@@ -3,6 +3,7 @@ import { bearerAuth } from "hono/bearer-auth";
 import { cors } from "hono/cors";
 import type { Config } from "./config.ts";
 import { pingDb } from "./db/client.ts";
+import { createCcRoutes } from "./cc/routes.ts";
 import { createChatRoutes } from "./chat/routes.ts";
 import { createTaskRoutes } from "./tasks/routes.ts";
 
@@ -64,6 +65,7 @@ export function createApp(config: Config): Hono {
 
   app.route("/api/tasks", createTaskRoutes(config));
   app.route("/api/chat", createChatRoutes(config));
+  app.route("/api/cc", createCcRoutes());
 
   return app;
 }
