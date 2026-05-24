@@ -18,6 +18,8 @@ pub const SECRET_KEYS: &[&str] = &[
     "gemini_api_key",
     "github_token",
     "database_url",
+    "google_client_id",
+    "google_client_secret",
 ];
 
 #[derive(Serialize)]

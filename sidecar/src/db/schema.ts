@@ -105,6 +105,25 @@ export const githubStars = pgTable(
   (t) => [uniqueIndex("github_stars_pr_idx").on(t.owner, t.repo, t.number)],
 );
 
+/**
+ * Google OAuth tokens for the calendar integration. Single-account model: the
+ * service keeps at most one row (the most recent). The refresh token is only
+ * returned by Google on first consent, so it is preserved across refreshes.
+ */
+export const googleTokens = pgTable("google_tokens", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  accessToken: text("access_token").notNull(),
+  refreshToken: text("refresh_token"),
+  scope: text("scope"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 export type ChatSession = typeof chatSessions.$inferSelect;
 export type NewChatSession = typeof chatSessions.$inferInsert;
 export type ChatMessage = typeof chatMessages.$inferSelect;
@@ -115,3 +134,5 @@ export type MemoryRow = typeof memories.$inferSelect;
 export type NewMemoryRow = typeof memories.$inferInsert;
 export type GithubFilter = typeof githubFilters.$inferSelect;
 export type GithubStar = typeof githubStars.$inferSelect;
+export type GoogleToken = typeof googleTokens.$inferSelect;
+export type NewGoogleToken = typeof googleTokens.$inferInsert;

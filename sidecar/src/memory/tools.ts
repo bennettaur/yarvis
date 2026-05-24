@@ -22,7 +22,7 @@ export function buildMemoryTools(memory: MemoryService, sessionId: string) {
 
     recall: tool({
       description:
-        "Search the user's stored memories for anything relevant to a query.",
+        "Search the user's stored memories, notes, and ingested documents for anything relevant to a query.",
       inputSchema: z.object({
         query: z.string(),
         limit: z.number().int().min(1).max(20).optional(),
@@ -33,6 +33,18 @@ export function buildMemoryTools(memory: MemoryService, sessionId: string) {
           content: r.content,
           score: r.score,
         }));
+      },
+    }),
+
+    take_note: tool({
+      description:
+        "Capture a freeform note the user wants to jot down. Notes are kept and feed into daily/weekly recaps.",
+      inputSchema: z.object({
+        content: z.string().describe("The note text, verbatim or lightly cleaned up"),
+      }),
+      execute: async ({ content }) => {
+        const record = await memory.add(content, { type: "note", sessionId });
+        return { id: record.id };
       },
     }),
   };

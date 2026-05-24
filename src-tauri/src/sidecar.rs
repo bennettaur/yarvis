@@ -118,6 +118,12 @@ fn build_command(port: u16, token: &str) -> Command {
     if let Some(token) = read_secret("github_token") {
         cmd.env("GITHUB_TOKEN", token);
     }
+    if let Some(id) = read_secret("google_client_id") {
+        cmd.env("GOOGLE_CLIENT_ID", id);
+    }
+    if let Some(secret) = read_secret("google_client_secret") {
+        cmd.env("GOOGLE_CLIENT_SECRET", secret);
+    }
 
     // Ensure the child dies with the parent rather than lingering.
     cmd.kill_on_drop(true);

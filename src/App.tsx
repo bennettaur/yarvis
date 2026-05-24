@@ -2,21 +2,42 @@ import { useEffect, useState } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import AlarmOverlay from "./components/AlarmOverlay";
 import AlarmsPanel from "./components/AlarmsPanel";
+import CalendarPanel from "./components/CalendarPanel";
 import ChatPanel from "./components/ChatPanel";
 import Dashboard from "./components/Dashboard";
+import MemoryPanel from "./components/MemoryPanel";
 import PrsPanel from "./components/PrsPanel";
 import SessionsPanel from "./components/SessionsPanel";
 import TasksPanel from "./components/TasksPanel";
 import { onAlarmFired, type Alarm } from "./lib/alarms";
 
-type Tab = "chat" | "tasks" | "prs" | "alarms" | "sessions" | "dashboard";
+type Tab =
+  | "chat"
+  | "tasks"
+  | "prs"
+  | "memory"
+  | "calendar"
+  | "alarms"
+  | "sessions"
+  | "dashboard";
 
-const TABS: Tab[] = ["chat", "tasks", "prs", "alarms", "sessions", "dashboard"];
+const TABS: Tab[] = [
+  "chat",
+  "tasks",
+  "prs",
+  "memory",
+  "calendar",
+  "alarms",
+  "sessions",
+  "dashboard",
+];
 
 const TAB_LABELS: Record<Tab, string> = {
   chat: "Chat",
   tasks: "Tasks",
   prs: "PRs",
+  memory: "Memory",
+  calendar: "Calendar",
   alarms: "Alarms",
   sessions: "Sessions",
   dashboard: "Dashboard",
@@ -59,6 +80,8 @@ export default function App() {
         {tab === "chat" && <ChatPanel />}
         {tab === "tasks" && <TasksPanel />}
         {tab === "prs" && <PrsPanel />}
+        {tab === "memory" && <MemoryPanel />}
+        {tab === "calendar" && <CalendarPanel />}
         {tab === "alarms" && <AlarmsPanel />}
         {tab === "sessions" && <SessionsPanel />}
         {tab === "dashboard" && <Dashboard />}

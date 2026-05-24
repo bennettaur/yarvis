@@ -6,6 +6,8 @@ import { pingDb } from "./db/client.ts";
 import { createCcRoutes } from "./cc/routes.ts";
 import { createChatRoutes } from "./chat/routes.ts";
 import { createGithubRoutes } from "./github/routes.ts";
+import { createCalendarRoutes, createGoogleCallbackRoutes } from "./google/routes.ts";
+import { createMemoryRoutes } from "./memory/routes.ts";
 import { createTaskRoutes } from "./tasks/routes.ts";
 
 const SERVICE_NAME = "yarvis-sidecar";
@@ -41,6 +43,11 @@ export function createApp(config: Config): Hono {
     }),
   );
 
+  // The Google OAuth loopback callback is unauthenticated like /health: the
+  // redirect from Google can't carry our bearer token. It is CSRF-protected by
+  // a state nonce and exposes nothing sensitive.
+  app.route("/", createGoogleCallbackRoutes(config));
+
   // Everything past this point requires the bearer token.
   app.use("/api/*", bearerAuth({ token: config.token }));
 
@@ -68,6 +75,8 @@ export function createApp(config: Config): Hono {
   app.route("/api/chat", createChatRoutes(config));
   app.route("/api/cc", createCcRoutes());
   app.route("/api/github", createGithubRoutes(config));
+  app.route("/api/memory", createMemoryRoutes(config));
+  app.route("/api/calendar", createCalendarRoutes(config));
 
   return app;
 }

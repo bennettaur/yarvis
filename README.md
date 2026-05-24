@@ -45,9 +45,17 @@ psql -d yarvis -c "CREATE EXTENSION IF NOT EXISTS vector;"
 DATABASE_URL="postgres://localhost:5432/yarvis" bun run --cwd sidecar db:migrate
 ```
 
-Provider keys (Anthropic, Gemini) and the database URL are entered in the app's
-**Settings** screen and stored in the macOS Keychain — not in env files. AWS
-Bedrock uses the standard AWS credential chain.
+Secrets are entered in the app's **Settings** screen and stored in the macOS
+Keychain — not in env files: the database URL, provider keys (Anthropic,
+Gemini), a GitHub token (for the PR dashboard + embedded review), and a Google
+Cloud OAuth client id/secret (for the Calendar integration). AWS Bedrock uses
+the standard AWS credential chain.
+
+For Google Calendar, create a **Desktop app** OAuth client in Google Cloud
+Console and register the loopback redirect
+`http://127.0.0.1:<sidecar-port>/oauth/google/callback` (any port is accepted
+for Desktop clients), then enter the client id/secret in Settings and connect
+from the Calendar tab. See `ROADMAP.md` for the full verification steps.
 
 ## Development
 
@@ -72,10 +80,17 @@ bun run build                  # typecheck + build the frontend
 ```
 src/            React frontend (Vite + TS + Tailwind)
   lib/          sidecar API client, Keychain command wrappers
+  components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, …)
 src-tauri/      Rust core (Tauri v2)
   src/keychain.rs   Keychain-backed secret commands
   src/sidecar.rs    sidecar supervisor
+  src/alarms.rs     full-screen alarm scheduler
 sidecar/        Bun + TS service (Hono)
   src/db/       Drizzle schema, client, migrations
+  src/chat/     multi-provider streaming chat + tool-calls
+  src/tasks/    daily/weekly work tracking
+  src/memory/   pgvector memory, notes, ingestion, recaps
+  src/github/   PR dashboard + embedded review (REST + GraphQL)
+  src/google/   Google Calendar OAuth + events
   drizzle/      generated SQL migrations
 ```

@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, gte, isNotNull, lte } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { tasks, type Task } from "../db/schema.ts";
 
@@ -63,6 +63,28 @@ export async function listTasks(
     .from(tasks)
     .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(asc(tasks.scope), asc(tasks.targetDate), asc(tasks.createdAt));
+}
+
+/**
+ * Tasks completed within an inclusive instant range, used by recaps. Ordered
+ * by when they were finished.
+ */
+export async function tasksCompletedBetween(
+  db: Db,
+  from: Date,
+  to: Date,
+): Promise<Task[]> {
+  return db
+    .select()
+    .from(tasks)
+    .where(
+      and(
+        isNotNull(tasks.completedAt),
+        gte(tasks.completedAt, from),
+        lte(tasks.completedAt, to),
+      ),
+    )
+    .orderBy(asc(tasks.completedAt));
 }
 
 export async function completeTask(
