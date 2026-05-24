@@ -6,7 +6,11 @@ import {
   text,
   timestamp,
   uuid,
+  vector,
 } from "drizzle-orm/pg-core";
+
+/** Embedding dimension used across the memory store and all embedders. */
+export const EMBED_DIM = 768;
 
 /**
  * Application schema for Yarvis. This holds *our* data — chat sessions/messages
@@ -64,9 +68,21 @@ export const tasks = pgTable("tasks", {
   completedAt: timestamp("completed_at", { withTimezone: true }),
 });
 
+export const memories = pgTable("memories", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  content: text("content").notNull(),
+  metadata: jsonb("metadata"),
+  embedding: vector("embedding", { dimensions: EMBED_DIM }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 export type ChatSession = typeof chatSessions.$inferSelect;
 export type NewChatSession = typeof chatSessions.$inferInsert;
 export type ChatMessage = typeof chatMessages.$inferSelect;
 export type NewChatMessage = typeof chatMessages.$inferInsert;
 export type Task = typeof tasks.$inferSelect;
 export type NewTask = typeof tasks.$inferInsert;
+export type MemoryRow = typeof memories.$inferSelect;
+export type NewMemoryRow = typeof memories.$inferInsert;

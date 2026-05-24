@@ -5,6 +5,9 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { availableProviders, resolveModel } from "../llm/providers.ts";
+import { chooseEmbedder } from "../memory/embedder.ts";
+import { PgVectorMemoryStore } from "../memory/index.ts";
+import { buildMemoryTools } from "../memory/tools.ts";
 import { addMessage, createSession, getMessages, listSessions } from "./service.ts";
 import { buildTaskTools } from "./tools.ts";
 
@@ -16,6 +19,7 @@ function systemPrompt(): string {
     "When the user states intentions (e.g. 'I plan to...', 'today I'll...', 'I need X by end of week'), capture each as a task with create_task: scope 'daily' for work due today, 'weekly' for goals due by the end of the week (compute the end-of-week date).",
     "When the user asks what they have left, what they didn't finish, or to plan, use list_tasks and summarize clearly.",
     "To carry unfinished work forward, use rollover_tasks. Mark finished work with complete_task.",
+    "When the user shares a durable fact or preference worth keeping, store it with remember. When answering, recall relevant memories first.",
     "Be concise and concrete.",
   ].join(" ");
 }
@@ -83,12 +87,17 @@ export function createChatRoutes(config: Config): Hono {
       }));
     messages.push({ role: "user", content: message });
 
+    const memory = new PgVectorMemoryStore(dbh, chooseEmbedder(config));
+
     return streamSSE(c, async (stream) => {
       const result = streamText({
         model: chatModel,
         system: systemPrompt(),
         messages,
-        tools: buildTaskTools(dbh, sessionId),
+        tools: {
+          ...buildTaskTools(dbh, sessionId),
+          ...buildMemoryTools(memory, sessionId),
+        },
         stopWhen: stepCountIs(5),
       });
       let full = "";

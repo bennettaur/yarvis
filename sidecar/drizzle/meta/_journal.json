@@ -8,6 +8,13 @@
       "when": 1779592239935,
       "tag": "0000_steady_sentinel",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1779601167633,
+      "tag": "0001_cuddly_lord_hawal",
+      "breakpoints": true
     }
   ]
 }
