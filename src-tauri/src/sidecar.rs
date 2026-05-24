@@ -115,6 +115,9 @@ fn build_command(port: u16, token: &str) -> Command {
     if let Some(key) = read_secret("gemini_api_key") {
         cmd.env("GEMINI_API_KEY", key);
     }
+    if let Some(token) = read_secret("github_token") {
+        cmd.env("GITHUB_TOKEN", token);
+    }
 
     // Ensure the child dies with the parent rather than lingering.
     cmd.kill_on_drop(true);

@@ -13,7 +13,12 @@ const SERVICE: &str = "com.mikebennett.yarvis";
 
 /// The complete set of secrets the app manages. Writes to any other key are
 /// rejected so the frontend cannot store arbitrary data in the Keychain.
-pub const SECRET_KEYS: &[&str] = &["anthropic_api_key", "gemini_api_key", "database_url"];
+pub const SECRET_KEYS: &[&str] = &[
+    "anthropic_api_key",
+    "gemini_api_key",
+    "github_token",
+    "database_url",
+];
 
 #[derive(Serialize)]
 pub struct SecretStatus {

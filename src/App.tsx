@@ -1,12 +1,13 @@
 import { useState } from "react";
 import ChatPanel from "./components/ChatPanel";
 import Dashboard from "./components/Dashboard";
+import PrsPanel from "./components/PrsPanel";
 import SessionsPanel from "./components/SessionsPanel";
 import TasksPanel from "./components/TasksPanel";
 
-type Tab = "chat" | "tasks" | "sessions" | "dashboard";
+type Tab = "chat" | "tasks" | "prs" | "sessions" | "dashboard";
 
-const TABS: Tab[] = ["chat", "tasks", "sessions", "dashboard"];
+const TABS: Tab[] = ["chat", "tasks", "prs", "sessions", "dashboard"];
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("chat");
@@ -35,6 +36,7 @@ export default function App() {
 
         {tab === "chat" && <ChatPanel />}
         {tab === "tasks" && <TasksPanel />}
+        {tab === "prs" && <PrsPanel />}
         {tab === "sessions" && <SessionsPanel />}
         {tab === "dashboard" && <Dashboard />}
       </div>

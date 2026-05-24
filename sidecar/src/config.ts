@@ -18,6 +18,7 @@ function randomToken(): string {
 export interface ProviderSecrets {
   anthropicApiKey?: string;
   geminiApiKey?: string;
+  githubToken?: string;
   // AWS Bedrock relies on the standard AWS credential chain (env vars / SSO),
   // so no explicit key is read here.
 }
@@ -60,6 +61,7 @@ export function loadConfig(): Config {
     secrets: {
       anthropicApiKey: env.ANTHROPIC_API_KEY,
       geminiApiKey: env.GEMINI_API_KEY,
+      githubToken: env.GITHUB_TOKEN,
     },
   };
 }

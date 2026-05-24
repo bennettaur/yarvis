@@ -1,10 +1,12 @@
 import {
   date,
+  integer,
   jsonb,
   pgEnum,
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
   vector,
 } from "drizzle-orm/pg-core";
@@ -78,6 +80,31 @@ export const memories = pgTable("memories", {
     .defaultNow(),
 });
 
+export const githubFilters = pgTable("github_filters", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  query: text("query").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const githubStars = pgTable(
+  "github_stars",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    owner: text("owner").notNull(),
+    repo: text("repo").notNull(),
+    number: integer("number").notNull(),
+    title: text("title"),
+    url: text("url"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [uniqueIndex("github_stars_pr_idx").on(t.owner, t.repo, t.number)],
+);
+
 export type ChatSession = typeof chatSessions.$inferSelect;
 export type NewChatSession = typeof chatSessions.$inferInsert;
 export type ChatMessage = typeof chatMessages.$inferSelect;
@@ -86,3 +113,5 @@ export type Task = typeof tasks.$inferSelect;
 export type NewTask = typeof tasks.$inferInsert;
 export type MemoryRow = typeof memories.$inferSelect;
 export type NewMemoryRow = typeof memories.$inferInsert;
+export type GithubFilter = typeof githubFilters.$inferSelect;
+export type GithubStar = typeof githubStars.$inferSelect;

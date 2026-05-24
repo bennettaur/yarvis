@@ -1,7 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 
 /** Secrets the app manages, mirrored from the Rust `SECRET_KEYS` allowlist. */
-export type SecretKey = "anthropic_api_key" | "gemini_api_key" | "database_url";
+export type SecretKey =
+  | "anthropic_api_key"
+  | "gemini_api_key"
+  | "github_token"
+  | "database_url";
 
 export interface SecretMeta {
   key: SecretKey;
@@ -28,6 +32,12 @@ export const SECRETS: SecretMeta[] = [
     label: "Gemini API key",
     placeholder: "AIza...",
     help: "Google Gemini API key for chat and embeddings.",
+  },
+  {
+    key: "github_token",
+    label: "GitHub token",
+    placeholder: "ghp_...",
+    help: "Fine-grained or classic PAT for the PR dashboard (repo + read access).",
   },
 ];
 
