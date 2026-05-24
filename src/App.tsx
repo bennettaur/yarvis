@@ -1,16 +1,29 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import type { UnlistenFn } from "@tauri-apps/api/event";
+import AlarmOverlay from "./components/AlarmOverlay";
+import AlarmsPanel from "./components/AlarmsPanel";
 import ChatPanel from "./components/ChatPanel";
 import Dashboard from "./components/Dashboard";
 import PrsPanel from "./components/PrsPanel";
 import SessionsPanel from "./components/SessionsPanel";
 import TasksPanel from "./components/TasksPanel";
+import { onAlarmFired, type Alarm } from "./lib/alarms";
 
-type Tab = "chat" | "tasks" | "prs" | "sessions" | "dashboard";
+type Tab = "chat" | "tasks" | "prs" | "alarms" | "sessions" | "dashboard";
 
-const TABS: Tab[] = ["chat", "tasks", "prs", "sessions", "dashboard"];
+const TABS: Tab[] = ["chat", "tasks", "prs", "alarms", "sessions", "dashboard"];
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("chat");
+  const [activeAlarm, setActiveAlarm] = useState<Alarm | null>(null);
+
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    onAlarmFired((alarm) => setActiveAlarm(alarm)).then((u) => {
+      unlisten = u;
+    });
+    return () => unlisten?.();
+  }, []);
 
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100">
@@ -37,9 +50,14 @@ export default function App() {
         {tab === "chat" && <ChatPanel />}
         {tab === "tasks" && <TasksPanel />}
         {tab === "prs" && <PrsPanel />}
+        {tab === "alarms" && <AlarmsPanel />}
         {tab === "sessions" && <SessionsPanel />}
         {tab === "dashboard" && <Dashboard />}
       </div>
+
+      {activeAlarm && (
+        <AlarmOverlay alarm={activeAlarm} onDone={() => setActiveAlarm(null)} />
+      )}
     </main>
   );
 }

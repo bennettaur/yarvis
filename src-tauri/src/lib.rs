@@ -1,3 +1,4 @@
+mod alarms;
 mod keychain;
 mod sidecar;
 
@@ -34,6 +35,9 @@ pub fn run() {
             if let Err(e) = sidecar::init(app.handle()) {
                 eprintln!("[sidecar] init failed: {e}");
             }
+            if let Err(e) = alarms::init(app.handle()) {
+                eprintln!("[alarms] init failed: {e}");
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -43,6 +47,11 @@ pub fn run() {
             keychain::list_secret_status,
             sidecar::get_sidecar_info,
             sidecar::restart_sidecar,
+            alarms::list_alarms,
+            alarms::create_alarm,
+            alarms::cancel_alarm,
+            alarms::acknowledge_alarm,
+            alarms::snooze_alarm,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
