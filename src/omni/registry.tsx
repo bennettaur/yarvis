@@ -1,12 +1,13 @@
 import { defineRegistry } from "@json-render/react";
 import AlarmsPanel from "../components/AlarmsPanel";
+import CalendarPanel from "../components/CalendarPanel";
 import ChatPanel from "../components/ChatPanel";
 import Dashboard from "../components/Dashboard";
+import MemoryPanel from "../components/MemoryPanel";
 import PrsPanel from "../components/PrsPanel";
 import SessionsPanel from "../components/SessionsPanel";
 import TasksPanel from "../components/TasksPanel";
 import { catalog } from "./catalog";
-import MeetingsWidget from "./MeetingsWidget";
 import { Column, Divider, Grid, Heading, Panel, Row, Text } from "./primitives";
 import WidgetFrame from "./WidgetFrame";
 
@@ -34,7 +35,16 @@ const { registry } = defineRegistry(catalog, {
         <TasksPanel />
       </WidgetFrame>
     ),
-    Meetings: ({ props }) => <MeetingsWidget title={props.title} />,
+    Calendar: ({ props }) => (
+      <WidgetFrame title={props.title ?? "Calendar"} bodyClassName="p-4">
+        <CalendarPanel />
+      </WidgetFrame>
+    ),
+    Memory: ({ props }) => (
+      <WidgetFrame title={props.title ?? "Memory"} bodyClassName="p-4">
+        <MemoryPanel />
+      </WidgetFrame>
+    ),
     PullRequests: ({ props }) => (
       <WidgetFrame title={props.title ?? "Pull Requests"} bodyClassName="p-4">
         <PrsPanel />

@@ -1,6 +1,6 @@
 {
-  "id": "6dccf3a0-82fb-4a27-85e9-c282271c2a16",
-  "prevId": "01a0a7b9-90f4-451d-9f1c-a1a80a403894",
+  "id": "9fd33207-4421-4c15-a6bd-a7c0d3db5fe6",
+  "prevId": "6dccf3a0-82fb-4a27-85e9-c282271c2a16",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -323,6 +323,52 @@
         },
         "created_at": {
           "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.omni_layouts": {
+      "name": "omni_layouts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "spec": {
+          "name": "spec",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,

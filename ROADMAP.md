@@ -20,6 +20,17 @@ Status of the build against the original vision. The full V1 plan lives at
   saved filters (PRs tab).
 - **Alarms** — full-screen takeover + escalating sound/notification, with
   acknowledge/snooze (Alarms tab).
+- **Embedded PR review** — in-app PR detail view built from the GitHub GraphQL
+  API (description, normalized checks, review threads) plus REST file diffs,
+  rendered with markdown and per-line diff coloring (PRs tab → "Review").
+- **Memory & knowledge** — notes, daily/weekly recaps (tasks completed + notes,
+  LLM-summarized or offline raw), document/URL ingestion (chunk → embed →
+  store), and a management UI to search/delete (Memory tab). Reuses the
+  `memories` table with a `type` tag (note/doc/fact).
+- **Google Calendar (scaffolded, untested)** — desktop OAuth + upcoming-events
+  fetch and a Calendar tab that arms meeting alarms just before start. Built
+  blind against the documented Google APIs; needs real OAuth credentials to
+  exercise (see Remaining → Calendar verification).
 
 ## Remaining to build
 
@@ -36,35 +47,22 @@ PRs" → check out the PR branch and run an agent to fix it).
 - **Builds on:** GitHub dashboard. Bun is already the runtime (Agent SDK is
   Bun-first).
 
-### 2. Google Calendar integration
-Pull meetings and feed them into the alarm system; fire an alarm before a
-meeting and escalate if you're a minute past the start without acknowledging.
-- **Approach:** Google OAuth; list upcoming events; auto-create alarms for
-  meetings; "joined/acknowledged" flow to stop escalation.
-- **Needs from you:** a Google Cloud OAuth app (client id/secret) + consent —
-  can't build or test the flow without it.
-- **Builds on:** the alarm system (already ready to receive scheduled alarms).
+### 2. Google Calendar verification
+The integration is built but unexercised.
+- **Needs from you:** create a Google Cloud OAuth app (Desktop client), register
+  the loopback redirect `http://127.0.0.1:<sidecar-port>/oauth/google/callback`,
+  and enter the client id/secret in Settings. Then connect from the Calendar tab
+  and confirm the auth → token-exchange → events → alarm flow end to end.
+- **Possible follow-ups:** background auto-sync of alarms (today arming is
+  manual per event or "set alarms for all"); a "joined" signal beyond
+  acknowledging the alarm; per-event lead-time configuration.
 
-### 3. Embedded / quick PR review view
-In-app review of PRs that need your attention.
-- **Approach:** GitHub blocks iframing its pages (`X-Frame-Options`), so build a
-  custom PR detail view from the GraphQL API (description, diff, checks,
-  review threads). Today the dashboard opens PRs in the system browser.
-- **Needs from you:** nothing new (uses the existing GitHub token) — just a
-  decision on how rich the in-app view should be vs. opening in the browser.
-- **Builds on:** GitHub dashboard.
-
-### 4. Memory & knowledge
-Extend memory from "remember/recall" into notes, recaps, and learning.
-- **Notes & recaps:** capture freeform notes; "give me a recap of today / this
-  week" summarizing tasks completed + notes + key chat points.
-- **Document/URL ingestion:** feed docs or links so the app learns over time
-  (chunk → embed → store in memory for recall).
-- **Memory management UI:** view, search, and delete stored memories.
-- **Optional — OpenMemory backend:** `openmemory-js` was deferred because it
-  boots its own server on import and is mid-rewrite; if its graph/temporal
-  features become worth it, run it as a standalone server and add an
-  HTTP-backed `MemoryService` (the interface already supports swapping).
+### 3. Memory & knowledge follow-ups
+The core is shipped; optional extensions remain.
+- **OpenMemory backend:** `openmemory-js` was deferred because it boots its own
+  server on import and is mid-rewrite; if its graph/temporal features become
+  worth it, run it as a standalone server and add an HTTP-backed `MemoryService`
+  (the interface already supports swapping).
 - **Needs from you:** an embeddings key (Gemini/Bedrock) for good-quality
   semantic recall on ingested docs; works offline at lower quality otherwise.
 
@@ -79,17 +77,19 @@ Extend memory from "remember/recall" into notes, recaps, and learning.
 - **Tray + autostart:** the plugins are installed but not yet wired to behaviors
   (run in tray, launch at login, focus on alarm).
 - **Secret storage review:** confirm Keychain coverage; consider Stronghold for
-  defense-in-depth.
+  defense-in-depth. Note: Google OAuth access/refresh tokens are persisted in
+  Postgres (`google_tokens`) rather than the Keychain — fine for a local
+  single-user app, but a candidate to move to the Keychain or encrypt at rest.
 - **Rust tests:** unit-test alarm due-logic and sidecar arg construction.
 - **Chat polish:** optional per-session model pinning; markdown rendering of
-  assistant messages.
+  assistant messages (a reusable `Markdown` component now exists — used by the
+  PR review and Memory tabs — and could be wired into the chat transcript).
 - **Alarm tuning:** choose fullscreen-takeover vs. maximize + always-on-top;
   recurring alarms.
 
 ## Suggested order
 
-1. **Embedded PR review view** — no new credentials; rounds out the GitHub work.
+1. **Google Calendar verification** — set up the OAuth app and exercise the
+   already-built flow end to end.
 2. **Claude Code delegation** — high value; needs your guardrail decisions first.
-3. **Google Calendar** — once you set up the OAuth app; unlocks meeting alarms.
-4. **Memory & knowledge** — notes/recaps/ingestion as a focused milestone.
-5. **Packaging** — when you're ready to run it as a real installed app.
+3. **Packaging** — when you're ready to run it as a real installed app.

@@ -7,6 +7,7 @@ import {
   createTask,
   listTasks,
   rolloverTasks,
+  tasksCompletedBetween,
   updateTask,
 } from "./service.ts";
 
@@ -70,6 +71,28 @@ describe("task service", () => {
     const reopened = await updateTask(db, task.id, { status: "open" });
     expect(reopened?.status).toBe("open");
     expect(reopened?.completedAt).toBeNull();
+  });
+
+  it("returns only tasks completed within the given window", async () => {
+    const inWindow = await createTask(db, { title: "in window", scope: "daily" });
+    await completeTask(db, inWindow.id); // completedAt = now
+    const open = await createTask(db, { title: "still open", scope: "daily" });
+    void open; // never completed, must be excluded
+
+    const now = new Date();
+    const from = new Date(now.getTime() - 60_000);
+    const to = new Date(now.getTime() + 60_000);
+    const within = await tasksCompletedBetween(db, from, to);
+    expect(within.length).toBe(1);
+    expect(within[0]!.title).toBe("in window");
+
+    // A window entirely in the past excludes the just-completed task.
+    const past = await tasksCompletedBetween(
+      db,
+      new Date(now.getTime() - 120_000),
+      new Date(now.getTime() - 60_000),
+    );
+    expect(past.length).toBe(0);
   });
 
   it("rolls open tasks from one date to another, leaving done ones", async () => {

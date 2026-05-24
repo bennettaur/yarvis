@@ -35,8 +35,8 @@ const SPEC_KEY = "yarvis.omni.spec";
 const MESSAGES_KEY = "yarvis.omni.messages";
 
 const EXAMPLES = [
-  "Show my tasks and meetings side by side, with a chat underneath",
-  "Give me a dashboard of my PRs, tasks, and alarms",
+  "Show my tasks and calendar side by side, with a chat underneath",
+  "Give me a dashboard of my PRs, tasks, and memory",
   "Just a big chat window next to my tasks",
 ];
 
@@ -323,8 +323,8 @@ export default function OmniView() {
                 <h2 className="text-lg font-semibold text-zinc-200">Omni</h2>
                 <p className="mt-1 max-w-md text-sm text-zinc-500">
                   Ask the chat to build a view from your widgets — tasks,
-                  meetings, PRs, sessions, alarms, and chat windows — in any
-                  layout.
+                  calendar, PRs, memory, sessions, alarms, and chat windows — in
+                  any layout.
                 </p>
               </div>
               <div className="flex max-w-md flex-col gap-2">

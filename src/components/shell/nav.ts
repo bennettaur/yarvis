@@ -6,6 +6,8 @@ export type Tab =
   | "omni"
   | "tasks"
   | "prs"
+  | "memory"
+  | "calendar"
   | "alarms"
   | "sessions"
   | "dashboard";
@@ -23,6 +25,8 @@ export const NAV_ITEMS: NavItem[] = [
   { id: "omni", label: "Omni", icon: "omni" },
   { id: "tasks", label: "Tasks", icon: "tasks" },
   { id: "prs", label: "PRs", icon: "prs" },
+  { id: "memory", label: "Memory", icon: "memory" },
+  { id: "calendar", label: "Calendar", icon: "calendar" },
   { id: "alarms", label: "Alarms", icon: "alarms" },
   { id: "sessions", label: "Sessions", icon: "sessions" },
   { id: "dashboard", label: "Dashboard", icon: "dashboard", pinBottom: true },

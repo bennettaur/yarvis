@@ -80,6 +80,36 @@ export function createGithubRoutes(config: Config): Hono {
     }
   });
 
+  // Rich detail for the in-app review view: description, checks, review threads.
+  router.get("/pr/:owner/:repo/:number/detail", async (c) => {
+    const gh = client();
+    if (!gh) return c.json({ error: "github token not configured" }, 400);
+    const number = Number(c.req.param("number"));
+    if (!Number.isInteger(number)) return c.json({ error: "bad number" }, 400);
+    try {
+      return c.json(
+        await gh.prDetail(c.req.param("owner"), c.req.param("repo"), number),
+      );
+    } catch (e) {
+      return c.json({ error: String(e) }, 502);
+    }
+  });
+
+  // Changed files with unified-diff patches for the in-app review view.
+  router.get("/pr/:owner/:repo/:number/files", async (c) => {
+    const gh = client();
+    if (!gh) return c.json({ error: "github token not configured" }, 400);
+    const number = Number(c.req.param("number"));
+    if (!Number.isInteger(number)) return c.json({ error: "bad number" }, 400);
+    try {
+      return c.json(
+        await gh.prFiles(c.req.param("owner"), c.req.param("repo"), number),
+      );
+    } catch (e) {
+      return c.json({ error: String(e) }, 502);
+    }
+  });
+
   // --- Saved filters (database only) ---
 
   router.get("/filters", async (c) => c.json(await listFilters(db())));

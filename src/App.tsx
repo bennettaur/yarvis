@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import AlarmOverlay from "./components/AlarmOverlay";
 import AlarmsPanel from "./components/AlarmsPanel";
+import CalendarPanel from "./components/CalendarPanel";
 import ChatPanel from "./components/ChatPanel";
 import Dashboard from "./components/Dashboard";
+import MemoryPanel from "./components/MemoryPanel";
 import PrsPanel from "./components/PrsPanel";
 import SessionsPanel from "./components/SessionsPanel";
 import TasksPanel from "./components/TasksPanel";
@@ -37,6 +39,8 @@ export default function App() {
           <div className="h-full overflow-y-auto p-6">
             {tab === "tasks" && <TasksPanel />}
             {tab === "prs" && <PrsPanel />}
+            {tab === "memory" && <MemoryPanel />}
+            {tab === "calendar" && <CalendarPanel />}
             {tab === "alarms" && <AlarmsPanel />}
             {tab === "sessions" && <SessionsPanel />}
             {tab === "dashboard" && <Dashboard />}

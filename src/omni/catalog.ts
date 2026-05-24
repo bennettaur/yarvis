@@ -89,10 +89,15 @@ export const catalog = defineCatalog(schema, {
       description:
         "The user's daily and weekly tasks, with inline add/complete. Self-contained.",
     },
-    Meetings: {
+    Calendar: {
       props: titled,
       description:
-        "Upcoming calendar meetings. Self-contained (calendar integration pending).",
+        "Upcoming Google Calendar meetings, with connect and per-event alarm controls. Self-contained.",
+    },
+    Memory: {
+      props: titled,
+      description:
+        "Saved notes, ingested documents, and day/week recaps, with search. Self-contained.",
     },
     PullRequests: {
       props: titled,

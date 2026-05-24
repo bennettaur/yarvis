@@ -14,6 +14,7 @@ import {
   type PrStatus,
   type PrSummary,
 } from "../lib/github";
+import PrDetailView from "./PrDetailView";
 
 const MY_PRS = "is:open is:pr author:@me";
 const REVIEW = "is:open is:pr review-requested:@me";
@@ -47,10 +48,12 @@ function PrRow({
   pr,
   starred,
   onToggleStar,
+  onReview,
 }: {
   pr: PrSummary;
   starred: boolean;
   onToggleStar: (pr: PrSummary, starred: boolean) => void;
+  onReview: (pr: PrSummary) => void;
 }) {
   const [status, setStatus] = useState<PrStatus | null>(null);
 
@@ -87,6 +90,12 @@ function PrRow({
           {pr.owner}/{pr.repo}#{pr.number} · {pr.author}
         </div>
       </div>
+      <button
+        onClick={() => onReview(pr)}
+        className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+      >
+        Review
+      </button>
       <StatusBadge status={status} />
     </li>
   );
@@ -97,11 +106,13 @@ function PrList({
   prs,
   isStarred,
   onToggleStar,
+  onReview,
 }: {
   title: string;
   prs: PrSummary[];
   isStarred: (pr: PrSummary) => boolean;
   onToggleStar: (pr: PrSummary, starred: boolean) => void;
+  onReview: (pr: PrSummary) => void;
 }) {
   return (
     <section>
@@ -118,6 +129,7 @@ function PrList({
               pr={pr}
               starred={isStarred(pr)}
               onToggleStar={onToggleStar}
+              onReview={onReview}
             />
           ))}
         </ul>
@@ -134,6 +146,7 @@ export default function PrsPanel() {
   const [filters, setFilters] = useState<GhFilter[]>([]);
   const [filterResults, setFilterResults] = useState<PrSummary[] | null>(null);
   const [newFilter, setNewFilter] = useState({ name: "", query: "" });
+  const [selected, setSelected] = useState<PrSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const loadStars = useCallback(async () => {
@@ -203,14 +216,25 @@ export default function PrsPanel() {
     );
   }
 
+  if (selected) {
+    return <PrDetailView pr={selected} onBack={() => setSelected(null)} />;
+  }
+
   return (
     <div className="space-y-6">
-      <PrList title="My PRs" prs={mine} isStarred={isStarred} onToggleStar={onToggleStar} />
+      <PrList
+        title="My PRs"
+        prs={mine}
+        isStarred={isStarred}
+        onToggleStar={onToggleStar}
+        onReview={setSelected}
+      />
       <PrList
         title="Needs my review"
         prs={review}
         isStarred={isStarred}
         onToggleStar={onToggleStar}
+        onReview={setSelected}
       />
 
       <section>
@@ -266,6 +290,7 @@ export default function PrsPanel() {
           prs={filterResults}
           isStarred={isStarred}
           onToggleStar={onToggleStar}
+          onReview={setSelected}
         />
       )}
 

@@ -19,6 +19,11 @@ export interface ProviderSecrets {
   anthropicApiKey?: string;
   geminiApiKey?: string;
   githubToken?: string;
+  // Google Cloud OAuth app credentials for the calendar integration. Created by
+  // the user in Google Cloud Console (Desktop app client) and injected by the
+  // Rust core from the Keychain, like the other secrets.
+  googleClientId?: string;
+  googleClientSecret?: string;
   // AWS Bedrock relies on the standard AWS credential chain (env vars / SSO),
   // so no explicit key is read here.
 }
@@ -62,6 +67,8 @@ export function loadConfig(): Config {
       anthropicApiKey: env.ANTHROPIC_API_KEY,
       geminiApiKey: env.GEMINI_API_KEY,
       githubToken: env.GITHUB_TOKEN,
+      googleClientId: env.GOOGLE_CLIENT_ID,
+      googleClientSecret: env.GOOGLE_CLIENT_SECRET,
     },
   };
 }

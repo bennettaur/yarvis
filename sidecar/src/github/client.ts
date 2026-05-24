@@ -28,6 +28,58 @@ export interface PrStatus {
   checks: ChecksSummary;
 }
 
+/** A single review comment within a thread. */
+export interface ReviewComment {
+  author: string;
+  body: string;
+  createdAt: string;
+}
+
+/** A review thread anchored to a file/line, with its comments. */
+export interface ReviewThread {
+  path: string | null;
+  line: number | null;
+  isResolved: boolean;
+  comments: ReviewComment[];
+}
+
+/** A normalized CI check (CheckRun or legacy commit status). */
+export interface CheckItem {
+  name: string;
+  /** "COMPLETED" | "IN_PROGRESS" | "QUEUED" | "PENDING" … */
+  status: string;
+  /** "SUCCESS" | "FAILURE" | "NEUTRAL" | null while pending. */
+  conclusion: string | null;
+  url: string | null;
+}
+
+/** Rich detail for the in-app PR review view (description, checks, threads). */
+export interface PrDetail {
+  number: number;
+  title: string;
+  body: string;
+  state: string;
+  draft: boolean;
+  author: string;
+  baseRef: string;
+  headRef: string;
+  additions: number;
+  deletions: number;
+  /** GraphQL mergeable enum: "MERGEABLE" | "CONFLICTING" | "UNKNOWN". */
+  mergeable: string;
+  checks: CheckItem[];
+  reviewThreads: ReviewThread[];
+}
+
+/** A changed file with its unified-diff patch (REST `pulls/:n/files`). */
+export interface PrFile {
+  filename: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  patch: string | null;
+}
+
 type FetchFn = typeof fetch;
 
 function parseRepo(
@@ -76,6 +128,80 @@ export function summarizeChecks(runs: any[]): ChecksSummary {
   return { total: runs.length, success, failure, pending };
 }
 
+/** Normalizes a GraphQL statusCheckRollup context into a flat CheckItem. */
+function toCheckItem(node: any): CheckItem {
+  if (node.__typename === "CheckRun") {
+    return {
+      name: node.name ?? "check",
+      status: node.status ?? "COMPLETED",
+      conclusion: node.conclusion ?? null,
+      url: node.detailsUrl ?? null,
+    };
+  }
+  // StatusContext (legacy commit status): map its state onto the same shape.
+  return {
+    name: node.context ?? "status",
+    status: "COMPLETED",
+    conclusion: node.state ?? null,
+    url: node.targetUrl ?? null,
+  };
+}
+
+/** Shapes the GraphQL `pullRequest` payload into a flat PrDetail. */
+export function toPrDetail(pr: any): PrDetail {
+  const rollupNodes =
+    pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
+  const threadNodes = pr.reviewThreads?.nodes ?? [];
+  return {
+    number: pr.number,
+    title: pr.title,
+    body: pr.body ?? "",
+    state: pr.state,
+    draft: Boolean(pr.isDraft),
+    author: pr.author?.login ?? "",
+    baseRef: pr.baseRefName ?? "",
+    headRef: pr.headRefName ?? "",
+    additions: pr.additions ?? 0,
+    deletions: pr.deletions ?? 0,
+    mergeable: pr.mergeable ?? "UNKNOWN",
+    checks: rollupNodes.map(toCheckItem),
+    reviewThreads: threadNodes.map((thread: any) => ({
+      path: thread.path ?? null,
+      line: thread.line ?? null,
+      isResolved: Boolean(thread.isResolved),
+      comments: (thread.comments?.nodes ?? []).map((comment: any) => ({
+        author: comment.author?.login ?? "",
+        body: comment.body ?? "",
+        createdAt: comment.createdAt ?? "",
+      })),
+    })),
+  };
+}
+
+const PR_DETAIL_QUERY = `
+query($owner:String!,$repo:String!,$number:Int!){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$number){
+      number title body state isDraft additions deletions mergeable
+      author{login}
+      baseRefName headRefName
+      reviewThreads(first:50){
+        nodes{
+          isResolved path line
+          comments(first:50){ nodes{ author{login} body createdAt } }
+        }
+      }
+      commits(last:1){
+        nodes{ commit{ statusCheckRollup{ contexts(first:100){ nodes{
+          __typename
+          ... on CheckRun { name status conclusion detailsUrl }
+          ... on StatusContext { context state targetUrl }
+        }}}}}
+      }
+    }
+  }
+}`;
+
 export class GitHubClient {
   constructor(
     private readonly token: string,
@@ -92,6 +218,26 @@ export class GitHubClient {
     });
     if (!res.ok) throw new Error(`github ${path} -> ${res.status}`);
     return (await res.json()) as T;
+  }
+
+  private async graphql<T>(
+    query: string,
+    variables: Record<string, unknown>,
+  ): Promise<T> {
+    const res = await this.fetchImpl("https://api.github.com/graphql", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ query, variables }),
+    });
+    if (!res.ok) throw new Error(`github graphql -> ${res.status}`);
+    const payload = (await res.json()) as { data?: T; errors?: unknown };
+    if (payload.errors) {
+      throw new Error(`github graphql: ${JSON.stringify(payload.errors)}`);
+    }
+    return payload.data as T;
   }
 
   viewer(): Promise<{ login: string }> {
@@ -115,5 +261,35 @@ export class GitHubClient {
       mergeableState: pr.mergeable_state ?? "unknown",
       checks: summarizeChecks(checks.check_runs ?? []),
     };
+  }
+
+  async prDetail(
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<PrDetail> {
+    const data = await this.graphql<{
+      repository?: { pullRequest?: any };
+    }>(PR_DETAIL_QUERY, { owner, repo, number });
+    const pr = data.repository?.pullRequest;
+    if (!pr) throw new Error(`pull request ${owner}/${repo}#${number} not found`);
+    return toPrDetail(pr);
+  }
+
+  async prFiles(
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<PrFile[]> {
+    const files = await this.api<any[]>(
+      `/repos/${owner}/${repo}/pulls/${number}/files?per_page=100`,
+    );
+    return files.map((f) => ({
+      filename: f.filename,
+      status: f.status,
+      additions: f.additions ?? 0,
+      deletions: f.deletions ?? 0,
+      patch: f.patch ?? null,
+    }));
   }
 }
