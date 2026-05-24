@@ -17,7 +17,7 @@ function TaskItem({ task, onComplete }: { task: Task; onComplete: (id: string) =
         type="checkbox"
         checked={task.status === "done"}
         onChange={() => onComplete(task.id)}
-        className="h-4 w-4 accent-emerald-500"
+        className="h-4 w-4 accent-indigo-500"
       />
       <span className={task.status === "done" ? "text-zinc-500 line-through" : ""}>
         {task.title}
@@ -120,7 +120,7 @@ export default function TasksPanel() {
         </select>
         <button
           onClick={() => void onAdd()}
-          className="rounded-md bg-emerald-600 px-4 py-1.5 text-sm font-medium hover:bg-emerald-500"
+          className="rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium hover:bg-indigo-500"
         >
           Add
         </button>

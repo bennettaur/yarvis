@@ -1,1 +1,25 @@
 @import "tailwindcss";
+
+/*
+ * Sharp, flat desktop aesthetic. Zeroing the radius scale flattens every
+ * `rounded-*` surface (cards, buttons, inputs) without touching each class.
+ * `rounded-full` (status dots, avatars) does not read these variables, so it
+ * stays round.
+ */
+@theme {
+  --radius-xs: 0px;
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+  --radius-2xl: 0px;
+  --radius-3xl: 0px;
+  --radius-4xl: 0px;
+}
+
+/* The shell owns the full viewport and manages its own scroll regions. */
+html,
+body,
+#root {
+  height: 100%;
+}

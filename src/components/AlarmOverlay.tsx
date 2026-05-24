@@ -44,7 +44,7 @@ export default function AlarmOverlay({
             await acknowledgeAlarm(alarm.id);
             onDone();
           }}
-          className="rounded-lg bg-emerald-600 px-8 py-3 text-lg font-medium hover:bg-emerald-500"
+          className="rounded-lg bg-indigo-600 px-8 py-3 text-lg font-medium hover:bg-indigo-500"
         >
           Acknowledge
         </button>

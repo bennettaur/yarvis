@@ -6,6 +6,8 @@ import { pingDb } from "./db/client.ts";
 import { createCcRoutes } from "./cc/routes.ts";
 import { createChatRoutes } from "./chat/routes.ts";
 import { createGithubRoutes } from "./github/routes.ts";
+import { createOmniRoutes } from "./omni/routes.ts";
+import { createReadiness, type Readiness } from "./readiness.ts";
 import { createTaskRoutes } from "./tasks/routes.ts";
 
 const SERVICE_NAME = "yarvis-sidecar";
@@ -21,7 +23,10 @@ const startedAt = Date.now();
  *  - `/health` is intentionally unauthenticated so the Rust supervisor can probe
  *    readiness; it exposes nothing sensitive.
  */
-export function createApp(config: Config): Hono {
+export function createApp(
+  config: Config,
+  readiness: Readiness = createReadiness(),
+): Hono {
   const app = new Hono();
 
   app.use(
@@ -33,13 +38,20 @@ export function createApp(config: Config): Hono {
     }),
   );
 
-  app.get("/health", (c) =>
-    c.json({
+  // `/health` is intentionally unauthenticated. `ready` is false while startup
+  // migrations run (or if they failed), so the frontend can gate behind a
+  // loading screen until the service is usable.
+  app.get("/health", (c) => {
+    const { phase, error } = readiness.get();
+    return c.json({
       status: "ok",
       service: SERVICE_NAME,
       uptimeMs: Date.now() - startedAt,
-    }),
-  );
+      ready: phase === "ready",
+      phase,
+      ...(error ? { error } : {}),
+    });
+  });
 
   // Everything past this point requires the bearer token.
   app.use("/api/*", bearerAuth({ token: config.token }));
@@ -68,6 +80,7 @@ export function createApp(config: Config): Hono {
   app.route("/api/chat", createChatRoutes(config));
   app.route("/api/cc", createCcRoutes());
   app.route("/api/github", createGithubRoutes(config));
+  app.route("/api/omni", createOmniRoutes(config));
 
   return app;
 }

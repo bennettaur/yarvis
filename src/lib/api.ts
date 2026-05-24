@@ -10,6 +10,10 @@ export interface HealthResponse {
   status: string;
   service: string;
   uptimeMs: number;
+  /** False while startup migrations run or if they failed. */
+  ready?: boolean;
+  phase?: "migrating" | "ready" | "error";
+  error?: string;
 }
 
 export interface StatusResponse {
@@ -28,7 +32,12 @@ let cachedInfo: Promise<SidecarInfo> | null = null;
 /** Fetches and caches the sidecar port/token from the Rust core. */
 export function sidecarInfo(): Promise<SidecarInfo> {
   if (!cachedInfo) {
-    cachedInfo = invoke<SidecarInfo>("get_sidecar_info");
+    // Don't cache a rejection: clear it so the next call (e.g. the boot-time
+    // poll) retries instead of being stuck on a one-time failure.
+    cachedInfo = invoke<SidecarInfo>("get_sidecar_info").catch((e) => {
+      cachedInfo = null;
+      throw e;
+    });
   }
   return cachedInfo;
 }

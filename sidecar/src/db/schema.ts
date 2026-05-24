@@ -105,6 +105,19 @@ export const githubStars = pgTable(
   (t) => [uniqueIndex("github_stars_pr_idx").on(t.owner, t.repo, t.number)],
 );
 
+/** Saved Omni layouts: a named json-render spec the user can reload later. */
+export const omniLayouts = pgTable("omni_layouts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  spec: jsonb("spec").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 export type ChatSession = typeof chatSessions.$inferSelect;
 export type NewChatSession = typeof chatSessions.$inferInsert;
 export type ChatMessage = typeof chatMessages.$inferSelect;
@@ -115,3 +128,5 @@ export type MemoryRow = typeof memories.$inferSelect;
 export type NewMemoryRow = typeof memories.$inferInsert;
 export type GithubFilter = typeof githubFilters.$inferSelect;
 export type GithubStar = typeof githubStars.$inferSelect;
+export type OmniLayout = typeof omniLayouts.$inferSelect;
+export type NewOmniLayout = typeof omniLayouts.$inferInsert;
