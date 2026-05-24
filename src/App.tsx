@@ -1,17 +1,18 @@
 import { useState } from "react";
+import ChatPanel from "./components/ChatPanel";
 import Dashboard from "./components/Dashboard";
 import TasksPanel from "./components/TasksPanel";
 
-type Tab = "dashboard" | "tasks";
+type Tab = "chat" | "tasks" | "dashboard";
 
-const TABS: Tab[] = ["dashboard", "tasks"];
+const TABS: Tab[] = ["chat", "tasks", "dashboard"];
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("dashboard");
+  const [tab, setTab] = useState<Tab>("chat");
 
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100">
-      <div className="mx-auto max-w-2xl px-8 py-8">
+      <div className="mx-auto max-w-3xl px-8 py-8">
         <header className="mb-8 flex items-center gap-6">
           <h1 className="text-2xl font-semibold tracking-tight">Yarvis</h1>
           <nav className="flex gap-1">
@@ -31,7 +32,9 @@ export default function App() {
           </nav>
         </header>
 
-        {tab === "dashboard" ? <Dashboard /> : <TasksPanel />}
+        {tab === "chat" && <ChatPanel />}
+        {tab === "tasks" && <TasksPanel />}
+        {tab === "dashboard" && <Dashboard />}
       </div>
     </main>
   );

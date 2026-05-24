@@ -3,6 +3,7 @@ import { bearerAuth } from "hono/bearer-auth";
 import { cors } from "hono/cors";
 import type { Config } from "./config.ts";
 import { pingDb } from "./db/client.ts";
+import { createChatRoutes } from "./chat/routes.ts";
 import { createTaskRoutes } from "./tasks/routes.ts";
 
 const SERVICE_NAME = "yarvis-sidecar";
@@ -62,6 +63,7 @@ export function createApp(config: Config): Hono {
   });
 
   app.route("/api/tasks", createTaskRoutes(config));
+  app.route("/api/chat", createChatRoutes(config));
 
   return app;
 }
