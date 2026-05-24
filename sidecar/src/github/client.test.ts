@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { GitHubClient, summarizeChecks } from "./client.ts";
+import { GitHubClient, summarizeChecks, toPrDetail } from "./client.ts";
 
 function fakeFetch(routes: Record<string, unknown>): typeof fetch {
   return (async (url: string) => {
@@ -76,5 +76,114 @@ describe("github client", () => {
     expect(st.mergeable).toBe(true);
     expect(st.mergeableState).toBe("clean");
     expect(st.checks).toMatchObject({ total: 1, success: 1 });
+  });
+
+  it("normalizes CheckRun and StatusContext into a flat check list", () => {
+    const detail = toPrDetail({
+      number: 5,
+      title: "Add feature",
+      body: "## Summary\nDoes a thing.",
+      state: "OPEN",
+      isDraft: false,
+      additions: 10,
+      deletions: 2,
+      mergeable: "MERGEABLE",
+      author: { login: "me" },
+      baseRefName: "main",
+      headRefName: "feature",
+      reviewThreads: {
+        nodes: [
+          {
+            isResolved: false,
+            path: "src/a.ts",
+            line: 12,
+            comments: {
+              nodes: [
+                { author: { login: "rev" }, body: "nit", createdAt: "2026-01-01" },
+              ],
+            },
+          },
+        ],
+      },
+      commits: {
+        nodes: [
+          {
+            commit: {
+              statusCheckRollup: {
+                contexts: {
+                  nodes: [
+                    {
+                      __typename: "CheckRun",
+                      name: "build",
+                      status: "COMPLETED",
+                      conclusion: "SUCCESS",
+                      detailsUrl: "https://ci/build",
+                    },
+                    {
+                      __typename: "StatusContext",
+                      context: "legacy",
+                      state: "FAILURE",
+                      targetUrl: "https://ci/legacy",
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    expect(detail).toMatchObject({
+      number: 5,
+      author: "me",
+      baseRef: "main",
+      headRef: "feature",
+      mergeable: "MERGEABLE",
+    });
+    expect(detail.checks).toEqual([
+      { name: "build", status: "COMPLETED", conclusion: "SUCCESS", url: "https://ci/build" },
+      { name: "legacy", status: "COMPLETED", conclusion: "FAILURE", url: "https://ci/legacy" },
+    ]);
+    expect(detail.reviewThreads[0]).toMatchObject({
+      path: "src/a.ts",
+      line: 12,
+      isResolved: false,
+    });
+    expect(detail.reviewThreads[0]!.comments[0]).toMatchObject({
+      author: "rev",
+      body: "nit",
+    });
+  });
+
+  it("fetches PR detail over graphql", async () => {
+    const gh = new GitHubClient(
+      "t",
+      fakeFetch({
+        "/graphql": {
+          data: {
+            repository: {
+              pullRequest: {
+                number: 9,
+                title: "T",
+                body: "b",
+                state: "OPEN",
+                isDraft: true,
+                additions: 1,
+                deletions: 0,
+                mergeable: "UNKNOWN",
+                author: { login: "me" },
+                baseRefName: "main",
+                headRefName: "f",
+                reviewThreads: { nodes: [] },
+                commits: { nodes: [] },
+              },
+            },
+          },
+        },
+      }),
+    );
+    const detail = await gh.prDetail("o", "r", 9);
+    expect(detail).toMatchObject({ number: 9, draft: true, checks: [] });
   });
 });

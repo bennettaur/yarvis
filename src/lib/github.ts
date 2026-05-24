@@ -18,6 +18,50 @@ export interface PrStatus {
   checks: { total: number; success: number; failure: number; pending: number };
 }
 
+export interface ReviewComment {
+  author: string;
+  body: string;
+  createdAt: string;
+}
+
+export interface ReviewThread {
+  path: string | null;
+  line: number | null;
+  isResolved: boolean;
+  comments: ReviewComment[];
+}
+
+export interface CheckItem {
+  name: string;
+  status: string;
+  conclusion: string | null;
+  url: string | null;
+}
+
+export interface PrDetail {
+  number: number;
+  title: string;
+  body: string;
+  state: string;
+  draft: boolean;
+  author: string;
+  baseRef: string;
+  headRef: string;
+  additions: number;
+  deletions: number;
+  mergeable: string;
+  checks: CheckItem[];
+  reviewThreads: ReviewThread[];
+}
+
+export interface PrFile {
+  filename: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  patch: string | null;
+}
+
 export interface GhFilter {
   id: string;
   name: string;
@@ -56,6 +100,10 @@ export const ghSearch = (q: string) =>
   get<PrSummary[]>(`/api/github/search?q=${encodeURIComponent(q)}`);
 export const ghPrStatus = (owner: string, repo: string, number: number) =>
   get<PrStatus>(`/api/github/pr/${owner}/${repo}/${number}`);
+export const ghPrDetail = (owner: string, repo: string, number: number) =>
+  get<PrDetail>(`/api/github/pr/${owner}/${repo}/${number}/detail`);
+export const ghPrFiles = (owner: string, repo: string, number: number) =>
+  get<PrFile[]>(`/api/github/pr/${owner}/${repo}/${number}/files`);
 
 export const ghFilters = () => get<GhFilter[]>("/api/github/filters");
 export const ghCreateFilter = (name: string, query: string) =>
