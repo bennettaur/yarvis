@@ -5,12 +5,14 @@
 //! with secrets injected from the Keychain. The sidecar is restarted if it exits.
 
 use std::net::TcpListener;
+use std::sync::Arc;
 use std::time::Duration;
 
 use rand::RngCore;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 use tokio::process::Command;
+use tokio::sync::Notify;
 use tokio::time::sleep;
 
 use crate::keychain::read_secret;
@@ -28,6 +30,13 @@ const SPAWN_RETRY_DELAY: Duration = Duration::from_secs(2);
 pub struct SidecarInfo {
     pub port: u16,
     pub token: String,
+}
+
+/// Lets commands ask the supervisor to restart the sidecar (e.g. after a
+/// secret changes, so the new value is injected into a fresh process).
+#[derive(Clone)]
+pub struct SidecarControl {
+    restart: Arc<Notify>,
 }
 
 fn pick_free_port() -> std::io::Result<u16> {
@@ -53,19 +62,34 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
         token: token.clone(),
     });
 
+    let restart = Arc::new(Notify::new());
+    app.manage(SidecarControl {
+        restart: restart.clone(),
+    });
+
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        supervise(handle, port, token).await;
+        supervise(handle, port, token, restart).await;
     });
     Ok(())
 }
 
-async fn supervise(_app: AppHandle, port: u16, token: String) {
+async fn supervise(_app: AppHandle, port: u16, token: String, restart: Arc<Notify>) {
     loop {
         match build_command(port, &token).spawn() {
             Ok(mut child) => {
-                let status = child.wait().await;
-                eprintln!("[sidecar] exited ({status:?}); restarting shortly");
+                // Wait for the sidecar to exit on its own or for a restart request.
+                tokio::select! {
+                    status = child.wait() => {
+                        eprintln!("[sidecar] exited ({status:?}); restarting shortly");
+                    }
+                    _ = restart.notified() => {
+                        eprintln!("[sidecar] restart requested");
+                    }
+                }
+                // Ensure the process is gone before respawning (no-op if it already exited).
+                let _ = child.start_kill();
+                let _ = child.wait().await;
                 sleep(RESTART_DELAY).await;
             }
             Err(e) => {
@@ -117,4 +141,11 @@ fn command_base() -> Command {
 #[tauri::command]
 pub fn get_sidecar_info(info: tauri::State<'_, SidecarInfo>) -> SidecarInfo {
     info.inner().clone()
+}
+
+/// Restarts the sidecar so newly-stored secrets are picked up. The port and
+/// token are unchanged, so the frontend's cached connection stays valid.
+#[tauri::command]
+pub fn restart_sidecar(control: tauri::State<'_, SidecarControl>) {
+    control.restart.notify_one();
 }

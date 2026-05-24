@@ -1,4 +1,4 @@
-import { streamText, type ModelMessage } from "ai";
+import { stepCountIs, streamText, type ModelMessage } from "ai";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
@@ -6,6 +6,19 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { availableProviders, resolveModel } from "../llm/providers.ts";
 import { addMessage, createSession, getMessages, listSessions } from "./service.ts";
+import { buildTaskTools } from "./tools.ts";
+
+function systemPrompt(): string {
+  const today = new Date().toISOString().slice(0, 10);
+  return [
+    "You are Yarvis, a personal assistant that helps the user track and recall their work.",
+    `Today's date is ${today}.`,
+    "When the user states intentions (e.g. 'I plan to...', 'today I'll...', 'I need X by end of week'), capture each as a task with create_task: scope 'daily' for work due today, 'weekly' for goals due by the end of the week (compute the end-of-week date).",
+    "When the user asks what they have left, what they didn't finish, or to plan, use list_tasks and summarize clearly.",
+    "To carry unfinished work forward, use rollover_tasks. Mark finished work with complete_task.",
+    "Be concise and concrete.",
+  ].join(" ");
+}
 
 const chatSchema = z.object({
   sessionId: z.string().uuid(),
@@ -71,7 +84,13 @@ export function createChatRoutes(config: Config): Hono {
     messages.push({ role: "user", content: message });
 
     return streamSSE(c, async (stream) => {
-      const result = streamText({ model: chatModel, messages });
+      const result = streamText({
+        model: chatModel,
+        system: systemPrompt(),
+        messages,
+        tools: buildTaskTools(dbh, sessionId),
+        stopWhen: stepCountIs(5),
+      });
       let full = "";
       try {
         for await (const delta of result.textStream) {

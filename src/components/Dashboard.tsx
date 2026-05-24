@@ -10,6 +10,7 @@ import {
   SECRETS,
   deleteSecret,
   listSecretStatus,
+  restartSidecar,
   setSecret,
   type SecretKey,
   type SecretStatus,
@@ -74,6 +75,8 @@ export default function Dashboard() {
       if (!value) return;
       await setSecret(key, value);
       setInputs((prev) => ({ ...prev, [key]: "" }));
+      // Reload the sidecar so it picks up the new secret immediately.
+      await restartSidecar();
       await refresh();
     },
     [inputs, refresh],
@@ -82,6 +85,7 @@ export default function Dashboard() {
   const onClear = useCallback(
     async (key: SecretKey) => {
       await deleteSecret(key);
+      await restartSidecar();
       await refresh();
     },
     [refresh],
@@ -135,8 +139,8 @@ export default function Dashboard() {
           Secrets
         </h2>
         <p className="mb-4 text-xs text-zinc-500">
-          Stored in the macOS Keychain. Restart the app after changing these so
-          the sidecar picks them up.
+          Stored in the macOS Keychain. Saving reloads the sidecar so changes
+          take effect right away.
         </p>
         <div className="space-y-5">
           {SECRETS.map((meta) => (

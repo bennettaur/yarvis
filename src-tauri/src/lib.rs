@@ -42,6 +42,7 @@ pub fn run() {
             keychain::delete_secret,
             keychain::list_secret_status,
             sidecar::get_sidecar_info,
+            sidecar::restart_sidecar,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
