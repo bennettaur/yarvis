@@ -41,4 +41,15 @@ describe("pgvector memory store", () => {
     expect(await store.delete(rec.id)).toBe(true);
     expect(await store.get(rec.id)).toBeNull();
   });
+
+  it("lists memories and filters by metadata type", async () => {
+    await store.add("a fact", { type: "fact" });
+    await store.add("note one", { type: "note" });
+    await store.add("note two", { type: "note" });
+
+    expect((await store.list()).length).toBe(3);
+    const notes = await store.list({ type: "note" });
+    expect(notes.length).toBe(2);
+    expect(notes.every((n) => (n.metadata as any).type === "note")).toBe(true);
+  });
 });

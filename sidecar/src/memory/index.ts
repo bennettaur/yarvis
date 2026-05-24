@@ -1,4 +1,4 @@
-import { cosineDistance, eq } from "drizzle-orm";
+import { and, cosineDistance, desc, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { memories, type MemoryRow } from "../db/schema.ts";
 import type { Embedder } from "./embedder.ts";
@@ -12,6 +12,15 @@ export interface MemoryRecord {
   score?: number;
 }
 
+/** Filters for browsing stored memories (management UI, recaps). */
+export interface MemoryListOptions {
+  /** Match the metadata `type` tag (e.g. "note", "doc"). */
+  type?: string;
+  /** Only memories created at or after this instant. */
+  since?: Date;
+  limit?: number;
+}
+
 /**
  * Stores and retrieves freeform memories by semantic similarity. The app
  * depends only on this interface, so the backing store (pgvector today,
@@ -20,6 +29,7 @@ export interface MemoryRecord {
 export interface MemoryService {
   add(content: string, metadata?: Record<string, unknown>): Promise<MemoryRecord>;
   search(query: string, limit?: number): Promise<MemoryRecord[]>;
+  list(options?: MemoryListOptions): Promise<MemoryRecord[]>;
   get(id: string): Promise<MemoryRecord | null>;
   delete(id: string): Promise<boolean>;
 }
@@ -71,6 +81,28 @@ export class PgVectorMemoryStore implements MemoryService {
     return rows.map((r) =>
       toRecord(r as MemoryRow, 1 - Number(r.distance)),
     );
+  }
+
+  async list(options: MemoryListOptions = {}): Promise<MemoryRecord[]> {
+    const conditions = [];
+    if (options.type) {
+      conditions.push(sql`${memories.metadata}->>'type' = ${options.type}`);
+    }
+    if (options.since) {
+      conditions.push(gte(memories.createdAt, options.since));
+    }
+    const rows = await this.db
+      .select({
+        id: memories.id,
+        content: memories.content,
+        metadata: memories.metadata,
+        createdAt: memories.createdAt,
+      })
+      .from(memories)
+      .where(conditions.length ? and(...conditions) : undefined)
+      .orderBy(desc(memories.createdAt))
+      .limit(options.limit ?? 100);
+    return rows.map((r) => toRecord(r as MemoryRow));
   }
 
   async get(id: string): Promise<MemoryRecord | null> {
