@@ -72,10 +72,17 @@ bun run build                  # typecheck + build the frontend
 ```
 src/            React frontend (Vite + TS + Tailwind)
   lib/          sidecar API client, Keychain command wrappers
+  components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, …)
 src-tauri/      Rust core (Tauri v2)
   src/keychain.rs   Keychain-backed secret commands
   src/sidecar.rs    sidecar supervisor
+  src/alarms.rs     full-screen alarm scheduler
 sidecar/        Bun + TS service (Hono)
   src/db/       Drizzle schema, client, migrations
+  src/chat/     multi-provider streaming chat + tool-calls
+  src/tasks/    daily/weekly work tracking
+  src/memory/   pgvector memory, notes, ingestion, recaps
+  src/github/   PR dashboard + embedded review (REST + GraphQL)
+  src/google/   Google Calendar OAuth + events
   drizzle/      generated SQL migrations
 ```
