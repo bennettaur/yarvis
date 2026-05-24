@@ -3,6 +3,7 @@ import { bearerAuth } from "hono/bearer-auth";
 import { cors } from "hono/cors";
 import type { Config } from "./config.ts";
 import { pingDb } from "./db/client.ts";
+import { createTaskRoutes } from "./tasks/routes.ts";
 
 const SERVICE_NAME = "yarvis-sidecar";
 const startedAt = Date.now();
@@ -59,6 +60,8 @@ export function createApp(config: Config): Hono {
     const reachable = await pingDb(config.databaseUrl);
     return c.json({ configured: true, reachable });
   });
+
+  app.route("/api/tasks", createTaskRoutes(config));
 
   return app;
 }
