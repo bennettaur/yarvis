@@ -13,6 +13,15 @@ type Tab = "chat" | "tasks" | "prs" | "alarms" | "sessions" | "dashboard";
 
 const TABS: Tab[] = ["chat", "tasks", "prs", "alarms", "sessions", "dashboard"];
 
+const TAB_LABELS: Record<Tab, string> = {
+  chat: "Chat",
+  tasks: "Tasks",
+  prs: "PRs",
+  alarms: "Alarms",
+  sessions: "Sessions",
+  dashboard: "Dashboard",
+};
+
 export default function App() {
   const [tab, setTab] = useState<Tab>("chat");
   const [activeAlarm, setActiveAlarm] = useState<Alarm | null>(null);
@@ -35,13 +44,13 @@ export default function App() {
               <button
                 key={t}
                 onClick={() => setTab(t)}
-                className={`rounded-md px-3 py-1.5 text-sm capitalize ${
+                className={`rounded-md px-3 py-1.5 text-sm ${
                   tab === t
                     ? "bg-zinc-800 text-zinc-100"
                     : "text-zinc-400 hover:text-zinc-200"
                 }`}
               >
-                {t}
+                {TAB_LABELS[t]}
               </button>
             ))}
           </nav>

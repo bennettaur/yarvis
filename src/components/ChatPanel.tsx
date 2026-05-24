@@ -16,6 +16,9 @@ interface Display {
   content: string;
 }
 
+const PROVIDER_KEY = "yarvis.chat.provider";
+const MODEL_KEY = "yarvis.chat.model";
+
 export default function ChatPanel() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [provider, setProvider] = useState<ProviderId | "">("");
@@ -34,10 +37,21 @@ export default function ChatPanel() {
       try {
         const provs = await listProviders();
         setProviders(provs);
-        const firstAvailable = provs.find((p) => p.available) ?? provs[0];
-        if (firstAvailable) {
-          setProvider(firstAvailable.id);
-          setModel(firstAvailable.models[0] ?? "");
+        // Restore the last-used provider/model, falling back to the first
+        // available provider and its first model.
+        const savedProvider = localStorage.getItem(PROVIDER_KEY) as ProviderId | null;
+        const savedModel = localStorage.getItem(MODEL_KEY);
+        const chosen =
+          provs.find((p) => p.id === savedProvider) ??
+          provs.find((p) => p.available) ??
+          provs[0];
+        if (chosen) {
+          setProvider(chosen.id);
+          setModel(
+            savedModel && chosen.models.includes(savedModel)
+              ? savedModel
+              : (chosen.models[0] ?? ""),
+          );
         }
         setSessions(await listSessions());
       } catch (e) {
@@ -45,6 +59,12 @@ export default function ChatPanel() {
       }
     })();
   }, []);
+
+  // Remember the last-used provider/model across sessions.
+  useEffect(() => {
+    if (provider) localStorage.setItem(PROVIDER_KEY, provider);
+    if (model) localStorage.setItem(MODEL_KEY, model);
+  }, [provider, model]);
 
   useEffect(() => {
     threadRef.current?.scrollTo(0, threadRef.current.scrollHeight);
