@@ -5,7 +5,9 @@ export type SecretKey =
   | "anthropic_api_key"
   | "gemini_api_key"
   | "github_token"
-  | "database_url";
+  | "database_url"
+  | "google_client_id"
+  | "google_client_secret";
 
 export interface SecretMeta {
   key: SecretKey;
@@ -38,6 +40,18 @@ export const SECRETS: SecretMeta[] = [
     label: "GitHub token",
     placeholder: "ghp_...",
     help: "Fine-grained or classic PAT for the PR dashboard (repo + read access).",
+  },
+  {
+    key: "google_client_id",
+    label: "Google client id",
+    placeholder: "...apps.googleusercontent.com",
+    help: "Google Cloud OAuth client (Desktop app) id for the calendar integration.",
+  },
+  {
+    key: "google_client_secret",
+    label: "Google client secret",
+    placeholder: "GOCSPX-...",
+    help: "OAuth client secret paired with the Google client id.",
   },
 ];
 
