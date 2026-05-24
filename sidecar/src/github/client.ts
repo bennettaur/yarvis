@@ -165,14 +165,14 @@ export function toPrDetail(pr: any): PrDetail {
     deletions: pr.deletions ?? 0,
     mergeable: pr.mergeable ?? "UNKNOWN",
     checks: rollupNodes.map(toCheckItem),
-    reviewThreads: threadNodes.map((t: any) => ({
-      path: t.path ?? null,
-      line: t.line ?? null,
-      isResolved: Boolean(t.isResolved),
-      comments: (t.comments?.nodes ?? []).map((cm: any) => ({
-        author: cm.author?.login ?? "",
-        body: cm.body ?? "",
-        createdAt: cm.createdAt ?? "",
+    reviewThreads: threadNodes.map((thread: any) => ({
+      path: thread.path ?? null,
+      line: thread.line ?? null,
+      isResolved: Boolean(thread.isResolved),
+      comments: (thread.comments?.nodes ?? []).map((comment: any) => ({
+        author: comment.author?.login ?? "",
+        body: comment.body ?? "",
+        createdAt: comment.createdAt ?? "",
       })),
     })),
   };

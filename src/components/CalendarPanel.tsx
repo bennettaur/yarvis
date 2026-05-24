@@ -1,6 +1,6 @@
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useState } from "react";
 import { createAlarm } from "../lib/alarms";
+import { openExternal } from "../lib/url";
 import {
   calAuthUrl,
   calDisconnect,
@@ -50,9 +50,7 @@ function EventRow({
             <>
               {" · "}
               <button
-                onClick={() =>
-                  void openUrl(event.meetLink!).catch(() => window.open(event.meetLink!))
-                }
+                onClick={() => openExternal(event.meetLink)}
                 className="text-sky-400 hover:underline"
               >
                 join
@@ -100,7 +98,7 @@ export default function CalendarPanel() {
   const connect = useCallback(async () => {
     try {
       const { url } = await calAuthUrl();
-      await openUrl(url).catch(() => window.open(url));
+      openExternal(url);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }

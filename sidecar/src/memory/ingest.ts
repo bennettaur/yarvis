@@ -71,23 +71,56 @@ export interface IngestResult {
 
 /**
  * Chunks a document and stores each chunk as a `doc` memory so it can be
- * recalled semantically. Each chunk records its source and position.
+ * recalled semantically. Each chunk records its source and position. Chunks are
+ * embedded and inserted in a single batch.
  */
 export async function ingestDocument(
   memory: MemoryService,
   input: IngestInput,
 ): Promise<IngestResult> {
   const chunks = chunkText(input.text);
-  for (let i = 0; i < chunks.length; i++) {
-    await memory.add(chunks[i]!, {
-      type: "doc",
-      source: input.source,
-      title: input.title ?? input.source,
-      chunk: i,
-      of: chunks.length,
-    });
-  }
+  await memory.addMany(
+    chunks.map((content, i) => ({
+      content,
+      metadata: {
+        type: "doc",
+        source: input.source,
+        title: input.title ?? input.source,
+        chunk: i,
+        of: chunks.length,
+      },
+    })),
+  );
   return { source: input.source, chunks: chunks.length };
+}
+
+/**
+ * Best-effort SSRF guard: only http(s) and not an obvious internal host. This
+ * runs in a localhost-bound sidecar, so it blocks the easy mistakes (loopback,
+ * link-local metadata, RFC-1918 ranges) rather than resolving DNS.
+ */
+export function assertFetchableUrl(url: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error("invalid url");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("only http(s) urls can be ingested");
+  }
+  const host = parsed.hostname.toLowerCase();
+  const blocked =
+    host === "localhost" ||
+    host === "0.0.0.0" ||
+    host === "::1" ||
+    /^127\./.test(host) ||
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^169\.254\./.test(host) ||
+    /^172\.(1[6-9]|2[0-9]|3[01])\./.test(host);
+  if (blocked) throw new Error("refusing to fetch an internal host");
+  return parsed;
 }
 
 /** Fetches a URL and returns its body as plain text (HTML stripped). */
@@ -95,6 +128,7 @@ export async function fetchUrlText(
   url: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<{ text: string; title: string }> {
+  assertFetchableUrl(url);
   const res = await fetchImpl(url, {
     headers: { "User-Agent": "yarvis/0.1 (+local assistant)" },
   });

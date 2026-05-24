@@ -3,12 +3,20 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import { resolveModel, type ProviderId } from "../llm/providers.ts";
+import { resolveModel } from "../llm/providers.ts";
 import { tasksCompletedBetween } from "../tasks/service.ts";
 import { chooseEmbedder } from "./embedder.ts";
 import { PgVectorMemoryStore } from "./index.ts";
 import { fetchUrlText, ingestDocument } from "./ingest.ts";
-import { assembleRecapContext, dateRange, recapPrompt } from "./recap.ts";
+import {
+  assembleRecapContext,
+  dateRange,
+  recapMaterial,
+  recapSystemPrompt,
+} from "./recap.ts";
+
+/** Cap the recap LLM call so a hung provider can't block the request forever. */
+const RECAP_TIMEOUT_MS = 30_000;
 
 const addSchema = z.object({
   content: z.string().min(1),
@@ -118,10 +126,13 @@ export function createMemoryRoutes(config: Config): Hono {
     let recap = context;
     if (provider && model) {
       try {
-        const llm = resolveModel(config, provider as ProviderId, model);
+        const llm = resolveModel(config, provider, model);
         const { text } = await generateText({
           model: llm,
-          prompt: recapPrompt(window.label, context),
+          system: recapSystemPrompt(window.label),
+          messages: [{ role: "user", content: recapMaterial(context) }],
+          maxRetries: 2,
+          abortSignal: AbortSignal.timeout(RECAP_TIMEOUT_MS),
         });
         recap = text;
       } catch (e) {

@@ -1,5 +1,5 @@
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useState } from "react";
+import { openExternal } from "../lib/url";
 import {
   ghPrDetail,
   ghPrFiles,
@@ -13,15 +13,15 @@ import Markdown from "./Markdown";
 
 function checkColor(check: CheckItem): string {
   if (check.status !== "COMPLETED") return "text-amber-400";
-  const c = (check.conclusion ?? "").toUpperCase();
-  if (["SUCCESS", "NEUTRAL", "SKIPPED"].includes(c)) return "text-emerald-400";
+  const conclusion = (check.conclusion ?? "").toUpperCase();
+  if (["SUCCESS", "NEUTRAL", "SKIPPED"].includes(conclusion)) return "text-emerald-400";
   return "text-red-400";
 }
 
 function checkGlyph(check: CheckItem): string {
   if (check.status !== "COMPLETED") return "○";
-  const c = (check.conclusion ?? "").toUpperCase();
-  if (["SUCCESS", "NEUTRAL", "SKIPPED"].includes(c)) return "✓";
+  const conclusion = (check.conclusion ?? "").toUpperCase();
+  if (["SUCCESS", "NEUTRAL", "SKIPPED"].includes(conclusion)) return "✓";
   return "✕";
 }
 
@@ -31,21 +31,21 @@ function ChecksSection({ checks }: { checks: CheckItem[] }) {
   }
   return (
     <ul className="space-y-1">
-      {checks.map((ck, i) => (
-        <li key={`${ck.name}-${i}`} className="flex items-center gap-2 text-sm">
-          <span className={checkColor(ck)}>{checkGlyph(ck)}</span>
-          {ck.url ? (
+      {checks.map((check, i) => (
+        <li key={`${check.name}-${i}`} className="flex items-center gap-2 text-sm">
+          <span className={checkColor(check)}>{checkGlyph(check)}</span>
+          {check.url ? (
             <button
-              onClick={() => void openUrl(ck.url!).catch(() => window.open(ck.url!))}
+              onClick={() => openExternal(check.url)}
               className="text-left text-zinc-300 hover:underline"
             >
-              {ck.name}
+              {check.name}
             </button>
           ) : (
-            <span className="text-zinc-300">{ck.name}</span>
+            <span className="text-zinc-300">{check.name}</span>
           )}
           <span className="text-xs text-zinc-600">
-            {ck.conclusion?.toLowerCase() ?? ck.status.toLowerCase()}
+            {check.conclusion?.toLowerCase() ?? check.status.toLowerCase()}
           </span>
         </li>
       ))}
@@ -177,7 +177,7 @@ export default function PrDetailView({
           ← Back
         </button>
         <button
-          onClick={() => void openUrl(pr.url).catch(() => window.open(pr.url))}
+          onClick={() => openExternal(pr.url)}
           className="text-sm text-sky-400 hover:underline"
         >
           Open on GitHub

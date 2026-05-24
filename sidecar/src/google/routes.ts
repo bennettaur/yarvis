@@ -110,6 +110,16 @@ export function createGoogleCallbackRoutes(config: Config): Hono {
   return router;
 }
 
+/** Escapes text for safe interpolation into the callback HTML. */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function donePage(message: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Yarvis</title></head><body style="font-family:system-ui;background:#09090b;color:#e4e4e7;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><p>${message}</p></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Yarvis</title></head><body style="font-family:system-ui;background:#09090b;color:#e4e4e7;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><p>${escapeHtml(message)}</p></body></html>`;
 }

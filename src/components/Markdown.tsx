@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openExternal } from "../lib/url";
 
 /**
  * Tailwind-styled element overrides for rendered markdown. The project has no
@@ -20,7 +20,7 @@ const components: Components = {
       href={href}
       onClick={(e) => {
         e.preventDefault();
-        if (href) void openUrl(href).catch(() => window.open(href));
+        openExternal(href);
       }}
       className="text-sky-400 hover:underline"
     >

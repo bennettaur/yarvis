@@ -42,6 +42,15 @@ describe("pgvector memory store", () => {
     expect(await store.get(rec.id)).toBeNull();
   });
 
+  it("adds many memories in one batch", async () => {
+    const records = await store.addMany([
+      { content: "chunk one", metadata: { type: "doc" } },
+      { content: "chunk two", metadata: { type: "doc" } },
+    ]);
+    expect(records.length).toBe(2);
+    expect((await store.list({ type: "doc" })).length).toBe(2);
+  });
+
   it("lists memories and filters by metadata type", async () => {
     await store.add("a fact", { type: "fact" });
     await store.add("note one", { type: "note" });

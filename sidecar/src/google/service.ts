@@ -8,22 +8,42 @@ const EXPIRY_SKEW_MS = 60_000;
 
 /**
  * Outstanding OAuth `state` nonces, for CSRF protection between issuing the
- * consent URL and handling the callback. In-memory is fine: the flow completes
- * within one app session.
+ * consent URL and handling the callback. Kept in memory (the flow completes
+ * within one app session) with a TTL and a cap so abandoned consent attempts
+ * don't accumulate or stay valid indefinitely.
  */
-const pendingStates = new Set<string>();
+const pendingStates = new Map<string, number>();
+const STATE_TTL_MS = 10 * 60_000;
+const MAX_PENDING_STATES = 64;
+
+function pruneStates(now: number): void {
+  for (const [state, issuedAt] of pendingStates) {
+    if (now - issuedAt > STATE_TTL_MS) pendingStates.delete(state);
+  }
+  // Bound the set even if many flows are started without finishing: drop oldest.
+  while (pendingStates.size >= MAX_PENDING_STATES) {
+    const oldest = pendingStates.keys().next().value;
+    if (oldest === undefined) break;
+    pendingStates.delete(oldest);
+  }
+}
 
 export function issueState(): string {
+  const now = Date.now();
+  pruneStates(now);
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
   const state = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-  pendingStates.add(state);
+  pendingStates.set(state, now);
   return state;
 }
 
-/** Validates and consumes a state nonce; false if unknown (possible CSRF). */
+/** Validates and consumes a state nonce; false if unknown or expired (CSRF). */
 export function consumeState(state: string): boolean {
-  return pendingStates.delete(state);
+  const issuedAt = pendingStates.get(state);
+  if (issuedAt === undefined) return false;
+  pendingStates.delete(state);
+  return Date.now() - issuedAt <= STATE_TTL_MS;
 }
 
 /** Returns the stored token row (most recent), or null if not connected. */

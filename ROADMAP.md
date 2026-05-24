@@ -77,7 +77,9 @@ The core is shipped; optional extensions remain.
 - **Tray + autostart:** the plugins are installed but not yet wired to behaviors
   (run in tray, launch at login, focus on alarm).
 - **Secret storage review:** confirm Keychain coverage; consider Stronghold for
-  defense-in-depth.
+  defense-in-depth. Note: Google OAuth access/refresh tokens are persisted in
+  Postgres (`google_tokens`) rather than the Keychain — fine for a local
+  single-user app, but a candidate to move to the Keychain or encrypt at rest.
 - **Rust tests:** unit-test alarm due-logic and sidecar arg construction.
 - **Chat polish:** optional per-session model pinning; markdown rendering of
   assistant messages (a reusable `Markdown` component now exists — used by the
