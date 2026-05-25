@@ -40,11 +40,13 @@ const saveLayoutSchema = z.object({
   name: z.string().min(1).max(120),
   spec: z
     .object({
-      root: z.string(),
+      root: z.string().min(1),
       elements: z.record(z.unknown()),
     })
     .passthrough(),
 });
+
+const idParam = z.string().uuid();
 
 /** Saved-layout CRUD, mounted under /api/omni/layouts. Requires a database. */
 function createLayoutRoutes(config: Config): Hono {
@@ -81,12 +83,18 @@ function createLayoutRoutes(config: Config): Hono {
   });
 
   router.get("/:id", async (c) => {
+    if (!idParam.safeParse(c.req.param("id")).success) {
+      return c.json({ error: "invalid id" }, 400);
+    }
     const row = await getLayout(db(), c.req.param("id"));
     if (!row) return c.json({ error: "not found" }, 404);
     return c.json(row);
   });
 
   router.delete("/:id", async (c) => {
+    if (!idParam.safeParse(c.req.param("id")).success) {
+      return c.json({ error: "invalid id" }, 400);
+    }
     const ok = await deleteLayout(db(), c.req.param("id"));
     if (!ok) return c.json({ error: "not found" }, 404);
     return c.json({ ok: true });
@@ -123,6 +131,12 @@ export function createOmniRoutes(config: Config): Hono {
         model: chatModel,
         system,
         messages: messages as ModelMessage[],
+        // A rendered layout is small; cap output so a runaway generation can't
+        // spend unbounded tokens.
+        maxOutputTokens: 8000,
+        // Cancel the upstream call if the client disconnects (e.g. navigates
+        // away) instead of draining the provider with no consumer.
+        abortSignal: c.req.raw.signal,
         // The AI SDK delivers provider/streaming failures here instead of
         // throwing from `textStream`; without this the stream would end
         // silently and the client would render nothing.

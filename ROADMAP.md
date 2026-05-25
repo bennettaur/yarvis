@@ -7,7 +7,11 @@ Status of the build against the original vision. The full V1 plan lives at
 
 - **Foundation** — Tauri v2 (Rust core) + React/Vite/TS frontend + Bun sidecar,
   local PostgreSQL 17 + pgvector, macOS Keychain secret storage, sidecar
-  supervision with live reload.
+  supervision with live reload. Migrations apply automatically on sidecar
+  startup; a boot screen gates the UI on sidecar `/health` readiness.
+- **Desktop shell** — full-bleed layout with a left icon nav rail and a top bar
+  with live sidecar status (sharp, flat aesthetic, indigo accent), replacing the
+  earlier centered card layout. Static pages remain.
 - **Chat** — multi-provider streaming (Anthropic / AWS Bedrock / Gemini) with
   session + message persistence.
 - **Work tracking** — daily/weekly tasks driven by chat tool-calls
@@ -31,6 +35,12 @@ Status of the build against the original vision. The full V1 plan lives at
   fetch and a Calendar tab that arms meeting alarms just before start. Built
   blind against the documented Google APIs; needs real OAuth credentials to
   exercise (see Remaining → Calendar verification).
+- **Omni (dynamic UI)** — describe a workspace in natural language and an agent
+  composes a live layout from a fixed component catalog: layout primitives
+  (Row/Column/Grid/Panel/…) plus self-contained feature widgets (Tasks,
+  Calendar, Memory, PRs, Sessions, Alarms, Settings, Chat). Streamed from the
+  sidecar `/api/omni/generate` and rendered with `@json-render`; layouts can be
+  named, saved (`omni_layouts`), and reloaded (Omni tab).
 
 ## Remaining to build
 

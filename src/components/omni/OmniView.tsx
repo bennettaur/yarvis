@@ -33,6 +33,8 @@ const MODEL_KEY = "yarvis.chat.model";
 // (which unmounts this view) restores what you had.
 const SPEC_KEY = "yarvis.omni.spec";
 const MESSAGES_KEY = "yarvis.omni.messages";
+// Cap how many prior turns are replayed to the model per request.
+const MAX_HISTORY_MESSAGES = 12;
 
 const EXAMPLES = [
   "Show my tasks and calendar side by side, with a chat underneath",
@@ -199,8 +201,13 @@ export default function OmniView() {
         currentSpec: hasContent(spec) ? spec : null,
         editModes: ["patch"],
       });
+      // The current spec is embedded in the final turn, so older turns add
+      // little; cap replayed history to keep the request bounded over a long
+      // session.
       const outMessages = [
-        ...priorHistory.map((m) => ({ role: m.role, content: m.content })),
+        ...priorHistory
+          .slice(-MAX_HISTORY_MESSAGES)
+          .map((m) => ({ role: m.role, content: m.content })),
         { role: "user" as const, content: userPrompt },
       ];
 

@@ -11,8 +11,9 @@ import { z } from "zod";
  * Two kinds of components:
  *  - Layout primitives (Row / Column / Grid / Panel / Heading / Text / Divider)
  *    that arrange and label content.
- *  - Feature widgets (Tasks / Meetings / PullRequests / Sessions / Alarms /
- *    Settings / Chat) — self-contained, fetch their own data, fill their pane.
+ *  - Feature widgets (Tasks / Calendar / Memory / PullRequests / Sessions /
+ *    Alarms / Settings / Chat) — self-contained, fetch their own data, fill
+ *    their pane.
  */
 
 const titled = z.object({

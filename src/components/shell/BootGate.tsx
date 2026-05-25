@@ -34,7 +34,7 @@ export default function BootGate({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
       try {
         const h = await getHealth();
