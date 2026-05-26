@@ -8,6 +8,8 @@ import { createChatRoutes } from "./chat/routes.ts";
 import { createGithubRoutes } from "./github/routes.ts";
 import { createCalendarRoutes, createGoogleCallbackRoutes } from "./google/routes.ts";
 import { createMemoryRoutes } from "./memory/routes.ts";
+import { createOmniRoutes } from "./omni/routes.ts";
+import { createReadiness, type Readiness } from "./readiness.ts";
 import { createTaskRoutes } from "./tasks/routes.ts";
 
 const SERVICE_NAME = "yarvis-sidecar";
@@ -23,7 +25,10 @@ const startedAt = Date.now();
  *  - `/health` is intentionally unauthenticated so the Rust supervisor can probe
  *    readiness; it exposes nothing sensitive.
  */
-export function createApp(config: Config): Hono {
+export function createApp(
+  config: Config,
+  readiness: Readiness = createReadiness(),
+): Hono {
   const app = new Hono();
 
   app.use(
@@ -35,13 +40,20 @@ export function createApp(config: Config): Hono {
     }),
   );
 
-  app.get("/health", (c) =>
-    c.json({
+  // `/health` is intentionally unauthenticated. `ready` is false while startup
+  // migrations run (or if they failed), so the frontend can gate behind a
+  // loading screen until the service is usable.
+  app.get("/health", (c) => {
+    const { phase, error } = readiness.get();
+    return c.json({
       status: "ok",
       service: SERVICE_NAME,
       uptimeMs: Date.now() - startedAt,
-    }),
-  );
+      ready: phase === "ready",
+      phase,
+      ...(error ? { error } : {}),
+    });
+  });
 
   // The Google OAuth loopback callback is unauthenticated like /health: the
   // redirect from Google can't carry our bearer token. It is CSRF-protected by
@@ -77,6 +89,7 @@ export function createApp(config: Config): Hono {
   app.route("/api/github", createGithubRoutes(config));
   app.route("/api/memory", createMemoryRoutes(config));
   app.route("/api/calendar", createCalendarRoutes(config));
+  app.route("/api/omni", createOmniRoutes(config));
 
   return app;
 }

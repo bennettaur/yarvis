@@ -95,7 +95,8 @@ export default function Dashboard() {
     secrets.find((s) => s.key === key)?.present ?? false;
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
+      <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
       <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
         <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-zinc-500">
           System
@@ -165,7 +166,7 @@ export default function Dashboard() {
                 />
                 <button
                   onClick={() => void onSave(meta.key)}
-                  className="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium hover:bg-emerald-500"
+                  className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500"
                 >
                   Save
                 </button>
@@ -181,6 +182,7 @@ export default function Dashboard() {
           ))}
         </div>
       </section>
+      </div>
 
       {error && (
         <p className="text-sm text-red-400">

@@ -105,6 +105,19 @@ export const githubStars = pgTable(
   (t) => [uniqueIndex("github_stars_pr_idx").on(t.owner, t.repo, t.number)],
 );
 
+/** Saved Omni layouts: a named json-render spec the user can reload later. */
+export const omniLayouts = pgTable("omni_layouts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  spec: jsonb("spec").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 /**
  * Google OAuth tokens for the calendar integration. Single-account model: the
  * service keeps at most one row (the most recent). The refresh token is only
@@ -134,5 +147,7 @@ export type MemoryRow = typeof memories.$inferSelect;
 export type NewMemoryRow = typeof memories.$inferInsert;
 export type GithubFilter = typeof githubFilters.$inferSelect;
 export type GithubStar = typeof githubStars.$inferSelect;
+export type OmniLayout = typeof omniLayouts.$inferSelect;
+export type NewOmniLayout = typeof omniLayouts.$inferInsert;
 export type GoogleToken = typeof googleTokens.$inferSelect;
 export type NewGoogleToken = typeof googleTokens.$inferInsert;

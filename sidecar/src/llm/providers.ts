@@ -17,7 +17,12 @@ export interface ProviderInfo {
 // model availability; the chat request can specify any model string.
 const ANTHROPIC_MODELS = ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"];
 const BEDROCK_MODELS = ["anthropic.claude-sonnet-4-6-v1:0"];
-const GEMINI_MODELS = ["gemini-3.5-flash", "gemini-3.1-pro-preview"];
+const GEMINI_MODELS = [
+  "gemini-3.5-flash",
+  "gemini-3-flash-preview",
+  "gemini-3.1-flash-lite",
+  "gemini-3.1-pro-preview",
+];
 
 /** Lists providers and whether each is usable given configured credentials. */
 export function availableProviders(config: Config): ProviderInfo[] {

@@ -129,7 +129,7 @@ export default function ChatPanel() {
   }, [input, provider, model, busy, sessionId]);
 
   return (
-    <div className="flex h-[70vh] flex-col gap-4">
+    <div className="flex h-full flex-col gap-4 p-6">
       <div className="flex flex-wrap items-center gap-2">
         <button
           onClick={() => void newChat()}
@@ -224,7 +224,7 @@ export default function ChatPanel() {
         <button
           onClick={() => void send()}
           disabled={busy}
-          className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium hover:bg-emerald-500 disabled:opacity-50"
+          className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500 disabled:opacity-50"
         >
           {busy ? "…" : "Send"}
         </button>

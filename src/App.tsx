@@ -9,39 +9,10 @@ import MemoryPanel from "./components/MemoryPanel";
 import PrsPanel from "./components/PrsPanel";
 import SessionsPanel from "./components/SessionsPanel";
 import TasksPanel from "./components/TasksPanel";
+import OmniView from "./components/omni/OmniView";
+import AppShell from "./components/shell/AppShell";
+import type { Tab } from "./components/shell/nav";
 import { onAlarmFired, type Alarm } from "./lib/alarms";
-
-type Tab =
-  | "chat"
-  | "tasks"
-  | "prs"
-  | "memory"
-  | "calendar"
-  | "alarms"
-  | "sessions"
-  | "dashboard";
-
-const TABS: Tab[] = [
-  "chat",
-  "tasks",
-  "prs",
-  "memory",
-  "calendar",
-  "alarms",
-  "sessions",
-  "dashboard",
-];
-
-const TAB_LABELS: Record<Tab, string> = {
-  chat: "Chat",
-  tasks: "Tasks",
-  prs: "PRs",
-  memory: "Memory",
-  calendar: "Calendar",
-  alarms: "Alarms",
-  sessions: "Sessions",
-  dashboard: "Dashboard",
-};
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("chat");
@@ -56,40 +27,30 @@ export default function App() {
   }, []);
 
   return (
-    <main className="min-h-screen bg-zinc-950 text-zinc-100">
-      <div className="mx-auto max-w-3xl px-8 py-8">
-        <header className="mb-8 flex items-center gap-6">
-          <h1 className="text-2xl font-semibold tracking-tight">Yarvis</h1>
-          <nav className="flex gap-1">
-            {TABS.map((t) => (
-              <button
-                key={t}
-                onClick={() => setTab(t)}
-                className={`rounded-md px-3 py-1.5 text-sm ${
-                  tab === t
-                    ? "bg-zinc-800 text-zinc-100"
-                    : "text-zinc-400 hover:text-zinc-200"
-                }`}
-              >
-                {TAB_LABELS[t]}
-              </button>
-            ))}
-          </nav>
-        </header>
-
-        {tab === "chat" && <ChatPanel />}
-        {tab === "tasks" && <TasksPanel />}
-        {tab === "prs" && <PrsPanel />}
-        {tab === "memory" && <MemoryPanel />}
-        {tab === "calendar" && <CalendarPanel />}
-        {tab === "alarms" && <AlarmsPanel />}
-        {tab === "sessions" && <SessionsPanel />}
-        {tab === "dashboard" && <Dashboard />}
-      </div>
+    <>
+      <AppShell tab={tab} onTabChange={setTab}>
+        {/* Chat and Omni fill the region and manage their own layout; page-like
+            views scroll as a padded document. */}
+        {tab === "chat" ? (
+          <ChatPanel />
+        ) : tab === "omni" ? (
+          <OmniView />
+        ) : (
+          <div className="h-full overflow-y-auto p-6">
+            {tab === "tasks" && <TasksPanel />}
+            {tab === "prs" && <PrsPanel />}
+            {tab === "memory" && <MemoryPanel />}
+            {tab === "calendar" && <CalendarPanel />}
+            {tab === "alarms" && <AlarmsPanel />}
+            {tab === "sessions" && <SessionsPanel />}
+            {tab === "dashboard" && <Dashboard />}
+          </div>
+        )}
+      </AppShell>
 
       {activeAlarm && (
         <AlarmOverlay alarm={activeAlarm} onDone={() => setActiveAlarm(null)} />
       )}
-    </main>
+    </>
   );
 }

@@ -51,7 +51,7 @@ function EventRow({
               {" · "}
               <button
                 onClick={() => openExternal(event.meetLink)}
-                className="text-sky-400 hover:underline"
+                className="text-indigo-400 hover:underline"
               >
                 join
               </button>

@@ -41,7 +41,9 @@ bun install
 createdb yarvis
 psql -d yarvis -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
-# 3. Apply database migrations
+# 3. (Optional) Apply migrations manually. The sidecar also applies any pending
+#    migrations automatically on startup, so this is only needed to migrate
+#    without launching the app.
 DATABASE_URL="postgres://localhost:5432/yarvis" bun run --cwd sidecar db:migrate
 ```
 
@@ -81,16 +83,20 @@ bun run build                  # typecheck + build the frontend
 src/            React frontend (Vite + TS + Tailwind)
   lib/          sidecar API client, Keychain command wrappers
   components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, …)
+    shell/      desktop shell: nav rail, top bar, boot loading screen
+    omni/       Omni view — chat-driven dynamic-UI canvas
+  omni/         json-render component catalog, registry, layout primitives
 src-tauri/      Rust core (Tauri v2)
   src/keychain.rs   Keychain-backed secret commands
   src/sidecar.rs    sidecar supervisor
   src/alarms.rs     full-screen alarm scheduler
 sidecar/        Bun + TS service (Hono)
-  src/db/       Drizzle schema, client, migrations
+  src/db/       Drizzle schema, client, migrations (applied on startup)
   src/chat/     multi-provider streaming chat + tool-calls
   src/tasks/    daily/weekly work tracking
   src/memory/   pgvector memory, notes, ingestion, recaps
   src/github/   PR dashboard + embedded review (REST + GraphQL)
   src/google/   Google Calendar OAuth + events
+  src/omni/     Omni UI generation (streaming) + saved layouts
   drizzle/      generated SQL migrations
 ```

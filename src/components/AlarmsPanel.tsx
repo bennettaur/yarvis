@@ -74,7 +74,7 @@ export default function AlarmsPanel() {
           />
           <button
             onClick={() => void add()}
-            className="rounded-md bg-emerald-600 px-4 py-1.5 text-sm font-medium hover:bg-emerald-500"
+            className="rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium hover:bg-indigo-500"
           >
             Set
           </button>
