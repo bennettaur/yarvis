@@ -4,15 +4,16 @@
 //! core, independent of the webview component that renders it. The frontend
 //! reattaches to a session by a stable id and replays the captured scrollback,
 //! so switching tabs or re-rendering an Omni layout does not kill the shell. A
-//! reader thread streams output to the frontend as `pty-output` events and
-//! signals teardown with `pty-exit`, mirroring the event pattern in `alarms.rs`.
+//! reader thread streams output to the frontend as `pty-output:<id>` events and
+//! signals teardown with `pty-exit:<id>`, mirroring the event pattern in
+//! `alarms.rs`. Events are namespaced per session so each terminal only
+//! receives its own output.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
 /// Upper bound on per-session captured output, in bytes. Older output is
@@ -35,31 +36,6 @@ pub struct PtyState {
     sessions: Mutex<HashMap<String, PtySession>>,
 }
 
-/// Output chunk pushed to the frontend. Bytes are sent raw (a JS `number[]`)
-/// rather than as a UTF-8 string, so multibyte sequences split across reads are
-/// reassembled by xterm instead of being corrupted by lossy decoding.
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PtyOutput {
-    id: String,
-    bytes: Vec<u8>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PtyExit {
-    id: String,
-}
-
-/// Result of attaching to a session: whether it already existed and, if so, the
-/// scrollback to replay into a fresh terminal view.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PtyAttach {
-    existed: bool,
-    scrollback: Vec<u8>,
-}
-
 fn pty_size(cols: u16, rows: u16) -> PtySize {
     PtySize {
         rows,
@@ -67,6 +43,23 @@ fn pty_size(cols: u16, rows: u16) -> PtySize {
         pixel_width: 0,
         pixel_height: 0,
     }
+}
+
+/// Appends `chunk` to `buf`, dropping the oldest bytes so `buf` never exceeds
+/// `max`. Extracted as a free function so the cap logic is unit-testable
+/// without a live PTY.
+fn append_capped(buf: &mut Vec<u8>, chunk: &[u8], max: usize) {
+    buf.extend_from_slice(chunk);
+    if buf.len() > max {
+        let excess = buf.len() - max;
+        buf.drain(0..excess);
+    }
+}
+
+/// Clones a session's scrollback, treating a poisoned lock as empty rather than
+/// propagating — a reader-thread panic must not permanently brick reattach.
+fn snapshot(scrollback: &Arc<Mutex<Vec<u8>>>) -> Vec<u8> {
+    scrollback.lock().map(|sb| sb.clone()).unwrap_or_default()
 }
 
 /// Spawns a shell in a new PTY and starts the reader thread that streams its
@@ -121,36 +114,29 @@ fn read_loop(
     mut reader: Box<dyn Read + Send>,
     scrollback: Arc<Mutex<Vec<u8>>>,
 ) {
+    let output_event = format!("pty-output:{id}");
     let mut buf = [0u8; READ_BUF_SIZE];
     loop {
         match reader.read(&mut buf) {
             Ok(0) | Err(_) => break,
             Ok(n) => {
-                let chunk = buf[..n].to_vec();
+                let chunk = &buf[..n];
                 if let Ok(mut sb) = scrollback.lock() {
-                    sb.extend_from_slice(&chunk);
-                    if sb.len() > MAX_SCROLLBACK {
-                        let excess = sb.len() - MAX_SCROLLBACK;
-                        sb.drain(0..excess);
-                    }
+                    append_capped(&mut sb, chunk, MAX_SCROLLBACK);
                 }
-                let _ = app.emit(
-                    "pty-output",
-                    PtyOutput {
-                        id: id.clone(),
-                        bytes: chunk,
-                    },
-                );
+                let _ = app.emit(&output_event, chunk.to_vec());
             }
         }
     }
-    let _ = app.emit("pty-exit", PtyExit { id });
+    // The shell exited or the PTY closed. The dead session is left in the map
+    // and reaped lazily on the next attach (see `pty_attach`).
+    let _ = app.emit(&format!("pty-exit:{id}"), ());
 }
 
 // --- Commands ---
 
-/// Attaches to the session `id`, creating it if it does not yet exist. Returns
-/// the scrollback to replay for an existing session, or empty for a new one.
+/// Attaches to the session `id`, returning its scrollback to replay. Spawns a
+/// fresh shell when the session is absent or its shell has already exited.
 #[tauri::command]
 pub fn pty_attach(
     app: AppHandle,
@@ -158,25 +144,32 @@ pub fn pty_attach(
     id: String,
     cols: u16,
     rows: u16,
-) -> Result<PtyAttach, String> {
-    let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
-    if let Some(session) = sessions.get(&id) {
-        let scrollback = session
-            .scrollback
-            .lock()
-            .map_err(|e| e.to_string())?
-            .clone();
-        return Ok(PtyAttach {
-            existed: true,
-            scrollback,
-        });
+) -> Result<Vec<u8>, String> {
+    // Reattach to a live session; reap and respawn a dead one.
+    {
+        let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+        if let Some(session) = sessions.get_mut(&id) {
+            if matches!(session.child.try_wait(), Ok(None)) {
+                return Ok(snapshot(&session.scrollback));
+            }
+            sessions.remove(&id);
+        }
     }
+
+    // Spawn outside the lock: openpty + spawn_command + thread do real I/O and
+    // would otherwise block every other PTY command for the duration.
     let session = spawn_session(&app, &id, cols, rows)?;
+
+    let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    if let Some(existing) = sessions.get(&id) {
+        // A concurrent attach for the same id won the race; keep it, discard
+        // ours so we don't leak an orphan shell.
+        let mut loser = session;
+        let _ = loser.child.kill();
+        return Ok(snapshot(&existing.scrollback));
+    }
     sessions.insert(id, session);
-    Ok(PtyAttach {
-        existed: false,
-        scrollback: Vec::new(),
-    })
+    Ok(Vec::new())
 }
 
 #[tauri::command]
@@ -215,9 +208,47 @@ pub fn pty_resize(
 pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), String> {
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     if let Some(mut session) = sessions.remove(&id) {
-        // Dropping the session closes the master, which the reader thread sees
-        // as EOF and reports via `pty-exit`.
+        // Killing the child closes its PTY end; the reader thread then sees EOF
+        // and reports teardown via `pty-exit`. Removing the session drops the
+        // master and writer.
         let _ = session.child.kill();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{append_capped, MAX_SCROLLBACK};
+
+    #[test]
+    fn append_capped_leaves_under_cap_untouched() {
+        let mut buf = Vec::new();
+        append_capped(&mut buf, b"hello", 1024);
+        assert_eq!(buf, b"hello");
+    }
+
+    #[test]
+    fn append_capped_trims_oldest_down_to_cap() {
+        let mut buf = Vec::new();
+        append_capped(&mut buf, b"0123456789", 10);
+        append_capped(&mut buf, b"abcde", 10);
+        // The oldest 5 bytes are dropped and the length is held at the cap.
+        assert_eq!(buf, b"56789abcde");
+    }
+
+    #[test]
+    fn append_capped_handles_chunk_larger_than_cap() {
+        let mut buf = Vec::new();
+        append_capped(&mut buf, b"abcdefghij", 4);
+        assert_eq!(buf, b"ghij");
+    }
+
+    #[test]
+    fn append_capped_real_cap_is_bounded() {
+        let mut buf = Vec::new();
+        for _ in 0..512 {
+            append_capped(&mut buf, &[b'x'; 4096], MAX_SCROLLBACK);
+        }
+        assert!(buf.len() <= MAX_SCROLLBACK);
+    }
 }

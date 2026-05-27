@@ -4,20 +4,15 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 /**
  * Client for the Rust PTY sessions (`src-tauri/src/pty.rs`). Sessions are keyed
  * by a stable id and live in the core, so a component can detach (unmount) and
- * reattach later without losing its shell. Output arrives as `pty-output`
- * events; teardown as `pty-exit`. Mirrors the event pattern in `lib/alarms.ts`.
+ * reattach later without losing its shell. Output and teardown arrive on
+ * per-session events (`pty-output:<id>` / `pty-exit:<id>`) so a terminal only
+ * receives its own bytes. Mirrors the event pattern in `lib/alarms.ts`.
  */
 
-export interface PtyAttach {
-  /** True if the session already existed (so `scrollback` should be replayed). */
-  existed: boolean;
-  /** Captured output to replay into a fresh view; raw bytes as a number array. */
-  scrollback: number[];
-}
-
-/** Attaches to session `id`, spawning a shell if it does not yet exist. */
+/** Attaches to session `id`, spawning a shell if it does not yet exist. Returns
+ * the captured scrollback (raw bytes as a number array) to replay. */
 export const attachPty = (id: string, cols: number, rows: number) =>
-  invoke<PtyAttach>("pty_attach", { id, cols, rows });
+  invoke<number[]>("pty_attach", { id, cols, rows });
 
 /** Sends user input to the session's shell. */
 export const writePty = (id: string, data: string) =>
@@ -35,12 +30,8 @@ export const onPtyOutput = (
   id: string,
   cb: (bytes: Uint8Array) => void,
 ): Promise<UnlistenFn> =>
-  listen<{ id: string; bytes: number[] }>("pty-output", (e) => {
-    if (e.payload.id === id) cb(new Uint8Array(e.payload.bytes));
-  });
+  listen<number[]>(`pty-output:${id}`, (e) => cb(new Uint8Array(e.payload)));
 
 /** Subscribe to the exit signal for a single session. */
 export const onPtyExit = (id: string, cb: () => void): Promise<UnlistenFn> =>
-  listen<{ id: string }>("pty-exit", (e) => {
-    if (e.payload.id === id) cb();
-  });
+  listen(`pty-exit:${id}`, () => cb());

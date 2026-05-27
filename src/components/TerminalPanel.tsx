@@ -11,16 +11,21 @@ import {
   writePty,
 } from "../lib/pty";
 
+/** Coalesce ResizeObserver bursts (a window/panel drag fires at frame rate). */
+const RESIZE_DEBOUNCE_MS = 80;
+
 /**
  * A live shell rendered with xterm.js, backed by a persistent PTY in the Rust
  * core (`lib/pty.ts`). The session is keyed by `sessionId` and survives this
  * component unmounting (tab switch, Omni layout change): on mount we reattach
  * and replay the captured scrollback rather than spawning a new shell.
  *
- * `sessionId` should be stable for a given terminal. The standalone tab passes
- * a constant; Omni passes the model-assigned id. When absent (model omitted
- * it), we fall back to a per-instance id so terminals never share a shell —
- * such a session resets only if Omni itself unmounts.
+ * `sessionId` is namespaced by source — `tab:` for the standalone tab, `omni:`
+ * for an Omni widget, `auto:` for the fallback below — so ids chosen
+ * independently by different surfaces can never collide on one shell. It should
+ * be stable for a given terminal. When absent (the Omni model omitted it), we
+ * fall back to a per-instance id so terminals never share a shell; such a
+ * session resets only if Omni itself unmounts.
  */
 export default function TerminalPanel({ sessionId }: { sessionId?: string }) {
   const autoId = useId();
@@ -54,15 +59,20 @@ export default function TerminalPanel({ sessionId }: { sessionId?: string }) {
       // below fits it once it has dimensions.
     }
 
+    const dataSub = term.onData((data) => void writePty(id, data));
+    cleanups.push(() => dataSub.dispose());
+
     void (async () => {
       try {
-        const { scrollback } = await attachPty(id, term.cols, term.rows);
-        if (disposed) return;
-        if (scrollback.length) term.write(new Uint8Array(scrollback));
-        // Align the PTY with the actual viewport now that it is laid out.
-        void resizePty(id, term.cols, term.rows);
-
-        const unOutput = await onPtyOutput(id, (bytes) => term.write(bytes));
+        // Subscribe before attaching so output emitted between shell spawn and
+        // listener registration is buffered rather than lost. Once the
+        // scrollback replay completes we flush and switch to writing live.
+        let ready = false;
+        const pending: Uint8Array[] = [];
+        const unOutput = await onPtyOutput(id, (bytes) => {
+          if (ready) term.write(bytes);
+          else pending.push(bytes);
+        });
         const unExit = await onPtyExit(id, () => {
           setExited(true);
           term.writeln("\r\n\x1b[2m[process exited]\x1b[0m");
@@ -73,24 +83,47 @@ export default function TerminalPanel({ sessionId }: { sessionId?: string }) {
           return;
         }
         cleanups.push(unOutput, unExit);
+
+        const scrollback = await attachPty(id, term.cols, term.rows);
+        if (disposed) return;
+        // Synchronous from here, so no buffered event can interleave: replay
+        // history for a reattach, or flush the buffer for a fresh shell. On a
+        // reattach the scrollback is authoritative, so drop the buffer to avoid
+        // duplicating bytes already in the snapshot.
+        if (scrollback.length) term.write(new Uint8Array(scrollback));
+        else for (const chunk of pending) term.write(chunk);
+        pending.length = 0;
+        ready = true;
+        void resizePty(id, term.cols, term.rows);
       } catch (e) {
         if (!disposed) setError(e instanceof Error ? e.message : String(e));
       }
     })();
 
-    const dataSub = term.onData((data) => void writePty(id, data));
-    cleanups.push(() => dataSub.dispose());
-
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+    let lastCols = term.cols;
+    let lastRows = term.rows;
     const observer = new ResizeObserver(() => {
-      try {
-        fit.fit();
-        void resizePty(id, term.cols, term.rows);
-      } catch {
-        // Ignore transient sizing errors during layout changes.
-      }
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        try {
+          fit.fit();
+          // Only notify the PTY when the grid actually changed.
+          if (term.cols !== lastCols || term.rows !== lastRows) {
+            lastCols = term.cols;
+            lastRows = term.rows;
+            void resizePty(id, term.cols, term.rows);
+          }
+        } catch {
+          // Ignore transient sizing errors during layout changes.
+        }
+      }, RESIZE_DEBOUNCE_MS);
     });
     observer.observe(container);
-    cleanups.push(() => observer.disconnect());
+    cleanups.push(() => {
+      if (resizeTimer) clearTimeout(resizeTimer);
+      observer.disconnect();
+    });
 
     term.focus();
 
