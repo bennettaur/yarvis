@@ -30,3 +30,4 @@ src-tauri/binaries/
 *.njsproj
 *.sln
 *.sw?
+.worktrees
