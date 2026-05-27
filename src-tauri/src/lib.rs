@@ -1,5 +1,6 @@
 mod alarms;
 mod keychain;
+mod pty;
 mod sidecar;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -32,6 +33,8 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            use tauri::Manager;
+            app.manage(pty::PtyState::default());
             if let Err(e) = sidecar::init(app.handle()) {
                 eprintln!("[sidecar] init failed: {e}");
             }
@@ -52,6 +55,10 @@ pub fn run() {
             alarms::cancel_alarm,
             alarms::acknowledge_alarm,
             alarms::snooze_alarm,
+            pty::pty_attach,
+            pty::pty_write,
+            pty::pty_resize,
+            pty::pty_kill,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
