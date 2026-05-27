@@ -9,6 +9,7 @@ import MemoryPanel from "./components/MemoryPanel";
 import PrsPanel from "./components/PrsPanel";
 import SessionsPanel from "./components/SessionsPanel";
 import TasksPanel from "./components/TasksPanel";
+import TerminalPanel from "./components/TerminalPanel";
 import OmniView from "./components/omni/OmniView";
 import AppShell from "./components/shell/AppShell";
 import type { Tab } from "./components/shell/nav";
@@ -35,6 +36,8 @@ export default function App() {
           <ChatPanel />
         ) : tab === "omni" ? (
           <OmniView />
+        ) : tab === "terminal" ? (
+          <TerminalPanel sessionId="tab:terminal" />
         ) : (
           <div className="h-full overflow-y-auto p-6">
             {tab === "tasks" && <TasksPanel />}

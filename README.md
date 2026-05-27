@@ -82,7 +82,7 @@ bun run build                  # typecheck + build the frontend
 ```
 src/            React frontend (Vite + TS + Tailwind)
   lib/          sidecar API client, Keychain command wrappers
-  components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, …)
+  components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, Terminal, …)
     shell/      desktop shell: nav rail, top bar, boot loading screen
     omni/       Omni view — chat-driven dynamic-UI canvas
   omni/         json-render component catalog, registry, layout primitives

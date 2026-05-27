@@ -7,6 +7,7 @@ import MemoryPanel from "../components/MemoryPanel";
 import PrsPanel from "../components/PrsPanel";
 import SessionsPanel from "../components/SessionsPanel";
 import TasksPanel from "../components/TasksPanel";
+import TerminalPanel from "../components/TerminalPanel";
 import { catalog } from "./catalog";
 import { Column, Divider, Grid, Heading, Panel, Row, Text } from "./primitives";
 import WidgetFrame from "./WidgetFrame";
@@ -68,6 +69,13 @@ const { registry } = defineRegistry(catalog, {
     Chat: ({ props }) => (
       <WidgetFrame title={props.title ?? "Chat"}>
         <ChatPanel />
+      </WidgetFrame>
+    ),
+    Terminal: ({ props }) => (
+      <WidgetFrame title={props.title ?? "Terminal"}>
+        <TerminalPanel
+          sessionId={props.sessionId ? `omni:${props.sessionId}` : undefined}
+        />
       </WidgetFrame>
     ),
   },
