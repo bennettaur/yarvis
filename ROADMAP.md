@@ -20,13 +20,18 @@ Status of the build against the original vision. The full V1 plan lives at
   (Gemini embeddings when keyed, offline hash-embedding fallback).
 - **Claude Code session introspection** — browse `~/.claude` projects, session
   transcripts, and plans (Sessions tab).
-- **GitHub PR dashboard** — my PRs, review-requested, CI/merge status, stars,
-  saved filters (PRs tab).
+- **GitHub PR dashboard** — my PRs and review-requested, split into tabs and
+  grouped by owner/repo, newest-first; each row is clickable into the in-app
+  review and shows a draft label, CI/merge status, and relative dates. Stars and
+  saved filters too (PRs tab).
 - **Alarms** — full-screen takeover + escalating sound/notification, with
   acknowledge/snooze (Alarms tab).
 - **Embedded PR review** — in-app PR detail view built from the GitHub GraphQL
   API (description, normalized checks, review threads) plus REST file diffs,
-  rendered with markdown and per-line diff coloring (PRs tab → "Review").
+  rendered with markdown and per-line diff coloring (PRs tab → row click).
+  Decomposed into reusable, prop-driven components (description+comments, checks,
+  changed-file list, file diffs) that share one cached fetch per PR; the detail
+  view places the changed-file list beside the diffs.
 - **Memory & knowledge** — notes, daily/weekly recaps (tasks completed + notes,
   LLM-summarized or offline raw), document/URL ingestion (chunk → embed →
   store), and a management UI to search/delete (Memory tab). Reuses the
@@ -38,9 +43,13 @@ Status of the build against the original vision. The full V1 plan lives at
 - **Omni (dynamic UI)** — describe a workspace in natural language and an agent
   composes a live layout from a fixed component catalog: layout primitives
   (Row/Column/Grid/Panel/…) plus self-contained feature widgets (Tasks,
-  Calendar, Memory, PRs, Sessions, Alarms, Settings, Chat). Streamed from the
-  sidecar `/api/omni/generate` and rendered with `@json-render`; layouts can be
-  named, saved (`omni_layouts`), and reloaded (Omni tab).
+  Calendar, Memory, PRs, Sessions, Alarms, Settings, Chat) and the decomposed
+  PR-review widgets (PrDescription/PrChecks/PrFileList/PrFileDiffs) that name a
+  single PR by owner/repo/number and share one cached fetch. Widgets accept an
+  optional fixed `height` so duplicates scroll independently. Streamed from the
+  sidecar `/api/omni/generate` and rendered with `@json-render`; the canvas
+  scrolls and the builder panel collapses; layouts can be named, saved
+  (`omni_layouts`), and reloaded (Omni tab).
 
 ## Remaining to build
 

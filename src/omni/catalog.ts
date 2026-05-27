@@ -16,8 +16,31 @@ import { z } from "zod";
  *    their pane.
  */
 
+const heightProp = z
+  .number()
+  .int()
+  .positive()
+  .optional()
+  .describe(
+    "Optional fixed height in pixels. The widget keeps this height and scrolls its own content while the canvas scrolls between widgets. Use to place two of the same widget (e.g. two PrFileDiffs of one PR) and scroll/compare them independently.",
+  );
+
 const titled = z.object({
   title: z.string().optional().describe("Optional header shown above the widget"),
+  height: heightProp,
+});
+
+/**
+ * Identifies a single pull request for the decomposed PR-review widgets. Several
+ * widgets sharing the same owner/repo/number show different parts of one PR and
+ * share a single cached fetch; different numbers render isolated PRs.
+ */
+const prRef = z.object({
+  owner: z.string().describe("Repository owner or org login, e.g. 'facebook'"),
+  repo: z.string().describe("Repository name, e.g. 'react'"),
+  number: z.number().int().describe("Pull request number"),
+  title: z.string().optional().describe("Optional header shown above the widget"),
+  height: heightProp,
 });
 
 export const catalog = defineCatalog(schema, {
@@ -56,6 +79,7 @@ export const catalog = defineCatalog(schema, {
     Panel: {
       props: z.object({
         title: z.string().optional().describe("Optional header for the panel"),
+        height: heightProp,
       }),
       slots: ["default"],
       description:
@@ -104,6 +128,26 @@ export const catalog = defineCatalog(schema, {
       props: titled,
       description:
         "GitHub pull request dashboard: authored and review-requested PRs with CI/merge status. Self-contained.",
+    },
+    PrDescription: {
+      props: prRef,
+      description:
+        "One pull request's description and review comment threads, for the PR named by owner/repo/number.",
+    },
+    PrChecks: {
+      props: prRef,
+      description:
+        "One pull request's CI/check status list, for the PR named by owner/repo/number.",
+    },
+    PrFileList: {
+      props: prRef,
+      description:
+        "Compact list of a pull request's changed files (with +/− counts); clicking a file scrolls to its diff. Pairs with PrFileDiffs for the same owner/repo/number.",
+    },
+    PrFileDiffs: {
+      props: prRef,
+      description:
+        "A pull request's changed files rendered as expandable unified diffs, for the PR named by owner/repo/number.",
     },
     Sessions: {
       props: titled,

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import ChatComposer from "./ChatComposer";
 import {
   createSession,
   getMessages,
@@ -210,25 +211,14 @@ export default function ChatPanel() {
 
       {error && <p className="text-sm text-red-400">{error}</p>}
 
-      <div className="flex gap-2">
-        <input
-          value={input}
-          placeholder="Message..."
-          disabled={busy}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") void send();
-          }}
-          className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm outline-none focus:border-zinc-500 disabled:opacity-50"
-        />
-        <button
-          onClick={() => void send()}
-          disabled={busy}
-          className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500 disabled:opacity-50"
-        >
-          {busy ? "…" : "Send"}
-        </button>
-      </div>
+      <ChatComposer
+        value={input}
+        onChange={setInput}
+        onSubmit={() => void send()}
+        busy={busy}
+        placeholder="Message..."
+        submitLabel="Send"
+      />
     </div>
   );
 }

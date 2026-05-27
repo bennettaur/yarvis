@@ -4,6 +4,7 @@ import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { clientError, describeError } from "../llm/errors.ts";
 import { availableProviders, resolveModel } from "../llm/providers.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
@@ -74,6 +75,7 @@ export function createChatRoutes(config: Config): Hono {
     try {
       chatModel = resolveModel(config, provider, model);
     } catch (e) {
+      console.error("[chat] model resolution failed:", e);
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
     }
 
@@ -91,7 +93,15 @@ export function createChatRoutes(config: Config): Hono {
 
     const memory = new PgVectorMemoryStore(dbh, chooseEmbedder(config));
 
+    console.log(
+      `[chat] message provider=${provider} model=${model} turns=${messages.length}`,
+    );
+
     return streamSSE(c, async (stream) => {
+      let streamError: unknown = null;
+      let full = "";
+      let firstTokenLogged = false;
+      const startedAt = Date.now();
       const result = streamText({
         model: chatModel,
         system: systemPrompt(),
@@ -101,24 +111,43 @@ export function createChatRoutes(config: Config): Hono {
           ...buildMemoryTools(memory, sessionId),
         },
         stopWhen: stepCountIs(5),
+        // Cancel the upstream call if the client disconnects instead of draining
+        // the provider with no consumer.
+        abortSignal: c.req.raw.signal,
+        // The AI SDK delivers provider/streaming failures here instead of
+        // throwing from `textStream`; without this the stream would end silently
+        // and the client would render nothing.
+        onError: ({ error }) => {
+          streamError = error;
+          console.error("[chat] model error:", describeError(error));
+        },
       });
-      let full = "";
       try {
         for await (const delta of result.textStream) {
+          if (!firstTokenLogged) {
+            console.log(`[chat] first token after ${Date.now() - startedAt}ms`);
+            firstTokenLogged = true;
+          }
           full += delta;
           await stream.writeSSE({
             data: JSON.stringify({ type: "delta", text: delta }),
           });
         }
-        await addMessage(dbh, { sessionId, role: "assistant", content: full });
-        await stream.writeSSE({ data: JSON.stringify({ type: "done" }) });
       } catch (e) {
+        streamError = e;
+        console.error("[chat] stream iteration error:", describeError(e));
+      }
+
+      if (streamError) {
         await stream.writeSSE({
-          data: JSON.stringify({
-            type: "error",
-            message: e instanceof Error ? e.message : String(e),
-          }),
+          data: JSON.stringify({ type: "error", message: clientError(streamError) }),
         });
+      } else {
+        await addMessage(dbh, { sessionId, role: "assistant", content: full });
+        console.log(
+          `[chat] done provider=${provider} model=${model} chars=${full.length} ms=${Date.now() - startedAt}`,
+        );
+        await stream.writeSSE({ data: JSON.stringify({ type: "done" }) });
       }
     });
   });

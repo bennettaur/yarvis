@@ -9,6 +9,7 @@ export interface PrSummary {
   author: string;
   draft: boolean;
   state: string;
+  createdAt: string;
   updatedAt: string;
 }
 
@@ -95,15 +96,20 @@ async function send<T>(path: string, method: string, body?: unknown): Promise<T>
   return res.json();
 }
 
+// Owner/repo segments can originate from agent-composed Omni layouts, so encode
+// them rather than interpolating untrusted text straight into the request path.
+const prPath = (owner: string, repo: string, number: number) =>
+  `/api/github/pr/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}`;
+
 export const ghViewer = () => get<{ login: string }>("/api/github/viewer");
 export const ghSearch = (q: string) =>
   get<PrSummary[]>(`/api/github/search?q=${encodeURIComponent(q)}`);
 export const ghPrStatus = (owner: string, repo: string, number: number) =>
-  get<PrStatus>(`/api/github/pr/${owner}/${repo}/${number}`);
+  get<PrStatus>(prPath(owner, repo, number));
 export const ghPrDetail = (owner: string, repo: string, number: number) =>
-  get<PrDetail>(`/api/github/pr/${owner}/${repo}/${number}/detail`);
+  get<PrDetail>(`${prPath(owner, repo, number)}/detail`);
 export const ghPrFiles = (owner: string, repo: string, number: number) =>
-  get<PrFile[]>(`/api/github/pr/${owner}/${repo}/${number}/files`);
+  get<PrFile[]>(`${prPath(owner, repo, number)}/files`);
 
 export const ghFilters = () => get<GhFilter[]>("/api/github/filters");
 export const ghCreateFilter = (name: string, query: string) =>
