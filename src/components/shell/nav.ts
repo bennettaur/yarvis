@@ -10,7 +10,8 @@ export type Tab =
   | "calendar"
   | "alarms"
   | "sessions"
-  | "dashboard";
+  | "dashboard"
+  | "settings";
 
 export interface NavItem {
   id: Tab;
@@ -30,6 +31,7 @@ export const NAV_ITEMS: NavItem[] = [
   { id: "alarms", label: "Alarms", icon: "alarms" },
   { id: "sessions", label: "Sessions", icon: "sessions" },
   { id: "dashboard", label: "Dashboard", icon: "dashboard", pinBottom: true },
+  { id: "settings", label: "Settings", icon: "settings", pinBottom: true },
 ];
 
 export function tabLabel(tab: Tab): string {

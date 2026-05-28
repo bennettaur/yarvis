@@ -35,7 +35,7 @@ const ingestSchema = z
 
 const recapSchema = z.object({
   range: z.enum(["day", "week"]),
-  provider: z.enum(["anthropic", "bedrock", "gemini"]).optional(),
+  provider: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
 });
 
@@ -126,7 +126,7 @@ export function createMemoryRoutes(config: Config): Hono {
     let recap = context;
     if (provider && model) {
       try {
-        const llm = resolveModel(config, provider, model);
+        const llm = await resolveModel(config, db, provider, model);
         const { text } = await generateText({
           model: llm,
           system: recapSystemPrompt(window.label),

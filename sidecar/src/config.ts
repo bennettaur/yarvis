@@ -28,6 +28,17 @@ export interface ProviderSecrets {
   // so no explicit key is read here.
 }
 
+/**
+ * Secret bundle for a single user-configured provider. The structural fields
+ * (name, baseURL, apiKind, models, headerNames) live in Postgres; this is
+ * just the matching credentials, pulled from the macOS Keychain and injected
+ * by the Rust core via the YARVIS_CUSTOM_PROVIDER_SECRETS env var.
+ */
+export interface CustomProviderSecrets {
+  apiKey?: string;
+  headers: Record<string, string>;
+}
+
 export interface Config {
   /** Loopback port to bind. The Rust core supplies this; defaults for standalone use. */
   port: number;
@@ -40,6 +51,43 @@ export interface Config {
   /** Postgres connection string. May be undefined until the user configures it. */
   databaseUrl: string | undefined;
   secrets: ProviderSecrets;
+  /** Keyed by custom provider id from the database. */
+  customProviderSecrets: Record<string, CustomProviderSecrets>;
+}
+
+function parseCustomProviderSecrets(
+  raw: string | undefined,
+): Record<string, CustomProviderSecrets> {
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    console.warn(
+      "[config] YARVIS_CUSTOM_PROVIDER_SECRETS is not valid JSON:",
+      e,
+    );
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const out: Record<string, CustomProviderSecrets> = {};
+  for (const [id, entry] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as Record<string, unknown>;
+    const headers: Record<string, string> =
+      e.headers && typeof e.headers === "object"
+        ? Object.fromEntries(
+            Object.entries(e.headers as Record<string, unknown>).filter(
+              (kv): kv is [string, string] => typeof kv[1] === "string",
+            ),
+          )
+        : {};
+    out[id] = {
+      apiKey: typeof e.apiKey === "string" ? e.apiKey : undefined,
+      headers,
+    };
+  }
+  return out;
 }
 
 function parseOrigins(raw: string | undefined): string[] | null {
@@ -70,5 +118,8 @@ export function loadConfig(): Config {
       googleClientId: env.GOOGLE_CLIENT_ID,
       googleClientSecret: env.GOOGLE_CLIENT_SECRET,
     },
+    customProviderSecrets: parseCustomProviderSecrets(
+      env.YARVIS_CUSTOM_PROVIDER_SECRETS,
+    ),
   };
 }

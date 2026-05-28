@@ -15,6 +15,7 @@ use tokio::process::Command;
 use tokio::sync::Notify;
 use tokio::time::sleep;
 
+use crate::custom_providers::build_sidecar_env;
 use crate::keychain::read_secret;
 
 /// Origins permitted to call the sidecar. Covers the Vite dev server and the
@@ -74,9 +75,9 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-async fn supervise(_app: AppHandle, port: u16, token: String, restart: Arc<Notify>) {
+async fn supervise(app: AppHandle, port: u16, token: String, restart: Arc<Notify>) {
     loop {
-        match build_command(port, &token).spawn() {
+        match build_command(&app, port, &token).spawn() {
             Ok(mut child) => {
                 // Wait for the sidecar to exit on its own or for a restart request.
                 tokio::select! {
@@ -100,7 +101,7 @@ async fn supervise(_app: AppHandle, port: u16, token: String, restart: Arc<Notif
     }
 }
 
-fn build_command(port: u16, token: &str) -> Command {
+fn build_command(_app: &AppHandle, port: u16, token: &str) -> Command {
     let mut cmd = command_base();
     cmd.env("YARVIS_SIDECAR_PORT", port.to_string());
     cmd.env("YARVIS_SIDECAR_TOKEN", token);
@@ -123,6 +124,10 @@ fn build_command(port: u16, token: &str) -> Command {
     }
     if let Some(secret) = read_secret("google_client_secret") {
         cmd.env("GOOGLE_CLIENT_SECRET", secret);
+    }
+
+    if let Some(json) = build_sidecar_env() {
+        cmd.env("YARVIS_CUSTOM_PROVIDER_SECRETS", json);
     }
 
     // Ensure the child dies with the parent rather than lingering.

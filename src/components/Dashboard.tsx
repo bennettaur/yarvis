@@ -6,15 +6,6 @@ import {
   type DbHealthResponse,
   type StatusResponse,
 } from "../lib/api";
-import {
-  SECRETS,
-  deleteSecret,
-  listSecretStatus,
-  restartSidecar,
-  setSecret,
-  type SecretKey,
-  type SecretStatus,
-} from "../lib/keychain";
 
 type Health = "checking" | "ok" | "down";
 
@@ -33,13 +24,14 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
+/**
+ * Read-only system status. Configuration (secrets, custom providers) lives in
+ * the Settings tab.
+ */
 export default function Dashboard() {
   const [health, setHealth] = useState<Health>("checking");
   const [status, setStatusState] = useState<StatusResponse | null>(null);
   const [db, setDb] = useState<DbHealthResponse | null>(null);
-  const [secrets, setSecrets] = useState<SecretStatus[]>([]);
-  const [inputs, setInputs] = useState<Record<string, string>>({});
-  const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -55,12 +47,6 @@ export default function Dashboard() {
       setStatusState(null);
       setDb(null);
     }
-    try {
-      setSecrets(await listSecretStatus());
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
   }, []);
 
   useEffect(() => {
@@ -69,34 +55,8 @@ export default function Dashboard() {
     return () => clearInterval(timer);
   }, [refresh]);
 
-  const onSave = useCallback(
-    async (key: SecretKey) => {
-      const value = inputs[key]?.trim();
-      if (!value) return;
-      await setSecret(key, value);
-      setInputs((prev) => ({ ...prev, [key]: "" }));
-      // Reload the sidecar so it picks up the new secret immediately.
-      await restartSidecar();
-      await refresh();
-    },
-    [inputs, refresh],
-  );
-
-  const onClear = useCallback(
-    async (key: SecretKey) => {
-      await deleteSecret(key);
-      await restartSidecar();
-      await refresh();
-    },
-    [refresh],
-  );
-
-  const isPresent = (key: SecretKey) =>
-    secrets.find((s) => s.key === key)?.present ?? false;
-
   return (
     <div className="space-y-6">
-      <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
       <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
         <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-zinc-500">
           System
@@ -134,61 +94,6 @@ export default function Dashboard() {
           value={<StatusDot state={status?.providers.gemini ?? null} />}
         />
       </section>
-
-      <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
-        <h2 className="mb-1 text-sm font-medium uppercase tracking-wide text-zinc-500">
-          Secrets
-        </h2>
-        <p className="mb-4 text-xs text-zinc-500">
-          Stored in the macOS Keychain. Saving reloads the sidecar so changes
-          take effect right away.
-        </p>
-        <div className="space-y-5">
-          {SECRETS.map((meta) => (
-            <div key={meta.key}>
-              <div className="mb-1 flex items-center justify-between">
-                <label className="text-sm font-medium">{meta.label}</label>
-                <span className="flex items-center gap-1.5 text-xs text-zinc-400">
-                  <StatusDot state={isPresent(meta.key)} />
-                  {isPresent(meta.key) ? "set" : "not set"}
-                </span>
-              </div>
-              <p className="mb-2 text-xs text-zinc-500">{meta.help}</p>
-              <div className="flex gap-2">
-                <input
-                  type="password"
-                  value={inputs[meta.key] ?? ""}
-                  placeholder={meta.placeholder}
-                  onChange={(e) =>
-                    setInputs((prev) => ({ ...prev, [meta.key]: e.target.value }))
-                  }
-                  className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-zinc-500"
-                />
-                <button
-                  onClick={() => void onSave(meta.key)}
-                  className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500"
-                >
-                  Save
-                </button>
-                <button
-                  onClick={() => void onClear(meta.key)}
-                  disabled={!isPresent(meta.key)}
-                  className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
-                >
-                  Clear
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-      </div>
-
-      {error && (
-        <p className="text-sm text-red-400">
-          {error} — invoke commands require the app to run under Tauri.
-        </p>
-      )}
     </div>
   );
 }

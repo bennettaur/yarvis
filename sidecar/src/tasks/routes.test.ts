@@ -14,6 +14,7 @@ const config: Config = {
   allowedOrigins: null,
   databaseUrl: url,
   secrets: {},
+  customProviderSecrets: {},
 };
 const app = createApp(config);
 const auth = { Authorization: "Bearer test-token" };
