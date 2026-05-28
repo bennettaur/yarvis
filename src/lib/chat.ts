@@ -1,12 +1,18 @@
 import { sidecarFetch, streamSSE } from "./api";
 
-export type ProviderId = "anthropic" | "bedrock" | "gemini";
+/**
+ * Built-in providers use their bare name; user-configured proxies are
+ * namespaced as `custom:<provider-id>`. The frontend treats the id as opaque.
+ */
+export type ProviderId = string;
 
 export interface ProviderInfo {
   id: ProviderId;
   label: string;
   models: string[];
   available: boolean;
+  /** Present (and true) when the entry was contributed by a custom provider. */
+  custom?: boolean;
 }
 
 export interface ChatSession {

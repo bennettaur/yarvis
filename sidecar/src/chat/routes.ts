@@ -29,7 +29,7 @@ function systemPrompt(): string {
 const chatSchema = z.object({
   sessionId: z.string().uuid(),
   message: z.string().min(1),
-  provider: z.enum(["anthropic", "bedrock", "gemini"]),
+  provider: z.string().min(1),
   model: z.string().min(1),
 });
 
@@ -39,7 +39,12 @@ const createSessionSchema = z.object({ title: z.string().nullish() });
 export function createChatRoutes(config: Config): Hono {
   const router = new Hono();
 
-  router.get("/providers", (c) => c.json(availableProviders(config)));
+  router.get("/providers", async (c) => {
+    const db = config.databaseUrl
+      ? getDb(config.databaseUrl).db
+      : undefined;
+    return c.json(await availableProviders(config, db));
+  });
 
   // Routes below need a database.
   router.use("*", async (c, next) => {
@@ -70,14 +75,13 @@ export function createChatRoutes(config: Config): Hono {
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     const { sessionId, message, provider, model } = parsed.data;
 
+    const dbh = db();
     let chatModel;
     try {
-      chatModel = resolveModel(config, provider, model);
+      chatModel = await resolveModel(config, dbh, provider, model);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
     }
-
-    const dbh = db();
     const history = await getMessages(dbh, sessionId);
     await addMessage(dbh, { sessionId, role: "user", content: message });
 

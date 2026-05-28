@@ -10,6 +10,7 @@ const config: Config = {
   allowedOrigins: null,
   databaseUrl: undefined,
   secrets: {}, // no provider keys configured
+  customProviderSecrets: {},
 };
 const app = createApp(config);
 const jsonAuth = {

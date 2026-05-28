@@ -137,6 +137,29 @@ export const googleTokens = pgTable("google_tokens", {
     .defaultNow(),
 });
 
+/**
+ * User-configured LLM proxy providers (e.g. a litellm endpoint). Structural
+ * data lives here; the secret values (API key, header values) stay in the
+ * macOS Keychain and are injected into the sidecar at spawn time.
+ */
+export const customProviders = pgTable("custom_providers", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  baseUrl: text("base_url").notNull(),
+  apiKind: text("api_kind").notNull(), // "openai" | "anthropic"
+  models: jsonb("models").$type<string[]>().notNull().default([]),
+  headerNames: jsonb("header_names").$type<string[]>().notNull().default([]),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export type CustomProviderRow = typeof customProviders.$inferSelect;
+export type NewCustomProviderRow = typeof customProviders.$inferInsert;
+
 export type ChatSession = typeof chatSessions.$inferSelect;
 export type NewChatSession = typeof chatSessions.$inferInsert;
 export type ChatMessage = typeof chatMessages.$inferSelect;

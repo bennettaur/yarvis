@@ -1,4 +1,5 @@
 mod alarms;
+mod custom_providers;
 mod keychain;
 mod pty;
 mod sidecar;
@@ -48,6 +49,10 @@ pub fn run() {
             keychain::get_secret_status,
             keychain::delete_secret,
             keychain::list_secret_status,
+            custom_providers::list_custom_provider_secret_status,
+            custom_providers::set_custom_provider_secret,
+            custom_providers::delete_custom_provider_secret,
+            custom_providers::delete_custom_provider_all_secrets,
             sidecar::get_sidecar_info,
             sidecar::restart_sidecar,
             alarms::list_alarms,
