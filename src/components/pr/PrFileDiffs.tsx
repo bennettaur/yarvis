@@ -1,14 +1,12 @@
+import type { PrFile } from "../../lib/github";
 import { usePrFiles } from "../../lib/githubCache";
-import { type PrFile } from "../../lib/github";
-import { prFileAnchorId, type PrRef } from "./shared";
+import { type PrRef, prFileAnchorId } from "./shared";
 
 /** Renders one file's unified-diff patch with per-line add/remove coloring. */
 function DiffView({ patch }: { patch: string | null }) {
   if (!patch) {
     return (
-      <p className="px-3 py-2 text-xs text-zinc-600">
-        No textual diff (binary or too large).
-      </p>
+      <p className="px-3 py-2 text-xs text-zinc-600">No textual diff (binary or too large).</p>
     );
   }
   return (

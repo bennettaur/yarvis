@@ -1,11 +1,11 @@
 import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { cors } from "hono/cors";
-import type { Config } from "./config.ts";
-import { pingDb } from "./db/client.ts";
 import { createCcRoutes } from "./cc/routes.ts";
 import { createChatRoutes } from "./chat/routes.ts";
+import type { Config } from "./config.ts";
 import { createCustomProviderRoutes } from "./customProviders/routes.ts";
+import { pingDb } from "./db/client.ts";
 import { createGithubRoutes } from "./github/routes.ts";
 import { createCalendarRoutes, createGoogleCallbackRoutes } from "./google/routes.ts";
 import { createMemoryRoutes } from "./memory/routes.ts";
@@ -26,10 +26,7 @@ const startedAt = Date.now();
  *  - `/health` is intentionally unauthenticated so the Rust supervisor can probe
  *    readiness; it exposes nothing sensitive.
  */
-export function createApp(
-  config: Config,
-  readiness: Readiness = createReadiness(),
-): Hono {
+export function createApp(config: Config, readiness: Readiness = createReadiness()): Hono {
   const app = new Hono();
 
   app.use(

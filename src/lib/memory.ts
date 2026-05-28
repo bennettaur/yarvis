@@ -1,5 +1,5 @@
-import type { ProviderId } from "./chat";
 import { sidecarFetch } from "./api";
+import type { ProviderId } from "./chat";
 
 export interface MemoryRecord {
   id: string;
@@ -53,14 +53,10 @@ export const memSearch = (q: string) =>
 export const memAddNote = (content: string) =>
   send<MemoryRecord>("/api/memory/notes", "POST", { content });
 
-export const memDelete = (id: string) =>
-  send<{ deleted: boolean }>(`/api/memory/${id}`, "DELETE");
+export const memDelete = (id: string) => send<{ deleted: boolean }>(`/api/memory/${id}`, "DELETE");
 
 export const memIngest = (input: { url?: string; text?: string; title?: string }) =>
   send<IngestResult>("/api/memory/ingest", "POST", input);
 
-export const memRecap = (
-  range: "day" | "week",
-  provider?: ProviderId,
-  model?: string,
-) => send<RecapResult>("/api/memory/recap", "POST", { range, provider, model });
+export const memRecap = (range: "day" | "week", provider?: ProviderId, model?: string) =>
+  send<RecapResult>("/api/memory/recap", "POST", { range, provider, model });

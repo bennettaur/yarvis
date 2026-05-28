@@ -4,11 +4,11 @@ import CalendarPanel from "../components/CalendarPanel";
 import ChatPanel from "../components/ChatPanel";
 import Dashboard from "../components/Dashboard";
 import MemoryPanel from "../components/MemoryPanel";
+import PrsPanel from "../components/PrsPanel";
 import PrChecks from "../components/pr/PrChecks";
 import PrDescription from "../components/pr/PrDescription";
 import PrFileDiffs from "../components/pr/PrFileDiffs";
 import PrFileList from "../components/pr/PrFileList";
-import PrsPanel from "../components/PrsPanel";
 import SessionsPanel from "../components/SessionsPanel";
 import TasksPanel from "../components/TasksPanel";
 import TerminalPanel from "../components/TerminalPanel";
@@ -55,11 +55,7 @@ const { registry } = defineRegistry(catalog, {
       </WidgetFrame>
     ),
     PullRequests: ({ props }) => (
-      <WidgetFrame
-        title={props.title ?? "Pull Requests"}
-        name="PullRequests"
-        height={props.height}
-      >
+      <WidgetFrame title={props.title ?? "Pull Requests"} name="PullRequests" height={props.height}>
         <PrsPanel />
       </WidgetFrame>
     ),
@@ -121,9 +117,7 @@ const { registry } = defineRegistry(catalog, {
     ),
     Terminal: ({ props }) => (
       <WidgetFrame title={props.title ?? "Terminal"}>
-        <TerminalPanel
-          sessionId={props.sessionId ? `omni:${props.sessionId}` : undefined}
-        />
+        <TerminalPanel sessionId={props.sessionId ? `omni:${props.sessionId}` : undefined} />
       </WidgetFrame>
     ),
   },

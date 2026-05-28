@@ -63,10 +63,7 @@ function parseCustomProviderSecrets(
   try {
     parsed = JSON.parse(raw);
   } catch (e) {
-    console.warn(
-      "[config] YARVIS_CUSTOM_PROVIDER_SECRETS is not valid JSON:",
-      e,
-    );
+    console.warn("[config] YARVIS_CUSTOM_PROVIDER_SECRETS is not valid JSON:", e);
     return {};
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
@@ -118,8 +115,6 @@ export function loadConfig(): Config {
       googleClientId: env.GOOGLE_CLIENT_ID,
       googleClientSecret: env.GOOGLE_CLIENT_SECRET,
     },
-    customProviderSecrets: parseCustomProviderSecrets(
-      env.YARVIS_CUSTOM_PROVIDER_SECRETS,
-    ),
+    customProviderSecrets: parseCustomProviderSecrets(env.YARVIS_CUSTOM_PROVIDER_SECRETS),
   };
 }

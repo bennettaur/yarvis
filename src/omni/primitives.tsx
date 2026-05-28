@@ -23,12 +23,11 @@ const DEFAULT_GAP = 6;
  * equal-flex sizing — a silent layout regression, not a crash. Revisit pane
  * classification here if @json-render is bumped.
  */
-function catalogElement(
-  child: ReactNode,
-): { type?: string; props?: { height?: unknown } } | null {
+function catalogElement(child: ReactNode): { type?: string; props?: { height?: unknown } } | null {
   if (!isValidElement(child)) return null;
-  return (child.props as { element?: { type?: string; props?: { height?: unknown } } })
-    .element ?? null;
+  return (
+    (child.props as { element?: { type?: string; props?: { height?: unknown } } }).element ?? null
+  );
 }
 
 /** Text-like primitives size to their content rather than claiming a pane. */
@@ -67,10 +66,7 @@ export function Row({ gap, children }: { gap?: number; children?: ReactNode }) {
 
 export function Column({ gap, children }: { gap?: number; children?: ReactNode }) {
   return (
-    <div
-      className="flex min-h-full w-full flex-col"
-      style={{ gap: gap ?? DEFAULT_GAP }}
-    >
+    <div className="flex min-h-full w-full flex-col" style={{ gap: gap ?? DEFAULT_GAP }}>
       {Children.map(children, (child) => pane(child, true))}
     </div>
   );

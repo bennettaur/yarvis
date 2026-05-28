@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { createAlarm } from "../lib/alarms";
-import { openExternal } from "../lib/url";
 import {
+  type CalendarEvent,
+  type CalendarStatus,
   calAuthUrl,
   calDisconnect,
   calEvents,
   calStatus,
-  type CalendarEvent,
-  type CalendarStatus,
 } from "../lib/calendar";
+import { openExternal } from "../lib/url";
 
 // Fire the meeting alarm shortly before the start. The alarm system then
 // escalates ~60s later (around the meeting start) if it isn't acknowledged.
@@ -35,11 +35,7 @@ function EventRow({
   onArm: (event: CalendarEvent) => void;
 }) {
   const ms = startMs(event);
-  const when = event.allDay
-    ? "All day"
-    : ms !== null
-      ? new Date(ms).toLocaleString()
-      : event.start;
+  const when = event.allDay ? "All day" : ms !== null ? new Date(ms).toLocaleString() : event.start;
   return (
     <li className="flex items-center gap-3 px-4 py-3">
       <div className="min-w-0 flex-1">
@@ -133,9 +129,8 @@ export default function CalendarPanel() {
     return (
       <div className="space-y-2 text-sm text-zinc-400">
         <p>
-          Google Calendar isn't configured. Add a Google Cloud OAuth client
-          (Desktop app) under <b>Settings → Google client id / secret</b> to
-          connect your calendar.
+          Google Calendar isn't configured. Add a Google Cloud OAuth client (Desktop app) under{" "}
+          <b>Settings → Google client id / secret</b> to connect your calendar.
         </p>
         <p className="text-xs text-zinc-600">
           The redirect URI to register is{" "}
@@ -152,8 +147,7 @@ export default function CalendarPanel() {
     return (
       <div className="space-y-3">
         <p className="text-sm text-zinc-400">
-          Connect your Google Calendar to see upcoming meetings and arm alarms
-          for them.
+          Connect your Google Calendar to see upcoming meetings and arm alarms for them.
         </p>
         <button
           onClick={() => void connect()}

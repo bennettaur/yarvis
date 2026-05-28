@@ -49,9 +49,7 @@ export class GeminiEmbedder implements Embedder {
   private model;
 
   constructor(apiKey: string) {
-    this.model = createGoogleGenerativeAI({ apiKey }).textEmbeddingModel(
-      "text-embedding-004",
-    );
+    this.model = createGoogleGenerativeAI({ apiKey }).textEmbeddingModel("text-embedding-004");
   }
 
   async embed(text: string): Promise<number[]> {

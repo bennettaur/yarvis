@@ -6,18 +6,14 @@ import {
 } from "@json-render/core";
 import { JSONUIProvider, Renderer } from "@json-render/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  listProviders,
-  type ProviderId,
-  type ProviderInfo,
-} from "../../lib/chat";
+import { listProviders, type ProviderId, type ProviderInfo } from "../../lib/chat";
 import {
   deleteLayout,
   getLayout,
   listLayouts,
+  type OmniLayoutSummary,
   saveLayout,
   streamOmni,
-  type OmniLayoutSummary,
 } from "../../lib/omni";
 import { catalog } from "../../omni/catalog";
 import { registry } from "../../omni/registry";
@@ -93,10 +89,7 @@ export default function OmniView() {
 
   // The catalog defines what the agent may compose; turn it into a system
   // prompt once. `inline` mode = converse first, then emit JSONL spec patches.
-  const system = useMemo(
-    () => catalog.prompt({ mode: "inline", editModes: ["patch"] }),
-    [],
-  );
+  const system = useMemo(() => catalog.prompt({ mode: "inline", editModes: ["patch"] }), []);
 
   useEffect(() => {
     void (async () => {
@@ -106,9 +99,7 @@ export default function OmniView() {
         const savedProvider = localStorage.getItem(PROVIDER_KEY) as ProviderId | null;
         const savedModel = localStorage.getItem(MODEL_KEY);
         const chosen =
-          provs.find((p) => p.id === savedProvider) ??
-          provs.find((p) => p.available) ??
-          provs[0];
+          provs.find((p) => p.id === savedProvider) ?? provs.find((p) => p.available) ?? provs[0];
         if (chosen) {
           setProvider(chosen.id);
           setModel(
@@ -145,7 +136,7 @@ export default function OmniView() {
 
   useEffect(() => {
     threadRef.current?.scrollTo(0, threadRef.current.scrollHeight);
-  }, [messages, streaming]);
+  }, []);
 
   const refreshLayouts = useCallback(async () => {
     try {
@@ -182,7 +173,7 @@ export default function OmniView() {
         ? structuredClone(spec as Spec)
         : { root: "", elements: {} };
       let prose = "";
-      let patchCount = 0;
+      let _patchCount = 0;
       let appliedCount = 0;
       const parser = createMixedStreamParser({
         onText: (t) => {
@@ -190,7 +181,7 @@ export default function OmniView() {
           setStreaming(prose);
         },
         onPatch: (patch) => {
-          patchCount += 1;
+          _patchCount += 1;
           try {
             applySpecPatch(working, patch);
             appliedCount += 1;
@@ -240,9 +231,6 @@ export default function OmniView() {
         failureMessage = e instanceof Error ? e.message : String(e);
         console.error("[omni] request failed:", e);
       } finally {
-        console.log(
-          `[omni] result patches=${patchCount} applied=${appliedCount} proseChars=${prose.length}`,
-        );
         if (prose.trim()) {
           setMessages((prev) => [...prev, { role: "assistant", content: prose.trim() }]);
         }
@@ -338,9 +326,8 @@ export default function OmniView() {
               <div>
                 <h2 className="text-lg font-semibold text-zinc-200">Omni</h2>
                 <p className="mt-1 max-w-md text-sm text-zinc-500">
-                  Ask the chat to build a view from your widgets — tasks,
-                  calendar, PRs, memory, sessions, alarms, and chat windows — in
-                  any layout.
+                  Ask the chat to build a view from your widgets — tasks, calendar, PRs, memory,
+                  sessions, alarms, and chat windows — in any layout.
                 </p>
               </div>
               <div className="flex max-w-md flex-col gap-2">
@@ -375,150 +362,141 @@ export default function OmniView() {
           </span>
         </aside>
       ) : (
-      <aside className="flex w-96 shrink-0 flex-col border-l border-zinc-800">
-        <div className="flex items-center justify-between gap-2 border-b border-zinc-800 px-4 py-2">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setBuilderCollapsed(true)}
-              title="Collapse builder"
-              className="text-zinc-500 hover:text-zinc-300"
-            >
-              ›
+        <aside className="flex w-96 shrink-0 flex-col border-l border-zinc-800">
+          <div className="flex items-center justify-between gap-2 border-b border-zinc-800 px-4 py-2">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setBuilderCollapsed(true)}
+                title="Collapse builder"
+                className="text-zinc-500 hover:text-zinc-300"
+              >
+                ›
+              </button>
+              <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">
+                Builder
+              </span>
+            </div>
+            <button onClick={reset} className="text-xs text-zinc-500 hover:text-zinc-300">
+              Clear
             </button>
-            <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">
-              Builder
-            </span>
           </div>
-          <button
-            onClick={reset}
-            className="text-xs text-zinc-500 hover:text-zinc-300"
-          >
-            Clear
-          </button>
-        </div>
 
-        <div className="flex flex-wrap gap-2 border-b border-zinc-800 px-4 py-2">
-          <select
-            value={provider}
-            onChange={(e) => {
-              const id = e.target.value as ProviderId;
-              setProvider(id);
-              setModel(modelsFor(id)[0] ?? "");
-            }}
-            className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs"
-          >
-            {providers.map((p) => (
-              <option key={p.id} value={p.id} disabled={!p.available}>
-                {p.label}
-                {p.available ? "" : " (no key)"}
-              </option>
-            ))}
-          </select>
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs"
-          >
-            {(provider ? modelsFor(provider) : []).map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {/* Saved layouts */}
-        <div className="space-y-2 border-b border-zinc-800 px-4 py-2">
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2 border-b border-zinc-800 px-4 py-2">
             <select
-              value={loadedId}
-              onChange={(e) => void onLoad(e.target.value)}
-              className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs"
+              value={provider}
+              onChange={(e) => {
+                const id = e.target.value as ProviderId;
+                setProvider(id);
+                setModel(modelsFor(id)[0] ?? "");
+              }}
+              className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs"
             >
-              <option value="">— load layout —</option>
-              {layouts.map((l) => (
-                <option key={l.id} value={l.id}>
-                  {l.name}
+              {providers.map((p) => (
+                <option key={p.id} value={p.id} disabled={!p.available}>
+                  {p.label}
+                  {p.available ? "" : " (no key)"}
                 </option>
               ))}
             </select>
-            <button
-              onClick={() => void onDelete()}
-              disabled={!loadedId}
-              title="Delete the selected layout"
-              className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-red-400 disabled:opacity-40"
+            <select
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs"
             >
-              Delete
-            </button>
+              {(provider ? modelsFor(provider) : []).map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
           </div>
-          <div className="flex gap-2">
-            <input
-              value={layoutName}
-              placeholder="Save current layout as…"
-              disabled={!hasContent(spec)}
-              onChange={(e) => setLayoutName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void onSave();
-              }}
-              className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs outline-none focus:border-zinc-500 disabled:opacity-40"
-            />
-            <button
-              onClick={() => void onSave()}
-              disabled={!hasContent(spec) || !layoutName.trim()}
-              className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium hover:bg-indigo-500 disabled:opacity-40"
-            >
-              Save
-            </button>
+
+          {/* Saved layouts */}
+          <div className="space-y-2 border-b border-zinc-800 px-4 py-2">
+            <div className="flex gap-2">
+              <select
+                value={loadedId}
+                onChange={(e) => void onLoad(e.target.value)}
+                className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs"
+              >
+                <option value="">— load layout —</option>
+                {layouts.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={() => void onDelete()}
+                disabled={!loadedId}
+                title="Delete the selected layout"
+                className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-red-400 disabled:opacity-40"
+              >
+                Delete
+              </button>
+            </div>
+            <div className="flex gap-2">
+              <input
+                value={layoutName}
+                placeholder="Save current layout as…"
+                disabled={!hasContent(spec)}
+                onChange={(e) => setLayoutName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void onSave();
+                }}
+                className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs outline-none focus:border-zinc-500 disabled:opacity-40"
+              />
+              <button
+                onClick={() => void onSave()}
+                disabled={!hasContent(spec) || !layoutName.trim()}
+                className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium hover:bg-indigo-500 disabled:opacity-40"
+              >
+                Save
+              </button>
+            </div>
           </div>
-        </div>
 
-        <div ref={threadRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
-          {messages.length === 0 && !streaming && (
-            <p className="text-sm text-zinc-600">
-              Describe the layout you want. Follow-ups refine the current view.
-            </p>
-          )}
-          {messages.map((m, i) => (
-            <div key={i} className="text-sm">
-              <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
-                {m.role}
+          <div ref={threadRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
+            {messages.length === 0 && !streaming && (
+              <p className="text-sm text-zinc-600">
+                Describe the layout you want. Follow-ups refine the current view.
+              </p>
+            )}
+            {messages.map((m, i) => (
+              <div key={i} className="text-sm">
+                <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">{m.role}</div>
+                <div className="whitespace-pre-wrap text-zinc-100">{m.content}</div>
               </div>
-              <div className="whitespace-pre-wrap text-zinc-100">{m.content}</div>
-            </div>
-          ))}
-          {streaming && (
-            <div className="text-sm">
-              <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
-                assistant
+            ))}
+            {streaming && (
+              <div className="text-sm">
+                <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">assistant</div>
+                <div className="whitespace-pre-wrap text-zinc-100">{streaming}</div>
               </div>
-              <div className="whitespace-pre-wrap text-zinc-100">{streaming}</div>
-            </div>
-          )}
-          {busy && !streaming && (
-            <div className="text-sm">
-              <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
-                assistant
+            )}
+            {busy && !streaming && (
+              <div className="text-sm">
+                <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">assistant</div>
+                <div className="flex items-center gap-2 text-zinc-400">
+                  <Spinner />
+                  Thinking…
+                </div>
               </div>
-              <div className="flex items-center gap-2 text-zinc-400">
-                <Spinner />
-                Thinking…
-              </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
 
-        {error && <p className="px-4 pb-2 text-sm text-red-400">{error}</p>}
+          {error && <p className="px-4 pb-2 text-sm text-red-400">{error}</p>}
 
-        <ChatComposer
-          value={input}
-          onChange={setInput}
-          onSubmit={() => void send(input)}
-          busy={busy}
-          placeholder="Describe a layout..."
-          submitLabel="Build"
-          className="flex gap-2 border-t border-zinc-800 p-3"
-        />
-      </aside>
+          <ChatComposer
+            value={input}
+            onChange={setInput}
+            onSubmit={() => void send(input)}
+            busy={busy}
+            placeholder="Describe a layout..."
+            submitLabel="Build"
+            className="flex gap-2 border-t border-zinc-800 p-3"
+          />
+        </aside>
       )}
     </div>
   );

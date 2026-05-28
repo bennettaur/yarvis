@@ -10,9 +10,6 @@ export interface PrRef {
  * matching `PrFileDiffs` entry — even when the two are separate components in
  * an Omni layout. The PR trio keeps ids unique when several PRs share a page.
  */
-export function prFileAnchorId(
-  ref: PrRef,
-  index: number,
-): string {
+export function prFileAnchorId(ref: PrRef, index: number): string {
   return `prfile-${ref.owner}-${ref.repo}-${ref.number}-${index}`;
 }

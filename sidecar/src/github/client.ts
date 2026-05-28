@@ -83,10 +83,7 @@ export interface PrFile {
 
 type FetchFn = typeof fetch;
 
-function parseRepo(
-  repositoryUrl?: string,
-  htmlUrl?: string,
-): { owner: string; repo: string } {
+function parseRepo(repositoryUrl?: string, htmlUrl?: string): { owner: string; repo: string } {
   if (repositoryUrl) {
     const m = repositoryUrl.match(/repos\/([^/]+)\/([^/]+)$/);
     if (m) return { owner: m[1]!, repo: m[2]! };
@@ -151,8 +148,7 @@ function toCheckItem(node: any): CheckItem {
 
 /** Shapes the GraphQL `pullRequest` payload into a flat PrDetail. */
 export function toPrDetail(pr: any): PrDetail {
-  const rollupNodes =
-    pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
+  const rollupNodes = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
   const threadNodes = pr.reviewThreads?.nodes ?? [];
   return {
     number: pr.number,
@@ -222,10 +218,7 @@ export class GitHubClient {
     return (await res.json()) as T;
   }
 
-  private async graphql<T>(
-    query: string,
-    variables: Record<string, unknown>,
-  ): Promise<T> {
+  private async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
     const res = await this.fetchImpl("https://api.github.com/graphql", {
       method: "POST",
       headers: {
@@ -265,11 +258,7 @@ export class GitHubClient {
     };
   }
 
-  async prDetail(
-    owner: string,
-    repo: string,
-    number: number,
-  ): Promise<PrDetail> {
+  async prDetail(owner: string, repo: string, number: number): Promise<PrDetail> {
     const data = await this.graphql<{
       repository?: { pullRequest?: any };
     }>(PR_DETAIL_QUERY, { owner, repo, number });
@@ -278,11 +267,7 @@ export class GitHubClient {
     return toPrDetail(pr);
   }
 
-  async prFiles(
-    owner: string,
-    repo: string,
-    number: number,
-  ): Promise<PrFile[]> {
+  async prFiles(owner: string, repo: string, number: number): Promise<PrFile[]> {
     const files = await this.api<any[]>(
       `/repos/${owner}/${repo}/pulls/${number}/files?per_page=100`,
     );

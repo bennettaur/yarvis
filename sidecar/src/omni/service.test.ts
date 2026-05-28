@@ -4,8 +4,7 @@ import postgres from "postgres";
 import * as schema from "../db/schema.ts";
 import { deleteLayout, getLayout, listLayouts, saveLayout } from "./service.ts";
 
-const url =
-  process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
+const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
 const db = drizzle(sql, { schema });
 
@@ -37,7 +36,10 @@ describe("omni layout service", () => {
 
   it("upserts by name instead of duplicating", async () => {
     const first = await saveLayout(db, "Daily", sampleSpec);
-    const updatedSpec = { root: "root", elements: { root: { type: "Chat", props: {}, children: [] } } };
+    const updatedSpec = {
+      root: "root",
+      elements: { root: { type: "Chat", props: {}, children: [] } },
+    };
     const second = await saveLayout(db, "Daily", updatedSpec);
 
     expect(second.id).toBe(first.id);
