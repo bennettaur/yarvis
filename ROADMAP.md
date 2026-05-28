@@ -43,13 +43,18 @@ Status of the build against the original vision. The full V1 plan lives at
 - **Omni (dynamic UI)** — describe a workspace in natural language and an agent
   composes a live layout from a fixed component catalog: layout primitives
   (Row/Column/Grid/Panel/…) plus self-contained feature widgets (Tasks,
-  Calendar, Memory, PRs, Sessions, Alarms, Settings, Chat) and the decomposed
+  Calendar, Memory, PRs, Sessions, Alarms, Settings, Chat, Termina) and the decomposed
   PR-review widgets (PrDescription/PrChecks/PrFileList/PrFileDiffs) that name a
   single PR by owner/repo/number and share one cached fetch. Widgets accept an
   optional fixed `height` so duplicates scroll independently. Streamed from the
   sidecar `/api/omni/generate` and rendered with `@json-render`; the canvas
   scrolls and the builder panel collapses; layouts can be named, saved
   (`omni_layouts`), and reloaded (Omni tab).
+- **Terminal** — a live shell backed by a real PTY in the Rust core
+  (`portable-pty`), rendered with xterm.js. Sessions are keyed by a stable id
+  and live in the core independent of the webview, so the shell survives tab
+  switches and Omni re-renders (scrollback is captured and replayed on
+  reattach). Available as a standalone Terminal tab and as an Omni widget.
 
 ## Remaining to build
 

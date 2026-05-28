@@ -33,7 +33,7 @@ const generateSchema = z.object({
       }),
     )
     .min(1),
-  provider: z.enum(["anthropic", "bedrock", "gemini"]),
+  provider: z.string().min(1),
   model: z.string().min(1),
 });
 
@@ -115,7 +115,10 @@ export function createOmniRoutes(config: Config): Hono {
 
     let chatModel;
     try {
-      chatModel = resolveModel(config, provider, model);
+      const db = config.databaseUrl
+        ? getDb(config.databaseUrl).db
+        : undefined;
+      chatModel = await resolveModel(config, db, provider, model);
     } catch (e) {
       console.error("[omni] model resolution failed:", e);
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);

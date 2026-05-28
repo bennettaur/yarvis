@@ -65,6 +65,38 @@ export async function getHealth(): Promise<HealthResponse> {
   return res.json();
 }
 
+/**
+ * Polls `/health` until the sidecar reports `ready`, with a timeout. Use this
+ * after `restartSidecar()` so follow-up HTTP calls don't race the respawn.
+ *
+ * Pass `minUptimeMsBefore` (the uptime captured *before* triggering the
+ * restart) so we wait for a process whose uptime is lower than the old one —
+ * otherwise we might see the old process briefly answer before it's killed.
+ */
+export async function waitForSidecarReady({
+  timeoutMs = 10_000,
+  intervalMs = 200,
+  minUptimeMsBefore,
+}: {
+  timeoutMs?: number;
+  intervalMs?: number;
+  minUptimeMsBefore?: number;
+} = {}): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const health = await getHealth();
+      const isFresh =
+        minUptimeMsBefore === undefined || health.uptimeMs < minUptimeMsBefore;
+      if (health.ready && isFresh) return;
+    } catch {
+      // sidecar is mid-restart; fall through and retry
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error("sidecar did not become ready in time");
+}
+
 export async function getStatus(): Promise<StatusResponse> {
   const res = await sidecarFetch("/api/status");
   if (!res.ok) throw new Error(`status failed: ${res.status}`);

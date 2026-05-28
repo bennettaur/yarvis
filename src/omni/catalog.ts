@@ -168,6 +168,19 @@ export const catalog = defineCatalog(schema, {
       description:
         "An interactive assistant chat window with its own session. Can be placed multiple times.",
     },
+    Terminal: {
+      props: z.object({
+        title: z.string().optional().describe("Optional header shown above the widget"),
+        sessionId: z
+          .string()
+          .optional()
+          .describe(
+            "Stable, unique id for this terminal's shell session (e.g. \"term-1\"). Assign a distinct value to each Terminal and keep it unchanged across edits so its running shell is preserved.",
+          ),
+      }),
+      description:
+        "A live shell terminal backed by a real PTY. Self-contained; can be placed multiple times. Give each one a unique, stable sessionId so its shell survives layout changes.",
+    },
   },
   // No agent-invokable actions yet: widgets are self-contained and handle their
   // own interactions. The key is required by defineCatalog.

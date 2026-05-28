@@ -1,5 +1,7 @@
 mod alarms;
+mod custom_providers;
 mod keychain;
+mod pty;
 mod sidecar;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -32,6 +34,8 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            use tauri::Manager;
+            app.manage(pty::PtyState::default());
             if let Err(e) = sidecar::init(app.handle()) {
                 eprintln!("[sidecar] init failed: {e}");
             }
@@ -45,6 +49,10 @@ pub fn run() {
             keychain::get_secret_status,
             keychain::delete_secret,
             keychain::list_secret_status,
+            custom_providers::list_custom_provider_secret_status,
+            custom_providers::set_custom_provider_secret,
+            custom_providers::delete_custom_provider_secret,
+            custom_providers::delete_custom_provider_all_secrets,
             sidecar::get_sidecar_info,
             sidecar::restart_sidecar,
             alarms::list_alarms,
@@ -52,6 +60,10 @@ pub fn run() {
             alarms::cancel_alarm,
             alarms::acknowledge_alarm,
             alarms::snooze_alarm,
+            pty::pty_attach,
+            pty::pty_write,
+            pty::pty_resize,
+            pty::pty_kill,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -11,6 +11,7 @@ function testConfig(overrides: Partial<Config> = {}): Config {
     allowedOrigins: null,
     databaseUrl: undefined,
     secrets: {},
+    customProviderSecrets: {},
     ...overrides,
   };
 }

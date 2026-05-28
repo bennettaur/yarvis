@@ -1,16 +1,31 @@
 import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createOpenAI } from "@ai-sdk/openai";
 import type { LanguageModel } from "ai";
 import type { Config } from "../config.ts";
+import type { Db } from "../db/client.ts";
+import { listCustomProviders } from "../customProviders/service.ts";
+import type { CustomProviderRow } from "../db/schema.ts";
 
-export type ProviderId = "anthropic" | "bedrock" | "gemini";
+/**
+ * Provider identifiers.
+ *
+ * Built-in providers use their bare name (`anthropic`, `bedrock`, `gemini`).
+ * User-configured proxies are namespaced as `custom:<provider-id>` so they
+ * never collide with the built-in ids.
+ */
+export type ProviderId = string;
+
+export const CUSTOM_PROVIDER_PREFIX = "custom:";
 
 export interface ProviderInfo {
   id: ProviderId;
   label: string;
   models: string[];
   available: boolean;
+  /** True for user-configured providers; helps the UI render them distinctly. */
+  custom?: boolean;
 }
 
 // Default model lists. These IDs may need adjusting per account / region /
@@ -24,8 +39,7 @@ const GEMINI_MODELS = [
   "gemini-3.1-pro-preview",
 ];
 
-/** Lists providers and whether each is usable given configured credentials. */
-export function availableProviders(config: Config): ProviderInfo[] {
+function builtInProviders(config: Config): ProviderInfo[] {
   return [
     {
       id: "anthropic",
@@ -50,12 +64,74 @@ export function availableProviders(config: Config): ProviderInfo[] {
   ];
 }
 
-/** Resolves a concrete language model for the given provider/model. */
-export function resolveModel(
+function customProviderInfo(row: CustomProviderRow): ProviderInfo {
+  return {
+    id: `${CUSTOM_PROVIDER_PREFIX}${row.id}`,
+    label: row.name,
+    models: row.models,
+    // A custom provider is usable once it has at least one configured model.
+    // The proxy may or may not require an api key, so we don't gate on secrets.
+    available: row.models.length > 0,
+    custom: true,
+  };
+}
+
+/**
+ * Lists providers and whether each is usable. When a `db` is provided, the
+ * user's configured custom providers are appended.
+ */
+export async function availableProviders(
   config: Config,
-  providerId: ProviderId,
+  db?: Db,
+): Promise<ProviderInfo[]> {
+  const built = builtInProviders(config);
+  if (!db) return built;
+  const rows = await listCustomProviders(db);
+  return [...built, ...rows.map(customProviderInfo)];
+}
+
+function resolveCustom(
+  row: CustomProviderRow,
+  config: Config,
   modelId: string,
 ): LanguageModel {
+  const secrets = config.customProviderSecrets[row.id] ?? { headers: {} };
+  const options = {
+    baseURL: row.baseUrl,
+    apiKey: secrets.apiKey,
+    headers: secrets.headers,
+  };
+  switch (row.apiKind) {
+    case "openai":
+      // Default call goes through the OpenAI Responses API.
+      return createOpenAI(options)(modelId);
+    case "openai-chat":
+      // Use the legacy /chat/completions endpoint for gateways (e.g. older
+      // litellm versions) that don't speak the Responses API.
+      return createOpenAI(options).chat(modelId);
+    case "anthropic":
+      return createAnthropic(options)(modelId);
+    default:
+      throw new Error(`unsupported apiKind: ${row.apiKind}`);
+  }
+}
+
+/** Resolves a concrete language model for the given provider/model. */
+export async function resolveModel(
+  config: Config,
+  db: Db | undefined,
+  providerId: ProviderId,
+  modelId: string,
+): Promise<LanguageModel> {
+  if (providerId.startsWith(CUSTOM_PROVIDER_PREFIX)) {
+    if (!db) throw new Error("custom providers require a configured database");
+    const id = providerId.slice(CUSTOM_PROVIDER_PREFIX.length);
+    const rows = await listCustomProviders(db);
+    const row = rows.find((r) => r.id === id);
+    if (!row) throw new Error(`unknown custom provider: ${id}`);
+    return resolveCustom(row, config, modelId);
+  }
+
   switch (providerId) {
     case "anthropic": {
       const apiKey = config.secrets.anthropicApiKey;
@@ -72,5 +148,7 @@ export function resolveModel(
         region: process.env.AWS_REGION ?? "us-east-1",
       })(modelId);
     }
+    default:
+      throw new Error(`unknown provider: ${providerId}`);
   }
 }

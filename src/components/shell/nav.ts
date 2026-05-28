@@ -4,13 +4,15 @@ import type { IconName } from "./icons";
 export type Tab =
   | "chat"
   | "omni"
+  | "terminal"
   | "tasks"
   | "prs"
   | "memory"
   | "calendar"
   | "alarms"
   | "sessions"
-  | "dashboard";
+  | "dashboard"
+  | "settings";
 
 export interface NavItem {
   id: Tab;
@@ -23,6 +25,7 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   { id: "chat", label: "Chat", icon: "chat" },
   { id: "omni", label: "Omni", icon: "omni" },
+  { id: "terminal", label: "Terminal", icon: "terminal" },
   { id: "tasks", label: "Tasks", icon: "tasks" },
   { id: "prs", label: "PRs", icon: "prs" },
   { id: "memory", label: "Memory", icon: "memory" },
@@ -30,6 +33,7 @@ export const NAV_ITEMS: NavItem[] = [
   { id: "alarms", label: "Alarms", icon: "alarms" },
   { id: "sessions", label: "Sessions", icon: "sessions" },
   { id: "dashboard", label: "Dashboard", icon: "dashboard", pinBottom: true },
+  { id: "settings", label: "Settings", icon: "settings", pinBottom: true },
 ];
 
 export function tabLabel(tab: Tab): string {
