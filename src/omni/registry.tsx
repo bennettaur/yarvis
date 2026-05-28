@@ -4,6 +4,10 @@ import CalendarPanel from "../components/CalendarPanel";
 import ChatPanel from "../components/ChatPanel";
 import Dashboard from "../components/Dashboard";
 import MemoryPanel from "../components/MemoryPanel";
+import PrChecks from "../components/pr/PrChecks";
+import PrDescription from "../components/pr/PrDescription";
+import PrFileDiffs from "../components/pr/PrFileDiffs";
+import PrFileList from "../components/pr/PrFileList";
 import PrsPanel from "../components/PrsPanel";
 import SessionsPanel from "../components/SessionsPanel";
 import TasksPanel from "../components/TasksPanel";
@@ -27,47 +31,91 @@ const { registry } = defineRegistry(catalog, {
         {children}
       </Grid>
     ),
-    Panel: ({ props, children }) => <Panel title={props.title}>{children}</Panel>,
+    Panel: ({ props, children }) => (
+      <Panel title={props.title} name="Panel" height={props.height}>
+        {children}
+      </Panel>
+    ),
     Heading: ({ props }) => <Heading text={props.text} level={props.level} />,
     Text: ({ props }) => <Text text={props.text} muted={props.muted} />,
     Divider: () => <Divider />,
     Tasks: ({ props }) => (
-      <WidgetFrame title={props.title ?? "Tasks"} bodyClassName="p-4">
+      <WidgetFrame title={props.title ?? "Tasks"} name="Tasks" height={props.height}>
         <TasksPanel />
       </WidgetFrame>
     ),
     Calendar: ({ props }) => (
-      <WidgetFrame title={props.title ?? "Calendar"} bodyClassName="p-4">
+      <WidgetFrame title={props.title ?? "Calendar"} name="Calendar" height={props.height}>
         <CalendarPanel />
       </WidgetFrame>
     ),
     Memory: ({ props }) => (
-      <WidgetFrame title={props.title ?? "Memory"} bodyClassName="p-4">
+      <WidgetFrame title={props.title ?? "Memory"} name="Memory" height={props.height}>
         <MemoryPanel />
       </WidgetFrame>
     ),
     PullRequests: ({ props }) => (
-      <WidgetFrame title={props.title ?? "Pull Requests"} bodyClassName="p-4">
+      <WidgetFrame
+        title={props.title ?? "Pull Requests"}
+        name="PullRequests"
+        height={props.height}
+      >
         <PrsPanel />
       </WidgetFrame>
     ),
+    PrDescription: ({ props }) => (
+      <WidgetFrame
+        title={props.title ?? `Description #${props.number}`}
+        name="PrDescription"
+        height={props.height}
+      >
+        <PrDescription owner={props.owner} repo={props.repo} number={props.number} />
+      </WidgetFrame>
+    ),
+    PrChecks: ({ props }) => (
+      <WidgetFrame
+        title={props.title ?? `Checks #${props.number}`}
+        name="PrChecks"
+        height={props.height}
+      >
+        <PrChecks owner={props.owner} repo={props.repo} number={props.number} />
+      </WidgetFrame>
+    ),
+    PrFileList: ({ props }) => (
+      <WidgetFrame
+        title={props.title ?? `Files #${props.number}`}
+        name="PrFileList"
+        height={props.height}
+      >
+        <PrFileList owner={props.owner} repo={props.repo} number={props.number} />
+      </WidgetFrame>
+    ),
+    PrFileDiffs: ({ props }) => (
+      <WidgetFrame
+        title={props.title ?? `Diff #${props.number}`}
+        name="PrFileDiffs"
+        height={props.height}
+      >
+        <PrFileDiffs owner={props.owner} repo={props.repo} number={props.number} />
+      </WidgetFrame>
+    ),
     Sessions: ({ props }) => (
-      <WidgetFrame title={props.title ?? "Sessions"} bodyClassName="p-4">
+      <WidgetFrame title={props.title ?? "Sessions"} name="Sessions" height={props.height}>
         <SessionsPanel />
       </WidgetFrame>
     ),
     Alarms: ({ props }) => (
-      <WidgetFrame title={props.title ?? "Alarms"} bodyClassName="p-4">
+      <WidgetFrame title={props.title ?? "Alarms"} name="Alarms" height={props.height}>
         <AlarmsPanel />
       </WidgetFrame>
     ),
     Settings: ({ props }) => (
-      <WidgetFrame title={props.title ?? "Settings"} bodyClassName="p-4">
+      <WidgetFrame title={props.title ?? "Settings"} name="Settings" height={props.height}>
         <Dashboard />
       </WidgetFrame>
     ),
     Chat: ({ props }) => (
-      <WidgetFrame title={props.title ?? "Chat"}>
+      <WidgetFrame title={props.title ?? "Chat"} name="Chat" height={props.height}>
         <ChatPanel />
       </WidgetFrame>
     ),

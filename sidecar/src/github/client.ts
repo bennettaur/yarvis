@@ -12,6 +12,7 @@ export interface PrSummary {
   author: string;
   draft: boolean;
   state: string;
+  createdAt: string;
   updatedAt: string;
 }
 
@@ -108,6 +109,7 @@ export function toPrSummary(item: any): PrSummary {
     author: item.user?.login ?? "",
     draft: Boolean(item.draft),
     state: item.state,
+    createdAt: item.created_at,
     updatedAt: item.updated_at,
   };
 }
@@ -246,7 +248,7 @@ export class GitHubClient {
 
   async search(query: string): Promise<PrSummary[]> {
     const data = await this.api<{ items?: any[] }>(
-      `/search/issues?q=${encodeURIComponent(query)}&per_page=50`,
+      `/search/issues?q=${encodeURIComponent(query)}&per_page=50&sort=created&order=desc`,
     );
     return (data.items ?? []).filter((i) => i.pull_request).map(toPrSummary);
   }

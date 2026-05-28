@@ -34,6 +34,7 @@ describe("github client", () => {
               repository_url: "https://api.github.com/repos/o/r",
               user: { login: "me" },
               state: "open",
+              created_at: "2025-12-30",
               updated_at: "2026-01-01",
               pull_request: {},
             },
@@ -55,6 +56,8 @@ describe("github client", () => {
       owner: "o",
       repo: "r",
       author: "me",
+      createdAt: "2025-12-30",
+      updatedAt: "2026-01-01",
     });
   });
 

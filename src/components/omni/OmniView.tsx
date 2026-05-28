@@ -21,6 +21,7 @@ import {
 } from "../../lib/omni";
 import { catalog } from "../../omni/catalog";
 import { registry } from "../../omni/registry";
+import ChatComposer from "../ChatComposer";
 
 interface Display {
   role: "user" | "assistant";
@@ -33,6 +34,7 @@ const MODEL_KEY = "yarvis.chat.model";
 // (which unmounts this view) restores what you had.
 const SPEC_KEY = "yarvis.omni.spec";
 const MESSAGES_KEY = "yarvis.omni.messages";
+const BUILDER_COLLAPSED_KEY = "yarvis.omni.builderCollapsed";
 // Cap how many prior turns are replayed to the model per request.
 const MAX_HISTORY_MESSAGES = 12;
 
@@ -84,6 +86,9 @@ export default function OmniView() {
   const [layouts, setLayouts] = useState<OmniLayoutSummary[]>([]);
   const [layoutName, setLayoutName] = useState("");
   const [loadedId, setLoadedId] = useState("");
+  const [builderCollapsed, setBuilderCollapsed] = useState<boolean>(
+    () => localStorage.getItem(BUILDER_COLLAPSED_KEY) === "1",
+  );
   const threadRef = useRef<HTMLDivElement>(null);
 
   // The catalog defines what the agent may compose; turn it into a system
@@ -122,6 +127,10 @@ export default function OmniView() {
     if (provider) localStorage.setItem(PROVIDER_KEY, provider);
     if (model) localStorage.setItem(MODEL_KEY, model);
   }, [provider, model]);
+
+  useEffect(() => {
+    localStorage.setItem(BUILDER_COLLAPSED_KEY, builderCollapsed ? "1" : "0");
+  }, [builderCollapsed]);
 
   // Persist the rendered layout and conversation across navigation/restarts.
   useEffect(() => {
@@ -312,9 +321,9 @@ export default function OmniView() {
           className={`h-0.5 shrink-0 ${busy ? "animate-pulse bg-indigo-500" : "bg-transparent"}`}
           aria-hidden="true"
         />
-        <div className="min-h-0 flex-1 overflow-hidden p-4">
+        <div className="min-h-0 flex-1 overflow-y-auto p-1">
           {hasContent(spec) ? (
-            <div className="h-full">
+            <div className="min-h-full">
               <JSONUIProvider registry={registry}>
                 <Renderer spec={spec} registry={registry} loading={busy} />
               </JSONUIProvider>
@@ -351,12 +360,35 @@ export default function OmniView() {
         </div>
       </div>
 
-      {/* Side chat */}
-      <aside className="flex w-96 shrink-0 flex-col border-l border-zinc-800">
-        <div className="flex items-center justify-between gap-2 border-b border-zinc-800 px-4 py-2">
-          <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">
+      {/* Builder side panel — collapsible to give the canvas full width */}
+      {builderCollapsed ? (
+        <aside className="flex w-9 shrink-0 flex-col items-center gap-3 border-l border-zinc-800 py-2">
+          <button
+            onClick={() => setBuilderCollapsed(false)}
+            title="Expand builder"
+            className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+          >
+            ‹
+          </button>
+          <span className="text-xs font-medium uppercase tracking-wide text-zinc-500 [writing-mode:vertical-rl]">
             Builder
           </span>
+        </aside>
+      ) : (
+      <aside className="flex w-96 shrink-0 flex-col border-l border-zinc-800">
+        <div className="flex items-center justify-between gap-2 border-b border-zinc-800 px-4 py-2">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setBuilderCollapsed(true)}
+              title="Collapse builder"
+              className="text-zinc-500 hover:text-zinc-300"
+            >
+              ›
+            </button>
+            <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">
+              Builder
+            </span>
+          </div>
           <button
             onClick={reset}
             className="text-xs text-zinc-500 hover:text-zinc-300"
@@ -477,26 +509,17 @@ export default function OmniView() {
 
         {error && <p className="px-4 pb-2 text-sm text-red-400">{error}</p>}
 
-        <div className="flex gap-2 border-t border-zinc-800 p-3">
-          <input
-            value={input}
-            placeholder="Describe a layout..."
-            disabled={busy}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void send(input);
-            }}
-            className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm outline-none focus:border-zinc-500 disabled:opacity-50"
-          />
-          <button
-            onClick={() => void send(input)}
-            disabled={busy}
-            className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500 disabled:opacity-50"
-          >
-            {busy ? "…" : "Build"}
-          </button>
-        </div>
+        <ChatComposer
+          value={input}
+          onChange={setInput}
+          onSubmit={() => void send(input)}
+          busy={busy}
+          placeholder="Describe a layout..."
+          submitLabel="Build"
+          className="flex gap-2 border-t border-zinc-800 p-3"
+        />
       </aside>
+      )}
     </div>
   );
 }

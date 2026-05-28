@@ -17,6 +17,11 @@ const server = Bun.serve({
   port: config.port,
   hostname: "127.0.0.1",
   fetch: app.fetch,
+  // Streaming LLM endpoints (chat, omni) can wait well beyond Bun's 10s default
+  // for the provider's first token, after which each streamed chunk resets the
+  // idle timer. Without this the socket is closed mid-generation and the client
+  // sees a timeout with no output. 255s is Bun's maximum.
+  idleTimeout: 255,
 });
 
 console.log(`[sidecar] listening on http://127.0.0.1:${server.port}`);

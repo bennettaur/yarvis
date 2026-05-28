@@ -4,6 +4,7 @@ import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { clientError, describeError } from "../llm/errors.ts";
 import { resolveModel } from "../llm/providers.ts";
 import {
   deleteLayout,
@@ -130,6 +131,8 @@ export function createOmniRoutes(config: Config): Hono {
     return streamSSE(c, async (stream) => {
       let streamError: unknown = null;
       let chars = 0;
+      let firstTokenLogged = false;
+      const startedAt = Date.now();
       const result = streamText({
         model: chatModel,
         system,
@@ -145,11 +148,15 @@ export function createOmniRoutes(config: Config): Hono {
         // silently and the client would render nothing.
         onError: ({ error }) => {
           streamError = error;
-          console.error("[omni] model error:", error);
+          console.error("[omni] model error:", describeError(error));
         },
       });
       try {
         for await (const delta of result.textStream) {
+          if (!firstTokenLogged) {
+            console.log(`[omni] first token after ${Date.now() - startedAt}ms`);
+            firstTokenLogged = true;
+          }
           chars += delta.length;
           await stream.writeSSE({
             data: JSON.stringify({ type: "delta", text: delta }),
@@ -157,21 +164,20 @@ export function createOmniRoutes(config: Config): Hono {
         }
       } catch (e) {
         streamError = e;
-        console.error("[omni] stream iteration error:", e);
+        console.error("[omni] stream iteration error:", describeError(e));
       }
 
       if (streamError) {
         await stream.writeSSE({
           data: JSON.stringify({
             type: "error",
-            message:
-              streamError instanceof Error
-                ? streamError.message
-                : String(streamError),
+            message: clientError(streamError),
           }),
         });
       } else {
-        console.log(`[omni] done provider=${provider} model=${model} chars=${chars}`);
+        console.log(
+          `[omni] done provider=${provider} model=${model} chars=${chars} ms=${Date.now() - startedAt}`,
+        );
         await stream.writeSSE({ data: JSON.stringify({ type: "done" }) });
       }
     });
