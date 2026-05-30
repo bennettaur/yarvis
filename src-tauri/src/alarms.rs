@@ -73,7 +73,12 @@ impl AlarmState {
     fn save(&self) {
         if let Ok(alarms) = self.alarms.lock() {
             if let Ok(json) = serde_json::to_string_pretty(&*alarms) {
-                let _ = std::fs::write(&self.path, json);
+                // Atomic write: serialize to a sibling file then rename over the
+                // target so a crash mid-write can't leave alarms.json truncated.
+                let tmp = self.path.with_extension("json.tmp");
+                if std::fs::write(&tmp, json).is_ok() {
+                    let _ = std::fs::rename(&tmp, &self.path);
+                }
             }
         }
     }
