@@ -6,6 +6,7 @@ import {
   type ChatMessage,
   type ChatSession,
 } from "../db/schema.ts";
+import { emitEvent } from "../events/service.ts";
 
 /** Chat session + message persistence. */
 
@@ -17,6 +18,11 @@ export async function createSession(
     .insert(chatSessions)
     .values({ title: title ?? null })
     .returning();
+  await emitEvent(db, {
+    type: "chat.started",
+    source: "chat",
+    payload: { sessionId: row!.id },
+  });
   return row!;
 }
 

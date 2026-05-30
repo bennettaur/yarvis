@@ -1,5 +1,6 @@
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { usePrDetail } from "../lib/githubCache";
+import { recordEvent } from "../lib/events";
 import { type PrSummary } from "../lib/github";
 import { openExternal } from "../lib/url";
 import PrChecks from "./pr/PrChecks";
@@ -33,6 +34,16 @@ export default function PrDetailView({
 }) {
   const ref = { owner: pr.owner, repo: pr.repo, number: pr.number };
   const { data: detail, error } = usePrDetail(pr.owner, pr.repo, pr.number);
+
+  // Record opening a PR for review. Keyed by the PR identity so re-renders
+  // don't re-fire; a different PR records a new event. Fire-and-forget.
+  useEffect(() => {
+    void recordEvent(
+      "pr.viewed",
+      { owner: pr.owner, repo: pr.repo, number: pr.number, title: pr.title, url: pr.url },
+      "github",
+    );
+  }, [pr.owner, pr.repo, pr.number, pr.title, pr.url]);
 
   return (
     <div className="space-y-5">

@@ -50,6 +50,13 @@
       "when": 1780110404417,
       "tag": "0006_supreme_liz_osborn",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1780112687133,
+      "tag": "0007_loud_thundra",
+      "breakpoints": true
     }
   ]
 }

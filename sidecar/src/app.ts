@@ -6,6 +6,7 @@ import { pingDb } from "./db/client.ts";
 import { createCcRoutes } from "./cc/routes.ts";
 import { createChatRoutes } from "./chat/routes.ts";
 import { createCustomProviderRoutes } from "./customProviders/routes.ts";
+import { createEventRoutes } from "./events/routes.ts";
 import { createGithubRoutes } from "./github/routes.ts";
 import { createCalendarRoutes, createGoogleCallbackRoutes } from "./google/routes.ts";
 import { createMemoryRoutes } from "./memory/routes.ts";
@@ -90,6 +91,7 @@ export function createApp(
   app.route("/api/cc", createCcRoutes());
   app.route("/api/github", createGithubRoutes(config));
   app.route("/api/memory", createMemoryRoutes(config));
+  app.route("/api/events", createEventRoutes(config));
   app.route("/api/calendar", createCalendarRoutes(config));
   app.route("/api/omni", createOmniRoutes(config));
 

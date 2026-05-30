@@ -1,6 +1,12 @@
 import { and, asc, eq, gte, isNotNull, lte } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { tasks, type Task } from "../db/schema.ts";
+import { emitEvent } from "../events/service.ts";
+
+/** Payload shared by task.created / task.completed events. */
+function taskEventPayload(task: Task): Record<string, unknown> {
+  return { taskId: task.id, title: task.title, scope: task.scope };
+}
 
 /**
  * Work-tracking task service. Tasks are daily or weekly, open or done, and may
@@ -46,6 +52,11 @@ export async function createTask(
       sourceSessionId: input.sourceSessionId ?? null,
     })
     .returning();
+  await emitEvent(db, {
+    type: "task.created",
+    source: "tasks",
+    payload: taskEventPayload(row!),
+  });
   return row!;
 }
 
@@ -96,6 +107,13 @@ export async function completeTask(
     .set({ status: "done", completedAt: new Date() })
     .where(eq(tasks.id, id))
     .returning();
+  if (row) {
+    await emitEvent(db, {
+      type: "task.completed",
+      source: "tasks",
+      payload: taskEventPayload(row),
+    });
+  }
   return row ?? null;
 }
 
@@ -114,6 +132,14 @@ export async function updateTask(
     .set(values)
     .where(eq(tasks.id, id))
     .returning();
+  // Mirror completeTask: a task moving to "done" via an edit is a completion too.
+  if (row && patch.status === "done") {
+    await emitEvent(db, {
+      type: "task.completed",
+      source: "tasks",
+      payload: taskEventPayload(row),
+    });
+  }
   return row ?? null;
 }
 

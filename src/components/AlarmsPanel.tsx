@@ -5,6 +5,7 @@ import {
   listAlarms,
   type Alarm,
 } from "../lib/alarms";
+import { recordEvent } from "../lib/events";
 
 function localInputValue(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -39,7 +40,14 @@ export default function AlarmsPanel() {
   const add = useCallback(async () => {
     const trimmed = label.trim();
     if (!trimmed || !when) return;
-    await createAlarm(trimmed, new Date(when).getTime());
+    const fireAtMs = new Date(when).getTime();
+    await createAlarm(trimmed, fireAtMs);
+    // Record the deliberate creation (not the quick-test or calendar arming).
+    void recordEvent(
+      "alarm.created",
+      { label: trimmed, fireAt: new Date(fireAtMs).toISOString() },
+      "alarms",
+    );
     setLabel("");
     await refresh();
   }, [label, when, refresh]);
