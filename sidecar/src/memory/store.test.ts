@@ -61,4 +61,43 @@ describe("pgvector memory store", () => {
     expect(notes.length).toBe(2);
     expect(notes.every((n) => (n.metadata as any).type === "note")).toBe(true);
   });
+
+  it("stamps the producing embedder onto each memory", async () => {
+    const rec = await store.add("stamped");
+    const got = await store.get(rec.id);
+    expect((got!.metadata as any).embedder).toEqual({
+      kind: "hash",
+      model: "hash",
+      dim: schema.EMBED_DIM,
+    });
+  });
+
+  it("reports healthy when all memories match the active embedder", async () => {
+    await store.add("one");
+    await store.add("two");
+    const health = await store.embedderHealth();
+    expect(health.ok).toBe(true);
+    expect(health.mismatchedCount).toBe(0);
+    expect(health.active.kind).toBe("hash");
+  });
+
+  it("flags a mismatch and clears it after re-embedding", async () => {
+    const rec = await store.add("legacy memory");
+    // Simulate a vector produced by a different embedder.
+    await sql`
+      UPDATE memories
+      SET metadata = jsonb_set(metadata, '{embedder}',
+        '{"kind":"gemini","model":"text-embedding-004","dim":768}'::jsonb)
+      WHERE id = ${rec.id}`;
+
+    const before = await store.embedderHealth();
+    expect(before.ok).toBe(false);
+    expect(before.mismatchedCount).toBe(1);
+
+    const count = await store.reembedAll();
+    expect(count).toBe(1);
+
+    const after = await store.embedderHealth();
+    expect(after.ok).toBe(true);
+  });
 });

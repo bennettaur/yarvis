@@ -1,7 +1,16 @@
-import { and, cosineDistance, desc, eq, gte, sql, type SQL } from "drizzle-orm";
+import {
+  and,
+  cosineDistance,
+  desc,
+  eq,
+  gte,
+  isNotNull,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { memories, type MemoryRow } from "../db/schema.ts";
-import type { Embedder } from "./embedder.ts";
+import type { Embedder, EmbedderIdentity } from "./embedder.ts";
 
 export interface MemoryRecord {
   id: string;
@@ -66,6 +75,18 @@ export class PgVectorMemoryStore implements MemoryService {
     private readonly embedder: Embedder,
   ) {}
 
+  /**
+   * Records which embedder produced a vector by merging its identity into the
+   * memory's metadata under `embedder`. Lets `embedderHealth` flag memories that
+   * were embedded by a now-inactive model (whose vectors are no longer
+   * comparable to the active one).
+   */
+  private stamp(
+    metadata: Record<string, unknown> | null | undefined,
+  ): Record<string, unknown> {
+    return { ...(metadata ?? {}), embedder: this.embedder.identity() };
+  }
+
   async add(
     content: string,
     metadata?: Record<string, unknown>,
@@ -73,7 +94,7 @@ export class PgVectorMemoryStore implements MemoryService {
     const embedding = await this.embedder.embed(content);
     const [row] = await this.db
       .insert(memories)
-      .values({ content, metadata: metadata ?? null, embedding })
+      .values({ content, metadata: this.stamp(metadata), embedding })
       .returning();
     return toRecord(row!);
   }
@@ -86,7 +107,7 @@ export class PgVectorMemoryStore implements MemoryService {
       .values(
         items.map((item, i) => ({
           content: item.content,
-          metadata: item.metadata ?? null,
+          metadata: this.stamp(item.metadata),
           embedding: embeddings[i]!,
         })),
       )
@@ -148,4 +169,94 @@ export class PgVectorMemoryStore implements MemoryService {
       .returning({ id: memories.id });
     return deleted.length > 0;
   }
+
+  /**
+   * Reports the active embedder and whether any stored memories were produced
+   * by a different one. A mismatch means recall is unreliable until those
+   * memories are re-embedded, since vectors from different models aren't
+   * comparable. Memories with an embedding but no recorded identity (e.g. from
+   * before identity stamping) also count as a mismatch.
+   */
+  async embedderHealth(): Promise<EmbedderHealth> {
+    const active = this.embedder.identity();
+    const rows = await this.db
+      .select({
+        embedder: sql<EmbedderIdentity | null>`${memories.metadata}->'embedder'`,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(memories)
+      .where(isNotNull(memories.embedding))
+      .groupBy(sql`${memories.metadata}->'embedder'`);
+
+    const stored = rows.map((r) => ({
+      embedder: r.embedder ?? null,
+      count: Number(r.count),
+    }));
+    const mismatchedCount = stored
+      .filter((s) => !identityEquals(s.embedder, active))
+      .reduce((sum, s) => sum + s.count, 0);
+
+    return { active, stored, mismatchedCount, ok: mismatchedCount === 0 };
+  }
+
+  /**
+   * Re-embeds every memory's existing content with the active embedder,
+   * updating the vector and the recorded identity. Used to recover after a
+   * dimension change or when switching embedding providers. Processes in
+   * batches to bound the per-call embedding payload.
+   */
+  async reembedAll(batchSize = 64): Promise<number> {
+    const rows = await this.db
+      .select({
+        id: memories.id,
+        content: memories.content,
+        metadata: memories.metadata,
+      })
+      .from(memories);
+
+    let updated = 0;
+    for (let i = 0; i < rows.length; i += batchSize) {
+      const batch = rows.slice(i, i + batchSize);
+      const embeddings = await this.embedder.embedMany(
+        batch.map((r) => r.content),
+      );
+      for (let j = 0; j < batch.length; j++) {
+        const row = batch[j]!;
+        await this.db
+          .update(memories)
+          .set({
+            embedding: embeddings[j]!,
+            metadata: this.stamp(row.metadata as Record<string, unknown> | null),
+          })
+          .where(eq(memories.id, row.id));
+        updated++;
+      }
+    }
+    return updated;
+  }
+}
+
+/** One group of stored memories sharing an embedder identity. */
+export interface StoredEmbedderGroup {
+  embedder: EmbedderIdentity | null;
+  count: number;
+}
+
+/** Result of comparing the active embedder against what's stored. */
+export interface EmbedderHealth {
+  active: EmbedderIdentity;
+  stored: StoredEmbedderGroup[];
+  /** Number of stored memories not produced by the active embedder. */
+  mismatchedCount: number;
+  /** True when every stored memory matches the active embedder. */
+  ok: boolean;
+}
+
+function identityEquals(
+  a: EmbedderIdentity | null,
+  b: EmbedderIdentity,
+): boolean {
+  return (
+    a !== null && a.kind === b.kind && a.model === b.model && a.dim === b.dim
+  );
 }

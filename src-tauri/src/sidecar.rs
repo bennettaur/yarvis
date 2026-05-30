@@ -130,6 +130,10 @@ fn build_command(_app: &AppHandle, port: u16, token: &str) -> Command {
         cmd.env("YARVIS_CUSTOM_PROVIDER_SECRETS", json);
     }
 
+    if let Some(json) = crate::embeddings_secrets::build_sidecar_env() {
+        cmd.env("YARVIS_EMBEDDINGS_SECRETS", json);
+    }
+
     // Ensure the child dies with the parent rather than lingering.
     cmd.kill_on_drop(true);
     cmd

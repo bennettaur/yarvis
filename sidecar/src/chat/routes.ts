@@ -95,7 +95,7 @@ export function createChatRoutes(config: Config): Hono {
       }));
     messages.push({ role: "user", content: message });
 
-    const memory = new PgVectorMemoryStore(dbh, chooseEmbedder(config));
+    const memory = new PgVectorMemoryStore(dbh, await chooseEmbedder(config, dbh));
 
     console.log(
       `[chat] message provider=${provider} model=${model} turns=${messages.length}`,

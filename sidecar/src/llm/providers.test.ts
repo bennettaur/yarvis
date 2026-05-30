@@ -25,6 +25,7 @@ function configWithSecrets(
     databaseUrl: url,
     secrets: {},
     customProviderSecrets: secrets,
+    embeddingsSecrets: { headers: {} },
   };
 }
 
