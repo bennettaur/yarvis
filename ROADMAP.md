@@ -60,6 +60,13 @@ Status of the build against the original vision. The full V1 plan lives at
   and live in the core independent of the webview, so the shell survives tab
   switches and Omni re-renders (scrollback is captured and replayed on
   reattach). Available as a standalone Terminal tab and as an Omni widget.
+- **Event log (Phase 2)** — a local, on-device trail of meaningful actions
+  (chat started, task created/completed via backend hooks; PR viewed and alarm
+  created from the UI), persisted to an `events` table and served over
+  `POST`/`GET /api/events`. Event types are a fixed allowlist; recording is
+  best-effort so a logging failure never breaks the triggering action. UI
+  navigation and Omni layouts are deliberately not events. Reconciling events
+  into memories is Phase 3 (not yet built).
 
 ## Remaining to build
 
@@ -97,6 +104,15 @@ The core is shipped; optional extensions remain.
   Settings → Embeddings. Works offline via the hash embedder at lower quality
   otherwise. (The current embedder path is OpenAI-compatible or Gemini; Bedrock
   embeddings are not wired up.)
+
+### 4. Event reconciliation (Phase 3)
+The event log (Phase 2) records actions but nothing yet folds them into memory.
+- **Approach:** a periodic reconciliation pass scans unprocessed events
+  (`processed_at IS NULL`, oldest-first via `events_processed_occurred_idx`),
+  derives layered memories (e.g. a short summary referencing a PR or chat, plus
+  a daily rollup), and stamps `processed_at`. Plus a PR created/reviewed poller
+  that emits events, and a default summarization model setting.
+- **Builds on:** the shipped event log and the existing `MemoryService`.
 
 ## Cross-cutting / polish / tech debt
 

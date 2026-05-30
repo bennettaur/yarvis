@@ -112,6 +112,7 @@ sidecar/        Bun + TS service (Hono)
   src/db/       Drizzle schema, client, migrations (applied on startup)
   src/chat/     multi-provider streaming chat + tool-calls
   src/tasks/    daily/weekly work tracking
+  src/events/   local on-device event log (action trail; reconciled to memory later)
   src/memory/   pgvector memory, notes, ingestion, recaps
   src/github/   PR dashboard + embedded review (REST + GraphQL)
   src/google/   Google Calendar OAuth + events

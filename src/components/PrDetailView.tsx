@@ -35,15 +35,17 @@ export default function PrDetailView({
   const ref = { owner: pr.owner, repo: pr.repo, number: pr.number };
   const { data: detail, error } = usePrDetail(pr.owner, pr.repo, pr.number);
 
-  // Record opening a PR for review. Keyed by the PR identity so re-renders
-  // don't re-fire; a different PR records a new event. Fire-and-forget.
+  // Record opening a PR for review. Keyed strictly by PR identity so re-renders
+  // (and metadata edits like a rename) don't re-fire; a different PR records a
+  // new event. Fire-and-forget.
   useEffect(() => {
     void recordEvent(
       "pr.viewed",
       { owner: pr.owner, repo: pr.repo, number: pr.number, title: pr.title, url: pr.url },
       "github",
     );
-  }, [pr.owner, pr.repo, pr.number, pr.title, pr.url]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pr.owner, pr.repo, pr.number]);
 
   return (
     <div className="space-y-5">

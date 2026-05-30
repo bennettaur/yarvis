@@ -4,7 +4,7 @@ import postgres from "postgres";
 import { createSession } from "../chat/service.ts";
 import * as schema from "../db/schema.ts";
 import { createTask, completeTask } from "../tasks/service.ts";
-import { listEvents, recordEvent } from "./service.ts";
+import { emitEvent, listEvents, recordEvent } from "./service.ts";
 
 const url =
   process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -49,6 +49,23 @@ describe("events service", () => {
     expect(unprocessed.length).toBe(1);
   });
 
+  it("emitEvent swallows failures without poisoning later writes", async () => {
+    // A db whose insert throws stands in for any persistence failure.
+    const brokenDb = {
+      insert: () => {
+        throw new Error("boom");
+      },
+    } as unknown as typeof db;
+
+    // Must not throw, even though the underlying insert fails.
+    await emitEvent(brokenDb, { type: "pr.viewed" });
+
+    // A subsequent real write still succeeds — the failure didn't leave state behind.
+    const rec = await recordEvent(db, { type: "pr.viewed" });
+    expect(rec.id).toBeDefined();
+    expect((await listEvents(db)).length).toBe(1);
+  });
+
   it("orders newest-first by occurredAt", async () => {
     const older = await recordEvent(db, {
       type: "pr.viewed",
@@ -67,9 +84,9 @@ describe("events service", () => {
 describe("event emission hooks", () => {
   it("records chat.started when a session is created", async () => {
     const session = await createSession(db, "hello");
-    const events = await listEvents(db, { type: "chat.started" });
-    expect(events.length).toBe(1);
-    expect((events[0]!.payload as { sessionId: string }).sessionId).toBe(
+    const started = await listEvents(db, { type: "chat.started" });
+    expect(started.length).toBe(1);
+    expect((started[0]!.payload as { sessionId: string }).sessionId).toBe(
       session.id,
     );
   });

@@ -82,6 +82,22 @@ describe("event routes", () => {
     expect(res.status).toBe(400);
   });
 
+  it("tolerates a bad limit by falling back to the default", async () => {
+    await app.request("/api/events", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ type: "pr.viewed" }),
+    });
+    // Negative/non-numeric limits must not error or reach the DB as-is.
+    for (const limit of ["-5", "0", "abc"]) {
+      const res = await app.request(`/api/events?limit=${limit}`, {
+        headers: jsonAuth,
+      });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as unknown[]).length).toBe(1);
+    }
+  });
+
   it("requires authentication", async () => {
     const res = await app.request("/api/events");
     expect(res.status).toBe(401);

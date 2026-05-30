@@ -2,7 +2,10 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import { EVENT_TYPES, listEvents, recordEvent } from "./service.ts";
+import { EVENT_TYPES, isEventType, listEvents, recordEvent } from "./service.ts";
+
+/** Upper bound on a single list response, so the log can't be read whole. */
+const MAX_LIMIT = 1000;
 
 /**
  * Generic ingestion for frontend-sourced events (e.g. a PR viewed, an alarm
@@ -47,19 +50,24 @@ export function createEventRoutes(config: Config): Hono {
     return c.json(row, 201);
   });
 
+  // Supports ?type=, ?since=<ISO>, ?unprocessed=true, and ?limit= (clamped).
   router.get("/", async (c) => {
     const typeParam = c.req.query("type");
-    if (typeParam && !(EVENT_TYPES as readonly string[]).includes(typeParam)) {
+    if (typeParam !== undefined && !isEventType(typeParam)) {
       return c.json({ error: "unknown type" }, 400);
     }
-    const limit = Number(c.req.query("limit") ?? "100");
+    const rawLimit = Number(c.req.query("limit") ?? "100");
+    const limit =
+      Number.isInteger(rawLimit) && rawLimit > 0
+        ? Math.min(rawLimit, MAX_LIMIT)
+        : 100;
     const sinceParam = c.req.query("since");
     const since = sinceParam ? new Date(sinceParam) : undefined;
     const records = await listEvents(db(), {
-      type: typeParam as (typeof EVENT_TYPES)[number] | undefined,
+      type: typeParam,
       since: since && !Number.isNaN(since.getTime()) ? since : undefined,
       unprocessedOnly: c.req.query("unprocessed") === "true",
-      limit: Number.isFinite(limit) ? limit : 100,
+      limit,
     });
     return c.json(records);
   });
