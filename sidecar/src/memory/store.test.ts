@@ -1,8 +1,9 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
+import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
-import { HashEmbedder } from "./embedder.ts";
+import { chooseEmbedder, HashEmbedder } from "./embedder.ts";
 import { PgVectorMemoryStore } from "./index.ts";
 
 const url =
@@ -11,8 +12,20 @@ const sql = postgres(url, { max: 1 });
 const db = drizzle(sql, { schema });
 const store = new PgVectorMemoryStore(db, new HashEmbedder());
 
+const baseConfig: Config = {
+  port: 0,
+  token: "t",
+  tokenGenerated: true,
+  allowedOrigins: null,
+  databaseUrl: url,
+  secrets: {},
+  customProviderSecrets: {},
+  embeddingsSecrets: { headers: {} },
+};
+
 beforeEach(async () => {
   await sql`TRUNCATE memories RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE embeddings_config RESTART IDENTITY CASCADE`;
 });
 
 afterAll(async () => {
@@ -99,5 +112,14 @@ describe("pgvector memory store", () => {
 
     const after = await store.embedderHealth();
     expect(after.ok).toBe(true);
+  });
+
+  it("rejects a configured embedder whose dimension doesn't match the column", async () => {
+    // A row with the wrong dimension shouldn't normally exist (the PUT route
+    // rejects it), but chooseEmbedder guards against it regardless.
+    await sql`
+      INSERT INTO embeddings_config (base_url, model, api_kind, dimensions)
+      VALUES ('http://localhost:11434/v1', 'wrong-dims', 'openai', ${schema.EMBED_DIM + 1})`;
+    expect(chooseEmbedder(baseConfig, db)).rejects.toThrow(/dimension/i);
   });
 });

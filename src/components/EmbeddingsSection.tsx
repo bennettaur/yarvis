@@ -64,6 +64,7 @@ export default function EmbeddingsSection() {
   const [draft, setDraft] = useState<Draft>(() => draftFromConfig(null));
   const [secretInputs, setSecretInputs] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -87,6 +88,7 @@ export default function EmbeddingsSection() {
   }, [refresh]);
 
   const saveConfig = useCallback(async () => {
+    setNotice(null);
     const dimensions = Number(draft.dimensions);
     if (!draft.baseUrl.trim() || !draft.model.trim()) {
       setError("Base URL and model are required.");
@@ -169,13 +171,12 @@ export default function EmbeddingsSection() {
 
   const reembed = useCallback(async () => {
     setBusy("reembed");
+    setNotice(null);
     try {
       const { reembedded } = await memReembed();
       await refresh();
       setError(null);
-      // A transient confirmation via the banner area would need extra state;
-      // the refreshed health banner clearing is the success signal. Log count.
-      console.log(`[embeddings] re-embedded ${reembedded} memories`);
+      setNotice(`Re-embedded ${reembedded} ${reembedded === 1 ? "memory" : "memories"}.`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -211,6 +212,7 @@ export default function EmbeddingsSection() {
       </p>
 
       {error && <p className="mb-3 text-sm text-red-400">{error}</p>}
+      {notice && <p className="mb-3 text-sm text-emerald-400">{notice}</p>}
 
       {active && (
         <div className="mb-4 text-xs text-zinc-400">

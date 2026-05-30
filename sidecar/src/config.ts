@@ -65,17 +65,17 @@ export interface Config {
 /** Parses one `{ apiKey?, headers }` secret bundle from untrusted JSON. */
 function parseSecretEntry(entry: unknown): CustomProviderSecrets {
   if (!entry || typeof entry !== "object") return { headers: {} };
-  const e = entry as Record<string, unknown>;
+  const obj = entry as Record<string, unknown>;
   const headers: Record<string, string> =
-    e.headers && typeof e.headers === "object"
+    obj.headers && typeof obj.headers === "object"
       ? Object.fromEntries(
-          Object.entries(e.headers as Record<string, unknown>).filter(
+          Object.entries(obj.headers as Record<string, unknown>).filter(
             (kv): kv is [string, string] => typeof kv[1] === "string",
           ),
         )
       : {};
   return {
-    apiKey: typeof e.apiKey === "string" ? e.apiKey : undefined,
+    apiKey: typeof obj.apiKey === "string" ? obj.apiKey : undefined,
     headers,
   };
 }
@@ -88,9 +88,11 @@ function parseCustomProviderSecrets(
   try {
     parsed = JSON.parse(raw);
   } catch (e) {
+    // Log only the error name — a JSON.parse message can echo a fragment of the
+    // offending input, which here is secret material.
     console.warn(
       "[config] YARVIS_CUSTOM_PROVIDER_SECRETS is not valid JSON:",
-      e,
+      e instanceof Error ? e.name : "parse error",
     );
     return {};
   }
@@ -109,7 +111,11 @@ function parseEmbeddingsSecrets(raw: string | undefined): CustomProviderSecrets 
   try {
     return parseSecretEntry(JSON.parse(raw));
   } catch (e) {
-    console.warn("[config] YARVIS_EMBEDDINGS_SECRETS is not valid JSON:", e);
+    // Log only the error name; the parse message can echo secret material.
+    console.warn(
+      "[config] YARVIS_EMBEDDINGS_SECRETS is not valid JSON:",
+      e instanceof Error ? e.name : "parse error",
+    );
     return { headers: {} };
   }
 }

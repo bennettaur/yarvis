@@ -140,3 +140,22 @@ pub fn build_sidecar_env() -> Option<String> {
     }
     serde_json::to_string(&blob).ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::validate_slot;
+
+    #[test]
+    fn accepts_api_key_and_named_headers() {
+        assert!(validate_slot("apiKey").is_ok());
+        assert!(validate_slot("header:X-Tenant").is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_or_unknown_slots() {
+        assert!(validate_slot("").is_err());
+        assert!(validate_slot("header:").is_err());
+        assert!(validate_slot("apikey").is_err()); // case-sensitive
+        assert!(validate_slot("password").is_err());
+    }
+}

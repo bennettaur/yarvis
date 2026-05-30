@@ -16,8 +16,13 @@ Status of the build against the original vision. The full V1 plan lives at
   session + message persistence.
 - **Work tracking** — daily/weekly tasks driven by chat tool-calls
   ("I plan to…", "what's left?", roll yesterday forward) plus a Tasks UI.
-- **Memory** — `MemoryService` over pgvector with remember/recall tools in chat
-  (Gemini embeddings when keyed, offline hash-embedding fallback).
+- **Memory** — `MemoryService` over pgvector with remember/recall tools in chat.
+  Embeddings come from a configurable OpenAI-compatible provider (an internal
+  proxy or a local Ollama server), with Gemini as a fallback when keyed and the
+  column dimension is 768, and an offline hash embedder otherwise. The column is
+  `vector(1024)`; each memory records the embedder identity (kind/model/dim), so
+  a provider or dimension change is detected and surfaced as a "re-embed needed"
+  health warning in Settings (with a re-embed action).
 - **Claude Code session introspection** — browse `~/.claude` projects, session
   transcripts, and plans (Sessions tab).
 - **GitHub PR dashboard** — my PRs and review-requested, split into tabs and
@@ -87,8 +92,11 @@ The core is shipped; optional extensions remain.
   server on import and is mid-rewrite; if its graph/temporal features become
   worth it, run it as a standalone server and add an HTTP-backed `MemoryService`
   (the interface already supports swapping).
-- **Needs from you:** an embeddings key (Gemini/Bedrock) for good-quality
-  semantic recall on ingested docs; works offline at lower quality otherwise.
+- **Needs from you:** an embeddings provider for good-quality semantic recall —
+  either a local Ollama server (no key) or a proxy/Gemini key, configured in
+  Settings → Embeddings. Works offline via the hash embedder at lower quality
+  otherwise. (The current embedder path is OpenAI-compatible or Gemini; Bedrock
+  embeddings are not wired up.)
 
 ## Cross-cutting / polish / tech debt
 

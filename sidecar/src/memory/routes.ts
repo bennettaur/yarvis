@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { EMBED_DIM } from "../db/schema.ts";
 import { resolveModel } from "../llm/providers.ts";
 import { tasksCompletedBetween } from "../tasks/service.ts";
 import { chooseEmbedder } from "./embedder.ts";
@@ -185,6 +186,17 @@ export function createMemoryRoutes(config: Config): Hono {
       await c.req.json().catch(() => null),
     );
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    // The model's output dimension must equal the memories column dimension.
+    // Reject a mismatch here so it surfaces at save time, rather than making
+    // every later memory request (including reads) fail in chooseEmbedder.
+    if (parsed.data.dimensions !== EMBED_DIM) {
+      return c.json(
+        {
+          error: `dimensions must be ${EMBED_DIM} to match the memories column; got ${parsed.data.dimensions}`,
+        },
+        400,
+      );
+    }
     const db = getDb(config.databaseUrl as string).db;
     const row = await upsertEmbeddingsConfig(db, parsed.data);
     return c.json(row);

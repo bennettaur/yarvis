@@ -49,9 +49,27 @@ DATABASE_URL="postgres://localhost:5432/yarvis" bun run --cwd sidecar db:migrate
 
 Secrets are entered in the app's **Settings** screen and stored in the macOS
 Keychain — not in env files: the database URL, provider keys (Anthropic,
-Gemini), a GitHub token (for the PR dashboard + embedded review), and a Google
-Cloud OAuth client id/secret (for the Calendar integration). AWS Bedrock uses
-the standard AWS credential chain.
+Gemini), a GitHub token (for the PR dashboard + embedded review), a Google
+Cloud OAuth client id/secret (for the Calendar integration), and an optional
+embeddings-provider secret (an API key and/or custom header values for an
+OpenAI-compatible embeddings endpoint; a local Ollama server needs neither).
+AWS Bedrock uses the standard AWS credential chain.
+
+### Embeddings
+
+The `memories.embedding` column is `vector(1024)`, and the active embedder's
+output dimension must match it. Configure an embeddings provider under
+**Settings → Embeddings**: an OpenAI-compatible endpoint such as your proxy or a
+local Ollama server (base URL `http://localhost:11434/v1`, model e.g.
+`mxbai-embed-large`). Without one, Yarvis uses Gemini when keyed *and* the column
+dimension is 768, otherwise an offline hash embedder. Each memory records the
+embedder identity (kind/model/dim) so a provider or dimension change is detected
+and surfaced as a "re-embed needed" warning.
+
+Note: migration `0006` widens the column to `vector(1024)` and **clears existing
+embeddings** (memory *content* is preserved). After upgrading, configure a
+provider and run **Re-embed all** in Settings (or `POST /api/memory/reembed`) to
+regenerate vectors.
 
 For Google Calendar, create a **Desktop app** OAuth client in Google Cloud
 Console and register the loopback redirect

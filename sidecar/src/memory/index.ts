@@ -220,17 +220,22 @@ export class PgVectorMemoryStore implements MemoryService {
       const embeddings = await this.embedder.embedMany(
         batch.map((r) => r.content),
       );
-      for (let j = 0; j < batch.length; j++) {
-        const row = batch[j]!;
-        await this.db
-          .update(memories)
-          .set({
-            embedding: embeddings[j]!,
-            metadata: this.stamp(row.metadata as Record<string, unknown> | null),
-          })
-          .where(eq(memories.id, row.id));
-        updated++;
-      }
+      // The updates within a batch are independent, so issue them together
+      // rather than serializing one DB round-trip per row.
+      await Promise.all(
+        batch.map((row, j) =>
+          this.db
+            .update(memories)
+            .set({
+              embedding: embeddings[j]!,
+              metadata: this.stamp(
+                row.metadata as Record<string, unknown> | null,
+              ),
+            })
+            .where(eq(memories.id, row.id)),
+        ),
+      );
+      updated += batch.length;
     }
     return updated;
   }
