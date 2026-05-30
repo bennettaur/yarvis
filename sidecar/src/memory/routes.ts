@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { clientError } from "../llm/errors.ts";
 import { resolveModel } from "../llm/providers.ts";
 import { tasksCompletedBetween } from "../tasks/service.ts";
 import { chooseEmbedder } from "./embedder.ts";
@@ -136,7 +137,9 @@ export function createMemoryRoutes(config: Config): Hono {
         });
         recap = text;
       } catch (e) {
-        recap = `(could not summarize: ${e instanceof Error ? e.message : String(e)})\n\n${context}`;
+        // `clientError` keeps the human message + HTTP status but never the raw
+        // url / response body, which can carry provider-side identifiers.
+        recap = `(could not summarize: ${clientError(e)})\n\n${context}`;
       }
     }
 
