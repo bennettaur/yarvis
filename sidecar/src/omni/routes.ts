@@ -23,16 +23,24 @@ import {
  * model's raw output — conversational text interleaved with json-render JSONL
  * spec patches — which the frontend splits and compiles into a live spec.
  */
+const MAX_OMNI_SYSTEM_CHARS = 64 * 1024;
+const MAX_OMNI_MESSAGE_CHARS = 32 * 1024;
+const MAX_OMNI_MESSAGES = 200;
+
 const generateSchema = z.object({
-  system: z.string().min(1),
+  // Hard cap on the system-prompt size. The catalog prompt that the frontend
+  // sends is well under this; a much larger value indicates either abuse or a
+  // client mistake worth surfacing as a 400 rather than billing as tokens.
+  system: z.string().min(1).max(MAX_OMNI_SYSTEM_CHARS),
   messages: z
     .array(
       z.object({
         role: z.enum(["user", "assistant"]),
-        content: z.string(),
+        content: z.string().max(MAX_OMNI_MESSAGE_CHARS),
       }),
     )
-    .min(1),
+    .min(1)
+    .max(MAX_OMNI_MESSAGES),
   provider: z.string().min(1),
   model: z.string().min(1),
 });

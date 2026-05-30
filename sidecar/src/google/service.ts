@@ -13,7 +13,7 @@ const EXPIRY_SKEW_MS = 60_000;
  * don't accumulate or stay valid indefinitely.
  */
 const pendingStates = new Map<string, number>();
-const STATE_TTL_MS = 10 * 60_000;
+const STATE_TTL_MS = 5 * 60_000;
 const MAX_PENDING_STATES = 64;
 
 function pruneStates(now: number): void {

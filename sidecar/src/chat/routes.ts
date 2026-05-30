@@ -87,10 +87,14 @@ export function createChatRoutes(config: Config): Hono {
     const history = await getMessages(dbh, sessionId);
     await addMessage(dbh, { sessionId, role: "user", content: message });
 
+    // Only user/assistant messages are replayed. A persisted `system` row could
+    // otherwise override the application system prompt on the next turn, so
+    // even though the writers in this codebase don't insert them today we
+    // filter them out as a defense in depth.
     const messages: ModelMessage[] = history
-      .filter((m) => m.role !== "tool")
+      .filter((m) => m.role === "user" || m.role === "assistant")
       .map((m) => ({
-        role: m.role as "user" | "assistant" | "system",
+        role: m.role as "user" | "assistant",
         content: m.content,
       }));
     messages.push({ role: "user", content: message });
