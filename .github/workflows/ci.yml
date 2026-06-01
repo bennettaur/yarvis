@@ -46,6 +46,27 @@ jobs:
   bun-test:
     name: Sidecar tests
     runs-on: ubuntu-latest
+    # The sidecar suite exercises Drizzle/pgvector against a real database, so
+    # CI provisions a throwaway Postgres with the vector extension available.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: yarvis_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # migrate.ts reads DATABASE_URL; the tests read TEST_DATABASE_URL. Both
+      # point at the same service container.
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/yarvis_test
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/yarvis_test
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -53,6 +74,8 @@ jobs:
           bun-version: latest
       - name: Install dependencies
         run: bun install --frozen-lockfile
+      - name: Apply database migrations
+        run: bun run --cwd sidecar db:migrate
       - name: Run sidecar tests
         run: bun run sidecar:test
 
