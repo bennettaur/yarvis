@@ -82,9 +82,6 @@ jobs:
   bun-audit:
     name: bun audit
     runs-on: ubuntu-latest
-    # Informational until the dependency-update PR cleans known issues.
-    # Flip to required once the audit baseline is clean.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -92,8 +89,13 @@ jobs:
           bun-version: latest
       - name: Install dependencies
         run: bun install --frozen-lockfile
+      # GHSA-67mh-4wv8-2f99 (esbuild dev-server CORS) reaches us only through
+      # drizzle-kit's archived @esbuild-kit loader, which has no patched
+      # release. It is a build-time tool that never runs an esbuild dev server,
+      # so the advisory is not exploitable here. Any other moderate+ advisory
+      # still fails this job.
       - name: Audit production dependencies
-        run: bun audit --prod
+        run: bun audit --prod --ignore GHSA-67mh-4wv8-2f99
 
   rust-fmt:
     name: Rust formatting
