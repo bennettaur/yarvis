@@ -26,5 +26,4 @@ if (import.meta.main) {
     process.exit(1);
   }
   await runMigrations(config.databaseUrl);
-  console.log("[migrate] migrations applied");
 }

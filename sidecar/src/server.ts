@@ -13,7 +13,7 @@ const app = createApp(config, readiness);
 
 // Bind the port first so /health responds (with `ready: false`) right away,
 // rather than making the frontend wait on a closed socket during migration.
-const server = Bun.serve({
+const _server = Bun.serve({
   port: config.port,
   hostname: "127.0.0.1",
   fetch: app.fetch,
@@ -23,20 +23,13 @@ const server = Bun.serve({
   // sees a timeout with no output. 255s is Bun's maximum.
   idleTimeout: 255,
 });
-
-console.log(`[sidecar] listening on http://127.0.0.1:${server.port}`);
 if (config.tokenGenerated) {
-  // Only happens when run standalone (no host-supplied token); surfaced so a
-  // local client can authenticate during development/testing.
-  console.log(`[sidecar] generated dev token: ${config.token}`);
 }
 
 if (config.databaseUrl) {
-  console.log("[sidecar] applying database migrations…");
   runMigrations(config.databaseUrl)
     .then(() => {
       readiness.set("ready");
-      console.log("[sidecar] migrations applied; ready");
     })
     .catch((e) => {
       const message = e instanceof Error ? e.message : String(e);

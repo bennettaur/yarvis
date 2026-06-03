@@ -81,10 +81,7 @@ impl AlarmState {
 
 /// Initializes alarm state and starts the scheduler. Call from `setup`.
 pub fn init(app: &AppHandle) -> Result<(), String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let _ = std::fs::create_dir_all(&dir);
     let state = AlarmState::load(dir.join("alarms.json"));
     app.manage(state);
@@ -166,9 +163,17 @@ async fn ring_until_stopped(stop: Arc<Notify>, fired_at: i64) {
     loop {
         let escalated = now_ms() - fired_at >= ESCALATE_AFTER_SECS * 1000;
         let (sound, volume, gap) = if escalated {
-            ("/System/Library/Sounds/Sonar.aiff", "2", Duration::from_secs(2))
+            (
+                "/System/Library/Sounds/Sonar.aiff",
+                "2",
+                Duration::from_secs(2),
+            )
         } else {
-            ("/System/Library/Sounds/Ping.aiff", "1", Duration::from_secs(5))
+            (
+                "/System/Library/Sounds/Ping.aiff",
+                "1",
+                Duration::from_secs(5),
+            )
         };
 
         let _ = tokio::process::Command::new("afplay")

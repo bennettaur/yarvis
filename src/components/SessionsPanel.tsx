@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  type CcPlan,
+  type CcProject,
+  type CcSession,
+  type CcTranscriptEntry,
   getPlan,
   getTranscript,
   listPlans,
   listProjects,
   listSessions,
-  type CcPlan,
-  type CcProject,
-  type CcSession,
-  type CcTranscriptEntry,
 } from "../lib/cc";
 
 type View = "sessions" | "plans";
@@ -154,9 +154,7 @@ export default function SessionsPanel() {
                     className="w-full px-4 py-3 text-left hover:bg-zinc-800/50"
                   >
                     <div className="text-sm text-zinc-100">{p.title ?? p.name}</div>
-                    <div className="mt-0.5 text-xs text-zinc-500">
-                      {p.updatedAt.slice(0, 10)}
-                    </div>
+                    <div className="mt-0.5 text-xs text-zinc-500">{p.updatedAt.slice(0, 10)}</div>
                   </button>
                 </li>
               ))}

@@ -47,10 +47,7 @@ function baseUrl(info: SidecarInfo): string {
 }
 
 /** Authenticated fetch against the sidecar. Adds the bearer token automatically. */
-export async function sidecarFetch(
-  path: string,
-  init: RequestInit = {},
-): Promise<Response> {
+export async function sidecarFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const info = await sidecarInfo();
   const headers = new Headers(init.headers);
   headers.set("Authorization", `Bearer ${info.token}`);
@@ -86,8 +83,7 @@ export async function waitForSidecarReady({
   while (Date.now() < deadline) {
     try {
       const health = await getHealth();
-      const isFresh =
-        minUptimeMsBefore === undefined || health.uptimeMs < minUptimeMsBefore;
+      const isFresh = minUptimeMsBefore === undefined || health.uptimeMs < minUptimeMsBefore;
       if (health.ready && isFresh) return;
     } catch {
       // sidecar is mid-restart; fall through and retry
@@ -113,10 +109,7 @@ export async function getDbHealth(): Promise<DbHealthResponse> {
  * Reads a Server-Sent-Events stream from an authenticated sidecar route,
  * yielding each `data:` payload. Used by the chat feature (M1).
  */
-export async function* streamSSE(
-  path: string,
-  init: RequestInit = {},
-): AsyncGenerator<string> {
+export async function* streamSSE(path: string, init: RequestInit = {}): AsyncGenerator<string> {
   const res = await sidecarFetch(path, init);
   if (!res.ok || !res.body) {
     throw new Error(`stream failed: ${res.status}`);
@@ -131,9 +124,7 @@ export async function* streamSSE(
     const events = buffer.split("\n\n");
     buffer = events.pop() ?? "";
     for (const event of events) {
-      const line = event
-        .split("\n")
-        .find((l) => l.startsWith("data:"));
+      const line = event.split("\n").find((l) => l.startsWith("data:"));
       if (line) yield line.slice("data:".length).trim();
     }
   }

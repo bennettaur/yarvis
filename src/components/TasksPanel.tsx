@@ -1,10 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import {
-  completeTask,
-  createTask,
-  listTasks,
-  type Task,
-} from "../lib/tasks";
+import { completeTask, createTask, listTasks, type Task } from "../lib/tasks";
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
@@ -22,9 +17,7 @@ function TaskItem({ task, onComplete }: { task: Task; onComplete: (id: string) =
       <span className={task.status === "done" ? "text-zinc-500 line-through" : ""}>
         {task.title}
       </span>
-      {task.targetDate && (
-        <span className="ml-auto text-xs text-zinc-500">{task.targetDate}</span>
-      )}
+      {task.targetDate && <span className="ml-auto text-xs text-zinc-500">{task.targetDate}</span>}
     </li>
   );
 }
@@ -40,9 +33,7 @@ function TaskGroup({
 }) {
   return (
     <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
-      <h2 className="mb-2 text-sm font-medium uppercase tracking-wide text-zinc-500">
-        {title}
-      </h2>
+      <h2 className="mb-2 text-sm font-medium uppercase tracking-wide text-zinc-500">{title}</h2>
       {tasks.length === 0 ? (
         <p className="text-sm text-zinc-600">Nothing here.</p>
       ) : (

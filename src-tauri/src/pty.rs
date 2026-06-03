@@ -64,12 +64,7 @@ fn snapshot(scrollback: &Arc<Mutex<Vec<u8>>>) -> Vec<u8> {
 
 /// Spawns a shell in a new PTY and starts the reader thread that streams its
 /// output to the frontend.
-fn spawn_session(
-    app: &AppHandle,
-    id: &str,
-    cols: u16,
-    rows: u16,
-) -> Result<PtySession, String> {
+fn spawn_session(app: &AppHandle, id: &str, cols: u16, rows: u16) -> Result<PtySession, String> {
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(pty_size(cols, rows))
