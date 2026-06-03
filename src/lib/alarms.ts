@@ -16,11 +16,9 @@ export const createAlarm = (label: string, fireAtMs: number, sound = true) =>
 
 export const cancelAlarm = (id: string) => invoke("cancel_alarm", { id });
 
-export const acknowledgeAlarm = (id: string) =>
-  invoke("acknowledge_alarm", { id });
+export const acknowledgeAlarm = (id: string) => invoke("acknowledge_alarm", { id });
 
-export const snoozeAlarm = (id: string, minutes: number) =>
-  invoke("snooze_alarm", { id, minutes });
+export const snoozeAlarm = (id: string, minutes: number) => invoke("snooze_alarm", { id, minutes });
 
 /** Subscribe to alarm-fired events from the Rust scheduler. */
 export const onAlarmFired = (cb: (alarm: Alarm) => void): Promise<UnlistenFn> =>

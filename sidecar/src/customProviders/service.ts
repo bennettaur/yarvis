@@ -1,9 +1,6 @@
 import { asc, eq } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
-import {
-  customProviders,
-  type CustomProviderRow,
-} from "../db/schema.ts";
+import { type CustomProviderRow, customProviders } from "../db/schema.ts";
 
 /**
  * CRUD for user-configured proxy providers. Structure-only — API key and
@@ -34,14 +31,8 @@ export async function listCustomProviders(db: Db): Promise<CustomProviderRow[]> 
   return db.select().from(customProviders).orderBy(asc(customProviders.name));
 }
 
-export async function getCustomProvider(
-  db: Db,
-  id: string,
-): Promise<CustomProviderRow | null> {
-  const [row] = await db
-    .select()
-    .from(customProviders)
-    .where(eq(customProviders.id, id));
+export async function getCustomProvider(db: Db, id: string): Promise<CustomProviderRow | null> {
+  const [row] = await db.select().from(customProviders).where(eq(customProviders.id, id));
   return row ?? null;
 }
 
@@ -66,10 +57,7 @@ export async function updateCustomProvider(
   return row ?? null;
 }
 
-export async function deleteCustomProvider(
-  db: Db,
-  id: string,
-): Promise<boolean> {
+export async function deleteCustomProvider(db: Db, id: string): Promise<boolean> {
   const rows = await db
     .delete(customProviders)
     .where(eq(customProviders.id, id))

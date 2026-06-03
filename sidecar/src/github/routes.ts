@@ -38,9 +38,7 @@ export function createGithubRoutes(config: Config): Hono {
 
   const db = () => getDb(config.databaseUrl as string).db;
   const client = () =>
-    config.secrets.githubToken
-      ? new GitHubClient(config.secrets.githubToken)
-      : null;
+    config.secrets.githubToken ? new GitHubClient(config.secrets.githubToken) : null;
 
   // --- Live GitHub queries (require a token) ---
 
@@ -72,9 +70,7 @@ export function createGithubRoutes(config: Config): Hono {
     const number = Number(c.req.param("number"));
     if (!Number.isInteger(number)) return c.json({ error: "bad number" }, 400);
     try {
-      return c.json(
-        await gh.prStatus(c.req.param("owner"), c.req.param("repo"), number),
-      );
+      return c.json(await gh.prStatus(c.req.param("owner"), c.req.param("repo"), number));
     } catch (e) {
       return c.json({ error: String(e) }, 502);
     }
@@ -87,9 +83,7 @@ export function createGithubRoutes(config: Config): Hono {
     const number = Number(c.req.param("number"));
     if (!Number.isInteger(number)) return c.json({ error: "bad number" }, 400);
     try {
-      return c.json(
-        await gh.prDetail(c.req.param("owner"), c.req.param("repo"), number),
-      );
+      return c.json(await gh.prDetail(c.req.param("owner"), c.req.param("repo"), number));
     } catch (e) {
       return c.json({ error: String(e) }, 502);
     }
@@ -102,9 +96,7 @@ export function createGithubRoutes(config: Config): Hono {
     const number = Number(c.req.param("number"));
     if (!Number.isInteger(number)) return c.json({ error: "bad number" }, 400);
     try {
-      return c.json(
-        await gh.prFiles(c.req.param("owner"), c.req.param("repo"), number),
-      );
+      return c.json(await gh.prFiles(c.req.param("owner"), c.req.param("repo"), number));
     } catch (e) {
       return c.json({ error: String(e) }, 502);
     }
@@ -138,12 +130,7 @@ export function createGithubRoutes(config: Config): Hono {
   router.delete("/stars/:owner/:repo/:number", async (c) => {
     const number = Number(c.req.param("number"));
     return c.json({
-      deleted: await removeStar(
-        db(),
-        c.req.param("owner"),
-        c.req.param("repo"),
-        number,
-      ),
+      deleted: await removeStar(db(), c.req.param("owner"), c.req.param("repo"), number),
     });
   });
 

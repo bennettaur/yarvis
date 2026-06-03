@@ -52,9 +52,7 @@ export async function listCustomProviders(): Promise<CustomProvider[]> {
   return res.json();
 }
 
-export async function createCustomProvider(
-  input: CustomProviderInput,
-): Promise<CustomProvider> {
+export async function createCustomProvider(input: CustomProviderInput): Promise<CustomProvider> {
   const res = await sidecarFetch("/api/custom-providers", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -88,12 +86,8 @@ export async function deleteCustomProvider(id: string): Promise<void> {
 
 /* ---------- Secrets (Tauri commands, Keychain-backed) ---------- */
 
-export function listCustomProviderSecretStatus(): Promise<
-  CustomProviderSecretStatus[]
-> {
-  return invoke<CustomProviderSecretStatus[]>(
-    "list_custom_provider_secret_status",
-  );
+export function listCustomProviderSecretStatus(): Promise<CustomProviderSecretStatus[]> {
+  return invoke<CustomProviderSecretStatus[]>("list_custom_provider_secret_status");
 }
 
 export function setCustomProviderSecret(
@@ -111,8 +105,6 @@ export function deleteCustomProviderSecret(
   return invoke("delete_custom_provider_secret", { providerId, slot });
 }
 
-export function deleteAllCustomProviderSecrets(
-  providerId: string,
-): Promise<void> {
+export function deleteAllCustomProviderSecrets(providerId: string): Promise<void> {
   return invoke("delete_custom_provider_all_secrets", { providerId });
 }

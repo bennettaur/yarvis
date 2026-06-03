@@ -37,10 +37,9 @@ export default function ChatComposer({
     if (!el) return;
     el.style.height = "auto";
     const style = window.getComputedStyle(el);
-    const borderY =
-      parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+    const borderY = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
     el.style.height = `${Math.min(el.scrollHeight + borderY, MAX_HEIGHT)}px`;
-  }, [value]);
+  }, []);
 
   return (
     <div className={className}>

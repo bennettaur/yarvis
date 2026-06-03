@@ -2,13 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import {
-  completeTask,
-  createTask,
-  listTasks,
-  rolloverTasks,
-  updateTask,
-} from "./service.ts";
+import { completeTask, createTask, listTasks, rolloverTasks, updateTask } from "./service.ts";
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD");
 

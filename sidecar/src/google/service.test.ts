@@ -12,8 +12,7 @@ import {
   saveToken,
 } from "./service.ts";
 
-const url =
-  process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
+const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
 const db = drizzle(sql, { schema });
 
@@ -45,11 +44,7 @@ describe("google token persistence", () => {
 
   it("preserves the existing refresh token when a refresh omits it", async () => {
     await saveToken(db, { accessToken: "a", refreshToken: "keep-me", expiresAt: Date.now() });
-    await saveToken(
-      db,
-      { accessToken: "a2", expiresAt: Date.now() + 1e6 },
-      "keep-me",
-    );
+    await saveToken(db, { accessToken: "a2", expiresAt: Date.now() + 1e6 }, "keep-me");
     expect((await getStoredToken(db))?.refreshToken).toBe("keep-me");
   });
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  type GhFilter,
   ghAddStar,
   ghCreateFilter,
   ghDeleteFilter,
@@ -8,7 +9,6 @@ import {
   ghSearch,
   ghStars,
   ghViewer,
-  type GhFilter,
   type PrStatus,
   type PrSummary,
 } from "../lib/github";
@@ -55,9 +55,7 @@ function groupByRepo(prs: PrSummary[]): { repo: string; prs: PrSummary[] }[] {
 }
 
 function DraftBadge() {
-  return (
-    <span className="rounded bg-zinc-700 px-1.5 py-0.5 text-xs text-zinc-300">draft</span>
-  );
+  return <span className="rounded bg-zinc-700 px-1.5 py-0.5 text-xs text-zinc-300">draft</span>;
 }
 
 /** CI/merge state for a row. Renders nothing while loading or when no signal. */
@@ -247,8 +245,8 @@ export default function PrsPanel() {
   if (tokenMissing) {
     return (
       <p className="text-sm text-zinc-400">
-        No GitHub token configured. Add one under <b>Dashboard → Secrets →
-        GitHub token</b> to see your PRs.
+        No GitHub token configured. Add one under <b>Dashboard → Secrets → GitHub token</b> to see
+        your PRs.
       </p>
     );
   }
