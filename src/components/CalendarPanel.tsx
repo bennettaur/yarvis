@@ -1,29 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
-import { createAlarm } from "../lib/alarms";
+import CalendarConnectionGate from "./calendar/CalendarConnectionGate";
+import EventAlarmButton from "./calendar/EventAlarmButton";
+import { isArmable, useEventAlarms } from "../lib/calendarAlarms";
+import { startMs } from "../lib/calendarGrid";
 import { openExternal } from "../lib/url";
 import {
-  calAuthUrl,
   calDisconnect,
   calEvents,
-  calStatus,
   type CalendarEvent,
-  type CalendarStatus,
 } from "../lib/calendar";
-
-// Fire the meeting alarm shortly before the start. The alarm system then
-// escalates ~60s later (around the meeting start) if it isn't acknowledged.
-const LEAD_MINUTES = 1;
-
-function startMs(event: CalendarEvent): number | null {
-  const t = Date.parse(event.start);
-  return Number.isNaN(t) ? null : t;
-}
-
-function isArmable(event: CalendarEvent): boolean {
-  if (event.allDay) return false;
-  const ms = startMs(event);
-  return ms !== null && ms > Date.now();
-}
 
 function EventRow({
   event,
@@ -59,118 +44,34 @@ function EventRow({
           )}
         </div>
       </div>
-      {isArmable(event) ? (
-        armed ? (
-          <span className="text-xs text-emerald-400">alarm set</span>
-        ) : (
-          <button
-            onClick={() => onArm(event)}
-            className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
-          >
-            Set alarm
-          </button>
-        )
-      ) : null}
+      <EventAlarmButton event={event} armed={armed} onArm={onArm} />
     </li>
   );
 }
 
-export default function CalendarPanel() {
-  const [status, setStatus] = useState<CalendarStatus | null>(null);
+/** The agenda view: a flat list of upcoming meetings with per-event alarms. */
+function Agenda({ onDisconnect }: { onDisconnect: () => void }) {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
-  const [armed, setArmed] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
-
-  const loadStatus = useCallback(async () => {
-    try {
-      const s = await calStatus();
-      setStatus(s);
-      if (s.connected) setEvents(await calEvents());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
+  const { isArmed, arm } = useEventAlarms();
 
   useEffect(() => {
-    void loadStatus();
-  }, [loadStatus]);
-
-  const connect = useCallback(async () => {
-    try {
-      const { url } = await calAuthUrl();
-      openExternal(url);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
-
-  const armEvent = useCallback(async (event: CalendarEvent) => {
-    const ms = startMs(event);
-    if (ms === null) return;
-    const fireAt = ms - LEAD_MINUTES * 60_000;
-    await createAlarm(`Meeting: ${event.title}`, fireAt);
-    setArmed((prev) => new Set(prev).add(event.id));
+    calEvents()
+      .then(setEvents)
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
 
   const armAll = useCallback(async () => {
     for (const event of events.filter(isArmable)) {
-      await armEvent(event);
+      await arm(event);
     }
-  }, [events, armEvent]);
+  }, [events, arm]);
 
   const disconnect = useCallback(async () => {
     await calDisconnect();
     setEvents([]);
-    setArmed(new Set());
-    await loadStatus();
-  }, [loadStatus]);
-
-  if (!status) {
-    return <p className="text-sm text-zinc-500">Loading…</p>;
-  }
-
-  if (!status.configured) {
-    return (
-      <div className="space-y-2 text-sm text-zinc-400">
-        <p>
-          Google Calendar isn't configured. Add a Google Cloud OAuth client
-          (Desktop app) under <b>Settings → Google client id / secret</b> to
-          connect your calendar.
-        </p>
-        <p className="text-xs text-zinc-600">
-          The redirect URI to register is{" "}
-          <code className="rounded bg-zinc-800 px-1">
-            http://127.0.0.1:&lt;sidecar-port&gt;/oauth/google/callback
-          </code>{" "}
-          (loopback; any port is accepted for Desktop clients).
-        </p>
-      </div>
-    );
-  }
-
-  if (!status.connected) {
-    return (
-      <div className="space-y-3">
-        <p className="text-sm text-zinc-400">
-          Connect your Google Calendar to see upcoming meetings and arm alarms
-          for them.
-        </p>
-        <button
-          onClick={() => void connect()}
-          className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800"
-        >
-          Connect Google Calendar
-        </button>
-        <button
-          onClick={() => void loadStatus()}
-          className="ml-2 text-sm text-zinc-500 hover:text-zinc-300"
-        >
-          I've connected — refresh
-        </button>
-        {error && <p className="text-sm text-red-400">{error}</p>}
-      </div>
-    );
-  }
+    onDisconnect();
+  }, [onDisconnect]);
 
   return (
     <div className="space-y-4">
@@ -200,8 +101,8 @@ export default function CalendarPanel() {
             <EventRow
               key={e.id}
               event={e}
-              armed={armed.has(e.id)}
-              onArm={(ev) => void armEvent(ev)}
+              armed={isArmed(e)}
+              onArm={(ev) => void arm(ev)}
             />
           ))}
         </ul>
@@ -209,5 +110,13 @@ export default function CalendarPanel() {
 
       {error && <p className="text-sm text-red-400">{error}</p>}
     </div>
+  );
+}
+
+export default function CalendarPanel() {
+  return (
+    <CalendarConnectionGate>
+      {({ reload }) => <Agenda onDisconnect={reload} />}
+    </CalendarConnectionGate>
   );
 }

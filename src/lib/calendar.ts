@@ -27,5 +27,23 @@ export const calStatus = () => get<CalendarStatus>("/api/calendar/status");
 export const calAuthUrl = () => get<{ url: string }>("/api/calendar/auth-url");
 export const calEvents = () => get<CalendarEvent[]>("/api/calendar/events");
 
+/**
+ * Fetches events whose start falls within [timeMinIso, timeMaxIso). Backs the
+ * week/month/day grids, which need events from the start of the range (often
+ * earlier than now), not just upcoming ones.
+ */
+export const calEventsRange = (
+  timeMinIso: string,
+  timeMaxIso: string,
+  max = 250,
+) => {
+  const params = new URLSearchParams({
+    timeMin: timeMinIso,
+    timeMax: timeMaxIso,
+    max: String(max),
+  });
+  return get<CalendarEvent[]>(`/api/calendar/events?${params.toString()}`);
+};
+
 export const calDisconnect = () =>
   sidecarFetch("/api/calendar/disconnect", { method: "POST" }).then((r) => r.json());

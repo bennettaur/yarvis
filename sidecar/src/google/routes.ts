@@ -61,9 +61,18 @@ export function createCalendarRoutes(config: Config): Hono {
     if (!client) return c.json({ error: "google oauth not configured" }, 400);
     try {
       const accessToken = await getValidAccessToken(db(), client);
-      const max = Number(c.req.query("max") ?? "20");
+      const requested = Number(c.req.query("max") ?? "20");
+      // A month grid can hold many events, so allow a larger ceiling than the
+      // agenda's default while still bounding the response.
+      const maxResults = Number.isFinite(requested)
+        ? Math.min(250, Math.max(1, Math.trunc(requested)))
+        : 20;
       return c.json(
-        await client.listUpcomingEvents(accessToken, Number.isFinite(max) ? max : 20),
+        await client.listEvents(accessToken, {
+          timeMin: c.req.query("timeMin"),
+          timeMax: c.req.query("timeMax"),
+          maxResults,
+        }),
       );
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 502);

@@ -71,6 +71,40 @@ describe("toCalendarEvent", () => {
   });
 });
 
+describe("listEvents", () => {
+  function capturingFetch(captured: { url?: string }): typeof fetch {
+    return (async (url: string) => {
+      captured.url = String(url);
+      return new Response(JSON.stringify({ items: [] }), { status: 200 });
+    }) as unknown as typeof fetch;
+  }
+
+  it("sends an explicit time range and orders by start time", async () => {
+    const captured: { url?: string } = {};
+    const client = new GoogleCalendarClient("cid", "secret", capturingFetch(captured));
+    await client.listEvents("at", {
+      timeMin: "2026-05-24T00:00:00.000Z",
+      timeMax: "2026-05-31T00:00:00.000Z",
+      maxResults: 100,
+    });
+    const url = new URL(captured.url ?? "");
+    expect(url.searchParams.get("timeMin")).toBe("2026-05-24T00:00:00.000Z");
+    expect(url.searchParams.get("timeMax")).toBe("2026-05-31T00:00:00.000Z");
+    expect(url.searchParams.get("orderBy")).toBe("startTime");
+    expect(url.searchParams.get("singleEvents")).toBe("true");
+    expect(url.searchParams.get("maxResults")).toBe("100");
+  });
+
+  it("defaults timeMin to now and omits timeMax when unset", async () => {
+    const captured: { url?: string } = {};
+    const client = new GoogleCalendarClient("cid", "secret", capturingFetch(captured));
+    await client.listEvents("at");
+    const url = new URL(captured.url ?? "");
+    expect(url.searchParams.get("timeMin")).not.toBeNull();
+    expect(url.searchParams.has("timeMax")).toBe(false);
+  });
+});
+
 describe("token exchange", () => {
   it("computes an absolute expiry from expires_in", async () => {
     const client = new GoogleCalendarClient(

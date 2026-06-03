@@ -1,6 +1,9 @@
 import { defineRegistry } from "@json-render/react";
 import AlarmsPanel from "../components/AlarmsPanel";
 import CalendarPanel from "../components/CalendarPanel";
+import DayTimeline from "../components/calendar/DayTimeline";
+import MonthView from "../components/calendar/MonthView";
+import WeekView from "../components/calendar/WeekView";
 import ChatPanel from "../components/ChatPanel";
 import Dashboard from "../components/Dashboard";
 import MemoryPanel from "../components/MemoryPanel";
@@ -47,6 +50,21 @@ const { registry } = defineRegistry(catalog, {
     Calendar: ({ props }) => (
       <WidgetFrame title={props.title ?? "Calendar"} name="Calendar" height={props.height}>
         <CalendarPanel />
+      </WidgetFrame>
+    ),
+    CalendarWeek: ({ props }) => (
+      <WidgetFrame title={props.title ?? "Week"} name="CalendarWeek" height={props.height}>
+        <WeekView />
+      </WidgetFrame>
+    ),
+    CalendarMonth: ({ props }) => (
+      <WidgetFrame title={props.title ?? "Month"} name="CalendarMonth" height={props.height}>
+        <MonthView />
+      </WidgetFrame>
+    ),
+    CalendarDay: ({ props }) => (
+      <WidgetFrame title={props.title ?? "Day"} name="CalendarDay" height={props.height}>
+        <DayTimeline orientation={props.orientation} />
       </WidgetFrame>
     ),
     Memory: ({ props }) => (
