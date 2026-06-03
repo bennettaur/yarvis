@@ -194,9 +194,7 @@ pub fn pty_write(
     data: String,
 ) -> Result<(), String> {
     if data.len() > MAX_WRITE_BYTES {
-        return Err(format!(
-            "pty_write payload exceeds {MAX_WRITE_BYTES} bytes"
-        ));
+        return Err(format!("pty_write payload exceeds {MAX_WRITE_BYTES} bytes"));
     }
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = sessions.get_mut(&id).ok_or("no such session")?;

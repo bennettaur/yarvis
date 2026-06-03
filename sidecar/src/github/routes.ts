@@ -101,11 +101,7 @@ export function createGithubRoutes(config: Config): Hono {
   router.get("/pr/:owner/:repo/:number", async (c) => {
     const gh = client();
     if (!gh) return c.json({ error: "github token not configured" }, 400);
-    const params = parsePrParams(
-      c.req.param("owner"),
-      c.req.param("repo"),
-      c.req.param("number"),
-    );
+    const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
     if ("error" in params) return c.json({ error: params.error }, 400);
     try {
       return c.json(await gh.prStatus(params.owner, params.repo, params.number));
@@ -118,11 +114,7 @@ export function createGithubRoutes(config: Config): Hono {
   router.get("/pr/:owner/:repo/:number/detail", async (c) => {
     const gh = client();
     if (!gh) return c.json({ error: "github token not configured" }, 400);
-    const params = parsePrParams(
-      c.req.param("owner"),
-      c.req.param("repo"),
-      c.req.param("number"),
-    );
+    const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
     if ("error" in params) return c.json({ error: params.error }, 400);
     try {
       return c.json(await gh.prDetail(params.owner, params.repo, params.number));
@@ -135,11 +127,7 @@ export function createGithubRoutes(config: Config): Hono {
   router.get("/pr/:owner/:repo/:number/files", async (c) => {
     const gh = client();
     if (!gh) return c.json({ error: "github token not configured" }, 400);
-    const params = parsePrParams(
-      c.req.param("owner"),
-      c.req.param("repo"),
-      c.req.param("number"),
-    );
+    const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
     if ("error" in params) return c.json({ error: params.error }, 400);
     try {
       return c.json(await gh.prFiles(params.owner, params.repo, params.number));
@@ -174,11 +162,7 @@ export function createGithubRoutes(config: Config): Hono {
   });
 
   router.delete("/stars/:owner/:repo/:number", async (c) => {
-    const params = parsePrParams(
-      c.req.param("owner"),
-      c.req.param("repo"),
-      c.req.param("number"),
-    );
+    const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
     if ("error" in params) return c.json({ error: params.error }, 400);
     return c.json({
       deleted: await removeStar(db(), params.owner, params.repo, params.number),

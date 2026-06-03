@@ -1,5 +1,5 @@
-import dns from "node:dns/promises";
 import type { LookupAddress } from "node:dns";
+import dns from "node:dns/promises";
 import net from "node:net";
 
 /**

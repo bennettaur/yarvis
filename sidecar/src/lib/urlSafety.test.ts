@@ -14,12 +14,8 @@ describe("validateOutboundUrl", () => {
   });
 
   it("rejects urls with embedded credentials", () => {
-    expect(() => validateOutboundUrl("http://user:pw@example.com/")).toThrow(
-      UrlSafetyError,
-    );
-    expect(() => validateOutboundUrl("http://user@example.com/")).toThrow(
-      UrlSafetyError,
-    );
+    expect(() => validateOutboundUrl("http://user:pw@example.com/")).toThrow(UrlSafetyError);
+    expect(() => validateOutboundUrl("http://user@example.com/")).toThrow(UrlSafetyError);
   });
 
   it("rejects literal loopback addresses", () => {
@@ -54,9 +50,7 @@ describe("validateOutboundUrl", () => {
   it("rejects hostname aliases for loopback", () => {
     expect(() => validateOutboundUrl("http://localhost/")).toThrow(UrlSafetyError);
     expect(() => validateOutboundUrl("http://anything.local/")).toThrow(UrlSafetyError);
-    expect(() => validateOutboundUrl("http://anything.localhost/")).toThrow(
-      UrlSafetyError,
-    );
+    expect(() => validateOutboundUrl("http://anything.localhost/")).toThrow(UrlSafetyError);
   });
 
   it("accepts public IPs literally", () => {

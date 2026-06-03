@@ -34,10 +34,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   // reach the API are the Tauri webview's own. Open `*` is never used — the
   // bearer token is the primary control, but a stale/missing config must not
   // also dismantle the cross-origin defense.
-  const corsOrigins = config.allowedOrigins ?? [
-    "tauri://localhost",
-    "http://tauri.localhost",
-  ];
+  const corsOrigins = config.allowedOrigins ?? ["tauri://localhost", "http://tauri.localhost"];
 
   app.use(
     "*",

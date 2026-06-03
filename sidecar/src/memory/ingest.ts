@@ -1,7 +1,4 @@
-import {
-  assertResolvableOutbound,
-  validateOutboundUrl,
-} from "../lib/urlSafety.ts";
+import { assertResolvableOutbound, validateOutboundUrl } from "../lib/urlSafety.ts";
 import type { MemoryService } from "./index.ts";
 
 /** Hard cap on a fetched document, after which the fetch is aborted. */
