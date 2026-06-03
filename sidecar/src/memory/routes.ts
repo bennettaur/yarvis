@@ -14,12 +14,7 @@ import {
 } from "./embeddingsConfig.ts";
 import { PgVectorMemoryStore } from "./index.ts";
 import { fetchUrlText, ingestDocument } from "./ingest.ts";
-import {
-  assembleRecapContext,
-  dateRange,
-  recapMaterial,
-  recapSystemPrompt,
-} from "./recap.ts";
+import { assembleRecapContext, dateRange, recapMaterial, recapSystemPrompt } from "./recap.ts";
 
 /** Cap the recap LLM call so a hung provider can't block the request forever. */
 const RECAP_TIMEOUT_MS = 30_000;

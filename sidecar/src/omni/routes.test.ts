@@ -46,9 +46,7 @@ describe("omni routes", () => {
       }),
     });
     expect(res.status).toBe(400);
-    expect(((await res.json()) as { error: string }).error).toContain(
-      "Anthropic API key",
-    );
+    expect(((await res.json()) as { error: string }).error).toContain("Anthropic API key");
   });
 
   it("requires the bearer token", async () => {
@@ -78,8 +76,7 @@ describe("omni routes", () => {
   });
 });
 
-const url =
-  process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
+const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
 const dbApp = createApp({ ...config, databaseUrl: url });
 
@@ -134,14 +131,12 @@ describe("omni layout routes (with database)", () => {
 
   it("returns 400 for a non-uuid id and 404 for an unknown one", async () => {
     expect(
-      (await dbApp.request("/api/omni/layouts/not-a-uuid", { headers: jsonAuth }))
-        .status,
+      (await dbApp.request("/api/omni/layouts/not-a-uuid", { headers: jsonAuth })).status,
     ).toBe(400);
 
     const missing = "00000000-0000-0000-0000-000000000000";
     expect(
-      (await dbApp.request(`/api/omni/layouts/${missing}`, { headers: jsonAuth }))
-        .status,
+      (await dbApp.request(`/api/omni/layouts/${missing}`, { headers: jsonAuth })).status,
     ).toBe(404);
     expect(
       (
@@ -166,9 +161,8 @@ describe("omni layout routes (with database)", () => {
       headers: jsonAuth,
     });
     expect(del.status).toBe(200);
-    expect(
-      (await dbApp.request(`/api/omni/layouts/${id}`, { headers: jsonAuth }))
-        .status,
-    ).toBe(404);
+    expect((await dbApp.request(`/api/omni/layouts/${id}`, { headers: jsonAuth })).status).toBe(
+      404,
+    );
   });
 });

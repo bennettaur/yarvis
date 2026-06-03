@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  getDbHealth,
-  getStatus,
-  getHealth,
   type DbHealthResponse,
+  getDbHealth,
+  getHealth,
+  getStatus,
   type StatusResponse,
 } from "../lib/api";
 
 type Health = "checking" | "ok" | "down";
 
 export function StatusDot({ state }: { state: boolean | null }) {
-  const color =
-    state === null ? "bg-zinc-500" : state ? "bg-emerald-500" : "bg-red-500";
+  const color = state === null ? "bg-zinc-500" : state ? "bg-emerald-500" : "bg-red-500";
   return <span className={`inline-block h-2.5 w-2.5 rounded-full ${color}`} />;
 }
 
@@ -58,9 +57,7 @@ export default function Dashboard() {
   return (
     <div className="space-y-6">
       <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
-        <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-zinc-500">
-          System
-        </h2>
+        <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-zinc-500">System</h2>
         <Row
           label="Sidecar"
           value={
@@ -89,10 +86,7 @@ export default function Dashboard() {
           label="Anthropic key"
           value={<StatusDot state={status?.providers.anthropic ?? null} />}
         />
-        <Row
-          label="Gemini key"
-          value={<StatusDot state={status?.providers.gemini ?? null} />}
-        />
+        <Row label="Gemini key" value={<StatusDot state={status?.providers.gemini ?? null} />} />
       </section>
     </div>
   );

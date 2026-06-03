@@ -15,8 +15,7 @@ export const attachPty = (id: string, cols: number, rows: number) =>
   invoke<number[]>("pty_attach", { id, cols, rows });
 
 /** Sends user input to the session's shell. */
-export const writePty = (id: string, data: string) =>
-  invoke("pty_write", { id, data });
+export const writePty = (id: string, data: string) => invoke("pty_write", { id, data });
 
 /** Resizes the session's PTY to match the terminal viewport. */
 export const resizePty = (id: string, cols: number, rows: number) =>
@@ -26,10 +25,7 @@ export const resizePty = (id: string, cols: number, rows: number) =>
 export const killPty = (id: string) => invoke("pty_kill", { id });
 
 /** Subscribe to output bytes for a single session. */
-export const onPtyOutput = (
-  id: string,
-  cb: (bytes: Uint8Array) => void,
-): Promise<UnlistenFn> =>
+export const onPtyOutput = (id: string, cb: (bytes: Uint8Array) => void): Promise<UnlistenFn> =>
   listen<number[]>(`pty-output:${id}`, (e) => cb(new Uint8Array(e.payload)));
 
 /** Subscribe to the exit signal for a single session. */

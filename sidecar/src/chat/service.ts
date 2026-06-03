@@ -1,18 +1,10 @@
 import { asc, desc, eq } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
-import {
-  chatMessages,
-  chatSessions,
-  type ChatMessage,
-  type ChatSession,
-} from "../db/schema.ts";
+import { type ChatMessage, type ChatSession, chatMessages, chatSessions } from "../db/schema.ts";
 
 /** Chat session + message persistence. */
 
-export async function createSession(
-  db: Db,
-  title?: string | null,
-): Promise<ChatSession> {
+export async function createSession(db: Db, title?: string | null): Promise<ChatSession> {
   const [row] = await db
     .insert(chatSessions)
     .values({ title: title ?? null })
@@ -21,16 +13,10 @@ export async function createSession(
 }
 
 export async function listSessions(db: Db): Promise<ChatSession[]> {
-  return db
-    .select()
-    .from(chatSessions)
-    .orderBy(desc(chatSessions.updatedAt));
+  return db.select().from(chatSessions).orderBy(desc(chatSessions.updatedAt));
 }
 
-export async function getMessages(
-  db: Db,
-  sessionId: string,
-): Promise<ChatMessage[]> {
+export async function getMessages(db: Db, sessionId: string): Promise<ChatMessage[]> {
   return db
     .select()
     .from(chatMessages)
@@ -45,10 +31,7 @@ export interface AddMessageInput {
   toolCalls?: unknown;
 }
 
-export async function addMessage(
-  db: Db,
-  input: AddMessageInput,
-): Promise<ChatMessage> {
+export async function addMessage(db: Db, input: AddMessageInput): Promise<ChatMessage> {
   const [row] = await db
     .insert(chatMessages)
     .values({

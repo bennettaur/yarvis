@@ -53,10 +53,7 @@ export interface MemoryService {
 
 /** The columns toRecord needs — a subset of MemoryRow (the embedding is omitted
  * from list/search selects since it isn't returned to callers). */
-type MemoryRowFields = Pick<
-  MemoryRow,
-  "id" | "content" | "metadata" | "createdAt"
->;
+type MemoryRowFields = Pick<MemoryRow, "id" | "content" | "metadata" | "createdAt">;
 
 function toRecord(row: MemoryRowFields, score?: number): MemoryRecord {
   return {
@@ -155,10 +152,7 @@ export class PgVectorMemoryStore implements MemoryService {
   }
 
   async get(id: string): Promise<MemoryRecord | null> {
-    const [row] = await this.db
-      .select()
-      .from(memories)
-      .where(eq(memories.id, id));
+    const [row] = await this.db.select().from(memories).where(eq(memories.id, id));
     return row ? toRecord(row) : null;
   }
 

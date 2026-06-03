@@ -27,12 +27,7 @@ export const EMBED_DIM: number = 1024;
  * store for semantic memory.
  */
 
-export const messageRole = pgEnum("message_role", [
-  "user",
-  "assistant",
-  "system",
-  "tool",
-]);
+export const messageRole = pgEnum("message_role", ["user", "assistant", "system", "tool"]);
 
 export const taskStatus = pgEnum("task_status", ["open", "done"]);
 export const taskScope = pgEnum("task_scope", ["daily", "weekly"]);
@@ -40,12 +35,8 @@ export const taskScope = pgEnum("task_scope", ["daily", "weekly"]);
 export const chatSessions = pgTable("chat_sessions", {
   id: uuid("id").primaryKey().defaultRandom(),
   title: text("title"),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const chatMessages = pgTable("chat_messages", {
@@ -56,9 +47,7 @@ export const chatMessages = pgTable("chat_messages", {
   role: messageRole("role").notNull(),
   content: text("content").notNull(),
   toolCalls: jsonb("tool_calls"),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const tasks = pgTable("tasks", {
@@ -71,9 +60,7 @@ export const tasks = pgTable("tasks", {
   sourceSessionId: uuid("source_session_id").references(() => chatSessions.id, {
     onDelete: "set null",
   }),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   completedAt: timestamp("completed_at", { withTimezone: true }),
 });
 
@@ -82,18 +69,14 @@ export const memories = pgTable("memories", {
   content: text("content").notNull(),
   metadata: jsonb("metadata"),
   embedding: vector("embedding", { dimensions: EMBED_DIM }),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const githubFilters = pgTable("github_filters", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
   query: text("query").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const githubStars = pgTable(
@@ -105,9 +88,7 @@ export const githubStars = pgTable(
     number: integer("number").notNull(),
     title: text("title"),
     url: text("url"),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex("github_stars_pr_idx").on(t.owner, t.repo, t.number)],
 );
@@ -117,12 +98,8 @@ export const omniLayouts = pgTable("omni_layouts", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
   spec: jsonb("spec").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 /**
@@ -136,12 +113,8 @@ export const googleTokens = pgTable("google_tokens", {
   refreshToken: text("refresh_token"),
   scope: text("scope"),
   expiresAt: timestamp("expires_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 /**
@@ -156,12 +129,8 @@ export const customProviders = pgTable("custom_providers", {
   apiKind: text("api_kind").notNull(), // "openai" | "anthropic"
   models: jsonb("models").$type<string[]>().notNull().default([]),
   headerNames: jsonb("header_names").$type<string[]>().notNull().default([]),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 /**

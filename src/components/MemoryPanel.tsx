@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ProviderId } from "../lib/chat";
 import {
+  type MemoryRecord,
   memAddNote,
   memDelete,
   memIngest,
   memList,
   memRecap,
   memSearch,
-  type MemoryRecord,
   type RecapResult,
 } from "../lib/memory";
 import Markdown from "./Markdown";
@@ -28,20 +28,12 @@ function typeColor(type: string): string {
   return "bg-zinc-700 text-zinc-300";
 }
 
-function MemoryItem({
-  m,
-  onDelete,
-}: {
-  m: MemoryRecord;
-  onDelete: (id: string) => void;
-}) {
+function MemoryItem({ m, onDelete }: { m: MemoryRecord; onDelete: (id: string) => void }) {
   const type = memoryType(m);
   const source = (m.metadata as { source?: string } | null)?.source;
   return (
     <li className="flex items-start gap-3 px-4 py-3">
-      <span className={`rounded px-1.5 py-0.5 text-xs ${typeColor(type)}`}>
-        {type}
-      </span>
+      <span className={`rounded px-1.5 py-0.5 text-xs ${typeColor(type)}`}>{type}</span>
       <div className="min-w-0 flex-1">
         <p className="text-sm text-zinc-200">{m.content}</p>
         <div className="mt-0.5 text-xs text-zinc-600">
@@ -97,13 +89,10 @@ export default function MemoryPanel() {
     }
   }, [query, reload]);
 
-  const onDelete = useCallback(
-    async (id: string) => {
-      await memDelete(id);
-      setItems((prev) => prev.filter((m) => m.id !== id));
-    },
-    [],
-  );
+  const onDelete = useCallback(async (id: string) => {
+    await memDelete(id);
+    setItems((prev) => prev.filter((m) => m.id !== id));
+  }, []);
 
   const addNote = useCallback(async () => {
     const content = note.trim();
@@ -148,9 +137,7 @@ export default function MemoryPanel() {
   return (
     <div className="space-y-6">
       <section>
-        <h2 className="mb-2 text-sm font-medium uppercase tracking-wide text-zinc-500">
-          Recap
-        </h2>
+        <h2 className="mb-2 text-sm font-medium uppercase tracking-wide text-zinc-500">Recap</h2>
         <div className="flex gap-2">
           <button
             onClick={() => void runRecap("day")}
