@@ -1,4 +1,10 @@
+import { assertResolvableOutbound, validateOutboundUrl } from "../lib/urlSafety.ts";
 import type { MemoryService } from "./index.ts";
+
+/** Hard cap on a fetched document, after which the fetch is aborted. */
+const MAX_FETCH_BYTES = 5 * 1024 * 1024;
+/** Per-fetch wall-clock cap so a slow internal host can't block a request thread. */
+const FETCH_TIMEOUT_MS = 15_000;
 
 /** Target size for a single embedded chunk, in characters. */
 const CHUNK_CHARS = 1000;
@@ -95,46 +101,82 @@ export async function ingestDocument(
 }
 
 /**
- * Best-effort SSRF guard: only http(s) and not an obvious internal host. This
- * runs in a localhost-bound sidecar, so it blocks the easy mistakes (loopback,
- * link-local metadata, RFC-1918 ranges) rather than resolving DNS.
+ * SSRF guard: validates scheme, rejects URLs with embedded credentials, and
+ * blocks private / loopback / link-local addresses. The static-only variant
+ * (no DNS) lets callers reject obviously-bad URLs at CRUD time; the resolver
+ * variant in `lib/urlSafety` is called immediately before the actual fetch.
  */
 export function assertFetchableUrl(url: string): URL {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new Error("invalid url");
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new Error("only http(s) urls can be ingested");
-  }
-  const host = parsed.hostname.toLowerCase();
-  const blocked =
-    host === "localhost" ||
-    host === "0.0.0.0" ||
-    host === "::1" ||
-    /^127\./.test(host) ||
-    /^10\./.test(host) ||
-    /^192\.168\./.test(host) ||
-    /^169\.254\./.test(host) ||
-    /^172\.(1[6-9]|2[0-9]|3[01])\./.test(host);
-  if (blocked) throw new Error("refusing to fetch an internal host");
-  return parsed;
+  return validateOutboundUrl(url);
 }
 
-/** Fetches a URL and returns its body as plain text (HTML stripped). */
+/**
+ * Fetches a URL and returns its body as plain text (HTML stripped). Enforces
+ * DNS-resolved SSRF protection, rejects redirects that would jump to a
+ * disallowed host, caps body size, and times out on slow hosts.
+ */
 export async function fetchUrlText(
   url: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<{ text: string; title: string }> {
-  assertFetchableUrl(url);
-  const res = await fetchImpl(url, {
-    headers: { "User-Agent": "yarvis/0.1 (+local assistant)" },
-  });
+  await assertResolvableOutbound(url);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetchImpl(url, {
+      headers: { "User-Agent": "yarvis/0.1 (+local assistant)" },
+      // Manual redirect handling: re-validate the target host before following,
+      // so a 302 to an internal address can't bypass the SSRF guard.
+      redirect: "manual",
+      signal: controller.signal,
+    });
+    let hops = 0;
+    while (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
+      if (hops++ >= 5) throw new Error("too many redirects");
+      const next = new URL(res.headers.get("location")!, url).toString();
+      await assertResolvableOutbound(next);
+      res = await fetchImpl(next, {
+        headers: { "User-Agent": "yarvis/0.1 (+local assistant)" },
+        redirect: "manual",
+        signal: controller.signal,
+      });
+    }
+  } finally {
+    clearTimeout(timeout);
+  }
   if (!res.ok) throw new Error(`fetch ${url} -> ${res.status}`);
+
+  const contentLength = Number(res.headers.get("content-length") ?? 0);
+  if (contentLength > MAX_FETCH_BYTES) {
+    throw new Error(`response too large: ${contentLength} bytes`);
+  }
+
+  // Stream the body so an oversize response (without/with lying Content-Length)
+  // is aborted before it fills memory.
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error("empty response body");
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_FETCH_BYTES) {
+      await reader.cancel();
+      throw new Error(`response too large: exceeded ${MAX_FETCH_BYTES} bytes`);
+    }
+    chunks.push(value);
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const body = new TextDecoder().decode(merged);
+
   const contentType = res.headers.get("content-type") ?? "";
-  const body = await res.text();
   if (contentType.includes("html")) {
     const titleMatch = body.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
     const title = titleMatch ? htmlToText(titleMatch[1]!) : url;

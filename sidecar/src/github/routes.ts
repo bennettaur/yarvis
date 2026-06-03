@@ -12,14 +12,36 @@ import {
   removeStar,
 } from "./service.ts";
 
+/**
+ * GitHub allows letters, numbers, hyphens, underscores, and dots in owner/repo
+ * names, and caps at 39 chars (owner) / 100 chars (repo). Validating these
+ * before they're interpolated into `${owner}/${repo}/...` API paths blocks
+ * smuggling extra path segments or query strings via route params.
+ */
+const ownerName = z
+  .string()
+  .min(1)
+  .max(39)
+  .regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/, "invalid github owner");
+const repoName = z
+  .string()
+  .min(1)
+  .max(100)
+  .regex(/^[A-Za-z0-9._-]+$/, "invalid github repo");
+
+const ownerRepoParams = z.object({
+  owner: ownerName,
+  repo: repoName,
+});
+
 const filterSchema = z.object({
   name: z.string().min(1),
   query: z.string().min(1),
 });
 
 const starSchema = z.object({
-  owner: z.string().min(1),
-  repo: z.string().min(1),
+  owner: ownerName,
+  repo: repoName,
   number: z.number().int(),
   title: z.string().nullish(),
   url: z.string().nullish(),
@@ -64,13 +86,25 @@ export function createGithubRoutes(config: Config): Hono {
     }
   });
 
+  function parsePrParams(
+    owner: string,
+    repo: string,
+    rawNumber: string,
+  ): { owner: string; repo: string; number: number } | { error: unknown } {
+    const parsed = ownerRepoParams.safeParse({ owner, repo });
+    if (!parsed.success) return { error: parsed.error.flatten() };
+    const number = Number(rawNumber);
+    if (!Number.isInteger(number) || number < 1) return { error: "bad number" };
+    return { owner: parsed.data.owner, repo: parsed.data.repo, number };
+  }
+
   router.get("/pr/:owner/:repo/:number", async (c) => {
     const gh = client();
     if (!gh) return c.json({ error: "github token not configured" }, 400);
-    const number = Number(c.req.param("number"));
-    if (!Number.isInteger(number)) return c.json({ error: "bad number" }, 400);
+    const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
+    if ("error" in params) return c.json({ error: params.error }, 400);
     try {
-      return c.json(await gh.prStatus(c.req.param("owner"), c.req.param("repo"), number));
+      return c.json(await gh.prStatus(params.owner, params.repo, params.number));
     } catch (e) {
       return c.json({ error: String(e) }, 502);
     }
@@ -80,10 +114,10 @@ export function createGithubRoutes(config: Config): Hono {
   router.get("/pr/:owner/:repo/:number/detail", async (c) => {
     const gh = client();
     if (!gh) return c.json({ error: "github token not configured" }, 400);
-    const number = Number(c.req.param("number"));
-    if (!Number.isInteger(number)) return c.json({ error: "bad number" }, 400);
+    const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
+    if ("error" in params) return c.json({ error: params.error }, 400);
     try {
-      return c.json(await gh.prDetail(c.req.param("owner"), c.req.param("repo"), number));
+      return c.json(await gh.prDetail(params.owner, params.repo, params.number));
     } catch (e) {
       return c.json({ error: String(e) }, 502);
     }
@@ -93,10 +127,10 @@ export function createGithubRoutes(config: Config): Hono {
   router.get("/pr/:owner/:repo/:number/files", async (c) => {
     const gh = client();
     if (!gh) return c.json({ error: "github token not configured" }, 400);
-    const number = Number(c.req.param("number"));
-    if (!Number.isInteger(number)) return c.json({ error: "bad number" }, 400);
+    const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
+    if ("error" in params) return c.json({ error: params.error }, 400);
     try {
-      return c.json(await gh.prFiles(c.req.param("owner"), c.req.param("repo"), number));
+      return c.json(await gh.prFiles(params.owner, params.repo, params.number));
     } catch (e) {
       return c.json({ error: String(e) }, 502);
     }
@@ -128,9 +162,10 @@ export function createGithubRoutes(config: Config): Hono {
   });
 
   router.delete("/stars/:owner/:repo/:number", async (c) => {
-    const number = Number(c.req.param("number"));
+    const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
+    if ("error" in params) return c.json({ error: params.error }, 400);
     return c.json({
-      deleted: await removeStar(db(), c.req.param("owner"), c.req.param("repo"), number),
+      deleted: await removeStar(db(), params.owner, params.repo, params.number),
     });
   });
 

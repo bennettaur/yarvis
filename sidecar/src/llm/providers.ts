@@ -7,6 +7,7 @@ import type { Config } from "../config.ts";
 import { listCustomProviders } from "../customProviders/service.ts";
 import type { Db } from "../db/client.ts";
 import type { CustomProviderRow } from "../db/schema.ts";
+import { validateOutboundUrl } from "../lib/urlSafety.ts";
 
 /**
  * Provider identifiers.
@@ -88,6 +89,9 @@ export async function availableProviders(config: Config, db?: Db): Promise<Provi
 }
 
 function resolveCustom(row: CustomProviderRow, config: Config, modelId: string): LanguageModel {
+  // Defense-in-depth: the create/update routes already validate, but DB rows
+  // can have been seeded by an earlier version, so re-check at resolve time.
+  validateOutboundUrl(row.baseUrl);
   const secrets = config.customProviderSecrets[row.id] ?? { headers: {} };
   const options = {
     baseURL: row.baseUrl,

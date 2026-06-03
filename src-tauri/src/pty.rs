@@ -20,6 +20,15 @@ use tauri::{AppHandle, Emitter};
 /// dropped from the front once exceeded so memory stays bounded.
 const MAX_SCROLLBACK: usize = 1024 * 1024;
 const READ_BUF_SIZE: usize = 4096;
+/// Maximum bytes accepted in a single `pty_write` call. Bounds the amount a
+/// compromised webview (e.g. via an XSS that the CSP misses) can shove at the
+/// shell in one IPC call. The shell still receives an aggregate of separate
+/// writes, so this isn't a strong defense — it's an extra layer.
+const MAX_WRITE_BYTES: usize = 64 * 1024;
+/// Cap on the number of live PTY sessions. The Terminal UI rarely needs more
+/// than a handful; this prevents `pty_attach` with novel ids from spawning
+/// shells without bound.
+const MAX_SESSIONS: usize = 8;
 
 struct PtySession {
     /// Writes user input into the PTY (taken once from the master).
@@ -151,6 +160,17 @@ pub fn pty_attach(
         }
     }
 
+    // Enforce the per-process cap before spawning, not after, so a flood of
+    // attach calls doesn't briefly hold MAX_SESSIONS+N live shells.
+    {
+        let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+        if sessions.len() >= MAX_SESSIONS && !sessions.contains_key(&id) {
+            return Err(format!(
+                "too many PTY sessions (cap: {MAX_SESSIONS}); close one before opening another"
+            ));
+        }
+    }
+
     // Spawn outside the lock: openpty + spawn_command + thread do real I/O and
     // would otherwise block every other PTY command for the duration.
     let session = spawn_session(&app, &id, cols, rows)?;
@@ -173,6 +193,9 @@ pub fn pty_write(
     id: String,
     data: String,
 ) -> Result<(), String> {
+    if data.len() > MAX_WRITE_BYTES {
+        return Err(format!("pty_write payload exceeds {MAX_WRITE_BYTES} bytes"));
+    }
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = sessions.get_mut(&id).ok_or("no such session")?;
     session

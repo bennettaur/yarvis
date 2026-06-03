@@ -62,12 +62,13 @@ describe("chat routes", () => {
   });
 
   it("accepts a custom provider id in chat requests (schema-level)", async () => {
-    // The streaming call will fail trying to reach 127.0.0.1:1, but the
-    // request should pass schema validation and start the stream rather than
-    // being rejected with a 400.
+    // The streaming call will fail trying to reach this nonexistent host, but
+    // the request should pass schema validation and start the stream rather
+    // than being rejected with a 400. A literal loopback URL would now be
+    // rejected by the outbound-URL guard, so use a publicly-shaped host.
     const row = await createCustomProvider(db, {
       name: "litellm",
-      baseUrl: "http://127.0.0.1:1/v1",
+      baseUrl: "https://litellm.example.invalid/v1",
       apiKind: "openai",
       models: ["gpt-4o"],
       headerNames: [],
