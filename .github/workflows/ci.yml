@@ -162,13 +162,14 @@ jobs:
   cargo-audit:
     name: cargo audit
     runs-on: ubuntu-latest
-    # Informational until the dependency-update PR cleans known issues.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+      # The only crate lives in src-tauri/; without this the action looks for
+      # ./Cargo.lock at the repo root and fails before auditing anything.
       - uses: rustsec/audit-check@v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          working-directory: src-tauri
 
   tauri-build:
     name: Tauri build (${{ matrix.platform }})
