@@ -4,11 +4,7 @@ import EventAlarmButton from "./calendar/EventAlarmButton";
 import { isArmable, useEventAlarms } from "../lib/calendarAlarms";
 import { startMs } from "../lib/calendarGrid";
 import { openExternal } from "../lib/url";
-import {
-  calDisconnect,
-  calEvents,
-  type CalendarEvent,
-} from "../lib/calendar";
+import { calDisconnect, calEvents, type CalendarEvent } from "../lib/calendar";
 
 function EventRow({
   event,
@@ -20,11 +16,7 @@ function EventRow({
   onArm: (event: CalendarEvent) => void;
 }) {
   const ms = startMs(event);
-  const when = event.allDay
-    ? "All day"
-    : ms !== null
-      ? new Date(ms).toLocaleString()
-      : event.start;
+  const when = event.allDay ? "All day" : ms !== null ? new Date(ms).toLocaleString() : event.start;
   return (
     <li className="flex items-center gap-3 px-4 py-3">
       <div className="min-w-0 flex-1">

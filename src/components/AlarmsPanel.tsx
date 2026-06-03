@@ -1,10 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import {
-  cancelAlarm,
-  createAlarm,
-  listAlarms,
-  type Alarm,
-} from "../lib/alarms";
+import { type Alarm, cancelAlarm, createAlarm, listAlarms } from "../lib/alarms";
 
 function localInputValue(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -16,9 +11,7 @@ function localInputValue(d: Date): string {
 export default function AlarmsPanel() {
   const [alarms, setAlarms] = useState<Alarm[]>([]);
   const [label, setLabel] = useState("");
-  const [when, setWhen] = useState(() =>
-    localInputValue(new Date(Date.now() + 5 * 60_000)),
-  );
+  const [when, setWhen] = useState(() => localInputValue(new Date(Date.now() + 5 * 60_000)));
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -56,9 +49,7 @@ export default function AlarmsPanel() {
   return (
     <div className="space-y-6">
       <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
-        <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-500">
-          New alarm
-        </h2>
+        <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-500">New alarm</h2>
         <div className="flex flex-wrap gap-2">
           <input
             value={label}

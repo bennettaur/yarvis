@@ -1,5 +1,5 @@
+import type { CheckItem } from "../../lib/github";
 import { usePrDetail } from "../../lib/githubCache";
-import { type CheckItem } from "../../lib/github";
 import { openExternal } from "../../lib/url";
 import type { PrRef } from "./shared";
 

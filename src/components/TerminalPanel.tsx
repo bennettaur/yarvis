@@ -1,15 +1,8 @@
-import { useEffect, useId, useRef, useState } from "react";
-import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { Terminal } from "@xterm/xterm";
+import { useEffect, useId, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
-import {
-  attachPty,
-  killPty,
-  onPtyExit,
-  onPtyOutput,
-  resizePty,
-  writePty,
-} from "../lib/pty";
+import { attachPty, killPty, onPtyExit, onPtyOutput, resizePty, writePty } from "../lib/pty";
 
 /** Coalesce ResizeObserver bursts (a window/panel drag fires at frame rate). */
 const RESIZE_DEBOUNCE_MS = 80;
@@ -34,7 +27,7 @@ export default function TerminalPanel({ sessionId }: { sessionId?: string }) {
   const [exited, setExited] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Bumped by the restart control to tear down and re-attach a fresh session.
-  const [generation, setGeneration] = useState(0);
+  const [_generation, setGeneration] = useState(0);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -44,8 +37,7 @@ export default function TerminalPanel({ sessionId }: { sessionId?: string }) {
 
     const term = new Terminal({
       cursorBlink: true,
-      fontFamily:
-        'ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Code", monospace',
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Code", monospace',
       fontSize: 13,
       theme: { background: "#09090b", foreground: "#e4e4e7" },
     });
@@ -134,7 +126,7 @@ export default function TerminalPanel({ sessionId }: { sessionId?: string }) {
       // The PTY session is intentionally left running so it survives unmount;
       // it is ended only by the restart control or app exit.
     };
-  }, [id, generation]);
+  }, [id]);
 
   const restart = () => {
     void killPty(id).finally(() => {

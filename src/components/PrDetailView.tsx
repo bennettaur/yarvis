@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
+import type { PrSummary } from "../lib/github";
 import { usePrDetail } from "../lib/githubCache";
-import { type PrSummary } from "../lib/github";
 import { openExternal } from "../lib/url";
 import PrChecks from "./pr/PrChecks";
 import PrDescription from "./pr/PrDescription";
@@ -10,9 +10,7 @@ import PrFileList from "./pr/PrFileList";
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section>
-      <h3 className="mb-2 text-sm font-medium uppercase tracking-wide text-zinc-500">
-        {title}
-      </h3>
+      <h3 className="mb-2 text-sm font-medium uppercase tracking-wide text-zinc-500">{title}</h3>
       {children}
     </section>
   );
@@ -24,13 +22,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
  * the github cache (keyed by owner/repo/number), so naming the same PR here and
  * in each child does not multiply requests.
  */
-export default function PrDetailView({
-  pr,
-  onBack,
-}: {
-  pr: PrSummary;
-  onBack: () => void;
-}) {
+export default function PrDetailView({ pr, onBack }: { pr: PrSummary; onBack: () => void }) {
   const ref = { owner: pr.owner, repo: pr.repo, number: pr.number };
   const { data: detail, error } = usePrDetail(pr.owner, pr.repo, pr.number);
 

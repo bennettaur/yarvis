@@ -1,11 +1,6 @@
 import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
-import {
-  githubFilters,
-  githubStars,
-  type GithubFilter,
-  type GithubStar,
-} from "../db/schema.ts";
+import { type GithubFilter, type GithubStar, githubFilters, githubStars } from "../db/schema.ts";
 
 /** Saved PR search filters and starred PRs, persisted in Postgres. */
 
@@ -13,15 +8,8 @@ export function listFilters(db: Db): Promise<GithubFilter[]> {
   return db.select().from(githubFilters).orderBy(desc(githubFilters.createdAt));
 }
 
-export async function createFilter(
-  db: Db,
-  name: string,
-  query: string,
-): Promise<GithubFilter> {
-  const [row] = await db
-    .insert(githubFilters)
-    .values({ name, query })
-    .returning();
+export async function createFilter(db: Db, name: string, query: string): Promise<GithubFilter> {
+  const [row] = await db.insert(githubFilters).values({ name, query }).returning();
   return row!;
 }
 
@@ -67,11 +55,7 @@ export async function removeStar(
   const deleted = await db
     .delete(githubStars)
     .where(
-      and(
-        eq(githubStars.owner, owner),
-        eq(githubStars.repo, repo),
-        eq(githubStars.number, number),
-      ),
+      and(eq(githubStars.owner, owner), eq(githubStars.repo, repo), eq(githubStars.number, number)),
     )
     .returning({ id: githubStars.id });
   return deleted.length > 0;

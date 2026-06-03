@@ -1,10 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import {
-  buildAuthUrl,
-  CALENDAR_SCOPE,
-  GoogleCalendarClient,
-  toCalendarEvent,
-} from "./client.ts";
+import { buildAuthUrl, CALENDAR_SCOPE, GoogleCalendarClient, toCalendarEvent } from "./client.ts";
 
 function fakeFetch(routes: Record<string, unknown>): typeof fetch {
   return (async (url: string) => {

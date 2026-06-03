@@ -36,9 +36,7 @@ export function createCalendarRoutes(config: Config): Hono {
   const db = () => getDb(config.databaseUrl as string).db;
 
   router.get("/status", async (c) => {
-    const configured = Boolean(
-      config.secrets.googleClientId && config.secrets.googleClientSecret,
-    );
+    const configured = Boolean(config.secrets.googleClientId && config.secrets.googleClientSecret);
     const token = await getStoredToken(db());
     return c.json({
       configured,
