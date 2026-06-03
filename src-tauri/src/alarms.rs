@@ -53,7 +53,7 @@ fn now_ms() -> i64 {
 
 fn random_id() -> String {
     let mut bytes = [0u8; 8];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 

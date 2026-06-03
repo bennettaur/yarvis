@@ -37,7 +37,7 @@ const saveLayoutSchema = z.object({
   spec: z
     .object({
       root: z.string().min(1),
-      elements: z.record(z.unknown()),
+      elements: z.record(z.string(), z.unknown()),
     })
     .passthrough(),
 });
