@@ -71,10 +71,7 @@ export interface Resource<T> {
  * (the `usePrXxx` hooks below put owner/repo/number into it); otherwise the
  * component would keep stale data when those values change.
  */
-function useCachedResource<T>(
-  key: string | null,
-  loader: () => Promise<T>,
-): Resource<T> {
+function useCachedResource<T>(key: string | null, loader: () => Promise<T>): Resource<T> {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(key !== null);
@@ -105,7 +102,7 @@ function useCachedResource<T>(
     };
     // `loader` is recreated each render and is deliberately excluded; `key` is
     // the resource's full identity (see the contract above).
-  }, [key]);
+  }, [key, loader]);
 
   return { data, error, loading };
 }
@@ -114,31 +111,19 @@ function prKey(prefix: string, owner: string, repo: string, number: number) {
   return owner && repo ? `${prefix}:${owner}/${repo}/${number}` : null;
 }
 
-export function usePrDetail(
-  owner: string,
-  repo: string,
-  number: number,
-): Resource<PrDetail> {
+export function usePrDetail(owner: string, repo: string, number: number): Resource<PrDetail> {
   return useCachedResource(prKey("detail", owner, repo, number), () =>
     ghPrDetail(owner, repo, number),
   );
 }
 
-export function usePrFiles(
-  owner: string,
-  repo: string,
-  number: number,
-): Resource<PrFile[]> {
+export function usePrFiles(owner: string, repo: string, number: number): Resource<PrFile[]> {
   return useCachedResource(prKey("files", owner, repo, number), () =>
     ghPrFiles(owner, repo, number),
   );
 }
 
-export function usePrStatus(
-  owner: string,
-  repo: string,
-  number: number,
-): Resource<PrStatus> {
+export function usePrStatus(owner: string, repo: string, number: number): Resource<PrStatus> {
   return useCachedResource(prKey("status", owner, repo, number), () =>
     ghPrStatus(owner, repo, number),
   );

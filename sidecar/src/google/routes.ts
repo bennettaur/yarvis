@@ -36,9 +36,7 @@ export function createCalendarRoutes(config: Config): Hono {
   const db = () => getDb(config.databaseUrl as string).db;
 
   router.get("/status", async (c) => {
-    const configured = Boolean(
-      config.secrets.googleClientId && config.secrets.googleClientSecret,
-    );
+    const configured = Boolean(config.secrets.googleClientId && config.secrets.googleClientSecret);
     const token = await getStoredToken(db());
     return c.json({
       configured,
@@ -62,9 +60,7 @@ export function createCalendarRoutes(config: Config): Hono {
     try {
       const accessToken = await getValidAccessToken(db(), client);
       const max = Number(c.req.query("max") ?? "20");
-      return c.json(
-        await client.listUpcomingEvents(accessToken, Number.isFinite(max) ? max : 20),
-      );
+      return c.json(await client.listUpcomingEvents(accessToken, Number.isFinite(max) ? max : 20));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 502);
     }

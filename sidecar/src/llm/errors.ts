@@ -58,7 +58,5 @@ export function describeError(error: unknown): string {
 export function clientError(error: unknown): string {
   if (!(error instanceof Error)) return String(error);
   const status = (error as unknown as Record<string, unknown>).statusCode;
-  return typeof status === "number"
-    ? `${error.message} (status ${status})`
-    : error.message;
+  return typeof status === "number" ? `${error.message} (status ${status})` : error.message;
 }

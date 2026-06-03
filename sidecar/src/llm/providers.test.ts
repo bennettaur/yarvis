@@ -1,22 +1,15 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import postgres from "postgres";
 import type { Config } from "../config.ts";
-import { getDb } from "../db/client.ts";
 import { createCustomProvider } from "../customProviders/service.ts";
-import {
-  CUSTOM_PROVIDER_PREFIX,
-  availableProviders,
-  resolveModel,
-} from "./providers.ts";
+import { getDb } from "../db/client.ts";
+import { availableProviders, CUSTOM_PROVIDER_PREFIX, resolveModel } from "./providers.ts";
 
-const url =
-  process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
+const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
 const { db } = getDb(url);
 
-function configWithSecrets(
-  secrets: Config["customProviderSecrets"] = {},
-): Config {
+function configWithSecrets(secrets: Config["customProviderSecrets"] = {}): Config {
   return {
     port: 0,
     token: "t",
@@ -39,11 +32,7 @@ afterAll(async () => {
 describe("availableProviders", () => {
   it("returns only built-ins when no database is provided", async () => {
     const providers = await availableProviders(configWithSecrets());
-    expect(providers.map((p) => p.id).sort()).toEqual([
-      "anthropic",
-      "bedrock",
-      "gemini",
-    ]);
+    expect(providers.map((p) => p.id).sort()).toEqual(["anthropic", "bedrock", "gemini"]);
   });
 
   it("appends configured custom providers when given a database", async () => {
@@ -71,9 +60,9 @@ describe("availableProviders", () => {
       headerNames: [],
     });
     const providers = await availableProviders(configWithSecrets(), db);
-    expect(
-      providers.find((p) => p.id === `${CUSTOM_PROVIDER_PREFIX}${row.id}`)?.available,
-    ).toBe(false);
+    expect(providers.find((p) => p.id === `${CUSTOM_PROVIDER_PREFIX}${row.id}`)?.available).toBe(
+      false,
+    );
   });
 });
 
@@ -89,12 +78,7 @@ describe("resolveModel for custom providers", () => {
     const config = configWithSecrets({
       [row.id]: { apiKey: "sk-fake", headers: { "X-Tenant": "team-a" } },
     });
-    const model = await resolveModel(
-      config,
-      db,
-      `${CUSTOM_PROVIDER_PREFIX}${row.id}`,
-      "gpt-4o",
-    );
+    const model = await resolveModel(config, db, `${CUSTOM_PROVIDER_PREFIX}${row.id}`, "gpt-4o");
     expect((model as { modelId?: string }).modelId).toBe("gpt-4o");
   });
 
@@ -134,12 +118,7 @@ describe("resolveModel for custom providers", () => {
 
   it("throws when the custom provider id is unknown", async () => {
     await expect(
-      resolveModel(
-        configWithSecrets(),
-        db,
-        `${CUSTOM_PROVIDER_PREFIX}does-not-exist`,
-        "x",
-      ),
+      resolveModel(configWithSecrets(), db, `${CUSTOM_PROVIDER_PREFIX}does-not-exist`, "x"),
     ).rejects.toThrow();
   });
 });

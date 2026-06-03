@@ -143,10 +143,7 @@ pub fn list_custom_provider_secret_status() -> Vec<CustomProviderSecretStatus> {
         let mut headers = BTreeMap::new();
         if let Some(headers_obj) = entry_obj.get("headers").and_then(|v| v.as_object()) {
             for (name, value) in headers_obj {
-                let present = value
-                    .as_str()
-                    .map(|s| !s.is_empty())
-                    .unwrap_or(false);
+                let present = value.as_str().map(|s| !s.is_empty()).unwrap_or(false);
                 headers.insert(name.clone(), present);
             }
         }
@@ -190,17 +187,13 @@ pub fn set_custom_provider_secret(
 }
 
 #[tauri::command]
-pub fn delete_custom_provider_secret(
-    provider_id: String,
-    slot: String,
-) -> Result<(), String> {
+pub fn delete_custom_provider_secret(provider_id: String, slot: String) -> Result<(), String> {
     validate_slot(&slot)?;
     let mut blob = read_blob();
     let Some(root) = blob.as_object_mut() else {
         return Ok(());
     };
-    let Some(provider) = root.get_mut(&provider_id).and_then(|v| v.as_object_mut())
-    else {
+    let Some(provider) = root.get_mut(&provider_id).and_then(|v| v.as_object_mut()) else {
         return Ok(());
     };
     if slot == "apiKey" {

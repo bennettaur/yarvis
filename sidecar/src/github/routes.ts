@@ -60,9 +60,7 @@ export function createGithubRoutes(config: Config): Hono {
 
   const db = () => getDb(config.databaseUrl as string).db;
   const client = () =>
-    config.secrets.githubToken
-      ? new GitHubClient(config.secrets.githubToken)
-      : null;
+    config.secrets.githubToken ? new GitHubClient(config.secrets.githubToken) : null;
 
   // --- Live GitHub queries (require a token) ---
 

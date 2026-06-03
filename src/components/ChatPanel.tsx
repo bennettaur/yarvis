@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import ChatComposer from "./ChatComposer";
 import {
+  type ChatMessage,
+  type ChatSession,
   createSession,
   getMessages,
   listProviders,
   listSessions,
-  streamChat,
-  type ChatMessage,
-  type ChatSession,
   type ProviderId,
   type ProviderInfo,
+  streamChat,
 } from "../lib/chat";
+import ChatComposer from "./ChatComposer";
 
 interface Display {
   role: string;
@@ -43,9 +43,7 @@ export default function ChatPanel() {
         const savedProvider = localStorage.getItem(PROVIDER_KEY) as ProviderId | null;
         const savedModel = localStorage.getItem(MODEL_KEY);
         const chosen =
-          provs.find((p) => p.id === savedProvider) ??
-          provs.find((p) => p.available) ??
-          provs[0];
+          provs.find((p) => p.id === savedProvider) ?? provs.find((p) => p.available) ?? provs[0];
         if (chosen) {
           setProvider(chosen.id);
           setModel(
@@ -69,7 +67,7 @@ export default function ChatPanel() {
 
   useEffect(() => {
     threadRef.current?.scrollTo(0, threadRef.current.scrollHeight);
-  }, [messages, streaming]);
+  }, []);
 
   const selectSession = useCallback(async (id: string) => {
     setSessionId(id);
@@ -187,23 +185,18 @@ export default function ChatPanel() {
       >
         {messages.length === 0 && !streaming && (
           <p className="text-sm text-zinc-600">
-            Start a conversation. Set a provider key in Settings if the picker
-            shows "(no key)".
+            Start a conversation. Set a provider key in Settings if the picker shows "(no key)".
           </p>
         )}
         {messages.map((m, i) => (
           <div key={i} className="text-sm">
-            <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
-              {m.role}
-            </div>
+            <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">{m.role}</div>
             <div className="whitespace-pre-wrap text-zinc-100">{m.content}</div>
           </div>
         ))}
         {streaming && (
           <div className="text-sm">
-            <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
-              assistant
-            </div>
+            <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">assistant</div>
             <div className="whitespace-pre-wrap text-zinc-100">{streaming}</div>
           </div>
         )}

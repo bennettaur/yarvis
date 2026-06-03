@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { usePrFiles } from "../../lib/githubCache";
-import { prFileAnchorId, type PrRef } from "./shared";
+import { type PrRef, prFileAnchorId } from "./shared";
 
 const STATUS_LETTER: Record<string, { letter: string; color: string }> = {
   added: { letter: "A", color: "text-emerald-400" },
@@ -49,9 +49,7 @@ export default function PrFileList({
               }`}
               title={f.filename}
             >
-              <span className={`${status.color} shrink-0 font-mono text-xs`}>
-                {status.letter}
-              </span>
+              <span className={`${status.color} shrink-0 font-mono text-xs`}>{status.letter}</span>
               <span className="min-w-0 flex-1 truncate font-mono text-xs text-zinc-300">
                 {f.filename}
               </span>

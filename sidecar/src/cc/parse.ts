@@ -142,7 +142,7 @@ export function parseHistory(content: string, limit = 50): HistoryEntry[] {
 export function parsePlanTitle(markdown: string): string | null {
   for (const line of markdown.split("\n")) {
     const match = line.match(/^#\s+(.+)$/);
-    if (match) return match[1]!.trim();
+    if (match) return match[1]?.trim();
   }
   return null;
 }

@@ -1,5 +1,5 @@
+import type { ReviewThread } from "../../lib/github";
 import { usePrDetail } from "../../lib/githubCache";
-import { type ReviewThread } from "../../lib/github";
 import Markdown from "../Markdown";
 import type { PrRef } from "./shared";
 
@@ -54,9 +54,7 @@ export default function PrDescription({ owner, repo, number }: PrRef) {
         )}
       </section>
       <section>
-        <h3 className="mb-2 text-sm font-medium uppercase tracking-wide text-zinc-500">
-          Comments
-        </h3>
+        <h3 className="mb-2 text-sm font-medium uppercase tracking-wide text-zinc-500">Comments</h3>
         <ThreadsSection threads={data.reviewThreads} />
       </section>
     </div>

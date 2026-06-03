@@ -26,11 +26,7 @@ export default function TopBar({ title }: { title: string }) {
   }, []);
 
   const dotColor =
-    health === "checking"
-      ? "bg-zinc-500"
-      : health === "ok"
-        ? "bg-emerald-500"
-        : "bg-red-500";
+    health === "checking" ? "bg-zinc-500" : health === "ok" ? "bg-emerald-500" : "bg-red-500";
 
   return (
     <header className="flex h-12 shrink-0 items-center justify-between border-b border-zinc-800 px-5">
