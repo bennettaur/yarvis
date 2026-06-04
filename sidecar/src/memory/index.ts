@@ -1,6 +1,6 @@
-import { and, cosineDistance, desc, eq, gte, sql, type SQL } from "drizzle-orm";
+import { and, cosineDistance, desc, eq, gte, type SQL, sql } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
-import { memories, type MemoryRow } from "../db/schema.ts";
+import { type MemoryRow, memories } from "../db/schema.ts";
 import type { Embedder } from "./embedder.ts";
 
 export interface MemoryRecord {
@@ -44,10 +44,7 @@ export interface MemoryService {
 
 /** The columns toRecord needs — a subset of MemoryRow (the embedding is omitted
  * from list/search selects since it isn't returned to callers). */
-type MemoryRowFields = Pick<
-  MemoryRow,
-  "id" | "content" | "metadata" | "createdAt"
->;
+type MemoryRowFields = Pick<MemoryRow, "id" | "content" | "metadata" | "createdAt">;
 
 function toRecord(row: MemoryRowFields, score?: number): MemoryRecord {
   return {
@@ -66,10 +63,7 @@ export class PgVectorMemoryStore implements MemoryService {
     private readonly embedder: Embedder,
   ) {}
 
-  async add(
-    content: string,
-    metadata?: Record<string, unknown>,
-  ): Promise<MemoryRecord> {
+  async add(content: string, metadata?: Record<string, unknown>): Promise<MemoryRecord> {
     const embedding = await this.embedder.embed(content);
     const [row] = await this.db
       .insert(memories)
@@ -134,10 +128,7 @@ export class PgVectorMemoryStore implements MemoryService {
   }
 
   async get(id: string): Promise<MemoryRecord | null> {
-    const [row] = await this.db
-      .select()
-      .from(memories)
-      .where(eq(memories.id, id));
+    const [row] = await this.db.select().from(memories).where(eq(memories.id, id));
     return row ? toRecord(row) : null;
   }
 

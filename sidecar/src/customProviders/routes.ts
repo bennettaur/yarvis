@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { UrlSafetyError, validateOutboundUrl } from "../lib/urlSafety.ts";
 import {
   createCustomProvider,
   deleteCustomProvider,
@@ -11,22 +12,65 @@ import {
 } from "./service.ts";
 
 const apiKind = z.enum(["openai", "openai-chat", "anthropic"]);
+
+/** RFC 7230 token characters, the legal set for HTTP header names. */
+const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$/;
+/**
+ * Reserved header names the user must not be able to override on outbound
+ * provider requests — preventing auth-bypass and request smuggling.
+ */
+const RESERVED_HEADER_NAMES = new Set([
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+  "host",
+  "content-length",
+  "transfer-encoding",
+  "connection",
+]);
+
+const headerName = z
+  .string()
+  .min(1)
+  .max(64)
+  .refine((v) => HEADER_NAME.test(v), "header name must match RFC 7230 token charset")
+  .refine(
+    (v) => !RESERVED_HEADER_NAMES.has(v.toLowerCase()),
+    "header name is reserved and cannot be customised",
+  );
+
 const trimmedStrings = z.array(z.string().min(1));
+const headerNames = z.array(headerName);
+
+const baseUrl = z
+  .string()
+  .url()
+  .max(2048)
+  .superRefine((value, ctx) => {
+    try {
+      validateOutboundUrl(value);
+    } catch (e) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: e instanceof UrlSafetyError ? e.message : "url is not allowed",
+      });
+    }
+  });
 
 const createSchema = z.object({
   name: z.string().min(1),
-  baseUrl: z.string().url(),
+  baseUrl,
   apiKind,
   models: trimmedStrings.default([]),
-  headerNames: trimmedStrings.default([]),
+  headerNames: headerNames.default([]),
 });
 
 const updateSchema = z.object({
   name: z.string().min(1).optional(),
-  baseUrl: z.string().url().optional(),
+  baseUrl: baseUrl.optional(),
   apiKind: apiKind.optional(),
   models: trimmedStrings.optional(),
-  headerNames: trimmedStrings.optional(),
+  headerNames: headerNames.optional(),
 });
 
 /** Custom provider CRUD, mounted under /api/custom-providers. */

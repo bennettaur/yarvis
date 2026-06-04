@@ -126,7 +126,4 @@ export const ghAddStar = (pr: {
   url?: string | null;
 }) => send<{ ok: boolean }>("/api/github/stars", "POST", pr);
 export const ghRemoveStar = (owner: string, repo: string, number: number) =>
-  send<{ deleted: boolean }>(
-    `/api/github/stars/${owner}/${repo}/${number}`,
-    "DELETE",
-  );
+  send<{ deleted: boolean }>(`/api/github/stars/${owner}/${repo}/${number}`, "DELETE");

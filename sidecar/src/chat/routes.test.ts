@@ -2,11 +2,10 @@ import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
-import { getDb } from "../db/client.ts";
 import { createCustomProvider } from "../customProviders/service.ts";
+import { getDb } from "../db/client.ts";
 
-const url =
-  process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
+const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
 const { db } = getDb(url);
 
@@ -36,11 +35,7 @@ describe("chat routes", () => {
     const res = await app.request("/api/chat/providers", { headers: auth });
     expect(res.status).toBe(200);
     const providers = (await res.json()) as { id: string; available: boolean }[];
-    expect(providers.map((p) => p.id).sort()).toEqual([
-      "anthropic",
-      "bedrock",
-      "gemini",
-    ]);
+    expect(providers.map((p) => p.id).sort()).toEqual(["anthropic", "bedrock", "gemini"]);
     // No keys configured, so the key-based providers are unavailable.
     expect(providers.find((p) => p.id === "anthropic")?.available).toBe(false);
   });
@@ -67,12 +62,13 @@ describe("chat routes", () => {
   });
 
   it("accepts a custom provider id in chat requests (schema-level)", async () => {
-    // The streaming call will fail trying to reach 127.0.0.1:1, but the
-    // request should pass schema validation and start the stream rather than
-    // being rejected with a 400.
+    // The streaming call will fail trying to reach this nonexistent host, but
+    // the request should pass schema validation and start the stream rather
+    // than being rejected with a 400. A literal loopback URL would now be
+    // rejected by the outbound-URL guard, so use a publicly-shaped host.
     const row = await createCustomProvider(db, {
       name: "litellm",
-      baseUrl: "http://127.0.0.1:1/v1",
+      baseUrl: "https://litellm.example.invalid/v1",
       apiKind: "openai",
       models: ["gpt-4o"],
       headerNames: [],
@@ -134,8 +130,6 @@ describe("chat routes", () => {
       }),
     });
     expect(res.status).toBe(400);
-    expect(((await res.json()) as { error: string }).error).toContain(
-      "Anthropic API key",
-    );
+    expect(((await res.json()) as { error: string }).error).toContain("Anthropic API key");
   });
 });

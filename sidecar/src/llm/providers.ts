@@ -4,9 +4,10 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
 import type { LanguageModel } from "ai";
 import type { Config } from "../config.ts";
-import type { Db } from "../db/client.ts";
 import { listCustomProviders } from "../customProviders/service.ts";
+import type { Db } from "../db/client.ts";
 import type { CustomProviderRow } from "../db/schema.ts";
+import { validateOutboundUrl } from "../lib/urlSafety.ts";
 
 /**
  * Provider identifiers.
@@ -80,21 +81,17 @@ function customProviderInfo(row: CustomProviderRow): ProviderInfo {
  * Lists providers and whether each is usable. When a `db` is provided, the
  * user's configured custom providers are appended.
  */
-export async function availableProviders(
-  config: Config,
-  db?: Db,
-): Promise<ProviderInfo[]> {
+export async function availableProviders(config: Config, db?: Db): Promise<ProviderInfo[]> {
   const built = builtInProviders(config);
   if (!db) return built;
   const rows = await listCustomProviders(db);
   return [...built, ...rows.map(customProviderInfo)];
 }
 
-function resolveCustom(
-  row: CustomProviderRow,
-  config: Config,
-  modelId: string,
-): LanguageModel {
+function resolveCustom(row: CustomProviderRow, config: Config, modelId: string): LanguageModel {
+  // Defense-in-depth: the create/update routes already validate, but DB rows
+  // can have been seeded by an earlier version, so re-check at resolve time.
+  validateOutboundUrl(row.baseUrl);
   const secrets = config.customProviderSecrets[row.id] ?? { headers: {} };
   const options = {
     baseURL: row.baseUrl,

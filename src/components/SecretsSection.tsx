@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { getHealth, waitForSidecarReady } from "../lib/api";
 import {
-  SECRETS,
   deleteSecret,
   listSecretStatus,
   restartSidecar,
-  setSecret,
+  SECRETS,
   type SecretKey,
   type SecretStatus,
+  setSecret,
 } from "../lib/keychain";
 import { StatusDot } from "./Dashboard";
 import { MaskedInput } from "./MaskedInput";
@@ -68,17 +68,13 @@ export default function SecretsSection() {
     [refresh],
   );
 
-  const isPresent = (key: SecretKey) =>
-    secrets.find((s) => s.key === key)?.present ?? false;
+  const isPresent = (key: SecretKey) => secrets.find((s) => s.key === key)?.present ?? false;
 
   return (
     <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
-      <h2 className="mb-1 text-sm font-medium uppercase tracking-wide text-zinc-500">
-        Secrets
-      </h2>
+      <h2 className="mb-1 text-sm font-medium uppercase tracking-wide text-zinc-500">Secrets</h2>
       <p className="mb-4 text-xs text-zinc-500">
-        Stored in the macOS Keychain. Saving reloads the sidecar so changes
-        take effect right away.
+        Stored in the macOS Keychain. Saving reloads the sidecar so changes take effect right away.
       </p>
       <div className="space-y-5">
         {SECRETS.map((meta) => (
@@ -95,9 +91,7 @@ export default function SecretsSection() {
               <MaskedInput
                 value={inputs[meta.key] ?? ""}
                 placeholder={meta.placeholder}
-                onChange={(v) =>
-                  setInputs((prev) => ({ ...prev, [meta.key]: v }))
-                }
+                onChange={(v) => setInputs((prev) => ({ ...prev, [meta.key]: v }))}
               />
               <button
                 onClick={() => void onSave(meta.key)}

@@ -1,6 +1,6 @@
 import NavRail from "./NavRail";
+import { type Tab, tabLabel } from "./nav";
 import TopBar from "./TopBar";
-import { tabLabel, type Tab } from "./nav";
 
 /**
  * Full-viewport desktop shell: a slim left icon rail, a thin top bar, and a

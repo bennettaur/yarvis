@@ -1,20 +1,20 @@
-import { useEffect, useState } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { useEffect, useState } from "react";
 import AlarmOverlay from "./components/AlarmOverlay";
 import AlarmsPanel from "./components/AlarmsPanel";
 import CalendarPanel from "./components/CalendarPanel";
 import ChatPanel from "./components/ChatPanel";
 import Dashboard from "./components/Dashboard";
 import MemoryPanel from "./components/MemoryPanel";
+import OmniView from "./components/omni/OmniView";
 import PrsPanel from "./components/PrsPanel";
 import SessionsPanel from "./components/SessionsPanel";
 import SettingsPanel from "./components/SettingsPanel";
-import TasksPanel from "./components/TasksPanel";
-import TerminalPanel from "./components/TerminalPanel";
-import OmniView from "./components/omni/OmniView";
 import AppShell from "./components/shell/AppShell";
 import type { Tab } from "./components/shell/nav";
-import { onAlarmFired, type Alarm } from "./lib/alarms";
+import TasksPanel from "./components/TasksPanel";
+import TerminalPanel from "./components/TerminalPanel";
+import { type Alarm, onAlarmFired } from "./lib/alarms";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("chat");
@@ -53,9 +53,7 @@ export default function App() {
         )}
       </AppShell>
 
-      {activeAlarm && (
-        <AlarmOverlay alarm={activeAlarm} onDone={() => setActiveAlarm(null)} />
-      )}
+      {activeAlarm && <AlarmOverlay alarm={activeAlarm} onDone={() => setActiveAlarm(null)} />}
     </>
   );
 }

@@ -3,17 +3,13 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { clientError } from "../llm/errors.ts";
 import { resolveModel } from "../llm/providers.ts";
 import { tasksCompletedBetween } from "../tasks/service.ts";
 import { chooseEmbedder } from "./embedder.ts";
 import { PgVectorMemoryStore } from "./index.ts";
 import { fetchUrlText, ingestDocument } from "./ingest.ts";
-import {
-  assembleRecapContext,
-  dateRange,
-  recapMaterial,
-  recapSystemPrompt,
-} from "./recap.ts";
+import { assembleRecapContext, dateRange, recapMaterial, recapSystemPrompt } from "./recap.ts";
 
 /** Cap the recap LLM call so a hung provider can't block the request forever. */
 const RECAP_TIMEOUT_MS = 30_000;
@@ -86,9 +82,7 @@ export function createMemoryRoutes(config: Config): Hono {
     return c.json(await store().add(parsed.data.content, { type: "note" }), 201);
   });
 
-  router.delete("/:id", async (c) =>
-    c.json({ deleted: await store().delete(c.req.param("id")) }),
-  );
+  router.delete("/:id", async (c) => c.json({ deleted: await store().delete(c.req.param("id")) }));
 
   router.post("/ingest", async (c) => {
     const parsed = ingestSchema.safeParse(await c.req.json().catch(() => null));
@@ -136,7 +130,9 @@ export function createMemoryRoutes(config: Config): Hono {
         });
         recap = text;
       } catch (e) {
-        recap = `(could not summarize: ${e instanceof Error ? e.message : String(e)})\n\n${context}`;
+        // `clientError` keeps the human message + HTTP status but never the raw
+        // url / response body, which can carry provider-side identifiers.
+        recap = `(could not summarize: ${clientError(e)})\n\n${context}`;
       }
     }
 

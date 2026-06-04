@@ -65,7 +65,9 @@ pub fn read_root() -> Value {
 /// Persists the secrets blob, replacing the single Keychain item's contents.
 pub fn write_root(root: &Value) -> Result<(), String> {
     let serialized = serde_json::to_string(root).map_err(|e| e.to_string())?;
-    entry()?.set_password(&serialized).map_err(|e| e.to_string())
+    entry()?
+        .set_password(&serialized)
+        .map_err(|e| e.to_string())
 }
 
 /// Extracts a non-empty top-level secret from an already-read blob.

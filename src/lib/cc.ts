@@ -51,6 +51,4 @@ export const getTranscript = (dir: string, id: string) =>
 export const listPlans = () => get<CcPlan[]>("/api/cc/plans");
 
 export const getPlan = (name: string) =>
-  get<{ name: string; content: string }>(
-    `/api/cc/plans/${encodeURIComponent(name)}`,
-  );
+  get<{ name: string; content: string }>(`/api/cc/plans/${encodeURIComponent(name)}`);

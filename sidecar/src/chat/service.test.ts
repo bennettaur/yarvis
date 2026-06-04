@@ -4,8 +4,7 @@ import postgres from "postgres";
 import * as schema from "../db/schema.ts";
 import { addMessage, createSession, getMessages, listSessions } from "./service.ts";
 
-const url =
-  process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
+const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
 const db = drizzle(sql, { schema });
 

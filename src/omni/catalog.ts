@@ -111,8 +111,7 @@ export const catalog = defineCatalog(schema, {
     },
     Tasks: {
       props: titled,
-      description:
-        "The user's daily and weekly tasks, with inline add/complete. Self-contained.",
+      description: "The user's daily and weekly tasks, with inline add/complete. Self-contained.",
     },
     Calendar: {
       props: titled,
@@ -151,8 +150,7 @@ export const catalog = defineCatalog(schema, {
     },
     Sessions: {
       props: titled,
-      description:
-        "Claude Code session and plan browser for local projects. Self-contained.",
+      description: "Claude Code session and plan browser for local projects. Self-contained.",
     },
     Alarms: {
       props: titled,
@@ -175,7 +173,7 @@ export const catalog = defineCatalog(schema, {
           .string()
           .optional()
           .describe(
-            "Stable, unique id for this terminal's shell session (e.g. \"term-1\"). Assign a distinct value to each Terminal and keep it unchanged across edits so its running shell is preserved.",
+            'Stable, unique id for this terminal\'s shell session (e.g. "term-1"). Assign a distinct value to each Terminal and keep it unchanged across edits so its running shell is preserved.',
           ),
       }),
       description:

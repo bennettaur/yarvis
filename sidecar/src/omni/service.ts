@@ -1,6 +1,6 @@
 import { desc, eq } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
-import { omniLayouts, type OmniLayout } from "../db/schema.ts";
+import { type OmniLayout, omniLayouts } from "../db/schema.ts";
 
 /**
  * Persistence for named Omni layouts. A layout is a json-render spec the user
@@ -17,15 +17,8 @@ export async function getLayout(db: Db, id: string): Promise<OmniLayout | null> 
   return row ?? null;
 }
 
-export async function saveLayout(
-  db: Db,
-  name: string,
-  spec: unknown,
-): Promise<OmniLayout> {
-  const [existing] = await db
-    .select()
-    .from(omniLayouts)
-    .where(eq(omniLayouts.name, name));
+export async function saveLayout(db: Db, name: string, spec: unknown): Promise<OmniLayout> {
+  const [existing] = await db.select().from(omniLayouts).where(eq(omniLayouts.name, name));
 
   if (existing) {
     const [row] = await db
@@ -41,9 +34,6 @@ export async function saveLayout(
 }
 
 export async function deleteLayout(db: Db, id: string): Promise<boolean> {
-  const rows = await db
-    .delete(omniLayouts)
-    .where(eq(omniLayouts.id, id))
-    .returning();
+  const rows = await db.delete(omniLayouts).where(eq(omniLayouts.id, id)).returning();
   return rows.length > 0;
 }

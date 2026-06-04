@@ -1,4 +1,4 @@
-import { stepCountIs, streamText, type ModelMessage } from "ai";
+import { type ModelMessage, stepCountIs, streamText } from "ai";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
@@ -41,9 +41,7 @@ export function createChatRoutes(config: Config): Hono {
   const router = new Hono();
 
   router.get("/providers", async (c) => {
-    const db = config.databaseUrl
-      ? getDb(config.databaseUrl).db
-      : undefined;
+    const db = config.databaseUrl ? getDb(config.databaseUrl).db : undefined;
     return c.json(await availableProviders(config, db));
   });
 
@@ -87,25 +85,25 @@ export function createChatRoutes(config: Config): Hono {
     const history = await getMessages(dbh, sessionId);
     await addMessage(dbh, { sessionId, role: "user", content: message });
 
+    // Only user/assistant messages are replayed. A persisted `system` row could
+    // otherwise override the application system prompt on the next turn, so
+    // even though the writers in this codebase don't insert them today we
+    // filter them out as a defense in depth.
     const messages: ModelMessage[] = history
-      .filter((m) => m.role !== "tool")
+      .filter((m) => m.role === "user" || m.role === "assistant")
       .map((m) => ({
-        role: m.role as "user" | "assistant" | "system",
+        role: m.role as "user" | "assistant",
         content: m.content,
       }));
     messages.push({ role: "user", content: message });
 
     const memory = new PgVectorMemoryStore(dbh, chooseEmbedder(config));
 
-    console.log(
-      `[chat] message provider=${provider} model=${model} turns=${messages.length}`,
-    );
-
     return streamSSE(c, async (stream) => {
       let streamError: unknown = null;
       let full = "";
       let firstTokenLogged = false;
-      const startedAt = Date.now();
+      const _startedAt = Date.now();
       const result = streamText({
         model: chatModel,
         system: systemPrompt(),
@@ -129,7 +127,6 @@ export function createChatRoutes(config: Config): Hono {
       try {
         for await (const delta of result.textStream) {
           if (!firstTokenLogged) {
-            console.log(`[chat] first token after ${Date.now() - startedAt}ms`);
             firstTokenLogged = true;
           }
           full += delta;
@@ -148,9 +145,6 @@ export function createChatRoutes(config: Config): Hono {
         });
       } else {
         await addMessage(dbh, { sessionId, role: "assistant", content: full });
-        console.log(
-          `[chat] done provider=${provider} model=${model} chars=${full.length} ms=${Date.now() - startedAt}`,
-        );
         await stream.writeSSE({ data: JSON.stringify({ type: "done" }) });
       }
     });

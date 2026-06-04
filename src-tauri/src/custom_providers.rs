@@ -52,14 +52,67 @@ fn provider_entry<'a>(blob: &'a mut Value, id: &str) -> &'a mut Map<String, Valu
         .expect("provider entries are objects")
 }
 
+/// Header names the user must not be able to override on outbound provider
+/// requests. Keeps the sidecar's RESERVED_HEADER_NAMES set and this Rust
+/// validator in lockstep — both guard the same surface from different angles.
+const RESERVED_HEADER_NAMES: &[&str] = &[
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "host",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+];
+
+const MAX_HEADER_NAME_LEN: usize = 64;
+
+/// Matches the RFC 7230 token charset: `!#$%&'*+-.^_`|~` plus alphanumerics.
+fn is_header_token_char(c: char) -> bool {
+    c.is_ascii_alphanumeric()
+        || matches!(
+            c,
+            '!' | '#'
+                | '$'
+                | '%'
+                | '&'
+                | '\''
+                | '*'
+                | '+'
+                | '-'
+                | '.'
+                | '^'
+                | '_'
+                | '`'
+                | '|'
+                | '~'
+        )
+}
+
+fn validate_header_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("header name is empty".to_string());
+    }
+    if name.len() > MAX_HEADER_NAME_LEN {
+        return Err(format!(
+            "header name exceeds {MAX_HEADER_NAME_LEN} characters"
+        ));
+    }
+    if !name.chars().all(is_header_token_char) {
+        return Err("header name must match RFC 7230 token charset".to_string());
+    }
+    if RESERVED_HEADER_NAMES.contains(&name.to_ascii_lowercase().as_str()) {
+        return Err(format!("header name '{name}' is reserved"));
+    }
+    Ok(())
+}
+
 fn validate_slot(slot: &str) -> Result<(), String> {
     if slot == "apiKey" {
         return Ok(());
     }
     if let Some(name) = slot.strip_prefix("header:") {
-        if !name.is_empty() {
-            return Ok(());
-        }
+        return validate_header_name(name);
     }
     Err(format!("unknown secret slot: {slot}"))
 }
@@ -88,10 +141,7 @@ pub fn list_custom_provider_secret_status() -> Vec<CustomProviderSecretStatus> {
         let mut headers = BTreeMap::new();
         if let Some(headers_obj) = entry_obj.get("headers").and_then(|v| v.as_object()) {
             for (name, value) in headers_obj {
-                let present = value
-                    .as_str()
-                    .map(|s| !s.is_empty())
-                    .unwrap_or(false);
+                let present = value.as_str().map(|s| !s.is_empty()).unwrap_or(false);
                 headers.insert(name.clone(), present);
             }
         }
@@ -135,17 +185,13 @@ pub fn set_custom_provider_secret(
 }
 
 #[tauri::command]
-pub fn delete_custom_provider_secret(
-    provider_id: String,
-    slot: String,
-) -> Result<(), String> {
+pub fn delete_custom_provider_secret(provider_id: String, slot: String) -> Result<(), String> {
     validate_slot(&slot)?;
     let mut blob = read_blob();
     let Some(root) = blob.as_object_mut() else {
         return Ok(());
     };
-    let Some(provider) = root.get_mut(&provider_id).and_then(|v| v.as_object_mut())
-    else {
+    let Some(provider) = root.get_mut(&provider_id).and_then(|v| v.as_object_mut()) else {
         return Ok(());
     };
     if slot == "apiKey" {

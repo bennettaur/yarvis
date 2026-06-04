@@ -1,14 +1,8 @@
 import { useEffect, useState } from "react";
-import { acknowledgeAlarm, snoozeAlarm, type Alarm } from "../lib/alarms";
+import { type Alarm, acknowledgeAlarm, snoozeAlarm } from "../lib/alarms";
 
 /** Full-screen takeover shown when an alarm fires. */
-export default function AlarmOverlay({
-  alarm,
-  onDone,
-}: {
-  alarm: Alarm;
-  onDone: () => void;
-}) {
+export default function AlarmOverlay({ alarm, onDone }: { alarm: Alarm; onDone: () => void }) {
   const [secondsPast, setSecondsPast] = useState(
     Math.max(0, Math.floor((Date.now() - alarm.fireAtMs) / 1000)),
   );
@@ -34,9 +28,7 @@ export default function AlarmOverlay({
         {alarm.label}
       </div>
       {escalated && (
-        <div className="text-red-300">
-          Overdue by {secondsPast}s — please acknowledge
-        </div>
+        <div className="text-red-300">Overdue by {secondsPast}s — please acknowledge</div>
       )}
       <div className="flex gap-4">
         <button

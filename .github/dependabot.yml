@@ -1,0 +1,40 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      tauri:
+        patterns:
+          - "@tauri-apps/*"
+      react:
+        patterns:
+          - react
+          - react-dom
+          - "@types/react"
+          - "@types/react-dom"
+      ai-sdk:
+        patterns:
+          - "@ai-sdk/*"
+          - ai
+      dev-dependencies:
+        dependency-type: development
+
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      tauri:
+        patterns:
+          - tauri
+          - tauri-*
+          - tauri-plugin-*
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

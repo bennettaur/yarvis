@@ -1,4 +1,4 @@
-import { streamText, type ModelMessage } from "ai";
+import { type ModelMessage, streamText } from "ai";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
@@ -6,12 +6,7 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
 import { resolveModel } from "../llm/providers.ts";
-import {
-  deleteLayout,
-  getLayout,
-  listLayouts,
-  saveLayout,
-} from "./service.ts";
+import { deleteLayout, getLayout, listLayouts, saveLayout } from "./service.ts";
 
 /**
  * Omni UI-generation routes, mounted under /api/omni.
@@ -23,16 +18,24 @@ import {
  * model's raw output — conversational text interleaved with json-render JSONL
  * spec patches — which the frontend splits and compiles into a live spec.
  */
+const MAX_OMNI_SYSTEM_CHARS = 64 * 1024;
+const MAX_OMNI_MESSAGE_CHARS = 32 * 1024;
+const MAX_OMNI_MESSAGES = 200;
+
 const generateSchema = z.object({
-  system: z.string().min(1),
+  // Hard cap on the system-prompt size. The catalog prompt that the frontend
+  // sends is well under this; a much larger value indicates either abuse or a
+  // client mistake worth surfacing as a 400 rather than billing as tokens.
+  system: z.string().min(1).max(MAX_OMNI_SYSTEM_CHARS),
   messages: z
     .array(
       z.object({
         role: z.enum(["user", "assistant"]),
-        content: z.string(),
+        content: z.string().max(MAX_OMNI_MESSAGE_CHARS),
       }),
     )
-    .min(1),
+    .min(1)
+    .max(MAX_OMNI_MESSAGES),
   provider: z.string().min(1),
   model: z.string().min(1),
 });
@@ -42,7 +45,7 @@ const saveLayoutSchema = z.object({
   spec: z
     .object({
       root: z.string().min(1),
-      elements: z.record(z.unknown()),
+      elements: z.record(z.string(), z.unknown()),
     })
     .passthrough(),
 });
@@ -115,24 +118,18 @@ export function createOmniRoutes(config: Config): Hono {
 
     let chatModel;
     try {
-      const db = config.databaseUrl
-        ? getDb(config.databaseUrl).db
-        : undefined;
+      const db = config.databaseUrl ? getDb(config.databaseUrl).db : undefined;
       chatModel = await resolveModel(config, db, provider, model);
     } catch (e) {
       console.error("[omni] model resolution failed:", e);
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
     }
 
-    console.log(
-      `[omni] generate provider=${provider} model=${model} turns=${messages.length}`,
-    );
-
     return streamSSE(c, async (stream) => {
       let streamError: unknown = null;
-      let chars = 0;
+      let _chars = 0;
       let firstTokenLogged = false;
-      const startedAt = Date.now();
+      const _startedAt = Date.now();
       const result = streamText({
         model: chatModel,
         system,
@@ -154,10 +151,9 @@ export function createOmniRoutes(config: Config): Hono {
       try {
         for await (const delta of result.textStream) {
           if (!firstTokenLogged) {
-            console.log(`[omni] first token after ${Date.now() - startedAt}ms`);
             firstTokenLogged = true;
           }
-          chars += delta.length;
+          _chars += delta.length;
           await stream.writeSSE({
             data: JSON.stringify({ type: "delta", text: delta }),
           });
@@ -175,9 +171,6 @@ export function createOmniRoutes(config: Config): Hono {
           }),
         });
       } else {
-        console.log(
-          `[omni] done provider=${provider} model=${model} chars=${chars} ms=${Date.now() - startedAt}`,
-        );
         await stream.writeSSE({ data: JSON.stringify({ type: "done" }) });
       }
     });

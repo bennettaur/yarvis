@@ -24,9 +24,7 @@ export function buildTaskTools(db: Db, sessionId: string) {
       inputSchema: z.object({
         title: z.string().describe("Short description of the task"),
         scope: z.enum(["daily", "weekly"]),
-        targetDate: isoDate
-          .optional()
-          .describe("Due date; for weekly goals, the end-of-week date"),
+        targetDate: isoDate.optional().describe("Due date; for weekly goals, the end-of-week date"),
       }),
       execute: async ({ title, scope, targetDate }) => {
         const t = await createTask(db, {
