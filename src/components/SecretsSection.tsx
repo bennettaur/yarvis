@@ -10,6 +10,7 @@ import {
   type SecretStatus,
 } from "../lib/keychain";
 import { StatusDot } from "./Dashboard";
+import { MaskedInput } from "./MaskedInput";
 
 /** Trigger a sidecar restart and wait for it to come back ready. */
 async function restartAndWait(): Promise<void> {
@@ -91,14 +92,12 @@ export default function SecretsSection() {
             </div>
             <p className="mb-2 text-xs text-zinc-500">{meta.help}</p>
             <div className="flex gap-2">
-              <input
-                type="password"
+              <MaskedInput
                 value={inputs[meta.key] ?? ""}
                 placeholder={meta.placeholder}
-                onChange={(e) =>
-                  setInputs((prev) => ({ ...prev, [meta.key]: e.target.value }))
+                onChange={(v) =>
+                  setInputs((prev) => ({ ...prev, [meta.key]: v }))
                 }
-                className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-zinc-500"
               />
               <button
                 onClick={() => void onSave(meta.key)}
