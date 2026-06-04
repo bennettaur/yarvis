@@ -16,7 +16,7 @@ use tokio::sync::Notify;
 use tokio::time::sleep;
 
 use crate::custom_providers::build_sidecar_env;
-use crate::keychain::read_secret;
+use crate::keychain::{read_root, secret_from_root};
 
 /// Origins permitted to call the sidecar. Covers the Vite dev server and the
 /// Tauri webview origins; the sidecar still requires the bearer token regardless.
@@ -107,26 +107,29 @@ fn build_command(_app: &AppHandle, port: u16, token: &str) -> Command {
     cmd.env("YARVIS_SIDECAR_TOKEN", token);
     cmd.env("YARVIS_ALLOWED_ORIGINS", ALLOWED_ORIGINS);
 
-    if let Some(url) = read_secret("database_url") {
+    // Read the single secrets item once; one Keychain access covers every
+    // value injected below.
+    let secrets = read_root();
+    if let Some(url) = secret_from_root(&secrets, "database_url") {
         cmd.env("DATABASE_URL", url);
     }
-    if let Some(key) = read_secret("anthropic_api_key") {
+    if let Some(key) = secret_from_root(&secrets, "anthropic_api_key") {
         cmd.env("ANTHROPIC_API_KEY", key);
     }
-    if let Some(key) = read_secret("gemini_api_key") {
+    if let Some(key) = secret_from_root(&secrets, "gemini_api_key") {
         cmd.env("GEMINI_API_KEY", key);
     }
-    if let Some(token) = read_secret("github_token") {
+    if let Some(token) = secret_from_root(&secrets, "github_token") {
         cmd.env("GITHUB_TOKEN", token);
     }
-    if let Some(id) = read_secret("google_client_id") {
+    if let Some(id) = secret_from_root(&secrets, "google_client_id") {
         cmd.env("GOOGLE_CLIENT_ID", id);
     }
-    if let Some(secret) = read_secret("google_client_secret") {
+    if let Some(secret) = secret_from_root(&secrets, "google_client_secret") {
         cmd.env("GOOGLE_CLIENT_SECRET", secret);
     }
 
-    if let Some(json) = build_sidecar_env() {
+    if let Some(json) = build_sidecar_env(&secrets) {
         cmd.env("YARVIS_CUSTOM_PROVIDER_SECRETS", json);
     }
 
