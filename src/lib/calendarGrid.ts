@@ -42,6 +42,13 @@ export function startOfMonth(date: Date): Date {
   return d;
 }
 
+/** Midnight on the first of the month `months` after `date`'s month. */
+export function addMonths(date: Date, months: number): Date {
+  const d = startOfMonth(date);
+  d.setMonth(d.getMonth() + months);
+  return d;
+}
+
 /**
  * The days filling a 6×7 month grid: the month's days plus the leading and
  * trailing days needed to start on Sunday and end on Saturday. Always 42 cells
@@ -168,7 +175,7 @@ export function assignLanes(events: CalendarEvent[]): LaidOutEvent[] {
   let clusterMaxEnd = -Infinity;
 
   const flush = () => {
-    const lanes = cluster.reduce((m, c) => Math.max(m, c.lane + 1), 0);
+    const lanes = cluster.reduce((maxLane, c) => Math.max(maxLane, c.lane + 1), 0);
     for (const c of cluster) result.push({ event: c.event, lane: c.lane, lanes });
     cluster = [];
     clusterMaxEnd = -Infinity;

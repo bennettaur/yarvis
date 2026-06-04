@@ -1,10 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import CalendarConnectionGate from "./CalendarConnectionGate";
-import EventAlarmButton from "./EventAlarmButton";
-import { useNow, useRangeEvents } from "./useRangeEvents";
-import { openExternal } from "../../lib/url";
-import { useEventAlarms } from "../../lib/calendarAlarms";
 import type { CalendarEvent } from "../../lib/calendar";
+import { useEventAlarms } from "../../lib/calendarAlarms";
 import {
   addDays,
   assignLanes,
@@ -19,6 +15,10 @@ import {
   startMs,
   startOfDay,
 } from "../../lib/calendarGrid";
+import { openExternal } from "../../lib/url";
+import CalendarConnectionGate from "./CalendarConnectionGate";
+import EventAlarmButton from "./EventAlarmButton";
+import { useNow, useRangeEvents } from "./useRangeEvents";
 
 export type Orientation = "vertical" | "horizontal";
 
@@ -53,22 +53,13 @@ function geometry(event: CalendarEvent, day: Date, pxPerMin: number): Geom {
   return { offset: startMin * pxPerMin, size: durMin * pxPerMin };
 }
 
-function Timeline({
-  orientation,
-  initialDate,
-}: {
-  orientation: Orientation;
-  initialDate?: Date;
-}) {
+function Timeline({ orientation, initialDate }: { orientation: Orientation; initialDate?: Date }) {
   const vertical = orientation === "vertical";
   const pxPerMin = PX_PER_MIN[orientation];
   const axisPx = 24 * 60 * pxPerMin;
   const now = useNow();
   const [day, setDay] = useState(() => initialDate ?? new Date());
-  const { events, error, loading } = useRangeEvents(
-    startOfDay(day),
-    addDays(startOfDay(day), 1),
-  );
+  const { events, error, loading } = useRangeEvents(startOfDay(day), addDays(startOfDay(day), 1));
   const { isArmed, arm } = useEventAlarms();
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -89,7 +80,10 @@ function Timeline({
   }, [vertical, nowOffset, showNow]);
 
   // Viewing another day: rest at the start of the work day. Keyed on the day so
-  // it lands there once on switch rather than fighting manual scrolling.
+  // it lands there once on switch rather than fighting manual scrolling. dayKey
+  // isn't read in the body but is a required trigger: switching between two
+  // non-today days changes nothing else in the deps.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-run to reset scroll when the viewed day changes
   useEffect(() => {
     const el = scrollRef.current;
     if (!el || showNow) return;
@@ -106,7 +100,10 @@ function Timeline({
       <div className="flex shrink-0 flex-wrap items-center gap-2 pb-2">
         <h2 className="text-sm font-medium text-zinc-200">{formatFullDay(day)}</h2>
         {allDay.length > 0 && (
-          <span className="truncate text-xs text-zinc-500" title={allDay.map((e) => e.title).join(", ")}>
+          <span
+            className="truncate text-xs text-zinc-500"
+            title={allDay.map((e) => e.title).join(", ")}
+          >
             · {allDay.map((e) => e.title).join(", ")}
           </span>
         )}
@@ -205,9 +202,7 @@ function Timeline({
                 title={event.title}
               >
                 <div className="flex items-start justify-between gap-1">
-                  <span className="truncate font-medium text-zinc-100">
-                    {event.title}
-                  </span>
+                  <span className="truncate font-medium text-zinc-100">{event.title}</span>
                   <EventAlarmButton
                     event={event}
                     armed={isArmed(event)}

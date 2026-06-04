@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import CalendarConnectionGate from "./calendar/CalendarConnectionGate";
-import EventAlarmButton from "./calendar/EventAlarmButton";
+import { type CalendarEvent, calDisconnect, calEvents } from "../lib/calendar";
 import { isArmable, useEventAlarms } from "../lib/calendarAlarms";
 import { startMs } from "../lib/calendarGrid";
 import { openExternal } from "../lib/url";
-import { calDisconnect, calEvents, type CalendarEvent } from "../lib/calendar";
+import CalendarConnectionGate from "./calendar/CalendarConnectionGate";
+import EventAlarmButton from "./calendar/EventAlarmButton";
 
 function EventRow({
   event,
@@ -90,12 +90,7 @@ function Agenda({ onDisconnect }: { onDisconnect: () => void }) {
       ) : (
         <ul className="divide-y divide-zinc-800 rounded-xl border border-zinc-800 bg-zinc-900/50">
           {events.map((e) => (
-            <EventRow
-              key={e.id}
-              event={e}
-              armed={isArmed(e)}
-              onArm={(ev) => void arm(ev)}
-            />
+            <EventRow key={e.id} event={e} armed={isArmed(e)} onArm={(ev) => void arm(ev)} />
           ))}
         </ul>
       )}

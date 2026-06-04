@@ -10,8 +10,9 @@ function Bell({ filled }: { filled: boolean }) {
       fill={filled ? "currentColor" : "none"}
       stroke="currentColor"
       strokeWidth="1.4"
-      aria-hidden
+      role="img"
     >
+      <title>{filled ? "Alarm set" : "Set alarm"}</title>
       <path d="M8 2a3 3 0 0 0-3 3v2.5c0 .7-.3 1.4-.8 1.9L3 11h10l-1.2-1.6c-.5-.5-.8-1.2-.8-1.9V5a3 3 0 0 0-3-3Z" />
       <path d="M6.5 13a1.5 1.5 0 0 0 3 0" />
     </svg>
@@ -48,11 +49,7 @@ export default function EventAlarmButton({
         onClick={arm}
         disabled={armed}
         title={armed ? "Alarm set" : "Set alarm"}
-        className={`shrink-0 ${
-          armed
-            ? "text-emerald-400"
-            : "text-zinc-500 hover:text-zinc-200"
-        }`}
+        className={`shrink-0 ${armed ? "text-emerald-400" : "text-zinc-500 hover:text-zinc-200"}`}
       >
         <Bell filled={armed} />
       </button>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { calEventsRange, type CalendarEvent } from "../../lib/calendar";
+import { type CalendarEvent, calEventsRange } from "../../lib/calendar";
 
 /**
  * A Date that re-renders on an interval, for the "now" line and time-based

@@ -1,10 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import {
-  createAlarm,
-  listAlarms,
-  onAlarmFired,
-  type Alarm,
-} from "./alarms";
+import { type Alarm, createAlarm, listAlarms, onAlarmFired } from "./alarms";
 import type { CalendarEvent } from "./calendar";
 import { startMs } from "./calendarGrid";
 

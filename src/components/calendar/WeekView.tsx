@@ -1,10 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import CalendarConnectionGate from "./CalendarConnectionGate";
-import EventAlarmButton from "./EventAlarmButton";
-import { useNow, useRangeEvents } from "./useRangeEvents";
-import { openExternal } from "../../lib/url";
-import { useEventAlarms } from "../../lib/calendarAlarms";
 import type { CalendarEvent } from "../../lib/calendar";
+import { useEventAlarms } from "../../lib/calendarAlarms";
 import {
   addDays,
   assignLanes,
@@ -12,15 +8,19 @@ import {
   eventsForDay,
   formatHourLabel,
   formatTime,
-  formatWeekRange,
   formatWeekday,
-  minutesIntoDay,
+  formatWeekRange,
   MINUTES_PER_DAY,
+  minutesIntoDay,
   sameDay,
   startMs,
   startOfWeekSunday,
   weekDays,
 } from "../../lib/calendarGrid";
+import { openExternal } from "../../lib/url";
+import CalendarConnectionGate from "./CalendarConnectionGate";
+import EventAlarmButton from "./EventAlarmButton";
+import { useNow, useRangeEvents } from "./useRangeEvents";
 
 /** Pixel height of one hour row; the 24h column is 24× this. */
 const HOUR_PX = 48;
@@ -46,10 +46,7 @@ function DayColumn({
   const showNow = sameDay(day, now);
 
   return (
-    <div
-      className="relative border-l border-zinc-800"
-      style={{ height: HOUR_PX * 24 }}
-    >
+    <div className="relative border-l border-zinc-800" style={{ height: HOUR_PX * 24 }}>
       {HOURS.map((h) => (
         <div
           key={h}
@@ -74,15 +71,8 @@ function DayColumn({
             title={event.title}
           >
             <div className="flex items-start justify-between gap-1">
-              <span className="truncate font-medium text-zinc-100">
-                {event.title}
-              </span>
-              <EventAlarmButton
-                event={event}
-                armed={isArmed(event)}
-                onArm={onArm}
-                compact
-              />
+              <span className="truncate font-medium text-zinc-100">{event.title}</span>
+              <EventAlarmButton event={event} armed={isArmed(event)} onArm={onArm} compact />
             </div>
             <div className="truncate text-indigo-300">
               {ms !== null && formatTime(new Date(ms))}
@@ -122,10 +112,7 @@ function Week() {
   const now = useNow();
   const weekStart = startOfWeekSunday(anchor);
   const days = weekDays(anchor);
-  const { events, error, loading } = useRangeEvents(
-    weekStart,
-    addDays(weekStart, 7),
-  );
+  const { events, error, loading } = useRangeEvents(weekStart, addDays(weekStart, 7));
   const { isArmed, arm } = useEventAlarms();
   const gridRef = useRef<HTMLDivElement>(null);
 
@@ -137,9 +124,7 @@ function Week() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 pb-2">
-        <h2 className="text-sm font-medium text-zinc-200">
-          {formatWeekRange(weekStart)}
-        </h2>
+        <h2 className="text-sm font-medium text-zinc-200">{formatWeekRange(weekStart)}</h2>
         <div className="ml-auto flex items-center gap-1">
           <button
             onClick={() => setAnchor((d) => addDays(d, -7))}
@@ -219,10 +204,7 @@ function Week() {
       {loading && <p className="py-1 text-xs text-zinc-600">Loading…</p>}
 
       {/* Scrollable hourly grid. */}
-      <div
-        ref={gridRef}
-        className="flex min-h-0 flex-1 overflow-y-auto border-t border-zinc-800"
-      >
+      <div ref={gridRef} className="flex min-h-0 flex-1 overflow-y-auto border-t border-zinc-800">
         <div className="relative w-14 shrink-0" style={{ height: HOUR_PX * 24 }}>
           {HOURS.map((h) => (
             <div

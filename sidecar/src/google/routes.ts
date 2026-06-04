@@ -22,6 +22,11 @@ function makeClient(config: Config): GoogleCalendarClient | null {
   return new GoogleCalendarClient(googleClientId, googleClientSecret);
 }
 
+/** True when the value is absent or a parseable timestamp (rejects garbage). */
+function isIsoOrAbsent(value: string | undefined): boolean {
+  return value === undefined || !Number.isNaN(Date.parse(value));
+}
+
 /** Authenticated calendar routes, mounted under /api/calendar. */
 export function createCalendarRoutes(config: Config): Hono {
   const router = new Hono();
@@ -57,6 +62,13 @@ export function createCalendarRoutes(config: Config): Hono {
   router.get("/events", async (c) => {
     const client = makeClient(config);
     if (!client) return c.json({ error: "google oauth not configured" }, 400);
+
+    const timeMin = c.req.query("timeMin");
+    const timeMax = c.req.query("timeMax");
+    if (!isIsoOrAbsent(timeMin) || !isIsoOrAbsent(timeMax)) {
+      return c.json({ error: "timeMin/timeMax must be ISO timestamps" }, 400);
+    }
+
     try {
       const accessToken = await getValidAccessToken(db(), client);
       const requested = Number(c.req.query("max") ?? "20");
@@ -65,13 +77,7 @@ export function createCalendarRoutes(config: Config): Hono {
       const maxResults = Number.isFinite(requested)
         ? Math.min(250, Math.max(1, Math.trunc(requested)))
         : 20;
-      return c.json(
-        await client.listEvents(accessToken, {
-          timeMin: c.req.query("timeMin"),
-          timeMax: c.req.query("timeMax"),
-          maxResults,
-        }),
-      );
+      return c.json(await client.listEvents(accessToken, { timeMin, timeMax, maxResults }));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 502);
     }

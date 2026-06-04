@@ -1,11 +1,9 @@
 import { useState } from "react";
-import CalendarConnectionGate from "./CalendarConnectionGate";
-import EventAlarmButton from "./EventAlarmButton";
-import { useNow, useRangeEvents } from "./useRangeEvents";
-import { useEventAlarms } from "../../lib/calendarAlarms";
 import type { CalendarEvent } from "../../lib/calendar";
+import { useEventAlarms } from "../../lib/calendarAlarms";
 import {
   addDays,
+  addMonths,
   eventsForDay,
   formatMonthLabel,
   formatTime,
@@ -14,6 +12,9 @@ import {
   startMs,
   startOfMonth,
 } from "../../lib/calendarGrid";
+import CalendarConnectionGate from "./CalendarConnectionGate";
+import EventAlarmButton from "./EventAlarmButton";
+import { useNow, useRangeEvents } from "./useRangeEvents";
 
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 /** Events listed per day cell before collapsing the rest into "+N more". */
@@ -32,9 +33,7 @@ function EventLine({
   return (
     <div className="flex items-center gap-1 text-[11px] leading-tight">
       {!event.allDay && ms !== null && (
-        <span className="shrink-0 tabular-nums text-zinc-500">
-          {formatTime(new Date(ms))}
-        </span>
+        <span className="shrink-0 tabular-nums text-zinc-500">{formatTime(new Date(ms))}</span>
       )}
       <span className="min-w-0 flex-1 truncate text-zinc-200" title={event.title}>
         {event.title}
@@ -74,27 +73,16 @@ function DayCell({
     >
       <div
         className={`mb-0.5 text-right text-xs ${
-          today
-            ? "font-semibold text-indigo-300"
-            : inMonth
-              ? "text-zinc-400"
-              : "text-zinc-600"
+          today ? "font-semibold text-indigo-300" : inMonth ? "text-zinc-400" : "text-zinc-600"
         }`}
       >
         {day.getDate()}
       </div>
       <div className="min-h-0 flex-1 space-y-0.5 overflow-hidden">
         {shown.map((e) => (
-          <EventLine
-            key={e.id}
-            event={e}
-            armed={isArmed(e)}
-            onArm={onArm}
-          />
+          <EventLine key={e.id} event={e} armed={isArmed(e)} onArm={onArm} />
         ))}
-        {overflow > 0 && (
-          <div className="text-[10px] text-zinc-500">+{overflow} more</div>
-        )}
+        {overflow > 0 && <div className="text-[10px] text-zinc-500">+{overflow} more</div>}
       </div>
     </div>
   );
@@ -111,12 +99,10 @@ function Month() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 pb-2">
-        <h2 className="text-sm font-medium text-zinc-200">
-          {formatMonthLabel(month)}
-        </h2>
+        <h2 className="text-sm font-medium text-zinc-200">{formatMonthLabel(month)}</h2>
         <div className="ml-auto flex items-center gap-1">
           <button
-            onClick={() => setAnchor((d) => startOfMonth(addDays(startOfMonth(d), -1)))}
+            onClick={() => setAnchor((d) => addMonths(d, -1))}
             className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
           >
             ‹ Prev
@@ -128,7 +114,7 @@ function Month() {
             Today
           </button>
           <button
-            onClick={() => setAnchor((d) => startOfMonth(addDays(startOfMonth(d), 32)))}
+            onClick={() => setAnchor((d) => addMonths(d, 1))}
             className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
           >
             Next ›

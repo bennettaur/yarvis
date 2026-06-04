@@ -153,12 +153,4 @@ export class GoogleCalendarClient {
     const data = (await res.json()) as { items?: any[] };
     return (data.items ?? []).map(toCalendarEvent);
   }
-
-  /** Lists upcoming events on the primary calendar, soonest first. */
-  listUpcomingEvents(
-    accessToken: string,
-    maxResults = 20,
-  ): Promise<CalendarEvent[]> {
-    return this.listEvents(accessToken, { maxResults });
-  }
 }
