@@ -32,11 +32,7 @@ export const calEvents = () => get<CalendarEvent[]>("/api/calendar/events");
  * week/month/day grids, which need events from the start of the range (often
  * earlier than now), not just upcoming ones.
  */
-export const calEventsRange = (
-  timeMinIso: string,
-  timeMaxIso: string,
-  max = 250,
-) => {
+export const calEventsRange = (timeMinIso: string, timeMaxIso: string, max = 250) => {
   const params = new URLSearchParams({
     timeMin: timeMinIso,
     timeMax: timeMaxIso,

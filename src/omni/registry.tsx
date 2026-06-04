@@ -1,10 +1,10 @@
 import { defineRegistry } from "@json-render/react";
 import AlarmsPanel from "../components/AlarmsPanel";
 import CalendarPanel from "../components/CalendarPanel";
+import ChatPanel from "../components/ChatPanel";
 import DayTimeline from "../components/calendar/DayTimeline";
 import MonthView from "../components/calendar/MonthView";
 import WeekView from "../components/calendar/WeekView";
-import ChatPanel from "../components/ChatPanel";
 import Dashboard from "../components/Dashboard";
 import MemoryPanel from "../components/MemoryPanel";
 import PrsPanel from "../components/PrsPanel";
