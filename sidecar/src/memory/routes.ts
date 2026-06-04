@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { EMBED_DIM } from "../db/schema.ts";
+import { clientError } from "../llm/errors.ts";
 import { resolveModel } from "../llm/providers.ts";
 import { tasksCompletedBetween } from "../tasks/service.ts";
 import { chooseEmbedder } from "./embedder.ts";
@@ -80,9 +81,7 @@ export function createMemoryRoutes(config: Config): Hono {
     const q = c.req.query("q");
     if (!q) return c.json({ error: "missing q" }, 400);
     const limit = Number(c.req.query("limit") ?? "10");
-    return c.json(
-      await (await store()).search(q, Number.isFinite(limit) ? limit : 10),
-    );
+    return c.json(await (await store()).search(q, Number.isFinite(limit) ? limit : 10));
   });
 
   router.post("/", async (c) => {
@@ -96,10 +95,7 @@ export function createMemoryRoutes(config: Config): Hono {
   router.post("/notes", async (c) => {
     const parsed = addSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    return c.json(
-      await (await store()).add(parsed.data.content, { type: "note" }),
-      201,
-    );
+    return c.json(await (await store()).add(parsed.data.content, { type: "note" }), 201);
   });
 
   router.delete("/:id", async (c) =>
@@ -152,7 +148,9 @@ export function createMemoryRoutes(config: Config): Hono {
         });
         recap = text;
       } catch (e) {
-        recap = `(could not summarize: ${e instanceof Error ? e.message : String(e)})\n\n${context}`;
+        // `clientError` keeps the human message + HTTP status but never the raw
+        // url / response body, which can carry provider-side identifiers.
+        recap = `(could not summarize: ${clientError(e)})\n\n${context}`;
       }
     }
 
@@ -177,9 +175,7 @@ export function createMemoryRoutes(config: Config): Hono {
   });
 
   router.put("/embeddings/config", async (c) => {
-    const parsed = embeddingsConfigSchema.safeParse(
-      await c.req.json().catch(() => null),
-    );
+    const parsed = embeddingsConfigSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     // The model's output dimension must equal the memories column dimension.
     // Reject a mismatch here so it surfaces at save time, rather than making

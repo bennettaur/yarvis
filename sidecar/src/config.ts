@@ -148,9 +148,7 @@ export function loadConfig(): Config {
       googleClientId: env.GOOGLE_CLIENT_ID,
       googleClientSecret: env.GOOGLE_CLIENT_SECRET,
     },
-    customProviderSecrets: parseCustomProviderSecrets(
-      env.YARVIS_CUSTOM_PROVIDER_SECRETS,
-    ),
+    customProviderSecrets: parseCustomProviderSecrets(env.YARVIS_CUSTOM_PROVIDER_SECRETS),
     embeddingsSecrets: parseEmbeddingsSecrets(env.YARVIS_EMBEDDINGS_SECRETS),
   };
 }

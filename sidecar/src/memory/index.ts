@@ -1,15 +1,6 @@
-import {
-  and,
-  cosineDistance,
-  desc,
-  eq,
-  gte,
-  isNotNull,
-  sql,
-  type SQL,
-} from "drizzle-orm";
+import { and, cosineDistance, desc, eq, gte, isNotNull, type SQL, sql } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
-import { memories, type MemoryRow } from "../db/schema.ts";
+import { type MemoryRow, memories } from "../db/schema.ts";
 import type { Embedder, EmbedderIdentity } from "./embedder.ts";
 
 export interface MemoryRecord {
@@ -78,16 +69,11 @@ export class PgVectorMemoryStore implements MemoryService {
    * were embedded by a now-inactive model (whose vectors are no longer
    * comparable to the active one).
    */
-  private stamp(
-    metadata: Record<string, unknown> | null | undefined,
-  ): Record<string, unknown> {
+  private stamp(metadata: Record<string, unknown> | null | undefined): Record<string, unknown> {
     return { ...(metadata ?? {}), embedder: this.embedder.identity() };
   }
 
-  async add(
-    content: string,
-    metadata?: Record<string, unknown>,
-  ): Promise<MemoryRecord> {
+  async add(content: string, metadata?: Record<string, unknown>): Promise<MemoryRecord> {
     const embedding = await this.embedder.embed(content);
     const [row] = await this.db
       .insert(memories)
@@ -211,9 +197,7 @@ export class PgVectorMemoryStore implements MemoryService {
     let updated = 0;
     for (let i = 0; i < rows.length; i += batchSize) {
       const batch = rows.slice(i, i + batchSize);
-      const embeddings = await this.embedder.embedMany(
-        batch.map((r) => r.content),
-      );
+      const embeddings = await this.embedder.embedMany(batch.map((r) => r.content));
       // The updates within a batch are independent, so issue them together
       // rather than serializing one DB round-trip per row.
       await Promise.all(
@@ -222,9 +206,7 @@ export class PgVectorMemoryStore implements MemoryService {
             .update(memories)
             .set({
               embedding: embeddings[j]!,
-              metadata: this.stamp(
-                row.metadata as Record<string, unknown> | null,
-              ),
+              metadata: this.stamp(row.metadata as Record<string, unknown> | null),
             })
             .where(eq(memories.id, row.id)),
         ),
@@ -251,11 +233,6 @@ export interface EmbedderHealth {
   ok: boolean;
 }
 
-function identityEquals(
-  a: EmbedderIdentity | null,
-  b: EmbedderIdentity,
-): boolean {
-  return (
-    a !== null && a.kind === b.kind && a.model === b.model && a.dim === b.dim
-  );
+function identityEquals(a: EmbedderIdentity | null, b: EmbedderIdentity): boolean {
+  return a !== null && a.kind === b.kind && a.model === b.model && a.dim === b.dim;
 }

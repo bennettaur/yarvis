@@ -77,9 +77,7 @@ export class GeminiEmbedder implements Embedder {
   private embeddingModel;
 
   constructor(apiKey: string) {
-    this.embeddingModel = createGoogleGenerativeAI({ apiKey }).textEmbeddingModel(
-      this.model,
-    );
+    this.embeddingModel = createGoogleGenerativeAI({ apiKey }).textEmbeddingModel(this.model);
   }
 
   identity(): EmbedderIdentity {
@@ -160,10 +158,7 @@ export class OpenAICompatibleEmbedder implements Embedder {
  * left to fail deep in an insert. Reads the provider config from the database,
  * so it is async.
  */
-export async function chooseEmbedder(
-  config: Config,
-  db?: Db,
-): Promise<Embedder> {
+export async function chooseEmbedder(config: Config, db?: Db): Promise<Embedder> {
   const embedder = await selectEmbedder(config, db);
   if (embedder.dimensions !== EMBED_DIM) {
     throw new Error(

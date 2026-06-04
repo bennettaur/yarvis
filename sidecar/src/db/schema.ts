@@ -151,12 +151,8 @@ export const embeddingsConfig = pgTable("embeddings_config", {
   apiKind: text("api_kind").notNull().default("openai"),
   dimensions: integer("dimensions").notNull(),
   headerNames: jsonb("header_names").$type<string[]>().notNull().default([]),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export type EmbeddingsConfigRow = typeof embeddingsConfig.$inferSelect;

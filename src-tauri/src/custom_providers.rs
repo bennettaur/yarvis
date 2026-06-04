@@ -54,14 +54,67 @@ fn provider_entry<'a>(blob: &'a mut Value, id: &str) -> &'a mut Map<String, Valu
         .expect("provider entries are objects")
 }
 
+/// Header names the user must not be able to override on outbound provider
+/// requests. Keeps the sidecar's RESERVED_HEADER_NAMES set and this Rust
+/// validator in lockstep — both guard the same surface from different angles.
+const RESERVED_HEADER_NAMES: &[&str] = &[
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "host",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+];
+
+const MAX_HEADER_NAME_LEN: usize = 64;
+
+/// Matches the RFC 7230 token charset: `!#$%&'*+-.^_`|~` plus alphanumerics.
+fn is_header_token_char(c: char) -> bool {
+    c.is_ascii_alphanumeric()
+        || matches!(
+            c,
+            '!' | '#'
+                | '$'
+                | '%'
+                | '&'
+                | '\''
+                | '*'
+                | '+'
+                | '-'
+                | '.'
+                | '^'
+                | '_'
+                | '`'
+                | '|'
+                | '~'
+        )
+}
+
+fn validate_header_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("header name is empty".to_string());
+    }
+    if name.len() > MAX_HEADER_NAME_LEN {
+        return Err(format!(
+            "header name exceeds {MAX_HEADER_NAME_LEN} characters"
+        ));
+    }
+    if !name.chars().all(is_header_token_char) {
+        return Err("header name must match RFC 7230 token charset".to_string());
+    }
+    if RESERVED_HEADER_NAMES.contains(&name.to_ascii_lowercase().as_str()) {
+        return Err(format!("header name '{name}' is reserved"));
+    }
+    Ok(())
+}
+
 fn validate_slot(slot: &str) -> Result<(), String> {
     if slot == "apiKey" {
         return Ok(());
     }
     if let Some(name) = slot.strip_prefix("header:") {
-        if !name.is_empty() {
-            return Ok(());
-        }
+        return validate_header_name(name);
     }
     Err(format!("unknown secret slot: {slot}"))
 }

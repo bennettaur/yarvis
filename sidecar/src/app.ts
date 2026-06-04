@@ -8,6 +8,7 @@ import { createCustomProviderRoutes } from "./customProviders/routes.ts";
 import { pingDb } from "./db/client.ts";
 import { createGithubRoutes } from "./github/routes.ts";
 import { createCalendarRoutes, createGoogleCallbackRoutes } from "./google/routes.ts";
+import { redactSecrets } from "./llm/errors.ts";
 import { createMemoryRoutes } from "./memory/routes.ts";
 import { createOmniRoutes } from "./omni/routes.ts";
 import { createReadiness, type Readiness } from "./readiness.ts";
@@ -29,10 +30,16 @@ const startedAt = Date.now();
 export function createApp(config: Config, readiness: Readiness = createReadiness()): Hono {
   const app = new Hono();
 
+  // CORS fails closed: without an explicit allowlist the only origins that may
+  // reach the API are the Tauri webview's own. Open `*` is never used — the
+  // bearer token is the primary control, but a stale/missing config must not
+  // also dismantle the cross-origin defense.
+  const corsOrigins = config.allowedOrigins ?? ["tauri://localhost", "http://tauri.localhost"];
+
   app.use(
     "*",
     cors({
-      origin: config.allowedOrigins ?? "*",
+      origin: corsOrigins,
       allowHeaders: ["Authorization", "Content-Type"],
       allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     }),
@@ -49,7 +56,10 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
       uptimeMs: Date.now() - startedAt,
       ready: phase === "ready",
       phase,
-      ...(error ? { error } : {}),
+      // `/health` is unauthenticated; redact any credentials that may have made
+      // it into the error string (e.g. a `postgres://user:pass@host` connection
+      // string thrown by the migration step).
+      ...(error ? { error: redactSecrets(error) } : {}),
     });
   });
 
