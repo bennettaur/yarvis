@@ -53,6 +53,22 @@ Gemini), a GitHub token (for the PR dashboard + embedded review), and a Google
 Cloud OAuth client id/secret (for the Calendar integration). AWS Bedrock uses
 the standard AWS credential chain.
 
+All secrets live in a **single** Keychain item (one JSON object), rather than
+one item per secret. macOS authorizes Keychain access per item, so consolidating
+means a session is authorized once instead of prompting for every secret in
+turn.
+
+> **Upgrading from an earlier build:** secrets previously lived in one item per
+> key, so re-save each secret once in Settings to populate the consolidated
+> item. The old per-key items are no longer read and can be deleted from
+> Keychain Access if you want to tidy up.
+
+> **Touch ID:** gating this item behind Touch ID requires the app to be
+> code-signed with an application-identifier entitlement so it can use the macOS
+> data-protection keychain — unsigned dev builds fall back to the login-password
+> prompt. That signing work is tracked separately; once it lands, the single
+> authorization becomes a single Touch ID tap with no further change here.
+
 For Google Calendar, create a **Desktop app** OAuth client in Google Cloud
 Console and register the loopback redirect
 `http://127.0.0.1:<sidecar-port>/oauth/google/callback` (any port is accepted
@@ -87,7 +103,7 @@ src/            React frontend (Vite + TS + Tailwind)
     omni/       Omni view — chat-driven dynamic-UI canvas
   omni/         json-render component catalog, registry, layout primitives
 src-tauri/      Rust core (Tauri v2)
-  src/keychain.rs   Keychain-backed secret commands
+  src/keychain.rs   Keychain-backed secret commands (single consolidated item)
   src/sidecar.rs    sidecar supervisor
   src/alarms.rs     full-screen alarm scheduler
 sidecar/        Bun + TS service (Hono)
