@@ -2,8 +2,8 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
 import AlarmOverlay from "./components/AlarmOverlay";
 import AlarmsPanel from "./components/AlarmsPanel";
-import CalendarPanel from "./components/CalendarPanel";
 import ChatPanel from "./components/ChatPanel";
+import CalendarView from "./components/calendar/CalendarView";
 import Dashboard from "./components/Dashboard";
 import MemoryPanel from "./components/MemoryPanel";
 import OmniView from "./components/omni/OmniView";
@@ -44,7 +44,7 @@ export default function App() {
             {tab === "tasks" && <TasksPanel />}
             {tab === "prs" && <PrsPanel />}
             {tab === "memory" && <MemoryPanel />}
-            {tab === "calendar" && <CalendarPanel />}
+            {tab === "calendar" && <CalendarView />}
             {tab === "alarms" && <AlarmsPanel />}
             {tab === "sessions" && <SessionsPanel />}
             {tab === "dashboard" && <Dashboard />}

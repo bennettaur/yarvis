@@ -116,7 +116,31 @@ export const catalog = defineCatalog(schema, {
     Calendar: {
       props: titled,
       description:
-        "Upcoming Google Calendar meetings, with connect and per-event alarm controls. Self-contained.",
+        "Upcoming Google Calendar meetings as an agenda list, with connect and per-event alarm controls. Self-contained.",
+    },
+    CalendarWeek: {
+      props: titled,
+      description:
+        "A 7-day week view (Sunday–Saturday) of Google Calendar events on a vertical hourly timeline, with a now-line and per-event alarm controls. Prev/Today/Next navigation. Self-contained.",
+    },
+    CalendarMonth: {
+      props: titled,
+      description:
+        "A month grid of Google Calendar events; each day lists its events with start times and per-event alarm controls. Prev/Today/Next navigation. Self-contained.",
+    },
+    CalendarDay: {
+      props: z.object({
+        title: z.string().optional().describe("Optional header shown above the widget"),
+        height: heightProp,
+        orientation: z
+          .enum(["vertical", "horizontal"])
+          .optional()
+          .describe(
+            "Timeline axis direction (default 'vertical'). 'vertical' scrolls up/down; 'horizontal' scrolls left/right.",
+          ),
+      }),
+      description:
+        "Today's events as a scrolling timeline with a center now-line and hour markers; upcoming events scroll toward the line as time passes. Per-event alarm controls. Self-contained.",
     },
     Memory: {
       props: titled,

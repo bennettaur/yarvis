@@ -36,14 +36,16 @@ Status of the build against the original vision. The full V1 plan lives at
   LLM-summarized or offline raw), document/URL ingestion (chunk → embed →
   store), and a management UI to search/delete (Memory tab). Reuses the
   `memories` table with a `type` tag (note/doc/fact).
-- **Google Calendar (scaffolded, untested)** — desktop OAuth + upcoming-events
-  fetch and a Calendar tab that arms meeting alarms just before start. Built
-  blind against the documented Google APIs; needs real OAuth credentials to
-  exercise (see Remaining → Calendar verification).
+- **Google Calendar** — desktop OAuth + a date-range events fetch backing a
+  Calendar tab with a view switcher: agenda, a Sunday-start week grid, a month
+  grid, and a scrolling day timeline (vertical/horizontal) with a current-time
+  line. Every view arms meeting alarms just before start and shows whether one
+  is already set. The week/month/day views are also Omni widgets.
 - **Omni (dynamic UI)** — describe a workspace in natural language and an agent
   composes a live layout from a fixed component catalog: layout primitives
   (Row/Column/Grid/Panel/…) plus self-contained feature widgets (Tasks,
-  Calendar, Memory, PRs, Sessions, Alarms, Settings, Chat, Termina) and the decomposed
+  Calendar, CalendarWeek, CalendarMonth, CalendarDay, Memory, PRs, Sessions,
+  Alarms, Settings, Chat, Terminal) and the decomposed
   PR-review widgets (PrDescription/PrChecks/PrFileList/PrFileDiffs) that name a
   single PR by owner/repo/number and share one cached fetch. Widgets accept an
   optional fixed `height` so duplicates scroll independently. Streamed from the

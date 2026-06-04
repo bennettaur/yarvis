@@ -88,10 +88,16 @@ bun run sidecar:dev
 ## Testing
 
 ```bash
+bun run test                   # frontend tests (src/) — runs under happy-dom
 bun test sidecar/              # sidecar unit/integration tests
 bun run --cwd sidecar typecheck
 bun run build                  # typecheck + build the frontend
 ```
+
+Frontend tests use `bun test` with a happy-dom environment. The preload in
+`src/test/setup.ts` registers the DOM, pins the timezone, and stubs the Tauri
+runtime APIs; component tests stub the sidecar data layer (`src/lib/api`) and
+render real components with the `renderToHtml` helper in `src/test/render.tsx`.
 
 ## Project layout
 

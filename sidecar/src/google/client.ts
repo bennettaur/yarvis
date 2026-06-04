@@ -126,14 +126,26 @@ export class GoogleCalendarClient {
     return toTokenResponse(await res.json());
   }
 
-  /** Lists upcoming events on the primary calendar, soonest first. */
-  async listUpcomingEvents(accessToken: string, maxResults = 20): Promise<CalendarEvent[]> {
+  /**
+   * Lists events on the primary calendar, soonest first. `timeMin` defaults to
+   * now (upcoming events); pass an explicit `timeMin`/`timeMax` to query a date
+   * range, e.g. the bounds of a week or month for the grid views.
+   */
+  async listEvents(
+    accessToken: string,
+    options: {
+      timeMin?: string;
+      timeMax?: string;
+      maxResults?: number;
+    } = {},
+  ): Promise<CalendarEvent[]> {
     const params = new URLSearchParams({
-      timeMin: new Date().toISOString(),
+      timeMin: options.timeMin ?? new Date().toISOString(),
       singleEvents: "true",
       orderBy: "startTime",
-      maxResults: String(maxResults),
+      maxResults: String(options.maxResults ?? 20),
     });
+    if (options.timeMax) params.set("timeMax", options.timeMax);
     const res = await this.fetchImpl(`${CALENDAR_EVENTS}?${params.toString()}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
