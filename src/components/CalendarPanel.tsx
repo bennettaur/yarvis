@@ -27,6 +27,7 @@ function EventRow({
             <>
               {" · "}
               <button
+                type="button"
                 onClick={() => openExternal(event.meetLink)}
                 className="text-indigo-400 hover:underline"
               >
@@ -72,12 +73,14 @@ function Agenda({ onDisconnect }: { onDisconnect: () => void }) {
           Upcoming ({events.length})
         </h2>
         <button
+          type="button"
           onClick={() => void armAll()}
           className="ml-auto rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
         >
           Set alarms for all
         </button>
         <button
+          type="button"
           onClick={() => void disconnect()}
           className="text-xs text-zinc-500 hover:text-red-400"
         >

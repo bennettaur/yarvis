@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CalendarEvent } from "../../lib/calendar";
 import { useEventAlarms } from "../../lib/calendarAlarms";
 import {
@@ -92,8 +92,14 @@ function Timeline({ orientation, initialDate }: { orientation: Orientation; init
     else el.scrollLeft = offset;
   }, [dayKey, vertical, pxPerMin, showNow]);
 
-  const { timed, allDay } = eventsForDay(events, day);
-  const laid = assignLanes(timed);
+  // Recompute the day's buckets only when its events or the day change, not on
+  // the now-tick that drives the center line. Keyed on dayKey because `day` is a
+  // fresh Date each render.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on dayKey, not the unstable day object
+  const { allDay, laid } = useMemo(() => {
+    const { allDay, timed } = eventsForDay(events, day);
+    return { allDay, laid: assignLanes(timed) };
+  }, [events, dayKey]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -109,18 +115,21 @@ function Timeline({ orientation, initialDate }: { orientation: Orientation; init
         )}
         <div className="ml-auto flex items-center gap-1">
           <button
+            type="button"
             onClick={() => setDay((d) => addDays(d, -1))}
             className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
           >
             ‹ Prev
           </button>
           <button
+            type="button"
             onClick={() => setDay(new Date())}
             className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
           >
             Today
           </button>
           <button
+            type="button"
             onClick={() => setDay((d) => addDays(d, 1))}
             className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
           >
@@ -216,6 +225,7 @@ function Timeline({ orientation, initialDate }: { orientation: Orientation; init
                     <>
                       {" · "}
                       <button
+                        type="button"
                         onClick={(e) => {
                           e.stopPropagation();
                           openExternal(event.meetLink);

@@ -46,6 +46,7 @@ export default function EventAlarmButton({
   if (compact) {
     return (
       <button
+        type="button"
         onClick={arm}
         disabled={armed}
         title={armed ? "Alarm set" : "Set alarm"}
@@ -62,6 +63,7 @@ export default function EventAlarmButton({
     </span>
   ) : (
     <button
+      type="button"
       onClick={arm}
       className="inline-flex items-center gap-1 rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
     >

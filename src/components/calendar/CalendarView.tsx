@@ -28,6 +28,7 @@ export default function CalendarView() {
           {VIEWS.map((v) => (
             <button
               key={v.id}
+              type="button"
               onClick={() => setView(v.id)}
               className={`px-3 py-1.5 text-sm ${
                 view === v.id ? "bg-indigo-600 text-white" : "text-zinc-300 hover:bg-zinc-800"
@@ -43,6 +44,7 @@ export default function CalendarView() {
             {(["vertical", "horizontal"] as Orientation[]).map((o) => (
               <button
                 key={o}
+                type="button"
                 onClick={() => setOrientation(o)}
                 className={`px-3 py-1.5 text-sm capitalize ${
                   orientation === o ? "bg-zinc-700 text-white" : "text-zinc-300 hover:bg-zinc-800"

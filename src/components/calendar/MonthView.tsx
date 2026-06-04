@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { CalendarEvent } from "../../lib/calendar";
 import { useEventAlarms } from "../../lib/calendarAlarms";
 import {
@@ -7,6 +7,7 @@ import {
   eventsForDay,
   formatMonthLabel,
   formatTime,
+  isoDateKey,
   monthGridDays,
   sameDay,
   startMs,
@@ -46,20 +47,18 @@ function EventLine({
 function DayCell({
   day,
   month,
-  events,
+  dayEvents,
   now,
   isArmed,
   onArm,
 }: {
   day: Date;
   month: Date;
-  events: CalendarEvent[];
+  dayEvents: CalendarEvent[];
   now: Date;
   isArmed: (e: CalendarEvent) => boolean;
   onArm: (e: CalendarEvent) => void;
 }) {
-  const { allDay, timed } = eventsForDay(events, day);
-  const dayEvents = [...allDay, ...timed];
   const inMonth = day.getMonth() === month.getMonth();
   const today = sameDay(day, now);
   const shown = dayEvents.slice(0, MAX_PER_CELL);
@@ -92,9 +91,22 @@ function Month() {
   const [anchor, setAnchor] = useState(() => new Date());
   const now = useNow();
   const month = startOfMonth(anchor);
-  const days = monthGridDays(anchor);
+  // Stable per month so the buckets below (and the range fetch) don't recompute
+  // on the now-tick.
+  const days = useMemo(() => monthGridDays(anchor), [anchor]);
   const { events, error, loading } = useRangeEvents(days[0], addDays(days[41], 1));
   const { isArmed, arm } = useEventAlarms();
+
+  // Split events into per-day buckets once, instead of scanning the full list
+  // inside each of the 42 cells on every render.
+  const byDay = useMemo(() => {
+    const map = new Map<string, CalendarEvent[]>();
+    for (const day of days) {
+      const { allDay, timed } = eventsForDay(events, day);
+      map.set(isoDateKey(day), [...allDay, ...timed]);
+    }
+    return map;
+  }, [events, days]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -102,18 +114,21 @@ function Month() {
         <h2 className="text-sm font-medium text-zinc-200">{formatMonthLabel(month)}</h2>
         <div className="ml-auto flex items-center gap-1">
           <button
+            type="button"
             onClick={() => setAnchor((d) => addMonths(d, -1))}
             className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
           >
             ‹ Prev
           </button>
           <button
+            type="button"
             onClick={() => setAnchor(new Date())}
             className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
           >
             Today
           </button>
           <button
+            type="button"
             onClick={() => setAnchor((d) => addMonths(d, 1))}
             className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
           >
@@ -145,7 +160,7 @@ function Month() {
             key={day.toISOString()}
             day={day}
             month={month}
-            events={events}
+            dayEvents={byDay.get(isoDateKey(day)) ?? []}
             now={now}
             isArmed={isArmed}
             onArm={(e) => void arm(e)}

@@ -91,7 +91,9 @@ export function eventsForDay(
   day: Date,
 ): { allDay: CalendarEvent[]; timed: CalendarEvent[] } {
   const dayStart = startOfDay(day).getTime();
-  const dayEnd = dayStart + MINUTES_PER_DAY * 60_000;
+  // Next local midnight, not dayStart + 24h: on DST-transition days the local
+  // day is 23 or 25 hours, so a fixed 24h would mis-bucket events near midnight.
+  const dayEnd = startOfDay(addDays(day, 1)).getTime();
   const allDay: CalendarEvent[] = [];
   const timed: CalendarEvent[] = [];
   for (const event of events) {

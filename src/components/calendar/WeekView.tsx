@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CalendarEvent } from "../../lib/calendar";
 import { useEventAlarms } from "../../lib/calendarAlarms";
 import {
@@ -10,6 +10,8 @@ import {
   formatTime,
   formatWeekday,
   formatWeekRange,
+  isoDateKey,
+  type LaidOutEvent,
   MINUTES_PER_DAY,
   minutesIntoDay,
   sameDay,
@@ -30,19 +32,17 @@ const START_HOUR = 6;
 
 function DayColumn({
   day,
-  events,
+  laid,
   now,
   isArmed,
   onArm,
 }: {
   day: Date;
-  events: CalendarEvent[];
+  laid: LaidOutEvent[];
   now: Date;
   isArmed: (e: CalendarEvent) => boolean;
   onArm: (e: CalendarEvent) => void;
 }) {
-  const { timed } = eventsForDay(events, day);
-  const laid = assignLanes(timed);
   const showNow = sameDay(day, now);
 
   return (
@@ -80,6 +80,7 @@ function DayColumn({
                 <>
                   {" · "}
                   <button
+                    type="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       openExternal(event.meetLink);
@@ -111,10 +112,23 @@ function Week() {
   const [anchor, setAnchor] = useState(() => new Date());
   const now = useNow();
   const weekStart = startOfWeekSunday(anchor);
-  const days = weekDays(anchor);
+  // Stable per week so the buckets below (and the range fetch) don't recompute
+  // on the now-tick.
+  const days = useMemo(() => weekDays(anchor), [anchor]);
   const { events, error, loading } = useRangeEvents(weekStart, addDays(weekStart, 7));
   const { isArmed, arm } = useEventAlarms();
   const gridRef = useRef<HTMLDivElement>(null);
+
+  // Split events into per-day all-day + lane-packed timed buckets once, instead
+  // of scanning the full list inside each of the 7 columns on every render.
+  const byDay = useMemo(() => {
+    const map = new Map<string, { allDay: CalendarEvent[]; laid: LaidOutEvent[] }>();
+    for (const day of days) {
+      const { allDay, timed } = eventsForDay(events, day);
+      map.set(isoDateKey(day), { allDay, laid: assignLanes(timed) });
+    }
+    return map;
+  }, [events, days]);
 
   // Start with the work day in view rather than midnight.
   useEffect(() => {
@@ -127,18 +141,21 @@ function Week() {
         <h2 className="text-sm font-medium text-zinc-200">{formatWeekRange(weekStart)}</h2>
         <div className="ml-auto flex items-center gap-1">
           <button
+            type="button"
             onClick={() => setAnchor((d) => addDays(d, -7))}
             className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
           >
             ‹ Prev
           </button>
           <button
+            type="button"
             onClick={() => setAnchor(new Date())}
             className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
           >
             Today
           </button>
           <button
+            type="button"
             onClick={() => setAnchor((d) => addDays(d, 7))}
             className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
           >
@@ -179,7 +196,7 @@ function Week() {
         </div>
         <div className="grid flex-1 grid-cols-7">
           {days.map((day) => {
-            const { allDay } = eventsForDay(events, day);
+            const allDay = byDay.get(isoDateKey(day))?.allDay ?? [];
             return (
               <div
                 key={day.toISOString()}
@@ -221,7 +238,7 @@ function Week() {
             <DayColumn
               key={day.toISOString()}
               day={day}
-              events={events}
+              laid={byDay.get(isoDateKey(day))?.laid ?? []}
               now={now}
               isArmed={isArmed}
               onArm={(e) => void arm(e)}

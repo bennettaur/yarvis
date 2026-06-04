@@ -71,12 +71,14 @@ export default function CalendarConnectionGate({
           Connect your Google Calendar to see upcoming meetings and arm alarms for them.
         </p>
         <button
+          type="button"
           onClick={() => void connect()}
           className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800"
         >
           Connect Google Calendar
         </button>
         <button
+          type="button"
           onClick={() => void loadStatus()}
           className="ml-2 text-sm text-zinc-500 hover:text-zinc-300"
         >
