@@ -15,6 +15,8 @@ import PrFileList from "../components/pr/PrFileList";
 import SessionsPanel from "../components/SessionsPanel";
 import TasksPanel from "../components/TasksPanel";
 import TerminalPanel from "../components/TerminalPanel";
+import WorkspaceListWidget from "../components/workspaces/WorkspaceListWidget";
+import WorkspaceWidget from "../components/workspaces/WorkspaceWidget";
 import { catalog } from "./catalog";
 import { Column, Divider, Grid, Heading, Panel, Row, Text } from "./primitives";
 import WidgetFrame from "./WidgetFrame";
@@ -144,6 +146,16 @@ const { registry } = defineRegistry(catalog, {
     Terminal: ({ props }) => (
       <WidgetFrame title={props.title ?? "Terminal"}>
         <TerminalPanel sessionId={props.sessionId ? `omni:${props.sessionId}` : undefined} />
+      </WidgetFrame>
+    ),
+    WorkspaceList: ({ props }) => (
+      <WidgetFrame title={props.title ?? "Workspaces"} name="WorkspaceList" height={props.height}>
+        <WorkspaceListWidget />
+      </WidgetFrame>
+    ),
+    Workspace: ({ props }) => (
+      <WidgetFrame title={props.title ?? "Workspace"} name="Workspace" height={props.height}>
+        <WorkspaceWidget workspaceId={props.workspaceId} />
       </WidgetFrame>
     ),
   },
