@@ -10,15 +10,24 @@ import TopBar from "./TopBar";
 export default function AppShell({
   tab,
   onTabChange,
+  onOpenOmniChat,
+  attentionPending,
   children,
 }: {
   tab: Tab;
   onTabChange: (tab: Tab) => void;
+  onOpenOmniChat: () => void;
+  attentionPending: boolean;
   children: React.ReactNode;
 }) {
   return (
     <div className="flex h-screen overflow-hidden bg-zinc-950 text-zinc-100">
-      <NavRail tab={tab} onTabChange={onTabChange} />
+      <NavRail
+        tab={tab}
+        onTabChange={onTabChange}
+        onOpenOmniChat={onOpenOmniChat}
+        attentionPending={attentionPending}
+      />
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar title={tabLabel(tab)} />
         <main className="min-h-0 flex-1 overflow-hidden">{children}</main>

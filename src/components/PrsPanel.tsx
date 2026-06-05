@@ -13,6 +13,7 @@ import {
   type PrSummary,
 } from "../lib/github";
 import { usePrStatus } from "../lib/githubCache";
+import { useOmniChatContext } from "../lib/omniChatContext";
 import { formatRelativeTime } from "../lib/time";
 import { openExternal } from "../lib/url";
 import PrDetailView from "./PrDetailView";
@@ -183,6 +184,27 @@ export default function PrsPanel() {
   const [newFilter, setNewFilter] = useState({ name: "", query: "" });
   const [selected, setSelected] = useState<PrSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Tell Omni Chat which PR the user is looking at (or which list), so it can
+  // act on "this PR" without the user spelling out the details.
+  useOmniChatContext("prs", () => {
+    if (selected) {
+      return {
+        source: "prs",
+        summary: `Reviewing PR #${selected.number} "${selected.title}" in ${selected.owner}/${selected.repo}`,
+        details: {
+          url: selected.url,
+          author: selected.author,
+          draft: selected.draft,
+        },
+      };
+    }
+    const count = activeTab === "mine" ? mine.length : activeTab === "review" ? review.length : 0;
+    return {
+      source: "prs",
+      summary: `On the PRs tab (${activeTab} list, ${count} shown)`,
+    };
+  }, [selected, activeTab, mine.length, review.length]);
 
   const loadStars = useCallback(async () => {
     const stars = await ghStars();
