@@ -45,7 +45,8 @@ Status of the build against the original vision. The full V1 plan lives at
   composes a live layout from a fixed component catalog: layout primitives
   (Row/Column/Grid/Panel/…) plus self-contained feature widgets (Tasks,
   Calendar, CalendarWeek, CalendarMonth, CalendarDay, Memory, PRs, Sessions,
-  Alarms, Settings, Chat, Terminal) and the decomposed
+  Alarms, Settings, Chat, Terminal, WorkspaceList, and a Workspace widget named
+  by id) and the decomposed
   PR-review widgets (PrDescription/PrChecks/PrFileList/PrFileDiffs) that name a
   single PR by owner/repo/number and share one cached fetch. Widgets accept an
   optional fixed `height` so duplicates scroll independently. Streamed from the
@@ -57,19 +58,18 @@ Status of the build against the original vision. The full V1 plan lives at
   and live in the core independent of the webview, so the shell survives tab
   switches and Omni re-renders (scrollback is captured and replayed on
   reattach). Available as a standalone Terminal tab and as an Omni widget.
+- **Workspaces** — one or many repo worktrees pulled into a folder for a
+  contextual task. A repo registry + git-worktree engine in the sidecar (clone,
+  refresh default branch, cut worktrees off `origin/<default>`, run per-repo
+  setup scripts; metadata in Postgres); a Workspaces sidebar tab with a
+  per-workspace terminal at the parent folder + per-repo run-script terminals; a
+  right-hand All files / Changed / PR-checks column backed by a background PR
+  poller; task linkage that auto-completes a linked task on archive (recording a
+  summary + merged-PR URL); and `WorkspaceList` / `Workspace` Omni widgets. The
+  worktree engine also answers the working-directory question in "Claude Code
+  delegation" below.
 
 ## Remaining to build
-
-### Workspaces (in progress)
-One or many repo worktrees pulled into a folder for a contextual task, with a
-terminal and live PR/checks. PR1 ships the foundation: a repo registry, a
-git-worktree engine in the sidecar (clone, refresh default branch, cut
-worktrees off `origin/<default>`, run per-repo setup scripts), the
-`/api/repos` + `/api/workspaces` routes, and a Repositories manager in
-Settings. Still to come: the Workspaces sidebar tab + terminal view, a
-background PR-checks poller, task linkage with auto-complete on archive, and
-Omni components. This also answers the working-directory question in "Claude
-Code delegation" below.
 
 ### 1. Claude Code delegation
 Dispatch coding tasks to Claude Code from the app (e.g. "fix all my failing
