@@ -10,10 +10,12 @@ import {
   deleteRepo,
   getRepo,
   getWorkspace,
+  linkTask,
   listRepos,
   listWorkspaces,
   type ProvisionEvent,
   provisionWorkspace,
+  unlinkTask,
   updateRepo,
   workspaceRepoChanges,
   workspaceRepoFiles,
@@ -163,6 +165,34 @@ export function createWorkspaceRoutes(config: Config): Hono {
       return c.json(await workspaceRepoChanges(db(), c.req.param("wrId")));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
+    }
+  });
+
+  // Link / unlink a task (archiving the workspace completes linked tasks).
+  router.post("/:id/tasks", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const parsed = z.object({ taskId: z.string().uuid() }).safeParse(body);
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    try {
+      const ok = await linkTask(db(), c.req.param("id"), parsed.data.taskId);
+      if (!ok) return c.json({ error: "task not found" }, 404);
+      return c.json({ ok: true });
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+  });
+
+  router.delete("/:id/tasks/:taskId", async (c) => {
+    const taskId = c.req.param("taskId");
+    if (!z.string().uuid().safeParse(taskId).success) {
+      return c.json({ error: "invalid task id" }, 400);
+    }
+    try {
+      const ok = await unlinkTask(db(), c.req.param("id"), taskId);
+      if (!ok) return c.json({ error: "task not found" }, 404);
+      return c.json({ ok: true });
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
     }
   });
 

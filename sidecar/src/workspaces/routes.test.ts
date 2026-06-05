@@ -2,12 +2,20 @@ import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { tasks } from "../db/schema.ts";
 import type { GitRunner } from "./git.ts";
-import { archiveWorkspace, createWorkspace, getWorkspace, provisionWorkspace } from "./service.ts";
+import {
+  archiveWorkspace,
+  createWorkspace,
+  getWorkspace,
+  provisionWorkspace,
+  unlinkTask,
+} from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -250,6 +258,92 @@ describe("provision + archive (injected git runner)", () => {
     const detail = await getWorkspace(db, ws.id);
     expect(detail?.status).toBe("archiving");
     expect(detail?.repos.map((r) => r.status).sort()).toEqual(["error", "removed"]);
+  });
+
+  it("completes a linked task when the workspace is fully archived", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const [task] = await db.insert(tasks).values({ title: "do it", scope: "daily" }).returning();
+    const ws = await createWorkspace(db, config, {
+      name: "linked",
+      repoIds: [repo.id],
+      taskId: task!.id,
+    });
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+
+    const result = await archiveWorkspace(db, ws.id, {}, fakeGit);
+    expect(result.completedTasks).toBe(1);
+    const [after] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    expect(after?.status).toBe("done");
+  });
+
+  it("does not complete the linked task on a partial archive", async () => {
+    const db = getDb(url).db;
+    const r1 = await addRepo();
+    const created = await app.request("/api/repos", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ cloneUrl: "git@github.com:acme/other.git" }),
+    });
+    const r2 = (await created.json()) as { id: string };
+    const [task] = await db.insert(tasks).values({ title: "t", scope: "daily" }).returning();
+    const ws = await createWorkspace(db, config, {
+      name: "partial",
+      repoIds: [r1.id, r2.id],
+      taskId: task!.id,
+    });
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+
+    const failingGit: GitRunner = async (args) => {
+      if (args[0] === "worktree" && args[1] === "remove" && args[args.length - 1]?.includes("other")) {
+        return { stdout: "", stderr: "dirty", exitCode: 1 };
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    };
+    const result = await archiveWorkspace(db, ws.id, {}, failingGit);
+    expect(result.status).toBe("archiving");
+    expect(result.completedTasks).toBe(0);
+    const [after] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    expect(after?.status).toBe("open"); // stays open so the archive can be retried
+  });
+
+  it("leaves an already-done linked task's completedAt unchanged", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ts = new Date("2026-01-01T00:00:00Z");
+    const [task] = await db
+      .insert(tasks)
+      .values({ title: "done", scope: "daily", status: "done", completedAt: ts })
+      .returning();
+    const ws = await createWorkspace(db, config, {
+      name: "done-task",
+      repoIds: [repo.id],
+      taskId: task!.id,
+    });
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+
+    const result = await archiveWorkspace(db, ws.id, {}, fakeGit);
+    expect(result.completedTasks).toBe(0); // only OPEN tasks are completed
+    const [after] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    expect(after?.completedAt?.getTime()).toBe(ts.getTime());
+  });
+
+  it("does not complete a task unlinked before archive", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const [task] = await db.insert(tasks).values({ title: "t", scope: "daily" }).returning();
+    const ws = await createWorkspace(db, config, {
+      name: "unlinkme",
+      repoIds: [repo.id],
+      taskId: task!.id,
+    });
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    expect(await unlinkTask(db, ws.id, task!.id)).toBe(true);
+
+    const result = await archiveWorkspace(db, ws.id, {}, fakeGit);
+    expect(result.completedTasks).toBe(0);
+    const [after] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
+    expect(after?.status).toBe("open");
   });
 
   it("completes provisioning even when a setup script fails (repo -> error)", async () => {
