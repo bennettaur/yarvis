@@ -13,6 +13,7 @@ import {
   type WorkspaceSummary,
 } from "../lib/workspaces";
 import TerminalPanel from "./TerminalPanel";
+import WorkspaceSidePanel from "./WorkspaceSidePanel";
 
 const STATUS_STYLES: Record<WorkspaceStatus, string> = {
   creating: "bg-amber-900/40 text-amber-200",
@@ -408,33 +409,36 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
           {provisionLog || "Starting…"}
         </pre>
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col">
-          <div className="min-h-0 flex-1">
-            <TerminalPanel sessionId={`ws:${detail.id}`} cwd={detail.rootPath} />
-          </div>
-          {runRepo && (
-            <div className="flex min-h-0 flex-1 flex-col border-t border-zinc-800">
-              <div className="flex shrink-0 items-center justify-between bg-zinc-900 px-3 py-1 text-xs text-zinc-400">
-                <span>
-                  run · {runRepo.repo.name}{" "}
-                  <span className="font-mono text-zinc-600">{runRepo.repo.runScript}</span>
-                </span>
-                <button
-                  onClick={() => setRunRepo(null)}
-                  className="rounded border border-zinc-700 px-1.5 py-0.5 hover:bg-zinc-800"
-                >
-                  Close
-                </button>
-              </div>
-              <div className="min-h-0 flex-1">
-                <TerminalPanel
-                  sessionId={`ws-run:${runRepo.id}`}
-                  cwd={runRepo.worktreePath}
-                  initialCommand={runRepo.repo.runScript ?? undefined}
-                />
-              </div>
+        <div className="flex min-h-0 flex-1">
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="min-h-0 flex-1">
+              <TerminalPanel sessionId={`ws:${detail.id}`} cwd={detail.rootPath} />
             </div>
-          )}
+            {runRepo && (
+              <div className="flex min-h-0 flex-1 flex-col border-t border-zinc-800">
+                <div className="flex shrink-0 items-center justify-between bg-zinc-900 px-3 py-1 text-xs text-zinc-400">
+                  <span>
+                    run · {runRepo.repo.name}{" "}
+                    <span className="font-mono text-zinc-600">{runRepo.repo.runScript}</span>
+                  </span>
+                  <button
+                    onClick={() => setRunRepo(null)}
+                    className="rounded border border-zinc-700 px-1.5 py-0.5 hover:bg-zinc-800"
+                  >
+                    Close
+                  </button>
+                </div>
+                <div className="min-h-0 flex-1">
+                  <TerminalPanel
+                    sessionId={`ws-run:${runRepo.id}`}
+                    cwd={runRepo.worktreePath}
+                    initialCommand={runRepo.repo.runScript ?? undefined}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+          <WorkspaceSidePanel workspaceId={detail.id} repos={detail.repos} />
         </div>
       )}
     </div>

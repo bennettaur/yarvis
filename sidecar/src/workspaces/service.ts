@@ -21,11 +21,14 @@ import {
 import { runStreaming } from "./exec.ts";
 import {
   branchExists,
+  type ChangedFile,
   createWorktree,
   defaultGitRunner,
   detectDefaultBranch,
   ensurePrimaryClone,
   type GitRunner,
+  listChangedFiles,
+  listFiles,
   removeWorktree,
   updateDefaultBranch,
 } from "./git.ts";
@@ -280,6 +283,35 @@ export async function getWorkspace(db: Db, id: string): Promise<WorkspaceDetail 
       pr: prByWr.get(wr.id) ?? null,
     })),
   };
+}
+
+async function getWorkspaceRepo(db: Db, workspaceRepoId: string): Promise<WorkspaceRepo> {
+  const [row] = await db
+    .select()
+    .from(workspaceRepos)
+    .where(eq(workspaceRepos.id, workspaceRepoId));
+  if (!row) throw new Error("workspace repo not found");
+  return row;
+}
+
+/** All tracked files in a workspace repo's worktree. */
+export async function workspaceRepoFiles(
+  db: Db,
+  workspaceRepoId: string,
+  runner: GitRunner = defaultGitRunner,
+): Promise<string[]> {
+  const wr = await getWorkspaceRepo(db, workspaceRepoId);
+  return listFiles(runner, wr.worktreePath);
+}
+
+/** Files changed on a workspace repo's branch versus its base. */
+export async function workspaceRepoChanges(
+  db: Db,
+  workspaceRepoId: string,
+  runner: GitRunner = defaultGitRunner,
+): Promise<ChangedFile[]> {
+  const wr = await getWorkspaceRepo(db, workspaceRepoId);
+  return listChangedFiles(runner, wr.worktreePath, wr.baseBranch);
 }
 
 // ---------------------------------------------------------------------------

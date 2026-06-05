@@ -198,10 +198,26 @@ export class GitHubClient {
       `/repos/${owner}/${repo}/commits/${pr.head.sha}/check-runs`,
     );
     return {
+      state: pr.state ?? "open",
+      merged: Boolean(pr.merged),
       mergeable: pr.mergeable ?? null,
       mergeableState: pr.mergeable_state ?? "unknown",
       checks: summarizeChecks(checks.check_runs ?? []),
     };
+  }
+
+  /**
+   * Finds the most recent PR whose head branch is `branch` in the given repo,
+   * or null. Uses the core REST `pulls?head=` filter (not the Search API, whose
+   * tight secondary rate limit the background poller would otherwise hit).
+   */
+  async findPrByBranch(owner: string, repo: string, branch: string): Promise<PrSummary | null> {
+    const head = encodeURIComponent(`${owner}:${branch}`);
+    const items = await this.api<any[]>(
+      `/repos/${owner}/${repo}/pulls?head=${head}&state=all&sort=created&direction=desc&per_page=1`,
+    );
+    const item = items[0];
+    return item ? toPrSummary(item) : null;
   }
 
   async prDetail(owner: string, repo: string, number: number): Promise<PrDetail> {
