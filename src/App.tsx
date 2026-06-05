@@ -14,6 +14,7 @@ import AppShell from "./components/shell/AppShell";
 import type { Tab } from "./components/shell/nav";
 import TasksPanel from "./components/TasksPanel";
 import TerminalPanel from "./components/TerminalPanel";
+import WorkspacesPanel from "./components/WorkspacesPanel";
 import { type Alarm, onAlarmFired } from "./lib/alarms";
 
 export default function App() {
@@ -39,6 +40,8 @@ export default function App() {
           <OmniView />
         ) : tab === "terminal" ? (
           <TerminalPanel sessionId="tab:terminal" />
+        ) : tab === "workspaces" ? (
+          <WorkspacesPanel />
         ) : (
           <div className="h-full overflow-y-auto p-6">
             {tab === "tasks" && <TasksPanel />}

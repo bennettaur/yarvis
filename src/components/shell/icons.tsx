@@ -8,6 +8,7 @@ export type IconName =
   | "omni"
   | "chat"
   | "terminal"
+  | "workspaces"
   | "tasks"
   | "prs"
   | "memory"
@@ -35,6 +36,14 @@ const PATHS: Record<IconName, React.ReactNode> = {
       <rect width="18" height="16" x="3" y="4" rx="2" />
       <path d="m7 9 3 3-3 3" />
       <path d="M13 15h4" />
+    </>
+  ),
+  workspaces: (
+    <>
+      <rect width="7" height="7" x="3" y="3" rx="1" />
+      <rect width="7" height="7" x="14" y="3" rx="1" />
+      <rect width="7" height="7" x="14" y="14" rx="1" />
+      <rect width="7" height="7" x="3" y="14" rx="1" />
     </>
   ),
   tasks: (

@@ -227,8 +227,27 @@ export async function createWorkspace(
   });
 }
 
-export async function listWorkspaces(db: Db): Promise<Workspace[]> {
-  return db.select().from(workspaces).orderBy(workspaces.createdAt);
+export interface WorkspaceSummary extends Workspace {
+  /** Names of the repos in this workspace, for grouping in the sidebar. */
+  repoNames: string[];
+}
+
+export async function listWorkspaces(db: Db): Promise<WorkspaceSummary[]> {
+  const wsRows = await db.select().from(workspaces).orderBy(workspaces.createdAt);
+  if (!wsRows.length) return [];
+
+  const memberships = await db
+    .select({ workspaceId: workspaceRepos.workspaceId, name: repos.name })
+    .from(workspaceRepos)
+    .innerJoin(repos, eq(workspaceRepos.repoId, repos.id));
+  const namesByWorkspace = new Map<string, string[]>();
+  for (const m of memberships) {
+    const names = namesByWorkspace.get(m.workspaceId) ?? [];
+    names.push(m.name);
+    namesByWorkspace.set(m.workspaceId, names);
+  }
+
+  return wsRows.map((w) => ({ ...w, repoNames: namesByWorkspace.get(w.id) ?? [] }));
 }
 
 export async function getWorkspace(db: Db, id: string): Promise<WorkspaceDetail | null> {

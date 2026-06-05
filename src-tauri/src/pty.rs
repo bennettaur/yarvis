@@ -25,10 +25,11 @@ const READ_BUF_SIZE: usize = 4096;
 /// shell in one IPC call. The shell still receives an aggregate of separate
 /// writes, so this isn't a strong defense — it's an extra layer.
 const MAX_WRITE_BYTES: usize = 64 * 1024;
-/// Cap on the number of live PTY sessions. The Terminal UI rarely needs more
-/// than a handful; this prevents `pty_attach` with novel ids from spawning
-/// shells without bound.
-const MAX_SESSIONS: usize = 8;
+/// Cap on the number of live PTY sessions. A multi-repo workspace opens a
+/// parent terminal plus a run-script session per repo, so several workspaces
+/// can be live at once; this still bounds `pty_attach` with novel ids from
+/// spawning shells without limit.
+const MAX_SESSIONS: usize = 24;
 
 struct PtySession {
     /// Writes user input into the PTY (taken once from the master).
@@ -72,8 +73,15 @@ fn snapshot(scrollback: &Arc<Mutex<Vec<u8>>>) -> Vec<u8> {
 }
 
 /// Spawns a shell in a new PTY and starts the reader thread that streams its
-/// output to the frontend.
-fn spawn_session(app: &AppHandle, id: &str, cols: u16, rows: u16) -> Result<PtySession, String> {
+/// output to the frontend. The shell opens in `cwd` when given (e.g. a
+/// workspace folder), otherwise in `$HOME`.
+fn spawn_session(
+    app: &AppHandle,
+    id: &str,
+    cols: u16,
+    rows: u16,
+    cwd: Option<String>,
+) -> Result<PtySession, String> {
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(pty_size(cols, rows))
@@ -82,8 +90,8 @@ fn spawn_session(app: &AppHandle, id: &str, cols: u16, rows: u16) -> Result<PtyS
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let mut cmd = CommandBuilder::new(shell);
     cmd.env("TERM", "xterm-256color");
-    if let Ok(home) = std::env::var("HOME") {
-        cmd.cwd(home);
+    if let Some(dir) = cwd.filter(|d| !d.is_empty()).or_else(|| std::env::var("HOME").ok()) {
+        cmd.cwd(dir);
     }
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
@@ -148,6 +156,7 @@ pub fn pty_attach(
     id: String,
     cols: u16,
     rows: u16,
+    cwd: Option<String>,
 ) -> Result<Vec<u8>, String> {
     // Reattach to a live session; reap and respawn a dead one.
     {
@@ -173,7 +182,7 @@ pub fn pty_attach(
 
     // Spawn outside the lock: openpty + spawn_command + thread do real I/O and
     // would otherwise block every other PTY command for the duration.
-    let session = spawn_session(&app, &id, cols, rows)?;
+    let session = spawn_session(&app, &id, cols, rows, cwd)?;
 
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     if let Some(existing) = sessions.get(&id) {

@@ -10,9 +10,10 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
  */
 
 /** Attaches to session `id`, spawning a shell if it does not yet exist. Returns
- * the captured scrollback (raw bytes as a number array) to replay. */
-export const attachPty = (id: string, cols: number, rows: number) =>
-  invoke<number[]>("pty_attach", { id, cols, rows });
+ * the captured scrollback (raw bytes as a number array) to replay. `cwd` sets
+ * the working directory for a freshly spawned shell (ignored on reattach). */
+export const attachPty = (id: string, cols: number, rows: number, cwd?: string) =>
+  invoke<number[]>("pty_attach", { id, cols, rows, cwd });
 
 /** Sends user input to the session's shell. */
 export const writePty = (id: string, data: string) => invoke("pty_write", { id, data });

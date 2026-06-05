@@ -114,6 +114,19 @@ describe("workspace routes", () => {
     expect(body.repos.length).toBe(1);
   });
 
+  it("lists workspaces with their repo names for grouping", async () => {
+    const repo = await addRepo();
+    await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "grouped", repoIds: [repo.id] }),
+    });
+    const res = await app.request("/api/workspaces", { headers: auth });
+    const list = (await res.json()) as { name: string; repoNames: string[] }[];
+    expect(list).toHaveLength(1);
+    expect(list[0]?.repoNames).toEqual(["widget"]);
+  });
+
   it("rejects a workspace with no repos", async () => {
     const res = await app.request("/api/workspaces", {
       method: "POST",
