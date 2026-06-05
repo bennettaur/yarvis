@@ -103,10 +103,11 @@ render real components with the `renderToHtml` helper in `src/test/render.tsx`.
 
 ```
 src/            React frontend (Vite + TS + Tailwind)
-  lib/          sidecar API client, Keychain command wrappers
+  lib/          sidecar API client, Keychain wrappers, Omni Chat context registry, notifications
   components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, Terminal, …)
-    shell/      desktop shell: nav rail, top bar, boot loading screen
+    shell/      desktop shell: nav rail, top bar, boot loading screen, tab shortcuts
     omni/       Omni view — chat-driven dynamic-UI canvas
+    omnichat/   Omni Chat — global summon-from-anywhere chat overlay
   omni/         json-render component catalog, registry, layout primitives
 src-tauri/      Rust core (Tauri v2)
   src/keychain.rs   Keychain-backed secret commands (single consolidated item)
@@ -120,5 +121,17 @@ sidecar/        Bun + TS service (Hono)
   src/github/   PR dashboard + embedded review (REST + GraphQL)
   src/google/   Google Calendar OAuth + events
   src/omni/     Omni UI generation (streaming) + saved layouts
+  src/chat/attentionTools.ts  request_attention tool (badge + OS notification)
   drizzle/      generated SQL migrations
 ```
+
+## Keyboard shortcuts
+
+- **Cmd/Ctrl + 1–9** — jump to the Nth tab in the nav rail.
+- **Cmd/Ctrl + Shift + ] / [** — cycle to the next / previous tab (wraps around).
+- **Control + Shift + Space** — summon **Omni Chat** from anywhere: a centered chat
+  overlay that receives a snapshot of the screen you're on (e.g. the PR you're
+  reviewing) as context. Esc hides it while the conversation keeps streaming in the
+  background; re-summoning resumes the same session. The agent can call
+  `request_attention` to raise a nav-rail badge and an OS notification when it needs
+  you. Any view contributes context by calling the `useOmniChatContext` hook.

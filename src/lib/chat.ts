@@ -31,9 +31,11 @@ export interface ChatMessage {
 }
 
 export interface ChatEvent {
-  type: "delta" | "done" | "error";
+  type: "delta" | "done" | "error" | "attention";
   text?: string;
   message?: string;
+  /** Present on `attention` events: why the agent needs the user. */
+  reason?: string;
 }
 
 export async function listProviders(): Promise<ProviderInfo[]> {
@@ -69,6 +71,8 @@ export interface ChatRequest {
   message: string;
   provider: ProviderId;
   model: string;
+  /** Optional snapshot of the screen the user summoned the chat from. */
+  context?: string;
 }
 
 export async function* streamChat(req: ChatRequest): AsyncGenerator<ChatEvent> {

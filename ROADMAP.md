@@ -57,6 +57,16 @@ Status of the build against the original vision. The full V1 plan lives at
   and live in the core independent of the webview, so the shell survives tab
   switches and Omni re-renders (scrollback is captured and replayed on
   reattach). Available as a standalone Terminal tab and as an Omni widget.
+- **Omni Chat + keyboard navigation** — a global `Control+Shift+Space` hotkey
+  (registered in the Rust core) raises a centered chat overlay over any tab; Esc
+  hides it while the session keeps streaming in the background, and re-summoning
+  resumes the same persisted conversation. Each mounted view contributes a context
+  snapshot via the `useOmniChatContext` hook → a frontend page-context registry;
+  the active snapshot is sent to the agent as a nonce-delimited, non-instruction
+  screen-context message (kept out of the system prompt). A `request_attention`
+  tool lets the agent raise a nav-rail badge + an OS notification when it finishes
+  background work or needs a decision. Tab shortcuts too: Cmd/Ctrl+1–9 jump to a
+  tab, Cmd/Ctrl+Shift+[ / ] cycle through them.
 
 ## Remaining to build
 
