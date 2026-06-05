@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listRepos, type Repo } from "../lib/repos";
+import { listTasks, type Task } from "../lib/tasks";
 import {
   createWorkspace,
   getWorkspace,
   listWorkspaces,
   type ProvisionEvent,
   provisionWorkspace,
+  unlinkWorkspaceTask,
   type WorkspaceDetail,
   type WorkspaceRepoDetail,
   type WorkspaceRepoStatus,
@@ -14,6 +16,9 @@ import {
 } from "../lib/workspaces";
 import TerminalPanel from "./TerminalPanel";
 import WorkspaceSidePanel from "./WorkspaceSidePanel";
+import ArchiveDialog from "./workspaces/ArchiveDialog";
+import ArchivedView from "./workspaces/ArchivedView";
+import LinkTaskControl from "./workspaces/LinkTaskControl";
 
 const STATUS_STYLES: Record<WorkspaceStatus, string> = {
   creating: "bg-amber-900/40 text-amber-200",
@@ -205,10 +210,18 @@ function NewWorkspaceForm({
 }) {
   const [name, setName] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [taskId, setTaskId] = useState("");
+  const [openTasks, setOpenTasks] = useState<Task[]>([]);
   const [phase, setPhase] = useState<"form" | "provisioning">("form");
   const [log, setLog] = useState("");
   const [error, setError] = useState<string | null>(null);
   const logRef = useRef<HTMLPreElement | null>(null);
+
+  useEffect(() => {
+    listTasks({ status: "open" })
+      .then(setOpenTasks)
+      .catch(() => setOpenTasks([]));
+  }, []);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll on each append
   useEffect(() => {
@@ -230,7 +243,11 @@ function NewWorkspaceForm({
       return;
     }
     try {
-      const ws = await createWorkspace({ name: name.trim(), repoIds: [...selected] });
+      const ws = await createWorkspace({
+        name: name.trim(),
+        repoIds: [...selected],
+        taskId: taskId || undefined,
+      });
       setPhase("provisioning");
       const result = await consumeProvision(ws.id, (text) => setLog((prev) => prev + text));
       if (result.ok) onCreated(ws.id);
@@ -300,6 +317,27 @@ function NewWorkspaceForm({
           )}
         </div>
 
+        {openTasks.length > 0 && (
+          <label className="block text-xs text-zinc-400">
+            <span className="mb-1 block uppercase tracking-wide">Link a task (optional)</span>
+            <select
+              value={taskId}
+              onChange={(e) => setTaskId(e.target.value)}
+              className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500"
+            >
+              <option value="">None</option>
+              {openTasks.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.title}
+                </option>
+              ))}
+            </select>
+            <span className="mt-1 block text-zinc-500">
+              Archiving the workspace will mark a linked task done.
+            </span>
+          </label>
+        )}
+
         <div className="flex justify-end gap-2">
           <button
             onClick={onCancel}
@@ -324,6 +362,7 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
   const [error, setError] = useState<string | null>(null);
   const [runRepo, setRunRepo] = useState<WorkspaceRepoDetail | null>(null);
   const [provisionLog, setProvisionLog] = useState<string | null>(null);
+  const [showArchive, setShowArchive] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -362,7 +401,7 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
   const provisioned = detail.status === "active";
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="relative flex h-full min-h-0 flex-col">
       <div className="shrink-0 border-b border-zinc-800 px-4 py-2">
         <div className="flex items-center gap-2">
           <h2 className="text-sm font-medium text-zinc-100">{detail.name}</h2>
@@ -370,6 +409,14 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
           <span className="ml-auto truncate font-mono text-xs text-zinc-500">
             {detail.rootPath}
           </span>
+          {detail.status !== "archived" && (
+            <button
+              onClick={() => setShowArchive(true)}
+              className="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
+            >
+              Archive
+            </button>
+          )}
         </div>
         <div className="mt-2 flex flex-wrap gap-2">
           {detail.repos.map((wr) => (
@@ -391,7 +438,61 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
             </div>
           ))}
         </div>
+        {detail.tasks.length > 0 && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+            <span className="uppercase tracking-wide">Tasks</span>
+            {detail.tasks.map((t) => (
+              <span
+                key={t.id}
+                className="flex items-center gap-1 rounded-md border border-zinc-800 px-2 py-0.5"
+              >
+                <span className={t.status === "done" ? "text-emerald-400" : "text-zinc-300"}>
+                  {t.status === "done" ? "✓" : "○"} {t.title}
+                </span>
+                {detail.status !== "archived" && (
+                  <button
+                    onClick={() =>
+                      void unlinkWorkspaceTask(id, t.id).then(() => {
+                        void load();
+                        onChanged();
+                      })
+                    }
+                    className="text-zinc-600 hover:text-zinc-300"
+                    aria-label="Unlink task"
+                  >
+                    ×
+                  </button>
+                )}
+              </span>
+            ))}
+          </div>
+        )}
+        {detail.status !== "archived" && (
+          <div className="mt-2">
+            <LinkTaskControl
+              workspaceId={id}
+              linkedIds={detail.tasks.map((t) => t.id)}
+              onLinked={async () => {
+                await load();
+                onChanged();
+              }}
+            />
+          </div>
+        )}
       </div>
+
+      {showArchive && (
+        <ArchiveDialog
+          detail={detail}
+          onClose={() => setShowArchive(false)}
+          onArchived={async () => {
+            setShowArchive(false);
+            await load();
+            onChanged();
+          }}
+          onError={(m) => setError(m)}
+        />
+      )}
 
       {!provisioned && provisionLog === null && (
         <div className="shrink-0 border-b border-zinc-800 px-4 py-2">
@@ -408,6 +509,8 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
         <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap bg-[#09090b] p-3 font-mono text-xs text-zinc-300">
           {provisionLog || "Starting…"}
         </pre>
+      ) : detail.status === "archived" ? (
+        <ArchivedView detail={detail} />
       ) : (
         <div className="flex min-h-0 flex-1">
           <div className="flex min-h-0 flex-1 flex-col">

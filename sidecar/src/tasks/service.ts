@@ -73,6 +73,27 @@ export async function tasksCompletedBetween(db: Db, from: Date, to: Date): Promi
     .orderBy(asc(tasks.completedAt));
 }
 
+/** Tasks linked to a workspace (oldest first), for the workspace detail view. */
+export async function tasksForWorkspace(db: Db, workspaceId: string): Promise<Task[]> {
+  return db
+    .select()
+    .from(tasks)
+    .where(eq(tasks.workspaceId, workspaceId))
+    .orderBy(asc(tasks.createdAt));
+}
+
+/**
+ * Completes every still-open task linked to a workspace. Used when a workspace
+ * is archived after its PR merged. Returns the tasks that were closed.
+ */
+export async function completeTasksByWorkspace(db: Db, workspaceId: string): Promise<Task[]> {
+  return db
+    .update(tasks)
+    .set({ status: "done", completedAt: new Date() })
+    .where(and(eq(tasks.workspaceId, workspaceId), eq(tasks.status, "open")))
+    .returning();
+}
+
 export async function completeTask(db: Db, id: string): Promise<Task | null> {
   const [row] = await db
     .update(tasks)

@@ -1,5 +1,6 @@
 import { sidecarFetch, streamSSE } from "./api";
 import type { Repo } from "./repos";
+import type { Task } from "./tasks";
 
 export type WorkspaceStatus = "creating" | "active" | "archiving" | "archived" | "error";
 export type WorkspaceRepoStatus = "pending" | "provisioning" | "ready" | "removed" | "error";
@@ -50,6 +51,7 @@ export interface WorkspaceRepoDetail {
 
 export interface WorkspaceDetail extends Workspace {
   repos: WorkspaceRepoDetail[];
+  tasks: Task[];
 }
 
 /** A workspace list row, with its repo names for sidebar grouping. */
@@ -79,6 +81,7 @@ export interface ArchiveWorkspaceInput {
 export interface ArchiveResult {
   status: WorkspaceStatus;
   errors: { repo: string; message: string }[];
+  completedTasks: number;
 }
 
 /** A progress event emitted while a workspace's worktrees are provisioned. */
@@ -146,6 +149,22 @@ export async function workspaceRepoChanges(
   const res = await sidecarFetch(`/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/changes`);
   if (!res.ok) return readError(res, "list changes");
   return res.json();
+}
+
+export async function linkWorkspaceTask(workspaceId: string, taskId: string): Promise<void> {
+  const res = await sidecarFetch(`/api/workspaces/${workspaceId}/tasks`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ taskId }),
+  });
+  if (!res.ok) return readError(res, "link task");
+}
+
+export async function unlinkWorkspaceTask(workspaceId: string, taskId: string): Promise<void> {
+  const res = await sidecarFetch(`/api/workspaces/${workspaceId}/tasks/${taskId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) return readError(res, "unlink task");
 }
 
 export async function archiveWorkspace(

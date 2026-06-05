@@ -4,12 +4,13 @@
  * module owns the database state and orchestration.
  */
 
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import {
   type Repo,
   repos,
+  type Task,
   tasks,
   type Workspace,
   type WorkspaceRepo,
@@ -18,6 +19,7 @@ import {
   workspaceRepos,
   workspaces,
 } from "../db/schema.ts";
+import { completeTasksByWorkspace, tasksForWorkspace } from "../tasks/service.ts";
 import { runStreaming } from "./exec.ts";
 import {
   branchExists,
@@ -149,6 +151,7 @@ export interface WorkspaceRepoDetail extends WorkspaceRepo {
 
 export interface WorkspaceDetail extends Workspace {
   repos: WorkspaceRepoDetail[];
+  tasks: Task[];
 }
 
 /** Filesystem- and branch-safe slug derived from a workspace name. */
@@ -282,7 +285,30 @@ export async function getWorkspace(db: Db, id: string): Promise<WorkspaceDetail 
       repo: repoById.get(wr.repoId)!,
       pr: prByWr.get(wr.id) ?? null,
     })),
+    tasks: await tasksForWorkspace(db, id),
   };
+}
+
+/** Links a task to a workspace; archiving the workspace will complete it.
+ *  Returns false if the task doesn't exist. */
+export async function linkTask(db: Db, workspaceId: string, taskId: string): Promise<boolean> {
+  const rows = await db
+    .update(tasks)
+    .set({ workspaceId })
+    .where(eq(tasks.id, taskId))
+    .returning({ id: tasks.id });
+  return rows.length > 0;
+}
+
+/** Detaches a task from a workspace; scoped so it only affects this workspace's
+ *  task. Returns false if no such linked task exists. */
+export async function unlinkTask(db: Db, workspaceId: string, taskId: string): Promise<boolean> {
+  const rows = await db
+    .update(tasks)
+    .set({ workspaceId: null })
+    .where(and(eq(tasks.id, taskId), eq(tasks.workspaceId, workspaceId)))
+    .returning({ id: tasks.id });
+  return rows.length > 0;
 }
 
 async function getWorkspaceRepo(db: Db, workspaceRepoId: string): Promise<WorkspaceRepo> {
@@ -491,6 +517,8 @@ export interface ArchiveWorkspaceInput {
 export interface ArchiveResult {
   status: Workspace["status"];
   errors: { repo: string; message: string }[];
+  /** Number of linked tasks completed (only when fully archived). */
+  completedTasks: number;
 }
 
 /**
@@ -551,5 +579,9 @@ export async function archiveWorkspace(
     })
     .where(eq(workspaces.id, id));
 
-  return { status, errors };
+  // Completing the work means the linked task is done — but only once the
+  // workspace is fully torn down, so a partial archive stays reopenable.
+  const completedTasks = fullyRemoved ? await completeTasksByWorkspace(db, id) : [];
+
+  return { status, errors, completedTasks: completedTasks.length };
 }
