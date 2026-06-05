@@ -57,6 +57,13 @@ export interface WorkspaceSummary extends Workspace {
   repoNames: string[];
 }
 
+export interface ChangedFile {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+}
+
 export interface CreateWorkspaceInput {
   name: string;
   repoIds: string[];
@@ -121,6 +128,24 @@ export async function* provisionWorkspace(id: string): AsyncGenerator<ProvisionE
   for await (const data of streamSSE(`/api/workspaces/${id}/provision`, { method: "POST" })) {
     yield JSON.parse(data) as ProvisionEvent;
   }
+}
+
+export async function workspaceRepoFiles(
+  workspaceId: string,
+  workspaceRepoId: string,
+): Promise<string[]> {
+  const res = await sidecarFetch(`/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/files`);
+  if (!res.ok) return readError(res, "list files");
+  return res.json();
+}
+
+export async function workspaceRepoChanges(
+  workspaceId: string,
+  workspaceRepoId: string,
+): Promise<ChangedFile[]> {
+  const res = await sidecarFetch(`/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/changes`);
+  if (!res.ok) return readError(res, "list changes");
+  return res.json();
 }
 
 export async function archiveWorkspace(

@@ -127,6 +127,14 @@ describe("workspace routes", () => {
     expect(list[0]?.repoNames).toEqual(["widget"]);
   });
 
+  it("returns 404 for files of an unknown workspace repo", async () => {
+    const res = await app.request(
+      "/api/workspaces/x/repos/00000000-0000-0000-0000-000000000000/files",
+      { headers: auth },
+    );
+    expect(res.status).toBe(404);
+  });
+
   it("rejects a workspace with no repos", async () => {
     const res = await app.request("/api/workspaces", {
       method: "POST",

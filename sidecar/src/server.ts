@@ -3,6 +3,7 @@ import { loadConfig } from "./config.ts";
 import { runMigrations } from "./db/migrate.ts";
 import { redactSecrets } from "./llm/errors.ts";
 import { createReadiness } from "./readiness.ts";
+import { startWorkspacePoller } from "./workspaces/poller.ts";
 
 const config = loadConfig();
 
@@ -42,6 +43,9 @@ if (config.databaseUrl) {
   runMigrations(config.databaseUrl)
     .then(() => {
       readiness.set("ready");
+      // Background PR/checks poller — the only background worker. No-op without
+      // a GitHub token; reconciles interrupted runs on its first tick.
+      startWorkspacePoller(config);
     })
     .catch((e) => {
       // Redact before storing the message because `/health` (unauthenticated)
