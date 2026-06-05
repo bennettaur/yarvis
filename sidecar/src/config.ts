@@ -7,6 +7,9 @@
  * and a generated token is logged so it can be used by a client.
  */
 
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 const TOKEN_BYTES = 32;
 
 function randomToken(): string {
@@ -50,6 +53,8 @@ export interface Config {
   allowedOrigins: string[] | null;
   /** Postgres connection string. May be undefined until the user configures it. */
   databaseUrl: string | undefined;
+  /** Base directory holding managed repo clones + per-workspace worktrees. */
+  workspacesRoot: string;
   secrets: ProviderSecrets;
   /** Keyed by custom provider id from the database. */
   customProviderSecrets: Record<string, CustomProviderSecrets>;
@@ -108,6 +113,7 @@ export function loadConfig(): Config {
     tokenGenerated: suppliedToken === undefined,
     allowedOrigins: parseOrigins(env.YARVIS_ALLOWED_ORIGINS),
     databaseUrl: env.DATABASE_URL,
+    workspacesRoot: env.YARVIS_WORKSPACES_ROOT ?? join(homedir(), "dev", "yarvis-workspaces"),
     secrets: {
       anthropicApiKey: env.ANTHROPIC_API_KEY,
       geminiApiKey: env.GEMINI_API_KEY,

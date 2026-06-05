@@ -75,6 +75,12 @@ Console and register the loopback redirect
 for Desktop clients), then enter the client id/secret in Settings and connect
 from the Calendar tab. See `ROADMAP.md` for the full verification steps.
 
+Workspaces manage their own repo clones and git worktrees under a base
+directory, `~/dev/yarvis-workspaces` by default and overridable with the
+`YARVIS_WORKSPACES_ROOT` env var (non-secret config, unlike the Keychain
+secrets above). Add repos and edit their per-repo setup/run scripts in the
+Settings tab's Repositories section.
+
 ## Development
 
 ```bash
@@ -120,5 +126,6 @@ sidecar/        Bun + TS service (Hono)
   src/github/   PR dashboard + embedded review (REST + GraphQL)
   src/google/   Google Calendar OAuth + events
   src/omni/     Omni UI generation (streaming) + saved layouts
+  src/workspaces/ repo registry + git-worktree provisioning (/api/repos, /api/workspaces)
   drizzle/      generated SQL migrations
 ```

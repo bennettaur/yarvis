@@ -12,6 +12,7 @@ const config: Config = {
   tokenGenerated: false,
   allowedOrigins: null,
   databaseUrl: url,
+  workspacesRoot: "/tmp/yarvis-test-workspaces",
   secrets: {},
   customProviderSecrets: {},
 };

@@ -1,4 +1,5 @@
 import CustomProviderSection from "./CustomProviderSection";
+import ReposSection from "./ReposSection";
 import SecretsSection from "./SecretsSection";
 
 /**
@@ -10,6 +11,7 @@ export default function SettingsPanel() {
     <div className="space-y-6">
       <SecretsSection />
       <CustomProviderSection />
+      <ReposSection />
     </div>
   );
 }

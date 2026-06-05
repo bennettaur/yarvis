@@ -60,6 +60,17 @@ Status of the build against the original vision. The full V1 plan lives at
 
 ## Remaining to build
 
+### Workspaces (in progress)
+One or many repo worktrees pulled into a folder for a contextual task, with a
+terminal and live PR/checks. PR1 ships the foundation: a repo registry, a
+git-worktree engine in the sidecar (clone, refresh default branch, cut
+worktrees off `origin/<default>`, run per-repo setup scripts), the
+`/api/repos` + `/api/workspaces` routes, and a Repositories manager in
+Settings. Still to come: the Workspaces sidebar tab + terminal view, a
+background PR-checks poller, task linkage with auto-complete on archive, and
+Omni components. This also answers the working-directory question in "Claude
+Code delegation" below.
+
 ### 1. Claude Code delegation
 Dispatch coding tasks to Claude Code from the app (e.g. "fix all my failing
 PRs" → check out the PR branch and run an agent to fix it).

@@ -1,4 +1,6 @@
+import { sql } from "drizzle-orm";
 import {
+  boolean,
   date,
   integer,
   jsonb,
@@ -51,6 +53,12 @@ export const tasks = pgTable("tasks", {
   targetDate: date("target_date"),
   notes: text("notes"),
   sourceSessionId: uuid("source_session_id").references(() => chatSessions.id, {
+    onDelete: "set null",
+  }),
+  // Links a task to the workspace opened to complete it. Archiving that
+  // workspace completes the task. One-directional: the workspace carries no
+  // reverse column.
+  workspaceId: uuid("workspace_id").references(() => workspaces.id, {
     onDelete: "set null",
   }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -126,6 +134,123 @@ export const customProviders = pgTable("custom_providers", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * Workspaces — one or many repo worktrees pulled together in a folder to
+ * complete a contextual task (e.g. changing an API in service A that service B
+ * calls). The sidecar owns the git/filesystem work; these tables are the
+ * source of truth for what exists on disk.
+ */
+
+export const workspaceStatus = pgEnum("workspace_status", [
+  "creating", // worktrees being provisioned / setup scripts running
+  "active", // ready for use
+  "archiving", // worktree teardown in progress
+  "archived",
+  "error", // provisioning or archival failed partway
+]);
+
+/** Per-repo provisioning state within a workspace. */
+export const workspaceRepoStatus = pgEnum("workspace_repo_status", [
+  "pending", // row created, nothing done yet
+  "provisioning", // fetch / worktree add / setup running
+  "ready",
+  "removed", // worktree torn down (archive)
+  "error",
+]);
+
+/** Rolled-up CI state for a workspace repo's PR, for cheap list filtering. */
+export const checkRollup = pgEnum("check_rollup", ["success", "failure", "pending", "none"]);
+
+/** Registry of repos yarvis manages clones + worktrees for. */
+export const repos = pgTable(
+  "repos",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(), // display name, e.g. "service-a"
+    owner: text("owner").notNull(), // github owner, for PR lookups
+    repo: text("repo").notNull(), // github repo name
+    cloneUrl: text("clone_url").notNull(), // git remote (ssh or https)
+    defaultBranch: text("default_branch"), // detected lazily; null until first provision
+    primaryClonePath: text("primary_clone_path").notNull(), // absolute path to the primary clone
+    setupScript: text("setup_script"), // shell, run in each worktree after creation
+    runScript: text("run_script"), // long-lived service command, run in a terminal
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("repos_owner_repo_idx").on(t.owner, t.repo)],
+);
+
+export const workspaces = pgTable(
+  "workspaces",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(),
+    slug: text("slug").notNull(), // filesystem-safe; used in paths + branch names
+    status: workspaceStatus("status").notNull().default("creating"),
+    rootPath: text("root_path").notNull(), // absolute parent folder (terminal cwd)
+    summary: text("summary"), // archival summary of what was done
+    mergedPrUrl: text("merged_pr_url"), // archival: the landed PR
+    error: text("error"), // last provisioning/archive error
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+  },
+  // Active slugs are unique; archived ones free the name for reuse.
+  (t) => [
+    uniqueIndex("workspaces_slug_active_idx").on(t.slug).where(sql`${t.status} <> 'archived'`),
+  ],
+);
+
+/** One row per repo worktree inside a workspace. */
+export const workspaceRepos = pgTable(
+  "workspace_repos",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    repoId: uuid("repo_id")
+      .notNull()
+      .references(() => repos.id, { onDelete: "restrict" }), // don't orphan worktrees
+    status: workspaceRepoStatus("status").notNull().default("pending"),
+    branch: text("branch").notNull(), // resolved worktree branch name
+    baseBranch: text("base_branch").notNull(), // default branch it was cut from
+    worktreePath: text("worktree_path").notNull(), // absolute subfolder
+    setupLog: text("setup_log"), // capped tail of the last setup run
+    setupExitCode: integer("setup_exit_code"),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("workspace_repos_ws_repo_idx").on(t.workspaceId, t.repoId)],
+);
+
+/** Background-poller cache of the PR + checks for each workspace repo (1:1). */
+export const workspaceRepoPr = pgTable(
+  "workspace_repo_pr",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceRepoId: uuid("workspace_repo_id")
+      .notNull()
+      .references(() => workspaceRepos.id, { onDelete: "cascade" }),
+    prNumber: integer("pr_number"), // null = no PR found yet
+    prUrl: text("pr_url"),
+    prState: text("pr_state"), // open | closed | merged
+    isDraft: boolean("is_draft"),
+    mergeable: text("mergeable"), // MERGEABLE | CONFLICTING | UNKNOWN
+    checkRollup: checkRollup("check_rollup").notNull().default("none"),
+    checks: jsonb("checks").$type<{
+      total: number;
+      success: number;
+      failure: number;
+      pending: number;
+    }>(),
+    lastPolledAt: timestamp("last_polled_at", { withTimezone: true }),
+    lastError: text("last_error"), // poll failed but the row persists
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("workspace_repo_pr_wr_idx").on(t.workspaceRepoId)],
+);
+
 export type CustomProviderRow = typeof customProviders.$inferSelect;
 export type NewCustomProviderRow = typeof customProviders.$inferInsert;
 
@@ -143,3 +268,11 @@ export type OmniLayout = typeof omniLayouts.$inferSelect;
 export type NewOmniLayout = typeof omniLayouts.$inferInsert;
 export type GoogleToken = typeof googleTokens.$inferSelect;
 export type NewGoogleToken = typeof googleTokens.$inferInsert;
+export type Repo = typeof repos.$inferSelect;
+export type NewRepo = typeof repos.$inferInsert;
+export type Workspace = typeof workspaces.$inferSelect;
+export type NewWorkspace = typeof workspaces.$inferInsert;
+export type WorkspaceRepo = typeof workspaceRepos.$inferSelect;
+export type NewWorkspaceRepo = typeof workspaceRepos.$inferInsert;
+export type WorkspaceRepoPr = typeof workspaceRepoPr.$inferSelect;
+export type NewWorkspaceRepoPr = typeof workspaceRepoPr.$inferInsert;
