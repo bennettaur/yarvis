@@ -6,14 +6,18 @@ function RailButton({
   icon,
   active,
   onClick,
+  badge = false,
 }: {
   label: string;
   icon: IconName;
   active: boolean;
   onClick: () => void;
+  /** Shows an attention dot over the icon (e.g. Omni Chat needs the user). */
+  badge?: boolean;
 }) {
   return (
     <button
+      type="button"
       title={label}
       aria-label={label}
       aria-current={active ? "page" : undefined}
@@ -26,6 +30,9 @@ function RailButton({
         <span className="absolute left-0 top-1/2 h-6 w-0.5 -translate-y-1/2 bg-indigo-400" />
       )}
       <Icon name={icon} className="h-5 w-5" />
+      {badge && (
+        <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-amber-400 ring-2 ring-zinc-950" />
+      )}
     </button>
   );
 }
@@ -34,9 +41,14 @@ function RailButton({
 export default function NavRail({
   tab,
   onTabChange,
+  onOpenOmniChat,
+  attentionPending,
 }: {
   tab: Tab;
   onTabChange: (tab: Tab) => void;
+  onOpenOmniChat: () => void;
+  /** When true, the Omni Chat launcher shows an attention dot. */
+  attentionPending: boolean;
 }) {
   const top = NAV_ITEMS.filter((i) => !i.pinBottom);
   const bottom = NAV_ITEMS.filter((i) => i.pinBottom);
@@ -53,6 +65,13 @@ export default function NavRail({
         />
       ))}
       <div className="mt-auto flex flex-col gap-1">
+        <RailButton
+          label="Omni Chat"
+          icon="omnichat"
+          active={false}
+          onClick={onOpenOmniChat}
+          badge={attentionPending}
+        />
         {bottom.map((item) => (
           <RailButton
             key={item.id}

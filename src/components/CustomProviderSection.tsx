@@ -15,6 +15,7 @@ import {
   updateCustomProvider,
 } from "../lib/customProviders";
 import { restartSidecar } from "../lib/keychain";
+import { MaskedInput } from "./MaskedInput";
 
 /**
  * Restarts the sidecar and waits for it to come back ready before resolving.
@@ -533,12 +534,10 @@ function SecretRow({
       </div>
       <p className="mb-2 text-xs text-zinc-500">{helper}</p>
       <div className="flex gap-2">
-        <input
-          type="password"
+        <MaskedInput
           value={value}
           placeholder={present ? "Enter a new value to replace" : ""}
-          onChange={(e) => setValue(e.target.value)}
-          className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-zinc-500"
+          onChange={setValue}
         />
         <button
           onClick={onSave}

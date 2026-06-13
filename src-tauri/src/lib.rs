@@ -5,6 +5,24 @@ mod keychain;
 mod pty;
 mod sidecar;
 
+/// Global hotkey that summons the Omni Chat overlay from anywhere.
+#[cfg(desktop)]
+const OMNI_CHAT_SHORTCUT: &str = "Control+Shift+Space";
+
+/// Brings the main window forward and tells the frontend to open Omni Chat.
+/// Unlike an alarm it does not fullscreen or pin the window — it's a transient
+/// summon the user dismisses with Esc.
+#[cfg(desktop)]
+fn summon_omni_chat(app: &tauri::AppHandle) {
+    use tauri::{Emitter, Manager};
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    let _ = app.emit("omni-chat-summon", ());
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
@@ -19,6 +37,23 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }));
+    }
+
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_global_shortcut::ShortcutState;
+        let shortcut: tauri_plugin_global_shortcut::Shortcut = OMNI_CHAT_SHORTCUT
+            .parse()
+            .expect("OMNI_CHAT_SHORTCUT is a valid accelerator");
+        builder = builder.plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(move |app, scut, event| {
+                    if scut == &shortcut && event.state() == ShortcutState::Pressed {
+                        summon_omni_chat(app);
+                    }
+                })
+                .build(),
+        );
     }
 
     builder = builder
@@ -42,6 +77,13 @@ pub fn run() {
             }
             if let Err(e) = alarms::init(app.handle()) {
                 eprintln!("[alarms] init failed: {e}");
+            }
+            #[cfg(desktop)]
+            {
+                use tauri_plugin_global_shortcut::GlobalShortcutExt;
+                if let Err(e) = app.global_shortcut().register(OMNI_CHAT_SHORTCUT) {
+                    eprintln!("[omni-chat] global shortcut registration failed: {e}");
+                }
             }
             Ok(())
         })
