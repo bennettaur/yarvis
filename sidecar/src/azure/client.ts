@@ -24,6 +24,36 @@ type FetchFn = typeof fetch;
 
 const API_VERSION = "7.1";
 
+// Azure comment/thread enum values used when posting a thread.
+const COMMENT_TYPE_TEXT = 1;
+const THREAD_STATUS_ACTIVE = 1;
+
+// The PR's base/head commit pair is invariant for the life of an iteration, but
+// every per-file diff needs it. Cache it briefly so opening an N-file PR doesn't
+// re-fetch the PR once per file. Module-level because the client is constructed
+// fresh per request; the short TTL bounds staleness to match the frontend cache.
+const COMMIT_CACHE_TTL_MS = 60_000;
+const commitCache = new Map<string, { base: string; head: string; ts: number }>();
+
+const ALLOWED_AZURE_HOSTS = ["dev.azure.com", "visualstudio.com"];
+
+/**
+ * True when `orgUrl` is an https Azure DevOps organization URL. The PAT is sent
+ * in the Authorization header on every request to this host, so an unvalidated
+ * value would let a malformed/hostile URL exfiltrate the credential. GitHub's
+ * client hardcodes its host; Azure's is user-supplied, so it is checked here.
+ */
+export function isAllowedAzureOrgUrl(orgUrl: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(orgUrl);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "https:") return false;
+  return ALLOWED_AZURE_HOSTS.some((h) => url.hostname === h || url.hostname.endsWith(`.${h}`));
+}
+
 /** Identity for one Azure DevOps pull request within the configured org. */
 export interface AzureRef {
   project: string;
@@ -204,6 +234,20 @@ export class AzureDevOpsClient {
     return this.get<any>(`${this.repoBase(ref)}/pullRequests/${ref.prId}`);
   }
 
+  /** The PR's base/head commit ids, cached briefly to avoid a fetch per file. */
+  private async commitPair(ref: AzureRef): Promise<{ base?: string; head?: string }> {
+    const key = `${this.org}/${ref.project}/${ref.repo}/${ref.prId}`;
+    const cached = commitCache.get(key);
+    if (cached && Date.now() - cached.ts < COMMIT_CACHE_TTL_MS) {
+      return { base: cached.base, head: cached.head };
+    }
+    const pr = await this.prRaw(ref);
+    const head = pr.lastMergeSourceCommit?.commitId;
+    const base = pr.lastMergeTargetCommit?.commitId;
+    if (base && head) commitCache.set(key, { base, head, ts: Date.now() });
+    return { base, head };
+  }
+
   /** Lightweight per-row status: one call, no policy evaluations. */
   async prStatus(ref: AzureRef): Promise<PrStatus> {
     const pr = await this.prRaw(ref);
@@ -303,9 +347,7 @@ export class AzureDevOpsClient {
 
   /** Builds one file's unified diff between the PR's base and head commits. */
   async prFileDiff(ref: AzureRef, path: string): Promise<PrFile> {
-    const pr = await this.prRaw(ref);
-    const head = pr.lastMergeSourceCommit?.commitId;
-    const base = pr.lastMergeTargetCommit?.commitId;
+    const { base, head } = await this.commitPair(ref);
     const filename = path.replace(/^\//, "");
     if (!head || !base) {
       return { filename, status: "modified", additions: 0, deletions: 0, patch: null };
@@ -329,8 +371,8 @@ export class AzureDevOpsClient {
   /** Posts a single-line comment thread anchored to the right side of the diff. */
   async postComment(ref: AzureRef, input: NewComment): Promise<void> {
     const body = {
-      comments: [{ content: input.body, commentType: 1 }],
-      status: 1,
+      comments: [{ content: input.body, commentType: COMMENT_TYPE_TEXT }],
+      status: THREAD_STATUS_ACTIVE,
       threadContext: {
         filePath: `/${input.path.replace(/^\//, "")}`,
         rightFileStart: { line: input.line, offset: 1 },

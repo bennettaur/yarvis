@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import { AzureDevOpsClient, type AzureRef } from "./client.ts";
+import { AzureDevOpsClient, type AzureRef, isAllowedAzureOrgUrl } from "./client.ts";
 import {
   addStar,
   createFilter,
@@ -66,10 +66,15 @@ export function createAzureRoutes(config: Config): Hono {
   });
 
   const db = () => getDb(config.databaseUrl as string).db;
-  const client = () =>
-    config.secrets.azureDevopsToken && config.secrets.azureDevopsOrgUrl
-      ? new AzureDevOpsClient(config.secrets.azureDevopsToken, config.secrets.azureDevopsOrgUrl)
-      : null;
+  const client = () => {
+    const { azureDevopsToken, azureDevopsOrgUrl } = config.secrets;
+    // A malformed or non-Azure org URL is treated as "not configured" so the PAT
+    // is never sent to an unexpected host.
+    if (!azureDevopsToken || !azureDevopsOrgUrl || !isAllowedAzureOrgUrl(azureDevopsOrgUrl)) {
+      return null;
+    }
+    return new AzureDevOpsClient(azureDevopsToken, azureDevopsOrgUrl);
+  };
 
   function parsePrParams(
     project: string,

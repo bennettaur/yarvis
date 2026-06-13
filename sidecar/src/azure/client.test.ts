@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { AzureDevOpsClient, mapPolicyEvaluation } from "./client.ts";
+import { AzureDevOpsClient, isAllowedAzureOrgUrl, mapPolicyEvaluation } from "./client.ts";
 
 const ORG = "https://dev.azure.com/acme";
 
@@ -244,5 +244,106 @@ describe("azure client", () => {
       comments: [{ content: "hi", commentType: 1 }],
       threadContext: { filePath: "/src/app.ts", rightFileStart: { line: 12, offset: 1 } },
     });
+  });
+
+  it("maps delete and rename change types", async () => {
+    const az = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([
+        {
+          match: (u) => u.includes("/iterations/1/changes"),
+          body: {
+            changeEntries: [
+              { item: { path: "/gone.ts" }, changeType: "delete" },
+              { item: { path: "/moved.ts" }, changeType: "rename" },
+            ],
+          },
+        },
+        { match: (u) => u.includes("/iterations"), body: { value: [{ id: 1 }] } },
+      ]),
+    );
+    const files = await az.prFiles({ project: "Shop", repo: "web", prId: 8 });
+    expect(files.map((f) => [f.filename, f.status])).toEqual([
+      ["gone.ts", "removed"],
+      ["moved.ts", "renamed"],
+    ]);
+  });
+
+  it("maps merge status to the shared mergeable flag", async () => {
+    const make = (prId: number, mergeStatus: string | undefined) =>
+      new AzureDevOpsClient(
+        "pat",
+        ORG,
+        fakeFetch([
+          {
+            match: (u) => new RegExp(`/pullRequests/${prId}$`).test(u.split("?")[0]!),
+            body: { pullRequestId: prId, mergeStatus, repository: { project: { id: "p1" } } },
+          },
+        ]),
+      );
+    expect(
+      (await make(20, "succeeded").prStatus({ project: "Shop", repo: "web", prId: 20 })).mergeable,
+    ).toBe(true);
+    expect(
+      (await make(21, "conflicts").prStatus({ project: "Shop", repo: "web", prId: 21 })).mergeable,
+    ).toBe(false);
+    expect(
+      (await make(22, undefined).prStatus({ project: "Shop", repo: "web", prId: 22 })).mergeable,
+    ).toBeNull();
+  });
+
+  it("maps a resolved thread and falls back to the left-file line", async () => {
+    const az = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([
+        {
+          match: (u) => /\/pullRequests\/30$/.test(u.split("?")[0]!),
+          body: {
+            pullRequestId: 30,
+            mergeStatus: "succeeded",
+            repository: { project: { id: "p1" } },
+          },
+        },
+        { match: (u) => u.includes("/policy/evaluations"), body: { value: [] } },
+        {
+          match: (u) => u.includes("/threads"),
+          body: {
+            value: [
+              {
+                status: "fixed",
+                threadContext: { filePath: "/src/old.ts", leftFileStart: { line: 5 } },
+                comments: [
+                  { author: { displayName: "Rev" }, content: "removed here", commentType: "text" },
+                ],
+              },
+            ],
+          },
+        },
+      ]),
+    );
+    const detail = await az.prDetail({ project: "Shop", repo: "web", prId: 30 });
+    expect(detail.reviewThreads).toEqual([
+      {
+        path: "src/old.ts",
+        line: 5,
+        isResolved: true,
+        comments: [{ author: "Rev", body: "removed here", createdAt: "" }],
+      },
+    ]);
+  });
+});
+
+describe("isAllowedAzureOrgUrl", () => {
+  it("accepts https dev.azure.com and *.visualstudio.com", () => {
+    expect(isAllowedAzureOrgUrl("https://dev.azure.com/acme")).toBe(true);
+    expect(isAllowedAzureOrgUrl("https://acme.visualstudio.com")).toBe(true);
+  });
+
+  it("rejects non-https and non-Azure hosts", () => {
+    expect(isAllowedAzureOrgUrl("http://dev.azure.com/acme")).toBe(false);
+    expect(isAllowedAzureOrgUrl("https://evil.example.com/acme")).toBe(false);
+    expect(isAllowedAzureOrgUrl("not a url")).toBe(false);
   });
 });

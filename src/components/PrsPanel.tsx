@@ -99,7 +99,11 @@ function PrRow({
   onToggleStar: (pr: PrSummary, starred: boolean) => void;
   onReview: (pr: PrSummary) => void;
 }) {
-  const { data: status } = usePrStatus(pr.ref);
+  // GitHub's status is one cheap call per row. Azure's only yields `mergeable`
+  // at the cost of a full PR-detail fetch per row, so for a list of N PRs that's
+  // N heavy calls for little signal — skip it and let the detail view show merge
+  // state instead.
+  const { data: status } = usePrStatus(pr.ref.provider === "github" ? pr.ref : null);
 
   return (
     <li

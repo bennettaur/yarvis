@@ -115,8 +115,10 @@ export function azAddStar(ref: PrRef, title?: string | null, url?: string | null
 
 export function azRemoveStar(ref: PrRef) {
   const r = az(ref);
+  // Project/repo names can contain spaces and dots, so encode each segment.
+  const seg = encodeURIComponent;
   return send<{ deleted: boolean }>(
-    `/api/azure/stars/${r.org}/${r.project}/${r.repo}/${r.prId}`,
+    `/api/azure/stars/${seg(r.org)}/${seg(r.project)}/${seg(r.repo)}/${r.prId}`,
     "DELETE",
   );
 }

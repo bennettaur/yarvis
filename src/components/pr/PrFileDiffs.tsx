@@ -66,6 +66,7 @@ function CommentComposer({
       {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
       <div className="mt-1 flex gap-2">
         <button
+          type="button"
           onClick={() => void submit()}
           disabled={busy || !body.trim()}
           className="rounded-md bg-sky-700 px-3 py-1 text-xs text-white hover:bg-sky-600 disabled:opacity-50"
@@ -73,6 +74,7 @@ function CommentComposer({
           {busy ? "Posting…" : "Comment"}
         </button>
         <button
+          type="button"
           onClick={onCancel}
           disabled={busy}
           className="rounded-md border border-zinc-700 px-3 py-1 text-xs hover:bg-zinc-800"
@@ -135,6 +137,7 @@ function DiffBody({
               <span className="flex w-12 shrink-0 select-none items-center justify-end gap-1 pr-2 text-zinc-600">
                 {commentable && (
                   <button
+                    type="button"
                     onClick={() => setActiveLine(row.rightLine)}
                     title="Comment on this line"
                     className="opacity-0 group-hover:opacity-100 text-sky-400 hover:text-sky-300"

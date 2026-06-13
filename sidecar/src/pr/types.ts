@@ -96,19 +96,3 @@ export interface Viewer {
   /** Provider user id, when the provider needs one for search (Azure). */
   id?: string;
 }
-
-/**
- * The data-returning contract both provider clients satisfy. Identity is
- * provider-specific (GitHub owner/repo/number vs Azure org/project/repo/prId),
- * so it is carried by the `Ref` type parameter rather than fixed positional
- * arguments.
- */
-export interface ProviderClient<Ref> {
-  viewer(): Promise<Viewer>;
-  search(scope: string): Promise<PrSummary[]>;
-  prStatus(ref: Ref): Promise<PrStatus>;
-  /** Includes review threads, so no separate thread fetch is needed. */
-  prDetail(ref: Ref): Promise<PrDetail>;
-  prFiles(ref: Ref): Promise<PrFile[]>;
-  postComment(ref: Ref, input: NewComment): Promise<void>;
-}

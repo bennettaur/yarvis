@@ -100,8 +100,10 @@ function useCachedResource<T>(key: string | null, loader: () => Promise<T>): Res
     return () => {
       active = false;
     };
-    // `loader` is recreated each render and is deliberately excluded; `key` is
-    // the resource's full identity (see the contract above).
+    // `key` is the resource's full identity (see the contract above). `loader`
+    // is recreated each render, but it closes over the same values `key`
+    // encodes, so a re-run from its changing identity is served by the cache
+    // rather than refetching.
   }, [key, loader]);
 
   return { data, error, loading };
