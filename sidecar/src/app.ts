@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { cors } from "hono/cors";
+import { createAzureRoutes } from "./azure/routes.ts";
 import { createCcRoutes } from "./cc/routes.ts";
 import { createChatRoutes } from "./chat/routes.ts";
 import type { Config } from "./config.ts";
@@ -96,6 +97,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/custom-providers", createCustomProviderRoutes(config));
   app.route("/api/cc", createCcRoutes());
   app.route("/api/github", createGithubRoutes(config));
+  app.route("/api/azure", createAzureRoutes(config));
   app.route("/api/memory", createMemoryRoutes(config));
   app.route("/api/calendar", createCalendarRoutes(config));
   app.route("/api/omni", createOmniRoutes(config));

@@ -1,19 +1,14 @@
 import { useEffect, useState } from "react";
-import {
-  ghPrDetail,
-  ghPrFiles,
-  ghPrStatus,
-  type PrDetail,
-  type PrFile,
-  type PrStatus,
-} from "./github";
+import { fetchPrDetail, fetchPrFileDiff, fetchPrFiles, fetchPrStatus } from "./api";
+import { refKey } from "./ref";
+import type { PrDetail, PrFile, PrRef, PrStatus } from "./types";
 
 /**
- * A tiny request cache for GitHub data, keyed by a string the caller derives
- * from the resource (e.g. `detail:owner/repo/number`). Its whole job is to make
- * the decomposed PR components cheap to compose: several components that name
- * the same PR share one network request rather than each calling GitHub, and
- * components naming different PRs stay isolated because their keys differ.
+ * A tiny request cache for PR data, keyed by a string derived from the resource
+ * (e.g. `detail:<refKey>`). Its whole job is to make the decomposed PR
+ * components cheap to compose: several components that name the same PR share
+ * one network request rather than each calling the provider, and components
+ * naming different PRs stay isolated because their keys differ.
  *
  * Three states per entry: an in-flight `promise` (so concurrent callers join
  * it), a resolved `value` with a timestamp (served until it goes stale), or an
@@ -58,6 +53,11 @@ export function cachedFetch<T>(
   return promise;
 }
 
+/** Drops a cached entry so the next subscriber refetches (e.g. after a write). */
+export function invalidate(key: string): void {
+  cache.delete(key);
+}
+
 export interface Resource<T> {
   data: T | null;
   error: string | null;
@@ -66,10 +66,10 @@ export interface Resource<T> {
 
 /**
  * Subscribes a component to a cached resource. `key` may be null to skip
- * fetching (e.g. while required ids are missing). The effect re-runs only when
- * `key` changes, so callers MUST encode every value the loader reads into `key`
- * (the `usePrXxx` hooks below put owner/repo/number into it); otherwise the
- * component would keep stale data when those values change.
+ * fetching (e.g. while a diff is collapsed). The effect re-runs only when `key`
+ * changes, so callers MUST encode every value the loader reads into `key` (the
+ * `usePrXxx` hooks below put the ref into it); otherwise the component would
+ * keep stale data when those values change.
  */
 function useCachedResource<T>(key: string | null, loader: () => Promise<T>): Resource<T> {
   const [data, setData] = useState<T | null>(null);
@@ -107,24 +107,26 @@ function useCachedResource<T>(key: string | null, loader: () => Promise<T>): Res
   return { data, error, loading };
 }
 
-function prKey(prefix: string, owner: string, repo: string, number: number) {
-  return owner && repo ? `${prefix}:${owner}/${repo}/${number}` : null;
+export const prDetailKey = (ref: PrRef) => `detail:${refKey(ref)}`;
+
+export function usePrDetail(ref: PrRef | null): Resource<PrDetail> {
+  return useCachedResource(ref ? prDetailKey(ref) : null, () => fetchPrDetail(ref!));
 }
 
-export function usePrDetail(owner: string, repo: string, number: number): Resource<PrDetail> {
-  return useCachedResource(prKey("detail", owner, repo, number), () =>
-    ghPrDetail(owner, repo, number),
-  );
+export function usePrFiles(ref: PrRef | null): Resource<PrFile[]> {
+  return useCachedResource(ref ? `files:${refKey(ref)}` : null, () => fetchPrFiles(ref!));
 }
 
-export function usePrFiles(owner: string, repo: string, number: number): Resource<PrFile[]> {
-  return useCachedResource(prKey("files", owner, repo, number), () =>
-    ghPrFiles(owner, repo, number),
-  );
+export function usePrStatus(ref: PrRef | null): Resource<PrStatus> {
+  return useCachedResource(ref ? `status:${refKey(ref)}` : null, () => fetchPrStatus(ref!));
 }
 
-export function usePrStatus(owner: string, repo: string, number: number): Resource<PrStatus> {
-  return useCachedResource(prKey("status", owner, repo, number), () =>
-    ghPrStatus(owner, repo, number),
-  );
+/**
+ * One file's diff, loaded only when `enabled` (the file's diff is open or among
+ * the first few prefetched). For GitHub the patch is already on `file`, so this
+ * resolves without a request.
+ */
+export function usePrFileDiff(ref: PrRef, file: PrFile, enabled: boolean): Resource<PrFile> {
+  const key = enabled ? `filediff:${refKey(ref)}:${file.filename}` : null;
+  return useCachedResource(key, () => fetchPrFileDiff(ref, file));
 }

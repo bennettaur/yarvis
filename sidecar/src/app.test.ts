@@ -78,4 +78,21 @@ describe("sidecar app", () => {
     const body = (await res.json()) as { databaseConfigured: boolean };
     expect(body.databaseConfigured).toBe(true);
   });
+
+  it("mounts the azure routes behind the bearer token", async () => {
+    const app = createApp(testConfig());
+    // Bearer-gated like the rest of /api/*.
+    expect((await app.request("/api/azure/viewer")).status).toBe(401);
+    // Authenticated but no database configured: the DB guard runs first.
+    const noDb = await app.request("/api/azure/viewer", {
+      headers: { Authorization: "Bearer test-token" },
+    });
+    expect(noDb.status).toBe(503);
+    // With a database but no Azure credentials, the live route reports not-configured.
+    const configured = createApp(testConfig({ databaseUrl: "postgres://localhost/x" }));
+    const noCreds = await configured.request("/api/azure/viewer", {
+      headers: { Authorization: "Bearer test-token" },
+    });
+    expect(noCreds.status).toBe(400);
+  });
 });

@@ -1,4 +1,4 @@
-import { describe, expect, it, mock } from "bun:test";
+import { afterAll, describe, expect, it, mock, setSystemTime } from "bun:test";
 import { createElement } from "react";
 import { renderToHtml } from "../../test/render";
 
@@ -8,6 +8,13 @@ import { renderToHtml } from "../../test/render";
  * per-day memoization all execute against a connected calendar with events, and
  * assert the views produce their grid + a now-line without runtime errors.
  */
+
+// Freeze the clock before building EVENTS so the event times and the "now" the
+// views compute at render share one instant. Without this the suite flakes
+// across a midnight (or Saturday→Sunday) boundary: events captured "today" at
+// module load fall on a different day/week than the views render, so today's
+// events vanish from the grid. A mid-week midday keeps the now-line on screen.
+setSystemTime(new Date("2026-06-17T12:00:00"));
 
 const at = (hour: number, minute = 0): string => {
   const d = new Date();
@@ -72,6 +79,10 @@ mock.module("../../lib/api", () => ({
     });
   },
 }));
+
+// Restore the real clock so the frozen time does not leak into other files in
+// the same `bun test` run.
+afterAll(() => setSystemTime());
 
 const { default: WeekView } = await import("./WeekView");
 const { default: MonthView } = await import("./MonthView");
