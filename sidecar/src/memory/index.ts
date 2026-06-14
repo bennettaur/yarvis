@@ -99,7 +99,7 @@ export class PgVectorMemoryStore implements MemoryService {
   }
 
   async search(query: string, limit = 5): Promise<MemoryRecord[]> {
-    const queryVec = await this.embedder.embed(query);
+    const queryVec = await this.embedder.embedQuery(query);
     const distance = cosineDistance(memories.embedding, queryVec);
     const rows = await this.db
       .select({

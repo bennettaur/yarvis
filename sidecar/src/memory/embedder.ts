@@ -24,13 +24,29 @@ export interface Embedder {
   readonly kind: string;
   /** A stable identity for this embedder, recorded on each memory it produces. */
   identity(): EmbedderIdentity;
+  /** Embeds a document being stored. */
   embed(text: string): Promise<number[]>;
-  /** Embeds many texts at once (one provider call where supported). */
+  /**
+   * Embeds a search query. Most embedders treat this identically to `embed`;
+   * providers with asymmetric retrieval modes (Gemini's task types) embed
+   * queries differently from documents so the two compare well in cosine space.
+   */
+  embedQuery(text: string): Promise<number[]>;
+  /** Embeds many documents at once (one provider call where supported). */
   embedMany(texts: string[]): Promise<number[][]>;
 }
 
-/** Gemini's text-embedding-004 output size. */
-const GEMINI_DIM = 768;
+/** Default direct-Gemini embedding model (the gemini-embedding-* family). */
+const GEMINI_MODEL = "gemini-embedding-001";
+
+/**
+ * L2-normalizes a vector so cosine similarity reduces to a dot product. A
+ * zero vector is returned unchanged (its norm is 0).
+ */
+function l2normalize(vec: number[]): number[] {
+  const norm = Math.sqrt(vec.reduce((sum, v) => sum + v * v, 0)) || 1;
+  return vec.map((v) => v / norm);
+}
 
 /**
  * Deterministic, offline fallback embedder. Hashes tokens into a fixed number
@@ -57,8 +73,12 @@ export class HashEmbedder implements Embedder {
       }
       vec[Math.abs(hash) % this.dimensions]! += 1;
     }
-    const norm = Math.sqrt(vec.reduce((sum, v) => sum + v * v, 0)) || 1;
-    return vec.map((v) => v / norm);
+    return l2normalize(vec);
+  }
+
+  // No document/query asymmetry: hashing is symmetric.
+  async embedQuery(text: string): Promise<number[]> {
+    return this.embed(text);
   }
 
   async embedMany(texts: string[]): Promise<number[][]> {
@@ -67,13 +87,16 @@ export class HashEmbedder implements Embedder {
 }
 
 /**
- * Google Gemini embeddings (text-embedding-004 → 768 dims). Only eligible when
- * the column dimension (EMBED_DIM) is 768, since it can't produce other sizes.
+ * Google Gemini embeddings via the gemini-embedding-* family. The model emits
+ * Matryoshka vectors, truncated to EMBED_DIM through `outputDimensionality`.
+ * Truncated vectors below the native size are not unit-length, so we re-normalize
+ * for cosine search. Documents and queries use distinct retrieval task types so
+ * the two embed into a compatible space.
  */
 export class GeminiEmbedder implements Embedder {
-  readonly dimensions = GEMINI_DIM;
+  readonly dimensions = EMBED_DIM;
   readonly kind = "gemini";
-  readonly model = "text-embedding-004";
+  readonly model = GEMINI_MODEL;
   private embeddingModel;
 
   constructor(apiKey: string) {
@@ -84,17 +107,36 @@ export class GeminiEmbedder implements Embedder {
     return { kind: this.kind, model: this.model, dim: this.dimensions };
   }
 
+  /** Shared call options: truncate to EMBED_DIM for the given retrieval role. */
+  private providerOptions(taskType: "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY") {
+    return { google: { outputDimensionality: this.dimensions, taskType } };
+  }
+
   async embed(text: string): Promise<number[]> {
-    const { embedding } = await embed({ model: this.embeddingModel, value: text });
-    return embedding;
+    const { embedding } = await embed({
+      model: this.embeddingModel,
+      value: text,
+      providerOptions: this.providerOptions("RETRIEVAL_DOCUMENT"),
+    });
+    return l2normalize(embedding);
+  }
+
+  async embedQuery(text: string): Promise<number[]> {
+    const { embedding } = await embed({
+      model: this.embeddingModel,
+      value: text,
+      providerOptions: this.providerOptions("RETRIEVAL_QUERY"),
+    });
+    return l2normalize(embedding);
   }
 
   async embedMany(texts: string[]): Promise<number[][]> {
     const { embeddings } = await embedMany({
       model: this.embeddingModel,
       values: texts,
+      providerOptions: this.providerOptions("RETRIEVAL_DOCUMENT"),
     });
-    return embeddings;
+    return embeddings.map(l2normalize);
   }
 }
 
@@ -133,15 +175,34 @@ export class OpenAICompatibleEmbedder implements Embedder {
     return { kind: this.kind, model: this.model, dim: this.dimensions };
   }
 
+  /**
+   * Requests the target dimension via the OpenAI `dimensions` param. Models that
+   * support Matryoshka truncation (Qwen3, OpenAI text-embedding-3) honor it
+   * directly; a LiteLLM-fronted Gemini model maps it to `output_dimensionality`.
+   */
+  private providerOptions() {
+    return { openai: { dimensions: this.dimensions } };
+  }
+
   async embed(text: string): Promise<number[]> {
-    const { embedding } = await embed({ model: this.embeddingModel, value: text });
+    const { embedding } = await embed({
+      model: this.embeddingModel,
+      value: text,
+      providerOptions: this.providerOptions(),
+    });
     return embedding;
+  }
+
+  // No document/query asymmetry over the OpenAI-compatible API.
+  async embedQuery(text: string): Promise<number[]> {
+    return this.embed(text);
   }
 
   async embedMany(texts: string[]): Promise<number[][]> {
     const { embeddings } = await embedMany({
       model: this.embeddingModel,
       values: texts,
+      providerOptions: this.providerOptions(),
     });
     return embeddings;
   }
@@ -149,8 +210,8 @@ export class OpenAICompatibleEmbedder implements Embedder {
 
 /**
  * Picks the active embedder, in order of preference:
- *   1. the configured embeddings provider (proxy or Ollama),
- *   2. Gemini, when a key is set *and* the column dimension is 768,
+ *   1. the configured embeddings provider (LiteLLM / OpenAI-compatible, e.g. Qwen3),
+ *   2. direct Gemini, when a key is set,
  *   3. the offline hash fallback.
  *
  * The chosen embedder's output dimension must equal EMBED_DIM (the column
@@ -183,7 +244,7 @@ async function selectEmbedder(config: Config, db?: Db): Promise<Embedder> {
       });
     }
   }
-  if (config.secrets.geminiApiKey && EMBED_DIM === GEMINI_DIM) {
+  if (config.secrets.geminiApiKey) {
     return new GeminiEmbedder(config.secrets.geminiApiKey);
   }
   return new HashEmbedder();

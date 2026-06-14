@@ -14,12 +14,14 @@ import {
 /**
  * Embedding dimension of the `memories.embedding` column. This is a fixed
  * column dimension: every stored vector must have exactly this many components,
- * and the active embedder's output dimension must match it. 1024 fits common
- * local/proxy embedding models (e.g. mxbai-embed-large). Changing it requires a
- * migration that clears existing vectors and a re-embed pass, since vectors of
- * different dimensions (or from different models) can't be compared.
+ * and the active embedder's output dimension must match it. 1536 is the
+ * truncation target for our primary embedders — gemini-embedding-* (Matryoshka
+ * output_dimensionality) and Qwen3 via an OpenAI-compatible endpoint. Changing
+ * it requires a migration that clears existing vectors and a re-embed pass,
+ * since vectors of different dimensions (or from different models) can't be
+ * compared.
  */
-export const EMBED_DIM: number = 1024;
+export const EMBED_DIM: number = 1536;
 
 /**
  * Application schema for Yarvis. This holds *our* data — chat sessions/messages
