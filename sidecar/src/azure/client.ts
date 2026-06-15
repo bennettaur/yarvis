@@ -50,6 +50,12 @@ const THREAD_STATUS_ACTIVE = 1;
 const COMMIT_CACHE_TTL_MS = 60_000;
 const commitCache = new Map<string, { base: string; head: string; ts: number }>();
 
+// The authenticated user's identity GUID is invariant for a given PAT + org, but
+// the client is constructed fresh per request, so resolving it via connectionData
+// would repeat on every search. Cache it module-wide, keyed by org + token so a
+// changed PAT or org URL is a new key and re-resolves on its own.
+const viewerIdCache = new Map<string, string>();
+
 const ALLOWED_AZURE_HOSTS = ["dev.azure.com", "visualstudio.com"];
 
 /**
@@ -140,7 +146,6 @@ export function mapPolicyEvaluation(evaluation: AzurePolicyEvaluation): CheckIte
 export class AzureDevOpsClient {
   private readonly orgUrl: string;
   private readonly org: string;
-  private viewerId: string | null = null;
 
   constructor(
     private readonly token: string,
@@ -213,16 +218,25 @@ export class AzureDevOpsClient {
     return user;
   }
 
+  // Newlines can't appear in either part, so they can't collide across keys.
+  private viewerCacheKey(): string {
+    return `${this.orgUrl}\n${this.token}`;
+  }
+
   private async resolveViewerId(): Promise<string> {
-    if (this.viewerId) return this.viewerId;
+    const key = this.viewerCacheKey();
+    const cached = viewerIdCache.get(key);
+    if (cached) return cached;
     const user = await this.authenticatedUser();
-    this.viewerId = user.id;
+    viewerIdCache.set(key, user.id);
     return user.id;
   }
 
   async viewer(): Promise<Viewer> {
+    // Always a live call: this is the gate that verifies the PAT still works. It
+    // also warms the id cache so a search in the same page load skips a round trip.
     const user = await this.authenticatedUser();
-    this.viewerId = user.id;
+    viewerIdCache.set(this.viewerCacheKey(), user.id);
     return { login: user.providerDisplayName ?? "", id: user.id };
   }
 

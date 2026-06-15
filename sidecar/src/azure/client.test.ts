@@ -130,6 +130,26 @@ describe("azure client", () => {
     expect(connectionUrl).not.toContain("api-version");
   });
 
+  it("caches the viewer id across client instances for the same PAT", async () => {
+    let connectionCalls = 0;
+    // A distinct token keeps this case isolated from the shared-"pat" cache key.
+    const fetchImpl = fakeFetch([
+      {
+        match: (u) => {
+          if (u.includes("connectionData")) connectionCalls++;
+          return u.includes("connectionData");
+        },
+        body: { authenticatedUser: { id: "user-1", providerDisplayName: "Me" } },
+      },
+      { match: (u) => u.includes("/_apis/git/pullrequests"), body: { value: [] } },
+    ]);
+    // The client is built fresh per request, so a second instance must reuse the
+    // id the first one resolved rather than calling connectionData again.
+    await new AzureDevOpsClient("pat-cache", ORG, fetchImpl).search("mine");
+    await new AzureDevOpsClient("pat-cache", ORG, fetchImpl).search("review");
+    expect(connectionCalls).toBe(1);
+  });
+
   it("builds PR detail with mapped checks and threads", async () => {
     let policyUrl = "";
     const az = new AzureDevOpsClient(
