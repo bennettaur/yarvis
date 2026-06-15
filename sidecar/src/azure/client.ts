@@ -18,6 +18,17 @@ import type {
   ReviewThread,
   Viewer,
 } from "../pr/types.ts";
+import type {
+  AzureChanges,
+  AzureComment,
+  AzureItemContent,
+  AzureIteration,
+  AzureList,
+  AzurePolicyEvaluation,
+  AzureProfile,
+  AzurePullRequest,
+  AzureThread,
+} from "./apiTypes.ts";
 import { buildPatch } from "./diff.ts";
 
 type FetchFn = typeof fetch;
@@ -101,7 +112,7 @@ function mapMergeStatus(mergeStatus: string | undefined): {
 }
 
 /** Maps an Azure policy evaluation status onto the shared CheckItem shape. */
-export function mapPolicyEvaluation(evaluation: any): CheckItem | null {
+export function mapPolicyEvaluation(evaluation: AzurePolicyEvaluation): CheckItem | null {
   const status = String(evaluation.status ?? "");
   if (status === "notApplicable") return null;
   let conclusion: string | null = null;
@@ -166,7 +177,7 @@ export class AzureDevOpsClient {
     });
     if (res.status === 404) return "";
     if (!res.ok) throw new Error(`azure GET items ${path} -> ${res.status}`);
-    const item = (await res.json()) as { content?: string };
+    const item = (await res.json()) as AzureItemContent;
     return item.content ?? "";
   }
 
@@ -178,7 +189,7 @@ export class AzureDevOpsClient {
 
   private async resolveViewerId(): Promise<string> {
     if (this.viewerId) return this.viewerId;
-    const profile = await this.get<{ id: string }>(
+    const profile = await this.get<AzureProfile>(
       "https://app.vssps.visualstudio.com/_apis/profile/profiles/me",
     );
     this.viewerId = profile.id;
@@ -186,11 +197,11 @@ export class AzureDevOpsClient {
   }
 
   async viewer(): Promise<Viewer> {
-    const profile = await this.get<{ id: string; displayName: string }>(
+    const profile = await this.get<AzureProfile>(
       "https://app.vssps.visualstudio.com/_apis/profile/profiles/me",
     );
     this.viewerId = profile.id;
-    return { login: profile.displayName, id: profile.id };
+    return { login: profile.displayName ?? "", id: profile.id };
   }
 
   /**
@@ -204,13 +215,13 @@ export class AzureDevOpsClient {
     const base = project
       ? `${this.orgUrl}/${encodeURIComponent(project)}/_apis/git/pullrequests`
       : `${this.orgUrl}/_apis/git/pullrequests`;
-    const data = await this.get<{ value?: any[] }>(
+    const data = await this.get<AzureList<AzurePullRequest>>(
       `${base}?searchCriteria.status=active&${criterion}&$top=50`,
     );
     return (data.value ?? []).map((pr) => this.toSummary(pr));
   }
 
-  private toSummary(pr: any): AzurePrSummary {
+  private toSummary(pr: AzurePullRequest): AzurePrSummary {
     const project = pr.repository?.project?.name ?? "";
     const repo = pr.repository?.name ?? "";
     const webUrl = pr.repository?.webUrl
@@ -230,8 +241,8 @@ export class AzureDevOpsClient {
     };
   }
 
-  private async prRaw(ref: AzureRef): Promise<any> {
-    return this.get<any>(`${this.repoBase(ref)}/pullRequests/${ref.prId}`);
+  private async prRaw(ref: AzureRef): Promise<AzurePullRequest> {
+    return this.get<AzurePullRequest>(`${this.repoBase(ref)}/pullRequests/${ref.prId}`);
   }
 
   /** The PR's base/head commit ids, cached briefly to avoid a fetch per file. */
@@ -286,7 +297,7 @@ export class AzureDevOpsClient {
   private async checks(project: string, projectId: string, prId: number): Promise<CheckItem[]> {
     if (!projectId) return [];
     const artifactId = `vstfs:///CodeReview/CodeReviewId/${projectId}/${prId}`;
-    const data = await this.get<{ value?: any[] }>(
+    const data = await this.get<AzureList<AzurePolicyEvaluation>>(
       `${this.orgUrl}/${encodeURIComponent(project)}/_apis/policy/evaluations?artifactId=${encodeURIComponent(
         artifactId,
       )}`,
@@ -295,7 +306,7 @@ export class AzureDevOpsClient {
   }
 
   private async threads(ref: AzureRef): Promise<ReviewThread[]> {
-    const data = await this.get<{ value?: any[] }>(
+    const data = await this.get<AzureList<AzureThread>>(
       `${this.repoBase(ref)}/pullRequests/${ref.prId}/threads`,
     );
     return (data.value ?? [])
@@ -303,17 +314,19 @@ export class AzureDevOpsClient {
       .filter((t): t is ReviewThread => t !== null);
   }
 
-  private toThread(thread: any): ReviewThread | null {
-    const comments = (thread.comments ?? []).filter((c: any) => c.commentType !== "system");
+  private toThread(thread: AzureThread): ReviewThread | null {
+    const comments = (thread.comments ?? []).filter(
+      (c: AzureComment) => c.commentType !== "system",
+    );
     if (comments.length === 0) return null;
     const ctx = thread.threadContext;
-    const path = ctx?.filePath ? String(ctx.filePath).replace(/^\//, "") : null;
+    const path = ctx?.filePath ? ctx.filePath.replace(/^\//, "") : null;
     const line = ctx?.rightFileStart?.line ?? ctx?.leftFileStart?.line ?? null;
     return {
       path,
       line,
       isResolved: thread.status === "closed" || thread.status === "fixed",
-      comments: comments.map((c: any) => ({
+      comments: comments.map((c) => ({
         author: c.author?.displayName ?? "",
         body: c.content ?? "",
         createdAt: c.publishedDate ?? "",
@@ -326,18 +339,18 @@ export class AzureDevOpsClient {
    * `prFileDiff` so a large PR does not fetch every file's content up front.
    */
   async prFiles(ref: AzureRef): Promise<PrFile[]> {
-    const iterations = await this.get<{ value?: any[] }>(
+    const iterations = await this.get<AzureList<AzureIteration>>(
       `${this.repoBase(ref)}/pullRequests/${ref.prId}/iterations`,
     );
     const last = (iterations.value ?? []).at(-1);
     if (!last) return [];
-    const changes = await this.get<{ changeEntries?: any[] }>(
+    const changes = await this.get<AzureChanges>(
       `${this.repoBase(ref)}/pullRequests/${ref.prId}/iterations/${last.id}/changes`,
     );
     return (changes.changeEntries ?? [])
       .filter((e) => e.item?.path && !e.item?.isFolder)
       .map((e) => ({
-        filename: String(e.item.path).replace(/^\//, ""),
+        filename: (e.item?.path ?? "").replace(/^\//, ""),
         status: mapChangeType(e.changeType ?? "edit"),
         additions: 0,
         deletions: 0,
