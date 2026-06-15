@@ -60,7 +60,39 @@ function az(ref: PrRef): Extract<PrRef, { provider: "azure" }> {
   return ref;
 }
 
-export const azViewer = () => get<{ login: string; id?: string }>("/api/azure/viewer");
+/**
+ * Why the Azure viewer call failed, as classified by the sidecar. Lets the PRs
+ * page tell the user which secret to fix instead of a single generic hint.
+ */
+export type AzureViewerReason =
+  | "missing_token"
+  | "missing_org_url"
+  | "invalid_org_url"
+  | "unauthorized"
+  | "upstream_error"
+  | "unknown";
+
+export class AzureViewerError extends Error {
+  constructor(
+    readonly reason: AzureViewerReason,
+    readonly status: number,
+  ) {
+    super(`azure viewer error: ${reason} (status ${status})`);
+    this.name = "AzureViewerError";
+  }
+}
+
+export async function azViewer(): Promise<{ login: string; id?: string }> {
+  const res = await sidecarFetch("/api/azure/viewer");
+  if (!res.ok) {
+    const reason = await res
+      .json()
+      .then((b: { reason?: AzureViewerReason }) => b?.reason)
+      .catch(() => undefined);
+    throw new AzureViewerError(reason ?? "unknown", res.status);
+  }
+  return res.json();
+}
 
 export async function azSearch(scope: "mine" | "review", project?: string): Promise<PrSummary[]> {
   const query = new URLSearchParams({ scope });

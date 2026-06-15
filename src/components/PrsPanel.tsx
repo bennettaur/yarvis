@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useOmniChatContext } from "../lib/omniChatContext";
 import { addStar, removeStar } from "../lib/pr/api";
 import {
+  AzureViewerError,
+  type AzureViewerReason,
   azCreateFilter,
   azDeleteFilter,
   azFilters,
@@ -39,6 +41,25 @@ const PROVIDERS: { key: Provider; label: string }[] = [
   { key: "github", label: "GitHub" },
   { key: "azure", label: "Azure DevOps" },
 ];
+
+const GH_SETUP_MESSAGE =
+  "No GitHub token configured. Add one under Dashboard → Secrets → GitHub token to see your PRs.";
+
+/** Turns a sidecar viewer-failure reason into a specific, actionable hint. */
+function azureSetupMessage(reason: AzureViewerReason): string {
+  switch (reason) {
+    case "missing_token":
+      return "No Azure DevOps personal access token configured. Add one under Dashboard → Secrets → Azure DevOps token.";
+    case "missing_org_url":
+      return "No Azure DevOps organization URL configured. Add it under Dashboard → Secrets → Azure DevOps org URL.";
+    case "invalid_org_url":
+      return "The Azure DevOps organization URL isn't a valid https://dev.azure.com/<org> or https://<org>.visualstudio.com URL. Fix it under Dashboard → Secrets.";
+    case "unauthorized":
+      return "Azure DevOps rejected the personal access token — it's expired or missing the Code (Read) scope. Update it under Dashboard → Secrets.";
+    default:
+      return "Couldn't reach Azure DevOps. Check the token and organization URL under Dashboard → Secrets, then try again.";
+  }
+}
 
 function createdMs(pr: PrSummary): number {
   return new Date(pr.createdAt).getTime() || 0;
@@ -186,7 +207,9 @@ function PrGroupedList({
 
 export default function PrsPanel() {
   const [provider, setProvider] = useState<Provider>("github");
-  const [tokenMissing, setTokenMissing] = useState(false);
+  // Non-null means configuration is incomplete: show this message instead of the
+  // PR lists. The message names the exact secret to fix (see azureSetupMessage).
+  const [setupNotice, setSetupNotice] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>("mine");
   const [mine, setMine] = useState<PrSummary[]>([]);
   const [review, setReview] = useState<PrSummary[]>([]);
@@ -226,7 +249,7 @@ export default function PrsPanel() {
   }, []);
 
   useEffect(() => {
-    setTokenMissing(false);
+    setSetupNotice(null);
     setError(null);
     setSelected(null);
     setFilterResults(null);
@@ -237,8 +260,10 @@ export default function PrsPanel() {
       try {
         if (provider === "github") await ghViewer();
         else await azViewer();
-      } catch {
-        setTokenMissing(true);
+      } catch (e) {
+        if (provider === "github") setSetupNotice(GH_SETUP_MESSAGE);
+        else
+          setSetupNotice(azureSetupMessage(e instanceof AzureViewerError ? e.reason : "unknown"));
         return;
       }
       try {
@@ -311,21 +336,11 @@ export default function PrsPanel() {
     </div>
   );
 
-  if (tokenMissing) {
+  if (setupNotice) {
     return (
       <div className="space-y-4">
         {providerToggle}
-        {provider === "github" ? (
-          <p className="text-sm text-zinc-400">
-            No GitHub token configured. Add one under <b>Dashboard → Secrets → GitHub token</b> to
-            see your PRs.
-          </p>
-        ) : (
-          <p className="text-sm text-zinc-400">
-            No Azure DevOps token or org URL configured. Add them under{" "}
-            <b>Dashboard → Secrets → Azure DevOps token</b> to see your PRs.
-          </p>
-        )}
+        <p className="text-sm text-zinc-400">{setupNotice}</p>
       </div>
     );
   }

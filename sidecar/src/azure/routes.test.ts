@@ -63,10 +63,29 @@ describe("azure not-configured handling", () => {
     expect(res.status).toBe(401);
   });
 
-  it("treats a non-https / non-Azure org URL as not configured", async () => {
+  it("reports a missing token with reason missing_token", async () => {
+    const app = appWith({
+      azureDevopsToken: undefined,
+      azureDevopsOrgUrl: "https://dev.azure.com/acme",
+    });
+    const res = await app.request("/api/azure/viewer", { headers: auth });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { reason: string }).reason).toBe("missing_token");
+  });
+
+  it("reports a missing org URL with reason missing_org_url", async () => {
+    const app = appWith({ azureDevopsToken: "pat", azureDevopsOrgUrl: undefined });
+    const res = await app.request("/api/azure/viewer", { headers: auth });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { reason: string }).reason).toBe("missing_org_url");
+  });
+
+  it("treats a non-https / non-Azure org URL as an invalid org URL", async () => {
     const app = appWith({ azureDevopsToken: "pat", azureDevopsOrgUrl: "http://evil.example.com" });
     const res = await app.request("/api/azure/viewer", { headers: auth });
     expect(res.status).toBe(400);
-    expect(((await res.json()) as { error: string }).error).toContain("not configured");
+    const body = (await res.json()) as { error: string; reason: string };
+    expect(body.error).toContain("not configured");
+    expect(body.reason).toBe("invalid_org_url");
   });
 });

@@ -21,11 +21,12 @@ import type {
 import type {
   AzureChanges,
   AzureComment,
+  AzureConnectionData,
+  AzureIdentity,
   AzureItemContent,
   AzureIteration,
   AzureList,
   AzurePolicyEvaluation,
-  AzureProfile,
   AzurePullRequest,
   AzureThread,
 } from "./apiTypes.ts";
@@ -34,6 +35,9 @@ import { buildPatch } from "./diff.ts";
 type FetchFn = typeof fetch;
 
 const API_VERSION = "7.1";
+// policy/evaluations is exposed only under a preview version and 400s on the GA
+// version, so that one call overrides the default.
+const POLICY_API_VERSION = "7.1-preview.1";
 
 // Azure comment/thread enum values used when posting a thread.
 const COMMENT_TYPE_TEXT = 1;
@@ -153,14 +157,19 @@ export class AzureDevOpsClient {
     return `Basic ${btoa(`:${this.token}`)}`;
   }
 
-  private withVersion(url: string): string {
-    return url.includes("?")
-      ? `${url}&api-version=${API_VERSION}`
-      : `${url}?api-version=${API_VERSION}`;
+  private withVersion(url: string, version: string): string {
+    const separator = url.includes("?") ? "&" : "?";
+    return `${url}${separator}api-version=${version}`;
   }
 
-  private async get<T>(url: string): Promise<T> {
-    const res = await this.fetchImpl(this.withVersion(url), {
+  // Most endpoints take the default api-version, but some need a specific preview
+  // version (policy/evaluations) and a few legacy endpoints reject the param
+  // entirely (connectionData). `apiVersion`: omit for the default, a string to
+  // override it, or null to send no version param.
+  private async get<T>(url: string, opts?: { apiVersion?: string | null }): Promise<T> {
+    const apiVersion = opts?.apiVersion === undefined ? API_VERSION : opts.apiVersion;
+    const requestUrl = apiVersion === null ? url : this.withVersion(url, apiVersion);
+    const res = await this.fetchImpl(requestUrl, {
       headers: { Authorization: this.authHeader(), Accept: "application/json" },
     });
     if (!res.ok) throw new Error(`azure GET ${url} -> ${res.status}`);
@@ -172,7 +181,7 @@ export class AzureDevOpsClient {
     const url = `${repoBase}/items?path=${encodeURIComponent(path)}&versionDescriptor.version=${encodeURIComponent(
       commit,
     )}&versionDescriptor.versionType=commit&includeContent=true`;
-    const res = await this.fetchImpl(this.withVersion(url), {
+    const res = await this.fetchImpl(this.withVersion(url, API_VERSION), {
       headers: { Authorization: this.authHeader(), Accept: "application/json" },
     });
     if (res.status === 404) return "";
@@ -187,21 +196,34 @@ export class AzureDevOpsClient {
     )}`;
   }
 
+  /**
+   * The authenticated user, resolved from the org-scoped connectionData endpoint.
+   * This deliberately avoids the cross-org `app.vssps.visualstudio.com` profile
+   * endpoint: an org-scoped PAT cannot authenticate there, and global PATs (the
+   * only kind that can) are being retired.
+   */
+  private async authenticatedUser(): Promise<AzureIdentity> {
+    // connectionData is a legacy location endpoint that 400s if sent an
+    // api-version, so it is requested unversioned (matching Microsoft's SDK).
+    const data = await this.get<AzureConnectionData>(`${this.orgUrl}/_apis/connectionData`, {
+      apiVersion: null,
+    });
+    const user = data.authenticatedUser;
+    if (!user?.id) throw new Error("azure connectionData returned no authenticated user");
+    return user;
+  }
+
   private async resolveViewerId(): Promise<string> {
     if (this.viewerId) return this.viewerId;
-    const profile = await this.get<AzureProfile>(
-      "https://app.vssps.visualstudio.com/_apis/profile/profiles/me",
-    );
-    this.viewerId = profile.id;
-    return profile.id;
+    const user = await this.authenticatedUser();
+    this.viewerId = user.id;
+    return user.id;
   }
 
   async viewer(): Promise<Viewer> {
-    const profile = await this.get<AzureProfile>(
-      "https://app.vssps.visualstudio.com/_apis/profile/profiles/me",
-    );
-    this.viewerId = profile.id;
-    return { login: profile.displayName ?? "", id: profile.id };
+    const user = await this.authenticatedUser();
+    this.viewerId = user.id;
+    return { login: user.providerDisplayName ?? "", id: user.id };
   }
 
   /**
@@ -301,6 +323,7 @@ export class AzureDevOpsClient {
       `${this.orgUrl}/${encodeURIComponent(project)}/_apis/policy/evaluations?artifactId=${encodeURIComponent(
         artifactId,
       )}`,
+      { apiVersion: POLICY_API_VERSION },
     );
     return (data.value ?? []).map(mapPolicyEvaluation).filter((c): c is CheckItem => c !== null);
   }
@@ -393,7 +416,7 @@ export class AzureDevOpsClient {
       },
     };
     const res = await this.fetchImpl(
-      this.withVersion(`${this.repoBase(ref)}/pullRequests/${ref.prId}/threads`),
+      this.withVersion(`${this.repoBase(ref)}/pullRequests/${ref.prId}/threads`, API_VERSION),
       {
         method: "POST",
         headers: {

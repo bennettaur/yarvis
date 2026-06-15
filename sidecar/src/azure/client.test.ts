@@ -47,7 +47,10 @@ describe("azure client", () => {
       "pat",
       ORG,
       fakeFetch([
-        { match: (u) => u.includes("profiles/me"), body: { id: "user-1", displayName: "Me" } },
+        {
+          match: (u) => u.includes("connectionData"),
+          body: { authenticatedUser: { id: "user-1", providerDisplayName: "Me" } },
+        },
         {
           match: (u) => u.includes("/_apis/git/pullrequests"),
           body: {
@@ -89,7 +92,10 @@ describe("azure client", () => {
       "pat",
       ORG,
       fakeFetch([
-        { match: (u) => u.includes("profiles/me"), body: { id: "user-1", displayName: "Me" } },
+        {
+          match: (u) => u.includes("connectionData"),
+          body: { authenticatedUser: { id: "user-1", providerDisplayName: "Me" } },
+        },
         {
           match: (u) => {
             if (u.includes("reviewerId=user-1")) reviewerQueried = true;
@@ -103,7 +109,29 @@ describe("azure client", () => {
     expect(reviewerQueried).toBe(true);
   });
 
+  it("resolves the viewer from connectionData without an api-version", async () => {
+    let connectionUrl = "";
+    const az = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([
+        {
+          match: (u) => {
+            if (u.includes("connectionData")) connectionUrl = u;
+            return u.includes("connectionData");
+          },
+          body: { authenticatedUser: { id: "user-1", providerDisplayName: "Me" } },
+        },
+      ]),
+    );
+    const viewer = await az.viewer();
+    expect(viewer).toEqual({ login: "Me", id: "user-1" });
+    // connectionData 400s when sent an api-version, so it must be requested bare.
+    expect(connectionUrl).not.toContain("api-version");
+  });
+
   it("builds PR detail with mapped checks and threads", async () => {
+    let policyUrl = "";
     const az = new AzureDevOpsClient(
       "pat",
       ORG,
@@ -124,7 +152,10 @@ describe("azure client", () => {
           },
         },
         {
-          match: (u) => u.includes("/policy/evaluations"),
+          match: (u) => {
+            if (u.includes("/policy/evaluations")) policyUrl = u;
+            return u.includes("/policy/evaluations");
+          },
           body: {
             value: [{ status: "approved", configuration: { type: { displayName: "Build" } } }],
           },
@@ -161,6 +192,8 @@ describe("azure client", () => {
     expect(detail.checks).toEqual([
       { name: "Build", status: "COMPLETED", conclusion: "SUCCESS", url: null },
     ]);
+    // policy/evaluations is preview-only and 400s on the GA version.
+    expect(policyUrl).toContain("api-version=7.1-preview.1");
     expect(detail.reviewThreads).toHaveLength(1);
     expect(detail.reviewThreads[0]).toMatchObject({
       path: "src/app.ts",

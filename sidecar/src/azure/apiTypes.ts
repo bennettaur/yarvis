@@ -11,10 +11,21 @@ export interface AzureList<T> {
   value?: T[];
 }
 
-/** vssps profile (`profiles/me`). */
-export interface AzureProfile {
+/** An Azure DevOps identity as returned inside `connectionData`. `id` is the
+ *  identity GUID that PR creator/reviewer search filters expect. */
+export interface AzureIdentity {
   id: string;
-  displayName?: string;
+  providerDisplayName?: string;
+}
+
+/**
+ * `{org}/_apis/connectionData` — the org-scoped way to resolve the current user.
+ * Unlike the cross-org vssps profile endpoint, this authenticates with an
+ * org-scoped PAT (the only kind Azure DevOps supports after global PATs are
+ * retired) and needs no User Profile scope.
+ */
+export interface AzureConnectionData {
+  authenticatedUser?: AzureIdentity;
 }
 
 export interface AzureUser {
