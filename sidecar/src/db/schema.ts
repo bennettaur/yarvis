@@ -95,6 +95,35 @@ export const githubStars = pgTable(
   (t) => [uniqueIndex("github_stars_pr_idx").on(t.owner, t.repo, t.number)],
 );
 
+/**
+ * Saved Azure DevOps PR searches. Unlike GitHub's free-text query, an Azure
+ * search is structured: a scope ("mine" | "review") and an optional project to
+ * narrow to.
+ */
+export const azureDevopsFilters = pgTable("azure_devops_filters", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  scope: text("scope").notNull(),
+  project: text("project"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Starred Azure DevOps PRs, identified by org/project/repo/pull-request id. */
+export const azureDevopsStars = pgTable(
+  "azure_devops_stars",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    org: text("org").notNull(),
+    project: text("project").notNull(),
+    repo: text("repo").notNull(),
+    prId: integer("pr_id").notNull(),
+    title: text("title"),
+    url: text("url"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("azure_devops_stars_pr_idx").on(t.org, t.project, t.repo, t.prId)],
+);
+
 /** Saved Omni layouts: a named json-render spec the user can reload later. */
 export const omniLayouts = pgTable("omni_layouts", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -173,6 +202,8 @@ export type MemoryRow = typeof memories.$inferSelect;
 export type NewMemoryRow = typeof memories.$inferInsert;
 export type GithubFilter = typeof githubFilters.$inferSelect;
 export type GithubStar = typeof githubStars.$inferSelect;
+export type AzureDevopsFilter = typeof azureDevopsFilters.$inferSelect;
+export type AzureDevopsStar = typeof azureDevopsStars.$inferSelect;
 export type OmniLayout = typeof omniLayouts.$inferSelect;
 export type NewOmniLayout = typeof omniLayouts.$inferInsert;
 export type GoogleToken = typeof googleTokens.$inferSelect;

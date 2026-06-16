@@ -25,18 +25,22 @@ Status of the build against the original vision. The full V1 plan lives at
   health warning in Settings (with a re-embed action).
 - **Claude Code session introspection** — browse `~/.claude` projects, session
   transcripts, and plans (Sessions tab).
-- **GitHub PR dashboard** — my PRs and review-requested, split into tabs and
-  grouped by owner/repo, newest-first; each row is clickable into the in-app
-  review and shows a draft label, CI/merge status, and relative dates. Stars and
-  saved filters too (PRs tab).
+- **PR dashboard (GitHub + Azure DevOps)** — my PRs and review-requested, split
+  into tabs and grouped by repo, newest-first; each row is clickable into the
+  in-app review and shows a draft label, CI/merge status, and relative dates.
+  Stars and saved filters too. A provider toggle switches between GitHub and
+  Azure DevOps, which share one provider-agnostic UI (PRs tab).
 - **Alarms** — full-screen takeover + escalating sound/notification, with
   acknowledge/snooze (Alarms tab).
-- **Embedded PR review** — in-app PR detail view built from the GitHub GraphQL
-  API (description, normalized checks, review threads) plus REST file diffs,
-  rendered with markdown and per-line diff coloring (PRs tab → row click).
-  Decomposed into reusable, prop-driven components (description+comments, checks,
-  changed-file list, file diffs) that share one cached fetch per PR; the detail
-  view places the changed-file list beside the diffs.
+- **Embedded PR review** — in-app PR detail view (description, normalized checks,
+  review threads, file diffs) rendered with markdown and per-line diff coloring
+  (PRs tab → row click). Decomposed into reusable, prop-driven components that
+  share one cached fetch per PR; the detail view places the changed-file list
+  beside the diffs and has a collapsible checks section. Works for both GitHub
+  (GraphQL + REST diffs) and Azure DevOps (REST; per-file diffs computed with
+  jsdiff since Azure has no unified-diff endpoint). Clicking a diff line opens a
+  composer that posts a single-line comment to the PR, and existing review
+  threads render inline at their line — for both providers.
 - **Memory & knowledge** — notes, daily/weekly recaps (tasks completed + notes,
   LLM-summarized or offline raw), document/URL ingestion (chunk → embed →
   store), and a management UI to search/delete (Memory tab). Reuses the

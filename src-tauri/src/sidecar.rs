@@ -122,6 +122,12 @@ fn build_command(_app: &AppHandle, port: u16, token: &str) -> Command {
     if let Some(token) = secret_from_root(&secrets, "github_token") {
         cmd.env("GITHUB_TOKEN", token);
     }
+    if let Some(token) = secret_from_root(&secrets, "azure_devops_token") {
+        cmd.env("AZURE_DEVOPS_TOKEN", token);
+    }
+    if let Some(url) = secret_from_root(&secrets, "azure_devops_org_url") {
+        cmd.env("AZURE_DEVOPS_ORG_URL", url);
+    }
     if let Some(id) = secret_from_root(&secrets, "google_client_id") {
         cmd.env("GOOGLE_CLIENT_ID", id);
     }

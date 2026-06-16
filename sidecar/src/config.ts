@@ -19,6 +19,12 @@ export interface ProviderSecrets {
   anthropicApiKey?: string;
   geminiApiKey?: string;
   githubToken?: string;
+  // Azure DevOps personal access token + organization base URL (e.g.
+  // https://dev.azure.com/your-org) for the PR dashboard. The org URL is
+  // configuration rather than a secret, but rides the same Keychain blob to
+  // keep the injection path uniform with the other provider credentials.
+  azureDevopsToken?: string;
+  azureDevopsOrgUrl?: string;
   // Google Cloud OAuth app credentials for the calendar integration. Created by
   // the user in Google Cloud Console (Desktop app client) and injected by the
   // Rust core from the Keychain, like the other secrets.
@@ -145,6 +151,8 @@ export function loadConfig(): Config {
       anthropicApiKey: env.ANTHROPIC_API_KEY,
       geminiApiKey: env.GEMINI_API_KEY,
       githubToken: env.GITHUB_TOKEN,
+      azureDevopsToken: env.AZURE_DEVOPS_TOKEN,
+      azureDevopsOrgUrl: env.AZURE_DEVOPS_ORG_URL,
       googleClientId: env.GOOGLE_CLIENT_ID,
       googleClientSecret: env.GOOGLE_CLIENT_SECRET,
     },

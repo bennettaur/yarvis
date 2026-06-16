@@ -49,27 +49,32 @@ DATABASE_URL="postgres://localhost:5432/yarvis" bun run --cwd sidecar db:migrate
 
 Secrets are entered in the app's **Settings** screen and stored in the macOS
 Keychain — not in env files: the database URL, provider keys (Anthropic,
-Gemini), a GitHub token (for the PR dashboard + embedded review), a Google
-Cloud OAuth client id/secret (for the Calendar integration), and an optional
-embeddings-provider secret (an API key and/or custom header values for an
-OpenAI-compatible embeddings endpoint; a local Ollama server needs neither).
-AWS Bedrock uses the standard AWS credential chain.
+Gemini), a GitHub token and/or an Azure DevOps token + organization URL (for the
+PR dashboard + embedded review — either provider can back it, selected with a
+toggle in the PRs tab), a Google Cloud OAuth client id/secret (for the Calendar
+integration), and an optional embeddings-provider secret (an API key and/or
+custom header values for an OpenAI-compatible embeddings endpoint). AWS Bedrock
+uses the standard AWS credential chain.
+
+The Azure DevOps token is a Personal Access Token with **Code (read)** and
+**Pull Request Threads (read & write)** scopes; the organization URL is the
+`https://dev.azure.com/your-org` base (project is chosen per search).
 
 ### Embeddings
 
-The `memories.embedding` column is `vector(1024)`, and the active embedder's
-output dimension must match it. Configure an embeddings provider under
-**Settings → Embeddings**: an OpenAI-compatible endpoint such as your proxy or a
-local Ollama server (base URL `http://localhost:11434/v1`, model e.g.
-`mxbai-embed-large`). Without one, Yarvis uses Gemini when keyed *and* the column
-dimension is 768, otherwise an offline hash embedder. Each memory records the
-embedder identity (kind/model/dim) so a provider or dimension change is detected
-and surfaced as a "re-embed needed" warning.
+The `memories.embedding` column is `vector(1536)`, and the active embedder's
+output dimension must match it (the model's output is truncated to it). Configure
+an embeddings provider under **Settings → Embeddings**: an OpenAI-compatible
+endpoint — a LiteLLM gateway fronting Gemini, or a Qwen3 embedding server (base
+URL e.g. `http://localhost:4000/v1`, model e.g. `gemini-embedding-001`). Without
+one, Yarvis uses Gemini directly when keyed, otherwise an offline hash embedder.
+Each memory records the embedder identity (kind/model/dim) so a provider or
+dimension change is detected and surfaced as a "re-embed needed" warning.
 
-Note: migration `0006` widens the column to `vector(1024)` and **clears existing
-embeddings** (memory *content* is preserved). After upgrading, configure a
-provider and run **Re-embed all** in Settings (or `POST /api/memory/reembed`) to
-regenerate vectors.
+Note: the embeddings migration sets the column to `vector(1536)` and **clears
+existing embeddings** (memory *content* is preserved). After upgrading, configure
+a provider and run **Re-embed all** in Settings (or `POST /api/memory/reembed`)
+to regenerate vectors.
 
 All secrets live in a **single** Keychain item (one JSON object), rather than
 one item per secret. macOS authorizes Keychain access per item, so consolidating
@@ -122,6 +127,7 @@ render real components with the `renderToHtml` helper in `src/test/render.tsx`.
 ```
 src/            React frontend (Vite + TS + Tailwind)
   lib/          sidecar API client, Keychain wrappers, Omni Chat context registry, notifications
+    pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs)
   components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, Terminal, …)
     shell/      desktop shell: nav rail, top bar, boot loading screen, tab shortcuts
     omni/       Omni view — chat-driven dynamic-UI canvas
@@ -136,7 +142,9 @@ sidecar/        Bun + TS service (Hono)
   src/chat/     multi-provider streaming chat + tool-calls
   src/tasks/    daily/weekly work tracking
   src/memory/   pgvector memory, notes, ingestion, recaps
-  src/github/   PR dashboard + embedded review (REST + GraphQL)
+  src/github/   GitHub PR dashboard + embedded review (REST + GraphQL)
+  src/azure/    Azure DevOps PR dashboard + embedded review (REST; diffs built with jsdiff)
+  src/pr/       provider-neutral PR types shared by the github/ and azure/ clients
   src/google/   Google Calendar OAuth + events
   src/omni/     Omni UI generation (streaming) + saved layouts
   src/chat/attentionTools.ts  request_attention tool (badge + OS notification)

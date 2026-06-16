@@ -26,6 +26,8 @@ pub const SECRET_KEYS: &[&str] = &[
     "anthropic_api_key",
     "gemini_api_key",
     "github_token",
+    "azure_devops_token",
+    "azure_devops_org_url",
     "database_url",
     "google_client_id",
     "google_client_secret",
