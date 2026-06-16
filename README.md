@@ -49,9 +49,14 @@ DATABASE_URL="postgres://localhost:5432/yarvis" bun run --cwd sidecar db:migrate
 
 Secrets are entered in the app's **Settings** screen and stored in the macOS
 Keychain — not in env files: the database URL, provider keys (Anthropic,
-Gemini), a GitHub token (for the PR dashboard + embedded review), and a Google
-Cloud OAuth client id/secret (for the Calendar integration). AWS Bedrock uses
-the standard AWS credential chain.
+Gemini), a GitHub token and/or an Azure DevOps token + organization URL (for the
+PR dashboard + embedded review — either provider can back it, selected with a
+toggle in the PRs tab), and a Google Cloud OAuth client id/secret (for the
+Calendar integration). AWS Bedrock uses the standard AWS credential chain.
+
+The Azure DevOps token is a Personal Access Token with **Code (read)** and
+**Pull Request Threads (read & write)** scopes; the organization URL is the
+`https://dev.azure.com/your-org` base (project is chosen per search).
 
 All secrets live in a **single** Keychain item (one JSON object), rather than
 one item per secret. macOS authorizes Keychain access per item, so consolidating
@@ -104,6 +109,7 @@ render real components with the `renderToHtml` helper in `src/test/render.tsx`.
 ```
 src/            React frontend (Vite + TS + Tailwind)
   lib/          sidecar API client, Keychain wrappers, Omni Chat context registry, notifications
+    pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs)
   components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, Terminal, …)
     shell/      desktop shell: nav rail, top bar, boot loading screen, tab shortcuts
     omni/       Omni view — chat-driven dynamic-UI canvas
@@ -118,7 +124,9 @@ sidecar/        Bun + TS service (Hono)
   src/chat/     multi-provider streaming chat + tool-calls
   src/tasks/    daily/weekly work tracking
   src/memory/   pgvector memory, notes, ingestion, recaps
-  src/github/   PR dashboard + embedded review (REST + GraphQL)
+  src/github/   GitHub PR dashboard + embedded review (REST + GraphQL)
+  src/azure/    Azure DevOps PR dashboard + embedded review (REST; diffs built with jsdiff)
+  src/pr/       provider-neutral PR types shared by the github/ and azure/ clients
   src/google/   Google Calendar OAuth + events
   src/omni/     Omni UI generation (streaming) + saved layouts
   src/chat/attentionTools.ts  request_attention tool (badge + OS notification)

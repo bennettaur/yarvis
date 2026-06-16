@@ -43,6 +43,13 @@
       "when": 1779974309185,
       "tag": "0005_first_storm",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1781357586474,
+      "tag": "0006_loud_cannonball",
+      "breakpoints": true
     }
   ]
 }
