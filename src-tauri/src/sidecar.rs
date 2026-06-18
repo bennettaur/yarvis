@@ -107,6 +107,13 @@ fn build_command(_app: &AppHandle, port: u16, token: &str) -> Command {
     cmd.env("YARVIS_SIDECAR_TOKEN", token);
     cmd.env("YARVIS_ALLOWED_ORIGINS", ALLOWED_ORIGINS);
 
+    // Forward the memory/embedding debug flag when the app was launched with it
+    // (e.g. `YARVIS_DEBUG_MEMORY=1 bun run tauri dev`), so the sidecar traces
+    // embedder selection and provider calls to stdout.
+    if let Ok(value) = std::env::var("YARVIS_DEBUG_MEMORY") {
+        cmd.env("YARVIS_DEBUG_MEMORY", value);
+    }
+
     // Read the single secrets item once; one Keychain access covers every
     // value injected below.
     let secrets = read_root();

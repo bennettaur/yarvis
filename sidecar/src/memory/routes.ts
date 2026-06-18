@@ -7,6 +7,7 @@ import { EMBED_DIM } from "../db/schema.ts";
 import { clientError } from "../llm/errors.ts";
 import { resolveModel } from "../llm/providers.ts";
 import { tasksCompletedBetween } from "../tasks/service.ts";
+import { memoryDebug } from "./debug.ts";
 import { chooseEmbedder } from "./embedder.ts";
 import {
   deleteEmbeddingsConfig,
@@ -171,6 +172,13 @@ export function createMemoryRoutes(config: Config): Hono {
     const db = getDb(config.databaseUrl as string).db;
     const cfg = await getEmbeddingsConfig(db);
     const health = await (await store()).embedderHealth();
+    const stored = health.stored.reduce((sum, group) => sum + group.count, 0);
+    memoryDebug(
+      "memory",
+      `config: provider=${cfg ? `${cfg.model}@${cfg.baseUrl}` : "none (direct Gemini/hash)"} | ` +
+        `health: active=${health.active.kind}/${health.active.model} stored=${stored} ` +
+        `mismatched=${health.mismatchedCount} ok=${health.ok}`,
+    );
     return c.json({ config: cfg, health });
   });
 

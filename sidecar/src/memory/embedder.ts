@@ -4,6 +4,7 @@ import { embed, embedMany } from "ai";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { EMBED_DIM } from "../db/schema.ts";
+import { memoryDebug, memoryDebugEnabled, traceEmbedCall, vectorSummary } from "./debug.ts";
 import { getEmbeddingsConfig } from "./embeddingsConfig.ts";
 
 /**
@@ -113,30 +114,48 @@ export class GeminiEmbedder implements Embedder {
   }
 
   async embed(text: string): Promise<number[]> {
-    const { embedding } = await embed({
-      model: this.embeddingModel,
-      value: text,
-      providerOptions: this.providerOptions("RETRIEVAL_DOCUMENT"),
-    });
-    return l2normalize(embedding);
+    return traceEmbedCall(
+      `gemini embed model=${this.model} task=RETRIEVAL_DOCUMENT chars=${text.length}`,
+      async () => {
+        const { embedding } = await embed({
+          model: this.embeddingModel,
+          value: text,
+          providerOptions: this.providerOptions("RETRIEVAL_DOCUMENT"),
+        });
+        return l2normalize(embedding);
+      },
+      vectorSummary,
+    );
   }
 
   async embedQuery(text: string): Promise<number[]> {
-    const { embedding } = await embed({
-      model: this.embeddingModel,
-      value: text,
-      providerOptions: this.providerOptions("RETRIEVAL_QUERY"),
-    });
-    return l2normalize(embedding);
+    return traceEmbedCall(
+      `gemini embed model=${this.model} task=RETRIEVAL_QUERY chars=${text.length}`,
+      async () => {
+        const { embedding } = await embed({
+          model: this.embeddingModel,
+          value: text,
+          providerOptions: this.providerOptions("RETRIEVAL_QUERY"),
+        });
+        return l2normalize(embedding);
+      },
+      vectorSummary,
+    );
   }
 
   async embedMany(texts: string[]): Promise<number[][]> {
-    const { embeddings } = await embedMany({
-      model: this.embeddingModel,
-      values: texts,
-      providerOptions: this.providerOptions("RETRIEVAL_DOCUMENT"),
-    });
-    return embeddings.map(l2normalize);
+    return traceEmbedCall(
+      `gemini embedMany model=${this.model} task=RETRIEVAL_DOCUMENT count=${texts.length}`,
+      async () => {
+        const { embeddings } = await embedMany({
+          model: this.embeddingModel,
+          values: texts,
+          providerOptions: this.providerOptions("RETRIEVAL_DOCUMENT"),
+        });
+        return embeddings.map(l2normalize);
+      },
+      (vecs) => `count=${vecs.length} ${vecs[0] ? vectorSummary(vecs[0]) : "empty"}`,
+    );
   }
 }
 
@@ -185,12 +204,18 @@ export class OpenAICompatibleEmbedder implements Embedder {
   }
 
   async embed(text: string): Promise<number[]> {
-    const { embedding } = await embed({
-      model: this.embeddingModel,
-      value: text,
-      providerOptions: this.providerOptions(),
-    });
-    return embedding;
+    return traceEmbedCall(
+      `openai-compatible embed model=${this.model} dims=${this.dimensions} chars=${text.length}`,
+      async () => {
+        const { embedding } = await embed({
+          model: this.embeddingModel,
+          value: text,
+          providerOptions: this.providerOptions(),
+        });
+        return embedding;
+      },
+      vectorSummary,
+    );
   }
 
   // No document/query asymmetry over the OpenAI-compatible API.
@@ -199,12 +224,18 @@ export class OpenAICompatibleEmbedder implements Embedder {
   }
 
   async embedMany(texts: string[]): Promise<number[][]> {
-    const { embeddings } = await embedMany({
-      model: this.embeddingModel,
-      values: texts,
-      providerOptions: this.providerOptions(),
-    });
-    return embeddings;
+    return traceEmbedCall(
+      `openai-compatible embedMany model=${this.model} dims=${this.dimensions} count=${texts.length}`,
+      async () => {
+        const { embeddings } = await embedMany({
+          model: this.embeddingModel,
+          values: texts,
+          providerOptions: this.providerOptions(),
+        });
+        return embeddings;
+      },
+      (vecs) => `count=${vecs.length} ${vecs[0] ? vectorSummary(vecs[0]) : "empty"}`,
+    );
   }
 }
 
@@ -220,7 +251,7 @@ export class OpenAICompatibleEmbedder implements Embedder {
  * so it is async.
  */
 export async function chooseEmbedder(config: Config, db?: Db): Promise<Embedder> {
-  const embedder = await selectEmbedder(config, db);
+  const { embedder, reason } = await selectEmbedder(config, db);
   if (embedder.dimensions !== EMBED_DIM) {
     throw new Error(
       `embedding dimension mismatch: ${embedder.kind} produces ${embedder.dimensions}-dim ` +
@@ -228,24 +259,56 @@ export async function chooseEmbedder(config: Config, db?: Db): Promise<Embedder>
         `dimension is ${EMBED_DIM} (or change EMBED_DIM and re-embed).`,
     );
   }
+  logSelection(embedder, reason);
   return embedder;
 }
 
-async function selectEmbedder(config: Config, db?: Db): Promise<Embedder> {
+/**
+ * `chooseEmbedder` runs on every memory request, so the selection would log on
+ * each one. Remembering the last line keeps the debug output to one entry per
+ * actual change (e.g. after configuring a provider or adding a key).
+ */
+let lastSelectionLog: string | undefined;
+
+function logSelection(embedder: Embedder, reason: string): void {
+  if (!memoryDebugEnabled()) return;
+  const id = embedder.identity();
+  const line = `embedder: ${id.kind} / ${id.model} / ${id.dim}d (${reason})`;
+  if (line !== lastSelectionLog) {
+    lastSelectionLog = line;
+    memoryDebug("memory", line);
+  }
+}
+
+interface EmbedderChoice {
+  embedder: Embedder;
+  reason: string;
+}
+
+async function selectEmbedder(config: Config, db?: Db): Promise<EmbedderChoice> {
   if (db) {
     const cfg = await getEmbeddingsConfig(db);
     if (cfg) {
-      return new OpenAICompatibleEmbedder({
-        baseUrl: cfg.baseUrl,
-        model: cfg.model,
-        dimensions: cfg.dimensions,
-        apiKey: config.embeddingsSecrets.apiKey,
-        headers: config.embeddingsSecrets.headers,
-      });
+      return {
+        embedder: new OpenAICompatibleEmbedder({
+          baseUrl: cfg.baseUrl,
+          model: cfg.model,
+          dimensions: cfg.dimensions,
+          apiKey: config.embeddingsSecrets.apiKey,
+          headers: config.embeddingsSecrets.headers,
+        }),
+        reason: `embeddings_config row → ${cfg.baseUrl}`,
+      };
     }
   }
   if (config.secrets.geminiApiKey) {
-    return new GeminiEmbedder(config.secrets.geminiApiKey);
+    return {
+      embedder: new GeminiEmbedder(config.secrets.geminiApiKey),
+      reason: "GEMINI_API_KEY set, no embeddings_config row",
+    };
   }
-  return new HashEmbedder();
+  return {
+    embedder: new HashEmbedder(),
+    reason: "offline fallback — no embeddings_config row, no GEMINI_API_KEY",
+  };
 }

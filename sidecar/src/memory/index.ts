@@ -1,6 +1,7 @@
 import { and, cosineDistance, desc, eq, gte, isNotNull, type SQL, sql } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { type MemoryRow, memories } from "../db/schema.ts";
+import { memoryDebug, preview } from "./debug.ts";
 import type { Embedder, EmbedderIdentity } from "./embedder.ts";
 
 export interface MemoryRecord {
@@ -79,6 +80,11 @@ export class PgVectorMemoryStore implements MemoryService {
       .insert(memories)
       .values({ content, metadata: this.stamp(metadata), embedding })
       .returning();
+    memoryDebug(
+      "memory",
+      `add id=${row!.id} type=${(metadata?.type as string) ?? "—"} chars=${content.length} ` +
+        `embedder=${this.embedder.kind} → stored`,
+    );
     return toRecord(row!);
   }
 
@@ -95,6 +101,7 @@ export class PgVectorMemoryStore implements MemoryService {
         })),
       )
       .returning();
+    memoryDebug("memory", `addMany count=${rows.length} embedder=${this.embedder.kind} → stored`);
     return rows.map((r) => toRecord(r));
   }
 
@@ -112,7 +119,14 @@ export class PgVectorMemoryStore implements MemoryService {
       .from(memories)
       .orderBy(distance)
       .limit(limit);
-    return rows.map((r) => toRecord(r, 1 - Number(r.distance)));
+    const results = rows.map((r) => toRecord(r, 1 - Number(r.distance)));
+    const top = results[0]?.score;
+    memoryDebug(
+      "memory",
+      `search q="${preview(query)}" → ${results.length} hits` +
+        (top !== undefined ? ` (top score ${top.toFixed(3)})` : ""),
+    );
+    return results;
   }
 
   async list(options: MemoryListOptions = {}): Promise<MemoryRecord[]> {
