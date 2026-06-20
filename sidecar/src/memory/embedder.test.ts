@@ -36,13 +36,13 @@ describe("embedder identities", () => {
     expect(e.identity()).toEqual({ kind: "hash", model: "hash", dim: EMBED_DIM });
   });
 
-  it("GeminiEmbedder reports its true 768-dim output", () => {
+  it("GeminiEmbedder truncates to the column dimension", () => {
     const e = new GeminiEmbedder("key");
-    expect(e.dimensions).toBe(768);
+    expect(e.dimensions).toBe(EMBED_DIM);
     expect(e.identity()).toEqual({
       kind: "gemini",
-      model: "text-embedding-004",
-      dim: 768,
+      model: "gemini-embedding-001",
+      dim: EMBED_DIM,
     });
   });
 
@@ -66,15 +66,21 @@ describe("chooseEmbedder (no database)", () => {
     expect(e.kind).toBe("hash");
   });
 
-  it("does not pick Gemini when its 768 dims don't match the column", async () => {
-    // EMBED_DIM is 1024, so Gemini (768) is ineligible even with a key.
+  it("picks direct Gemini when a key is set", async () => {
     const e = await chooseEmbedder(configWith({ geminiApiKey: "key" }));
-    expect(EMBED_DIM).not.toBe(768);
-    expect(e.kind).toBe("hash");
+    expect(e.kind).toBe("gemini");
   });
 
   it("the chosen embedder's dimension always matches the column", async () => {
     const e = await chooseEmbedder(configWith({ geminiApiKey: "key" }));
     expect(e.dimensions).toBe(EMBED_DIM);
+  });
+});
+
+describe("vector normalization", () => {
+  it("produces unit-length vectors so cosine reduces to a dot product", async () => {
+    const vec = await new HashEmbedder().embed("the quick brown fox");
+    const norm = Math.sqrt(vec.reduce((sum, v) => sum + v * v, 0));
+    expect(norm).toBeCloseTo(1, 5);
   });
 });

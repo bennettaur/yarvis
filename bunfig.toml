@@ -1,0 +1,6 @@
+# Frontend test runner config. The sidecar has its own suite (run from
+# sidecar/ via `bun run sidecar:test`); this preload applies to the frontend
+# tests under src/, registering a DOM and stubbing the Tauri runtime so
+# component and library code can be exercised in `bun test`.
+[test]
+preload = ["./src/test/setup.ts"]

@@ -1,19 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { getHealth, waitForSidecarReady } from "../lib/api";
+import { restartSidecar } from "../lib/keychain";
 import {
   deleteEmbeddingsSecret,
+  type EmbedderHealth,
+  type EmbeddingsConfig,
+  type EmbeddingsSecretSlot,
+  type EmbeddingsSecretStatus,
   getEmbeddingsSecretStatus,
   memDeleteEmbeddingsConfig,
   memEmbeddingsConfig,
   memReembed,
   memSetEmbeddingsConfig,
   setEmbeddingsSecret,
-  type EmbedderHealth,
-  type EmbeddingsConfig,
-  type EmbeddingsSecretSlot,
-  type EmbeddingsSecretStatus,
 } from "../lib/memory";
-import { getHealth, waitForSidecarReady } from "../lib/api";
-import { restartSidecar } from "../lib/keychain";
 import { StatusDot } from "./Dashboard";
 
 /**
@@ -44,18 +44,18 @@ function draftFromConfig(c: EmbeddingsConfig | null): Draft {
   return {
     baseUrl: c?.baseUrl ?? "",
     model: c?.model ?? "",
-    dimensions: c ? String(c.dimensions) : "1024",
+    dimensions: c ? String(c.dimensions) : "1536",
     headerNames: c ? [...c.headerNames] : [],
   };
 }
 
 /**
- * UI for the active embeddings provider: an OpenAI-compatible endpoint (the
- * user's proxy or a local Ollama server). Structure (base URL, model,
- * dimension, header names) lives in Postgres; the API key and header values
- * live in the macOS Keychain via Tauri commands. The dimension must match the
- * model's output (and the memories column); mismatched stored vectors are
- * surfaced as a warning with a re-embed action.
+ * UI for the active embeddings provider: an OpenAI-compatible endpoint — a
+ * LiteLLM gateway fronting Gemini, or a Qwen3 embedding server. Structure (base
+ * URL, model, dimension, header names) lives in Postgres; the API key and header
+ * values live in the macOS Keychain via Tauri commands. The dimension must match
+ * the memories column (the model's output is truncated to it); mismatched stored
+ * vectors are surfaced as a warning with a re-embed action.
  */
 export default function EmbeddingsSection() {
   const [config, setConfig] = useState<EmbeddingsConfig | null>(null);
@@ -203,12 +203,12 @@ export default function EmbeddingsSection() {
         Embeddings provider
       </h2>
       <p className="mb-4 text-xs text-zinc-500">
-        Generate memory embeddings through an OpenAI-compatible endpoint — your
-        proxy or a local Ollama server (e.g. base URL{" "}
-        <code className="text-zinc-400">http://localhost:11434/v1</code>, model{" "}
-        <code className="text-zinc-400">mxbai-embed-large</code>). The dimension
-        must match the model's output. Without a provider, Yarvis uses Gemini (if
-        keyed) or an offline fallback.
+        Generate memory embeddings through an OpenAI-compatible endpoint — a LiteLLM gateway
+        fronting Gemini, or a Qwen3 embedding server (e.g. base URL{" "}
+        <code className="text-zinc-400">http://localhost:4000/v1</code>, model{" "}
+        <code className="text-zinc-400">gemini-embedding-001</code>). The model's output is
+        truncated to the dimension below (sent as <code className="text-zinc-400">dimensions</code>
+        ). Without a provider, Yarvis uses Gemini directly (if keyed) or an offline fallback.
       </p>
 
       {error && <p className="mb-3 text-sm text-red-400">{error}</p>}
@@ -231,9 +231,8 @@ export default function EmbeddingsSection() {
         <div className="mb-4 rounded-lg border border-amber-900/60 bg-amber-950/30 p-3 text-xs text-amber-200">
           <p className="mb-2">
             {health.mismatchedCount} stored{" "}
-            {health.mismatchedCount === 1 ? "memory was" : "memories were"}{" "}
-            produced by a different embedder. Recall mixes incomparable vectors
-            until you re-embed.
+            {health.mismatchedCount === 1 ? "memory was" : "memories were"} produced by a different
+            embedder. Recall mixes incomparable vectors until you re-embed.
           </p>
           <button
             onClick={() => void reembed()}
@@ -251,20 +250,16 @@ export default function EmbeddingsSection() {
           <Labeled label="Base URL" full>
             <input
               value={draft.baseUrl}
-              placeholder="http://localhost:11434/v1"
-              onChange={(e) =>
-                setDraft((d) => ({ ...d, baseUrl: e.target.value }))
-              }
+              placeholder="http://localhost:4000/v1"
+              onChange={(e) => setDraft((d) => ({ ...d, baseUrl: e.target.value }))}
               className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500"
             />
           </Labeled>
           <Labeled label="Model">
             <input
               value={draft.model}
-              placeholder="mxbai-embed-large"
-              onChange={(e) =>
-                setDraft((d) => ({ ...d, model: e.target.value }))
-              }
+              placeholder="gemini-embedding-001"
+              onChange={(e) => setDraft((d) => ({ ...d, model: e.target.value }))}
               className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500"
             />
           </Labeled>
@@ -272,10 +267,8 @@ export default function EmbeddingsSection() {
             <input
               value={draft.dimensions}
               inputMode="numeric"
-              placeholder="1024"
-              onChange={(e) =>
-                setDraft((d) => ({ ...d, dimensions: e.target.value }))
-              }
+              placeholder="1536"
+              onChange={(e) => setDraft((d) => ({ ...d, dimensions: e.target.value }))}
               className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500"
             />
           </Labeled>
@@ -314,13 +307,11 @@ export default function EmbeddingsSection() {
         <div className="mt-5">
           <SecretRow
             label="API key"
-            helper="Sent as Authorization: Bearer. Leave unset for a local Ollama server."
+            helper="Sent as Authorization: Bearer. Leave unset if your endpoint needs no key."
             present={secrets?.apiKeyPresent ?? false}
-            value={secretInputs["apiKey"] ?? ""}
+            value={secretInputs.apiKey ?? ""}
             disabled={busy !== null}
-            setValue={(v) =>
-              setSecretInputs((prev) => ({ ...prev, apiKey: v }))
-            }
+            setValue={(v) => setSecretInputs((prev) => ({ ...prev, apiKey: v }))}
             onSave={() => void saveSecret("apiKey", "apiKey")}
             onClear={() => void clearSecret("apiKey")}
           />
@@ -332,9 +323,7 @@ export default function EmbeddingsSection() {
               present={h.present}
               value={secretInputs[h.inputKey] ?? ""}
               disabled={busy !== null}
-              setValue={(v) =>
-                setSecretInputs((prev) => ({ ...prev, [h.inputKey]: v }))
-              }
+              setValue={(v) => setSecretInputs((prev) => ({ ...prev, [h.inputKey]: v }))}
               onSave={() => void saveSecret(h.slot, h.inputKey)}
               onClear={() => void clearSecret(h.slot)}
             />

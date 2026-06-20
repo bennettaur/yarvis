@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { usePrFiles } from "../../lib/githubCache";
-import { prFileAnchorId, type PrRef } from "./shared";
+import { usePrFiles } from "../../lib/pr/cache";
+import type { PrRef } from "../../lib/pr/types";
+import { prFileAnchorId } from "./shared";
 
 const STATUS_LETTER: Record<string, { letter: string; color: string }> = {
   added: { letter: "A", color: "text-emerald-400" },
@@ -15,13 +16,13 @@ const STATUS_LETTER: Record<string, { letter: string; color: string }> = {
  * diffs sit beside it or elsewhere on the page) and notifies `onSelect`.
  */
 export default function PrFileList({
-  owner,
-  repo,
-  number,
+  prRef,
   onSelect,
-}: PrRef & { onSelect?: (index: number) => void }) {
-  const ref = { owner, repo, number };
-  const { data, error, loading } = usePrFiles(owner, repo, number);
+}: {
+  prRef: PrRef;
+  onSelect?: (index: number) => void;
+}) {
+  const { data, error, loading } = usePrFiles(prRef);
   const [selected, setSelected] = useState<number | null>(null);
 
   if (error) return <p className="text-sm text-red-400">{error}</p>;
@@ -32,7 +33,7 @@ export default function PrFileList({
     setSelected(index);
     onSelect?.(index);
     document
-      .getElementById(prFileAnchorId(ref, index))
+      .getElementById(prFileAnchorId(prRef, index))
       ?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
@@ -49,14 +50,16 @@ export default function PrFileList({
               }`}
               title={f.filename}
             >
-              <span className={`${status.color} shrink-0 font-mono text-xs`}>
-                {status.letter}
-              </span>
+              <span className={`${status.color} shrink-0 font-mono text-xs`}>{status.letter}</span>
               <span className="min-w-0 flex-1 truncate font-mono text-xs text-zinc-300">
                 {f.filename}
               </span>
-              <span className="shrink-0 text-xs text-emerald-400">+{f.additions}</span>
-              <span className="shrink-0 text-xs text-red-400">−{f.deletions}</span>
+              {f.additions + f.deletions > 0 && (
+                <>
+                  <span className="shrink-0 text-xs text-emerald-400">+{f.additions}</span>
+                  <span className="shrink-0 text-xs text-red-400">−{f.deletions}</span>
+                </>
+              )}
             </button>
           </li>
         );

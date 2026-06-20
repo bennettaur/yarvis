@@ -1,0 +1,236 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+
+jobs:
+  bun-lint-and-format:
+    name: Lint & format (Biome)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Biome check (lint + format)
+        run: bun run check
+
+  bun-typecheck:
+    name: TypeScript typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Frontend typecheck
+        run: bun run typecheck
+      - name: Sidecar typecheck
+        run: bun run sidecar:typecheck
+
+  bun-frontend-test:
+    name: Frontend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Run frontend tests
+        run: bun run test
+
+  bun-test:
+    name: Sidecar tests
+    runs-on: ubuntu-latest
+    # The sidecar suite exercises Drizzle/pgvector against a real database, so
+    # CI provisions a throwaway Postgres with the vector extension available.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: yarvis_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # migrate.ts reads DATABASE_URL; the tests read TEST_DATABASE_URL. Both
+      # point at the same service container.
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/yarvis_test
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/yarvis_test
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Apply database migrations
+        run: bun run --cwd sidecar db:migrate
+      - name: Run sidecar tests
+        run: bun run sidecar:test
+
+  bun-audit:
+    name: bun audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      # GHSA-67mh-4wv8-2f99 (esbuild dev-server CORS) reaches us only through
+      # drizzle-kit's archived @esbuild-kit loader, which has no patched
+      # release. It is a build-time tool that never runs an esbuild dev server,
+      # so the advisory is not exploitable here. Any other moderate+ advisory
+      # still fails this job.
+      - name: Audit production dependencies
+        run: bun audit --prod --ignore GHSA-67mh-4wv8-2f99
+
+  rust-fmt:
+    name: Rust formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt --check
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
+  rust-clippy:
+    name: Rust clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets --no-deps -- -D warnings
+
+  rust-test:
+    name: Rust tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --all-targets
+
+  cargo-audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # The only crate lives in src-tauri/; without this the action looks for
+      # ./Cargo.lock at the repo root and fails before auditing anything.
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          working-directory: src-tauri
+
+  tauri-build:
+    name: Tauri build (${{ matrix.platform }})
+    needs: [bun-lint-and-format, bun-typecheck, rust-clippy]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+          - platform: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.platform }}
+
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Build without bundling: faster than producing installers on every PR,
+      # while still verifying the full Rust + frontend compile chain on each OS.
+      - name: Tauri build (no bundle)
+        run: bun run tauri build --no-bundle

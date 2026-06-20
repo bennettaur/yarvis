@@ -1,15 +1,7 @@
-import {
-  and,
-  cosineDistance,
-  desc,
-  eq,
-  gte,
-  isNotNull,
-  sql,
-  type SQL,
-} from "drizzle-orm";
+import { and, cosineDistance, desc, eq, gte, isNotNull, type SQL, sql } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
-import { memories, type MemoryRow } from "../db/schema.ts";
+import { type MemoryRow, memories } from "../db/schema.ts";
+import { memoryDebug, preview } from "./debug.ts";
 import type { Embedder, EmbedderIdentity } from "./embedder.ts";
 
 export interface MemoryRecord {
@@ -53,10 +45,7 @@ export interface MemoryService {
 
 /** The columns toRecord needs — a subset of MemoryRow (the embedding is omitted
  * from list/search selects since it isn't returned to callers). */
-type MemoryRowFields = Pick<
-  MemoryRow,
-  "id" | "content" | "metadata" | "createdAt"
->;
+type MemoryRowFields = Pick<MemoryRow, "id" | "content" | "metadata" | "createdAt">;
 
 function toRecord(row: MemoryRowFields, score?: number): MemoryRecord {
   return {
@@ -81,21 +70,21 @@ export class PgVectorMemoryStore implements MemoryService {
    * were embedded by a now-inactive model (whose vectors are no longer
    * comparable to the active one).
    */
-  private stamp(
-    metadata: Record<string, unknown> | null | undefined,
-  ): Record<string, unknown> {
+  private stamp(metadata: Record<string, unknown> | null | undefined): Record<string, unknown> {
     return { ...(metadata ?? {}), embedder: this.embedder.identity() };
   }
 
-  async add(
-    content: string,
-    metadata?: Record<string, unknown>,
-  ): Promise<MemoryRecord> {
+  async add(content: string, metadata?: Record<string, unknown>): Promise<MemoryRecord> {
     const embedding = await this.embedder.embed(content);
     const [row] = await this.db
       .insert(memories)
       .values({ content, metadata: this.stamp(metadata), embedding })
       .returning();
+    memoryDebug(
+      "memory",
+      `add id=${row!.id} type=${(metadata?.type as string) ?? "—"} chars=${content.length} ` +
+        `embedder=${this.embedder.kind} → stored`,
+    );
     return toRecord(row!);
   }
 
@@ -112,11 +101,12 @@ export class PgVectorMemoryStore implements MemoryService {
         })),
       )
       .returning();
+    memoryDebug("memory", `addMany count=${rows.length} embedder=${this.embedder.kind} → stored`);
     return rows.map((r) => toRecord(r));
   }
 
   async search(query: string, limit = 5): Promise<MemoryRecord[]> {
-    const queryVec = await this.embedder.embed(query);
+    const queryVec = await this.embedder.embedQuery(query);
     const distance = cosineDistance(memories.embedding, queryVec);
     const rows = await this.db
       .select({
@@ -129,7 +119,14 @@ export class PgVectorMemoryStore implements MemoryService {
       .from(memories)
       .orderBy(distance)
       .limit(limit);
-    return rows.map((r) => toRecord(r, 1 - Number(r.distance)));
+    const results = rows.map((r) => toRecord(r, 1 - Number(r.distance)));
+    const top = results[0]?.score;
+    memoryDebug(
+      "memory",
+      `search q="${preview(query)}" → ${results.length} hits` +
+        (top !== undefined ? ` (top score ${top.toFixed(3)})` : ""),
+    );
+    return results;
   }
 
   async list(options: MemoryListOptions = {}): Promise<MemoryRecord[]> {
@@ -155,10 +152,7 @@ export class PgVectorMemoryStore implements MemoryService {
   }
 
   async get(id: string): Promise<MemoryRecord | null> {
-    const [row] = await this.db
-      .select()
-      .from(memories)
-      .where(eq(memories.id, id));
+    const [row] = await this.db.select().from(memories).where(eq(memories.id, id));
     return row ? toRecord(row) : null;
   }
 
@@ -217,9 +211,7 @@ export class PgVectorMemoryStore implements MemoryService {
     let updated = 0;
     for (let i = 0; i < rows.length; i += batchSize) {
       const batch = rows.slice(i, i + batchSize);
-      const embeddings = await this.embedder.embedMany(
-        batch.map((r) => r.content),
-      );
+      const embeddings = await this.embedder.embedMany(batch.map((r) => r.content));
       // The updates within a batch are independent, so issue them together
       // rather than serializing one DB round-trip per row.
       await Promise.all(
@@ -228,9 +220,7 @@ export class PgVectorMemoryStore implements MemoryService {
             .update(memories)
             .set({
               embedding: embeddings[j]!,
-              metadata: this.stamp(
-                row.metadata as Record<string, unknown> | null,
-              ),
+              metadata: this.stamp(row.metadata as Record<string, unknown> | null),
             })
             .where(eq(memories.id, row.id)),
         ),
@@ -257,11 +247,6 @@ export interface EmbedderHealth {
   ok: boolean;
 }
 
-function identityEquals(
-  a: EmbedderIdentity | null,
-  b: EmbedderIdentity,
-): boolean {
-  return (
-    a !== null && a.kind === b.kind && a.model === b.model && a.dim === b.dim
-  );
+function identityEquals(a: EmbedderIdentity | null, b: EmbedderIdentity): boolean {
+  return a !== null && a.kind === b.kind && a.model === b.model && a.dim === b.dim;
 }

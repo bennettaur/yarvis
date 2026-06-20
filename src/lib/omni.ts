@@ -56,10 +56,7 @@ export async function listLayouts(): Promise<OmniLayoutSummary[]> {
 }
 
 /** Saves the spec under a name, overwriting any existing layout with that name. */
-export async function saveLayout(
-  name: string,
-  spec: Spec,
-): Promise<OmniLayoutSummary> {
+export async function saveLayout(name: string, spec: Spec): Promise<OmniLayoutSummary> {
   const res = await sidecarFetch("/api/omni/layouts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

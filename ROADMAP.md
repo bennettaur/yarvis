@@ -25,30 +25,36 @@ Status of the build against the original vision. The full V1 plan lives at
   health warning in Settings (with a re-embed action).
 - **Claude Code session introspection** — browse `~/.claude` projects, session
   transcripts, and plans (Sessions tab).
-- **GitHub PR dashboard** — my PRs and review-requested, split into tabs and
-  grouped by owner/repo, newest-first; each row is clickable into the in-app
-  review and shows a draft label, CI/merge status, and relative dates. Stars and
-  saved filters too (PRs tab).
+- **PR dashboard (GitHub + Azure DevOps)** — my PRs and review-requested, split
+  into tabs and grouped by repo, newest-first; each row is clickable into the
+  in-app review and shows a draft label, CI/merge status, and relative dates.
+  Stars and saved filters too. A provider toggle switches between GitHub and
+  Azure DevOps, which share one provider-agnostic UI (PRs tab).
 - **Alarms** — full-screen takeover + escalating sound/notification, with
   acknowledge/snooze (Alarms tab).
-- **Embedded PR review** — in-app PR detail view built from the GitHub GraphQL
-  API (description, normalized checks, review threads) plus REST file diffs,
-  rendered with markdown and per-line diff coloring (PRs tab → row click).
-  Decomposed into reusable, prop-driven components (description+comments, checks,
-  changed-file list, file diffs) that share one cached fetch per PR; the detail
-  view places the changed-file list beside the diffs.
+- **Embedded PR review** — in-app PR detail view (description, normalized checks,
+  review threads, file diffs) rendered with markdown and per-line diff coloring
+  (PRs tab → row click). Decomposed into reusable, prop-driven components that
+  share one cached fetch per PR; the detail view places the changed-file list
+  beside the diffs and has a collapsible checks section. Works for both GitHub
+  (GraphQL + REST diffs) and Azure DevOps (REST; per-file diffs computed with
+  jsdiff since Azure has no unified-diff endpoint). Clicking a diff line opens a
+  composer that posts a single-line comment to the PR, and existing review
+  threads render inline at their line — for both providers.
 - **Memory & knowledge** — notes, daily/weekly recaps (tasks completed + notes,
   LLM-summarized or offline raw), document/URL ingestion (chunk → embed →
   store), and a management UI to search/delete (Memory tab). Reuses the
   `memories` table with a `type` tag (note/doc/fact).
-- **Google Calendar (scaffolded, untested)** — desktop OAuth + upcoming-events
-  fetch and a Calendar tab that arms meeting alarms just before start. Built
-  blind against the documented Google APIs; needs real OAuth credentials to
-  exercise (see Remaining → Calendar verification).
+- **Google Calendar** — desktop OAuth + a date-range events fetch backing a
+  Calendar tab with a view switcher: agenda, a Sunday-start week grid, a month
+  grid, and a scrolling day timeline (vertical/horizontal) with a current-time
+  line. Every view arms meeting alarms just before start and shows whether one
+  is already set. The week/month/day views are also Omni widgets.
 - **Omni (dynamic UI)** — describe a workspace in natural language and an agent
   composes a live layout from a fixed component catalog: layout primitives
   (Row/Column/Grid/Panel/…) plus self-contained feature widgets (Tasks,
-  Calendar, Memory, PRs, Sessions, Alarms, Settings, Chat, Termina) and the decomposed
+  Calendar, CalendarWeek, CalendarMonth, CalendarDay, Memory, PRs, Sessions,
+  Alarms, Settings, Chat, Terminal) and the decomposed
   PR-review widgets (PrDescription/PrChecks/PrFileList/PrFileDiffs) that name a
   single PR by owner/repo/number and share one cached fetch. Widgets accept an
   optional fixed `height` so duplicates scroll independently. Streamed from the
@@ -60,6 +66,16 @@ Status of the build against the original vision. The full V1 plan lives at
   and live in the core independent of the webview, so the shell survives tab
   switches and Omni re-renders (scrollback is captured and replayed on
   reattach). Available as a standalone Terminal tab and as an Omni widget.
+- **Omni Chat + keyboard navigation** — a global `Control+Shift+Space` hotkey
+  (registered in the Rust core) raises a centered chat overlay over any tab; Esc
+  hides it while the session keeps streaming in the background, and re-summoning
+  resumes the same persisted conversation. Each mounted view contributes a context
+  snapshot via the `useOmniChatContext` hook → a frontend page-context registry;
+  the active snapshot is sent to the agent as a nonce-delimited, non-instruction
+  screen-context message (kept out of the system prompt). A `request_attention`
+  tool lets the agent raise a nav-rail badge + an OS notification when it finishes
+  background work or needs a decision. Tab shortcuts too: Cmd/Ctrl+1–9 jump to a
+  tab, Cmd/Ctrl+Shift+[ / ] cycle through them.
 - **Event log (Phase 2)** — a local, on-device trail of meaningful actions
   (chat started, task created/completed via backend hooks; PR viewed and alarm
   created from the UI), persisted to an `events` table and served over

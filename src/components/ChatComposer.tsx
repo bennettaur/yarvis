@@ -17,6 +17,7 @@ export default function ChatComposer({
   placeholder,
   submitLabel,
   className = "flex gap-2",
+  textareaClassName = "",
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -25,6 +26,11 @@ export default function ChatComposer({
   placeholder?: string;
   submitLabel: string;
   className?: string;
+  /**
+   * Extra classes for the textarea, e.g. a `min-h-*` to start taller. A
+   * min-height also floors the auto-grow so the box never collapses below it.
+   */
+  textareaClassName?: string;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -37,10 +43,9 @@ export default function ChatComposer({
     if (!el) return;
     el.style.height = "auto";
     const style = window.getComputedStyle(el);
-    const borderY =
-      parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+    const borderY = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
     el.style.height = `${Math.min(el.scrollHeight + borderY, MAX_HEIGHT)}px`;
-  }, [value]);
+  }, []);
 
   return (
     <div className={className}>
@@ -57,7 +62,7 @@ export default function ChatComposer({
             onSubmit();
           }
         }}
-        className="flex-1 resize-none overflow-y-auto rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm outline-none focus:border-zinc-500 disabled:opacity-50"
+        className={`flex-1 resize-none overflow-y-auto rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm outline-none focus:border-zinc-500 disabled:opacity-50 ${textareaClassName}`}
       />
       <button
         onClick={onSubmit}

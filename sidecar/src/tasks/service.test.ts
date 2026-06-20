@@ -12,8 +12,7 @@ import {
   updateTask,
 } from "./service.ts";
 
-const url =
-  process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
+const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
 const db = drizzle(sql, { schema });
 
@@ -59,10 +58,7 @@ describe("task service", () => {
   });
 
   it("returns null when completing a missing task", async () => {
-    const missing = await completeTask(
-      db,
-      "00000000-0000-0000-0000-000000000000",
-    );
+    const missing = await completeTask(db, "00000000-0000-0000-0000-000000000000");
     expect(missing).toBeNull();
   });
 

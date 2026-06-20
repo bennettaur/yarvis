@@ -1,6 +1,6 @@
 import { desc } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
-import { googleTokens, type GoogleToken } from "../db/schema.ts";
+import { type GoogleToken, googleTokens } from "../db/schema.ts";
 import type { GoogleCalendarClient, TokenResponse } from "./client.ts";
 
 /** Refresh a little early so a token doesn't expire mid-request. */
@@ -13,7 +13,7 @@ const EXPIRY_SKEW_MS = 60_000;
  * don't accumulate or stay valid indefinitely.
  */
 const pendingStates = new Map<string, number>();
-const STATE_TTL_MS = 10 * 60_000;
+const STATE_TTL_MS = 5 * 60_000;
 const MAX_PENDING_STATES = 64;
 
 function pruneStates(now: number): void {
@@ -48,11 +48,7 @@ export function consumeState(state: string): boolean {
 
 /** Returns the stored token row (most recent), or null if not connected. */
 export async function getStoredToken(db: Db): Promise<GoogleToken | null> {
-  const [row] = await db
-    .select()
-    .from(googleTokens)
-    .orderBy(desc(googleTokens.createdAt))
-    .limit(1);
+  const [row] = await db.select().from(googleTokens).orderBy(desc(googleTokens.createdAt)).limit(1);
   return row ?? null;
 }
 
@@ -86,10 +82,7 @@ export async function clearToken(db: Db): Promise<void> {
  * refresh token when the current one is expired (or about to be). Throws when
  * no connection exists or the refresh fails.
  */
-export async function getValidAccessToken(
-  db: Db,
-  client: GoogleCalendarClient,
-): Promise<string> {
+export async function getValidAccessToken(db: Db, client: GoogleCalendarClient): Promise<string> {
   const stored = await getStoredToken(db);
   if (!stored) throw new Error("google calendar not connected");
 

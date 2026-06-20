@@ -2,11 +2,11 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
+  type HistoryEntry,
   parseHistory,
   parsePlanTitle,
   parseSessionSummary,
   parseTranscript,
-  type HistoryEntry,
   type SessionSummary,
   type TranscriptEntry,
 } from "./parse.ts";
@@ -161,10 +161,7 @@ export async function getPlan(name: string): Promise<string> {
   return readFile(file, "utf8");
 }
 
-export async function recentHistory(
-  limit = 50,
-  project?: string,
-): Promise<HistoryEntry[]> {
+export async function recentHistory(limit = 50, project?: string): Promise<HistoryEntry[]> {
   let content: string;
   try {
     content = await readFile(join(ccHome(), "history.jsonl"), "utf8");

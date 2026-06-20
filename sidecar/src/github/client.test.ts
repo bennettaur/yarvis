@@ -101,9 +101,7 @@ describe("github client", () => {
             path: "src/a.ts",
             line: 12,
             comments: {
-              nodes: [
-                { author: { login: "rev" }, body: "nit", createdAt: "2026-01-01" },
-              ],
+              nodes: [{ author: { login: "rev" }, body: "nit", createdAt: "2026-01-01" }],
             },
           },
         ],

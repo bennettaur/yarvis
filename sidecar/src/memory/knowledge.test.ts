@@ -56,9 +56,7 @@ describe("recap date range", () => {
 
 describe("assembleRecapContext", () => {
   it("lists completed tasks and notes, marking empties", () => {
-    const tasks = [
-      { scope: "daily", title: "Ship PR review", notes: null } as Task,
-    ];
+    const tasks = [{ scope: "daily", title: "Ship PR review", notes: null } as Task];
     const notes = [{ content: "Idea: add recaps" } as MemoryRecord];
     const out = assembleRecapContext(tasks, notes);
     expect(out).toContain("Ship PR review");

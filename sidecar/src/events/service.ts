@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, isNull, type SQL } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
-import { events, type EventRow } from "../db/schema.ts";
+import { type EventRow, events } from "../db/schema.ts";
 
 /**
  * The local event log: meaningful actions get recorded here so a later
@@ -40,10 +40,7 @@ export interface RecordEventInput {
 }
 
 /** Inserts an event and returns the row. Throws on failure. */
-export async function recordEvent(
-  db: Db,
-  input: RecordEventInput,
-): Promise<EventRow> {
+export async function recordEvent(db: Db, input: RecordEventInput): Promise<EventRow> {
   const [row] = await db
     .insert(events)
     .values({
@@ -61,10 +58,7 @@ export async function recordEvent(
  * the action that triggered it (creating a task, starting a chat). Errors are
  * logged and swallowed.
  */
-export async function emitEvent(
-  db: Db,
-  input: RecordEventInput,
-): Promise<void> {
+export async function emitEvent(db: Db, input: RecordEventInput): Promise<void> {
   try {
     await recordEvent(db, input);
   } catch (e) {
@@ -85,10 +79,7 @@ export interface ListEventsOptions {
 }
 
 /** Lists events newest-first, with optional filters. */
-export async function listEvents(
-  db: Db,
-  options: ListEventsOptions = {},
-): Promise<EventRow[]> {
+export async function listEvents(db: Db, options: ListEventsOptions = {}): Promise<EventRow[]> {
   const conditions: SQL[] = [];
   if (options.type) conditions.push(eq(events.type, options.type));
   if (options.since) conditions.push(gte(events.occurredAt, options.since));

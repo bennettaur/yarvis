@@ -41,11 +41,7 @@ type FetchFn = typeof fetch;
  * Builds the Google consent URL. `access_type=offline` + `prompt=consent`
  * ensure a refresh token comes back so the integration keeps working unattended.
  */
-export function buildAuthUrl(
-  clientId: string,
-  redirectUri: string,
-  state: string,
-): string {
+export function buildAuthUrl(clientId: string, redirectUri: string, state: string): string {
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirectUri,
@@ -71,9 +67,7 @@ function toTokenResponse(data: any): TokenResponse {
 /** Picks the best video link Google attaches to an event, if any. */
 function meetLink(item: any): string | null {
   if (item.hangoutLink) return item.hangoutLink;
-  const entry = item.conferenceData?.entryPoints?.find(
-    (e: any) => e.entryPointType === "video",
-  );
+  const entry = item.conferenceData?.entryPoints?.find((e: any) => e.entryPointType === "video");
   return entry?.uri ?? null;
 }
 
@@ -100,10 +94,7 @@ export class GoogleCalendarClient {
   ) {}
 
   /** Exchanges an authorization code for access + refresh tokens. */
-  async exchangeCode(
-    code: string,
-    redirectUri: string,
-  ): Promise<TokenResponse> {
+  async exchangeCode(code: string, redirectUri: string): Promise<TokenResponse> {
     const res = await this.fetchImpl(TOKEN_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -135,17 +126,26 @@ export class GoogleCalendarClient {
     return toTokenResponse(await res.json());
   }
 
-  /** Lists upcoming events on the primary calendar, soonest first. */
-  async listUpcomingEvents(
+  /**
+   * Lists events on the primary calendar, soonest first. `timeMin` defaults to
+   * now (upcoming events); pass an explicit `timeMin`/`timeMax` to query a date
+   * range, e.g. the bounds of a week or month for the grid views.
+   */
+  async listEvents(
     accessToken: string,
-    maxResults = 20,
+    options: {
+      timeMin?: string;
+      timeMax?: string;
+      maxResults?: number;
+    } = {},
   ): Promise<CalendarEvent[]> {
     const params = new URLSearchParams({
-      timeMin: new Date().toISOString(),
+      timeMin: options.timeMin ?? new Date().toISOString(),
       singleEvents: "true",
       orderBy: "startTime",
-      maxResults: String(maxResults),
+      maxResults: String(options.maxResults ?? 20),
     });
+    if (options.timeMax) params.set("timeMax", options.timeMax);
     const res = await this.fetchImpl(`${CALENDAR_EVENTS}?${params.toString()}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });

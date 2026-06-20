@@ -1,6 +1,6 @@
 import { desc, eq } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
-import { embeddingsConfig, type EmbeddingsConfigRow } from "../db/schema.ts";
+import { type EmbeddingsConfigRow, embeddingsConfig } from "../db/schema.ts";
 
 /**
  * Singleton store for the active embeddings provider's structural config. Like
@@ -19,9 +19,7 @@ export interface EmbeddingsConfigInput {
 }
 
 /** Returns the active embeddings config, or null when none is set. */
-export async function getEmbeddingsConfig(
-  db: Db,
-): Promise<EmbeddingsConfigRow | null> {
+export async function getEmbeddingsConfig(db: Db): Promise<EmbeddingsConfigRow | null> {
   const [row] = await db
     .select()
     .from(embeddingsConfig)
@@ -53,8 +51,6 @@ export async function upsertEmbeddingsConfig(
 
 /** Removes any configured embeddings provider, reverting to Gemini/hash. */
 export async function deleteEmbeddingsConfig(db: Db): Promise<boolean> {
-  const rows = await db
-    .delete(embeddingsConfig)
-    .returning({ id: embeddingsConfig.id });
+  const rows = await db.delete(embeddingsConfig).returning({ id: embeddingsConfig.id });
   return rows.length > 0;
 }

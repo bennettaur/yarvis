@@ -1,6 +1,7 @@
 import { createApp } from "./app.ts";
 import { loadConfig } from "./config.ts";
 import { runMigrations } from "./db/migrate.ts";
+import { redactSecrets } from "./llm/errors.ts";
 import { createReadiness } from "./readiness.ts";
 
 const config = loadConfig();
@@ -13,7 +14,7 @@ const app = createApp(config, readiness);
 
 // Bind the port first so /health responds (with `ready: false`) right away,
 // rather than making the frontend wait on a closed socket during migration.
-const server = Bun.serve({
+const _server = Bun.serve({
   port: config.port,
   hostname: "127.0.0.1",
   fetch: app.fetch,
@@ -23,24 +24,31 @@ const server = Bun.serve({
   // sees a timeout with no output. 255s is Bun's maximum.
   idleTimeout: 255,
 });
-
-console.log(`[sidecar] listening on http://127.0.0.1:${server.port}`);
 if (config.tokenGenerated) {
-  // Only happens when run standalone (no host-supplied token); surfaced so a
-  // local client can authenticate during development/testing.
-  console.log(`[sidecar] generated dev token: ${config.token}`);
+  // Standalone (no host-supplied token): print the full token only when the
+  // developer opts in via env. Otherwise show a fingerprint that's enough to
+  // recognise the same session in a debugger but useless on its own.
+  if (process.env.YARVIS_LOG_DEV_TOKEN === "1") {
+    console.log(`[sidecar] generated dev token: ${config.token}`);
+  } else {
+    const fingerprint = `${config.token.slice(0, 4)}...${config.token.slice(-4)} (${config.token.length} chars)`;
+    console.log(
+      `[sidecar] generated dev token fingerprint: ${fingerprint} — set YARVIS_LOG_DEV_TOKEN=1 to print the full token`,
+    );
+  }
 }
 
 if (config.databaseUrl) {
-  console.log("[sidecar] applying database migrations…");
   runMigrations(config.databaseUrl)
     .then(() => {
       readiness.set("ready");
-      console.log("[sidecar] migrations applied; ready");
     })
     .catch((e) => {
-      const message = e instanceof Error ? e.message : String(e);
+      // Redact before storing the message because `/health` (unauthenticated)
+      // surfaces it, and postgres error messages routinely echo the
+      // connection string (including the password) verbatim.
+      const message = redactSecrets(e instanceof Error ? e.message : String(e));
       readiness.set("error", message);
-      console.error("[sidecar] migration failed:", e);
+      console.error("[sidecar] migration failed:", redactSecrets(String(e)));
     });
 }

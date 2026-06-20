@@ -3,11 +3,10 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { createSession } from "../chat/service.ts";
 import * as schema from "../db/schema.ts";
-import { createTask, completeTask } from "../tasks/service.ts";
+import { completeTask, createTask } from "../tasks/service.ts";
 import { emitEvent, listEvents, recordEvent } from "./service.ts";
 
-const url =
-  process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
+const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
 const db = drizzle(sql, { schema });
 
@@ -86,9 +85,7 @@ describe("event emission hooks", () => {
     const session = await createSession(db, "hello");
     const started = await listEvents(db, { type: "chat.started" });
     expect(started.length).toBe(1);
-    expect((started[0]!.payload as { sessionId: string }).sessionId).toBe(
-      session.id,
-    );
+    expect((started[0]!.payload as { sessionId: string }).sessionId).toBe(session.id);
   });
 
   it("records task.created and task.completed", async () => {

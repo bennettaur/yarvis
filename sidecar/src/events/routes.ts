@@ -18,7 +18,7 @@ const MAX_LIMIT = 1000;
 const postSchema = z.object({
   type: z.enum(EVENT_TYPES),
   source: z.string().min(1).optional(),
-  payload: z.record(z.unknown()).optional(),
+  payload: z.record(z.string(), z.unknown()).optional(),
   // Accept an ISO timestamp for backfilled events; defaults to now otherwise.
   occurredAt: z.string().datetime().optional(),
 });
@@ -43,9 +43,7 @@ export function createEventRoutes(config: Config): Hono {
       type: parsed.data.type,
       source: parsed.data.source,
       payload: parsed.data.payload,
-      occurredAt: parsed.data.occurredAt
-        ? new Date(parsed.data.occurredAt)
-        : undefined,
+      occurredAt: parsed.data.occurredAt ? new Date(parsed.data.occurredAt) : undefined,
     });
     return c.json(row, 201);
   });
@@ -57,10 +55,7 @@ export function createEventRoutes(config: Config): Hono {
       return c.json({ error: "unknown type" }, 400);
     }
     const rawLimit = Number(c.req.query("limit") ?? "100");
-    const limit =
-      Number.isInteger(rawLimit) && rawLimit > 0
-        ? Math.min(rawLimit, MAX_LIMIT)
-        : 100;
+    const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, MAX_LIMIT) : 100;
     const sinceParam = c.req.query("since");
     const since = sinceParam ? new Date(sinceParam) : undefined;
     const records = await listEvents(db(), {

@@ -15,12 +15,14 @@ import {
 /**
  * Embedding dimension of the `memories.embedding` column. This is a fixed
  * column dimension: every stored vector must have exactly this many components,
- * and the active embedder's output dimension must match it. 1024 fits common
- * local/proxy embedding models (e.g. mxbai-embed-large). Changing it requires a
- * migration that clears existing vectors and a re-embed pass, since vectors of
- * different dimensions (or from different models) can't be compared.
+ * and the active embedder's output dimension must match it. 1536 is the
+ * truncation target for our primary embedders — gemini-embedding-* (Matryoshka
+ * output_dimensionality) and Qwen3 via an OpenAI-compatible endpoint. Changing
+ * it requires a migration that clears existing vectors and a re-embed pass,
+ * since vectors of different dimensions (or from different models) can't be
+ * compared.
  */
-export const EMBED_DIM: number = 1024;
+export const EMBED_DIM: number = 1536;
 
 /**
  * Application schema for Yarvis. This holds *our* data — chat sessions/messages
@@ -28,12 +30,7 @@ export const EMBED_DIM: number = 1024;
  * store for semantic memory.
  */
 
-export const messageRole = pgEnum("message_role", [
-  "user",
-  "assistant",
-  "system",
-  "tool",
-]);
+export const messageRole = pgEnum("message_role", ["user", "assistant", "system", "tool"]);
 
 export const taskStatus = pgEnum("task_status", ["open", "done"]);
 export const taskScope = pgEnum("task_scope", ["daily", "weekly"]);
@@ -41,12 +38,8 @@ export const taskScope = pgEnum("task_scope", ["daily", "weekly"]);
 export const chatSessions = pgTable("chat_sessions", {
   id: uuid("id").primaryKey().defaultRandom(),
   title: text("title"),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const chatMessages = pgTable("chat_messages", {
@@ -57,9 +50,7 @@ export const chatMessages = pgTable("chat_messages", {
   role: messageRole("role").notNull(),
   content: text("content").notNull(),
   toolCalls: jsonb("tool_calls"),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const tasks = pgTable("tasks", {
@@ -72,9 +63,7 @@ export const tasks = pgTable("tasks", {
   sourceSessionId: uuid("source_session_id").references(() => chatSessions.id, {
     onDelete: "set null",
   }),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   completedAt: timestamp("completed_at", { withTimezone: true }),
 });
 
@@ -83,18 +72,14 @@ export const memories = pgTable("memories", {
   content: text("content").notNull(),
   metadata: jsonb("metadata"),
   embedding: vector("embedding", { dimensions: EMBED_DIM }),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const githubFilters = pgTable("github_filters", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
   query: text("query").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const githubStars = pgTable(
@@ -106,11 +91,38 @@ export const githubStars = pgTable(
     number: integer("number").notNull(),
     title: text("title"),
     url: text("url"),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex("github_stars_pr_idx").on(t.owner, t.repo, t.number)],
+);
+
+/**
+ * Saved Azure DevOps PR searches. Unlike GitHub's free-text query, an Azure
+ * search is structured: a scope ("mine" | "review") and an optional project to
+ * narrow to.
+ */
+export const azureDevopsFilters = pgTable("azure_devops_filters", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  scope: text("scope").notNull(),
+  project: text("project"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Starred Azure DevOps PRs, identified by org/project/repo/pull-request id. */
+export const azureDevopsStars = pgTable(
+  "azure_devops_stars",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    org: text("org").notNull(),
+    project: text("project").notNull(),
+    repo: text("repo").notNull(),
+    prId: integer("pr_id").notNull(),
+    title: text("title"),
+    url: text("url"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("azure_devops_stars_pr_idx").on(t.org, t.project, t.repo, t.prId)],
 );
 
 /** Saved Omni layouts: a named json-render spec the user can reload later. */
@@ -118,12 +130,8 @@ export const omniLayouts = pgTable("omni_layouts", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
   spec: jsonb("spec").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 /**
@@ -137,12 +145,8 @@ export const googleTokens = pgTable("google_tokens", {
   refreshToken: text("refresh_token"),
   scope: text("scope"),
   expiresAt: timestamp("expires_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 /**
@@ -157,12 +161,8 @@ export const customProviders = pgTable("custom_providers", {
   apiKind: text("api_kind").notNull(), // "openai" | "anthropic"
   models: jsonb("models").$type<string[]>().notNull().default([]),
   headerNames: jsonb("header_names").$type<string[]>().notNull().default([]),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 /**
@@ -183,12 +183,8 @@ export const embeddingsConfig = pgTable("embeddings_config", {
   apiKind: text("api_kind").notNull().default("openai"),
   dimensions: integer("dimensions").notNull(),
   headerNames: jsonb("header_names").$type<string[]>().notNull().default([]),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export type EmbeddingsConfigRow = typeof embeddingsConfig.$inferSelect;
@@ -210,13 +206,9 @@ export const events = pgTable(
     type: text("type").notNull(),
     source: text("source"),
     payload: jsonb("payload"),
-    occurredAt: timestamp("occurred_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
     processedAt: timestamp("processed_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     // Reconciliation scans unprocessed events oldest-first.
@@ -241,6 +233,8 @@ export type MemoryRow = typeof memories.$inferSelect;
 export type NewMemoryRow = typeof memories.$inferInsert;
 export type GithubFilter = typeof githubFilters.$inferSelect;
 export type GithubStar = typeof githubStars.$inferSelect;
+export type AzureDevopsFilter = typeof azureDevopsFilters.$inferSelect;
+export type AzureDevopsStar = typeof azureDevopsStars.$inferSelect;
 export type OmniLayout = typeof omniLayouts.$inferSelect;
 export type NewOmniLayout = typeof omniLayouts.$inferInsert;
 export type GoogleToken = typeof googleTokens.$inferSelect;

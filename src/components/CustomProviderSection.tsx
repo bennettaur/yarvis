@@ -1,20 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { getHealth, waitForSidecarReady } from "../lib/api";
 import {
-  createCustomProvider,
-  deleteAllCustomProviderSecrets,
-  deleteCustomProvider,
-  deleteCustomProviderSecret,
-  listCustomProviders,
-  listCustomProviderSecretStatus,
-  setCustomProviderSecret,
-  updateCustomProvider,
   type CustomProvider,
   type CustomProviderApiKind,
   type CustomProviderInput,
   type CustomProviderSecretStatus,
+  createCustomProvider,
+  deleteAllCustomProviderSecrets,
+  deleteCustomProvider,
+  deleteCustomProviderSecret,
+  listCustomProviderSecretStatus,
+  listCustomProviders,
+  setCustomProviderSecret,
+  updateCustomProvider,
 } from "../lib/customProviders";
-import { getHealth, waitForSidecarReady } from "../lib/api";
 import { restartSidecar } from "../lib/keychain";
+import { MaskedInput } from "./MaskedInput";
 
 /**
  * Restarts the sidecar and waits for it to come back ready before resolving.
@@ -32,6 +33,7 @@ async function restartAndWait(): Promise<void> {
   await restartSidecar();
   await waitForSidecarReady({ minUptimeMsBefore: priorUptimeMs });
 }
+
 import { StatusDot } from "./Dashboard";
 
 interface Draft {
@@ -83,9 +85,7 @@ function toInput(d: Draft): CustomProviderInput {
  */
 export default function CustomProviderSection() {
   const [providers, setProviders] = useState<CustomProvider[]>([]);
-  const [secrets, setSecrets] = useState<
-    Record<string, CustomProviderSecretStatus>
-  >({});
+  const [secrets, setSecrets] = useState<Record<string, CustomProviderSecretStatus>>({});
   const [editingId, setEditingId] = useState<string | "new" | null>(null);
   const [draft, setDraft] = useState<Draft>(blankDraft);
   const [secretInputs, setSecretInputs] = useState<Record<string, string>>({});
@@ -98,9 +98,7 @@ export default function CustomProviderSection() {
         listCustomProviderSecretStatus(),
       ]);
       setProviders(rows);
-      setSecrets(
-        Object.fromEntries(statuses.map((s) => [s.providerId, s])),
-      );
+      setSecrets(Object.fromEntries(statuses.map((s) => [s.providerId, s])));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -213,9 +211,8 @@ export default function CustomProviderSection() {
         )}
       </div>
       <p className="mb-4 text-xs text-zinc-500">
-        Point Yarvis at an OpenAI- or Anthropic-shaped proxy (e.g. a litellm
-        endpoint). Structure is stored in the database; the API key and header
-        values are stored in the macOS Keychain.
+        Point Yarvis at an OpenAI- or Anthropic-shaped proxy (e.g. a litellm endpoint). Structure is
+        stored in the database; the API key and header values are stored in the macOS Keychain.
       </p>
 
       {error && <p className="mb-3 text-sm text-red-400">{error}</p>}
@@ -295,9 +292,7 @@ function DraftEditor({
           <input
             value={draft.baseUrl}
             placeholder="https://litellm.example.com/v1"
-            onChange={(e) =>
-              setDraft((d) => ({ ...d, baseUrl: e.target.value }))
-            }
+            onChange={(e) => setDraft((d) => ({ ...d, baseUrl: e.target.value }))}
             className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500"
           />
         </Labeled>
@@ -359,9 +354,7 @@ function ListEditor({
   return (
     <div className="mt-4">
       <div className="mb-1 flex items-center justify-between">
-        <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">
-          {title}
-        </span>
+        <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">{title}</span>
       </div>
       {helper && <p className="mb-2 text-xs text-zinc-500">{helper}</p>}
       <div className="flex flex-wrap gap-1.5">
@@ -435,15 +428,10 @@ function ProviderCard({
   provider: CustomProvider;
   status: CustomProviderSecretStatus | undefined;
   secretInputs: Record<string, string>;
-  setSecretInputs: (
-    updater: (prev: Record<string, string>) => Record<string, string>,
-  ) => void;
+  setSecretInputs: (updater: (prev: Record<string, string>) => Record<string, string>) => void;
   onEdit: () => void;
   onDelete: () => void;
-  onSaveSecret: (
-    slot: "apiKey" | `header:${string}`,
-    key: string,
-  ) => void;
+  onSaveSecret: (slot: "apiKey" | `header:${string}`, key: string) => void;
   onClearSecret: (slot: "apiKey" | `header:${string}`) => void;
 }) {
   const apiKeyInputKey = `${provider.id}:apiKey`;
@@ -485,9 +473,7 @@ function ProviderCard({
       </div>
 
       {provider.models.length > 0 && (
-        <div className="mb-3 text-xs text-zinc-400">
-          Models: {provider.models.join(", ")}
-        </div>
+        <div className="mb-3 text-xs text-zinc-400">Models: {provider.models.join(", ")}</div>
       )}
 
       <SecretRow
@@ -499,9 +485,7 @@ function ProviderCard({
         }
         present={apiKeyPresent}
         value={secretInputs[apiKeyInputKey] ?? ""}
-        setValue={(v) =>
-          setSecretInputs((prev) => ({ ...prev, [apiKeyInputKey]: v }))
-        }
+        setValue={(v) => setSecretInputs((prev) => ({ ...prev, [apiKeyInputKey]: v }))}
         onSave={() => onSaveSecret("apiKey", apiKeyInputKey)}
         onClear={() => onClearSecret("apiKey")}
       />
@@ -513,9 +497,7 @@ function ProviderCard({
           helper="Custom header value."
           present={h.present}
           value={secretInputs[h.inputKey] ?? ""}
-          setValue={(v) =>
-            setSecretInputs((prev) => ({ ...prev, [h.inputKey]: v }))
-          }
+          setValue={(v) => setSecretInputs((prev) => ({ ...prev, [h.inputKey]: v }))}
           onSave={() => onSaveSecret(h.slot, h.inputKey)}
           onClear={() => onClearSecret(h.slot)}
         />
@@ -552,12 +534,10 @@ function SecretRow({
       </div>
       <p className="mb-2 text-xs text-zinc-500">{helper}</p>
       <div className="flex gap-2">
-        <input
-          type="password"
+        <MaskedInput
           value={value}
           placeholder={present ? "Enter a new value to replace" : ""}
-          onChange={(e) => setValue(e.target.value)}
-          className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-zinc-500"
+          onChange={setValue}
         />
         <button
           onClick={onSave}

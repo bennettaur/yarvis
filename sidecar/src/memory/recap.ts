@@ -29,10 +29,7 @@ export function dateRange(range: RecapRange, now: Date = new Date()): RecapWindo
  * captured in the window. Also serves as the fallback recap when no LLM is
  * configured.
  */
-export function assembleRecapContext(
-  tasks: Task[],
-  notes: MemoryRecord[],
-): string {
+export function assembleRecapContext(tasks: Task[], notes: MemoryRecord[]): string {
   const parts: string[] = [];
 
   parts.push("Completed tasks:");

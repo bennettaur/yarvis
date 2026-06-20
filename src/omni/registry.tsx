@@ -2,13 +2,16 @@ import { defineRegistry } from "@json-render/react";
 import AlarmsPanel from "../components/AlarmsPanel";
 import CalendarPanel from "../components/CalendarPanel";
 import ChatPanel from "../components/ChatPanel";
+import DayTimeline from "../components/calendar/DayTimeline";
+import MonthView from "../components/calendar/MonthView";
+import WeekView from "../components/calendar/WeekView";
 import Dashboard from "../components/Dashboard";
 import MemoryPanel from "../components/MemoryPanel";
+import PrsPanel from "../components/PrsPanel";
 import PrChecks from "../components/pr/PrChecks";
 import PrDescription from "../components/pr/PrDescription";
 import PrFileDiffs from "../components/pr/PrFileDiffs";
 import PrFileList from "../components/pr/PrFileList";
-import PrsPanel from "../components/PrsPanel";
 import SessionsPanel from "../components/SessionsPanel";
 import TasksPanel from "../components/TasksPanel";
 import TerminalPanel from "../components/TerminalPanel";
@@ -49,17 +52,28 @@ const { registry } = defineRegistry(catalog, {
         <CalendarPanel />
       </WidgetFrame>
     ),
+    CalendarWeek: ({ props }) => (
+      <WidgetFrame title={props.title ?? "Week"} name="CalendarWeek" height={props.height}>
+        <WeekView />
+      </WidgetFrame>
+    ),
+    CalendarMonth: ({ props }) => (
+      <WidgetFrame title={props.title ?? "Month"} name="CalendarMonth" height={props.height}>
+        <MonthView />
+      </WidgetFrame>
+    ),
+    CalendarDay: ({ props }) => (
+      <WidgetFrame title={props.title ?? "Day"} name="CalendarDay" height={props.height}>
+        <DayTimeline orientation={props.orientation} />
+      </WidgetFrame>
+    ),
     Memory: ({ props }) => (
       <WidgetFrame title={props.title ?? "Memory"} name="Memory" height={props.height}>
         <MemoryPanel />
       </WidgetFrame>
     ),
     PullRequests: ({ props }) => (
-      <WidgetFrame
-        title={props.title ?? "Pull Requests"}
-        name="PullRequests"
-        height={props.height}
-      >
+      <WidgetFrame title={props.title ?? "Pull Requests"} name="PullRequests" height={props.height}>
         <PrsPanel />
       </WidgetFrame>
     ),
@@ -69,7 +83,9 @@ const { registry } = defineRegistry(catalog, {
         name="PrDescription"
         height={props.height}
       >
-        <PrDescription owner={props.owner} repo={props.repo} number={props.number} />
+        <PrDescription
+          prRef={{ provider: "github", owner: props.owner, repo: props.repo, number: props.number }}
+        />
       </WidgetFrame>
     ),
     PrChecks: ({ props }) => (
@@ -78,7 +94,9 @@ const { registry } = defineRegistry(catalog, {
         name="PrChecks"
         height={props.height}
       >
-        <PrChecks owner={props.owner} repo={props.repo} number={props.number} />
+        <PrChecks
+          prRef={{ provider: "github", owner: props.owner, repo: props.repo, number: props.number }}
+        />
       </WidgetFrame>
     ),
     PrFileList: ({ props }) => (
@@ -87,7 +105,9 @@ const { registry } = defineRegistry(catalog, {
         name="PrFileList"
         height={props.height}
       >
-        <PrFileList owner={props.owner} repo={props.repo} number={props.number} />
+        <PrFileList
+          prRef={{ provider: "github", owner: props.owner, repo: props.repo, number: props.number }}
+        />
       </WidgetFrame>
     ),
     PrFileDiffs: ({ props }) => (
@@ -96,7 +116,9 @@ const { registry } = defineRegistry(catalog, {
         name="PrFileDiffs"
         height={props.height}
       >
-        <PrFileDiffs owner={props.owner} repo={props.repo} number={props.number} />
+        <PrFileDiffs
+          prRef={{ provider: "github", owner: props.owner, repo: props.repo, number: props.number }}
+        />
       </WidgetFrame>
     ),
     Sessions: ({ props }) => (
@@ -121,9 +143,7 @@ const { registry } = defineRegistry(catalog, {
     ),
     Terminal: ({ props }) => (
       <WidgetFrame title={props.title ?? "Terminal"}>
-        <TerminalPanel
-          sessionId={props.sessionId ? `omni:${props.sessionId}` : undefined}
-        />
+        <TerminalPanel sessionId={props.sessionId ? `omni:${props.sessionId}` : undefined} />
       </WidgetFrame>
     ),
   },

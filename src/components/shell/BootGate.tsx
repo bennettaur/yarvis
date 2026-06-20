@@ -30,7 +30,7 @@ export default function BootGate({ children }: { children: React.ReactNode }) {
   const [phase, setPhase] = useState<Phase>("connecting");
   const [detail, setDetail] = useState<string | null>(null);
   const [slow, setSlow] = useState(false);
-  const [attempt, setAttempt] = useState(0);
+  const [_attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -62,13 +62,13 @@ export default function BootGate({ children }: { children: React.ReactNode }) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [attempt]);
+  }, []);
 
   useEffect(() => {
     if (phase === "ready" || phase === "error") return;
     const t = setTimeout(() => setSlow(true), SLOW_AFTER_MS);
     return () => clearTimeout(t);
-  }, [phase, attempt]);
+  }, [phase]);
 
   const retry = useCallback(async () => {
     setDetail(null);
