@@ -50,6 +50,13 @@
       "when": 1781357586474,
       "tag": "0006_loud_cannonball",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1781586857854,
+      "tag": "0007_narrow_wallop",
+      "breakpoints": true
     }
   ]
 }

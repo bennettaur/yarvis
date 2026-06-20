@@ -132,7 +132,7 @@ export function createChatRoutes(config: Config): Hono {
     if (screenContext) messages.push({ role: "user", content: screenContext });
     messages.push({ role: "user", content: message });
 
-    const memory = new PgVectorMemoryStore(dbh, chooseEmbedder(config));
+    const memory = new PgVectorMemoryStore(dbh, await chooseEmbedder(config, dbh));
 
     const attention = newAttentionState();
 

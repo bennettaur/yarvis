@@ -1,5 +1,6 @@
 import CustomProviderSection from "./CustomProviderSection";
-import SecretsSection from "./SecretsSection";
+import EmbeddingsSection from "./EmbeddingsSection";
+import KeychainSection from "./KeychainSection";
 
 /**
  * The Settings tab — where the user configures credentials and custom LLM
@@ -8,8 +9,9 @@ import SecretsSection from "./SecretsSection";
 export default function SettingsPanel() {
   return (
     <div className="space-y-6">
-      <SecretsSection />
+      <KeychainSection />
       <CustomProviderSection />
+      <EmbeddingsSection />
     </div>
   );
 }

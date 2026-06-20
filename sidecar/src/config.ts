@@ -59,6 +59,31 @@ export interface Config {
   secrets: ProviderSecrets;
   /** Keyed by custom provider id from the database. */
   customProviderSecrets: Record<string, CustomProviderSecrets>;
+  /**
+   * Credentials for the active embeddings provider. Same shape as a custom
+   * provider's secrets (the embeddings proxy may need an API key and/or custom
+   * headers; a local Ollama server needs neither). Injected via the
+   * YARVIS_EMBEDDINGS_SECRETS env var.
+   */
+  embeddingsSecrets: CustomProviderSecrets;
+}
+
+/** Parses one `{ apiKey?, headers }` secret bundle from untrusted JSON. */
+function parseSecretEntry(entry: unknown): CustomProviderSecrets {
+  if (!entry || typeof entry !== "object") return { headers: {} };
+  const obj = entry as Record<string, unknown>;
+  const headers: Record<string, string> =
+    obj.headers && typeof obj.headers === "object"
+      ? Object.fromEntries(
+          Object.entries(obj.headers as Record<string, unknown>).filter(
+            (kv): kv is [string, string] => typeof kv[1] === "string",
+          ),
+        )
+      : {};
+  return {
+    apiKey: typeof obj.apiKey === "string" ? obj.apiKey : undefined,
+    headers,
+  };
 }
 
 function parseCustomProviderSecrets(
@@ -69,28 +94,36 @@ function parseCustomProviderSecrets(
   try {
     parsed = JSON.parse(raw);
   } catch (e) {
-    console.warn("[config] YARVIS_CUSTOM_PROVIDER_SECRETS is not valid JSON:", e);
+    // Log only the error name — a JSON.parse message can echo a fragment of the
+    // offending input, which here is secret material.
+    console.warn(
+      "[config] YARVIS_CUSTOM_PROVIDER_SECRETS is not valid JSON:",
+      e instanceof Error ? e.name : "parse error",
+    );
     return {};
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
   const out: Record<string, CustomProviderSecrets> = {};
   for (const [id, entry] of Object.entries(parsed as Record<string, unknown>)) {
     if (!entry || typeof entry !== "object") continue;
-    const e = entry as Record<string, unknown>;
-    const headers: Record<string, string> =
-      e.headers && typeof e.headers === "object"
-        ? Object.fromEntries(
-            Object.entries(e.headers as Record<string, unknown>).filter(
-              (kv): kv is [string, string] => typeof kv[1] === "string",
-            ),
-          )
-        : {};
-    out[id] = {
-      apiKey: typeof e.apiKey === "string" ? e.apiKey : undefined,
-      headers,
-    };
+    out[id] = parseSecretEntry(entry);
   }
   return out;
+}
+
+/** Parses the single `{ apiKey?, headers }` bundle for the embeddings provider. */
+function parseEmbeddingsSecrets(raw: string | undefined): CustomProviderSecrets {
+  if (!raw) return { headers: {} };
+  try {
+    return parseSecretEntry(JSON.parse(raw));
+  } catch (e) {
+    // Log only the error name; the parse message can echo secret material.
+    console.warn(
+      "[config] YARVIS_EMBEDDINGS_SECRETS is not valid JSON:",
+      e instanceof Error ? e.name : "parse error",
+    );
+    return { headers: {} };
+  }
 }
 
 function parseOrigins(raw: string | undefined): string[] | null {
@@ -124,5 +157,6 @@ export function loadConfig(): Config {
       googleClientSecret: env.GOOGLE_CLIENT_SECRET,
     },
     customProviderSecrets: parseCustomProviderSecrets(env.YARVIS_CUSTOM_PROVIDER_SECRETS),
+    embeddingsSecrets: parseEmbeddingsSecrets(env.YARVIS_EMBEDDINGS_SECRETS),
   };
 }

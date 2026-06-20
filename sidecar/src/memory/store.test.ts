@@ -1,8 +1,9 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
+import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
-import { HashEmbedder } from "./embedder.ts";
+import { chooseEmbedder, HashEmbedder } from "./embedder.ts";
 import { PgVectorMemoryStore } from "./index.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -10,8 +11,20 @@ const sql = postgres(url, { max: 1 });
 const db = drizzle(sql, { schema });
 const store = new PgVectorMemoryStore(db, new HashEmbedder());
 
+const baseConfig: Config = {
+  port: 0,
+  token: "t",
+  tokenGenerated: true,
+  allowedOrigins: null,
+  databaseUrl: url,
+  secrets: {},
+  customProviderSecrets: {},
+  embeddingsSecrets: { headers: {} },
+};
+
 beforeEach(async () => {
   await sql`TRUNCATE memories RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE embeddings_config RESTART IDENTITY CASCADE`;
 });
 
 afterAll(async () => {
@@ -59,5 +72,53 @@ describe("pgvector memory store", () => {
     const notes = await store.list({ type: "note" });
     expect(notes.length).toBe(2);
     expect(notes.every((n) => (n.metadata as any).type === "note")).toBe(true);
+  });
+
+  it("stamps the producing embedder onto each memory", async () => {
+    const rec = await store.add("stamped");
+    const got = await store.get(rec.id);
+    expect((got!.metadata as any).embedder).toEqual({
+      kind: "hash",
+      model: "hash",
+      dim: schema.EMBED_DIM,
+    });
+  });
+
+  it("reports healthy when all memories match the active embedder", async () => {
+    await store.add("one");
+    await store.add("two");
+    const health = await store.embedderHealth();
+    expect(health.ok).toBe(true);
+    expect(health.mismatchedCount).toBe(0);
+    expect(health.active.kind).toBe("hash");
+  });
+
+  it("flags a mismatch and clears it after re-embedding", async () => {
+    const rec = await store.add("legacy memory");
+    // Simulate a vector produced by a different embedder.
+    await sql`
+      UPDATE memories
+      SET metadata = jsonb_set(metadata, '{embedder}',
+        '{"kind":"gemini","model":"text-embedding-004","dim":768}'::jsonb)
+      WHERE id = ${rec.id}`;
+
+    const before = await store.embedderHealth();
+    expect(before.ok).toBe(false);
+    expect(before.mismatchedCount).toBe(1);
+
+    const count = await store.reembedAll();
+    expect(count).toBe(1);
+
+    const after = await store.embedderHealth();
+    expect(after.ok).toBe(true);
+  });
+
+  it("rejects a configured embedder whose dimension doesn't match the column", async () => {
+    // A row with the wrong dimension shouldn't normally exist (the PUT route
+    // rejects it), but chooseEmbedder guards against it regardless.
+    await sql`
+      INSERT INTO embeddings_config (base_url, model, api_kind, dimensions)
+      VALUES ('http://localhost:11434/v1', 'wrong-dims', 'openai', ${schema.EMBED_DIM + 1})`;
+    expect(chooseEmbedder(baseConfig, db)).rejects.toThrow(/dimension/i);
   });
 });

@@ -51,12 +51,30 @@ Secrets are entered in the app's **Settings** screen and stored in the macOS
 Keychain — not in env files: the database URL, provider keys (Anthropic,
 Gemini), a GitHub token and/or an Azure DevOps token + organization URL (for the
 PR dashboard + embedded review — either provider can back it, selected with a
-toggle in the PRs tab), and a Google Cloud OAuth client id/secret (for the
-Calendar integration). AWS Bedrock uses the standard AWS credential chain.
+toggle in the PRs tab), a Google Cloud OAuth client id/secret (for the Calendar
+integration), and an optional embeddings-provider secret (an API key and/or
+custom header values for an OpenAI-compatible embeddings endpoint). AWS Bedrock
+uses the standard AWS credential chain.
 
 The Azure DevOps token is a Personal Access Token with **Code (read)** and
 **Pull Request Threads (read & write)** scopes; the organization URL is the
 `https://dev.azure.com/your-org` base (project is chosen per search).
+
+### Embeddings
+
+The `memories.embedding` column is `vector(1536)`, and the active embedder's
+output dimension must match it (the model's output is truncated to it). Configure
+an embeddings provider under **Settings → Embeddings**: an OpenAI-compatible
+endpoint — a LiteLLM gateway fronting Gemini, or a Qwen3 embedding server (base
+URL e.g. `http://localhost:4000/v1`, model e.g. `gemini-embedding-001`). Without
+one, Yarvis uses Gemini directly when keyed, otherwise an offline hash embedder.
+Each memory records the embedder identity (kind/model/dim) so a provider or
+dimension change is detected and surfaced as a "re-embed needed" warning.
+
+Note: the embeddings migration sets the column to `vector(1536)` and **clears
+existing embeddings** (memory *content* is preserved). After upgrading, configure
+a provider and run **Re-embed all** in Settings (or `POST /api/memory/reembed`)
+to regenerate vectors.
 
 All secrets live in a **single** Keychain item (one JSON object), rather than
 one item per secret. macOS authorizes Keychain access per item, so consolidating

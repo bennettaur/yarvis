@@ -14,6 +14,7 @@ const config: Config = {
   databaseUrl: url,
   secrets: {},
   customProviderSecrets: {},
+  embeddingsSecrets: { headers: {} },
 };
 const app = createApp(config);
 const auth = { Authorization: "Bearer test-token" };

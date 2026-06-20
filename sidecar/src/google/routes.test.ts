@@ -13,6 +13,7 @@ const config: Config = {
   databaseUrl: "postgres://localhost/unused",
   secrets: { googleClientId: "cid", googleClientSecret: "secret" },
   customProviderSecrets: {},
+  embeddingsSecrets: { headers: {} },
 };
 const app = createApp(config);
 const auth = { Authorization: "Bearer test-token" };
