@@ -10,7 +10,7 @@ describe("base32Decode", () => {
   });
 
   it("is tolerant of lowercase, spaces, and padding", () => {
-    expect(base32Decode("ge zd gn==".replace(/ /g, " "))).toEqual(base32Decode("GEZDGN"));
+    expect(base32Decode("ge zd gn==".replace(/ /g, ""))).toEqual(base32Decode("GEZDGN"));
   });
 
   it("rejects invalid characters", () => {
