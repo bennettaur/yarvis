@@ -8,7 +8,7 @@ use std::net::TcpListener;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rand::RngCore;
+use rand::Rng;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 use tokio::process::Command;
