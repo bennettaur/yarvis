@@ -20,6 +20,7 @@ const baseConfig: Config = {
   secrets: {},
   customProviderSecrets: {},
   embeddingsSecrets: { headers: {} },
+  telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
 };
 
 beforeEach(async () => {

@@ -3,7 +3,12 @@ import postgres from "postgres";
 import type { Config } from "../config.ts";
 import { createCustomProvider } from "../customProviders/service.ts";
 import { getDb } from "../db/client.ts";
-import { availableProviders, CUSTOM_PROVIDER_PREFIX, resolveModel } from "./providers.ts";
+import {
+  availableProviders,
+  CUSTOM_PROVIDER_PREFIX,
+  defaultProviderModel,
+  resolveModel,
+} from "./providers.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -19,6 +24,7 @@ function configWithSecrets(secrets: Config["customProviderSecrets"] = {}): Confi
     secrets: {},
     customProviderSecrets: secrets,
     embeddingsSecrets: { headers: {} },
+    telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
   };
 }
 
@@ -64,6 +70,31 @@ describe("availableProviders", () => {
     expect(providers.find((p) => p.id === `${CUSTOM_PROVIDER_PREFIX}${row.id}`)?.available).toBe(
       false,
     );
+  });
+});
+
+describe("defaultProviderModel", () => {
+  it("prefers a configured key provider over always-available Bedrock", async () => {
+    // Bedrock reports available unconditionally; with only a Gemini key set the
+    // default must still be Gemini, not Bedrock.
+    const config: Config = { ...configWithSecrets(), secrets: { geminiApiKey: "x" } };
+    const result = await defaultProviderModel(config);
+    expect(result?.provider).toBe("gemini");
+    expect(result?.model).toBeTruthy();
+  });
+
+  it("prefers Anthropic when both Anthropic and Gemini are configured", async () => {
+    const config: Config = {
+      ...configWithSecrets(),
+      secrets: { anthropicApiKey: "a", geminiApiKey: "g" },
+    };
+    const result = await defaultProviderModel(config);
+    expect(result?.provider).toBe("anthropic");
+  });
+
+  it("falls back to Bedrock when no other provider is configured", async () => {
+    const result = await defaultProviderModel(configWithSecrets());
+    expect(result?.provider).toBe("bedrock");
   });
 });
 

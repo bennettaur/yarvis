@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type ChatMessage,
+  type ChatMessageMetadata,
   createSession,
   getMessages,
   listProviders,
@@ -9,10 +10,11 @@ import {
   streamChat,
 } from "./chat";
 
-/** A rendered message: the persisted role plus its text. */
+/** A rendered message: the persisted role, its text, and optional provenance. */
 export interface ThreadMessage {
   role: string;
   content: string;
+  metadata?: ChatMessageMetadata | null;
 }
 
 // Shared with ChatPanel so Omni Chat defaults to the same provider/model the
@@ -51,7 +53,9 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     setSessionId(id);
     try {
       const msgs = await getMessages(id);
-      setMessages(msgs.map((m: ChatMessage) => ({ role: m.role, content: m.content })));
+      setMessages(
+        msgs.map((m: ChatMessage) => ({ role: m.role, content: m.content, metadata: m.metadata })),
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }

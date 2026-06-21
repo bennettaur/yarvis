@@ -57,6 +57,27 @@
       "when": 1781586857854,
       "tag": "0007_narrow_wallop",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1781962187355,
+      "tag": "0008_smooth_liz_osborn",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1781987505698,
+      "tag": "0009_tough_hulk",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1781988606480,
+      "tag": "0010_flowery_micromacro",
+      "breakpoints": true
     }
   ]
 }

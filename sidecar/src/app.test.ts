@@ -13,6 +13,7 @@ function testConfig(overrides: Partial<Config> = {}): Config {
     secrets: {},
     customProviderSecrets: {},
     embeddingsSecrets: { headers: {} },
+    telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
     ...overrides,
   };
 }

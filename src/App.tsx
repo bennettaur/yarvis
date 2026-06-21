@@ -20,6 +20,7 @@ import { type Alarm, onAlarmFired } from "./lib/alarms";
 import { notify } from "./lib/notify";
 import { onOmniChatSummon } from "./lib/omniChat";
 import { useOmniChatContext } from "./lib/omniChatContext";
+import { useTelegramSecurityAlerts } from "./lib/useTelegramSecurityAlerts";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("chat");
@@ -28,6 +29,9 @@ export default function App() {
   const [attention, setAttention] = useState<string | null>(null);
 
   useTabShortcuts(tab, setTab);
+
+  // Surface Telegram unlock/failed/lockout activity as OS notifications, app-wide.
+  useTelegramSecurityAlerts();
 
   // Baseline context: every view contributes at least its tab name, so Omni
   // Chat always knows roughly where the user is even before a view is wired up.
