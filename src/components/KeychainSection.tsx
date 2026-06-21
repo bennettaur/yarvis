@@ -29,7 +29,7 @@ async function restartAndWait(): Promise<void> {
  * token, Google OAuth credentials). Values live in the macOS Keychain; saving
  * reloads the sidecar so changes take effect immediately.
  */
-export default function SecretsSection() {
+export default function KeychainSection() {
   const [secrets, setSecrets] = useState<SecretStatus[]>([]);
   const [inputs, setInputs] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);

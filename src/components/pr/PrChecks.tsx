@@ -1,7 +1,6 @@
-import type { CheckItem } from "../../lib/github";
-import { usePrDetail } from "../../lib/githubCache";
+import { usePrDetail } from "../../lib/pr/cache";
+import type { CheckItem, PrRef } from "../../lib/pr/types";
 import { openExternal } from "../../lib/url";
-import type { PrRef } from "./shared";
 
 function checkColor(check: CheckItem): string {
   if (check.status !== "COMPLETED") return "text-amber-400";
@@ -18,8 +17,8 @@ function checkGlyph(check: CheckItem): string {
 }
 
 /** CI/check status for one PR, read from the shared detail cache. */
-export default function PrChecks({ owner, repo, number }: PrRef) {
-  const { data, error, loading } = usePrDetail(owner, repo, number);
+export default function PrChecks({ prRef }: { prRef: PrRef }) {
+  const { data, error, loading } = usePrDetail(prRef);
 
   if (error) return <p className="text-sm text-red-400">{error}</p>;
   if (loading || !data) return <p className="text-sm text-zinc-500">Loading…</p>;

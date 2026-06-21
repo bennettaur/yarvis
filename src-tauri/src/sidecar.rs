@@ -8,7 +8,7 @@ use std::net::TcpListener;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rand::RngCore;
+use rand::Rng;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 use tokio::process::Command;
@@ -107,6 +107,13 @@ fn build_command(_app: &AppHandle, port: u16, token: &str) -> Command {
     cmd.env("YARVIS_SIDECAR_TOKEN", token);
     cmd.env("YARVIS_ALLOWED_ORIGINS", ALLOWED_ORIGINS);
 
+    // Forward the memory/embedding debug flag when the app was launched with it
+    // (e.g. `YARVIS_DEBUG_MEMORY=1 bun run tauri dev`), so the sidecar traces
+    // embedder selection and provider calls to stdout.
+    if let Ok(value) = std::env::var("YARVIS_DEBUG_MEMORY") {
+        cmd.env("YARVIS_DEBUG_MEMORY", value);
+    }
+
     // Read the single secrets item once; one Keychain access covers every
     // value injected below.
     let secrets = read_root();
@@ -122,15 +129,37 @@ fn build_command(_app: &AppHandle, port: u16, token: &str) -> Command {
     if let Some(token) = secret_from_root(&secrets, "github_token") {
         cmd.env("GITHUB_TOKEN", token);
     }
+    if let Some(token) = secret_from_root(&secrets, "azure_devops_token") {
+        cmd.env("AZURE_DEVOPS_TOKEN", token);
+    }
+    if let Some(url) = secret_from_root(&secrets, "azure_devops_org_url") {
+        cmd.env("AZURE_DEVOPS_ORG_URL", url);
+    }
     if let Some(id) = secret_from_root(&secrets, "google_client_id") {
         cmd.env("GOOGLE_CLIENT_ID", id);
     }
     if let Some(secret) = secret_from_root(&secrets, "google_client_secret") {
         cmd.env("GOOGLE_CLIENT_SECRET", secret);
     }
+    if let Some(token) = secret_from_root(&secrets, "telegram_bot_token") {
+        cmd.env("TELEGRAM_BOT_TOKEN", token);
+    }
+    if let Some(ids) = secret_from_root(&secrets, "telegram_allowed_chat_ids") {
+        cmd.env("TELEGRAM_ALLOWED_CHAT_IDS", ids);
+    }
+    if let Some(secret) = secret_from_root(&secrets, "telegram_otp_secret") {
+        cmd.env("TELEGRAM_OTP_SECRET", secret);
+    }
+    if let Some(minutes) = secret_from_root(&secrets, "telegram_otp_window_minutes") {
+        cmd.env("TELEGRAM_OTP_WINDOW_MINUTES", minutes);
+    }
 
     if let Some(json) = build_sidecar_env(&secrets) {
         cmd.env("YARVIS_CUSTOM_PROVIDER_SECRETS", json);
+    }
+
+    if let Some(json) = crate::embeddings_secrets::build_sidecar_env() {
+        cmd.env("YARVIS_EMBEDDINGS_SECRETS", json);
     }
 
     // Ensure the child dies with the parent rather than lingering.

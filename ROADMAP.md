@@ -16,22 +16,31 @@ Status of the build against the original vision. The full V1 plan lives at
   session + message persistence.
 - **Work tracking** — daily/weekly tasks driven by chat tool-calls
   ("I plan to…", "what's left?", roll yesterday forward) plus a Tasks UI.
-- **Memory** — `MemoryService` over pgvector with remember/recall tools in chat
-  (Gemini embeddings when keyed, offline hash-embedding fallback).
+- **Memory** — `MemoryService` over pgvector with remember/recall tools in chat.
+  Embeddings come from a configurable OpenAI-compatible provider (an internal
+  proxy or a local Ollama server), with Gemini as a fallback when keyed and the
+  column dimension is 768, and an offline hash embedder otherwise. The column is
+  `vector(1024)`; each memory records the embedder identity (kind/model/dim), so
+  a provider or dimension change is detected and surfaced as a "re-embed needed"
+  health warning in Settings (with a re-embed action).
 - **Claude Code session introspection** — browse `~/.claude` projects, session
   transcripts, and plans (Sessions tab).
-- **GitHub PR dashboard** — my PRs and review-requested, split into tabs and
-  grouped by owner/repo, newest-first; each row is clickable into the in-app
-  review and shows a draft label, CI/merge status, and relative dates. Stars and
-  saved filters too (PRs tab).
+- **PR dashboard (GitHub + Azure DevOps)** — my PRs and review-requested, split
+  into tabs and grouped by repo, newest-first; each row is clickable into the
+  in-app review and shows a draft label, CI/merge status, and relative dates.
+  Stars and saved filters too. A provider toggle switches between GitHub and
+  Azure DevOps, which share one provider-agnostic UI (PRs tab).
 - **Alarms** — full-screen takeover + escalating sound/notification, with
   acknowledge/snooze (Alarms tab).
-- **Embedded PR review** — in-app PR detail view built from the GitHub GraphQL
-  API (description, normalized checks, review threads) plus REST file diffs,
-  rendered with markdown and per-line diff coloring (PRs tab → row click).
-  Decomposed into reusable, prop-driven components (description+comments, checks,
-  changed-file list, file diffs) that share one cached fetch per PR; the detail
-  view places the changed-file list beside the diffs.
+- **Embedded PR review** — in-app PR detail view (description, normalized checks,
+  review threads, file diffs) rendered with markdown and per-line diff coloring
+  (PRs tab → row click). Decomposed into reusable, prop-driven components that
+  share one cached fetch per PR; the detail view places the changed-file list
+  beside the diffs and has a collapsible checks section. Works for both GitHub
+  (GraphQL + REST diffs) and Azure DevOps (REST; per-file diffs computed with
+  jsdiff since Azure has no unified-diff endpoint). Clicking a diff line opens a
+  composer that posts a single-line comment to the PR, and existing review
+  threads render inline at their line — for both providers.
 - **Memory & knowledge** — notes, daily/weekly recaps (tasks completed + notes,
   LLM-summarized or offline raw), document/URL ingestion (chunk → embed →
   store), and a management UI to search/delete (Memory tab). Reuses the
@@ -57,6 +66,32 @@ Status of the build against the original vision. The full V1 plan lives at
   and live in the core independent of the webview, so the shell survives tab
   switches and Omni re-renders (scrollback is captured and replayed on
   reattach). Available as a standalone Terminal tab and as an Omni widget.
+- **Omni Chat + keyboard navigation** — a global `Control+Shift+Space` hotkey
+  (registered in the Rust core) raises a centered chat overlay over any tab; Esc
+  hides it while the session keeps streaming in the background, and re-summoning
+  resumes the same persisted conversation. Each mounted view contributes a context
+  snapshot via the `useOmniChatContext` hook → a frontend page-context registry;
+  the active snapshot is sent to the agent as a nonce-delimited, non-instruction
+  screen-context message (kept out of the system prompt). A `request_attention`
+  tool lets the agent raise a nav-rail badge + an OS notification when it finishes
+  background work or needs a decision. Tab shortcuts too: Cmd/Ctrl+1–9 jump to a
+  tab, Cmd/Ctrl+Shift+[ / ] cycle through them.
+- **Telegram remote control** — chat with Yarvis and issue control commands from
+  Telegram. A long-poll bot in the sidecar drives the same chat agent (extracted
+  into a shared `runAgentTurn`), persists a chat→session mapping plus the chosen
+  provider/model (`telegram_chats`), and supports `/new_chat`, `/chats`,
+  `/switch`, `/model`, `/setmodel`, and `/whoami`. Access is gated by a chat-id
+  allowlist and restricted to private chats; the bot token + allowlist are stored
+  in the Keychain like other secrets. An optional TOTP second factor (`/unlock`)
+  gates the bot behind a time-boxed window with rate-limited lockout and desktop
+  alerts, to defend against Telegram-account takeover.
+- **Event log (Phase 2)** — a local, on-device trail of meaningful actions
+  (chat started, task created/completed via backend hooks; PR viewed and alarm
+  created from the UI), persisted to an `events` table and served over
+  `POST`/`GET /api/events`. Event types are a fixed allowlist; recording is
+  best-effort so a logging failure never breaks the triggering action. UI
+  navigation and Omni layouts are deliberately not events. Reconciling events
+  into memories is Phase 3 (not yet built).
 
 ## Remaining to build
 
@@ -100,8 +135,20 @@ The core is shipped; optional extensions remain.
   server on import and is mid-rewrite; if its graph/temporal features become
   worth it, run it as a standalone server and add an HTTP-backed `MemoryService`
   (the interface already supports swapping).
-- **Needs from you:** an embeddings key (Gemini/Bedrock) for good-quality
-  semantic recall on ingested docs; works offline at lower quality otherwise.
+- **Needs from you:** an embeddings provider for good-quality semantic recall —
+  either a local Ollama server (no key) or a proxy/Gemini key, configured in
+  Settings → Embeddings. Works offline via the hash embedder at lower quality
+  otherwise. (The current embedder path is OpenAI-compatible or Gemini; Bedrock
+  embeddings are not wired up.)
+
+### 4. Event reconciliation (Phase 3)
+The event log (Phase 2) records actions but nothing yet folds them into memory.
+- **Approach:** a periodic reconciliation pass scans unprocessed events
+  (`processed_at IS NULL`, oldest-first via `events_processed_occurred_idx`),
+  derives layered memories (e.g. a short summary referencing a PR or chat, plus
+  a daily rollup), and stamps `processed_at`. Plus a PR created/reviewed poller
+  that emits events, and a default summarization model setting.
+- **Builds on:** the shipped event log and the existing `MemoryService`.
 
 ## Cross-cutting / polish / tech debt
 
