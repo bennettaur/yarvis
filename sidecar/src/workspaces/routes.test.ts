@@ -295,7 +295,11 @@ describe("provision + archive (injected git runner)", () => {
     await provisionWorkspace(db, ws.id, () => {}, fakeGit);
 
     const failingGit: GitRunner = async (args) => {
-      if (args[0] === "worktree" && args[1] === "remove" && args[args.length - 1]?.includes("other")) {
+      if (
+        args[0] === "worktree" &&
+        args[1] === "remove" &&
+        args[args.length - 1]?.includes("other")
+      ) {
         return { stdout: "", stderr: "dirty", exitCode: 1 };
       }
       return { stdout: "", stderr: "", exitCode: 0 };
