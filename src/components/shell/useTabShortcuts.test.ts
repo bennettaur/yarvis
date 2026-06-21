@@ -13,7 +13,7 @@ const ev = (over: Partial<ShortcutEvent>): ShortcutEvent => ({
 describe("resolveTabShortcut", () => {
   it("jumps to the Nth top-level tab on Cmd/Ctrl+digit", () => {
     expect(resolveTabShortcut(ev({ metaKey: true, key: "1" }), "settings")).toBe("chat");
-    expect(resolveTabShortcut(ev({ metaKey: true, key: "5" }), "chat")).toBe("prs");
+    expect(resolveTabShortcut(ev({ metaKey: true, key: "5" }), "chat")).toBe("tasks");
     expect(resolveTabShortcut(ev({ ctrlKey: true, key: "3" }), "chat")).toBe("terminal");
   });
 
