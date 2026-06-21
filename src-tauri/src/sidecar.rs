@@ -141,6 +141,18 @@ fn build_command(_app: &AppHandle, port: u16, token: &str) -> Command {
     if let Some(secret) = secret_from_root(&secrets, "google_client_secret") {
         cmd.env("GOOGLE_CLIENT_SECRET", secret);
     }
+    if let Some(token) = secret_from_root(&secrets, "telegram_bot_token") {
+        cmd.env("TELEGRAM_BOT_TOKEN", token);
+    }
+    if let Some(ids) = secret_from_root(&secrets, "telegram_allowed_chat_ids") {
+        cmd.env("TELEGRAM_ALLOWED_CHAT_IDS", ids);
+    }
+    if let Some(secret) = secret_from_root(&secrets, "telegram_otp_secret") {
+        cmd.env("TELEGRAM_OTP_SECRET", secret);
+    }
+    if let Some(minutes) = secret_from_root(&secrets, "telegram_otp_window_minutes") {
+        cmd.env("TELEGRAM_OTP_WINDOW_MINUTES", minutes);
+    }
 
     if let Some(json) = build_sidecar_env(&secrets) {
         cmd.env("YARVIS_CUSTOM_PROVIDER_SECRETS", json);

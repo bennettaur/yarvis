@@ -9,7 +9,14 @@ export type SecretKey =
   | "azure_devops_org_url"
   | "database_url"
   | "google_client_id"
-  | "google_client_secret";
+  | "google_client_secret"
+  // Telegram remote control. These are managed by the dedicated TelegramSection
+  // rather than the generic Secrets list, so they are intentionally absent from
+  // the SECRETS array below.
+  | "telegram_bot_token"
+  | "telegram_allowed_chat_ids"
+  | "telegram_otp_secret"
+  | "telegram_otp_window_minutes";
 
 export interface SecretMeta {
   key: SecretKey;

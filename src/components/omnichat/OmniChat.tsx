@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ProviderId } from "../../lib/chat";
+import { messageLabel, type ProviderId } from "../../lib/chat";
 import { OMNI_CHAT_SESSION_KEY } from "../../lib/omniChat";
 import { collectContext, formatContext } from "../../lib/omniChatContext";
 import { useChatThread } from "../../lib/useChatThread";
@@ -148,7 +148,9 @@ export default function OmniChat({
           )}
           {messages.map((m, i) => (
             <div key={i} className="text-sm">
-              <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">{m.role}</div>
+              <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
+                {messageLabel(m.role, m.metadata)}
+              </div>
               <div className="whitespace-pre-wrap text-zinc-100">{m.content}</div>
             </div>
           ))}

@@ -76,6 +76,15 @@ Status of the build against the original vision. The full V1 plan lives at
   tool lets the agent raise a nav-rail badge + an OS notification when it finishes
   background work or needs a decision. Tab shortcuts too: Cmd/Ctrl+1–9 jump to a
   tab, Cmd/Ctrl+Shift+[ / ] cycle through them.
+- **Telegram remote control** — chat with Yarvis and issue control commands from
+  Telegram. A long-poll bot in the sidecar drives the same chat agent (extracted
+  into a shared `runAgentTurn`), persists a chat→session mapping plus the chosen
+  provider/model (`telegram_chats`), and supports `/new_chat`, `/chats`,
+  `/switch`, `/model`, `/setmodel`, and `/whoami`. Access is gated by a chat-id
+  allowlist and restricted to private chats; the bot token + allowlist are stored
+  in the Keychain like other secrets. An optional TOTP second factor (`/unlock`)
+  gates the bot behind a time-boxed window with rate-limited lockout and desktop
+  alerts, to defend against Telegram-account takeover.
 - **Event log (Phase 2)** — a local, on-device trail of meaningful actions
   (chat started, task created/completed via backend hooks; PR viewed and alarm
   created from the UI), persisted to an `events` table and served over

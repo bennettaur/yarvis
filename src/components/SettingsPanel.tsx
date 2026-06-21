@@ -1,6 +1,7 @@
 import CustomProviderSection from "./CustomProviderSection";
 import EmbeddingsSection from "./EmbeddingsSection";
 import KeychainSection from "./KeychainSection";
+import TelegramSection from "./TelegramSection";
 
 /**
  * The Settings tab — where the user configures credentials and custom LLM
@@ -12,6 +13,7 @@ export default function SettingsPanel() {
       <KeychainSection />
       <CustomProviderSection />
       <EmbeddingsSection />
+      <TelegramSection />
     </div>
   );
 }

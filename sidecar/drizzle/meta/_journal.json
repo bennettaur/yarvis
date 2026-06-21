@@ -61,8 +61,29 @@
     {
       "idx": 8,
       "version": "7",
-      "when": 1781961564040,
-      "tag": "0008_soft_roulette",
+      "when": 1781962187355,
+      "tag": "0008_smooth_liz_osborn",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1781987505698,
+      "tag": "0009_tough_hulk",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1781988606480,
+      "tag": "0010_flowery_micromacro",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1782064537076,
+      "tag": "0011_little_hemingway",
       "breakpoints": true
     }
   ]

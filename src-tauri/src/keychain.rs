@@ -31,6 +31,10 @@ pub const SECRET_KEYS: &[&str] = &[
     "database_url",
     "google_client_id",
     "google_client_secret",
+    "telegram_bot_token",
+    "telegram_allowed_chat_ids",
+    "telegram_otp_secret",
+    "telegram_otp_window_minutes",
 ];
 
 #[derive(Serialize)]

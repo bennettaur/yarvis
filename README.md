@@ -18,8 +18,10 @@ Three processes with a clean ownership split:
   core via `invoke` (native + secrets) and to the sidecar over authenticated
   loopback HTTP (data + AI).
 - **Bun sidecar** (`sidecar/`) — a Hono HTTP service that owns Postgres access
-  (Drizzle ORM), LLM calls, and memory. Runs `src/server.ts` directly with Bun
-  in development; compiled to a single binary for distribution.
+  (Drizzle ORM), LLM calls, and memory. It also hosts an optional **Telegram
+  remote-control bot** (a long-poll loop that drives the same chat agent). Runs
+  `src/server.ts` directly with Bun in development; compiled to a single binary
+  for distribution.
 
 Data lives in a local **PostgreSQL + pgvector**.
 
@@ -52,9 +54,11 @@ Keychain — not in env files: the database URL, provider keys (Anthropic,
 Gemini), a GitHub token and/or an Azure DevOps token + organization URL (for the
 PR dashboard + embedded review — either provider can back it, selected with a
 toggle in the PRs tab), a Google Cloud OAuth client id/secret (for the Calendar
-integration), and an optional embeddings-provider secret (an API key and/or
-custom header values for an OpenAI-compatible embeddings endpoint). AWS Bedrock
-uses the standard AWS credential chain.
+integration), an optional embeddings-provider secret (an API key and/or
+custom header values for an OpenAI-compatible embeddings endpoint), and an
+optional Telegram bot token + allowed chat-id list (and, when the optional second
+factor is enabled, a TOTP secret + re-auth window) for the remote-control bot,
+see below. AWS Bedrock uses the standard AWS credential chain.
 
 The Azure DevOps token is a Personal Access Token with **Code (read)** and
 **Pull Request Threads (read & write)** scopes; the organization URL is the
@@ -98,6 +102,46 @@ Console and register the loopback redirect
 for Desktop clients), then enter the client id/secret in Settings and connect
 from the Calendar tab. See `ROADMAP.md` for the full verification steps.
 
+### Telegram remote control
+
+Chat with Yarvis — and issue control commands — from Telegram. The sidecar runs
+a bot that drives the same chat agent as the in-app UI; it requires a configured
+database and at least one LLM provider.
+
+Setup:
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) and copy its HTTP API
+   token (format `123456:ABC-DEF...`).
+2. Enter it under **Settings → Telegram** (stored in the Keychain; saving
+   reloads the sidecar to pick it up).
+3. Message your bot `/whoami` — it replies with your chat id. Until at least one
+   id is on the allowlist the bot answers **only** `/whoami`; once the allowlist
+   is set it ignores any chat that isn't on it.
+4. Paste your chat id (comma-separated for several) into **Allowed chat ids** and
+   save.
+
+Access is restricted to **private** chats on the allowlist — the bot ignores
+groups, channels, and bot senders. Commands:
+
+- `/new_chat` — start a fresh chat session
+- `/chats` — list recent sessions; `/switch <n>` — switch the active one
+- `/model` — show the current provider/model and the available options
+- `/setmodel <provider> <model>` — reply using a specific provider/model
+- `/whoami` — show your chat id; `/help` — list commands
+
+#### Optional second factor (OTP)
+
+For defense against Telegram-account takeover (a stolen session or SIM swap, where
+the attacker *is* your allowlisted chat), enable a TOTP second factor under
+**Settings → Telegram → Two-factor unlock**. Yarvis generates a secret you add to
+an authenticator app (Authy, Google Authenticator, 1Password, …); after that the
+bot won't act until you send `/unlock <code>` to open a window (default 2h,
+configurable). `/lock` ends the window early. The window relocks on restart, codes
+are rate-limited with a lockout after repeated failures, your `/unlock` message is
+deleted so the code doesn't linger, and the app raises a desktop notification on
+each unlock/failed/lockout so you see access you didn't initiate. The code is
+verified in the sidecar; it never leaves your authenticator and laptop.
+
 ## Development
 
 ```bash
@@ -139,7 +183,8 @@ src-tauri/      Rust core (Tauri v2)
   src/alarms.rs     full-screen alarm scheduler
 sidecar/        Bun + TS service (Hono)
   src/db/       Drizzle schema, client, migrations (applied on startup)
-  src/chat/     multi-provider streaming chat + tool-calls
+  src/chat/     multi-provider streaming chat + tool-calls (agent.ts: shared agent turn)
+  src/telegram/ Telegram remote-control bot (long-poll loop, slash commands, chat→session map)
   src/tasks/    daily/weekly work tracking
   src/events/   local on-device event log (action trail; reconciled to memory later)
   src/memory/   pgvector memory, notes, ingestion, recaps

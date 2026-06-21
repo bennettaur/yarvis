@@ -88,6 +88,37 @@ export async function availableProviders(config: Config, db?: Db): Promise<Provi
   return [...built, ...rows.map(customProviderInfo)];
 }
 
+/**
+ * Picks a sensible default provider/model for callers that have no user
+ * selection to draw on (e.g. the Telegram bot, which can't see the frontend's
+ * localStorage). Returns the first available provider's first model, or null
+ * when nothing is configured. Built-ins are listed before custom providers, so
+ * a configured Anthropic/Gemini key wins before any proxy.
+ */
+export async function defaultProviderModel(
+  config: Config,
+  db?: Db,
+): Promise<{ provider: ProviderId; model: string } | null> {
+  return pickDefaultModel(await availableProviders(config, db));
+}
+
+/**
+ * Chooses a default provider/model from an already-fetched provider list, so
+ * callers that already hold the list don't re-query. Returns null when nothing
+ * is usable. Bedrock reports `available` unconditionally because its AWS
+ * credentials can't be cheaply probed, so it would otherwise win the default
+ * even when the user only configured, say, Gemini; prefer any other configured
+ * provider and fall back to Bedrock only when it is the sole option.
+ */
+export function pickDefaultModel(
+  providers: ProviderInfo[],
+): { provider: ProviderId; model: string } | null {
+  const usable = providers.filter((p) => p.available && p.models.length > 0);
+  if (usable.length === 0) return null;
+  const preferred = usable.find((p) => p.id !== "bedrock") ?? usable[0]!;
+  return { provider: preferred.id, model: preferred.models[0]! };
+}
+
 function resolveCustom(row: CustomProviderRow, config: Config, modelId: string): LanguageModel {
   // Defense-in-depth: the create/update routes already validate, but DB rows
   // can have been seeded by an earlier version, so re-check at resolve time.

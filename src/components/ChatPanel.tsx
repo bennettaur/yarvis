@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type ChatMessage,
+  type ChatMessageMetadata,
   type ChatSession,
   createSession,
   getMessages,
   listProviders,
   listSessions,
+  messageLabel,
   type ProviderId,
   type ProviderInfo,
   streamChat,
@@ -15,6 +17,7 @@ import ChatComposer from "./ChatComposer";
 interface Display {
   role: string;
   content: string;
+  metadata?: ChatMessageMetadata | null;
 }
 
 const PROVIDER_KEY = "yarvis.chat.provider";
@@ -72,7 +75,9 @@ export default function ChatPanel() {
   const selectSession = useCallback(async (id: string) => {
     setSessionId(id);
     const msgs = await getMessages(id);
-    setMessages(msgs.map((m: ChatMessage) => ({ role: m.role, content: m.content })));
+    setMessages(
+      msgs.map((m: ChatMessage) => ({ role: m.role, content: m.content, metadata: m.metadata })),
+    );
   }, []);
 
   const newChat = useCallback(async () => {
@@ -190,7 +195,9 @@ export default function ChatPanel() {
         )}
         {messages.map((m, i) => (
           <div key={i} className="text-sm">
-            <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">{m.role}</div>
+            <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
+              {messageLabel(m.role, m.metadata)}
+            </div>
             <div className="whitespace-pre-wrap text-zinc-100">{m.content}</div>
           </div>
         ))}

@@ -1,4 +1,5 @@
 import {
+  bigint,
   date,
   index,
   integer,
@@ -32,6 +33,18 @@ export const EMBED_DIM: number = 1536;
 
 export const messageRole = pgEnum("message_role", ["user", "assistant", "system", "tool"]);
 
+/**
+ * Optional provenance for a chat message. The in-app UI leaves it null; the
+ * Telegram bot sets it on the user messages it persists so the chat history can
+ * show that a message came from Telegram and which Telegram user sent it.
+ */
+export interface ChatMessageMetadata {
+  source?: "telegram";
+  telegramUserId?: number;
+  telegramUsername?: string;
+  telegramFirstName?: string;
+}
+
 export const taskStatus = pgEnum("task_status", ["open", "done"]);
 export const taskScope = pgEnum("task_scope", ["daily", "weekly"]);
 
@@ -50,7 +63,34 @@ export const chatMessages = pgTable("chat_messages", {
   role: messageRole("role").notNull(),
   content: text("content").notNull(),
   toolCalls: jsonb("tool_calls"),
+  // Provenance for the message (e.g. that it arrived via Telegram). Null for
+  // messages composed in the app.
+  metadata: jsonb("metadata").$type<ChatMessageMetadata>(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Maps a Telegram conversation to its active Yarvis chat session. The Telegram
+ * bot drives the same chat engine as the in-app UI, so each Telegram chat needs
+ * a stable pointer to "the session I'm currently talking to". Keyed by the
+ * Telegram chat id (a 64-bit integer) so the mapping survives sidecar restarts,
+ * which back the `/new-chat` and `/switch` commands. `activeSessionId` is null
+ * until the first message mints a session, and is set null if its session is
+ * deleted.
+ */
+export const telegramChats = pgTable("telegram_chats", {
+  // Telegram chat ids are 64-bit (user ids already exceed int4 range, and
+  // supergroup/channel ids are large negatives), so this must be bigint.
+  chatId: bigint("chat_id", { mode: "number" }).primaryKey(),
+  activeSessionId: uuid("active_session_id").references(() => chatSessions.id, {
+    onDelete: "set null",
+  }),
+  // Provider/model the chat replies with, chosen via /setmodel. Null means
+  // "use the configured default" (the first available provider).
+  provider: text("provider"),
+  model: text("model"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const tasks = pgTable("tasks", {
@@ -227,6 +267,8 @@ export type ChatSession = typeof chatSessions.$inferSelect;
 export type NewChatSession = typeof chatSessions.$inferInsert;
 export type ChatMessage = typeof chatMessages.$inferSelect;
 export type NewChatMessage = typeof chatMessages.$inferInsert;
+export type TelegramChat = typeof telegramChats.$inferSelect;
+export type NewTelegramChat = typeof telegramChats.$inferInsert;
 export type Task = typeof tasks.$inferSelect;
 export type NewTask = typeof tasks.$inferInsert;
 export type MemoryRow = typeof memories.$inferSelect;

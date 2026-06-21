@@ -26,6 +26,7 @@ function configWith(secrets: Partial<Config["secrets"]> = {}): Config {
     },
     customProviderSecrets: {},
     embeddingsSecrets: { headers: {} },
+    telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
   };
 }
 

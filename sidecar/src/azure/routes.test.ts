@@ -15,6 +15,7 @@ function appWith(secrets: Config["secrets"]): ReturnType<typeof createApp> {
     secrets,
     customProviderSecrets: {},
     embeddingsSecrets: { headers: {} },
+    telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
   });
 }
 
