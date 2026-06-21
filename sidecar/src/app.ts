@@ -7,6 +7,7 @@ import { createChatRoutes } from "./chat/routes.ts";
 import type { Config } from "./config.ts";
 import { createCustomProviderRoutes } from "./customProviders/routes.ts";
 import { pingDb } from "./db/client.ts";
+import { createEventRoutes } from "./events/routes.ts";
 import { createGithubRoutes } from "./github/routes.ts";
 import { createCalendarRoutes, createGoogleCallbackRoutes } from "./google/routes.ts";
 import { redactSecrets } from "./llm/errors.ts";
@@ -99,6 +100,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/github", createGithubRoutes(config));
   app.route("/api/azure", createAzureRoutes(config));
   app.route("/api/memory", createMemoryRoutes(config));
+  app.route("/api/events", createEventRoutes(config));
   app.route("/api/calendar", createCalendarRoutes(config));
   app.route("/api/omni", createOmniRoutes(config));
 

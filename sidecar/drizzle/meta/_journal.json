@@ -57,6 +57,13 @@
       "when": 1781586857854,
       "tag": "0007_narrow_wallop",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1781961564040,
+      "tag": "0008_soft_roulette",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,7 @@
 import { asc, desc, eq } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { type ChatMessage, type ChatSession, chatMessages, chatSessions } from "../db/schema.ts";
+import { emitEvent } from "../events/service.ts";
 
 /** Chat session + message persistence. */
 
@@ -9,6 +10,11 @@ export async function createSession(db: Db, title?: string | null): Promise<Chat
     .insert(chatSessions)
     .values({ title: title ?? null })
     .returning();
+  await emitEvent(db, {
+    type: "chat.started",
+    source: "chat",
+    payload: { sessionId: row!.id },
+  });
   return row!;
 }
 

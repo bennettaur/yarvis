@@ -1,5 +1,6 @@
 import {
   date,
+  index,
   integer,
   jsonb,
   pgEnum,
@@ -188,6 +189,36 @@ export const embeddingsConfig = pgTable("embeddings_config", {
 
 export type EmbeddingsConfigRow = typeof embeddingsConfig.$inferSelect;
 export type NewEmbeddingsConfigRow = typeof embeddingsConfig.$inferInsert;
+
+/**
+ * A local, on-device log of meaningful actions (tasks added/completed, a chat
+ * started, a PR viewed, an alarm created, …). Periodic reconciliation (a later
+ * phase) turns unprocessed events into memories, so `processedAt` marks events
+ * already folded in. `occurredAt` is when the action happened (may predate the
+ * row, e.g. a backfilled calendar event); `createdAt` is when it was recorded.
+ * Deliberately schema-light: `type` is a dotted string and `payload` is opaque
+ * JSON, so new event kinds don't need a migration.
+ */
+export const events = pgTable(
+  "events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    type: text("type").notNull(),
+    source: text("source"),
+    payload: jsonb("payload"),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Reconciliation scans unprocessed events oldest-first.
+    index("events_processed_occurred_idx").on(t.processedAt, t.occurredAt),
+    index("events_type_idx").on(t.type),
+  ],
+);
+
+export type EventRow = typeof events.$inferSelect;
+export type NewEventRow = typeof events.$inferInsert;
 
 export type CustomProviderRow = typeof customProviders.$inferSelect;
 export type NewCustomProviderRow = typeof customProviders.$inferInsert;
