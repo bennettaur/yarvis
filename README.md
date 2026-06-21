@@ -186,6 +186,7 @@ sidecar/        Bun + TS service (Hono)
   src/chat/     multi-provider streaming chat + tool-calls (agent.ts: shared agent turn)
   src/telegram/ Telegram remote-control bot (long-poll loop, slash commands, chat→session map)
   src/tasks/    daily/weekly work tracking
+  src/events/   local on-device event log (action trail; reconciled to memory later)
   src/memory/   pgvector memory, notes, ingestion, recaps
   src/github/   GitHub PR dashboard + embedded review (REST + GraphQL)
   src/azure/    Azure DevOps PR dashboard + embedded review (REST; diffs built with jsdiff)

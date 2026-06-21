@@ -1,6 +1,7 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect } from "react";
+import { recordEvent } from "../lib/events";
 import { usePrDetail } from "../lib/pr/cache";
-import { refDisplayRepo, refNumber, refProviderName } from "../lib/pr/ref";
+import { refDisplayRepo, refKey, refNumber, refProviderName } from "../lib/pr/ref";
 import type { CheckItem, PrSummary } from "../lib/pr/types";
 import { openExternal } from "../lib/url";
 import PrChecks from "./pr/PrChecks";
@@ -66,6 +67,14 @@ function CollapsibleSection({
 export default function PrDetailView({ pr, onBack }: { pr: PrSummary; onBack: () => void }) {
   const prRef = pr.ref;
   const { data: detail, error } = usePrDetail(prRef);
+
+  // Record opening a PR for review. Keyed strictly by PR identity (the ref key)
+  // so re-renders (and metadata edits like a rename) don't re-fire; a different
+  // PR records a new event. Fire-and-forget.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the ref identity, not the unstable pr object
+  useEffect(() => {
+    void recordEvent("pr.viewed", { ref: prRef, title: pr.title, url: pr.url }, prRef.provider);
+  }, [refKey(prRef)]);
 
   return (
     <div className="space-y-5">
