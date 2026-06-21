@@ -22,18 +22,49 @@ export interface ChatSession {
   updatedAt: string;
 }
 
+/**
+ * Provenance for a message, mirrored from the sidecar's `ChatMessageMetadata`.
+ * Null/absent for messages composed in the app; set by the Telegram bot to mark
+ * Telegram-originated messages and record the sender.
+ */
+export interface ChatMessageMetadata {
+  source?: "telegram";
+  telegramUserId?: number;
+  telegramUsername?: string;
+  telegramFirstName?: string;
+}
+
 export interface ChatMessage {
   id: string;
   sessionId: string;
   role: string;
   content: string;
+  metadata?: ChatMessageMetadata | null;
   createdAt: string;
 }
 
+/**
+ * The label shown above a message. Telegram-originated messages are marked as
+ * such and identified by the sender's @username, name, or id, so they're
+ * distinguishable from messages composed in the app.
+ */
+export function messageLabel(role: string, metadata?: ChatMessageMetadata | null): string {
+  if (metadata?.source === "telegram") {
+    const who =
+      (metadata.telegramUsername && `@${metadata.telegramUsername}`) ||
+      metadata.telegramFirstName ||
+      (metadata.telegramUserId != null ? String(metadata.telegramUserId) : "");
+    return who ? `Telegram · ${who}` : "Telegram";
+  }
+  return role;
+}
+
 export interface ChatEvent {
-  type: "delta" | "done" | "error";
+  type: "delta" | "done" | "error" | "attention";
   text?: string;
   message?: string;
+  /** Present on `attention` events: why the agent needs the user. */
+  reason?: string;
 }
 
 export async function listProviders(): Promise<ProviderInfo[]> {
@@ -69,6 +100,8 @@ export interface ChatRequest {
   message: string;
   provider: ProviderId;
   model: string;
+  /** Optional snapshot of the screen the user summoned the chat from. */
+  context?: string;
 }
 
 export async function* streamChat(req: ChatRequest): AsyncGenerator<ChatEvent> {

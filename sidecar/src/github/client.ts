@@ -3,86 +3,29 @@
  * implementation is injectable so response shaping can be unit-tested.
  */
 
-export interface PrSummary {
-  number: number;
-  title: string;
-  url: string;
-  owner: string;
-  repo: string;
-  author: string;
-  draft: boolean;
-  state: string;
-  createdAt: string;
-  updatedAt: string;
-}
+import type {
+  CheckItem,
+  ChecksSummary,
+  NewComment,
+  PrDetail,
+  PrFile,
+  PrStatus,
+  PrSummary,
+} from "../pr/types.ts";
 
-export interface ChecksSummary {
-  total: number;
-  success: number;
-  failure: number;
-  pending: number;
-}
-
-export interface PrStatus {
-  /** "open" | "closed". */
-  state: string;
-  merged: boolean;
-  mergeable: boolean | null;
-  mergeableState: string;
-  checks: ChecksSummary;
-}
-
-/** A single review comment within a thread. */
-export interface ReviewComment {
-  author: string;
-  body: string;
-  createdAt: string;
-}
-
-/** A review thread anchored to a file/line, with its comments. */
-export interface ReviewThread {
-  path: string | null;
-  line: number | null;
-  isResolved: boolean;
-  comments: ReviewComment[];
-}
-
-/** A normalized CI check (CheckRun or legacy commit status). */
-export interface CheckItem {
-  name: string;
-  /** "COMPLETED" | "IN_PROGRESS" | "QUEUED" | "PENDING" … */
-  status: string;
-  /** "SUCCESS" | "FAILURE" | "NEUTRAL" | null while pending. */
-  conclusion: string | null;
-  url: string | null;
-}
-
-/** Rich detail for the in-app PR review view (description, checks, threads). */
-export interface PrDetail {
-  number: number;
-  title: string;
-  body: string;
-  state: string;
-  draft: boolean;
-  author: string;
-  baseRef: string;
-  headRef: string;
-  additions: number;
-  deletions: number;
-  /** GraphQL mergeable enum: "MERGEABLE" | "CONFLICTING" | "UNKNOWN". */
-  mergeable: string;
-  checks: CheckItem[];
-  reviewThreads: ReviewThread[];
-}
-
-/** A changed file with its unified-diff patch (REST `pulls/:n/files`). */
-export interface PrFile {
-  filename: string;
-  status: string;
-  additions: number;
-  deletions: number;
-  patch: string | null;
-}
+// Re-exported so existing `from "./client.ts"` imports keep resolving the
+// provider-neutral shapes that now live in ../pr/types.ts.
+export type {
+  CheckItem,
+  ChecksSummary,
+  NewComment,
+  PrDetail,
+  PrFile,
+  PrStatus,
+  PrSummary,
+  ReviewComment,
+  ReviewThread,
+} from "../pr/types.ts";
 
 type FetchFn = typeof fetch;
 
@@ -297,5 +240,34 @@ export class GitHubClient {
       deletions: f.deletions ?? 0,
       patch: f.patch ?? null,
     }));
+  }
+
+  /**
+   * Posts a single-line review comment. GitHub anchors review comments to a
+   * commit, so the PR's head sha is fetched first; `line` + `side` target the
+   * line in the diff (the same right-side line our diff parser exposes).
+   */
+  async postComment(owner: string, repo: string, number: number, input: NewComment): Promise<void> {
+    const pr = await this.api<{ head: { sha: string } }>(`/repos/${owner}/${repo}/pulls/${number}`);
+    const res = await this.fetchImpl(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${number}/comments`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          body: input.body,
+          commit_id: pr.head.sha,
+          path: input.path,
+          line: input.line,
+          side: input.side ?? "RIGHT",
+        }),
+      },
+    );
+    if (!res.ok) throw new Error(`github post comment -> ${res.status}`);
   }
 }

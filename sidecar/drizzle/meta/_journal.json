@@ -47,8 +47,50 @@
     {
       "idx": 6,
       "version": "7",
-      "when": 1780635035880,
-      "tag": "0006_milky_the_fury",
+      "when": 1781357586474,
+      "tag": "0006_loud_cannonball",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1781586857854,
+      "tag": "0007_narrow_wallop",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1781962187355,
+      "tag": "0008_smooth_liz_osborn",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1781987505698,
+      "tag": "0009_tough_hulk",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1781988606480,
+      "tag": "0010_flowery_micromacro",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1782064537076,
+      "tag": "0011_little_hemingway",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1782066538176,
+      "tag": "0012_bright_overlord",
       "breakpoints": true
     }
   ]

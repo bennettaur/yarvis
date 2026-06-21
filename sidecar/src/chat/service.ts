@@ -1,6 +1,13 @@
 import { asc, desc, eq } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
-import { type ChatMessage, type ChatSession, chatMessages, chatSessions } from "../db/schema.ts";
+import {
+  type ChatMessage,
+  type ChatMessageMetadata,
+  type ChatSession,
+  chatMessages,
+  chatSessions,
+} from "../db/schema.ts";
+import { emitEvent } from "../events/service.ts";
 
 /** Chat session + message persistence. */
 
@@ -9,6 +16,11 @@ export async function createSession(db: Db, title?: string | null): Promise<Chat
     .insert(chatSessions)
     .values({ title: title ?? null })
     .returning();
+  await emitEvent(db, {
+    type: "chat.started",
+    source: "chat",
+    payload: { sessionId: row!.id },
+  });
   return row!;
 }
 
@@ -29,6 +41,7 @@ export interface AddMessageInput {
   role: "user" | "assistant" | "system" | "tool";
   content: string;
   toolCalls?: unknown;
+  metadata?: ChatMessageMetadata;
 }
 
 export async function addMessage(db: Db, input: AddMessageInput): Promise<ChatMessage> {
@@ -39,6 +52,7 @@ export async function addMessage(db: Db, input: AddMessageInput): Promise<ChatMe
       role: input.role,
       content: input.content,
       toolCalls: input.toolCalls ?? null,
+      metadata: input.metadata ?? null,
     })
     .returning();
   // Keep the session's updatedAt fresh so recent chats sort first.

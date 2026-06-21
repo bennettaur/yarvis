@@ -1,24 +1,33 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useOmniChatContext } from "../lib/omniChatContext";
+import { addStar, removeStar } from "../lib/pr/api";
 import {
-  type GhFilter,
-  ghAddStar,
+  AzureViewerError,
+  type AzureViewerReason,
+  azCreateFilter,
+  azDeleteFilter,
+  azFilters,
+  azSearch,
+  azStars,
+  azViewer,
+} from "../lib/pr/azure";
+import { usePrStatus } from "../lib/pr/cache";
+import {
   ghCreateFilter,
   ghDeleteFilter,
   ghFilters,
-  ghRemoveStar,
   ghSearch,
   ghStars,
   ghViewer,
-  type PrStatus,
-  type PrSummary,
-} from "../lib/github";
-import { usePrStatus } from "../lib/githubCache";
+} from "../lib/pr/github";
+import { refDisplayRepo, refKey, refNumber } from "../lib/pr/ref";
+import type { AzFilter, GhFilter, Provider, PrStatus, PrSummary } from "../lib/pr/types";
 import { formatRelativeTime } from "../lib/time";
 import { openExternal } from "../lib/url";
 import PrDetailView from "./PrDetailView";
 
-const MY_PRS = "is:open is:pr author:@me";
-const REVIEW = "is:open is:pr review-requested:@me";
+const GH_MY = "is:open is:pr author:@me";
+const GH_REVIEW = "is:open is:pr review-requested:@me";
 
 type TabKey = "mine" | "review" | "filters";
 
@@ -28,19 +37,39 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "filters", label: "Filters" },
 ];
 
-function starKey(owner: string, repo: string, number: number) {
-  return `${owner}/${repo}/${number}`;
+const PROVIDERS: { key: Provider; label: string }[] = [
+  { key: "github", label: "GitHub" },
+  { key: "azure", label: "Azure DevOps" },
+];
+
+const GH_SETUP_MESSAGE =
+  "No GitHub token configured. Add one under Dashboard → Secrets → GitHub token to see your PRs.";
+
+/** Turns a sidecar viewer-failure reason into a specific, actionable hint. */
+function azureSetupMessage(reason: AzureViewerReason): string {
+  switch (reason) {
+    case "missing_token":
+      return "No Azure DevOps personal access token configured. Add one under Dashboard → Secrets → Azure DevOps token.";
+    case "missing_org_url":
+      return "No Azure DevOps organization URL configured. Add it under Dashboard → Secrets → Azure DevOps org URL.";
+    case "invalid_org_url":
+      return "The Azure DevOps organization URL isn't a valid https://dev.azure.com/<org> or https://<org>.visualstudio.com URL. Fix it under Dashboard → Secrets.";
+    case "unauthorized":
+      return "Azure DevOps rejected the personal access token — it's expired or missing the Code (Read) scope. Update it under Dashboard → Secrets.";
+    default:
+      return "Couldn't reach Azure DevOps. Check the token and organization URL under Dashboard → Secrets, then try again.";
+  }
 }
 
 function createdMs(pr: PrSummary): number {
   return new Date(pr.createdAt).getTime() || 0;
 }
 
-/** Groups PRs by owner/repo, newest-first within each group and across groups. */
+/** Groups PRs by their display repo, newest-first within each group and across groups. */
 function groupByRepo(prs: PrSummary[]): { repo: string; prs: PrSummary[] }[] {
   const map = new Map<string, PrSummary[]>();
   for (const pr of prs) {
-    const key = `${pr.owner}/${pr.repo}`;
+    const key = refDisplayRepo(pr.ref);
     const list = map.get(key);
     if (list) list.push(pr);
     else map.set(key, [pr]);
@@ -91,7 +120,11 @@ function PrRow({
   onToggleStar: (pr: PrSummary, starred: boolean) => void;
   onReview: (pr: PrSummary) => void;
 }) {
-  const { data: status } = usePrStatus(pr.owner, pr.repo, pr.number);
+  // GitHub's status is one cheap call per row. Azure's only yields `mergeable`
+  // at the cost of a full PR-detail fetch per row, so for a list of N PRs that's
+  // N heavy calls for little signal — skip it and let the detail view show merge
+  // state instead.
+  const { data: status } = usePrStatus(pr.ref.provider === "github" ? pr.ref : null);
 
   return (
     <li
@@ -111,7 +144,7 @@ function PrRow({
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm text-zinc-100">{pr.title}</div>
         <div className="text-xs text-zinc-500">
-          #{pr.number} · {pr.author} · opened {formatRelativeTime(pr.createdAt)}
+          #{refNumber(pr.ref)} · {pr.author} · opened {formatRelativeTime(pr.createdAt)}
         </div>
       </div>
       {pr.draft && <DraftBadge />}
@@ -125,7 +158,7 @@ function PrRow({
           openExternal(pr.url);
         }}
         className="shrink-0 text-zinc-600 hover:text-sky-400"
-        title="Open on GitHub"
+        title="Open externally"
       >
         ↗
       </button>
@@ -133,7 +166,7 @@ function PrRow({
   );
 }
 
-/** Renders PRs grouped under owner/repo headers, newest-first. */
+/** Renders PRs grouped under repo headers, newest-first. */
 function PrGroupedList({
   prs,
   isStarred,
@@ -173,81 +206,142 @@ function PrGroupedList({
 }
 
 export default function PrsPanel() {
-  const [tokenMissing, setTokenMissing] = useState(false);
+  const [provider, setProvider] = useState<Provider>("github");
+  // Non-null means configuration is incomplete: show this message instead of the
+  // PR lists. The message names the exact secret to fix (see azureSetupMessage).
+  const [setupNotice, setSetupNotice] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>("mine");
   const [mine, setMine] = useState<PrSummary[]>([]);
   const [review, setReview] = useState<PrSummary[]>([]);
   const [starredKeys, setStarredKeys] = useState<Set<string>>(new Set());
-  const [filters, setFilters] = useState<GhFilter[]>([]);
+  const [ghFilterList, setGhFilterList] = useState<GhFilter[]>([]);
+  const [azFilterList, setAzFilterList] = useState<AzFilter[]>([]);
   const [filterResults, setFilterResults] = useState<PrSummary[] | null>(null);
-  const [newFilter, setNewFilter] = useState({ name: "", query: "" });
+  const [newGhFilter, setNewGhFilter] = useState({ name: "", query: "" });
+  const [newAzFilter, setNewAzFilter] = useState<{
+    name: string;
+    scope: "mine" | "review";
+    project: string;
+  }>({ name: "", scope: "mine", project: "" });
   const [selected, setSelected] = useState<PrSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const loadStars = useCallback(async () => {
-    const stars = await ghStars();
-    setStarredKeys(new Set(stars.map((s) => starKey(s.owner, s.repo, s.number))));
+  // Tell Omni Chat which PR the user is looking at (or which list), so it can
+  // act on "this PR" without the user spelling out the details.
+  useOmniChatContext("prs", () => {
+    if (selected) {
+      return {
+        source: "prs",
+        summary: `Reviewing PR #${refNumber(selected.ref)} "${selected.title}" in ${refDisplayRepo(selected.ref)}`,
+        details: { url: selected.url, author: selected.author, draft: selected.draft },
+      };
+    }
+    const count = activeTab === "mine" ? mine.length : activeTab === "review" ? review.length : 0;
+    return {
+      source: "prs",
+      summary: `On the PRs tab (${provider}, ${activeTab} list, ${count} shown)`,
+    };
+  }, [selected, activeTab, provider, mine.length, review.length]);
+
+  const loadStars = useCallback(async (p: Provider) => {
+    const stars = p === "github" ? await ghStars() : await azStars();
+    setStarredKeys(new Set(stars.map((s) => refKey(s.ref))));
   }, []);
 
   useEffect(() => {
+    setSetupNotice(null);
+    setError(null);
+    setSelected(null);
+    setFilterResults(null);
+    setMine([]);
+    setReview([]);
+    setStarredKeys(new Set());
     void (async () => {
       try {
-        await ghViewer();
-      } catch {
-        setTokenMissing(true);
+        if (provider === "github") await ghViewer();
+        else await azViewer();
+      } catch (e) {
+        if (provider === "github") setSetupNotice(GH_SETUP_MESSAGE);
+        else
+          setSetupNotice(azureSetupMessage(e instanceof AzureViewerError ? e.reason : "unknown"));
         return;
       }
       try {
-        setMine(await ghSearch(MY_PRS));
-        setReview(await ghSearch(REVIEW));
-        setFilters(await ghFilters());
-        await loadStars();
+        if (provider === "github") {
+          setMine(await ghSearch(GH_MY));
+          setReview(await ghSearch(GH_REVIEW));
+          setGhFilterList(await ghFilters());
+        } else {
+          setMine(await azSearch("mine"));
+          setReview(await azSearch("review"));
+          setAzFilterList(await azFilters());
+        }
+        await loadStars(provider);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
     })();
-  }, [loadStars]);
+  }, [provider, loadStars]);
 
   const onToggleStar = useCallback(
     async (pr: PrSummary, starred: boolean) => {
-      if (starred) {
-        await ghRemoveStar(pr.owner, pr.repo, pr.number);
-      } else {
-        await ghAddStar({
-          owner: pr.owner,
-          repo: pr.repo,
-          number: pr.number,
-          title: pr.title,
-          url: pr.url,
-        });
-      }
-      await loadStars();
+      if (starred) await removeStar(pr.ref);
+      else await addStar(pr.ref, pr.title, pr.url);
+      await loadStars(provider);
     },
-    [loadStars],
+    [loadStars, provider],
   );
 
-  const isStarred = useCallback(
-    (pr: PrSummary) => starredKeys.has(starKey(pr.owner, pr.repo, pr.number)),
-    [starredKeys],
-  );
+  const isStarred = useCallback((pr: PrSummary) => starredKeys.has(refKey(pr.ref)), [starredKeys]);
 
-  const runFilter = useCallback(async (query: string) => {
+  const runGhFilter = useCallback(async (query: string) => {
     setFilterResults(await ghSearch(query));
   }, []);
 
-  const addFilter = useCallback(async () => {
-    if (!newFilter.name.trim() || !newFilter.query.trim()) return;
-    await ghCreateFilter(newFilter.name.trim(), newFilter.query.trim());
-    setNewFilter({ name: "", query: "" });
-    setFilters(await ghFilters());
-  }, [newFilter]);
+  const runAzFilter = useCallback(async (scope: "mine" | "review", project: string | null) => {
+    setFilterResults(await azSearch(scope, project ?? undefined));
+  }, []);
 
-  if (tokenMissing) {
+  const addGhFilter = useCallback(async () => {
+    if (!newGhFilter.name.trim() || !newGhFilter.query.trim()) return;
+    await ghCreateFilter(newGhFilter.name.trim(), newGhFilter.query.trim());
+    setNewGhFilter({ name: "", query: "" });
+    setGhFilterList(await ghFilters());
+  }, [newGhFilter]);
+
+  const addAzFilter = useCallback(async () => {
+    if (!newAzFilter.name.trim()) return;
+    await azCreateFilter(
+      newAzFilter.name.trim(),
+      newAzFilter.scope,
+      newAzFilter.project.trim() || null,
+    );
+    setNewAzFilter({ name: "", scope: "mine", project: "" });
+    setAzFilterList(await azFilters());
+  }, [newAzFilter]);
+
+  const providerToggle = (
+    <div className="inline-flex rounded-lg border border-zinc-700 p-0.5">
+      {PROVIDERS.map((p) => (
+        <button
+          key={p.key}
+          onClick={() => setProvider(p.key)}
+          className={`rounded-md px-3 py-1 text-sm ${
+            provider === p.key ? "bg-zinc-700 text-zinc-100" : "text-zinc-400 hover:text-zinc-200"
+          }`}
+        >
+          {p.label}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (setupNotice) {
     return (
-      <p className="text-sm text-zinc-400">
-        No GitHub token configured. Add one under <b>Dashboard → Secrets → GitHub token</b> to see
-        your PRs.
-      </p>
+      <div className="space-y-4">
+        {providerToggle}
+        <p className="text-sm text-zinc-400">{setupNotice}</p>
+      </div>
     );
   }
 
@@ -259,6 +353,8 @@ export default function PrsPanel() {
 
   return (
     <div className="space-y-5">
+      <div className="flex items-center justify-between">{providerToggle}</div>
+
       <nav className="flex gap-1 border-b border-zinc-800">
         {TABS.map((tab) => {
           const count =
@@ -283,22 +379,22 @@ export default function PrsPanel() {
       {activeTab === "mine" && <PrGroupedList prs={mine} {...listProps} />}
       {activeTab === "review" && <PrGroupedList prs={review} {...listProps} />}
 
-      {activeTab === "filters" && (
+      {activeTab === "filters" && provider === "github" && (
         <div className="space-y-5">
           <section>
             <div className="mb-3 flex flex-wrap gap-2">
-              {filters.map((f) => (
+              {ghFilterList.map((f) => (
                 <span
                   key={f.id}
                   className="flex items-center gap-1 rounded-md border border-zinc-700 px-2 py-1 text-xs"
                 >
-                  <button onClick={() => void runFilter(f.query)} className="hover:text-zinc-100">
+                  <button onClick={() => void runGhFilter(f.query)} className="hover:text-zinc-100">
                     {f.name}
                   </button>
                   <button
                     onClick={async () => {
                       await ghDeleteFilter(f.id);
-                      setFilters(await ghFilters());
+                      setGhFilterList(await ghFilters());
                     }}
                     className="text-zinc-600 hover:text-red-400"
                   >
@@ -309,26 +405,87 @@ export default function PrsPanel() {
             </div>
             <div className="flex gap-2">
               <input
-                value={newFilter.name}
+                value={newGhFilter.name}
                 placeholder="Filter name"
-                onChange={(e) => setNewFilter((p) => ({ ...p, name: e.target.value }))}
+                onChange={(e) => setNewGhFilter((p) => ({ ...p, name: e.target.value }))}
                 className="w-32 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
               />
               <input
-                value={newFilter.query}
+                value={newGhFilter.query}
                 placeholder="is:open is:pr ..."
-                onChange={(e) => setNewFilter((p) => ({ ...p, query: e.target.value }))}
+                onChange={(e) => setNewGhFilter((p) => ({ ...p, query: e.target.value }))}
                 className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
               />
               <button
-                onClick={() => void addFilter()}
+                onClick={() => void addGhFilter()}
                 className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800"
               >
                 Add
               </button>
             </div>
           </section>
+          {filterResults && <PrGroupedList prs={filterResults} {...listProps} />}
+        </div>
+      )}
 
+      {activeTab === "filters" && provider === "azure" && (
+        <div className="space-y-5">
+          <section>
+            <div className="mb-3 flex flex-wrap gap-2">
+              {azFilterList.map((f) => (
+                <span
+                  key={f.id}
+                  className="flex items-center gap-1 rounded-md border border-zinc-700 px-2 py-1 text-xs"
+                >
+                  <button
+                    onClick={() => void runAzFilter(f.scope, f.project)}
+                    className="hover:text-zinc-100"
+                  >
+                    {f.name}
+                  </button>
+                  <button
+                    onClick={async () => {
+                      await azDeleteFilter(f.id);
+                      setAzFilterList(await azFilters());
+                    }}
+                    className="text-zinc-600 hover:text-red-400"
+                  >
+                    ✕
+                  </button>
+                </span>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <input
+                value={newAzFilter.name}
+                placeholder="Filter name"
+                onChange={(e) => setNewAzFilter((p) => ({ ...p, name: e.target.value }))}
+                className="w-32 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
+              />
+              <select
+                value={newAzFilter.scope}
+                onChange={(e) =>
+                  setNewAzFilter((p) => ({ ...p, scope: e.target.value as "mine" | "review" }))
+                }
+                className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
+              >
+                <option value="mine">Created by me</option>
+                <option value="review">Needs my review</option>
+              </select>
+              <input
+                value={newAzFilter.project}
+                placeholder="Project (optional)"
+                onChange={(e) => setNewAzFilter((p) => ({ ...p, project: e.target.value }))}
+                className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
+              />
+              <button
+                onClick={() => void addAzFilter()}
+                className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800"
+              >
+                Add
+              </button>
+            </div>
+          </section>
           {filterResults && <PrGroupedList prs={filterResults} {...listProps} />}
         </div>
       )}
