@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import * as schema from "../db/schema.ts";
+import { listEvents } from "../events/service.ts";
 import {
   completeTask,
   createTask,
@@ -16,7 +17,7 @@ const sql = postgres(url, { max: 1 });
 const db = drizzle(sql, { schema });
 
 beforeEach(async () => {
-  await sql`TRUNCATE tasks, chat_messages, chat_sessions RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE tasks, chat_messages, chat_sessions, events RESTART IDENTITY CASCADE`;
 });
 
 afterAll(async () => {
@@ -107,5 +108,25 @@ describe("task service", () => {
 
     // The completed task stays on its original date.
     expect((await listTasks(db, { targetDate: "2026-05-23" })).length).toBe(1);
+  });
+
+  it("emits task.completed when updateTask sets status to done", async () => {
+    const task = await createTask(db, { title: "via edit", scope: "daily" });
+    await updateTask(db, task.id, { status: "done" });
+
+    const completed = await listEvents(db, { type: "task.completed" });
+    expect(completed.length).toBe(1);
+    expect((completed[0]!.payload as { taskId: string }).taskId).toBe(task.id);
+  });
+
+  it("does not emit task.completed for a non-completion edit or a reopen", async () => {
+    const task = await createTask(db, { title: "edit me", scope: "daily" });
+    await updateTask(db, task.id, { title: "renamed" });
+    await completeTask(db, task.id);
+    await updateTask(db, task.id, { status: "open" });
+
+    // Exactly one completion (from completeTask); the rename and reopen emit none.
+    const completed = await listEvents(db, { type: "task.completed" });
+    expect(completed.length).toBe(1);
   });
 });

@@ -83,7 +83,9 @@ const { registry } = defineRegistry(catalog, {
         name="PrDescription"
         height={props.height}
       >
-        <PrDescription owner={props.owner} repo={props.repo} number={props.number} />
+        <PrDescription
+          prRef={{ provider: "github", owner: props.owner, repo: props.repo, number: props.number }}
+        />
       </WidgetFrame>
     ),
     PrChecks: ({ props }) => (
@@ -92,7 +94,9 @@ const { registry } = defineRegistry(catalog, {
         name="PrChecks"
         height={props.height}
       >
-        <PrChecks owner={props.owner} repo={props.repo} number={props.number} />
+        <PrChecks
+          prRef={{ provider: "github", owner: props.owner, repo: props.repo, number: props.number }}
+        />
       </WidgetFrame>
     ),
     PrFileList: ({ props }) => (
@@ -101,7 +105,9 @@ const { registry } = defineRegistry(catalog, {
         name="PrFileList"
         height={props.height}
       >
-        <PrFileList owner={props.owner} repo={props.repo} number={props.number} />
+        <PrFileList
+          prRef={{ provider: "github", owner: props.owner, repo: props.repo, number: props.number }}
+        />
       </WidgetFrame>
     ),
     PrFileDiffs: ({ props }) => (
@@ -110,7 +116,9 @@ const { registry } = defineRegistry(catalog, {
         name="PrFileDiffs"
         height={props.height}
       >
-        <PrFileDiffs owner={props.owner} repo={props.repo} number={props.number} />
+        <PrFileDiffs
+          prRef={{ provider: "github", owner: props.owner, repo: props.repo, number: props.number }}
+        />
       </WidgetFrame>
     ),
     Sessions: ({ props }) => (
