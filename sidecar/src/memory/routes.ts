@@ -3,10 +3,17 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { EMBED_DIM } from "../db/schema.ts";
 import { clientError } from "../llm/errors.ts";
 import { resolveModel } from "../llm/providers.ts";
 import { tasksCompletedBetween } from "../tasks/service.ts";
+import { memoryDebug } from "./debug.ts";
 import { chooseEmbedder } from "./embedder.ts";
+import {
+  deleteEmbeddingsConfig,
+  getEmbeddingsConfig,
+  upsertEmbeddingsConfig,
+} from "./embeddingsConfig.ts";
 import { PgVectorMemoryStore } from "./index.ts";
 import { fetchUrlText, ingestDocument } from "./ingest.ts";
 import { assembleRecapContext, dateRange, recapMaterial, recapSystemPrompt } from "./recap.ts";
@@ -35,6 +42,14 @@ const recapSchema = z.object({
   model: z.string().min(1).optional(),
 });
 
+const embeddingsConfigSchema = z.object({
+  baseUrl: z.string().url(),
+  model: z.string().min(1),
+  apiKind: z.literal("openai").default("openai"),
+  dimensions: z.number().int().positive(),
+  headerNames: z.array(z.string().min(1)).default([]),
+});
+
 /** Memory & knowledge routes, mounted under /api/memory. */
 export function createMemoryRoutes(config: Config): Hono {
   const router = new Hono();
@@ -46,15 +61,17 @@ export function createMemoryRoutes(config: Config): Hono {
     return next();
   });
 
-  const store = () => {
+  // Building a store resolves the active embedder, which reads the embeddings
+  // provider config from the database — hence async.
+  const store = async () => {
     const db = getDb(config.databaseUrl as string).db;
-    return new PgVectorMemoryStore(db, chooseEmbedder(config));
+    return new PgVectorMemoryStore(db, await chooseEmbedder(config, db));
   };
 
   router.get("/", async (c) => {
     const type = c.req.query("type") ?? undefined;
     const limit = Number(c.req.query("limit") ?? "100");
-    const records = await store().list({
+    const records = await (await store()).list({
       type,
       limit: Number.isFinite(limit) ? limit : 100,
     });
@@ -65,24 +82,26 @@ export function createMemoryRoutes(config: Config): Hono {
     const q = c.req.query("q");
     if (!q) return c.json({ error: "missing q" }, 400);
     const limit = Number(c.req.query("limit") ?? "10");
-    return c.json(await store().search(q, Number.isFinite(limit) ? limit : 10));
+    return c.json(await (await store()).search(q, Number.isFinite(limit) ? limit : 10));
   });
 
   router.post("/", async (c) => {
     const parsed = addSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     const metadata = parsed.data.type ? { type: parsed.data.type } : undefined;
-    return c.json(await store().add(parsed.data.content, metadata), 201);
+    return c.json(await (await store()).add(parsed.data.content, metadata), 201);
   });
 
   // A note is just a memory tagged type "note"; convenience endpoint.
   router.post("/notes", async (c) => {
     const parsed = addSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    return c.json(await store().add(parsed.data.content, { type: "note" }), 201);
+    return c.json(await (await store()).add(parsed.data.content, { type: "note" }), 201);
   });
 
-  router.delete("/:id", async (c) => c.json({ deleted: await store().delete(c.req.param("id")) }));
+  router.delete("/:id", async (c) =>
+    c.json({ deleted: await (await store()).delete(c.req.param("id")) }),
+  );
 
   router.post("/ingest", async (c) => {
     const parsed = ingestSchema.safeParse(await c.req.json().catch(() => null));
@@ -97,7 +116,7 @@ export function createMemoryRoutes(config: Config): Hono {
         title = parsed.data.title ?? fetched.title;
         source = parsed.data.url;
       }
-      const result = await ingestDocument(store(), { text, source, title });
+      const result = await ingestDocument(await store(), { text, source, title });
       return c.json(result, 201);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 502);
@@ -112,7 +131,7 @@ export function createMemoryRoutes(config: Config): Hono {
     const db = getDb(config.databaseUrl as string).db;
     const window = dateRange(range);
     const tasks = await tasksCompletedBetween(db, window.from, window.to);
-    const notes = await store().list({ type: "note", since: window.from });
+    const notes = await (await store()).list({ type: "note", since: window.from });
     const context = assembleRecapContext(tasks, notes);
 
     // Summarize with the chosen model when available; otherwise return the raw
@@ -142,6 +161,57 @@ export function createMemoryRoutes(config: Config): Hono {
       tasks,
       notes,
     });
+  });
+
+  // --- Embeddings provider config ---
+
+  // Current structural config (no secrets) plus embedder health: whether stored
+  // memories match the active embedder. The UI uses health to warn + offer
+  // re-embedding after a provider/dimension change.
+  router.get("/embeddings/config", async (c) => {
+    const db = getDb(config.databaseUrl as string).db;
+    const cfg = await getEmbeddingsConfig(db);
+    const health = await (await store()).embedderHealth();
+    const stored = health.stored.reduce((sum, group) => sum + group.count, 0);
+    memoryDebug(
+      "memory",
+      `config: provider=${cfg ? `${cfg.model}@${cfg.baseUrl}` : "none (direct Gemini/hash)"} | ` +
+        `health: active=${health.active.kind}/${health.active.model} stored=${stored} ` +
+        `mismatched=${health.mismatchedCount} ok=${health.ok}`,
+    );
+    return c.json({ config: cfg, health });
+  });
+
+  router.put("/embeddings/config", async (c) => {
+    const parsed = embeddingsConfigSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    // The model's output dimension must equal the memories column dimension.
+    // Reject a mismatch here so it surfaces at save time, rather than making
+    // every later memory request (including reads) fail in chooseEmbedder.
+    if (parsed.data.dimensions !== EMBED_DIM) {
+      return c.json(
+        {
+          error: `dimensions must be ${EMBED_DIM} to match the memories column; got ${parsed.data.dimensions}`,
+        },
+        400,
+      );
+    }
+    const db = getDb(config.databaseUrl as string).db;
+    const row = await upsertEmbeddingsConfig(db, parsed.data);
+    return c.json(row);
+  });
+
+  router.delete("/embeddings/config", async (c) => {
+    const db = getDb(config.databaseUrl as string).db;
+    return c.json({ deleted: await deleteEmbeddingsConfig(db) });
+  });
+
+  // Re-embed every memory with the active embedder. Run after switching
+  // providers (and a sidecar restart, so new secrets are loaded) to make recall
+  // meaningful again.
+  router.post("/reembed", async (c) => {
+    const count = await (await store()).reembedAll();
+    return c.json({ reembedded: count });
   });
 
   return router;

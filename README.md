@@ -18,8 +18,10 @@ Three processes with a clean ownership split:
   core via `invoke` (native + secrets) and to the sidecar over authenticated
   loopback HTTP (data + AI).
 - **Bun sidecar** (`sidecar/`) — a Hono HTTP service that owns Postgres access
-  (Drizzle ORM), LLM calls, and memory. Runs `src/server.ts` directly with Bun
-  in development; compiled to a single binary for distribution.
+  (Drizzle ORM), LLM calls, and memory. It also hosts an optional **Telegram
+  remote-control bot** (a long-poll loop that drives the same chat agent). Runs
+  `src/server.ts` directly with Bun in development; compiled to a single binary
+  for distribution.
 
 Data lives in a local **PostgreSQL + pgvector**.
 
@@ -49,9 +51,34 @@ DATABASE_URL="postgres://localhost:5432/yarvis" bun run --cwd sidecar db:migrate
 
 Secrets are entered in the app's **Settings** screen and stored in the macOS
 Keychain — not in env files: the database URL, provider keys (Anthropic,
-Gemini), a GitHub token (for the PR dashboard + embedded review), and a Google
-Cloud OAuth client id/secret (for the Calendar integration). AWS Bedrock uses
-the standard AWS credential chain.
+Gemini), a GitHub token and/or an Azure DevOps token + organization URL (for the
+PR dashboard + embedded review — either provider can back it, selected with a
+toggle in the PRs tab), a Google Cloud OAuth client id/secret (for the Calendar
+integration), an optional embeddings-provider secret (an API key and/or
+custom header values for an OpenAI-compatible embeddings endpoint), and an
+optional Telegram bot token + allowed chat-id list (and, when the optional second
+factor is enabled, a TOTP secret + re-auth window) for the remote-control bot,
+see below. AWS Bedrock uses the standard AWS credential chain.
+
+The Azure DevOps token is a Personal Access Token with **Code (read)** and
+**Pull Request Threads (read & write)** scopes; the organization URL is the
+`https://dev.azure.com/your-org` base (project is chosen per search).
+
+### Embeddings
+
+The `memories.embedding` column is `vector(1536)`, and the active embedder's
+output dimension must match it (the model's output is truncated to it). Configure
+an embeddings provider under **Settings → Embeddings**: an OpenAI-compatible
+endpoint — a LiteLLM gateway fronting Gemini, or a Qwen3 embedding server (base
+URL e.g. `http://localhost:4000/v1`, model e.g. `gemini-embedding-001`). Without
+one, Yarvis uses Gemini directly when keyed, otherwise an offline hash embedder.
+Each memory records the embedder identity (kind/model/dim) so a provider or
+dimension change is detected and surfaced as a "re-embed needed" warning.
+
+Note: the embeddings migration sets the column to `vector(1536)` and **clears
+existing embeddings** (memory *content* is preserved). After upgrading, configure
+a provider and run **Re-embed all** in Settings (or `POST /api/memory/reembed`)
+to regenerate vectors.
 
 All secrets live in a **single** Keychain item (one JSON object), rather than
 one item per secret. macOS authorizes Keychain access per item, so consolidating
@@ -81,6 +108,46 @@ directory, `~/dev/yarvis-workspaces` by default and overridable with the
 secrets above). Add repos and edit their per-repo setup/run scripts in the
 Settings tab's Repositories section.
 
+### Telegram remote control
+
+Chat with Yarvis — and issue control commands — from Telegram. The sidecar runs
+a bot that drives the same chat agent as the in-app UI; it requires a configured
+database and at least one LLM provider.
+
+Setup:
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) and copy its HTTP API
+   token (format `123456:ABC-DEF...`).
+2. Enter it under **Settings → Telegram** (stored in the Keychain; saving
+   reloads the sidecar to pick it up).
+3. Message your bot `/whoami` — it replies with your chat id. Until at least one
+   id is on the allowlist the bot answers **only** `/whoami`; once the allowlist
+   is set it ignores any chat that isn't on it.
+4. Paste your chat id (comma-separated for several) into **Allowed chat ids** and
+   save.
+
+Access is restricted to **private** chats on the allowlist — the bot ignores
+groups, channels, and bot senders. Commands:
+
+- `/new_chat` — start a fresh chat session
+- `/chats` — list recent sessions; `/switch <n>` — switch the active one
+- `/model` — show the current provider/model and the available options
+- `/setmodel <provider> <model>` — reply using a specific provider/model
+- `/whoami` — show your chat id; `/help` — list commands
+
+#### Optional second factor (OTP)
+
+For defense against Telegram-account takeover (a stolen session or SIM swap, where
+the attacker *is* your allowlisted chat), enable a TOTP second factor under
+**Settings → Telegram → Two-factor unlock**. Yarvis generates a secret you add to
+an authenticator app (Authy, Google Authenticator, 1Password, …); after that the
+bot won't act until you send `/unlock <code>` to open a window (default 2h,
+configurable). `/lock` ends the window early. The window relocks on restart, codes
+are rate-limited with a lockout after repeated failures, your `/unlock` message is
+deleted so the code doesn't linger, and the app raises a desktop notification on
+each unlock/failed/lockout so you see access you didn't initiate. The code is
+verified in the sidecar; it never leaves your authenticator and laptop.
+
 ## Development
 
 ```bash
@@ -109,11 +176,13 @@ render real components with the `renderToHtml` helper in `src/test/render.tsx`.
 
 ```
 src/            React frontend (Vite + TS + Tailwind)
-  lib/          sidecar API client, Keychain command wrappers
+  lib/          sidecar API client, Keychain wrappers, Omni Chat context registry, notifications
+    pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs)
   components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, Terminal, Workspaces, …)
-    components/workspaces/  workspace detail subviews + Omni widgets
-    shell/      desktop shell: nav rail, top bar, boot loading screen
+    workspaces/  workspace detail subviews + Omni widgets
+    shell/      desktop shell: nav rail, top bar, boot loading screen, tab shortcuts
     omni/       Omni view — chat-driven dynamic-UI canvas
+    omnichat/   Omni Chat — global summon-from-anywhere chat overlay
   omni/         json-render component catalog, registry, layout primitives
 src-tauri/      Rust core (Tauri v2)
   src/keychain.rs   Keychain-backed secret commands (single consolidated item)
@@ -121,12 +190,28 @@ src-tauri/      Rust core (Tauri v2)
   src/alarms.rs     full-screen alarm scheduler
 sidecar/        Bun + TS service (Hono)
   src/db/       Drizzle schema, client, migrations (applied on startup)
-  src/chat/     multi-provider streaming chat + tool-calls
+  src/chat/     multi-provider streaming chat + tool-calls (agent.ts: shared agent turn)
+  src/telegram/ Telegram remote-control bot (long-poll loop, slash commands, chat→session map)
   src/tasks/    daily/weekly work tracking
+  src/events/   local on-device event log (action trail; reconciled to memory later)
   src/memory/   pgvector memory, notes, ingestion, recaps
-  src/github/   PR dashboard + embedded review (REST + GraphQL)
+  src/github/   GitHub PR dashboard + embedded review (REST + GraphQL)
+  src/azure/    Azure DevOps PR dashboard + embedded review (REST; diffs built with jsdiff)
+  src/pr/       provider-neutral PR types shared by the github/ and azure/ clients
   src/google/   Google Calendar OAuth + events
   src/omni/     Omni UI generation (streaming) + saved layouts
   src/workspaces/ repo registry + git-worktree provisioning (/api/repos, /api/workspaces)
+  src/chat/attentionTools.ts  request_attention tool (badge + OS notification)
   drizzle/      generated SQL migrations
 ```
+
+## Keyboard shortcuts
+
+- **Cmd/Ctrl + 1–9** — jump to the Nth tab in the nav rail.
+- **Cmd/Ctrl + Shift + ] / [** — cycle to the next / previous tab (wraps around).
+- **Control + Shift + Space** — summon **Omni Chat** from anywhere: a centered chat
+  overlay that receives a snapshot of the screen you're on (e.g. the PR you're
+  reviewing) as context. Esc hides it while the conversation keeps streaming in the
+  background; re-summoning resumes the same session. The agent can call
+  `request_attention` to raise a nav-rail badge and an OS notification when it needs
+  you. Any view contributes context by calling the `useOmniChatContext` hook.

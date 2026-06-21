@@ -1,11 +1,13 @@
 import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { cors } from "hono/cors";
+import { createAzureRoutes } from "./azure/routes.ts";
 import { createCcRoutes } from "./cc/routes.ts";
 import { createChatRoutes } from "./chat/routes.ts";
 import type { Config } from "./config.ts";
 import { createCustomProviderRoutes } from "./customProviders/routes.ts";
 import { pingDb } from "./db/client.ts";
+import { createEventRoutes } from "./events/routes.ts";
 import { createGithubRoutes } from "./github/routes.ts";
 import { createCalendarRoutes, createGoogleCallbackRoutes } from "./google/routes.ts";
 import { redactSecrets } from "./llm/errors.ts";
@@ -13,6 +15,7 @@ import { createMemoryRoutes } from "./memory/routes.ts";
 import { createOmniRoutes } from "./omni/routes.ts";
 import { createReadiness, type Readiness } from "./readiness.ts";
 import { createTaskRoutes } from "./tasks/routes.ts";
+import { createTelegramRoutes } from "./telegram/routes.ts";
 import { createRepoRoutes, createWorkspaceRoutes } from "./workspaces/routes.ts";
 
 const SERVICE_NAME = "yarvis-sidecar";
@@ -97,9 +100,12 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/custom-providers", createCustomProviderRoutes(config));
   app.route("/api/cc", createCcRoutes());
   app.route("/api/github", createGithubRoutes(config));
+  app.route("/api/azure", createAzureRoutes(config));
   app.route("/api/memory", createMemoryRoutes(config));
+  app.route("/api/events", createEventRoutes(config));
   app.route("/api/calendar", createCalendarRoutes(config));
   app.route("/api/omni", createOmniRoutes(config));
+  app.route("/api/telegram", createTelegramRoutes());
   app.route("/api/repos", createRepoRoutes(config));
   app.route("/api/workspaces", createWorkspaceRoutes(config));
 

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useOmniChatContext } from "../../lib/omniChatContext";
 import CalendarPanel from "../CalendarPanel";
 import DayTimeline, { type Orientation } from "./DayTimeline";
 import MonthView from "./MonthView";
@@ -20,6 +21,16 @@ const VIEWS: { id: View; label: string }[] = [
 export default function CalendarView() {
   const [view, setView] = useState<View>("agenda");
   const [orientation, setOrientation] = useState<Orientation>("vertical");
+
+  // Surface which calendar view the user is on for Omni Chat.
+  useOmniChatContext(
+    "calendar",
+    () => ({
+      source: "calendar",
+      summary: `On the Calendar (${view} view), anchored on ${new Date().toISOString().slice(0, 10)}`,
+    }),
+    [view],
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-col">

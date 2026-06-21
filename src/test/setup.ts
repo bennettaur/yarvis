@@ -32,3 +32,9 @@ mock.module("@tauri-apps/api/event", () => ({
 mock.module("@tauri-apps/plugin-opener", () => ({
   openUrl: async () => {},
 }));
+
+mock.module("@tauri-apps/plugin-notification", () => ({
+  isPermissionGranted: async () => true,
+  requestPermission: async () => "granted",
+  sendNotification: () => {},
+}));

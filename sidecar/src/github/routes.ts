@@ -47,6 +47,13 @@ const starSchema = z.object({
   url: z.string().nullish(),
 });
 
+const commentSchema = z.object({
+  path: z.string().min(1).max(1024),
+  line: z.number().int().min(1),
+  body: z.string().min(1),
+  side: z.enum(["RIGHT", "LEFT"]).optional(),
+});
+
 /** GitHub PR dashboard routes, mounted under /api/github. */
 export function createGithubRoutes(config: Config): Hono {
   const router = new Hono();
@@ -131,6 +138,22 @@ export function createGithubRoutes(config: Config): Hono {
     if ("error" in params) return c.json({ error: params.error }, 400);
     try {
       return c.json(await gh.prFiles(params.owner, params.repo, params.number));
+    } catch (e) {
+      return c.json({ error: String(e) }, 502);
+    }
+  });
+
+  // Post a single-line review comment to the PR.
+  router.post("/pr/:owner/:repo/:number/comments", async (c) => {
+    const gh = client();
+    if (!gh) return c.json({ error: "github token not configured" }, 400);
+    const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
+    if ("error" in params) return c.json({ error: params.error }, 400);
+    const parsed = commentSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    try {
+      await gh.postComment(params.owner, params.repo, params.number, parsed.data);
+      return c.json({ ok: true }, 201);
     } catch (e) {
       return c.json({ error: String(e) }, 502);
     }
