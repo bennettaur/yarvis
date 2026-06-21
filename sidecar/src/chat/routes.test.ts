@@ -18,6 +18,8 @@ const config: Config = {
   workspacesRoot: "/tmp/yarvis-test-workspaces",
   secrets: {}, // no provider keys configured
   customProviderSecrets: {},
+  embeddingsSecrets: { headers: {} },
+  telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
 };
 const app = createApp(config);
 const auth = { Authorization: "Bearer test-token" };

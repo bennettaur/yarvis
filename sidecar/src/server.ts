@@ -1,10 +1,18 @@
 import { createApp } from "./app.ts";
 import { loadConfig } from "./config.ts";
 import { runMigrations } from "./db/migrate.ts";
+import { watchParentProcess } from "./lib/parentWatch.ts";
 import { redactSecrets } from "./llm/errors.ts";
 import { createReadiness } from "./readiness.ts";
+import { startTelegramBot } from "./telegram/index.ts";
 
 const config = loadConfig();
+
+// When launched by the Rust core (host-supplied token), exit if that parent
+// dies, so a crash/force-quit can't leave an orphaned sidecar polling Telegram
+// and colliding with the next session's sidecar. Skipped for standalone/dev
+// runs (generated token), where the parent is just a shell.
+if (!config.tokenGenerated) watchParentProcess();
 
 // If a database is configured, apply migrations before the service is usable
 // and report that phase via /health so the UI can show a loading screen. With
@@ -42,6 +50,9 @@ if (config.databaseUrl) {
   runMigrations(config.databaseUrl)
     .then(() => {
       readiness.set("ready");
+      // The Telegram bot drives the chat agent, which needs the database, so it
+      // only starts once migrations have applied. It is a no-op without a token.
+      startTelegramBot(config);
     })
     .catch((e) => {
       // Redact before storing the message because `/health` (unauthenticated)

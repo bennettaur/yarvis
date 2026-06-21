@@ -5,9 +5,18 @@ export type SecretKey =
   | "anthropic_api_key"
   | "gemini_api_key"
   | "github_token"
+  | "azure_devops_token"
+  | "azure_devops_org_url"
   | "database_url"
   | "google_client_id"
-  | "google_client_secret";
+  | "google_client_secret"
+  // Telegram remote control. These are managed by the dedicated TelegramSection
+  // rather than the generic Secrets list, so they are intentionally absent from
+  // the SECRETS array below.
+  | "telegram_bot_token"
+  | "telegram_allowed_chat_ids"
+  | "telegram_otp_secret"
+  | "telegram_otp_window_minutes";
 
 export interface SecretMeta {
   key: SecretKey;
@@ -40,6 +49,18 @@ export const SECRETS: SecretMeta[] = [
     label: "GitHub token",
     placeholder: "ghp_...",
     help: "Fine-grained or classic PAT for the PR dashboard (repo + read access).",
+  },
+  {
+    key: "azure_devops_token",
+    label: "Azure DevOps token",
+    placeholder: "Azure DevOps PAT",
+    help: "Personal access token with Code (read) and Pull Request Threads (read & write) scopes.",
+  },
+  {
+    key: "azure_devops_org_url",
+    label: "Azure DevOps org URL",
+    placeholder: "https://dev.azure.com/your-org",
+    help: "Organization base URL for the PR dashboard. Project is chosen per search.",
   },
   {
     key: "google_client_id",
