@@ -11,6 +11,7 @@ const config: Config = {
   tokenGenerated: false,
   allowedOrigins: null,
   databaseUrl: "postgres://localhost/unused",
+  workspacesRoot: "/tmp/yarvis-test-workspaces",
   secrets: { googleClientId: "cid", googleClientSecret: "secret" },
   customProviderSecrets: {},
   embeddingsSecrets: { headers: {} },

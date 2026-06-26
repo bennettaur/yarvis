@@ -1,6 +1,7 @@
 import CustomProviderSection from "./CustomProviderSection";
 import EmbeddingsSection from "./EmbeddingsSection";
 import KeychainSection from "./KeychainSection";
+import ReposSection from "./ReposSection";
 import TelegramSection from "./TelegramSection";
 
 /**
@@ -12,6 +13,7 @@ export default function SettingsPanel() {
     <div className="space-y-6">
       <KeychainSection />
       <CustomProviderSection />
+      <ReposSection />
       <EmbeddingsSection />
       <TelegramSection />
     </div>

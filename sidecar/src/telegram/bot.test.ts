@@ -38,6 +38,7 @@ function config(): Config {
     tokenGenerated: false,
     allowedOrigins: null,
     databaseUrl: "postgres://localhost/unused",
+    workspacesRoot: "/tmp/yarvis-test-workspaces",
     secrets: {},
     customProviderSecrets: {},
     embeddingsSecrets: { headers: {} },

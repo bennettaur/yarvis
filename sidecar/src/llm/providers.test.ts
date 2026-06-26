@@ -21,6 +21,7 @@ function configWithSecrets(secrets: Config["customProviderSecrets"] = {}): Confi
     tokenGenerated: false,
     allowedOrigins: null,
     databaseUrl: url,
+    workspacesRoot: "/tmp/yarvis-test-workspaces",
     secrets: {},
     customProviderSecrets: secrets,
     embeddingsSecrets: { headers: {} },

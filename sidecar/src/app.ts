@@ -16,6 +16,7 @@ import { createOmniRoutes } from "./omni/routes.ts";
 import { createReadiness, type Readiness } from "./readiness.ts";
 import { createTaskRoutes } from "./tasks/routes.ts";
 import { createTelegramRoutes } from "./telegram/routes.ts";
+import { createRepoRoutes, createWorkspaceRoutes } from "./workspaces/routes.ts";
 
 const SERVICE_NAME = "yarvis-sidecar";
 const startedAt = Date.now();
@@ -105,6 +106,8 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/calendar", createCalendarRoutes(config));
   app.route("/api/omni", createOmniRoutes(config));
   app.route("/api/telegram", createTelegramRoutes());
+  app.route("/api/repos", createRepoRoutes(config));
+  app.route("/api/workspaces", createWorkspaceRoutes(config));
 
   return app;
 }

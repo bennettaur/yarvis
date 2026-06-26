@@ -10,6 +10,7 @@ function testConfig(overrides: Partial<Config> = {}): Config {
     tokenGenerated: false,
     allowedOrigins: null,
     databaseUrl: undefined,
+    workspacesRoot: "/tmp/yarvis-test-workspaces",
     secrets: {},
     customProviderSecrets: {},
     embeddingsSecrets: { headers: {} },

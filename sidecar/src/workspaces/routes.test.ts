@@ -1,0 +1,251 @@
+import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import postgres from "postgres";
+import { createApp } from "../app.ts";
+import type { Config } from "../config.ts";
+import { getDb } from "../db/client.ts";
+import type { GitRunner } from "./git.ts";
+import { archiveWorkspace, createWorkspace, getWorkspace, provisionWorkspace } from "./service.ts";
+
+const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
+const sql = postgres(url, { max: 1 });
+const workspacesRoot = mkdtempSync(join(tmpdir(), "yarvis-ws-root-"));
+
+const config: Config = {
+  port: 0,
+  token: "test-token",
+  tokenGenerated: false,
+  allowedOrigins: null,
+  databaseUrl: url,
+  workspacesRoot,
+  secrets: {},
+  customProviderSecrets: {},
+  embeddingsSecrets: { headers: {} },
+  telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
+};
+const app = createApp(config);
+const auth = { Authorization: "Bearer test-token" };
+const jsonAuth = { ...auth, "Content-Type": "application/json" };
+
+/** A no-op git runner; symbolic-ref answers so default-branch detection works. */
+const fakeGit: GitRunner = async (args) => {
+  if (args[0] === "symbolic-ref") return { stdout: "origin/main\n", stderr: "", exitCode: 0 };
+  if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 }; // branch absent
+  // Create the worktree dir like real git would, so setup scripts have a cwd.
+  if (args[0] === "worktree" && args[1] === "add" && args[4]) {
+    mkdirSync(args[4], { recursive: true });
+  }
+  return { stdout: "", stderr: "", exitCode: 0 };
+};
+
+beforeEach(async () => {
+  await sql`TRUNCATE repos, workspaces, workspace_repos, workspace_repo_pr, tasks RESTART IDENTITY CASCADE`;
+});
+
+afterAll(async () => {
+  await sql.end();
+  rmSync(workspacesRoot, { recursive: true, force: true });
+});
+
+async function addRepo(): Promise<{ id: string }> {
+  const res = await app.request("/api/repos", {
+    method: "POST",
+    headers: jsonAuth,
+    body: JSON.stringify({ cloneUrl: "git@github.com:acme/widget.git" }),
+  });
+  return (await res.json()) as { id: string };
+}
+
+describe("repo routes", () => {
+  it("requires authentication", async () => {
+    const res = await app.request("/api/repos");
+    expect(res.status).toBe(401);
+  });
+
+  it("creates a repo, deriving owner/repo and name from the clone URL", async () => {
+    const res = await app.request("/api/repos", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ cloneUrl: "git@github.com:acme/widget.git" }),
+    });
+    expect(res.status).toBe(201);
+    const repo = (await res.json()) as { owner: string; repo: string; name: string };
+    expect(repo.owner).toBe("acme");
+    expect(repo.repo).toBe("widget");
+    expect(repo.name).toBe("widget");
+  });
+
+  it("rejects an unparseable clone URL", async () => {
+    const res = await app.request("/api/repos", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ cloneUrl: "not-a-url" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("refuses to delete a repo still used by a workspace", async () => {
+    const repo = await addRepo();
+    await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "task", repoIds: [repo.id] }),
+    });
+    const res = await app.request(`/api/repos/${repo.id}`, { method: "DELETE", headers: auth });
+    expect(res.status).toBe(409);
+  });
+});
+
+describe("workspace routes", () => {
+  it("creates a workspace with a repo row and creating status", async () => {
+    const repo = await addRepo();
+    const res = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "Rename the API", repoIds: [repo.id] }),
+    });
+    expect(res.status).toBe(201);
+    const ws = (await res.json()) as { id: string; slug: string; status: string };
+    expect(ws.slug).toBe("rename-the-api");
+    expect(ws.status).toBe("creating");
+
+    const detail = await app.request(`/api/workspaces/${ws.id}`, { headers: auth });
+    const body = (await detail.json()) as { repos: unknown[] };
+    expect(body.repos.length).toBe(1);
+  });
+
+  it("rejects a workspace with no repos", async () => {
+    const res = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "empty", repoIds: [] }),
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("provision + archive (injected git runner)", () => {
+  it("provisions every repo to ready and marks the workspace active", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "feature", repoIds: [repo.id] });
+
+    const events: string[] = [];
+    await provisionWorkspace(db, ws.id, (e) => void events.push(e.type), fakeGit);
+
+    expect(events).toContain("done");
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.status).toBe("active");
+    expect(detail?.repos[0]?.status).toBe("ready");
+  });
+
+  it("archives by removing worktrees and recording a summary", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "to-archive", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+
+    const result = await archiveWorkspace(
+      db,
+      ws.id,
+      { summary: "did the thing", mergedPrUrl: "https://example/pr/1" },
+      fakeGit,
+    );
+    expect(result.status).toBe("archived");
+
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.status).toBe("archived");
+    expect(detail?.summary).toBe("did the thing");
+    expect(detail?.repos[0]?.status).toBe("removed");
+  });
+
+  it("suffixes the branch when it already exists in the repo", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "collide", repoIds: [repo.id] });
+
+    // show-ref exit 0 => the desired branch already exists, forcing a suffix.
+    let addedBranch = "";
+    const collidingGit: GitRunner = async (args) => {
+      if (args[0] === "symbolic-ref") return { stdout: "origin/main\n", stderr: "", exitCode: 0 };
+      if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 0 };
+      if (args[0] === "worktree" && args[1] === "add") {
+        addedBranch = args[3] ?? ""; // ["worktree","add","-b",<branch>,<path>,<base>]
+        if (args[4]) mkdirSync(args[4], { recursive: true });
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    };
+
+    await provisionWorkspace(db, ws.id, () => {}, collidingGit);
+    const expected = `yarvis/collide-${ws.id.slice(0, 8)}`;
+    expect(addedBranch).toBe(expected);
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.repos[0]?.branch).toBe(expected);
+  });
+
+  it("reuses a slug only after the prior workspace is archived", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const a = await createWorkspace(db, config, { name: "Same Name", repoIds: [repo.id] });
+    const b = await createWorkspace(db, config, { name: "Same Name", repoIds: [repo.id] });
+    expect(a.slug).toBe("same-name");
+    expect(b.slug).toBe("same-name-2"); // active slug is taken, so it suffixes
+
+    await provisionWorkspace(db, a.id, () => {}, fakeGit);
+    await archiveWorkspace(db, a.id, {}, fakeGit);
+    const c = await createWorkspace(db, config, { name: "Same Name", repoIds: [repo.id] });
+    expect(c.slug).toBe("same-name"); // archived slug is freed for reuse
+  });
+
+  it("stays archiving when one repo's worktree won't remove", async () => {
+    const db = getDb(url).db;
+    const r1 = await addRepo();
+    const created = await app.request("/api/repos", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ cloneUrl: "git@github.com:acme/other.git" }),
+    });
+    const r2 = (await created.json()) as { id: string };
+    const ws = await createWorkspace(db, config, { name: "multi", repoIds: [r1.id, r2.id] });
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+
+    // Removal fails only for the "other" repo's worktree.
+    const failingGit: GitRunner = async (args) => {
+      if (
+        args[0] === "worktree" &&
+        args[1] === "remove" &&
+        args[args.length - 1]?.includes("other")
+      ) {
+        return { stdout: "", stderr: "worktree contains modified files", exitCode: 1 };
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    };
+    const result = await archiveWorkspace(db, ws.id, {}, failingGit);
+    expect(result.status).toBe("archiving");
+    expect(result.errors.length).toBe(1);
+
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.status).toBe("archiving");
+    expect(detail?.repos.map((r) => r.status).sort()).toEqual(["error", "removed"]);
+  });
+
+  it("completes provisioning even when a setup script fails (repo -> error)", async () => {
+    const db = getDb(url).db;
+    // A repo whose setup script exits non-zero leaves that repo in error.
+    const created = await app.request("/api/repos", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ cloneUrl: "git@github.com:acme/flaky.git", setupScript: "exit 3" }),
+    });
+    const repo = (await created.json()) as { id: string };
+    const ws = await createWorkspace(db, config, { name: "flaky-task", repoIds: [repo.id] });
+
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.status).toBe("error");
+    expect(detail?.repos[0]?.status).toBe("error");
+    expect(detail?.repos[0]?.setupExitCode).toBe(3);
+  });
+});

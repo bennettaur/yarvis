@@ -1,0 +1,504 @@
+/**
+ * Workspaces service: the repo registry plus provisioning and teardown of the
+ * per-workspace worktrees. Git/filesystem work is delegated to `git.ts`; this
+ * module owns the database state and orchestration.
+ */
+
+import { eq, inArray } from "drizzle-orm";
+import type { Config } from "../config.ts";
+import type { Db } from "../db/client.ts";
+import {
+  type Repo,
+  repos,
+  tasks,
+  type Workspace,
+  type WorkspaceRepo,
+  type WorkspaceRepoPr,
+  workspaceRepoPr,
+  workspaceRepos,
+  workspaces,
+} from "../db/schema.ts";
+import { runStreaming } from "./exec.ts";
+import {
+  branchExists,
+  createWorktree,
+  defaultGitRunner,
+  detectDefaultBranch,
+  ensurePrimaryClone,
+  type GitRunner,
+  removeWorktree,
+  updateDefaultBranch,
+} from "./git.ts";
+
+const SETUP_LOG_CAP = 16 * 1024;
+const SETUP_TIMEOUT_MS = 10 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// Repo registry
+// ---------------------------------------------------------------------------
+
+export interface CreateRepoInput {
+  cloneUrl: string;
+  name?: string;
+  setupScript?: string | null;
+  runScript?: string | null;
+}
+
+export interface UpdateRepoInput {
+  name?: string;
+  cloneUrl?: string;
+  setupScript?: string | null;
+  runScript?: string | null;
+}
+
+/** Extracts {owner, repo} from an ssh or https git remote, or null. */
+export function parseGitUrl(url: string): { owner: string; repo: string } | null {
+  const trimmed = url.trim().replace(/\.git$/, "");
+  const match = trimmed.match(/[:/]([^/:]+)\/([^/]+)$/);
+  if (!match) return null;
+  return { owner: match[1]!, repo: match[2]! };
+}
+
+/**
+ * Allowed clone-URL transports. Git's `ext::`/`fd::` remote helpers execute
+ * arbitrary commands, and a leading `-` is read as a flag — both would turn a
+ * registry entry into code execution, so only these schemes are accepted.
+ */
+const ALLOWED_CLONE_URL = /^(https?:\/\/|git:\/\/|ssh:\/\/|[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:)/;
+
+/** Throws if a clone URL uses a transport that could execute arbitrary code. */
+export function assertSafeCloneUrl(url: string): void {
+  if (!ALLOWED_CLONE_URL.test(url.trim())) {
+    throw new Error(`unsupported clone URL transport: ${url}`);
+  }
+}
+
+/** Absolute path to a repo's primary clone under the workspaces root. */
+export function primaryClonePath(config: Config, owner: string, repo: string): string {
+  return `${config.workspacesRoot}/.repos/${owner}-${repo}`;
+}
+
+export async function createRepo(db: Db, config: Config, input: CreateRepoInput): Promise<Repo> {
+  assertSafeCloneUrl(input.cloneUrl);
+  const parsed = parseGitUrl(input.cloneUrl);
+  if (!parsed) throw new Error(`could not parse owner/repo from clone URL: ${input.cloneUrl}`);
+  const { owner, repo } = parsed;
+  const [row] = await db
+    .insert(repos)
+    .values({
+      name: input.name?.trim() || repo,
+      owner,
+      repo,
+      cloneUrl: input.cloneUrl.trim(),
+      primaryClonePath: primaryClonePath(config, owner, repo),
+      setupScript: input.setupScript ?? null,
+      runScript: input.runScript ?? null,
+    })
+    .returning();
+  return row!;
+}
+
+export async function listRepos(db: Db): Promise<Repo[]> {
+  return db.select().from(repos).orderBy(repos.name);
+}
+
+export async function getRepo(db: Db, id: string): Promise<Repo | null> {
+  const [row] = await db.select().from(repos).where(eq(repos.id, id));
+  return row ?? null;
+}
+
+export async function updateRepo(db: Db, id: string, patch: UpdateRepoInput): Promise<Repo | null> {
+  const values: Partial<typeof repos.$inferInsert> = { updatedAt: new Date() };
+  if (patch.name !== undefined) values.name = patch.name;
+  if (patch.setupScript !== undefined) values.setupScript = patch.setupScript;
+  if (patch.runScript !== undefined) values.runScript = patch.runScript;
+  if (patch.cloneUrl !== undefined) {
+    assertSafeCloneUrl(patch.cloneUrl);
+    const parsed = parseGitUrl(patch.cloneUrl);
+    if (!parsed) throw new Error(`could not parse owner/repo from clone URL: ${patch.cloneUrl}`);
+    values.cloneUrl = patch.cloneUrl.trim();
+    values.owner = parsed.owner;
+    values.repo = parsed.repo;
+  }
+  const [row] = await db.update(repos).set(values).where(eq(repos.id, id)).returning();
+  return row ?? null;
+}
+
+export async function deleteRepo(db: Db, id: string): Promise<boolean> {
+  const rows = await db.delete(repos).where(eq(repos.id, id)).returning();
+  return rows.length > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Workspaces
+// ---------------------------------------------------------------------------
+
+export interface CreateWorkspaceInput {
+  name: string;
+  repoIds: string[];
+  taskId?: string | null;
+}
+
+export interface WorkspaceRepoDetail extends WorkspaceRepo {
+  repo: Repo;
+  pr: WorkspaceRepoPr | null;
+}
+
+export interface WorkspaceDetail extends Workspace {
+  repos: WorkspaceRepoDetail[];
+}
+
+/** Filesystem- and branch-safe slug derived from a workspace name. */
+export function slugify(name: string): string {
+  return (
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 60) || "workspace"
+  );
+}
+
+/** Finds a slug not used by any non-archived workspace, suffixing if needed. */
+async function resolveUniqueSlug(db: Db, base: string): Promise<string> {
+  const active = await db
+    .select({ slug: workspaces.slug })
+    .from(workspaces)
+    .where(inArray(workspaces.status, ["creating", "active", "archiving", "error"]));
+  const taken = new Set(active.map((r) => r.slug));
+  if (!taken.has(base)) return base;
+  // Cap the search: 1000 same-named active workspaces means something is wrong.
+  for (let i = 2; i < 1000; i++) {
+    const candidate = `${base}-${i}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+  throw new Error("could not allocate a unique workspace slug");
+}
+
+/**
+ * Creates a workspace and its repo rows in the DB. Does NOT touch the
+ * filesystem — provisioning (clone/fetch/worktree/setup) is driven separately
+ * via `provisionWorkspace` so its output can be streamed to the UI.
+ */
+export async function createWorkspace(
+  db: Db,
+  config: Config,
+  input: CreateWorkspaceInput,
+): Promise<Workspace> {
+  if (input.repoIds.length === 0) throw new Error("a workspace needs at least one repo");
+
+  const selected = await db.select().from(repos).where(inArray(repos.id, input.repoIds));
+  if (selected.length !== input.repoIds.length) {
+    throw new Error("one or more repos not found");
+  }
+
+  const slug = await resolveUniqueSlug(db, slugify(input.name));
+  const rootPath = `${config.workspacesRoot}/${slug}`;
+  const branch = `yarvis/${slug}`;
+
+  // Distinct subfolder per repo; disambiguate name collisions with the owner.
+  const nameCounts = new Map<string, number>();
+  for (const repo of selected) nameCounts.set(repo.name, (nameCounts.get(repo.name) ?? 0) + 1);
+
+  // One transaction so a mid-create failure never leaves a half-built workspace.
+  return db.transaction(async (tx) => {
+    const [workspace] = await tx
+      .insert(workspaces)
+      .values({ name: input.name.trim(), slug, rootPath, status: "creating" })
+      .returning();
+
+    await tx.insert(workspaceRepos).values(
+      selected.map((repo) => ({
+        workspaceId: workspace!.id,
+        repoId: repo.id,
+        branch,
+        baseBranch: repo.defaultBranch ?? "main",
+        worktreePath: `${rootPath}/${
+          (nameCounts.get(repo.name) ?? 0) > 1 ? `${repo.name}-${repo.owner}` : repo.name
+        }`,
+      })),
+    );
+
+    if (input.taskId) {
+      await tx.update(tasks).set({ workspaceId: workspace!.id }).where(eq(tasks.id, input.taskId));
+    }
+
+    return workspace!;
+  });
+}
+
+export async function listWorkspaces(db: Db): Promise<Workspace[]> {
+  return db.select().from(workspaces).orderBy(workspaces.createdAt);
+}
+
+export async function getWorkspace(db: Db, id: string): Promise<WorkspaceDetail | null> {
+  const [workspace] = await db.select().from(workspaces).where(eq(workspaces.id, id));
+  if (!workspace) return null;
+
+  const wrRows = await db
+    .select()
+    .from(workspaceRepos)
+    .where(eq(workspaceRepos.workspaceId, id))
+    .orderBy(workspaceRepos.createdAt);
+
+  const repoIds = wrRows.map((r) => r.repoId);
+  const repoRows = repoIds.length
+    ? await db.select().from(repos).where(inArray(repos.id, repoIds))
+    : [];
+  const repoById = new Map(repoRows.map((r) => [r.id, r]));
+
+  const wrIds = wrRows.map((r) => r.id);
+  const prRows = wrIds.length
+    ? await db.select().from(workspaceRepoPr).where(inArray(workspaceRepoPr.workspaceRepoId, wrIds))
+    : [];
+  const prByWr = new Map(prRows.map((p) => [p.workspaceRepoId, p]));
+
+  return {
+    ...workspace,
+    repos: wrRows.map((wr) => ({
+      ...wr,
+      repo: repoById.get(wr.repoId)!,
+      pr: prByWr.get(wr.id) ?? null,
+    })),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Provisioning
+// ---------------------------------------------------------------------------
+
+export type ProvisionEvent =
+  | { type: "repo-start"; workspaceRepoId: string; repo: string }
+  | { type: "log"; workspaceRepoId: string; text: string }
+  | { type: "repo-done"; workspaceRepoId: string; status: string; exitCode?: number }
+  | { type: "repo-error"; workspaceRepoId: string; message: string }
+  | { type: "done"; status: string }
+  | { type: "error"; message: string };
+
+export type ProvisionEmit = (event: ProvisionEvent) => void | Promise<void>;
+
+/** Serializes mutations to a repo's primary clone across concurrent workspaces. */
+const repoLocks = new Map<string, Promise<unknown>>();
+
+async function withRepoLock<T>(repoId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = repoLocks.get(repoId) ?? Promise.resolve();
+  const result = prev.then(fn, fn);
+  // Store a never-rejecting tail so a failure doesn't poison the chain.
+  repoLocks.set(
+    repoId,
+    result.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return result;
+}
+
+/** Workspaces currently being provisioned, to reject concurrent drives. */
+const provisioning = new Set<string>();
+
+/**
+ * Drives provisioning for a workspace: per repo, ensure the primary clone,
+ * refresh its default branch, cut a worktree, and run the setup script —
+ * emitting progress events (setup output streams through `emit`). Idempotent
+ * enough to retry: a repo already `ready`/`removed` is skipped.
+ */
+export async function provisionWorkspace(
+  db: Db,
+  id: string,
+  emit: ProvisionEmit,
+  runner: GitRunner = defaultGitRunner,
+): Promise<void> {
+  if (provisioning.has(id)) {
+    await emit({ type: "error", message: "workspace is already being provisioned" });
+    return;
+  }
+  provisioning.add(id);
+  // Repos provision in parallel, so serialize emits: concurrent stream writes
+  // would otherwise interleave bytes within a single SSE frame.
+  let emitChain: Promise<void> = Promise.resolve();
+  const safeEmit: ProvisionEmit = (event) => {
+    emitChain = emitChain.then(() => emit(event));
+    return emitChain;
+  };
+
+  try {
+    const detail = await getWorkspace(db, id);
+    if (!detail) {
+      await safeEmit({ type: "error", message: "workspace not found" });
+      return;
+    }
+
+    const provisionRepo = async (wr: WorkspaceRepoDetail): Promise<void> => {
+      if (wr.status === "ready" || wr.status === "removed") return;
+      await safeEmit({ type: "repo-start", workspaceRepoId: wr.id, repo: wr.repo.name });
+      await db
+        .update(workspaceRepos)
+        .set({ status: "provisioning", error: null })
+        .where(eq(workspaceRepos.id, wr.id));
+
+      try {
+        await withRepoLock(wr.repoId, async () => {
+          const repo = wr.repo;
+          await ensurePrimaryClone(runner, repo.cloneUrl, repo.primaryClonePath);
+
+          const detected = await detectDefaultBranch(runner, repo.primaryClonePath);
+          const base = detected ?? repo.defaultBranch ?? "main";
+          if (detected && detected !== repo.defaultBranch) {
+            await db
+              .update(repos)
+              .set({ defaultBranch: detected, updatedAt: new Date() })
+              .where(eq(repos.id, repo.id));
+          }
+
+          await updateDefaultBranch(runner, repo.primaryClonePath, base);
+
+          // Avoid colliding with a branch left behind by a prior workspace.
+          let branch = wr.branch;
+          if (await branchExists(runner, repo.primaryClonePath, branch)) {
+            branch = `${wr.branch}-${id.slice(0, 8)}`;
+          }
+          await createWorktree(runner, repo.primaryClonePath, wr.worktreePath, branch, base);
+          await db
+            .update(workspaceRepos)
+            .set({ branch, baseBranch: base })
+            .where(eq(workspaceRepos.id, wr.id));
+        });
+
+        let exitCode = 0;
+        if (wr.repo.setupScript?.trim()) {
+          // `bash -c`, not `-lc`: a login shell would source the user's profile
+          // and re-import the provider secrets exec.ts deliberately stripped.
+          let logTail = "";
+          exitCode = await runStreaming(["bash", "-c", wr.repo.setupScript], {
+            cwd: wr.worktreePath,
+            timeoutMs: SETUP_TIMEOUT_MS,
+            onChunk: async (text) => {
+              logTail = (logTail + text).slice(-SETUP_LOG_CAP);
+              await safeEmit({ type: "log", workspaceRepoId: wr.id, text });
+            },
+          });
+          await db
+            .update(workspaceRepos)
+            .set({ setupLog: logTail, setupExitCode: exitCode })
+            .where(eq(workspaceRepos.id, wr.id));
+        }
+
+        if (exitCode !== 0) {
+          const message = `setup script exited ${exitCode}`;
+          await db
+            .update(workspaceRepos)
+            .set({ status: "error", error: message })
+            .where(eq(workspaceRepos.id, wr.id));
+          await safeEmit({ type: "repo-error", workspaceRepoId: wr.id, message });
+        } else {
+          await db
+            .update(workspaceRepos)
+            .set({ status: "ready" })
+            .where(eq(workspaceRepos.id, wr.id));
+          await safeEmit({ type: "repo-done", workspaceRepoId: wr.id, status: "ready", exitCode });
+        }
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        await db
+          .update(workspaceRepos)
+          .set({ status: "error", error: message })
+          .where(eq(workspaceRepos.id, wr.id));
+        await safeEmit({ type: "repo-error", workspaceRepoId: wr.id, message });
+      }
+    };
+
+    // Distinct repos provision concurrently; withRepoLock still serializes work
+    // on a primary clone shared with another workspace.
+    await Promise.all(detail.repos.map(provisionRepo));
+
+    // The workspace is active only if every repo provisioned cleanly.
+    const after = await getWorkspace(db, id);
+    const allReady = after?.repos.every((r) => r.status === "ready" || r.status === "removed");
+    const status = allReady ? "active" : "error";
+    await db
+      .update(workspaces)
+      .set({ status, updatedAt: new Date(), error: allReady ? null : "one or more repos failed" })
+      .where(eq(workspaces.id, id));
+    await safeEmit({ type: "done", status });
+  } finally {
+    provisioning.delete(id);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Archival
+// ---------------------------------------------------------------------------
+
+export interface ArchiveWorkspaceInput {
+  summary?: string | null;
+  mergedPrUrl?: string | null;
+  /** Discard uncommitted work in the worktrees. */
+  force?: boolean;
+}
+
+export interface ArchiveResult {
+  status: Workspace["status"];
+  errors: { repo: string; message: string }[];
+}
+
+/**
+ * Tears down a workspace's worktrees and marks it archived. Idempotent and
+ * partial-failure safe: a repo whose worktree won't remove (e.g. uncommitted
+ * changes without `force`) keeps the workspace in `archiving` with the error
+ * recorded, so the operation can be retried.
+ */
+export async function archiveWorkspace(
+  db: Db,
+  id: string,
+  input: ArchiveWorkspaceInput = {},
+  runner: GitRunner = defaultGitRunner,
+): Promise<ArchiveResult> {
+  const detail = await getWorkspace(db, id);
+  if (!detail) throw new Error("workspace not found");
+
+  await db
+    .update(workspaces)
+    .set({ status: "archiving", updatedAt: new Date() })
+    .where(eq(workspaces.id, id));
+
+  const errors: { repo: string; message: string }[] = [];
+
+  for (const wr of detail.repos) {
+    if (wr.status === "removed") continue;
+    try {
+      await withRepoLock(wr.repoId, () =>
+        removeWorktree(runner, wr.repo.primaryClonePath, wr.worktreePath, {
+          force: input.force ?? false,
+        }),
+      );
+      await db
+        .update(workspaceRepos)
+        .set({ status: "removed", error: null })
+        .where(eq(workspaceRepos.id, wr.id));
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      errors.push({ repo: wr.repo.name, message });
+      await db
+        .update(workspaceRepos)
+        .set({ status: "error", error: message })
+        .where(eq(workspaceRepos.id, wr.id));
+    }
+  }
+
+  const fullyRemoved = errors.length === 0;
+  const status: Workspace["status"] = fullyRemoved ? "archived" : "archiving";
+  await db
+    .update(workspaces)
+    .set({
+      status,
+      summary: input.summary ?? detail.summary,
+      mergedPrUrl: input.mergedPrUrl ?? detail.mergedPrUrl,
+      error: fullyRemoved ? null : "one or more worktrees could not be removed",
+      archivedAt: fullyRemoved ? new Date() : null,
+      updatedAt: new Date(),
+    })
+    .where(eq(workspaces.id, id));
+
+  return { status, errors };
+}
