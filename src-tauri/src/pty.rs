@@ -90,7 +90,10 @@ fn spawn_session(
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let mut cmd = CommandBuilder::new(shell);
     cmd.env("TERM", "xterm-256color");
-    if let Some(dir) = cwd.filter(|d| !d.is_empty()).or_else(|| std::env::var("HOME").ok()) {
+    if let Some(dir) = cwd
+        .filter(|d| !d.is_empty())
+        .or_else(|| std::env::var("HOME").ok())
+    {
         cmd.cwd(dir);
     }
 
