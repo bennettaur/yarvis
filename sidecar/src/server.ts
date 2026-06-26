@@ -5,6 +5,7 @@ import { watchParentProcess } from "./lib/parentWatch.ts";
 import { redactSecrets } from "./llm/errors.ts";
 import { createReadiness } from "./readiness.ts";
 import { startTelegramBot } from "./telegram/index.ts";
+import { startWorkspacePoller } from "./workspaces/poller.ts";
 
 const config = loadConfig();
 
@@ -53,6 +54,9 @@ if (config.databaseUrl) {
       // The Telegram bot drives the chat agent, which needs the database, so it
       // only starts once migrations have applied. It is a no-op without a token.
       startTelegramBot(config);
+      // Background PR/checks poller. No-op without a GitHub token; reconciles
+      // interrupted runs on its first tick.
+      startWorkspacePoller(config);
     })
     .catch((e) => {
       // Redact before storing the message because `/health` (unauthenticated)

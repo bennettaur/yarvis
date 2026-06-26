@@ -300,6 +300,8 @@ export class AzureDevOpsClient {
     const pr = await this.prRaw(ref);
     const merge = mapMergeStatus(pr.mergeStatus);
     return {
+      state: pr.status ?? "active",
+      merged: pr.status === "completed",
       mergeable: merge.mergeable,
       mergeableState: pr.mergeStatus ?? "unknown",
       checks: { total: 0, success: 0, failure: 0, pending: 0 },

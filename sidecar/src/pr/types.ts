@@ -25,6 +25,9 @@ export interface ChecksSummary {
 }
 
 export interface PrStatus {
+  /** "open" | "closed". */
+  state: string;
+  merged: boolean;
   mergeable: boolean | null;
   mergeableState: string;
   checks: ChecksSummary;

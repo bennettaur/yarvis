@@ -15,6 +15,8 @@ import {
   type ProvisionEvent,
   provisionWorkspace,
   updateRepo,
+  workspaceRepoChanges,
+  workspaceRepoFiles,
 } from "./service.ts";
 
 const createRepoSchema = z.object({
@@ -142,6 +144,26 @@ export function createWorkspaceRoutes(config: Config): Hono {
         await emit({ type: "error", message: e instanceof Error ? e.message : String(e) });
       }
     });
+  });
+
+  // Files / changed-files for a workspace repo's worktree (right-column views).
+  const errorStatus = (e: unknown): 400 | 404 =>
+    e instanceof Error && e.message.includes("not found") ? 404 : 400;
+
+  router.get("/:id/repos/:wrId/files", async (c) => {
+    try {
+      return c.json(await workspaceRepoFiles(db(), c.req.param("wrId")));
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
+    }
+  });
+
+  router.get("/:id/repos/:wrId/changes", async (c) => {
+    try {
+      return c.json(await workspaceRepoChanges(db(), c.req.param("wrId")));
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
+    }
   });
 
   router.post("/:id/archive", async (c) => {
