@@ -20,10 +20,26 @@ const RESIZE_DEBOUNCE_MS = 80;
  * fall back to a per-instance id so terminals never share a shell; such a
  * session resets only if Omni itself unmounts.
  */
-export default function TerminalPanel({ sessionId }: { sessionId?: string }) {
+export default function TerminalPanel({
+  sessionId,
+  cwd,
+  initialCommand,
+}: {
+  sessionId?: string;
+  /** Working directory for a freshly spawned shell (ignored on reattach). */
+  cwd?: string;
+  /** Command to run once when the shell is first spawned (not on reattach). */
+  initialCommand?: string;
+}) {
   const autoId = useId();
   const id = sessionId ?? `auto:${autoId}`;
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // cwd/initialCommand only apply at first spawn; refs let the attach effect read
+  // them without re-running when they change — the session is keyed by id alone.
+  const cwdRef = useRef(cwd);
+  cwdRef.current = cwd;
+  const initialCommandRef = useRef(initialCommand);
+  initialCommandRef.current = initialCommand;
   const [exited, setExited] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Bumped by the restart control to tear down and re-attach a fresh session.
@@ -76,17 +92,22 @@ export default function TerminalPanel({ sessionId }: { sessionId?: string }) {
         }
         cleanups.push(unOutput, unExit);
 
-        const scrollback = await attachPty(id, term.cols, term.rows);
+        const scrollback = await attachPty(id, term.cols, term.rows, cwdRef.current);
         if (disposed) return;
-        // Synchronous from here, so no buffered event can interleave: replay
-        // history for a reattach, or flush the buffer for a fresh shell. On a
-        // reattach the scrollback is authoritative, so drop the buffer to avoid
-        // duplicating bytes already in the snapshot.
-        if (scrollback.length) term.write(new Uint8Array(scrollback));
+        // Synchronous from here, so no buffered event can interleave. A fresh
+        // shell has no scrollback, so flush the buffer; on a reattach the
+        // scrollback is authoritative, so drop the buffer to avoid duplicating
+        // bytes already in the snapshot.
+        const fresh = scrollback.length === 0;
+        if (!fresh) term.write(new Uint8Array(scrollback));
         else for (const chunk of pending) term.write(chunk);
         pending.length = 0;
         ready = true;
         void resizePty(id, term.cols, term.rows);
+        // Run the one-shot command only on a fresh spawn so a tab switch
+        // (reattach) doesn't re-run it.
+        const initialCommand = initialCommandRef.current;
+        if (fresh && initialCommand) void writePty(id, `${initialCommand}\r`);
       } catch (e) {
         if (!disposed) setError(e instanceof Error ? e.message : String(e));
       }

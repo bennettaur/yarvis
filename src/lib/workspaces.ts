@@ -52,6 +52,11 @@ export interface WorkspaceDetail extends Workspace {
   repos: WorkspaceRepoDetail[];
 }
 
+/** A workspace list row, with its repo names for sidebar grouping. */
+export interface WorkspaceSummary extends Workspace {
+  repoNames: string[];
+}
+
 export interface CreateWorkspaceInput {
   name: string;
   repoIds: string[];
@@ -86,7 +91,7 @@ async function readError(res: Response, action: string): Promise<never> {
   );
 }
 
-export async function listWorkspaces(): Promise<Workspace[]> {
+export async function listWorkspaces(): Promise<WorkspaceSummary[]> {
   const res = await sidecarFetch("/api/workspaces");
   if (!res.ok) return readError(res, "list workspaces");
   return res.json();

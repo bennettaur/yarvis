@@ -5,6 +5,7 @@ export type Tab =
   | "chat"
   | "omni"
   | "terminal"
+  | "workspaces"
   | "tasks"
   | "prs"
   | "memory"
@@ -26,6 +27,7 @@ export const NAV_ITEMS: NavItem[] = [
   { id: "chat", label: "Chat", icon: "chat" },
   { id: "omni", label: "Omni", icon: "omni" },
   { id: "terminal", label: "Terminal", icon: "terminal" },
+  { id: "workspaces", label: "Workspaces", icon: "workspaces" },
   { id: "tasks", label: "Tasks", icon: "tasks" },
   { id: "prs", label: "PRs", icon: "prs" },
   { id: "memory", label: "Memory", icon: "memory" },

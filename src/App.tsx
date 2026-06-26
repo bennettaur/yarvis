@@ -16,6 +16,7 @@ import { type Tab, tabLabel } from "./components/shell/nav";
 import { useTabShortcuts } from "./components/shell/useTabShortcuts";
 import TasksPanel from "./components/TasksPanel";
 import TerminalPanel from "./components/TerminalPanel";
+import WorkspacesPanel from "./components/WorkspacesPanel";
 import { type Alarm, onAlarmFired } from "./lib/alarms";
 import { notify } from "./lib/notify";
 import { onOmniChatSummon } from "./lib/omniChat";
@@ -92,6 +93,8 @@ export default function App() {
           <OmniView />
         ) : tab === "terminal" ? (
           <TerminalPanel sessionId="tab:terminal" />
+        ) : tab === "workspaces" ? (
+          <WorkspacesPanel />
         ) : (
           <div className="h-full overflow-y-auto p-6">
             {tab === "tasks" && <TasksPanel />}
