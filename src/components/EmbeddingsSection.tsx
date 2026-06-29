@@ -110,8 +110,7 @@ export default function EmbeddingsSection() {
       .map((name) => ({ name, value: pendingHeaderValues[name]?.trim() ?? "" }))
       .filter((p) => p.value.length > 0);
     setBusy("config");
-    let step: "save config" | "store header value" | "restart sidecar" | "refresh" =
-      "save config";
+    let step: "save config" | "store header value" | "restart sidecar" | "refresh" = "save config";
     try {
       await memSetEmbeddingsConfig({
         baseUrl: draft.baseUrl.trim(),
@@ -304,9 +303,7 @@ export default function EmbeddingsSection() {
 
         <HeadersEditor
           names={draft.headerNames}
-          setNames={(next) =>
-            setDraft((d) => ({ ...d, headerNames: next }))
-          }
+          setNames={(next) => setDraft((d) => ({ ...d, headerNames: next }))}
           pendingValues={pendingHeaderValues}
           setPendingValues={setPendingHeaderValues}
           existingPresence={secrets?.headers ?? {}}
