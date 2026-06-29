@@ -14,6 +14,7 @@ import {
   type WorkspaceStatus,
   type WorkspaceSummary,
 } from "../lib/workspaces";
+import TerminalTabs from "./shell/terminalTabs/TerminalTabs";
 import TerminalPanel from "./TerminalPanel";
 import WorkspaceSidePanel from "./WorkspaceSidePanel";
 import ArchiveDialog from "./workspaces/ArchiveDialog";
@@ -141,6 +142,7 @@ export default function WorkspacesPanel() {
         <div className="flex shrink-0 items-center justify-between px-3 py-2">
           <h2 className="text-sm font-medium text-zinc-200">Workspaces</h2>
           <button
+            type="button"
             onClick={beginNew}
             className="rounded-md bg-indigo-600 px-2 py-1 text-xs font-medium hover:bg-indigo-500"
           >
@@ -161,6 +163,7 @@ export default function WorkspacesPanel() {
                 {group.items.map((ws) => (
                   <li key={ws.id}>
                     <button
+                      type="button"
                       onClick={() => {
                         setCreating(false);
                         setSelectedId(ws.id);
@@ -340,12 +343,14 @@ function NewWorkspaceForm({
 
         <div className="flex justify-end gap-2">
           <button
+            type="button"
             onClick={onCancel}
             className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
           >
             Cancel
           </button>
           <button
+            type="button"
             onClick={() => void submit()}
             className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500"
           >
@@ -411,6 +416,7 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
           </span>
           {detail.status !== "archived" && (
             <button
+              type="button"
               onClick={() => setShowArchive(true)}
               className="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
             >
@@ -429,6 +435,7 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
               <RepoStatusBadge status={wr.status} />
               {wr.repo.runScript && wr.status === "ready" && (
                 <button
+                  type="button"
                   onClick={() => setRunRepo(wr)}
                   className="rounded border border-zinc-700 px-1.5 py-0.5 text-zinc-300 hover:bg-zinc-800"
                 >
@@ -451,6 +458,7 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
                 </span>
                 {detail.status !== "archived" && (
                   <button
+                    type="button"
                     onClick={() =>
                       void unlinkWorkspaceTask(id, t.id).then(() => {
                         void load();
@@ -497,6 +505,7 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
       {!provisioned && provisionLog === null && (
         <div className="shrink-0 border-b border-zinc-800 px-4 py-2">
           <button
+            type="button"
             onClick={() => void provision()}
             className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500"
           >
@@ -515,7 +524,7 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
         <div className="flex min-h-0 flex-1">
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="min-h-0 flex-1">
-              <TerminalPanel sessionId={`ws:${detail.id}`} cwd={detail.rootPath} />
+              <TerminalTabs storageKey={`ws:${detail.id}`} cwd={detail.rootPath} />
             </div>
             {runRepo && (
               <div className="flex min-h-0 flex-1 flex-col border-t border-zinc-800">
@@ -525,6 +534,7 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
                     <span className="font-mono text-zinc-600">{runRepo.repo.runScript}</span>
                   </span>
                   <button
+                    type="button"
                     onClick={() => setRunRepo(null)}
                     className="rounded border border-zinc-700 px-1.5 py-0.5 hover:bg-zinc-800"
                   >

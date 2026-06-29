@@ -234,6 +234,26 @@ pub fn pty_resize(
     Ok(())
 }
 
+/// True when a non-shell foreground process is running in the PTY (e.g. the user
+/// is in vim, tailing logs, or running tests). Compares the PTY's foreground
+/// process group to the shell's pid: if they differ, the shell has handed off
+/// the foreground to a child. Returns false for unknown sessions or when the
+/// platform can't report a process group (Windows, serial PTYs).
+#[tauri::command]
+pub fn pty_is_busy(state: tauri::State<'_, PtyState>, id: String) -> Result<bool, String> {
+    let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    let Some(session) = sessions.get(&id) else {
+        return Ok(false);
+    };
+    let Some(fg) = session.master.process_group_leader() else {
+        return Ok(false);
+    };
+    let Some(shell_pid) = session.child.process_id() else {
+        return Ok(false);
+    };
+    Ok(fg > 0 && (fg as u32) != shell_pid)
+}
+
 #[tauri::command]
 pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), String> {
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;

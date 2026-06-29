@@ -13,8 +13,8 @@ import PrDescription from "../components/pr/PrDescription";
 import PrFileDiffs from "../components/pr/PrFileDiffs";
 import PrFileList from "../components/pr/PrFileList";
 import SessionsPanel from "../components/SessionsPanel";
+import TerminalTabs from "../components/shell/terminalTabs/TerminalTabs";
 import TasksPanel from "../components/TasksPanel";
-import TerminalPanel from "../components/TerminalPanel";
 import WorkspaceListWidget from "../components/workspaces/WorkspaceListWidget";
 import WorkspaceWidget from "../components/workspaces/WorkspaceWidget";
 import { catalog } from "./catalog";
@@ -145,7 +145,7 @@ const { registry } = defineRegistry(catalog, {
     ),
     Terminal: ({ props }) => (
       <WidgetFrame title={props.title ?? "Terminal"}>
-        <TerminalPanel sessionId={props.sessionId ? `omni:${props.sessionId}` : undefined} />
+        <TerminalTabs storageKey={`omni:${props.sessionId ?? "default"}`} />
       </WidgetFrame>
     ),
     WorkspaceList: ({ props }) => (
