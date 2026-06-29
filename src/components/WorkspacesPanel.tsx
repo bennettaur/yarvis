@@ -522,12 +522,12 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
         <ArchivedView detail={detail} />
       ) : (
         <div className="flex min-h-0 flex-1">
-          <div className="flex min-h-0 flex-1 flex-col">
-            <div className="min-h-0 flex-1">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <div className="min-h-0 min-w-0 flex-1">
               <TerminalTabs storageKey={`ws:${detail.id}`} cwd={detail.rootPath} />
             </div>
             {runRepo && (
-              <div className="flex min-h-0 flex-1 flex-col border-t border-zinc-800">
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col border-t border-zinc-800">
                 <div className="flex shrink-0 items-center justify-between bg-zinc-900 px-3 py-1 text-xs text-zinc-400">
                   <span>
                     run · {runRepo.repo.name}{" "}

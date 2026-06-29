@@ -234,8 +234,9 @@ export default function TerminalTabs({
     const onKey = (e: KeyboardEvent) => {
       const root = rootRef.current;
       if (!root?.contains(document.activeElement)) return;
-      const mod = e.metaKey || e.ctrlKey;
-      if (!mod || e.altKey) return;
+      // Cmd-only (not Ctrl) — Ctrl+D/T/W are reserved for the shell (EOF,
+      // transpose-chars, kill-word-back) and must reach the terminal.
+      if (!e.metaKey || e.ctrlKey || e.altKey) return;
       const key = e.key.toLowerCase();
       if (key === "t" && !e.shiftKey) {
         e.preventDefault();
@@ -270,7 +271,7 @@ export default function TerminalTabs({
   if (!activeTab) return null;
 
   return (
-    <div ref={rootRef} className="flex h-full min-h-0 w-full flex-col bg-[#09090b]">
+    <div ref={rootRef} className="flex h-full min-h-0 w-full min-w-0 flex-col bg-[#09090b]">
       <TabStrip
         tabs={state.tabs}
         activeId={activeTab.id}
@@ -278,7 +279,7 @@ export default function TerminalTabs({
         onClose={(id) => void closeTab(id)}
         onNew={openTab}
       />
-      <div className="min-h-0 flex-1">
+      <div className="min-h-0 min-w-0 flex-1">
         <PaneTreeView
           pane={activeTab.root}
           tabId={activeTab.id}
