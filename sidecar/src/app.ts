@@ -45,7 +45,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
     cors({
       origin: corsOrigins,
       allowHeaders: ["Authorization", "Content-Type"],
-      allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+      allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     }),
   );
 
