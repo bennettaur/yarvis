@@ -245,13 +245,21 @@ pub fn pty_is_busy(state: tauri::State<'_, PtyState>, id: String) -> Result<bool
     let Some(session) = sessions.get(&id) else {
         return Ok(false);
     };
-    let Some(fg) = session.master.process_group_leader() else {
-        return Ok(false);
-    };
-    let Some(shell_pid) = session.child.process_id() else {
-        return Ok(false);
-    };
-    Ok(fg > 0 && (fg as u32) != shell_pid)
+    #[cfg(unix)]
+    {
+        let Some(fg) = session.master.process_group_leader() else {
+            return Ok(false);
+        };
+        let Some(shell_pid) = session.child.process_id() else {
+            return Ok(false);
+        };
+        Ok(fg > 0 && (fg as u32) != shell_pid)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = session;
+        Ok(false)
+    }
 }
 
 #[tauri::command]
