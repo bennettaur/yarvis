@@ -29,19 +29,79 @@ export interface IngestResult {
   chunks: number;
 }
 
+/**
+ * Reads the server's response body for an error message. Routes here return
+ * either `{ error: string }` or `{ error: <zod flattened> }`; both are folded
+ * to a single line so the UI can surface it verbatim.
+ */
+async function readErrorBody(res: Response): Promise<string> {
+  const text = await res.text().catch(() => "");
+  if (!text) return "";
+  try {
+    const parsed = JSON.parse(text);
+    const err = parsed?.error;
+    if (typeof err === "string") return err;
+    if (err && typeof err === "object") return JSON.stringify(err);
+  } catch {
+    // not JSON; fall through and return the raw text
+  }
+  return text.slice(0, 500);
+}
+
+/**
+ * Flattens a fetch failure into a single string. WebKit (Tauri's webview on
+ * macOS) surfaces network errors as `TypeError: Load failed` with no further
+ * detail at the top level — the underlying cause, if any, lives on
+ * `error.cause`. We walk the chain so the surfaced message says something more
+ * actionable than "Load failed", and we also log the full error object to the
+ * console so devtools shows the stack and any cause chain.
+ */
+function describeFetchFailure(method: string, path: string, e: unknown): Error {
+  const parts: string[] = [];
+  let cur: unknown = e;
+  for (let depth = 0; depth < 5 && cur; depth++) {
+    if (cur instanceof Error) {
+      parts.push(cur.message || cur.name);
+      cur = (cur as { cause?: unknown }).cause;
+    } else {
+      parts.push(String(cur));
+      break;
+    }
+  }
+  const detail = parts.join(" ← ") || "unknown error";
+  console.error(`[sidecar] ${method} ${path} failed`, e);
+  return new Error(`${method} ${path}: ${detail}`);
+}
+
 async function get<T>(path: string): Promise<T> {
-  const res = await sidecarFetch(path);
-  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+  let res: Response;
+  try {
+    res = await sidecarFetch(path);
+  } catch (e) {
+    throw describeFetchFailure("GET", path, e);
+  }
+  if (!res.ok) {
+    const detail = await readErrorBody(res);
+    throw new Error(`GET ${path} → ${res.status}${detail ? `: ${detail}` : ""}`);
+  }
   return res.json();
 }
 
 async function send<T>(path: string, method: string, body?: unknown): Promise<T> {
-  const res = await sidecarFetch(path, {
-    method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+  let res: Response;
+  try {
+    res = await sidecarFetch(path, {
+      method,
+      headers: body ? { "Content-Type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) {
+    throw describeFetchFailure(method, path, e);
+  }
+  if (!res.ok) {
+    const detail = await readErrorBody(res);
+    throw new Error(`${method} ${path} → ${res.status}${detail ? `: ${detail}` : ""}`);
+  }
   return res.json();
 }
 
