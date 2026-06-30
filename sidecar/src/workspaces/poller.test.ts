@@ -130,6 +130,32 @@ describe("pollOnce", () => {
     expect(row?.checkRollup).toBe("pending");
   });
 
+  // The behavior under test: a follow-up push that retriggers a failing check
+  // restarts it as `in_progress`; the rollup must report `pending` (work not
+  // finalized) rather than the stale `failure` from before the push. The
+  // failing count is still preserved on the row so the UI can surface "1
+  // failing · N running" alongside the rollup.
+  it("derives pending — not failure — when both failing and running checks coexist", async () => {
+    const wrId = await seedReadyRepo();
+    const gh = clientWith((path) => {
+      if (path.includes("head=")) return [pullItem(7, "open")];
+      if (path.includes("/pulls/7")) return { state: "open", merged: false, head: { sha: "abc" } };
+      if (path.includes("/check-runs")) {
+        return CHECKS([
+          { status: "completed", conclusion: "success" },
+          { status: "completed", conclusion: "failure" },
+          { status: "in_progress", conclusion: "" },
+        ]);
+      }
+      return {};
+    });
+
+    await pollOnce(db, gh);
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row?.checkRollup).toBe("pending");
+    expect(row?.checks).toEqual({ total: 3, success: 1, failure: 1, pending: 1 });
+  });
+
   it("records a no-PR state when no PR exists for the branch", async () => {
     const wrId = await seedReadyRepo();
     const gh = clientWith((path) => (path.includes("head=") ? [] : {}));

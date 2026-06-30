@@ -40,7 +40,17 @@ Status of the build against the original vision. The full V1 plan lives at
   (GraphQL + REST diffs) and Azure DevOps (REST; per-file diffs computed with
   jsdiff since Azure has no unified-diff endpoint). Clicking a diff line opens a
   composer that posts a single-line comment to the PR, and existing review
-  threads render inline at their line — for both providers.
+  threads render inline at their line — for both providers. A static header at
+  the top of the detail view shows a derived lifecycle status
+  (Draft / CI failing / Awaiting review / Ready to merge) plus a review toolbar
+  that publishes a draft (GitHub `markPullRequestReadyForReview`; Azure
+  `isDraft=false` PATCH), approves, or requests changes (GitHub native review
+  submission; Azure votes 10 / -10 with the comment posted as a PR-level thread
+  when provided). Per-file "Viewed" pill checkboxes mark files done — synced
+  to github.com natively via GraphQL on GitHub, and persisted to localStorage
+  on Azure (no provider equivalent). Toggling a file viewed collapses its diff
+  (and re-expands when unmarked). The provider toggle only shows providers
+  whose viewer probe lands, so an unconfigured option never flashes.
 - **Memory & knowledge** — notes, daily/weekly recaps (tasks completed + notes,
   LLM-summarized or offline raw), document/URL ingestion (chunk → embed →
   store), and a management UI to search/delete (Memory tab). Reuses the
@@ -76,7 +86,17 @@ Status of the build against the original vision. The full V1 plan lives at
   poller; task linkage that auto-completes a linked task on archive (recording a
   summary + merged-PR URL); and `WorkspaceList` / `Workspace` Omni widgets. The
   worktree engine also answers the working-directory question in "Claude Code
-  delegation" below.
+  delegation" below. Files / Changes views auto-refresh every 5 seconds while
+  visible (paused when the tab is hidden); the open workspace's detail view
+  re-polls every 20 seconds so PR / checks cache updates from the background
+  poller appear without re-selecting. Archived workspaces are hidden by
+  default with a "Show archived (N)" toggle; the active selection and the
+  show-archived state are persisted to localStorage so navigating away and
+  back returns to the same workspace. The New Workspace form has inline
+  "+ Add new" repo creation so a fresh repo can be registered without leaving
+  the page. The PR-checks panel's "Review in yarvis" button hands off to the
+  PRs tab (via an in-app event bus) and opens the detail view directly,
+  alongside an "Open externally ↗" button for the provider's web UI.
 - **Omni Chat + keyboard navigation** — a global `Control+Shift+Space` hotkey
   (registered in the Rust core) raises a centered chat overlay over any tab; Esc
   hides it while the session keeps streaming in the background, and re-summoning

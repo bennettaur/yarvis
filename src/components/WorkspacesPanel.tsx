@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { listRepos, type Repo } from "../lib/repos";
+import { createRepo, listRepos, type Repo } from "../lib/repos";
 import { listTasks, type Task } from "../lib/tasks";
 import {
   createWorkspace,
@@ -100,11 +100,19 @@ function groupWorkspaces(items: WorkspaceSummary[]): Group[] {
   return [...single, ...multi];
 }
 
+const SELECTED_WORKSPACE_KEY = "yarvis.workspaces.selectedId";
+const SHOW_ARCHIVED_KEY = "yarvis.workspaces.showArchived";
+
 export default function WorkspacesPanel() {
   const [items, setItems] = useState<WorkspaceSummary[]>([]);
   const [repos, setRepos] = useState<Repo[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(() =>
+    localStorage.getItem(SELECTED_WORKSPACE_KEY),
+  );
   const [creating, setCreating] = useState(false);
+  const [showArchived, setShowArchived] = useState<boolean>(
+    () => localStorage.getItem(SHOW_ARCHIVED_KEY) === "1",
+  );
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -122,7 +130,31 @@ export default function WorkspacesPanel() {
     void refresh();
   }, [refresh]);
 
-  const groups = useMemo(() => groupWorkspaces(items), [items]);
+  // Persisted across reloads.
+  useEffect(() => {
+    if (selectedId) localStorage.setItem(SELECTED_WORKSPACE_KEY, selectedId);
+    else localStorage.removeItem(SELECTED_WORKSPACE_KEY);
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (showArchived) localStorage.setItem(SHOW_ARCHIVED_KEY, "1");
+    else localStorage.removeItem(SHOW_ARCHIVED_KEY);
+  }, [showArchived]);
+
+  // If the remembered workspace has since been removed (or doesn't exist for
+  // this user yet), drop the selection so the empty state shows.
+  useEffect(() => {
+    if (!selectedId || items.length === 0) return;
+    if (!items.some((w) => w.id === selectedId)) setSelectedId(null);
+  }, [items, selectedId]);
+
+  const visibleItems = useMemo(
+    () => (showArchived ? items : items.filter((w) => w.status !== "archived")),
+    [items, showArchived],
+  );
+  const archivedCount = useMemo(() => items.filter((w) => w.status === "archived").length, [items]);
+
+  const groups = useMemo(() => groupWorkspaces(visibleItems), [visibleItems]);
 
   const beginNew = () => {
     setCreating(true);
@@ -134,6 +166,10 @@ export default function WorkspacesPanel() {
     void refresh();
     setSelectedId(id);
   };
+
+  const onRepoAdded = useCallback((repo: Repo) => {
+    setRepos((prev) => (prev.some((r) => r.id === repo.id) ? prev : [...prev, repo]));
+  }, []);
 
   return (
     <div className="flex h-full min-h-0">
@@ -150,7 +186,9 @@ export default function WorkspacesPanel() {
         {error && <p className="px-3 pb-2 text-xs text-red-400">{error}</p>}
         <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
           {groups.length === 0 && (
-            <p className="px-1 py-2 text-xs text-zinc-500">No workspaces yet.</p>
+            <p className="px-1 py-2 text-xs text-zinc-500">
+              {showArchived || archivedCount === 0 ? "No workspaces yet." : "No active workspaces."}
+            </p>
           )}
           {groups.map((group) => (
             <div key={group.key} className="mb-3">
@@ -177,6 +215,14 @@ export default function WorkspacesPanel() {
               </ul>
             </div>
           ))}
+          {archivedCount > 0 && (
+            <button
+              onClick={() => setShowArchived((v) => !v)}
+              className="mt-1 w-full rounded-md px-2 py-1 text-left text-xs text-zinc-500 hover:bg-zinc-800/40 hover:text-zinc-300"
+            >
+              {showArchived ? "Hide archived" : `Show archived (${archivedCount})`}
+            </button>
+          )}
         </div>
       </aside>
 
@@ -186,6 +232,7 @@ export default function WorkspacesPanel() {
             repos={repos}
             onCancel={() => setCreating(false)}
             onCreated={onCreated}
+            onRepoAdded={onRepoAdded}
           />
         ) : selectedId ? (
           <WorkspaceDetailView key={selectedId} id={selectedId} onChanged={refresh} />
@@ -203,10 +250,12 @@ function NewWorkspaceForm({
   repos,
   onCancel,
   onCreated,
+  onRepoAdded,
 }: {
   repos: Repo[];
   onCancel: () => void;
   onCreated: (id: string) => void;
+  onRepoAdded: (repo: Repo) => void;
 }) {
   const [name, setName] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -215,6 +264,7 @@ function NewWorkspaceForm({
   const [phase, setPhase] = useState<"form" | "provisioning">("form");
   const [log, setLog] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [showAddRepo, setShowAddRepo] = useState(false);
   const logRef = useRef<HTMLPreElement | null>(null);
 
   useEffect(() => {
@@ -289,14 +339,22 @@ function NewWorkspaceForm({
         </label>
 
         <div>
-          <div className="mb-1 text-xs font-medium uppercase tracking-wide text-zinc-500">
-            Repos
+          <div className="mb-1 flex items-center justify-between">
+            <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">Repos</div>
+            <button
+              type="button"
+              onClick={() => setShowAddRepo((v) => !v)}
+              className="text-xs text-indigo-400 hover:text-indigo-300"
+            >
+              {showAddRepo ? "Cancel" : "+ Add new"}
+            </button>
           </div>
-          {repos.length === 0 ? (
+          {repos.length === 0 && !showAddRepo && (
             <p className="text-xs text-zinc-500">
-              No repos registered. Add one in Settings → Repositories first.
+              No repos registered. Click "+ Add new" to register one without leaving this page.
             </p>
-          ) : (
+          )}
+          {repos.length > 0 && (
             <ul className="divide-y divide-zinc-800 rounded-lg border border-zinc-800">
               {repos.map((repo) => (
                 <li key={repo.id}>
@@ -314,6 +372,16 @@ function NewWorkspaceForm({
                 </li>
               ))}
             </ul>
+          )}
+          {showAddRepo && (
+            <InlineRepoCreator
+              onAdded={(repo) => {
+                onRepoAdded(repo);
+                setSelected((prev) => new Set(prev).add(repo.id));
+                setShowAddRepo(false);
+              }}
+              onError={setError}
+            />
           )}
         </div>
 
@@ -357,24 +425,137 @@ function NewWorkspaceForm({
   );
 }
 
+/**
+ * Compact repo-create form embedded in the New Workspace flow so a user can
+ * register a repo without bouncing to Settings. Captures just the essentials;
+ * setup/run scripts can still be edited later in Settings → Repositories.
+ */
+function InlineRepoCreator({
+  onAdded,
+  onError,
+}: {
+  onAdded: (repo: Repo) => void;
+  onError: (message: string | null) => void;
+}) {
+  const [cloneUrl, setCloneUrl] = useState("");
+  const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    const url = cloneUrl.trim();
+    if (!url) {
+      onError("A clone URL is required.");
+      return;
+    }
+    setSaving(true);
+    onError(null);
+    try {
+      const repo = await createRepo({
+        cloneUrl: url,
+        name: name.trim() || undefined,
+      });
+      setCloneUrl("");
+      setName("");
+      onAdded(repo);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mt-2 space-y-2 rounded-lg border border-zinc-700 bg-zinc-900 p-3">
+      <input
+        value={cloneUrl}
+        placeholder="git@github.com:owner/repo.git"
+        onChange={(e) => setCloneUrl(e.target.value)}
+        className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500"
+      />
+      <input
+        value={name}
+        placeholder="Display name (optional)"
+        onChange={(e) => setName(e.target.value)}
+        className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500"
+      />
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-zinc-500">
+          Setup/run scripts can be added later in Settings → Repositories.
+        </p>
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={saving}
+          className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium hover:bg-indigo-500 disabled:opacity-50"
+        >
+          {saving ? "Saving…" : "Save repo"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** How often the open workspace re-fetches its detail so PR / checks cache
+ *  freshness from the background poller surfaces without a manual reload. The
+ *  poller itself runs every 60s, so a slightly faster cadence here ensures one
+ *  fresh poll lands per refresh while still being cheap (one local SQL read). */
+const DETAIL_REFRESH_INTERVAL_MS = 20_000;
+
 function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => void }) {
   const [detail, setDetail] = useState<WorkspaceDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [runRepo, setRunRepo] = useState<WorkspaceRepoDetail | null>(null);
   const [provisionLog, setProvisionLog] = useState<string | null>(null);
   const [showArchive, setShowArchive] = useState(false);
+  // Bumped when the active id changes (or this view unmounts) so an in-flight
+  // load() from a previous selection won't overwrite the new one's detail.
+  // Capture the current value at call time; compare on resolve.
+  const generationRef = useRef(0);
 
   const load = useCallback(async () => {
+    const gen = generationRef.current;
     try {
-      setDetail(await getWorkspace(id));
+      const next = await getWorkspace(id);
+      if (gen !== generationRef.current) return;
+      setDetail(next);
       setError(null);
     } catch (e) {
+      if (gen !== generationRef.current) return;
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [id]);
 
+  // Initial fetch + polling combined: chained setTimeout in `finally` ensures a
+  // slow load doesn't overlap the next tick (the setInterval shape did). Each
+  // mount/id change increments the generation so any still-resolving call from
+  // the previous run is dropped at write time (see `load` above). Skipped while
+  // the tab is hidden so a backgrounded app isn't hitting the sidecar; on
+  // return we fire one immediate load and resume.
   useEffect(() => {
-    void load();
+    generationRef.current += 1;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let live = true;
+
+    const tick = async () => {
+      await load();
+      if (live && !document.hidden) {
+        timer = setTimeout(tick, DETAIL_REFRESH_INTERVAL_MS);
+      }
+    };
+    const onVisibility = () => {
+      if (!document.hidden && live && timer === null) {
+        void tick();
+      }
+    };
+
+    void tick();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      live = false;
+      generationRef.current += 1;
+      if (timer !== null) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [load]);
 
   const provision = async () => {

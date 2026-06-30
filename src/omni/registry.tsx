@@ -17,6 +17,8 @@ import TasksPanel from "../components/TasksPanel";
 import TerminalPanel from "../components/TerminalPanel";
 import WorkspaceListWidget from "../components/workspaces/WorkspaceListWidget";
 import WorkspaceWidget from "../components/workspaces/WorkspaceWidget";
+import type { PrRef } from "../lib/pr/types";
+import { usePrViewedFiles } from "../lib/pr/viewed";
 import { catalog } from "./catalog";
 import { Column, Divider, Grid, Heading, Panel, Row, Text } from "./primitives";
 import WidgetFrame from "./WidgetFrame";
@@ -101,28 +103,50 @@ const { registry } = defineRegistry(catalog, {
         />
       </WidgetFrame>
     ),
-    PrFileList: ({ props }) => (
-      <WidgetFrame
-        title={props.title ?? `Files #${props.number}`}
-        name="PrFileList"
-        height={props.height}
-      >
-        <PrFileList
-          prRef={{ provider: "github", owner: props.owner, repo: props.repo, number: props.number }}
-        />
-      </WidgetFrame>
-    ),
-    PrFileDiffs: ({ props }) => (
-      <WidgetFrame
-        title={props.title ?? `Diff #${props.number}`}
-        name="PrFileDiffs"
-        height={props.height}
-      >
-        <PrFileDiffs
-          prRef={{ provider: "github", owner: props.owner, repo: props.repo, number: props.number }}
-        />
-      </WidgetFrame>
-    ),
+    PrFileList: ({ props }) => {
+      const prRef: PrRef = {
+        provider: "github",
+        owner: props.owner,
+        repo: props.repo,
+        number: props.number,
+      };
+      const viewedFiles = usePrViewedFiles(prRef);
+      return (
+        <WidgetFrame
+          title={props.title ?? `Files #${props.number}`}
+          name="PrFileList"
+          height={props.height}
+        >
+          <PrFileList
+            prRef={prRef}
+            viewed={viewedFiles.viewed}
+            onToggleViewed={viewedFiles.toggle}
+          />
+        </WidgetFrame>
+      );
+    },
+    PrFileDiffs: ({ props }) => {
+      const prRef: PrRef = {
+        provider: "github",
+        owner: props.owner,
+        repo: props.repo,
+        number: props.number,
+      };
+      const viewedFiles = usePrViewedFiles(prRef);
+      return (
+        <WidgetFrame
+          title={props.title ?? `Diff #${props.number}`}
+          name="PrFileDiffs"
+          height={props.height}
+        >
+          <PrFileDiffs
+            prRef={prRef}
+            viewed={viewedFiles.viewed}
+            onToggleViewed={viewedFiles.toggle}
+          />
+        </WidgetFrame>
+      );
+    },
     Sessions: ({ props }) => (
       <WidgetFrame title={props.title ?? "Sessions"} name="Sessions" height={props.height}>
         <SessionsPanel />

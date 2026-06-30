@@ -58,6 +58,34 @@ describe("azure route validation", () => {
     });
     expect(res.status).toBe(400);
   });
+
+  it("rejects a vote value outside the allowed enum with 400", async () => {
+    const res = await configured.request("/api/azure/pr/Shop/web/1/vote", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ vote: 7 }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects vote=-10 without a body with 400", async () => {
+    const res = await configured.request("/api/azure/pr/Shop/web/1/vote", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ vote: -10 }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toContain("rejecting");
+  });
+
+  it("rejects vote=-10 with a whitespace-only body with 400", async () => {
+    const res = await configured.request("/api/azure/pr/Shop/web/1/vote", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ vote: -10, body: "   \n  " }),
+    });
+    expect(res.status).toBe(400);
+  });
 });
 
 describe("azure not-configured handling", () => {

@@ -243,6 +243,122 @@ export class GitHubClient {
   }
 
   /**
+   * Marks a draft pull request as ready for review (the GraphQL equivalent of
+   * the "Ready for review" button). GitHub keys this mutation by the PR's node
+   * id, not its number, so a tiny preflight resolves the id first.
+   */
+  async markReady(owner: string, repo: string, number: number): Promise<void> {
+    const id = await this.resolvePrNodeId(owner, repo, number);
+    await this.graphql<unknown>(
+      `mutation($id:ID!){
+        markPullRequestReadyForReview(input:{pullRequestId:$id}){ clientMutationId }
+      }`,
+      { id },
+    );
+  }
+
+  private async resolvePrNodeId(owner: string, repo: string, number: number): Promise<string> {
+    const data = await this.graphql<{ repository?: { pullRequest?: { id: string } } }>(
+      `query($owner:String!,$repo:String!,$number:Int!){
+        repository(owner:$owner,name:$repo){ pullRequest(number:$number){ id } }
+      }`,
+      { owner, repo, number },
+    );
+    const id = data.repository?.pullRequest?.id;
+    if (!id) throw new Error(`pull request ${owner}/${repo}#${number} not found`);
+    return id;
+  }
+
+  /**
+   * Paths of changed files the viewer has marked viewed on this PR. Uses
+   * GraphQL pagination because the REST files endpoint doesn't carry the
+   * `viewerViewedState` field. Capped at 100 per page; loops on pageInfo.
+   */
+  async listViewedFiles(owner: string, repo: string, number: number): Promise<string[]> {
+    interface ViewedPage {
+      repository?: {
+        pullRequest?: {
+          files?: {
+            nodes?: Array<{ path: string; viewerViewedState: string }>;
+            pageInfo?: { hasNextPage: boolean; endCursor: string };
+          };
+        };
+      };
+    }
+    const viewed: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const data: ViewedPage = await this.graphql<ViewedPage>(
+        `query($owner:String!,$repo:String!,$number:Int!,$cursor:String){
+          repository(owner:$owner,name:$repo){
+            pullRequest(number:$number){
+              files(first:100, after:$cursor){
+                nodes{ path viewerViewedState }
+                pageInfo{ hasNextPage endCursor }
+              }
+            }
+          }
+        }`,
+        { owner, repo, number, cursor },
+      );
+      const page = data.repository?.pullRequest?.files;
+      for (const n of page?.nodes ?? []) {
+        if (n.viewerViewedState === "VIEWED") viewed.push(n.path);
+      }
+      cursor = page?.pageInfo?.hasNextPage ? (page.pageInfo.endCursor ?? null) : null;
+    } while (cursor);
+    return viewed;
+  }
+
+  /** Sets (or clears) the viewer's "viewed" flag on a single PR file. */
+  async setFileViewed(
+    owner: string,
+    repo: string,
+    number: number,
+    path: string,
+    viewed: boolean,
+  ): Promise<void> {
+    const id = await this.resolvePrNodeId(owner, repo, number);
+    const mutation = viewed
+      ? `mutation($id:ID!,$path:String!){
+          markFileAsViewed(input:{pullRequestId:$id, path:$path}){ clientMutationId }
+        }`
+      : `mutation($id:ID!,$path:String!){
+          unmarkFileAsViewed(input:{pullRequestId:$id, path:$path}){ clientMutationId }
+        }`;
+    await this.graphql<unknown>(mutation, { id, path });
+  }
+
+  /**
+   * Submits a PR review. `event` is GitHub's verb: APPROVE accepts the PR,
+   * REQUEST_CHANGES blocks it, COMMENT leaves an unbinding comment. The body
+   * is optional (GitHub allows a bodyless approval but requires text on a
+   * request-changes review; the caller is expected to enforce that).
+   */
+  async submitReview(
+    owner: string,
+    repo: string,
+    number: number,
+    event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
+    body?: string,
+  ): Promise<void> {
+    const res = await this.fetchImpl(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${number}/reviews`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ event, body: body ?? "" }),
+      },
+    );
+    if (!res.ok) throw new Error(`github submit review -> ${res.status}`);
+  }
+
+  /**
    * Posts a single-line review comment. GitHub anchors review comments to a
    * commit, so the PR's head sha is fetched first; `line` + `side` target the
    * line in the diff (the same right-side line our diff parser exposes).

@@ -2,8 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useOmniChatContext } from "../lib/omniChatContext";
 import { addStar, removeStar } from "../lib/pr/api";
 import {
-  AzureViewerError,
-  type AzureViewerReason,
   azCreateFilter,
   azDeleteFilter,
   azFilters,
@@ -41,25 +39,6 @@ const PROVIDERS: { key: Provider; label: string }[] = [
   { key: "github", label: "GitHub" },
   { key: "azure", label: "Azure DevOps" },
 ];
-
-const GH_SETUP_MESSAGE =
-  "No GitHub token configured. Add one under Dashboard → Secrets → GitHub token to see your PRs.";
-
-/** Turns a sidecar viewer-failure reason into a specific, actionable hint. */
-function azureSetupMessage(reason: AzureViewerReason): string {
-  switch (reason) {
-    case "missing_token":
-      return "No Azure DevOps personal access token configured. Add one under Dashboard → Secrets → Azure DevOps token.";
-    case "missing_org_url":
-      return "No Azure DevOps organization URL configured. Add it under Dashboard → Secrets → Azure DevOps org URL.";
-    case "invalid_org_url":
-      return "The Azure DevOps organization URL isn't a valid https://dev.azure.com/<org> or https://<org>.visualstudio.com URL. Fix it under Dashboard → Secrets.";
-    case "unauthorized":
-      return "Azure DevOps rejected the personal access token — it's expired or missing the Code (Read) scope. Update it under Dashboard → Secrets.";
-    default:
-      return "Couldn't reach Azure DevOps. Check the token and organization URL under Dashboard → Secrets, then try again.";
-  }
-}
 
 function createdMs(pr: PrSummary): number {
   return new Date(pr.createdAt).getTime() || 0;
@@ -205,11 +184,26 @@ function PrGroupedList({
   );
 }
 
-export default function PrsPanel() {
+export default function PrsPanel({
+  requestedPr = null,
+  onRequestConsumed,
+}: {
+  /** A PR another tab has asked us to open — auto-selected on mount/change. */
+  requestedPr?: PrSummary | null;
+  /** Called once we've consumed `requestedPr` so the parent can clear it. */
+  onRequestConsumed?: () => void;
+} = {}) {
   const [provider, setProvider] = useState<Provider>("github");
-  // Non-null means configuration is incomplete: show this message instead of the
-  // PR lists. The message names the exact secret to fix (see azureSetupMessage).
-  const [setupNotice, setSetupNotice] = useState<string | null>(null);
+  /**
+   * Which providers have working credentials. Starts EMPTY (rather than null /
+   * a both-providers placeholder) and grows as each viewer probe lands, so the
+   * provider toggle never flashes options that turn out to be unconfigured.
+   * `probeComplete` separately tracks whether we've heard back from every probe
+   * — needed to distinguish "still checking, none confirmed yet" from "checked,
+   * found nothing" so the empty-state message doesn't flash on first paint.
+   */
+  const [availableProviders, setAvailableProviders] = useState<Set<Provider>>(new Set());
+  const [probeComplete, setProbeComplete] = useState(false);
   const [activeTab, setActiveTab] = useState<TabKey>("mine");
   const [mine, setMine] = useState<PrSummary[]>([]);
   const [review, setReview] = useState<PrSummary[]>([]);
@@ -248,24 +242,91 @@ export default function PrsPanel() {
     setStarredKeys(new Set(stars.map((s) => refKey(s.ref))));
   }, []);
 
+  // Honor a cross-tab open request: switch the toggle to the PR's provider and
+  // jump straight to the detail view. Cleared via the consumed callback so a
+  // second navigation back to PRs doesn't re-select an old request.
   useEffect(() => {
-    setSetupNotice(null);
-    setError(null);
+    if (!requestedPr) return;
+    setProvider(requestedPr.ref.provider);
+    setSelected(requestedPr);
+    onRequestConsumed?.();
+  }, [requestedPr, onRequestConsumed]);
+
+  /**
+   * User-initiated provider switch. Resets the selection and filter results
+   * because they belong to the old provider. Provider state changes from other
+   * sources (probe auto-correct, cross-tab open) deliberately do NOT reset
+   * `selected`, so e.g. `requestedPr` lands on the detail view even when the
+   * background list-fetch effect re-runs after the availability probe resolves.
+   */
+  const selectProvider = useCallback((p: Provider) => {
+    setProvider(p);
     setSelected(null);
     setFilterResults(null);
+  }, []);
+
+  // Probe both providers independently and add each one to the visible set the
+  // moment its viewer call succeeds — so the toggle reveals providers as we
+  // discover them rather than flashing both and then hiding the bad one once
+  // the slowest probe loses. `probeComplete` flips when both have settled so
+  // the empty-state can render without an earlier "neither configured" flash.
+  useEffect(() => {
+    let live = true;
+    let outstanding = 2;
+    const settle = () => {
+      outstanding -= 1;
+      if (outstanding === 0 && live) setProbeComplete(true);
+    };
+    const add = (provider: Provider) => {
+      if (!live) return;
+      setAvailableProviders((prev) => {
+        if (prev.has(provider)) return prev;
+        const next = new Set(prev);
+        next.add(provider);
+        return next;
+      });
+    };
+    ghViewer()
+      .then(() => add("github"))
+      .catch(() => {})
+      .finally(settle);
+    azViewer()
+      .then(() => add("azure"))
+      .catch(() => {})
+      .finally(settle);
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  // Once probing is done, if the user is sitting on a provider that turned out
+  // not to be configured, jump them to one that is. Done in a separate effect
+  // (not the probe handlers) so it sees the fully-settled set rather than
+  // racing the second probe.
+  useEffect(() => {
+    if (!probeComplete) return;
+    if (availableProviders.has(provider)) return;
+    if (availableProviders.has("github")) setProvider("github");
+    else if (availableProviders.has("azure")) setProvider("azure");
+  }, [probeComplete, availableProviders, provider]);
+
+  // Refetch the per-provider lists whenever provider or availability changes.
+  // Deliberately does NOT touch `selected`: that's owned by user actions
+  // (clicking a row, the Back button) and the cross-tab open request, so this
+  // effect re-running on availability arrival never clobbers an in-flight
+  // navigation to a specific PR.
+  useEffect(() => {
+    setError(null);
     setMine([]);
     setReview([]);
     setStarredKeys(new Set());
+    if (!probeComplete) return;
+    if (!availableProviders.has(provider)) return;
+    // The probe already confirmed the viewer works for this provider, so we
+    // skip a second viewer round-trip and go straight to fetching the lists.
+    // If credentials get invalidated mid-session, the search calls land in
+    // the catch below.
     void (async () => {
-      try {
-        if (provider === "github") await ghViewer();
-        else await azViewer();
-      } catch (e) {
-        if (provider === "github") setSetupNotice(GH_SETUP_MESSAGE);
-        else
-          setSetupNotice(azureSetupMessage(e instanceof AzureViewerError ? e.reason : "unknown"));
-        return;
-      }
       try {
         if (provider === "github") {
           setMine(await ghSearch(GH_MY));
@@ -281,7 +342,7 @@ export default function PrsPanel() {
         setError(e instanceof Error ? e.message : String(e));
       }
     })();
-  }, [provider, loadStars]);
+  }, [provider, loadStars, availableProviders, probeComplete]);
 
   const onToggleStar = useCallback(
     async (pr: PrSummary, starred: boolean) => {
@@ -320,27 +381,36 @@ export default function PrsPanel() {
     setAzFilterList(await azFilters());
   }, [newAzFilter]);
 
-  const providerToggle = (
-    <div className="inline-flex rounded-lg border border-zinc-700 p-0.5">
-      {PROVIDERS.map((p) => (
-        <button
-          key={p.key}
-          onClick={() => setProvider(p.key)}
-          className={`rounded-md px-3 py-1 text-sm ${
-            provider === p.key ? "bg-zinc-700 text-zinc-100" : "text-zinc-400 hover:text-zinc-200"
-          }`}
-        >
-          {p.label}
-        </button>
-      ))}
-    </div>
+  const visibleProviders = useMemo(
+    () => PROVIDERS.filter((p) => availableProviders.has(p.key)),
+    [availableProviders],
   );
 
-  if (setupNotice) {
+  // With only one configured provider the toggle is just noise — hide it.
+  const providerToggle =
+    visibleProviders.length > 1 ? (
+      <div className="inline-flex rounded-lg border border-zinc-700 p-0.5">
+        {visibleProviders.map((p) => (
+          <button
+            key={p.key}
+            onClick={() => selectProvider(p.key)}
+            className={`rounded-md px-3 py-1 text-sm ${
+              provider === p.key ? "bg-zinc-700 text-zinc-100" : "text-zinc-400 hover:text-zinc-200"
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+    ) : null;
+
+  if (probeComplete && availableProviders.size === 0) {
     return (
-      <div className="space-y-4">
-        {providerToggle}
-        <p className="text-sm text-zinc-400">{setupNotice}</p>
+      <div className="h-full overflow-y-auto p-6">
+        <p className="text-sm text-zinc-400">
+          No PR provider configured. Add a GitHub token or Azure DevOps PAT in Settings →
+          Credentials to see your PRs here.
+        </p>
       </div>
     );
   }
@@ -352,145 +422,150 @@ export default function PrsPanel() {
   const listProps = { isStarred, onToggleStar, onReview: setSelected };
 
   return (
-    <div className="space-y-5">
-      <div className="flex items-center justify-between">{providerToggle}</div>
+    <div className="h-full overflow-y-auto p-6">
+      <div className="space-y-5">
+        <div className="flex items-center justify-between">{providerToggle}</div>
 
-      <nav className="flex gap-1 border-b border-zinc-800">
-        {TABS.map((tab) => {
-          const count =
-            tab.key === "mine" ? mine.length : tab.key === "review" ? review.length : null;
-          return (
-            <button
-              key={tab.key}
-              onClick={() => setActiveTab(tab.key)}
-              className={`-mb-px border-b-2 px-3 py-2 text-sm ${
-                activeTab === tab.key
-                  ? "border-sky-500 text-zinc-100"
-                  : "border-transparent text-zinc-500 hover:text-zinc-300"
-              }`}
-            >
-              {tab.label}
-              {count !== null && <span className="ml-1.5 text-xs text-zinc-600">{count}</span>}
-            </button>
-          );
-        })}
-      </nav>
-
-      {activeTab === "mine" && <PrGroupedList prs={mine} {...listProps} />}
-      {activeTab === "review" && <PrGroupedList prs={review} {...listProps} />}
-
-      {activeTab === "filters" && provider === "github" && (
-        <div className="space-y-5">
-          <section>
-            <div className="mb-3 flex flex-wrap gap-2">
-              {ghFilterList.map((f) => (
-                <span
-                  key={f.id}
-                  className="flex items-center gap-1 rounded-md border border-zinc-700 px-2 py-1 text-xs"
-                >
-                  <button onClick={() => void runGhFilter(f.query)} className="hover:text-zinc-100">
-                    {f.name}
-                  </button>
-                  <button
-                    onClick={async () => {
-                      await ghDeleteFilter(f.id);
-                      setGhFilterList(await ghFilters());
-                    }}
-                    className="text-zinc-600 hover:text-red-400"
-                  >
-                    ✕
-                  </button>
-                </span>
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <input
-                value={newGhFilter.name}
-                placeholder="Filter name"
-                onChange={(e) => setNewGhFilter((p) => ({ ...p, name: e.target.value }))}
-                className="w-32 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
-              />
-              <input
-                value={newGhFilter.query}
-                placeholder="is:open is:pr ..."
-                onChange={(e) => setNewGhFilter((p) => ({ ...p, query: e.target.value }))}
-                className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
-              />
+        <nav className="flex gap-1 border-b border-zinc-800">
+          {TABS.map((tab) => {
+            const count =
+              tab.key === "mine" ? mine.length : tab.key === "review" ? review.length : null;
+            return (
               <button
-                onClick={() => void addGhFilter()}
-                className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800"
+                key={tab.key}
+                onClick={() => setActiveTab(tab.key)}
+                className={`-mb-px border-b-2 px-3 py-2 text-sm ${
+                  activeTab === tab.key
+                    ? "border-sky-500 text-zinc-100"
+                    : "border-transparent text-zinc-500 hover:text-zinc-300"
+                }`}
               >
-                Add
+                {tab.label}
+                {count !== null && <span className="ml-1.5 text-xs text-zinc-600">{count}</span>}
               </button>
-            </div>
-          </section>
-          {filterResults && <PrGroupedList prs={filterResults} {...listProps} />}
-        </div>
-      )}
+            );
+          })}
+        </nav>
 
-      {activeTab === "filters" && provider === "azure" && (
-        <div className="space-y-5">
-          <section>
-            <div className="mb-3 flex flex-wrap gap-2">
-              {azFilterList.map((f) => (
-                <span
-                  key={f.id}
-                  className="flex items-center gap-1 rounded-md border border-zinc-700 px-2 py-1 text-xs"
+        {activeTab === "mine" && <PrGroupedList prs={mine} {...listProps} />}
+        {activeTab === "review" && <PrGroupedList prs={review} {...listProps} />}
+
+        {activeTab === "filters" && provider === "github" && (
+          <div className="space-y-5">
+            <section>
+              <div className="mb-3 flex flex-wrap gap-2">
+                {ghFilterList.map((f) => (
+                  <span
+                    key={f.id}
+                    className="flex items-center gap-1 rounded-md border border-zinc-700 px-2 py-1 text-xs"
+                  >
+                    <button
+                      onClick={() => void runGhFilter(f.query)}
+                      className="hover:text-zinc-100"
+                    >
+                      {f.name}
+                    </button>
+                    <button
+                      onClick={async () => {
+                        await ghDeleteFilter(f.id);
+                        setGhFilterList(await ghFilters());
+                      }}
+                      className="text-zinc-600 hover:text-red-400"
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <input
+                  value={newGhFilter.name}
+                  placeholder="Filter name"
+                  onChange={(e) => setNewGhFilter((p) => ({ ...p, name: e.target.value }))}
+                  className="w-32 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
+                />
+                <input
+                  value={newGhFilter.query}
+                  placeholder="is:open is:pr ..."
+                  onChange={(e) => setNewGhFilter((p) => ({ ...p, query: e.target.value }))}
+                  className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
+                />
+                <button
+                  onClick={() => void addGhFilter()}
+                  className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800"
                 >
-                  <button
-                    onClick={() => void runAzFilter(f.scope, f.project)}
-                    className="hover:text-zinc-100"
-                  >
-                    {f.name}
-                  </button>
-                  <button
-                    onClick={async () => {
-                      await azDeleteFilter(f.id);
-                      setAzFilterList(await azFilters());
-                    }}
-                    className="text-zinc-600 hover:text-red-400"
-                  >
-                    ✕
-                  </button>
-                </span>
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <input
-                value={newAzFilter.name}
-                placeholder="Filter name"
-                onChange={(e) => setNewAzFilter((p) => ({ ...p, name: e.target.value }))}
-                className="w-32 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
-              />
-              <select
-                value={newAzFilter.scope}
-                onChange={(e) =>
-                  setNewAzFilter((p) => ({ ...p, scope: e.target.value as "mine" | "review" }))
-                }
-                className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
-              >
-                <option value="mine">Created by me</option>
-                <option value="review">Needs my review</option>
-              </select>
-              <input
-                value={newAzFilter.project}
-                placeholder="Project (optional)"
-                onChange={(e) => setNewAzFilter((p) => ({ ...p, project: e.target.value }))}
-                className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
-              />
-              <button
-                onClick={() => void addAzFilter()}
-                className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800"
-              >
-                Add
-              </button>
-            </div>
-          </section>
-          {filterResults && <PrGroupedList prs={filterResults} {...listProps} />}
-        </div>
-      )}
+                  Add
+                </button>
+              </div>
+            </section>
+            {filterResults && <PrGroupedList prs={filterResults} {...listProps} />}
+          </div>
+        )}
 
-      {error && <p className="text-sm text-red-400">{error}</p>}
+        {activeTab === "filters" && provider === "azure" && (
+          <div className="space-y-5">
+            <section>
+              <div className="mb-3 flex flex-wrap gap-2">
+                {azFilterList.map((f) => (
+                  <span
+                    key={f.id}
+                    className="flex items-center gap-1 rounded-md border border-zinc-700 px-2 py-1 text-xs"
+                  >
+                    <button
+                      onClick={() => void runAzFilter(f.scope, f.project)}
+                      className="hover:text-zinc-100"
+                    >
+                      {f.name}
+                    </button>
+                    <button
+                      onClick={async () => {
+                        await azDeleteFilter(f.id);
+                        setAzFilterList(await azFilters());
+                      }}
+                      className="text-zinc-600 hover:text-red-400"
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <input
+                  value={newAzFilter.name}
+                  placeholder="Filter name"
+                  onChange={(e) => setNewAzFilter((p) => ({ ...p, name: e.target.value }))}
+                  className="w-32 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
+                />
+                <select
+                  value={newAzFilter.scope}
+                  onChange={(e) =>
+                    setNewAzFilter((p) => ({ ...p, scope: e.target.value as "mine" | "review" }))
+                  }
+                  className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
+                >
+                  <option value="mine">Created by me</option>
+                  <option value="review">Needs my review</option>
+                </select>
+                <input
+                  value={newAzFilter.project}
+                  placeholder="Project (optional)"
+                  onChange={(e) => setNewAzFilter((p) => ({ ...p, project: e.target.value }))}
+                  className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
+                />
+                <button
+                  onClick={() => void addAzFilter()}
+                  className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800"
+                >
+                  Add
+                </button>
+              </div>
+            </section>
+            {filterResults && <PrGroupedList prs={filterResults} {...listProps} />}
+          </div>
+        )}
+
+        {error && <p className="text-sm text-red-400">{error}</p>}
+      </div>
     </div>
   );
 }

@@ -109,6 +109,12 @@ export const azPrFileDiff = (ref: PrRef, path: string) =>
 export const azPostComment = (ref: PrRef, comment: NewComment) =>
   send<{ ok: boolean }>(`${refApiPath(ref)}/comments`, "POST", comment);
 
+export const azMarkReady = (ref: PrRef) =>
+  send<{ ok: boolean }>(`${refApiPath(ref)}/ready`, "POST");
+
+export const azSubmitVote = (ref: PrRef, vote: number, body?: string) =>
+  send<{ ok: boolean }>(`${refApiPath(ref)}/vote`, "POST", { vote, body });
+
 export const azFilters = () => get<AzFilter[]>("/api/azure/filters");
 export const azCreateFilter = (name: string, scope: "mine" | "review", project: string | null) =>
   send<AzFilter>("/api/azure/filters", "POST", { name, scope, project });

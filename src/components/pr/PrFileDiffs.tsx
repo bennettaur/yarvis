@@ -178,20 +178,72 @@ function DiffBody({
   );
 }
 
+/**
+ * The pill-shaped "Viewed" toggle in a file's title bar. Filled emerald when
+ * the file is marked viewed, outlined when not. Click stops propagation so the
+ * surrounding `<summary>` doesn't also toggle the diff's open state — the
+ * parent does that explicitly so collapse-on-view stays under our control.
+ */
+function ViewedToggle({ isViewed, onClick }: { isViewed: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        onClick();
+      }}
+      title={isViewed ? "Mark unviewed" : "Mark viewed"}
+      className={`ml-auto flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors ${
+        isViewed
+          ? "border-emerald-600 bg-emerald-900/40 text-emerald-200 hover:bg-emerald-900/60"
+          : "border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
+      }`}
+    >
+      <span
+        aria-hidden="true"
+        className={`flex h-3.5 w-3.5 items-center justify-center rounded-sm border ${
+          isViewed ? "border-emerald-400 bg-emerald-500/30" : "border-zinc-600"
+        }`}
+      >
+        {isViewed && (
+          <svg aria-hidden="true" viewBox="0 0 16 16" className="h-2.5 w-2.5" fill="none">
+            <path
+              d="M3.5 8.5l3 3 6-6"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        )}
+      </span>
+      Viewed
+    </button>
+  );
+}
+
 function FileDiff({
   prRef,
   file,
   index,
   threads,
+  isViewed,
+  onToggleViewed,
 }: {
   prRef: PrRef;
   file: PrFile;
   index: number;
   threads: ReviewThread[];
+  isViewed: boolean;
+  onToggleViewed: (path: string) => void;
 }) {
-  // The first few files are open (and thus loaded) on mount; the rest load when
-  // expanded, so a large Azure PR doesn't fetch every file's content up front.
-  const [open, setOpen] = useState(index < PREFETCH_COUNT);
+  // The first few unviewed files are open on mount; viewed files start
+  // collapsed regardless so the user's prior progress stays out of the way.
+  // The rest load when expanded, so a large Azure PR doesn't fetch every
+  // file's content up front. Marking viewed later also collapses the diff and
+  // unmarking re-expands it (see `toggleViewed` below).
+  const [open, setOpen] = useState(!isViewed && index < PREFETCH_COUNT);
   const { data: loaded, loading } = usePrFileDiff(prRef, file, open);
   const patch = loaded?.patch ?? file.patch;
   const fileThreads = useMemo(
@@ -199,24 +251,40 @@ function FileDiff({
     [threads, file.filename],
   );
 
+  // Single handler so the visual collapse and the underlying viewed mutation
+  // happen together — the diff folds away exactly when the user marks it done
+  // and pops back open if they undo. Keeping them coupled here avoids a flash
+  // where the diff is still expanded under a "Viewed" pill (or vice versa).
+  const toggleViewed = () => {
+    setOpen(isViewed);
+    onToggleViewed(file.filename);
+  };
+
   return (
     <details
       id={prFileAnchorId(prRef, index)}
       open={open}
       onToggle={(e) => setOpen(e.currentTarget.open)}
-      className="scroll-mt-4 overflow-hidden rounded-lg border border-zinc-800"
+      className={`scroll-mt-4 overflow-hidden rounded-lg border border-zinc-800 ${
+        isViewed ? "opacity-70" : ""
+      }`}
     >
-      <summary className="cursor-pointer bg-zinc-900 px-3 py-2 text-sm">
-        <span className="font-mono text-zinc-200">{file.filename}</span>
+      <summary className="flex cursor-pointer items-center gap-2 bg-zinc-900 px-3 py-2 text-sm">
+        <span
+          className={`min-w-0 truncate font-mono ${
+            isViewed ? "text-zinc-500 line-through" : "text-zinc-200"
+          }`}
+        >
+          {file.filename}
+        </span>
         {file.additions + file.deletions > 0 && (
           <>
-            <span className="ml-2 text-xs text-emerald-400">+{file.additions}</span>
-            <span className="ml-1 text-xs text-red-400">−{file.deletions}</span>
+            <span className="text-xs text-emerald-400">+{file.additions}</span>
+            <span className="text-xs text-red-400">−{file.deletions}</span>
           </>
         )}
-        {file.status !== "modified" && (
-          <span className="ml-2 text-xs text-zinc-500">{file.status}</span>
-        )}
+        {file.status !== "modified" && <span className="text-xs text-zinc-500">{file.status}</span>}
+        <ViewedToggle isViewed={isViewed} onClick={toggleViewed} />
       </summary>
       {open &&
         (loading && !patch ? (
@@ -231,7 +299,15 @@ function FileDiff({
 }
 
 /** The changed files of a PR rendered as expandable, comment-able unified diffs. */
-export default function PrFileDiffs({ prRef }: { prRef: PrRef }) {
+export default function PrFileDiffs({
+  prRef,
+  viewed,
+  onToggleViewed,
+}: {
+  prRef: PrRef;
+  viewed: Set<string>;
+  onToggleViewed: (path: string) => void;
+}) {
   const { data, error, loading } = usePrFiles(prRef);
   const detail = usePrDetail(prRef);
   const threads = detail.data?.reviewThreads ?? [];
@@ -243,7 +319,15 @@ export default function PrFileDiffs({ prRef }: { prRef: PrRef }) {
   return (
     <div className="space-y-2">
       {data.map((f, i) => (
-        <FileDiff key={f.filename} prRef={prRef} file={f} index={i} threads={threads} />
+        <FileDiff
+          key={f.filename}
+          prRef={prRef}
+          file={f}
+          index={i}
+          threads={threads}
+          isViewed={viewed.has(f.filename)}
+          onToggleViewed={onToggleViewed}
+        />
       ))}
     </div>
   );

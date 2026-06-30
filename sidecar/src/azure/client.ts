@@ -420,6 +420,84 @@ export class AzureDevOpsClient {
     };
   }
 
+  /**
+   * Publishes a draft PR (Azure equivalent of GitHub's "Ready for review"):
+   * clears the `isDraft` flag with a PATCH on the PR itself.
+   */
+  async markReady(ref: AzureRef): Promise<void> {
+    const url = this.withVersion(`${this.repoBase(ref)}/pullRequests/${ref.prId}`, API_VERSION);
+    const res = await this.fetchImpl(url, {
+      method: "PATCH",
+      headers: {
+        Authorization: this.authHeader(),
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ isDraft: false }),
+    });
+    if (!res.ok) throw new Error(`azure mark ready -> ${res.status}`);
+  }
+
+  /**
+   * Casts the viewer's vote on the PR (Azure's equivalent of approve / request
+   * changes). The vote vocabulary is numeric:
+   *   10  approved
+   *    5  approved with suggestions
+   *    0  no vote (resets)
+   *   -5  waiting for author
+   *  -10  rejected
+   * Azure has no "review body" tied to a vote, so when `body` is supplied we
+   * additionally post a regular PR-level comment thread so the user's note
+   * isn't lost. That extra thread is best-effort — if it fails after the vote
+   * succeeded, the vote still stands.
+   */
+  async submitVote(ref: AzureRef, vote: number, body?: string): Promise<void> {
+    const reviewerId = await this.resolveViewerId();
+    const voteUrl = this.withVersion(
+      `${this.repoBase(ref)}/pullRequests/${ref.prId}/reviewers/${reviewerId}`,
+      API_VERSION,
+    );
+    const res = await this.fetchImpl(voteUrl, {
+      method: "PUT",
+      headers: {
+        Authorization: this.authHeader(),
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ vote, id: reviewerId }),
+    });
+    if (!res.ok) throw new Error(`azure submit vote -> ${res.status}`);
+
+    if (body && body.trim().length > 0) {
+      await this.postPrComment(ref, body);
+    }
+  }
+
+  /**
+   * Posts a PR-level comment thread (no file/line anchor). Used for the review
+   * body that accompanies an approve / request-changes vote, since Azure does
+   * not attach a body to the vote itself.
+   */
+  private async postPrComment(ref: AzureRef, body: string): Promise<void> {
+    const url = this.withVersion(
+      `${this.repoBase(ref)}/pullRequests/${ref.prId}/threads`,
+      API_VERSION,
+    );
+    const res = await this.fetchImpl(url, {
+      method: "POST",
+      headers: {
+        Authorization: this.authHeader(),
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        comments: [{ content: body, commentType: COMMENT_TYPE_TEXT }],
+        status: THREAD_STATUS_ACTIVE,
+      }),
+    });
+    if (!res.ok) throw new Error(`azure post pr comment -> ${res.status}`);
+  }
+
   /** Posts a single-line comment thread anchored to the right side of the diff. */
   async postComment(ref: AzureRef, input: NewComment): Promise<void> {
     const body = {

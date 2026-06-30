@@ -1,0 +1,285 @@
+import { useEffect, useRef, useState } from "react";
+import { applyReviewAction, type ReviewAction } from "../../lib/pr/api";
+import { invalidate, prDetailKey } from "../../lib/pr/cache";
+import { refDisplayRepo, refNumber, refProviderName } from "../../lib/pr/ref";
+import type { CheckItem, PrDetail, PrRef, PrSummary } from "../../lib/pr/types";
+import { openExternal } from "../../lib/url";
+
+/**
+ * One of four high-level lifecycle states the UI shows in the floating header.
+ * `awaiting_review` is the catch-all: the PR is published, CI hasn't failed,
+ * but the provider isn't yet reporting it as cleanly mergeable (no approvals,
+ * a pending check, an unknown mergeable state).
+ */
+export type PrUiStatus = "draft" | "ci_failing" | "awaiting_review" | "ready_to_merge";
+
+/**
+ * Derives the single-line status shown in the floating header from the PR
+ * detail. CI-failing wins over draft so a draft with a broken pipeline still
+ * surfaces the failure (so the author isn't pestered to mark it ready for
+ * review while the build is red). When details haven't loaded yet we fall back
+ * to the list-level draft flag.
+ */
+export function derivePrUiStatus(detail: PrDetail | null, summary: PrSummary): PrUiStatus {
+  const checks: CheckItem[] = detail?.checks ?? [];
+  const ciFailing = checks.some(
+    (c) =>
+      c.status === "COMPLETED" &&
+      !["SUCCESS", "NEUTRAL", "SKIPPED", null].includes((c.conclusion ?? "").toUpperCase()),
+  );
+  if (ciFailing) return "ci_failing";
+  const isDraft = detail?.draft ?? summary.draft;
+  if (isDraft) return "draft";
+  const ciPending = checks.some((c) => c.status !== "COMPLETED");
+  if (!ciPending && detail?.mergeable === "MERGEABLE") return "ready_to_merge";
+  return "awaiting_review";
+}
+
+const STATUS_LABEL: Record<PrUiStatus, string> = {
+  draft: "Draft",
+  ci_failing: "CI failing",
+  awaiting_review: "Awaiting review",
+  ready_to_merge: "Ready to merge",
+};
+
+const STATUS_COLOR: Record<PrUiStatus, string> = {
+  draft: "bg-zinc-700 text-zinc-200",
+  ci_failing: "bg-red-900/60 text-red-200",
+  awaiting_review: "bg-amber-900/40 text-amber-200",
+  ready_to_merge: "bg-emerald-900/60 text-emerald-200",
+};
+
+/**
+ * A small composer that captures an optional review comment before the action
+ * fires. `required` flips the button to disabled until the user types
+ * something; we use it for request-changes (both providers reject an empty
+ * body) so the failure happens client-side rather than as a 400 round-trip.
+ */
+function CommentPrompt({
+  label,
+  placeholder,
+  required,
+  pending,
+  onConfirm,
+  onCancel,
+}: {
+  label: string;
+  placeholder: string;
+  required: boolean;
+  pending: boolean;
+  onConfirm: (body: string) => void;
+  onCancel: () => void;
+}) {
+  const [text, setText] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // Focus the composer when it pops open without using autoFocus (which biome
+  // flags for a11y). A11y-wise, focus following the user's deliberate click
+  // onto "Approve"/"Request changes" is the expected behavior.
+  useEffect(() => {
+    textareaRef.current?.focus();
+  }, []);
+  const disabled = pending || (required && !text.trim());
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-zinc-700 bg-zinc-900 p-2 shadow-lg">
+      <textarea
+        ref={textareaRef}
+        value={text}
+        placeholder={placeholder}
+        onChange={(e) => setText(e.target.value)}
+        rows={3}
+        className="w-72 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500"
+      />
+      <div className="flex items-center justify-end gap-2">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={() => onConfirm(text)}
+          disabled={disabled}
+          className="rounded-md bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+        >
+          {pending ? "…" : label}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+interface ActionConfig {
+  key: ReviewAction;
+  label: string;
+  className: string;
+  /** Open the comment composer instead of firing immediately. */
+  confirmInline: boolean;
+  /** When `confirmInline`, whether an empty body is rejected client-side. */
+  requireBody: boolean;
+  placeholder: string;
+  confirmLabel: string;
+}
+
+const APPROVE: ActionConfig = {
+  key: "approve",
+  label: "Approve",
+  className: "bg-emerald-600 hover:bg-emerald-500",
+  confirmInline: true,
+  requireBody: false,
+  placeholder: "Optional comment for the approval…",
+  confirmLabel: "Approve",
+};
+
+const REQUEST_CHANGES: ActionConfig = {
+  key: "request_changes",
+  label: "Request changes",
+  className: "bg-red-600 hover:bg-red-500",
+  confirmInline: true,
+  requireBody: true,
+  placeholder: "What needs to change?",
+  confirmLabel: "Submit",
+};
+
+const PUBLISH: ActionConfig = {
+  key: "publish",
+  label: "Ready for review",
+  className: "bg-indigo-600 hover:bg-indigo-500",
+  confirmInline: false,
+  requireBody: false,
+  placeholder: "",
+  confirmLabel: "Publish",
+};
+
+/**
+ * Returns the action buttons relevant for the current status. Approval &
+ * request-changes are hidden on drafts (you can't review a draft), and the
+ * publish button is only relevant for drafts. Ready-to-merge keeps the
+ * approve/request-changes buttons available — sometimes a second review is
+ * still needed, or you might want to push back even on a green PR.
+ */
+function actionsForStatus(status: PrUiStatus): ActionConfig[] {
+  if (status === "draft") return [PUBLISH];
+  return [APPROVE, REQUEST_CHANGES];
+}
+
+/**
+ * The static title/status bar at the top of the in-app PR review. Sits above
+ * the scrolling body (the parent `PrDetailView` is a flex column whose body
+ * owns the scroll), so it never overlaps body content as the user scrolls.
+ * Renders the title, lifecycle status badge, and the publish / approve /
+ * request-changes action buttons.
+ *
+ * The action handlers invalidate the PR cache so the cached detail (which
+ * fed the draft / mergeable state) is refetched after a publish or vote.
+ */
+export default function PrFloatingHeader({
+  pr,
+  detail,
+  onBack,
+}: {
+  pr: PrSummary;
+  detail: PrDetail | null;
+  onBack: () => void;
+}) {
+  const prRef: PrRef = pr.ref;
+  const [open, setOpen] = useState<ReviewAction | null>(null);
+  const [pending, setPending] = useState<ReviewAction | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const status = derivePrUiStatus(detail, pr);
+  const actions = actionsForStatus(status);
+
+  const run = async (action: ReviewAction, body?: string) => {
+    setPending(action);
+    setError(null);
+    try {
+      await applyReviewAction(prRef, action, body);
+      invalidate(prDetailKey(prRef));
+      setOpen(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPending(null);
+    }
+  };
+
+  return (
+    <div className="shrink-0 border-b border-zinc-800 bg-[#0a0a0a] px-6 py-3">
+      <div className="flex items-center gap-3">
+        <button
+          onClick={onBack}
+          className="rounded-md border border-zinc-700 px-2 py-1 text-sm hover:bg-zinc-800"
+        >
+          ← Back
+        </button>
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            {/* Prefer the detail's title — the summary's title can be empty
+                when the entry came from the workspace poller cache (which
+                doesn't store PR titles). Show a placeholder while detail
+                loads so the bar isn't blank. */}
+            <h2
+              className="min-w-0 truncate text-base font-semibold text-zinc-100"
+              title={detail?.title || pr.title}
+            >
+              {detail?.title || pr.title || (
+                <span className="font-normal italic text-zinc-500">Loading…</span>
+              )}
+            </h2>
+            <span className="font-normal text-zinc-500">#{refNumber(prRef)}</span>
+          </div>
+          <div className="truncate text-xs text-zinc-500">
+            {refDisplayRepo(prRef)} · {detail?.author || pr.author || "—"}
+          </div>
+        </div>
+        <span
+          className={`shrink-0 rounded px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[status]}`}
+        >
+          {STATUS_LABEL[status]}
+        </span>
+        <div className="flex shrink-0 items-center gap-2">
+          {actions.map((cfg) => {
+            const isPending = pending === cfg.key;
+            const isOpen = open === cfg.key;
+            const onClick = cfg.confirmInline
+              ? () => setOpen(isOpen ? null : cfg.key)
+              : () => void run(cfg.key);
+            return (
+              <div key={cfg.key} className="relative">
+                <button
+                  onClick={onClick}
+                  disabled={pending !== null}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors disabled:opacity-50 ${cfg.className}`}
+                >
+                  {isPending ? "…" : cfg.label}
+                </button>
+                {isOpen && (
+                  <div className="absolute right-0 top-full z-20 mt-1">
+                    <CommentPrompt
+                      label={cfg.confirmLabel}
+                      placeholder={cfg.placeholder}
+                      required={cfg.requireBody}
+                      pending={isPending}
+                      onConfirm={(body) => void run(cfg.key, body)}
+                      onCancel={() => setOpen(null)}
+                    />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          <button
+            onClick={() => openExternal(pr.url)}
+            className="rounded-md border border-zinc-700 px-2 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+            title={`Open on ${refProviderName(prRef)}`}
+          >
+            ↗
+          </button>
+        </div>
+      </div>
+      {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+    </div>
+  );
+}
