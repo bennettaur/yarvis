@@ -13,9 +13,9 @@ import SessionsPanel from "./components/SessionsPanel";
 import SettingsPanel from "./components/SettingsPanel";
 import AppShell from "./components/shell/AppShell";
 import { type Tab, tabLabel } from "./components/shell/nav";
+import TerminalTabs from "./components/shell/terminalTabs/TerminalTabs";
 import { useTabShortcuts } from "./components/shell/useTabShortcuts";
 import TasksPanel from "./components/TasksPanel";
-import TerminalPanel from "./components/TerminalPanel";
 import WorkspacesPanel from "./components/WorkspacesPanel";
 import { type Alarm, onAlarmFired } from "./lib/alarms";
 import { notify } from "./lib/notify";
@@ -92,7 +92,7 @@ export default function App() {
         ) : tab === "omni" ? (
           <OmniView />
         ) : tab === "terminal" ? (
-          <TerminalPanel sessionId="tab:terminal" />
+          <TerminalTabs storageKey="tab:terminal" />
         ) : tab === "workspaces" ? (
           <WorkspacesPanel />
         ) : (
