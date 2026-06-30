@@ -95,4 +95,39 @@ describe("derivePrUiStatus", () => {
     );
     expect(s).toBe("ready_to_merge");
   });
+
+  it("returns merged for a github MERGED state, regardless of CI history", () => {
+    // A merged PR may still have failing checks recorded from before merge; the
+    // terminal state takes priority so the toolbar doesn't offer to approve it.
+    const s = derivePrUiStatus(
+      detail({
+        state: "MERGED",
+        checks: [{ name: "a", status: "COMPLETED", conclusion: "FAILURE", url: null }],
+      }),
+      summary({ state: "closed" }),
+    );
+    expect(s).toBe("merged");
+  });
+
+  it("returns merged when only the summary reports it (workspace poller cache)", () => {
+    // Coming from the workspace checks panel, detail isn't loaded yet; the
+    // summary's `state` field (set by the poller to "merged") is the only signal.
+    const s = derivePrUiStatus(null, summary({ state: "merged" }));
+    expect(s).toBe("merged");
+  });
+
+  it("returns merged for an azure `completed` state", () => {
+    const s = derivePrUiStatus(detail({ state: "completed" }), summary({ state: "completed" }));
+    expect(s).toBe("merged");
+  });
+
+  it("returns closed for a closed-but-not-merged PR", () => {
+    const s = derivePrUiStatus(detail({ state: "CLOSED" }), summary({ state: "closed" }));
+    expect(s).toBe("closed");
+  });
+
+  it("returns closed for an azure `abandoned` state", () => {
+    const s = derivePrUiStatus(detail({ state: "abandoned" }), summary({ state: "abandoned" }));
+    expect(s).toBe("closed");
+  });
 });

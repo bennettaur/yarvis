@@ -6,21 +6,32 @@ import type { CheckItem, PrDetail, PrRef, PrSummary } from "../../lib/pr/types";
 import { openExternal } from "../../lib/url";
 
 /**
- * One of four high-level lifecycle states the UI shows in the floating header.
- * `awaiting_review` is the catch-all: the PR is published, CI hasn't failed,
- * but the provider isn't yet reporting it as cleanly mergeable (no approvals,
- * a pending check, an unknown mergeable state).
+ * The high-level lifecycle states the UI shows in the floating header.
+ * `awaiting_review` is the catch-all for an open PR with no clearer signal.
+ * Terminal states (`merged`, `closed`) suppress all review actions — there's
+ * nothing left to approve or request changes on.
  */
-export type PrUiStatus = "draft" | "ci_failing" | "awaiting_review" | "ready_to_merge";
+export type PrUiStatus =
+  | "draft"
+  | "ci_failing"
+  | "awaiting_review"
+  | "ready_to_merge"
+  | "merged"
+  | "closed";
 
 /**
- * Derives the single-line status shown in the floating header from the PR
- * detail. CI-failing wins over draft so a draft with a broken pipeline still
- * surfaces the failure (so the author isn't pestered to mark it ready for
- * review while the build is red). When details haven't loaded yet we fall back
- * to the list-level draft flag.
+ * Derives the single-line status shown in the floating header. Provider state
+ * vocabularies vary (GitHub GraphQL: OPEN/CLOSED/MERGED; the workspace poller
+ * cache: open/closed/merged; Azure: active/completed/abandoned), so the
+ * comparison is case-folded and covers all three. Terminal states win over
+ * everything else — a merged PR's CI history doesn't change the verdict.
+ * CI-failing then wins over draft so a draft with a broken pipeline still
+ * surfaces the failure rather than nagging the author to mark it ready.
  */
 export function derivePrUiStatus(detail: PrDetail | null, summary: PrSummary): PrUiStatus {
+  const state = (detail?.state ?? summary.state ?? "").toLowerCase();
+  if (state === "merged" || state === "completed") return "merged";
+  if (state === "closed" || state === "abandoned") return "closed";
   const checks: CheckItem[] = detail?.checks ?? [];
   const ciFailing = checks.some(
     (c) =>
@@ -40,6 +51,8 @@ const STATUS_LABEL: Record<PrUiStatus, string> = {
   ci_failing: "CI failing",
   awaiting_review: "Awaiting review",
   ready_to_merge: "Ready to merge",
+  merged: "Merged",
+  closed: "Closed",
 };
 
 const STATUS_COLOR: Record<PrUiStatus, string> = {
@@ -47,6 +60,8 @@ const STATUS_COLOR: Record<PrUiStatus, string> = {
   ci_failing: "bg-red-900/60 text-red-200",
   awaiting_review: "bg-amber-900/40 text-amber-200",
   ready_to_merge: "bg-emerald-900/60 text-emerald-200",
+  merged: "bg-violet-900/60 text-violet-200",
+  closed: "bg-zinc-800 text-zinc-400",
 };
 
 /**
@@ -161,6 +176,8 @@ const PUBLISH: ActionConfig = {
  */
 function actionsForStatus(status: PrUiStatus): ActionConfig[] {
   if (status === "draft") return [PUBLISH];
+  // Terminal states leave nothing to act on — no approve / request-changes.
+  if (status === "merged" || status === "closed") return [];
   return [APPROVE, REQUEST_CHANGES];
 }
 
