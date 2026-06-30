@@ -28,6 +28,11 @@ export const killPty = (id: string) => invoke("pty_kill", { id });
 /** True if a live session exists for `id` (without spawning one). */
 export const ptyExists = (id: string) => invoke<boolean>("pty_exists", { id });
 
+/** True when a non-shell foreground process is running in the session — used to
+ * decide whether closing should require confirmation. False for unknown
+ * sessions and for platforms that can't report a foreground process group. */
+export const isPtyBusy = (id: string) => invoke<boolean>("pty_is_busy", { id });
+
 /** Subscribe to output bytes for a single session. */
 export const onPtyOutput = (id: string, cb: (bytes: Uint8Array) => void): Promise<UnlistenFn> =>
   listen<number[]>(`pty-output:${id}`, (e) => cb(new Uint8Array(e.payload)));

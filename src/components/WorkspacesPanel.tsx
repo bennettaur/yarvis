@@ -15,6 +15,7 @@ import {
   type WorkspaceStatus,
   type WorkspaceSummary,
 } from "../lib/workspaces";
+import TerminalTabs from "./shell/terminalTabs/TerminalTabs";
 import TerminalPanel from "./TerminalPanel";
 import WorkspaceSidePanel from "./WorkspaceSidePanel";
 import ArchiveDialog from "./workspaces/ArchiveDialog";
@@ -142,6 +143,7 @@ export default function WorkspacesPanel() {
         <div className="flex shrink-0 items-center justify-between px-3 py-2">
           <h2 className="text-sm font-medium text-zinc-200">Workspaces</h2>
           <button
+            type="button"
             onClick={beginNew}
             className="rounded-md bg-indigo-600 px-2 py-1 text-xs font-medium hover:bg-indigo-500"
           >
@@ -162,6 +164,7 @@ export default function WorkspacesPanel() {
                 {group.items.map((ws) => (
                   <li key={ws.id}>
                     <button
+                      type="button"
                       onClick={() => {
                         setCreating(false);
                         setSelectedId(ws.id);
@@ -341,12 +344,14 @@ function NewWorkspaceForm({
 
         <div className="flex justify-end gap-2">
           <button
+            type="button"
             onClick={onCancel}
             className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
           >
             Cancel
           </button>
           <button
+            type="button"
             onClick={() => void submit()}
             className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500"
           >
@@ -365,8 +370,6 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
   const [provisionLog, setProvisionLog] = useState<string | null>(null);
   const [showArchive, setShowArchive] = useState(false);
   const [claudeActive, setClaudeActive] = useState(false);
-  const [showClaude, setShowClaude] = useState(false);
-  const prevClaudeActive = useRef(false);
 
   const load = useCallback(async () => {
     try {
@@ -381,9 +384,9 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
     void load();
   }, [load]);
 
-  // Poll whether a Claude session is live in the core, so the UI reflects one
-  // started here, by the agent, or remotely. Auto-open the view on the rising
-  // edge (a session appearing) without forcing it back open after the user hides it.
+  // Poll whether a Claude session is live in the core, so the workspace can
+  // surface it as a pinned terminal tab — whether it was started here, by the
+  // agent, or remotely.
   useEffect(() => {
     if (detail?.status !== "active") return;
     const claudeId = `ws-claude:${id}`;
@@ -391,10 +394,7 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
     const check = async () => {
       try {
         const alive = await ptyExists(claudeId);
-        if (cancelled) return;
-        setClaudeActive(alive);
-        if (alive && !prevClaudeActive.current) setShowClaude(true);
-        prevClaudeActive.current = alive;
+        if (!cancelled) setClaudeActive(alive);
       } catch {
         // Core unreachable; leave the last known state in place.
       }
@@ -445,6 +445,7 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
           </span>
           {detail.status !== "archived" && (
             <button
+              type="button"
               onClick={() => setShowArchive(true)}
               className="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
             >
@@ -463,6 +464,7 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
               <RepoStatusBadge status={wr.status} />
               {wr.repo.runScript && wr.status === "ready" && (
                 <button
+                  type="button"
                   onClick={() => setRunRepo(wr)}
                   className="rounded border border-zinc-700 px-1.5 py-0.5 text-zinc-300 hover:bg-zinc-800"
                 >
@@ -485,6 +487,7 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
                 </span>
                 {detail.status !== "archived" && (
                   <button
+                    type="button"
                     onClick={() =>
                       void unlinkWorkspaceTask(id, t.id).then(() => {
                         void load();
@@ -531,6 +534,7 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
       {!provisioned && provisionLog === null && (
         <div className="shrink-0 border-b border-zinc-800 px-4 py-2">
           <button
+            type="button"
             onClick={() => void provision()}
             className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500"
           >
@@ -547,50 +551,36 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
         <ArchivedView detail={detail} />
       ) : (
         <div className="flex min-h-0 flex-1">
-          <div className="flex min-h-0 flex-1 flex-col">
-            <div className="flex shrink-0 items-center gap-2 border-b border-zinc-800 bg-zinc-900 px-3 py-1 text-xs">
-              <span className="text-zinc-400">Claude session</span>
-              <span className={claudeActive ? "text-emerald-400" : "text-zinc-600"}>
-                {claudeActive ? "● active" : "○ idle"}
-              </span>
-              <button
-                onClick={() => setShowClaude((v) => !v)}
-                className="ml-auto rounded border border-zinc-700 px-1.5 py-0.5 text-zinc-300 hover:bg-zinc-800"
-              >
-                {showClaude ? "Hide" : claudeActive ? "Show" : "Resume (claude -c)"}
-              </button>
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <div className="min-h-0 min-w-0 flex-1">
+              {/* A live remote-control Claude session shows up as a pinned
+                  terminal tab; the workspace's own shells live in the other tabs. */}
+              <TerminalTabs
+                storageKey={`ws:${detail.id}`}
+                cwd={detail.rootPath}
+                pinnedTabs={
+                  claudeActive
+                    ? [
+                        {
+                          key: "claude",
+                          title: "Claude",
+                          sessionId: `ws-claude:${detail.id}`,
+                          cwd: claudeCwd,
+                        },
+                      ]
+                    : []
+                }
+              />
             </div>
-            <div className="min-h-0 flex-1">
-              <TerminalPanel sessionId={`ws:${detail.id}`} cwd={detail.rootPath} />
-            </div>
-            {showClaude && (
-              <div className="flex min-h-0 flex-1 flex-col border-t border-zinc-800">
-                <div className="flex shrink-0 items-center justify-between bg-zinc-900 px-3 py-1 text-xs text-zinc-400">
-                  <span>claude · {claudeActive ? "remote-control active" : "resuming"}</span>
-                  <button
-                    onClick={() => setShowClaude(false)}
-                    className="rounded border border-zinc-700 px-1.5 py-0.5 hover:bg-zinc-800"
-                  >
-                    Close
-                  </button>
-                </div>
-                <div className="min-h-0 flex-1">
-                  <TerminalPanel
-                    sessionId={`ws-claude:${detail.id}`}
-                    cwd={claudeCwd}
-                    initialCommand="claude -c"
-                  />
-                </div>
-              </div>
-            )}
             {runRepo && (
-              <div className="flex min-h-0 flex-1 flex-col border-t border-zinc-800">
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col border-t border-zinc-800">
                 <div className="flex shrink-0 items-center justify-between bg-zinc-900 px-3 py-1 text-xs text-zinc-400">
                   <span>
                     run · {runRepo.repo.name}{" "}
                     <span className="font-mono text-zinc-600">{runRepo.repo.runScript}</span>
                   </span>
                   <button
+                    type="button"
                     onClick={() => setRunRepo(null)}
                     className="rounded border border-zinc-700 px-1.5 py-0.5 hover:bg-zinc-800"
                   >
