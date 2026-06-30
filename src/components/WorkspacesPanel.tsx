@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ptyExists } from "../lib/pty";
 import { listRepos, type Repo } from "../lib/repos";
 import { listTasks, type Task } from "../lib/tasks";
 import {
@@ -363,6 +364,9 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
   const [runRepo, setRunRepo] = useState<WorkspaceRepoDetail | null>(null);
   const [provisionLog, setProvisionLog] = useState<string | null>(null);
   const [showArchive, setShowArchive] = useState(false);
+  const [claudeActive, setClaudeActive] = useState(false);
+  const [showClaude, setShowClaude] = useState(false);
+  const prevClaudeActive = useRef(false);
 
   const load = useCallback(async () => {
     try {
@@ -376,6 +380,32 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Poll whether a Claude session is live in the core, so the UI reflects one
+  // started here, by the agent, or remotely. Auto-open the view on the rising
+  // edge (a session appearing) without forcing it back open after the user hides it.
+  useEffect(() => {
+    if (detail?.status !== "active") return;
+    const claudeId = `ws-claude:${id}`;
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const alive = await ptyExists(claudeId);
+        if (cancelled) return;
+        setClaudeActive(alive);
+        if (alive && !prevClaudeActive.current) setShowClaude(true);
+        prevClaudeActive.current = alive;
+      } catch {
+        // Core unreachable; leave the last known state in place.
+      }
+    };
+    void check();
+    const timer = setInterval(check, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [id, detail?.status]);
 
   const provision = async () => {
     setProvisionLog("");
@@ -399,6 +429,10 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
   if (!detail) return <p className="p-6 text-sm text-zinc-500">Loading…</p>;
 
   const provisioned = detail.status === "active";
+  // One repo: work inside its worktree; multiple: the workspace root.
+  const firstRepo = detail.repos[0];
+  const claudeCwd =
+    detail.repos.length === 1 && firstRepo ? firstRepo.worktreePath : detail.rootPath;
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
@@ -514,9 +548,41 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
       ) : (
         <div className="flex min-h-0 flex-1">
           <div className="flex min-h-0 flex-1 flex-col">
+            <div className="flex shrink-0 items-center gap-2 border-b border-zinc-800 bg-zinc-900 px-3 py-1 text-xs">
+              <span className="text-zinc-400">Claude session</span>
+              <span className={claudeActive ? "text-emerald-400" : "text-zinc-600"}>
+                {claudeActive ? "● active" : "○ idle"}
+              </span>
+              <button
+                onClick={() => setShowClaude((v) => !v)}
+                className="ml-auto rounded border border-zinc-700 px-1.5 py-0.5 text-zinc-300 hover:bg-zinc-800"
+              >
+                {showClaude ? "Hide" : claudeActive ? "Show" : "Resume (claude -c)"}
+              </button>
+            </div>
             <div className="min-h-0 flex-1">
               <TerminalPanel sessionId={`ws:${detail.id}`} cwd={detail.rootPath} />
             </div>
+            {showClaude && (
+              <div className="flex min-h-0 flex-1 flex-col border-t border-zinc-800">
+                <div className="flex shrink-0 items-center justify-between bg-zinc-900 px-3 py-1 text-xs text-zinc-400">
+                  <span>claude · {claudeActive ? "remote-control active" : "resuming"}</span>
+                  <button
+                    onClick={() => setShowClaude(false)}
+                    className="rounded border border-zinc-700 px-1.5 py-0.5 hover:bg-zinc-800"
+                  >
+                    Close
+                  </button>
+                </div>
+                <div className="min-h-0 flex-1">
+                  <TerminalPanel
+                    sessionId={`ws-claude:${detail.id}`}
+                    cwd={claudeCwd}
+                    initialCommand="claude -c"
+                  />
+                </div>
+              </div>
+            )}
             {runRepo && (
               <div className="flex min-h-0 flex-1 flex-col border-t border-zinc-800">
                 <div className="flex shrink-0 items-center justify-between bg-zinc-900 px-3 py-1 text-xs text-zinc-400">

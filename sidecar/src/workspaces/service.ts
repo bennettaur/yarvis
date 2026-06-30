@@ -20,6 +20,7 @@ import {
   workspaces,
 } from "../db/schema.ts";
 import { completeTasksByWorkspace, tasksForWorkspace } from "../tasks/service.ts";
+import { stopClaudeSession } from "./claudeSession.ts";
 import { runStreaming } from "./exec.ts";
 import {
   branchExists,
@@ -535,6 +536,14 @@ export async function archiveWorkspace(
 ): Promise<ArchiveResult> {
   const detail = await getWorkspace(db, id);
   if (!detail) throw new Error("workspace not found");
+
+  // Stop any remote-control Claude session first so it isn't holding the
+  // worktree while we remove it. Best-effort: the core may be unreachable.
+  try {
+    await stopClaudeSession(id);
+  } catch (e) {
+    console.warn("[workspaces] failed to stop Claude session on archive:", e);
+  }
 
   await db
     .update(workspaces)

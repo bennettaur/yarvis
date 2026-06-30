@@ -1,4 +1,5 @@
 mod alarms;
+mod control;
 mod custom_providers;
 mod embeddings_secrets;
 mod keychain;
@@ -72,6 +73,11 @@ pub fn run() {
         .setup(|app| {
             use tauri::Manager;
             app.manage(pty::PtyState::default());
+            // Bind the control channel before spawning the sidecar so its socket
+            // path is available to inject into the sidecar's environment.
+            if let Err(e) = control::init(app.handle()) {
+                eprintln!("[control] init failed: {e}");
+            }
             if let Err(e) = sidecar::init(app.handle()) {
                 eprintln!("[sidecar] init failed: {e}");
             }
@@ -110,6 +116,7 @@ pub fn run() {
             pty::pty_write,
             pty::pty_resize,
             pty::pty_kill,
+            pty::pty_exists,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

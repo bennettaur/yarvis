@@ -25,6 +25,9 @@ export const resizePty = (id: string, cols: number, rows: number) =>
 /** Terminates the session's shell and frees it. */
 export const killPty = (id: string) => invoke("pty_kill", { id });
 
+/** True if a live session exists for `id` (without spawning one). */
+export const ptyExists = (id: string) => invoke<boolean>("pty_exists", { id });
+
 /** Subscribe to output bytes for a single session. */
 export const onPtyOutput = (id: string, cb: (bytes: Uint8Array) => void): Promise<UnlistenFn> =>
   listen<number[]>(`pty-output:${id}`, (e) => cb(new Uint8Array(e.payload)));
