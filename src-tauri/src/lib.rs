@@ -117,6 +117,7 @@ pub fn run() {
             pty::pty_resize,
             pty::pty_kill,
             pty::pty_exists,
+            pty::pty_start_claude,
             pty::pty_is_busy,
         ])
         .run(tauri::generate_context!())

@@ -7,7 +7,14 @@ import {
   startClaudeSession as defaultStartClaudeSession,
 } from "./claudeSession.ts";
 import { defaultGitRunner, type GitRunner } from "./git.ts";
-import { createWorkspace, getWorkspace, listRepos, provisionWorkspace } from "./service.ts";
+import {
+  createWorkspace,
+  getWorkspace,
+  listRepos,
+  listWorkspaces,
+  provisionWorkspace,
+  type WorkspaceDetail,
+} from "./service.ts";
 
 /** Injectable collaborators, overridden in tests to avoid real git/claude. */
 export interface WorkspaceToolDeps {
@@ -24,6 +31,39 @@ export interface WorkspaceToolDeps {
 export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolDeps = {}) {
   const startClaude = deps.startClaudeSession ?? defaultStartClaudeSession;
   const gitRunner = deps.gitRunner ?? defaultGitRunner;
+
+  /**
+   * Starts a Claude session in an already-active workspace and shapes the tool
+   * result. Shared by create_workspace_session (after provisioning) and
+   * start_workspace_session (existing workspace). One repo → its worktree;
+   * multiple → the workspace root so Claude sees each worktree as a subfolder.
+   */
+  const launchClaude = async (detail: WorkspaceDetail) => {
+    const [firstRepo] = detail.repos;
+    const cwd = detail.repos.length === 1 && firstRepo ? firstRepo.worktreePath : detail.rootPath;
+    try {
+      const session = await startClaude({ workspaceId: detail.id, cwd, name: detail.name });
+      return {
+        workspaceId: detail.id,
+        name: detail.name,
+        status: detail.status,
+        repos: detail.repos.map((r) => r.repo.name),
+        sessionName: detail.name,
+        sessionKey: session.sessionKey,
+        message: `Started a remote-controllable Claude Code session in workspace "${detail.name}". Open it from claude.ai/code or the Claude mobile app by the name "${detail.name}", or view it live in the Workspaces tab.`,
+      };
+    } catch (e) {
+      // The workspace is ready; only the Claude launch failed (commonly: not
+      // logged in). Surface that without discarding the usable workspace.
+      return {
+        error: e instanceof Error ? e.message : String(e),
+        workspaceId: detail.id,
+        name: detail.name,
+        status: detail.status,
+        note: "Workspace is ready; the Claude session failed to start. You can open the workspace locally and start Claude there.",
+      };
+    }
+  };
 
   return {
     list_repos: tool({
@@ -71,34 +111,45 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           };
         }
 
-        // One repo: work inside its worktree (a real git repo). Multiple: the
-        // workspace root, so Claude sees every worktree as a subfolder.
-        const [firstRepo] = detail.repos;
-        const cwd =
-          detail.repos.length === 1 && firstRepo ? firstRepo.worktreePath : detail.rootPath;
+        return launchClaude(detail);
+      },
+    }),
 
-        try {
-          const session = await startClaude({ workspaceId: ws.id, cwd, name: ws.name });
+    list_workspaces: tool({
+      description:
+        "List existing workspaces (id, name, status, repos) so you can act on one — e.g. start a Claude session in it with start_workspace_session.",
+      inputSchema: z.object({}),
+      execute: async () => {
+        const rows = await listWorkspaces(db);
+        return rows.map((w) => ({
+          id: w.id,
+          name: w.name,
+          status: w.status,
+          repos: w.repoNames,
+        }));
+      },
+    }),
+
+    start_workspace_session: tool({
+      description:
+        "Start a remote-controllable Claude Code session in an existing, already-provisioned workspace. Resolve the workspace id with list_workspaces first. The session is drivable from claude.ai/code or the Claude mobile app and appears as a live terminal tab in the Workspaces tab.",
+      inputSchema: z.object({
+        workspaceId: z
+          .string()
+          .uuid()
+          .describe("Id of an existing workspace, from list_workspaces"),
+      }),
+      execute: async ({ workspaceId }) => {
+        const detail = await getWorkspace(db, workspaceId);
+        if (!detail) return { error: "workspace not found" };
+        if (detail.status !== "active") {
           return {
-            workspaceId: ws.id,
-            name: ws.name,
+            error: `workspace is not ready to start a session (status: ${detail.status})`,
+            workspaceId,
             status: detail.status,
-            repos: detail.repos.map((r) => r.repo.name),
-            sessionName: ws.name,
-            sessionKey: session.sessionKey,
-            message: `Started a remote-controllable Claude Code session in workspace "${ws.name}". Open it from claude.ai/code or the Claude mobile app by the name "${ws.name}", or view it live in the Workspaces tab.`,
-          };
-        } catch (e) {
-          // The workspace is ready; only the Claude launch failed (commonly: not
-          // logged in). Surface that without discarding the usable workspace.
-          return {
-            error: e instanceof Error ? e.message : String(e),
-            workspaceId: ws.id,
-            name: ws.name,
-            status: detail.status,
-            note: "Workspace is ready; the Claude session failed to start. You can open the workspace locally and start Claude there.",
           };
         }
+        return launchClaude(detail);
       },
     }),
   };

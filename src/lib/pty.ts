@@ -28,6 +28,11 @@ export const killPty = (id: string) => invoke("pty_kill", { id });
 /** True if a live session exists for `id` (without spawning one). */
 export const ptyExists = (id: string) => invoke<boolean>("pty_exists", { id });
 
+/** Starts a remote-controllable Claude session for a workspace, keyed
+ * `ws-claude:<workspaceId>`. Resolves once the session is registered. */
+export const startClaudeSession = (workspaceId: string, cwd: string, name: string) =>
+  invoke("pty_start_claude", { workspaceId, cwd, name });
+
 /** True when a non-shell foreground process is running in the session — used to
  * decide whether closing should require confirmation. False for unknown
  * sessions and for platforms that can't report a foreground process group. */

@@ -103,4 +103,60 @@ describe("workspace tools", () => {
     expect(result.status).toBe("error");
     expect(started).toBe(false);
   });
+
+  it("start_workspace_session starts a session in an existing workspace", async () => {
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
+    const startedCwds: string[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => {
+        startedCwds.push(input.cwd);
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+
+    // Create + provision an active workspace (this also starts a session once).
+    const created = (await tools.create_workspace_session.execute!(
+      { name: "Existing WS", repoIds: [repo.id] },
+      opts,
+    )) as { workspaceId?: string; status?: string };
+    expect(created.status).toBe("active");
+    const wsId = created.workspaceId as string;
+
+    // Starting again on the existing workspace succeeds and reuses its worktree.
+    const result = (await tools.start_workspace_session.execute!({ workspaceId: wsId }, opts)) as {
+      error?: string;
+      sessionKey?: string;
+    };
+    expect(result.error).toBeUndefined();
+    expect(result.sessionKey).toBe(`ws-claude:${wsId}`);
+    expect(startedCwds.length).toBe(2);
+    expect(startedCwds[1]).toContain("existing-ws");
+  });
+
+  it("start_workspace_session errors on an unknown workspace", async () => {
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => ({ sessionKey: `ws-claude:${input.workspaceId}` }),
+    });
+
+    const result = (await tools.start_workspace_session.execute!(
+      { workspaceId: "00000000-0000-0000-0000-000000000000" },
+      opts,
+    )) as { error?: string };
+
+    expect(result.error).toBeDefined();
+  });
+
+  it("list_workspaces returns created workspaces", async () => {
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => ({ sessionKey: `ws-claude:${input.workspaceId}` }),
+    });
+    await tools.create_workspace_session.execute!({ name: "WS One", repoIds: [repo.id] }, opts);
+
+    const rows = (await tools.list_workspaces.execute!({}, opts)) as Array<{ name: string }>;
+    expect(rows.some((w) => w.name === "WS One")).toBe(true);
+  });
 });

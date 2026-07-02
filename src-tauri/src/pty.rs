@@ -321,6 +321,20 @@ pub fn pty_exists(state: tauri::State<'_, PtyState>, id: String) -> Result<bool,
     Ok(false)
 }
 
+/// Starts a remote-controllable Claude session for an existing workspace, so the
+/// frontend can offer a "Start Claude session" action. Mirrors what the control
+/// channel does for the sidecar/agent; both go through `spawn_claude_session`.
+#[tauri::command]
+pub fn pty_start_claude(
+    app: AppHandle,
+    state: tauri::State<'_, PtyState>,
+    workspace_id: String,
+    cwd: String,
+    name: String,
+) -> Result<(), String> {
+    spawn_claude_session(&app, state.inner(), &workspace_id, cwd, &name)
+}
+
 #[tauri::command]
 pub fn pty_write(
     state: tauri::State<'_, PtyState>,

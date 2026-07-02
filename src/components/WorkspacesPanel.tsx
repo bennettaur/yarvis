@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ptyExists } from "../lib/pty";
+import { ptyExists, startClaudeSession } from "../lib/pty";
 import { listRepos, type Repo } from "../lib/repos";
 import { listTasks, type Task } from "../lib/tasks";
 import {
@@ -434,6 +434,16 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
   const claudeCwd =
     detail.repos.length === 1 && firstRepo ? firstRepo.worktreePath : detail.rootPath;
 
+  const startClaude = async () => {
+    try {
+      await startClaudeSession(id, claudeCwd, detail.name);
+      // The session now exists; reflect it immediately (the poll would catch up).
+      setClaudeActive(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       <div className="shrink-0 border-b border-zinc-800 px-4 py-2">
@@ -443,6 +453,15 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
           <span className="ml-auto truncate font-mono text-xs text-zinc-500">
             {detail.rootPath}
           </span>
+          {provisioned && !claudeActive && (
+            <button
+              type="button"
+              onClick={() => void startClaude()}
+              className="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
+            >
+              Start Claude session
+            </button>
+          )}
           {detail.status !== "archived" && (
             <button
               type="button"
