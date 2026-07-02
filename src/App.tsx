@@ -18,9 +18,11 @@ import { useTabShortcuts } from "./components/shell/useTabShortcuts";
 import TasksPanel from "./components/TasksPanel";
 import WorkspacesPanel from "./components/WorkspacesPanel";
 import { type Alarm, onAlarmFired } from "./lib/alarms";
+import { useOpenPrListener } from "./lib/nav";
 import { notify } from "./lib/notify";
 import { onOmniChatSummon } from "./lib/omniChat";
 import { useOmniChatContext } from "./lib/omniChatContext";
+import type { PrSummary } from "./lib/pr/types";
 import { useTelegramSecurityAlerts } from "./lib/useTelegramSecurityAlerts";
 
 export default function App() {
@@ -28,8 +30,18 @@ export default function App() {
   const [activeAlarm, setActiveAlarm] = useState<Alarm | null>(null);
   const [omniChatOpen, setOmniChatOpen] = useState(false);
   const [attention, setAttention] = useState<string | null>(null);
+  // A PR another view (workspaces, omni) has asked us to open. PrsPanel reads
+  // this on mount/change, selects the PR, and we clear it. One-shot, not
+  // persisted — refreshing the app drops it.
+  const [requestedPr, setRequestedPr] = useState<PrSummary | null>(null);
 
   useTabShortcuts(tab, setTab);
+
+  const handleOpenPr = useCallback((pr: PrSummary) => {
+    setRequestedPr(pr);
+    setTab("prs");
+  }, []);
+  useOpenPrListener(handleOpenPr);
 
   // Surface Telegram unlock/failed/lockout activity as OS notifications, app-wide.
   useTelegramSecurityAlerts();
@@ -95,10 +107,15 @@ export default function App() {
           <TerminalTabs storageKey="tab:terminal" />
         ) : tab === "workspaces" ? (
           <WorkspacesPanel />
+        ) : tab === "prs" ? (
+          // PRs owns its scroll so the PR detail view can pin a static header
+          // at the top and let only the body scroll under it (rather than
+          // sharing the catch-all p-6 wrapper's scroll, which leaves a gap
+          // above a `sticky` header).
+          <PrsPanel requestedPr={requestedPr} onRequestConsumed={() => setRequestedPr(null)} />
         ) : (
           <div className="h-full overflow-y-auto p-6">
             {tab === "tasks" && <TasksPanel />}
-            {tab === "prs" && <PrsPanel />}
             {tab === "memory" && <MemoryPanel />}
             {tab === "calendar" && <CalendarView />}
             {tab === "alarms" && <AlarmsPanel />}

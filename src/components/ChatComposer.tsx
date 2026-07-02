@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 
 /** Tallest the textarea grows before it starts scrolling internally (px). */
-const MAX_HEIGHT = 160;
+const DEFAULT_MAX_HEIGHT = 160;
 
 /**
  * Message composer shared by the chat and Omni builder. A multi-line textarea
@@ -18,6 +18,7 @@ export default function ChatComposer({
   submitLabel,
   className = "flex gap-2",
   textareaClassName = "",
+  maxHeight = DEFAULT_MAX_HEIGHT,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -31,21 +32,22 @@ export default function ChatComposer({
    * min-height also floors the auto-grow so the box never collapses below it.
    */
   textareaClassName?: string;
+  /** Tallest the textarea grows before it scrolls internally (px). */
+  maxHeight?: number;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
 
-  // Resize to fit the content (reset to auto first so it can also shrink, e.g.
-  // after the value is cleared on submit). scrollHeight excludes the border, so
-  // add it back under border-box sizing to avoid a hairline scrollbar; past the
-  // cap the textarea scrolls internally.
+  // Re-measure after each value change. scrollHeight excludes the border so
+  // it's added back under border-box; past the cap the textarea scrolls.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-measure on every value change
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     el.style.height = "auto";
     const style = window.getComputedStyle(el);
     const borderY = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
-    el.style.height = `${Math.min(el.scrollHeight + borderY, MAX_HEIGHT)}px`;
-  }, []);
+    el.style.height = `${Math.min(el.scrollHeight + borderY, maxHeight)}px`;
+  }, [value, maxHeight]);
 
   return (
     <div className={className}>

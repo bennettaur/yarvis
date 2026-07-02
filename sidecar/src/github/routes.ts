@@ -54,6 +54,16 @@ const commentSchema = z.object({
   side: z.enum(["RIGHT", "LEFT"]).optional(),
 });
 
+const reviewSchema = z.object({
+  event: z.enum(["APPROVE", "REQUEST_CHANGES", "COMMENT"]),
+  body: z.string().max(65_536).optional(),
+});
+
+const viewedSchema = z.object({
+  path: z.string().min(1).max(1024),
+  viewed: z.boolean(),
+});
+
 /** GitHub PR dashboard routes, mounted under /api/github. */
 export function createGithubRoutes(config: Config): Hono {
   const router = new Hono();
@@ -138,6 +148,80 @@ export function createGithubRoutes(config: Config): Hono {
     if ("error" in params) return c.json({ error: params.error }, 400);
     try {
       return c.json(await gh.prFiles(params.owner, params.repo, params.number));
+    } catch (e) {
+      return c.json({ error: String(e) }, 502);
+    }
+  });
+
+  // Mark a draft PR as ready for review.
+  router.post("/pr/:owner/:repo/:number/ready", async (c) => {
+    const gh = client();
+    if (!gh) return c.json({ error: "github token not configured" }, 400);
+    const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
+    if ("error" in params) return c.json({ error: params.error }, 400);
+    try {
+      await gh.markReady(params.owner, params.repo, params.number);
+      return c.json({ ok: true });
+    } catch (e) {
+      return c.json({ error: String(e) }, 502);
+    }
+  });
+
+  // Submit a PR review (APPROVE / REQUEST_CHANGES / COMMENT).
+  router.post("/pr/:owner/:repo/:number/reviews", async (c) => {
+    const gh = client();
+    if (!gh) return c.json({ error: "github token not configured" }, 400);
+    const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
+    if ("error" in params) return c.json({ error: params.error }, 400);
+    const parsed = reviewSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    if (parsed.data.event === "REQUEST_CHANGES" && !parsed.data.body?.trim()) {
+      return c.json({ error: "request changes requires a body" }, 400);
+    }
+    try {
+      await gh.submitReview(
+        params.owner,
+        params.repo,
+        params.number,
+        parsed.data.event,
+        parsed.data.body,
+      );
+      return c.json({ ok: true }, 201);
+    } catch (e) {
+      return c.json({ error: String(e) }, 502);
+    }
+  });
+
+  // List paths the viewer has marked "viewed" on this PR.
+  router.get("/pr/:owner/:repo/:number/viewed", async (c) => {
+    const gh = client();
+    if (!gh) return c.json({ error: "github token not configured" }, 400);
+    const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
+    if ("error" in params) return c.json({ error: params.error }, 400);
+    try {
+      return c.json(await gh.listViewedFiles(params.owner, params.repo, params.number));
+    } catch (e) {
+      return c.json({ error: String(e) }, 502);
+    }
+  });
+
+  // Mark / unmark a single file as viewed on this PR.
+  router.post("/pr/:owner/:repo/:number/viewed", async (c) => {
+    const gh = client();
+    if (!gh) return c.json({ error: "github token not configured" }, 400);
+    const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
+    if ("error" in params) return c.json({ error: params.error }, 400);
+    const parsed = viewedSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    try {
+      await gh.setFileViewed(
+        params.owner,
+        params.repo,
+        params.number,
+        parsed.data.path,
+        parsed.data.viewed,
+      );
+      return c.json({ ok: true });
     } catch (e) {
       return c.json({ error: String(e) }, 502);
     }

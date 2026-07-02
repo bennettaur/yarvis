@@ -6,20 +6,24 @@
 
 import {
   azAddStar,
+  azMarkReady,
   azPostComment,
   azPrDetail,
   azPrFileDiff,
   azPrFiles,
   azPrStatus,
   azRemoveStar,
+  azSubmitVote,
 } from "./azure";
 import {
   ghAddStar,
+  ghMarkReady,
   ghPostComment,
   ghPrDetail,
   ghPrFiles,
   ghPrStatus,
   ghRemoveStar,
+  ghSubmitReview,
 } from "./github";
 import type { NewComment, PrDetail, PrFile, PrRef, PrStatus } from "./types";
 
@@ -47,3 +51,37 @@ export const addStar = (ref: PrRef, title?: string | null, url?: string | null) 
 
 export const removeStar = (ref: PrRef) =>
   ref.provider === "github" ? ghRemoveStar(ref) : azRemoveStar(ref);
+
+/**
+ * A provider-neutral review action. `approve` and `request_changes` map to the
+ * provider's native vocabulary; `publish` lifts a draft to ready-for-review.
+ */
+export type ReviewAction = "publish" | "approve" | "request_changes";
+
+/**
+ * Apply a review action to a PR. The optional `body` is shown to the PR author
+ * — required on `request_changes` for both providers (the sidecar enforces it,
+ * but the UI should also gate the button).
+ */
+export async function applyReviewAction(
+  ref: PrRef,
+  action: ReviewAction,
+  body?: string,
+): Promise<void> {
+  if (ref.provider === "github") {
+    if (action === "publish") {
+      await ghMarkReady(ref);
+      return;
+    }
+    const event = action === "approve" ? "APPROVE" : "REQUEST_CHANGES";
+    await ghSubmitReview(ref, event, body);
+    return;
+  }
+  if (action === "publish") {
+    await azMarkReady(ref);
+    return;
+  }
+  // Azure votes are numeric: 10 = approved, -10 = rejected.
+  const vote = action === "approve" ? 10 : -10;
+  await azSubmitVote(ref, vote, body);
+}
