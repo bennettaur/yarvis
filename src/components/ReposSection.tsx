@@ -14,10 +14,11 @@ interface Draft {
   cloneUrl: string;
   setupScript: string;
   runScript: string;
+  pullIssues: boolean;
 }
 
 function blankDraft(): Draft {
-  return { name: "", cloneUrl: "", setupScript: "", runScript: "" };
+  return { name: "", cloneUrl: "", setupScript: "", runScript: "", pullIssues: false };
 }
 
 function draftFromRepo(r: Repo): Draft {
@@ -27,6 +28,7 @@ function draftFromRepo(r: Repo): Draft {
     cloneUrl: r.cloneUrl,
     setupScript: r.setupScript ?? "",
     runScript: r.runScript ?? "",
+    pullIssues: r.pullIssues,
   };
 }
 
@@ -80,6 +82,7 @@ export default function ReposSection() {
         name: draft.name.trim() || undefined,
         setupScript: draft.setupScript.trim() || null,
         runScript: draft.runScript.trim() || null,
+        pullIssues: draft.pullIssues,
       };
       if (draft.id) {
         await updateRepo(draft.id, payload);
@@ -206,6 +209,21 @@ function DraftEditor({
         setValue={(v) => setDraft((d) => ({ ...d, runScript: v }))}
       />
 
+      <label className="mt-4 flex items-start gap-2 text-sm text-zinc-300">
+        <input
+          type="checkbox"
+          checked={draft.pullIssues}
+          onChange={(e) => setDraft((d) => ({ ...d, pullIssues: e.target.checked }))}
+          className="mt-0.5 h-4 w-4 rounded border-zinc-600 bg-zinc-800 accent-indigo-600"
+        />
+        <span>
+          Pull issues
+          <span className="mt-0.5 block text-xs text-zinc-500">
+            Show this repo's issues in the Issues dashboard.
+          </span>
+        </span>
+      </label>
+
       <div className="mt-4 flex justify-end gap-2">
         <button
           onClick={onCancel}
@@ -306,6 +324,7 @@ function RepoCard({
       <div className="mt-2 flex gap-3 text-xs text-zinc-500">
         <span>{repo.setupScript ? "setup ✓" : "no setup"}</span>
         <span>{repo.runScript ? "run ✓" : "no run"}</span>
+        {repo.pullIssues && <span className="text-indigo-400">issues ✓</span>}
       </div>
     </div>
   );

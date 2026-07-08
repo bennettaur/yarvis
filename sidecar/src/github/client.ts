@@ -3,6 +3,7 @@
  * implementation is injectable so response shaping can be unit-tested.
  */
 
+import type { IssueDetail, IssueLabel, IssueSummary } from "../issues/types.ts";
 import type {
   CheckItem,
   ChecksSummary,
@@ -54,6 +55,78 @@ export function toPrSummary(item: any): PrSummary {
     state: item.state,
     createdAt: item.created_at,
     updatedAt: item.updated_at,
+  };
+}
+
+/** Extracts {owner, repo} from an issue's repository_url or html_url. Mirrors
+ * `parseRepo` above for the issue URL shape (`/issues` rather than `/pull`). */
+function parseIssueRepo(repositoryUrl?: string, htmlUrl?: string): { owner: string; repo: string } {
+  if (repositoryUrl) {
+    const m = repositoryUrl.match(/repos\/([^/]+)\/([^/]+)$/);
+    if (m) return { owner: m[1]!, repo: m[2]! };
+  }
+  if (htmlUrl) {
+    const m = htmlUrl.match(/github\.com\/([^/]+)\/([^/]+)\/issues/);
+    if (m) return { owner: m[1]!, repo: m[2]! };
+  }
+  return { owner: "", repo: "" };
+}
+
+function toIssueLabels(raw: any[]): IssueLabel[] {
+  return (raw ?? []).map((l) =>
+    // Labels come back as strings on some legacy payloads, objects otherwise.
+    typeof l === "string"
+      ? { name: l, color: null }
+      : { name: l.name ?? "", color: l.color ?? null },
+  );
+}
+
+/**
+ * Shapes a GitHub issue (REST or Search item) into a provider-neutral
+ * IssueSummary. `fallback` supplies owner/repo for endpoints that don't echo a
+ * repository_url (the single-issue REST route), where the caller already knows
+ * the repo.
+ */
+export function toIssueSummary(
+  item: any,
+  fallback?: { owner: string; repo: string },
+): IssueSummary {
+  const parsed = parseIssueRepo(item.repository_url, item.html_url);
+  const owner = parsed.owner || fallback?.owner || "";
+  const repo = parsed.repo || fallback?.repo || "";
+  const sourceKey = `${owner}/${repo}`;
+  return {
+    provider: "github",
+    sourceKey,
+    sourceLabel: sourceKey,
+    externalId: String(item.number),
+    displayId: `#${item.number}`,
+    title: item.title ?? "",
+    url: item.html_url ?? "",
+    state: item.state ?? "open",
+    author: item.user?.login ?? "",
+    assignees: (item.assignees ?? []).map((a: any) => a.login).filter(Boolean),
+    labels: toIssueLabels(item.labels),
+    createdAt: item.created_at ?? "",
+    updatedAt: item.updated_at ?? "",
+    commentCount: item.comments ?? 0,
+  };
+}
+
+/** Shapes an issue plus its comments into a full IssueDetail. */
+export function toIssueDetail(
+  item: any,
+  comments: any[],
+  fallback?: { owner: string; repo: string },
+): IssueDetail {
+  return {
+    ...toIssueSummary(item, fallback),
+    body: item.body ?? "",
+    comments: (comments ?? []).map((c) => ({
+      author: c.user?.login ?? "",
+      body: c.body ?? "",
+      createdAt: c.created_at ?? "",
+    })),
   };
 }
 
@@ -385,5 +458,108 @@ export class GitHubClient {
       },
     );
     if (!res.ok) throw new Error(`github post comment -> ${res.status}`);
+  }
+
+  // --- Issues ---
+
+  /**
+   * Runs a GitHub issue search and drops pull requests. The `/search/issues`
+   * endpoint returns both issues and PRs (a PR *is* an issue to GitHub); a PR
+   * carries a `pull_request` field, so the absence of it identifies a true
+   * issue — the mirror of what `search()` does for PRs.
+   */
+  async searchIssues(query: string): Promise<IssueSummary[]> {
+    const data = await this.api<{ items?: any[] }>(
+      `/search/issues?q=${encodeURIComponent(query)}&per_page=50&sort=created&order=desc`,
+    );
+    return (data.items ?? []).filter((i) => !i.pull_request).map((i) => toIssueSummary(i));
+  }
+
+  /**
+   * Lists a repo's issues via the core REST endpoint (not the Search API, whose
+   * 30 req/min secondary limit the dashboard would hit fanning across repos).
+   * The endpoint returns PRs too — a PR carries a `pull_request` field — so
+   * those are dropped. `assignee` narrows to issues assigned to a login.
+   */
+  async listRepoIssues(
+    owner: string,
+    repo: string,
+    opts: { assignee?: string; state?: string } = {},
+  ): Promise<IssueSummary[]> {
+    const params = new URLSearchParams({
+      state: opts.state ?? "open",
+      per_page: "50",
+      sort: "created",
+      direction: "desc",
+    });
+    if (opts.assignee) params.set("assignee", opts.assignee);
+    const items = await this.api<any[]>(`/repos/${owner}/${repo}/issues?${params.toString()}`);
+    return items.filter((i) => !i.pull_request).map((i) => toIssueSummary(i, { owner, repo }));
+  }
+
+  async issueDetail(owner: string, repo: string, number: number): Promise<IssueDetail> {
+    const issue = await this.api<any>(`/repos/${owner}/${repo}/issues/${number}`);
+    // A PR is reachable via the issues endpoint too; refuse it so the issue
+    // views never render a pull request.
+    if (issue.pull_request) throw new Error(`${owner}/${repo}#${number} is a pull request`);
+    const comments = await this.api<any[]>(
+      `/repos/${owner}/${repo}/issues/${number}/comments?per_page=100`,
+    );
+    return toIssueDetail(issue, comments, { owner, repo });
+  }
+
+  /** Adds assignees to an issue (GitHub merges, it does not replace). */
+  async assignIssue(
+    owner: string,
+    repo: string,
+    number: number,
+    assignees: string[],
+  ): Promise<void> {
+    await this.mutate(`/repos/${owner}/${repo}/issues/${number}/assignees`, "POST", { assignees });
+  }
+
+  /**
+   * Ensures a label exists in the repo, creating it if absent. GitHub returns
+   * 404 for a missing label and 422 if a concurrent create already made it;
+   * both are treated as "exists now".
+   */
+  async ensureLabel(owner: string, repo: string, name: string, color = "ededed"): Promise<void> {
+    const res = await this.fetchImpl(
+      `https://api.github.com/repos/${owner}/${repo}/labels/${encodeURIComponent(name)}`,
+      { headers: this.restHeaders() },
+    );
+    if (res.ok) return;
+    if (res.status !== 404) throw new Error(`github get label -> ${res.status}`);
+    const create = await this.fetchImpl(`https://api.github.com/repos/${owner}/${repo}/labels`, {
+      method: "POST",
+      headers: this.restHeaders(),
+      body: JSON.stringify({ name, color }),
+    });
+    if (!create.ok && create.status !== 422) {
+      throw new Error(`github create label -> ${create.status}`);
+    }
+  }
+
+  /** Adds labels to an issue (GitHub merges with any already present). */
+  async addLabels(owner: string, repo: string, number: number, labels: string[]): Promise<void> {
+    await this.mutate(`/repos/${owner}/${repo}/issues/${number}/labels`, "POST", { labels });
+  }
+
+  private restHeaders(): Record<string, string> {
+    return {
+      Authorization: `Bearer ${this.token}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "Content-Type": "application/json",
+    };
+  }
+
+  private async mutate(path: string, method: string, body: unknown): Promise<void> {
+    const res = await this.fetchImpl(`https://api.github.com${path}`, {
+      method,
+      headers: this.restHeaders(),
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`github ${method} ${path} -> ${res.status}`);
   }
 }

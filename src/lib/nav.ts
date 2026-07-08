@@ -34,3 +34,38 @@ export function onOpenPr(handler: (pr: PrSummary) => void): () => void {
 export function useOpenPrListener(handler: (pr: PrSummary) => void): void {
   useEffect(() => onOpenPr(handler), [handler]);
 }
+
+const OPEN_WORKSPACE_EVENT = "yarvis:open-workspace";
+
+/**
+ * A request to open a workspace on the Workspaces tab. `claudePrompt`, when
+ * set (the "Start work on issue" flow), tells the workspace detail view to
+ * provision and launch a Claude session seeded with that prompt.
+ */
+export interface OpenWorkspaceRequest {
+  id: string;
+  claudePrompt?: string;
+}
+
+interface OpenWorkspaceEvent extends Event {
+  detail: OpenWorkspaceRequest;
+}
+
+export function requestOpenWorkspace(request: OpenWorkspaceRequest): void {
+  target.dispatchEvent(new CustomEvent(OPEN_WORKSPACE_EVENT, { detail: request }));
+}
+
+/**
+ * Subscribe to "open workspace" requests. The handler should switch to the
+ * Workspaces tab and select the requested workspace. Returns the cleanup fn.
+ */
+export function onOpenWorkspace(handler: (request: OpenWorkspaceRequest) => void): () => void {
+  const listener = (e: Event) => handler((e as OpenWorkspaceEvent).detail);
+  target.addEventListener(OPEN_WORKSPACE_EVENT, listener);
+  return () => target.removeEventListener(OPEN_WORKSPACE_EVENT, listener);
+}
+
+/** React-friendly hook over `onOpenWorkspace` for the App shell. */
+export function useOpenWorkspaceListener(handler: (request: OpenWorkspaceRequest) => void): void {
+  useEffect(() => onOpenWorkspace(handler), [handler]);
+}

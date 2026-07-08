@@ -26,6 +26,7 @@ const createRepoSchema = z.object({
   name: z.string().min(1).optional(),
   setupScript: z.string().nullish(),
   runScript: z.string().nullish(),
+  pullIssues: z.boolean().optional(),
 });
 
 const updateRepoSchema = z.object({
@@ -33,6 +34,7 @@ const updateRepoSchema = z.object({
   cloneUrl: z.string().min(1).optional(),
   setupScript: z.string().nullish(),
   runScript: z.string().nullish(),
+  pullIssues: z.boolean().optional(),
 });
 
 const createWorkspaceSchema = z.object({

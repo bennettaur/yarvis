@@ -5,6 +5,7 @@ import AlarmsPanel from "./components/AlarmsPanel";
 import ChatPanel from "./components/ChatPanel";
 import CalendarView from "./components/calendar/CalendarView";
 import Dashboard from "./components/Dashboard";
+import IssuesPanel from "./components/IssuesPanel";
 import MemoryPanel from "./components/MemoryPanel";
 import OmniView from "./components/omni/OmniView";
 import OmniChat from "./components/omnichat/OmniChat";
@@ -18,7 +19,7 @@ import { useTabShortcuts } from "./components/shell/useTabShortcuts";
 import TasksPanel from "./components/TasksPanel";
 import WorkspacesPanel from "./components/WorkspacesPanel";
 import { type Alarm, onAlarmFired } from "./lib/alarms";
-import { useOpenPrListener } from "./lib/nav";
+import { type OpenWorkspaceRequest, useOpenPrListener, useOpenWorkspaceListener } from "./lib/nav";
 import { notify } from "./lib/notify";
 import { onOmniChatSummon } from "./lib/omniChat";
 import { useOmniChatContext } from "./lib/omniChatContext";
@@ -34,6 +35,9 @@ export default function App() {
   // this on mount/change, selects the PR, and we clear it. One-shot, not
   // persisted — refreshing the app drops it.
   const [requestedPr, setRequestedPr] = useState<PrSummary | null>(null);
+  // A workspace another view (Issues "Start work") has asked us to open, with an
+  // optional Claude prompt to launch. WorkspacesPanel consumes and clears it.
+  const [requestedWorkspace, setRequestedWorkspace] = useState<OpenWorkspaceRequest | null>(null);
 
   useTabShortcuts(tab, setTab);
 
@@ -42,6 +46,12 @@ export default function App() {
     setTab("prs");
   }, []);
   useOpenPrListener(handleOpenPr);
+
+  const handleOpenWorkspace = useCallback((request: OpenWorkspaceRequest) => {
+    setRequestedWorkspace(request);
+    setTab("workspaces");
+  }, []);
+  useOpenWorkspaceListener(handleOpenWorkspace);
 
   // Surface Telegram unlock/failed/lockout activity as OS notifications, app-wide.
   useTelegramSecurityAlerts();
@@ -106,13 +116,20 @@ export default function App() {
         ) : tab === "terminal" ? (
           <TerminalTabs storageKey="tab:terminal" />
         ) : tab === "workspaces" ? (
-          <WorkspacesPanel />
+          <WorkspacesPanel
+            requested={requestedWorkspace}
+            onRequestConsumed={() => setRequestedWorkspace(null)}
+          />
         ) : tab === "prs" ? (
           // PRs owns its scroll so the PR detail view can pin a static header
           // at the top and let only the body scroll under it (rather than
           // sharing the catch-all p-6 wrapper's scroll, which leaves a gap
           // above a `sticky` header).
           <PrsPanel requestedPr={requestedPr} onRequestConsumed={() => setRequestedPr(null)} />
+        ) : tab === "issues" ? (
+          // Issues owns its scroll so the issue detail view can pin a header and
+          // scroll only its body, matching the PRs tab.
+          <IssuesPanel />
         ) : (
           <div className="h-full overflow-y-auto p-6">
             {tab === "tasks" && <TasksPanel />}
