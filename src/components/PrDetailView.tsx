@@ -1,13 +1,14 @@
 import { type ReactNode, useEffect } from "react";
 import { recordEvent } from "../lib/events";
 import { usePrDetail } from "../lib/pr/cache";
-import { refDisplayRepo, refKey, refNumber, refProviderName } from "../lib/pr/ref";
+import { refKey } from "../lib/pr/ref";
 import type { CheckItem, PrSummary } from "../lib/pr/types";
-import { openExternal } from "../lib/url";
+import { usePrViewedFiles } from "../lib/pr/viewed";
 import PrChecks from "./pr/PrChecks";
 import PrDescription from "./pr/PrDescription";
 import PrFileDiffs from "./pr/PrFileDiffs";
 import PrFileList from "./pr/PrFileList";
+import PrFloatingHeader from "./pr/PrFloatingHeader";
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -36,18 +37,19 @@ function checksSummary(checks: CheckItem[]): string {
   return parts.join(" · ");
 }
 
-/** Collapsible section header; defaults open, mirroring the file-diff idiom. */
 function CollapsibleSection({
   title,
   summary,
+  defaultOpen = true,
   children,
 }: {
   title: string;
   summary?: string;
+  defaultOpen?: boolean;
   children: ReactNode;
 }) {
   return (
-    <details open className="group">
+    <details open={defaultOpen} className="group">
       <summary className="mb-2 flex cursor-pointer items-center gap-2 text-sm font-medium uppercase tracking-wide text-zinc-500">
         <span className="text-zinc-600 group-open:rotate-90 transition-transform">▶</span>
         {title}
@@ -59,14 +61,20 @@ function CollapsibleSection({
 }
 
 /**
- * Full in-app PR review: header plus the decomposed description, checks, and a
- * changed-file list beside the file diffs. The pieces share one fetch through
- * the PR cache (keyed by the ref), so naming the same PR here and in each child
- * does not multiply requests.
+ * Full in-app PR review. Splits into a static header (title, derived lifecycle
+ * status, and action buttons) at the top, and a scrolling body underneath with
+ * the description, checks, and changed-file list. Owning the scroll here (the
+ * tab's outer scroll is bypassed in App.tsx for the PRs tab) lets the header
+ * stay anchored at the top without overlapping body content.
+ *
+ * The pieces share one fetch through the PR cache (keyed by the ref), so naming
+ * the same PR here and in each child does not multiply requests.
  */
 export default function PrDetailView({ pr, onBack }: { pr: PrSummary; onBack: () => void }) {
   const prRef = pr.ref;
   const { data: detail, error } = usePrDetail(prRef);
+  // Shared so the file list and diffs stay in lockstep.
+  const viewedFiles = usePrViewedFiles(prRef);
 
   // Record opening a PR for review. Keyed strictly by PR identity (the ref key)
   // so re-renders (and metadata edits like a rename) don't re-fire; a different
@@ -77,68 +85,43 @@ export default function PrDetailView({ pr, onBack }: { pr: PrSummary; onBack: ()
   }, [refKey(prRef)]);
 
   return (
-    <div className="space-y-5">
-      <div className="flex items-center gap-3">
-        <button
-          onClick={onBack}
-          className="rounded-md border border-zinc-700 px-2 py-1 text-sm hover:bg-zinc-800"
-        >
-          ← Back
-        </button>
-        <button
-          onClick={() => openExternal(pr.url)}
-          className="text-sm text-sky-400 hover:underline"
-        >
-          Open on {refProviderName(prRef)}
-        </button>
+    <div className="flex h-full min-h-0 flex-col">
+      <PrFloatingHeader pr={pr} detail={detail} onBack={onBack} />
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+        <div className="space-y-5">
+          {error && <p className="text-sm text-red-400">{error}</p>}
+
+          <PrDescription prRef={prRef} />
+
+          <CollapsibleSection
+            title="Checks"
+            summary={detail ? checksSummary(detail.checks) : undefined}
+            defaultOpen={false}
+          >
+            <PrChecks prRef={prRef} />
+          </CollapsibleSection>
+
+          <Section title="Files">
+            <div className="flex gap-4">
+              <div className="sticky top-0 max-h-[80vh] w-64 shrink-0 self-start overflow-auto">
+                <PrFileList
+                  prRef={prRef}
+                  viewed={viewedFiles.viewed}
+                  onToggleViewed={viewedFiles.toggle}
+                />
+              </div>
+              <div className="min-w-0 flex-1">
+                <PrFileDiffs
+                  prRef={prRef}
+                  viewed={viewedFiles.viewed}
+                  onToggleViewed={viewedFiles.toggle}
+                />
+              </div>
+            </div>
+          </Section>
+        </div>
       </div>
-
-      <header>
-        <h2 className="text-lg font-semibold text-zinc-100">
-          {pr.title}
-          <span className="ml-2 font-normal text-zinc-500">#{refNumber(prRef)}</span>
-        </h2>
-        <div className="mt-1 text-xs text-zinc-500">
-          {refDisplayRepo(prRef)} · {detail?.author ?? pr.author}
-          {detail && (
-            <>
-              {" · "}
-              <span className="font-mono">
-                {detail.baseRef} ← {detail.headRef}
-              </span>
-              {detail.additions + detail.deletions > 0 && (
-                <>
-                  {" · "}
-                  <span className="text-emerald-400">+{detail.additions}</span>{" "}
-                  <span className="text-red-400">−{detail.deletions}</span>
-                </>
-              )}
-            </>
-          )}
-        </div>
-      </header>
-
-      {error && <p className="text-sm text-red-400">{error}</p>}
-
-      <PrDescription prRef={prRef} />
-
-      <CollapsibleSection
-        title="Checks"
-        summary={detail ? checksSummary(detail.checks) : undefined}
-      >
-        <PrChecks prRef={prRef} />
-      </CollapsibleSection>
-
-      <Section title="Files">
-        <div className="flex gap-4">
-          <div className="sticky top-0 max-h-[80vh] w-64 shrink-0 self-start overflow-auto">
-            <PrFileList prRef={prRef} />
-          </div>
-          <div className="min-w-0 flex-1">
-            <PrFileDiffs prRef={prRef} />
-          </div>
-        </div>
-      </Section>
     </div>
   );
 }

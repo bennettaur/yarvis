@@ -218,6 +218,7 @@ export default function ChatPanel() {
         busy={busy}
         placeholder="Message..."
         submitLabel="Send"
+        maxHeight={360}
       />
     </div>
   );

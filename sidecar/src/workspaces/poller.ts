@@ -25,10 +25,18 @@ const POLL_INTERVAL_MS = 60_000;
  *  `error` so the UI offers a retry. The margin avoids racing a fresh create. */
 const ORPHAN_AGE_MS = 2 * 60_000;
 
+/**
+ * Pending wins over failure: while any check on the latest commit is still
+ * running, the PR's outcome is not finalized. If we showed "failure" the
+ * moment one check went red we'd hide the fact that fresh checks are queued
+ * after a follow-up push, which is the most common reason users come back to
+ * a "failing" PR. The per-bucket counts on the cached row still let the UI
+ * surface the failing count alongside the running count.
+ */
 function deriveRollup(checks: ChecksSummary): CheckRollup {
   if (checks.total === 0) return "none";
-  if (checks.failure > 0) return "failure";
   if (checks.pending > 0) return "pending";
+  if (checks.failure > 0) return "failure";
   return "success";
 }
 

@@ -56,6 +56,18 @@ const commentSchema = z.object({
   side: z.enum(["RIGHT", "LEFT"]).optional(),
 });
 
+/**
+ * Azure votes are an enum on a small numeric set; reject anything else so a
+ * caller can't push exotic values into the upstream call.
+ */
+const voteSchema = z.object({
+  vote: z
+    .number()
+    .int()
+    .refine((v) => [-10, -5, 0, 5, 10].includes(v), "invalid vote"),
+  body: z.string().max(65_536).optional(),
+});
+
 /** Azure DevOps PR dashboard routes, mounted under /api/azure. */
 export function createAzureRoutes(config: Config): Hono {
   const router = new Hono();
@@ -87,16 +99,17 @@ export function createAzureRoutes(config: Config): Hono {
 
   /**
    * Resolves the Azure client for a request, or returns a 400 whose `reason` names
-   * which secret is missing or invalid. The reason is logged so a misconfiguration
-   * can be pinpointed from the sidecar log; the org URL (not a credential) is
-   * logged when it is the invalid value so a typo is visible.
+   * which secret is missing or invalid. Only an invalid org URL is logged — a
+   * missing token or missing org URL is the common state for setups that only
+   * use GitHub and would just be noise. Invalid means the user *did* configure
+   * it but the value won't work, so it's a typo worth surfacing in logs.
    */
   const requireClient = (c: Context): AzureDevOpsClient | Response => {
     const gate = gateClient();
     if (gate.ok) return gate.client;
-    const detail =
-      gate.reason === "invalid_org_url" ? ` (orgUrl=${config.secrets.azureDevopsOrgUrl})` : "";
-    console.warn(`[azure] not configured: ${gate.reason}${detail}`);
+    if (gate.reason === "invalid_org_url") {
+      console.warn(`[azure] invalid org URL: ${config.secrets.azureDevopsOrgUrl}`);
+    }
     return c.json({ error: "azure devops not configured", reason: gate.reason }, 400);
   };
 
@@ -204,6 +217,40 @@ export function createAzureRoutes(config: Config): Hono {
     if (!path.success) return c.json({ error: path.error.flatten() }, 400);
     try {
       return c.json(await az.prFileDiff(ref, path.data));
+    } catch (e) {
+      return upstreamError(c, e);
+    }
+  });
+
+  // Publish a draft PR (Azure clears the isDraft flag).
+  router.post("/pr/:project/:repo/:prId/ready", async (c) => {
+    const az = requireClient(c);
+    if (az instanceof Response) return az;
+    const ref = parsePrParams(c.req.param("project"), c.req.param("repo"), c.req.param("prId"));
+    if ("error" in ref) return c.json({ error: ref.error }, 400);
+    try {
+      await az.markReady(ref);
+      return c.json({ ok: true });
+    } catch (e) {
+      return upstreamError(c, e);
+    }
+  });
+
+  // Cast a vote on the PR (10=approve, -10=reject). Optional `body` is posted
+  // as a PR-level comment thread so the user's note isn't dropped.
+  router.post("/pr/:project/:repo/:prId/vote", async (c) => {
+    const az = requireClient(c);
+    if (az instanceof Response) return az;
+    const ref = parsePrParams(c.req.param("project"), c.req.param("repo"), c.req.param("prId"));
+    if ("error" in ref) return c.json({ error: ref.error }, 400);
+    const parsed = voteSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    if (parsed.data.vote === -10 && !parsed.data.body?.trim()) {
+      return c.json({ error: "rejecting requires a body" }, 400);
+    }
+    try {
+      await az.submitVote(ref, parsed.data.vote, parsed.data.body);
+      return c.json({ ok: true }, 201);
     } catch (e) {
       return upstreamError(c, e);
     }
