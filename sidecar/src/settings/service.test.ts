@@ -1,6 +1,7 @@
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
+import { runMigrations } from "../db/migrate.ts";
 import * as schema from "../db/schema.ts";
 import { CLAUDE_COMMAND_KEY, getSetting, setSetting } from "./service.ts";
 
@@ -12,6 +13,14 @@ beforeEach(async () => {
   // Only truncate if we can connect. If not, this test might skip or fail gracefully.
   try {
     await sql`TRUNCATE app_settings RESTART IDENTITY CASCADE`;
+  } catch {
+    // skip
+  }
+});
+
+beforeAll(async () => {
+  try {
+    await runMigrations(url);
   } catch {
     // skip
   }

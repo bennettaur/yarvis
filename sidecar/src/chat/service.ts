@@ -19,7 +19,7 @@ export async function createSession(db: Db, title?: string | null): Promise<Chat
   await emitEvent(db, {
     type: "chat.started",
     source: "chat",
-    payload: { sessionId: row!.id },
+    payload: { sessionId: row?.id },
   });
   return row!;
 }

@@ -82,7 +82,7 @@ export class PgVectorMemoryStore implements MemoryService {
       .returning();
     memoryDebug(
       "memory",
-      `add id=${row!.id} type=${(metadata?.type as string) ?? "—"} chars=${content.length} ` +
+      `add id=${row?.id} type=${(metadata?.type as string) ?? "—"} chars=${content.length} ` +
         `embedder=${this.embedder.kind} → stored`,
     );
     return toRecord(row!);

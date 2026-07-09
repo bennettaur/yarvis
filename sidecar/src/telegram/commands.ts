@@ -19,7 +19,7 @@ export function parseCommand(text: string): ParsedCommand | null {
   const trimmed = text.trim();
   if (!trimmed.startsWith("/")) return null;
   const [head, ...rest] = trimmed.split(/\s+/);
-  const name = head!.slice(1).split("@")[0]!.toLowerCase();
+  const name = head?.slice(1).split("@")[0]?.toLowerCase();
   if (!name) return null;
   return { name, args: rest.join(" ").trim() };
 }
@@ -137,7 +137,7 @@ async function setModel(config: Config, db: Db, chatId: number, args: string): P
     return `Usage: /setmodel <provider> <model>\n\n${availableModelsText(providers)}`;
   }
   const match = providers.find((p) => p.id === provider);
-  if (!match || !match.available) {
+  if (!match?.available) {
     return `Unknown or unavailable provider: ${provider}\n\n${availableModelsText(providers)}`;
   }
   await setProviderModel(db, chatId, provider, model);

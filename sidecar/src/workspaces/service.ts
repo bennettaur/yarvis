@@ -19,7 +19,6 @@ import {
   workspaceRepos,
   workspaces,
 } from "../db/schema.ts";
-import { CLAUDE_COMMAND_KEY, getSetting } from "../settings/service.ts";
 import { completeTasksByWorkspace, tasksForWorkspace } from "../tasks/service.ts";
 import { stopClaudeSession } from "./claudeSession.ts";
 import { runStreaming } from "./exec.ts";
@@ -217,7 +216,7 @@ export async function createWorkspace(
 
     await tx.insert(workspaceRepos).values(
       selected.map((repo) => ({
-        workspaceId: workspace!.id,
+        workspaceId: workspace?.id,
         repoId: repo.id,
         branch,
         baseBranch: repo.defaultBranch ?? "main",
@@ -228,7 +227,7 @@ export async function createWorkspace(
     );
 
     if (input.taskId) {
-      await tx.update(tasks).set({ workspaceId: workspace!.id }).where(eq(tasks.id, input.taskId));
+      await tx.update(tasks).set({ workspaceId: workspace?.id }).where(eq(tasks.id, input.taskId));
     }
 
     return workspace!;

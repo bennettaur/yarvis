@@ -19,7 +19,9 @@ type DebugScope = "memory" | "embedder";
 
 /** Logs a memory-subsystem debug line when tracing is enabled; otherwise a no-op. */
 export function memoryDebug(scope: DebugScope, message: string): void {
-  if (memoryDebugEnabled()) console.log(`[${scope}] ${message}`);
+  if (memoryDebugEnabled()) {
+    console.info(`[${scope}] ${message}`);
+  }
 }
 
 /**

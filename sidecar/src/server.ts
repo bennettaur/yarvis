@@ -38,12 +38,8 @@ if (config.tokenGenerated) {
   // developer opts in via env. Otherwise show a fingerprint that's enough to
   // recognise the same session in a debugger but useless on its own.
   if (process.env.YARVIS_LOG_DEV_TOKEN === "1") {
-    console.log(`[sidecar] generated dev token: ${config.token}`);
   } else {
-    const fingerprint = `${config.token.slice(0, 4)}...${config.token.slice(-4)} (${config.token.length} chars)`;
-    console.log(
-      `[sidecar] generated dev token fingerprint: ${fingerprint} — set YARVIS_LOG_DEV_TOKEN=1 to print the full token`,
-    );
+    const _fingerprint = `${config.token.slice(0, 4)}...${config.token.slice(-4)} (${config.token.length} chars)`;
   }
 }
 

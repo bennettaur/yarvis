@@ -1,10 +1,11 @@
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import type { Config } from "../config.ts";
+import { runMigrations } from "../db/migrate.ts";
 import * as schema from "../db/schema.ts";
 import type { GitRunner } from "./git.ts";
 import { createRepo } from "./service.ts";
@@ -32,6 +33,10 @@ const okRunner: GitRunner = async (args) => {
 
 beforeEach(async () => {
   await sql`TRUNCATE workspaces, workspace_repos, workspace_repo_pr, repos, tasks RESTART IDENTITY CASCADE`;
+});
+
+beforeAll(async () => {
+  await runMigrations(url);
 });
 
 afterAll(async () => {

@@ -65,14 +65,13 @@ async function runBot(config: Config, token: string, signal: AbortSignal): Promi
   const client = new TelegramClient(token);
   const db = getDb(config.databaseUrl as string).db;
 
-  let me: Awaited<ReturnType<TelegramClient["getMe"]>>;
+  let _me: Awaited<ReturnType<TelegramClient["getMe"]>>;
   try {
-    me = await client.getMe(signal);
+    _me = await client.getMe(signal);
   } catch (e) {
     console.error("[telegram] invalid bot token; bot disabled:", describeError(e));
     return;
   }
-  console.log(`[telegram] bot @${me.username ?? me.id} online`);
 
   // When an OTP secret is configured, gate every chat behind a TOTP unlock. The
   // gate's state is in-memory, so this fresh instance relocks all chats — the
@@ -84,9 +83,6 @@ async function runBot(config: Config, token: string, signal: AbortSignal): Promi
       })
     : null;
   if (otpGate) {
-    console.log(
-      `[telegram] OTP second factor enabled (${config.telegram.otpWindowMinutes}m window)`,
-    );
   }
 
   // Skip any backlog so a sidecar restart doesn't replay messages received
@@ -138,7 +134,6 @@ async function runBot(config: Config, token: string, signal: AbortSignal): Promi
       backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
     }
   }
-  console.log("[telegram] bot stopped");
 }
 
 /**
@@ -203,7 +198,7 @@ export async function handleMessage(
         // OTP control commands are handled here (they must work while locked);
         // any other command is refused until the chat is unlocked.
         if (otpGate) {
-          const name = command!.name;
+          const name = command?.name;
           if (name === "unlock") {
             await handleUnlock(client, otpGate, msg, command!);
             return;
@@ -214,7 +209,11 @@ export async function handleMessage(
             await client.sendMessage(chatId, "🔒 Locked. Send /unlock <code> to resume.");
             return;
           }
-          if (!COMMANDS_ALLOWED_WHILE_LOCKED.has(name) && !otpGate.isUnlocked(chatId, now)) {
+          if (
+            name &&
+            !COMMANDS_ALLOWED_WHILE_LOCKED.has(name) &&
+            !otpGate.isUnlocked(chatId, now)
+          ) {
             await client.sendMessage(chatId, LOCKED_PROMPT);
             return;
           }
@@ -296,8 +295,8 @@ async function handleChat(
   const userMetadata: ChatMessageMetadata = {
     source: "telegram",
     telegramUserId: msg.from?.id,
-    telegramUsername: msg.from?.username,
-    telegramFirstName: msg.from?.first_name,
+    telegramUsername: msg.from?.username ?? undefined,
+    telegramFirstName: msg.from?.first_name ?? undefined,
   };
   const state = await getChatState(db, chatId);
 
