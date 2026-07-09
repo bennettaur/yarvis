@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ptyExists, startClaudeSession } from "../lib/pty";
 import { createRepo, listRepos, type Repo } from "../lib/repos";
 import { listTasks, type Task } from "../lib/tasks";
 import {
@@ -512,6 +513,7 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
   const [runRepo, setRunRepo] = useState<WorkspaceRepoDetail | null>(null);
   const [provisionLog, setProvisionLog] = useState<string | null>(null);
   const [showArchive, setShowArchive] = useState(false);
+  const [claudeActive, setClaudeActive] = useState(false);
   // Bumped when the active id changes (or this view unmounts) so an in-flight
   // load() from a previous selection won't overwrite the new one's detail.
   // Capture the current value at call time; compare on resolve.
@@ -563,6 +565,29 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
     };
   }, [load]);
 
+  // Poll whether a Claude session is live in the core, so the workspace can
+  // surface it as a pinned terminal tab — whether it was started here, by the
+  // agent, or remotely.
+  useEffect(() => {
+    if (detail?.status !== "active") return;
+    const claudeId = `ws-claude:${id}`;
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const alive = await ptyExists(claudeId);
+        if (!cancelled) setClaudeActive(alive);
+      } catch {
+        // Core unreachable; leave the last known state in place.
+      }
+    };
+    void check();
+    const timer = setInterval(check, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [id, detail?.status]);
+
   const provision = async () => {
     setProvisionLog("");
     try {
@@ -585,6 +610,20 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
   if (!detail) return <p className="p-6 text-sm text-zinc-500">Loading…</p>;
 
   const provisioned = detail.status === "active";
+  // One repo: work inside its worktree; multiple: the workspace root.
+  const firstRepo = detail.repos[0];
+  const claudeCwd =
+    detail.repos.length === 1 && firstRepo ? firstRepo.worktreePath : detail.rootPath;
+
+  const startClaude = async () => {
+    try {
+      await startClaudeSession(id, claudeCwd, detail.name);
+      // The session now exists; reflect it immediately (the poll would catch up).
+      setClaudeActive(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
@@ -595,6 +634,15 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
           <span className="ml-auto truncate font-mono text-xs text-zinc-500">
             {detail.rootPath}
           </span>
+          {provisioned && !claudeActive && (
+            <button
+              type="button"
+              onClick={() => void startClaude()}
+              className="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
+            >
+              Start Claude session
+            </button>
+          )}
           {detail.status !== "archived" && (
             <button
               type="button"
@@ -705,7 +753,24 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
         <div className="flex min-h-0 flex-1">
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             <div className="min-h-0 min-w-0 flex-1">
-              <TerminalTabs storageKey={`ws:${detail.id}`} cwd={detail.rootPath} />
+              {/* A live remote-control Claude session shows up as a pinned
+                  terminal tab; the workspace's own shells live in the other tabs. */}
+              <TerminalTabs
+                storageKey={`ws:${detail.id}`}
+                cwd={detail.rootPath}
+                pinnedTabs={
+                  claudeActive
+                    ? [
+                        {
+                          key: "claude",
+                          title: "Claude",
+                          sessionId: `ws-claude:${detail.id}`,
+                          cwd: claudeCwd,
+                        },
+                      ]
+                    : []
+                }
+              />
             </div>
             {runRepo && (
               <div className="flex min-h-0 min-w-0 flex-1 flex-col border-t border-zinc-800">

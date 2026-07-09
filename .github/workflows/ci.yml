@@ -183,6 +183,15 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           working-directory: src-tauri
+          # These advisories are all in transitive dependencies pinned by Tauri's
+          # own version requirements, so we can't upgrade past them without a
+          # Tauri release that moves them. None is reachable from our own code:
+          #   RUSTSEC-2026-0194 / -0195 — quick-xml DoS parsing *untrusted* XML;
+          #     we never feed it untrusted input (it's Tauri's internal bundling).
+          #   RUSTSEC-2024-0429 — glib VariantStrIter unsoundness in the Linux
+          #     GTK3 stack, which Tauri v2 still pins at glib 0.18 (no patched
+          #     0.18.x exists). Any other advisory still fails this job.
+          ignore: RUSTSEC-2026-0194,RUSTSEC-2026-0195,RUSTSEC-2024-0429
 
   tauri-build:
     name: Tauri build (${{ matrix.platform }})
