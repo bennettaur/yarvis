@@ -26,8 +26,15 @@ import type { PrSummary } from "./lib/pr/types";
 import { useTelegramSecurityAlerts } from "./lib/useTelegramSecurityAlerts";
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("chat");
+  const [tab, setTab] = useState<Tab>(() => {
+    const saved = localStorage.getItem("yarvis.activeTab") as Tab | null;
+    return saved ?? "chat";
+  });
   const [activeAlarm, setActiveAlarm] = useState<Alarm | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem("yarvis.activeTab", tab);
+  }, [tab]);
   const [omniChatOpen, setOmniChatOpen] = useState(false);
   const [attention, setAttention] = useState<string | null>(null);
   // A PR another view (workspaces, omni) has asked us to open. PrsPanel reads
