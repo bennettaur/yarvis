@@ -86,9 +86,16 @@ export function sanitizeIssueText(text: string): string {
   const cleaned = Array.from(text)
     .filter((ch) => !isHiddenChar(ch.codePointAt(0) ?? 0))
     .join("");
+
+  let withoutComments = cleaned;
+  let previous: string;
+  do {
+    previous = withoutComments;
+    withoutComments = withoutComments.replace(/<!--[\s\S]*?-->/g, "");
+  } while (withoutComments !== previous);
+
   return (
-    cleaned
-      .replace(/<!--[\s\S]*?-->/g, "")
+    withoutComments
       // Trailing whitespace (not newlines) and runs of blank lines.
       .replace(/[^\S\n]+$/gm, "")
       .replace(/\n{3,}/g, "\n\n")
