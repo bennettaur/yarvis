@@ -85,6 +85,13 @@ export default function TerminalPanel({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(container);
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.key === "Enter" && e.shiftKey && e.type === "keydown") {
+        void writePty(id, "\n");
+        return false;
+      }
+      return true;
+    });
     const focusSub = term.textarea
       ? (() => {
           const ta = term.textarea;
