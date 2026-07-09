@@ -16,7 +16,8 @@ function configWith(secrets: Partial<Config["secrets"]> = {}): Config {
     tokenGenerated: true,
     allowedOrigins: null,
     databaseUrl: undefined,
-    workspacesRoot: "/tmp/yarvis-test-workspaces", claudeCommand: "claude",
+    workspacesRoot: "/tmp/yarvis-test-workspaces",
+    claudeCommand: "claude",
     secrets: {
       anthropicApiKey: undefined,
       geminiApiKey: undefined,

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useOpenWorkspaceListener } from "../lib/nav";
 import { ptyExists, startClaudeSession } from "../lib/pty";
-import { getSettings } from "../lib/settings";
 import { createRepo, listRepos, type Repo } from "../lib/repos";
+import { getSettings } from "../lib/settings";
 import { listTasks, type Task } from "../lib/tasks";
 import {
   createWorkspace,

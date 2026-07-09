@@ -15,7 +15,8 @@ const config: Config = {
   tokenGenerated: false,
   allowedOrigins: null,
   databaseUrl: url,
-  workspacesRoot: "/tmp/yarvis-test-workspaces", claudeCommand: "claude",
+  workspacesRoot: "/tmp/yarvis-test-workspaces",
+  claudeCommand: "claude",
   secrets: {}, // no provider keys configured
   customProviderSecrets: {},
   embeddingsSecrets: { headers: {} },

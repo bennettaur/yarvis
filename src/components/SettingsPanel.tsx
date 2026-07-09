@@ -1,7 +1,7 @@
 import { useState } from "react";
-import GeneralSettingsSection from "./GeneralSettingsSection";
 import CustomProviderSection from "./CustomProviderSection";
 import EmbeddingsSection from "./EmbeddingsSection";
+import GeneralSettingsSection from "./GeneralSettingsSection";
 import KeychainSection from "./KeychainSection";
 import ReposSection from "./ReposSection";
 import TelegramSection from "./TelegramSection";
