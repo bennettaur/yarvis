@@ -120,11 +120,13 @@ export async function spawnClaudeSession(input: {
   workspaceId: string;
   cwd: string;
   name: string;
+  baseCommand?: string;
 }): Promise<void> {
   await rpc("claude.spawn", {
     workspaceId: input.workspaceId,
     cwd: input.cwd,
     name: input.name,
+    baseCommand: input.baseCommand,
   });
 }
 

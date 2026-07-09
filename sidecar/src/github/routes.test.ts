@@ -14,7 +14,7 @@ function appWith(secrets: Config["secrets"]): ReturnType<typeof createApp> {
     tokenGenerated: false,
     allowedOrigins: null,
     databaseUrl: "postgres://localhost/unused",
-    workspacesRoot: "/tmp/yarvis-test-workspaces",
+    workspacesRoot: "/tmp/yarvis-test-workspaces", claudeCommand: "claude",
     secrets,
     customProviderSecrets: {},
     embeddingsSecrets: { headers: {} },

@@ -18,7 +18,7 @@ import { useTabShortcuts } from "./components/shell/useTabShortcuts";
 import TasksPanel from "./components/TasksPanel";
 import WorkspacesPanel from "./components/WorkspacesPanel";
 import { type Alarm, onAlarmFired } from "./lib/alarms";
-import { useOpenPrListener } from "./lib/nav";
+import { useOpenPrListener, useOpenWorkspaceListener } from "./lib/nav";
 import { notify } from "./lib/notify";
 import { onOmniChatSummon } from "./lib/omniChat";
 import { useOmniChatContext } from "./lib/omniChatContext";
@@ -42,6 +42,14 @@ export default function App() {
     setTab("prs");
   }, []);
   useOpenPrListener(handleOpenPr);
+
+  const handleOpenWorkspace = useCallback((_id: string) => {
+    // WorkspacesPanel reads the selectedId from localStorage, which
+    // requestOpenWorkspace callers should have set or will be handled
+    // by the WorkspacesPanel itself if we pass the id.
+    setTab("workspaces");
+  }, []);
+  useOpenWorkspaceListener(handleOpenWorkspace);
 
   // Surface Telegram unlock/failed/lockout activity as OS notifications, app-wide.
   useTelegramSecurityAlerts();

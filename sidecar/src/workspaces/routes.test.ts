@@ -28,6 +28,7 @@ const config: Config = {
   allowedOrigins: null,
   databaseUrl: url,
   workspacesRoot,
+  claudeCommand: "claude",
   secrets: {},
   customProviderSecrets: {},
   embeddingsSecrets: { headers: {} },

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useOpenWorkspaceListener } from "../lib/nav";
 import { ptyExists, startClaudeSession } from "../lib/pty";
+import { getSettings } from "../lib/settings";
 import { createRepo, listRepos, type Repo } from "../lib/repos";
 import { listTasks, type Task } from "../lib/tasks";
 import {
@@ -138,6 +140,14 @@ export default function WorkspacesPanel() {
     else localStorage.removeItem(SELECTED_WORKSPACE_KEY);
   }, [selectedId]);
 
+  // Handle external navigation requests (both internal and from backend).
+  useOpenWorkspaceListener(
+    useCallback((id) => {
+      setSelectedId(id);
+      setCreating(false);
+    }, []),
+  );
+
   useEffect(() => {
     if (showArchived) localStorage.setItem(SHOW_ARCHIVED_KEY, "1");
     else localStorage.removeItem(SHOW_ARCHIVED_KEY);
@@ -163,11 +173,19 @@ export default function WorkspacesPanel() {
     setSelectedId(null);
   };
 
-  const onCreated = (id: string) => {
-    setCreating(false);
-    void refresh();
-    setSelectedId(id);
-  };
+  const onCreated = useCallback(
+    (id: string) => {
+      setCreating(false);
+      void refresh();
+      setSelectedId(id);
+      // The WorkspaceDetailView will handle auto-starting Claude if it detects
+      // it's a newly created workspace. Or we can just let the user click it.
+      // But the requirement says: "When I create a new workspace... start a
+      // terminal, and then claude session and navigate the UI to it".
+      // Navigation is already handled by setSelectedId(id) + App.tsx tab switch.
+    },
+    [refresh],
+  );
 
   const onRepoAdded = useCallback((repo: Repo) => {
     setRepos((prev) => (prev.some((r) => r.id === repo.id) ? prev : [...prev, repo]));
@@ -304,8 +322,10 @@ function NewWorkspaceForm({
       });
       setPhase("provisioning");
       const result = await consumeProvision(ws.id, (text) => setLog((prev) => prev + text));
-      if (result.ok) onCreated(ws.id);
-      else setError(result.error ?? "provisioning failed");
+      if (result.ok) {
+        localStorage.setItem(AUTO_START_KEY, ws.id);
+        onCreated(ws.id);
+      } else setError(result.error ?? "provisioning failed");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -507,6 +527,8 @@ function InlineRepoCreator({
  *  fresh poll lands per refresh while still being cheap (one local SQL read). */
 const DETAIL_REFRESH_INTERVAL_MS = 20_000;
 
+const AUTO_START_KEY = "yarvis.workspaces.autoStartClaude";
+
 function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => void }) {
   const [detail, setDetail] = useState<WorkspaceDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -615,15 +637,28 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
   const claudeCwd =
     detail.repos.length === 1 && firstRepo ? firstRepo.worktreePath : detail.rootPath;
 
-  const startClaude = async () => {
+  const startClaude = useCallback(async () => {
+    if (!detail) return;
     try {
-      await startClaudeSession(id, claudeCwd, detail.name);
+      const { claudeCommand } = await getSettings().catch(() => ({ claudeCommand: "claude" }));
+      await startClaudeSession(id, claudeCwd, detail.name, claudeCommand);
       // The session now exists; reflect it immediately (the poll would catch up).
       setClaudeActive(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  };
+  }, [id, claudeCwd, detail]);
+
+  // Auto-start Claude if this workspace was just created.
+  useEffect(() => {
+    if (detail?.status === "active" && !claudeActive) {
+      const autoStartId = localStorage.getItem(AUTO_START_KEY);
+      if (autoStartId === id) {
+        localStorage.removeItem(AUTO_START_KEY);
+        void startClaude();
+      }
+    }
+  }, [id, detail?.status, claudeActive, startClaude]);
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">

@@ -364,6 +364,12 @@ export type NewEmbeddingsConfigRow = typeof embeddingsConfig.$inferInsert;
  * Deliberately schema-light: `type` is a dotted string and `payload` is opaque
  * JSON, so new event kinds don't need a migration.
  */
+export const appSettings = pgTable("app_settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const events = pgTable(
   "events",
   {
@@ -381,6 +387,9 @@ export const events = pgTable(
     index("events_type_idx").on(t.type),
   ],
 );
+
+export type AppSettingRow = typeof appSettings.$inferSelect;
+export type NewAppSettingRow = typeof appSettings.$inferInsert;
 
 export type EventRow = typeof events.$inferSelect;
 export type NewEventRow = typeof events.$inferInsert;

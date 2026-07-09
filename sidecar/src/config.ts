@@ -79,6 +79,8 @@ export interface Config {
   databaseUrl: string | undefined;
   /** Base directory holding managed repo clones + per-workspace worktrees. */
   workspacesRoot: string;
+  /** Base command for launching Claude (default: "claude"). */
+  claudeCommand: string;
   secrets: ProviderSecrets;
   /** Keyed by custom provider id from the database. */
   customProviderSecrets: Record<string, CustomProviderSecrets>;
@@ -207,6 +209,7 @@ export function loadConfig(): Config {
     allowedOrigins: parseOrigins(env.YARVIS_ALLOWED_ORIGINS),
     databaseUrl: env.DATABASE_URL,
     workspacesRoot: env.YARVIS_WORKSPACES_ROOT ?? join(homedir(), "dev", "yarvis-workspaces"),
+    claudeCommand: env.YARVIS_CLAUDE_COMMAND ?? "claude",
     secrets: {
       anthropicApiKey: env.ANTHROPIC_API_KEY,
       geminiApiKey: env.GEMINI_API_KEY,

@@ -17,7 +17,7 @@ const baseConfig: Config = {
   tokenGenerated: true,
   allowedOrigins: null,
   databaseUrl: url,
-  workspacesRoot: "/tmp/yarvis-test-workspaces",
+  workspacesRoot: "/tmp/yarvis-test-workspaces", claudeCommand: "claude",
   secrets: {},
   customProviderSecrets: {},
   embeddingsSecrets: { headers: {} },

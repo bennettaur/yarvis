@@ -18,6 +18,8 @@ export interface StartClaudeSessionInput {
   cwd: string;
   /** Session title shown in claude.ai/code and the mobile app. */
   name: string;
+  /** Base command for launching Claude (e.g. "claude"). */
+  baseCommand?: string;
 }
 
 export interface ClaudeSessionResult {

@@ -20,6 +20,7 @@ import {
   workspaces,
 } from "../db/schema.ts";
 import { completeTasksByWorkspace, tasksForWorkspace } from "../tasks/service.ts";
+import { CLAUDE_COMMAND_KEY, getSetting } from "../settings/service.ts";
 import { stopClaudeSession } from "./claudeSession.ts";
 import { runStreaming } from "./exec.ts";
 import {

@@ -9,7 +9,7 @@ const config: Config = {
   tokenGenerated: false,
   allowedOrigins: null,
   databaseUrl: undefined,
-  workspacesRoot: "/tmp/yarvis-test-workspaces",
+  workspacesRoot: "/tmp/yarvis-test-workspaces", claudeCommand: "claude",
   secrets: {}, // no provider keys configured
   customProviderSecrets: {},
   embeddingsSecrets: { headers: {} },

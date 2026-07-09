@@ -60,6 +60,8 @@ mod unix_impl {
         workspace_id: String,
         cwd: String,
         name: String,
+        #[serde(rename = "baseCommand")]
+        base_command: Option<String>,
     }
 
     #[derive(Deserialize)]
@@ -189,7 +191,14 @@ mod unix_impl {
             "claude.spawn" => {
                 let p: SpawnParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
                 validate_workspace_id(&p.workspace_id)?;
-                spawn_claude_session(app, state.inner(), &p.workspace_id, p.cwd, &p.name)
+                spawn_claude_session(
+                    app,
+                    state.inner(),
+                    &p.workspace_id,
+                    p.cwd,
+                    &p.name,
+                    p.base_command,
+                )
             }
             "claude.kill" => {
                 let p: KillParams = serde_json::from_value(params).map_err(|e| e.to_string())?;

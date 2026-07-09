@@ -14,6 +14,7 @@ import { redactSecrets } from "./llm/errors.ts";
 import { createMemoryRoutes } from "./memory/routes.ts";
 import { createOmniRoutes } from "./omni/routes.ts";
 import { createReadiness, type Readiness } from "./readiness.ts";
+import { createSettingsRoutes } from "./settings/routes.ts";
 import { createTaskRoutes } from "./tasks/routes.ts";
 import { createTelegramRoutes } from "./telegram/routes.ts";
 import { createRepoRoutes, createWorkspaceRoutes } from "./workspaces/routes.ts";
@@ -95,6 +96,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
     return c.json({ configured: true, reachable });
   });
 
+  app.route("/api/settings", createSettingsRoutes(config));
   app.route("/api/tasks", createTaskRoutes(config));
   app.route("/api/chat", createChatRoutes(config));
   app.route("/api/custom-providers", createCustomProviderRoutes(config));

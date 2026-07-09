@@ -2,6 +2,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
+import { CLAUDE_COMMAND_KEY, getSetting } from "../settings/service.ts";
 import {
   type ClaudeSessionStarter,
   startClaudeSession as defaultStartClaudeSession,
@@ -42,7 +43,13 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
     const [firstRepo] = detail.repos;
     const cwd = detail.repos.length === 1 && firstRepo ? firstRepo.worktreePath : detail.rootPath;
     try {
-      const session = await startClaude({ workspaceId: detail.id, cwd, name: detail.name });
+      const baseCommand = (await getSetting(db, CLAUDE_COMMAND_KEY)) ?? config.claudeCommand;
+      const session = await startClaude({
+        workspaceId: detail.id,
+        cwd,
+        name: detail.name,
+        baseCommand,
+      });
       return {
         workspaceId: detail.id,
         name: detail.name,

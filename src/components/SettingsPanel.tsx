@@ -1,13 +1,15 @@
 import { useState } from "react";
+import GeneralSettingsSection from "./GeneralSettingsSection";
 import CustomProviderSection from "./CustomProviderSection";
 import EmbeddingsSection from "./EmbeddingsSection";
 import KeychainSection from "./KeychainSection";
 import ReposSection from "./ReposSection";
 import TelegramSection from "./TelegramSection";
 
-type TabKey = "credentials" | "providers" | "repos" | "embeddings" | "telegram";
+type TabKey = "general" | "credentials" | "providers" | "repos" | "embeddings" | "telegram";
 
 const TABS: { key: TabKey; label: string }[] = [
+  { key: "general", label: "General" },
   { key: "credentials", label: "Credentials" },
   { key: "providers", label: "LLM Providers" },
   { key: "repos", label: "Repositories" },
@@ -52,6 +54,7 @@ export default function SettingsPanel() {
         ))}
       </nav>
 
+      {active === "general" && <GeneralSettingsSection />}
       {active === "credentials" && <KeychainSection />}
       {active === "providers" && <CustomProviderSection />}
       {active === "repos" && <ReposSection />}

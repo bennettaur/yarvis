@@ -201,6 +201,13 @@ fn spawn_into_state(
         return Ok(());
     }
     sessions.insert(id.to_string(), session);
+
+    // If this was a Claude session, tell the frontend to navigate to the workspace.
+    if id.starts_with("ws-claude:") {
+        let workspace_id = id.strip_prefix("ws-claude:").unwrap_or("");
+        let _ = app.emit("workspace-opened", workspace_id);
+    }
+
     Ok(())
 }
 
@@ -243,10 +250,13 @@ pub fn spawn_claude_session(
     workspace_id: &str,
     cwd: String,
     name: &str,
+    base_command: Option<String>,
 ) -> Result<(), String> {
     let id = format!("ws-claude:{workspace_id}");
+    let base = base_command.unwrap_or_else(|| "claude".to_string());
     let command = format!(
-        "claude --permission-mode auto --remote-control {}",
+        "{} --permission-mode auto --remote-control {}",
+        base,
         shell_single_quote(name)
     );
     spawn_into_state(
@@ -331,8 +341,9 @@ pub fn pty_start_claude(
     workspace_id: String,
     cwd: String,
     name: String,
+    base_command: Option<String>,
 ) -> Result<(), String> {
-    spawn_claude_session(&app, state.inner(), &workspace_id, cwd, &name)
+    spawn_claude_session(&app, state.inner(), &workspace_id, cwd, &name, base_command)
 }
 
 #[tauri::command]
