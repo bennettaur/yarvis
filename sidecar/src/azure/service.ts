@@ -20,7 +20,8 @@ export async function createFilter(
   project: string | null,
 ): Promise<AzureDevopsFilter> {
   const [row] = await db.insert(azureDevopsFilters).values({ name, scope, project }).returning();
-  return row!;
+  if (!row) throw new Error("failed to create filter");
+  return row;
 }
 
 export async function deleteFilter(db: Db, id: string): Promise<boolean> {

@@ -41,7 +41,8 @@ export async function createCustomProvider(
   input: CustomProviderInput,
 ): Promise<CustomProviderRow> {
   const [row] = await db.insert(customProviders).values(input).returning();
-  return row!;
+  if (!row) throw new Error("failed to create provider");
+  return row;
 }
 
 export async function updateCustomProvider(

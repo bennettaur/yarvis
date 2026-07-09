@@ -10,7 +10,8 @@ export function listFilters(db: Db): Promise<GithubFilter[]> {
 
 export async function createFilter(db: Db, name: string, query: string): Promise<GithubFilter> {
   const [row] = await db.insert(githubFilters).values({ name, query }).returning();
-  return row!;
+  if (!row) throw new Error("failed to create row");
+  return row;
 }
 
 export async function deleteFilter(db: Db, id: string): Promise<boolean> {

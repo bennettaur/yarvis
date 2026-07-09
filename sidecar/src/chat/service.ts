@@ -16,12 +16,13 @@ export async function createSession(db: Db, title?: string | null): Promise<Chat
     .insert(chatSessions)
     .values({ title: title ?? null })
     .returning();
+  if (!row) throw new Error("failed to create session");
   await emitEvent(db, {
     type: "chat.started",
     source: "chat",
-    payload: { sessionId: row?.id },
+    payload: { sessionId: row.id },
   });
-  return row!;
+  return row;
 }
 
 export async function listSessions(db: Db): Promise<ChatSession[]> {
@@ -55,10 +56,11 @@ export async function addMessage(db: Db, input: AddMessageInput): Promise<ChatMe
       metadata: input.metadata ?? null,
     })
     .returning();
+  if (!row) throw new Error("failed to add message");
   // Keep the session's updatedAt fresh so recent chats sort first.
   await db
     .update(chatSessions)
     .set({ updatedAt: new Date() })
     .where(eq(chatSessions.id, input.sessionId));
-  return row!;
+  return row;
 }

@@ -50,7 +50,8 @@ export async function recordEvent(db: Db, input: RecordEventInput): Promise<Even
       occurredAt: input.occurredAt ?? new Date(),
     })
     .returning();
-  return row!;
+  if (!row) throw new Error("failed to record event");
+  return row;
 }
 
 /**
