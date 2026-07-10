@@ -5,6 +5,7 @@ import {
   assignLanes,
   eventLayout,
   eventsForDay,
+  groupEventsByDay,
   isoDateKey,
   monthGridDays,
   weekDays,
@@ -100,5 +101,23 @@ describe("eventLayout", () => {
     const { topPct, heightPct } = eventLayout(noon, day);
     expect(topPct).toBeCloseTo(50, 0);
     expect(heightPct).toBeCloseTo((60 / 1440) * 100, 1);
+  });
+});
+
+describe("groupEventsByDay", () => {
+  it("groups events by their local start date and sorts by date", () => {
+    const a = ev("a", "2025-06-10T14:00:00-04:00", "2025-06-10T15:00:00-04:00");
+    const b = ev("b", "2025-06-10T09:00:00-04:00", "2025-06-10T10:00:00-04:00");
+    const c = ev("c", "2025-06-11T10:00:00-04:00", "2025-06-11T11:00:00-04:00");
+    const holiday = ev("holiday", "2025-06-10", "2025-06-11", true);
+
+    const groups = groupEventsByDay([a, c, holiday, b]);
+    expect(groups).toHaveLength(2);
+
+    expect(isoDateKey(groups[0].date)).toBe("2025-06-10");
+    expect(groups[0].events.map((e) => e.id)).toEqual(["a", "holiday", "b"]);
+
+    expect(isoDateKey(groups[1].date)).toBe("2025-06-11");
+    expect(groups[1].events.map((e) => e.id)).toEqual(["c"]);
   });
 });

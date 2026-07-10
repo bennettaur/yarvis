@@ -52,6 +52,7 @@ export default function WorkspaceFileDiff({
   return (
     <div className="h-full overflow-y-auto bg-zinc-950 font-mono text-xs leading-relaxed">
       {rows.map((row, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: rows are static once loaded
         <div key={`${row.kind}-${row.rightLine}-${i}`} className={`flex ${rowClass(row.kind)}`}>
           <span className="w-12 shrink-0 select-none pr-2 text-right text-zinc-600">
             {row.rightLine ?? ""}

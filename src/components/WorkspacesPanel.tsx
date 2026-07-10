@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { writeIssuePromptFile } from "../lib/issues/api";
+import type { OpenWorkspaceRequest } from "../lib/nav";
 import { ptyExists, startClaudeSession } from "../lib/pty";
 import { createRepo, listRepos, type Repo } from "../lib/repos";
 import { listTasks, type Task } from "../lib/tasks";
@@ -106,12 +108,33 @@ function groupWorkspaces(items: WorkspaceSummary[]): Group[] {
 const SELECTED_WORKSPACE_KEY = "yarvis.workspaces.selectedId";
 const SHOW_ARCHIVED_KEY = "yarvis.workspaces.showArchived";
 
-export default function WorkspacesPanel() {
+/**
+ * Command that launches Claude for an "Start work on issue" session. The issue
+ * details are written to a known file under the workspace root (see the sidecar
+ * `/prompt-file` route), so a static instruction to read that file is enough —
+ * no need to inline the (potentially large) body into the command. `auto`
+ * permission mode lets Claude act without per-tool prompts.
+ */
+const CLAUDE_ISSUE_COMMAND =
+  'claude --permission-mode auto "Read the ticket details in .yarvis/issue-prompt.md and implement a first pass at the ticket, following the repository\'s conventions."';
+
+export default function WorkspacesPanel({
+  requested = null,
+  onRequestConsumed,
+}: {
+  /** A workspace another tab asked us to open, optionally with a Claude prompt. */
+  requested?: OpenWorkspaceRequest | null;
+  /** Called once we've consumed `requested` so the parent can clear it. */
+  onRequestConsumed?: () => void;
+} = {}) {
   const [items, setItems] = useState<WorkspaceSummary[]>([]);
   const [repos, setRepos] = useState<Repo[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(() =>
     localStorage.getItem(SELECTED_WORKSPACE_KEY),
   );
+  // A pending "Start work" Claude launch, scoped to one workspace id. Cleared
+  // when the user navigates to a different workspace so the prompt never leaks.
+  const [claudeRequest, setClaudeRequest] = useState<{ id: string; prompt: string } | null>(null);
   const [creating, setCreating] = useState(false);
   const [showArchived, setShowArchived] = useState<boolean>(
     () => localStorage.getItem(SHOW_ARCHIVED_KEY) === "1",
@@ -143,6 +166,19 @@ export default function WorkspacesPanel() {
     if (showArchived) localStorage.setItem(SHOW_ARCHIVED_KEY, "1");
     else localStorage.removeItem(SHOW_ARCHIVED_KEY);
   }, [showArchived]);
+
+  // Honor a cross-tab open request (Issues "Start work"): select the workspace
+  // and, if a Claude prompt came with it, stash it for the detail view to
+  // launch once provisioning finishes. Cleared via the consumed callback.
+  useEffect(() => {
+    if (!requested) return;
+    setCreating(false);
+    setSelectedId(requested.id);
+    setClaudeRequest(
+      requested.claudePrompt ? { id: requested.id, prompt: requested.claudePrompt } : null,
+    );
+    onRequestConsumed?.();
+  }, [requested, onRequestConsumed]);
 
   // If the remembered workspace has since been removed (or doesn't exist for
   // this user yet), drop the selection so the empty state shows.
@@ -207,6 +243,7 @@ export default function WorkspacesPanel() {
                       onClick={() => {
                         setCreating(false);
                         setSelectedId(ws.id);
+                        if (claudeRequest?.id !== ws.id) setClaudeRequest(null);
                       }}
                       className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-zinc-800/60 ${
                         selectedId === ws.id ? "bg-zinc-800 text-zinc-100" : "text-zinc-300"
@@ -241,7 +278,12 @@ export default function WorkspacesPanel() {
             onRepoAdded={onRepoAdded}
           />
         ) : selectedId ? (
-          <WorkspaceDetailView key={selectedId} id={selectedId} onChanged={refresh} />
+          <WorkspaceDetailView
+            key={selectedId}
+            id={selectedId}
+            onChanged={refresh}
+            claudePrompt={claudeRequest?.id === selectedId ? claudeRequest.prompt : undefined}
+          />
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-zinc-500">
             Select a workspace or create a new one.
@@ -494,7 +536,7 @@ function InlineRepoCreator({
           type="button"
           onClick={() => void save()}
           disabled={saving}
-          className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium hover:bg-indigo-500 disabled:opacity-50"
+          className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium hover:bg-indigo-500 disabled:opacity-40"
         >
           {saving ? "Saving…" : "Save repo"}
         </button>
@@ -509,13 +551,28 @@ function InlineRepoCreator({
  *  fresh poll lands per refresh while still being cheap (one local SQL read). */
 const DETAIL_REFRESH_INTERVAL_MS = 20_000;
 
-function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => void }) {
+function WorkspaceDetailView({
+  id,
+  onChanged,
+  claudePrompt,
+}: {
+  id: string;
+  onChanged: () => void;
+  /** When set (Issues "Start work"), auto-provision then launch a Claude session
+   * seeded with this prompt. */
+  claudePrompt?: string;
+}) {
   const [detail, setDetail] = useState<WorkspaceDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [runRepo, setRunRepo] = useState<WorkspaceRepoDetail | null>(null);
   const [provisionLog, setProvisionLog] = useState<string | null>(null);
   const [showArchive, setShowArchive] = useState(false);
   const [claudeActive, setClaudeActive] = useState(false);
+  // Flips once the issue prompt file has been written (post-provision), gating
+  // the Claude terminal launch.
+  const [claudePromptReady, setClaudePromptReady] = useState(false);
+  const autoProvisionRef = useRef(false);
+  const promptWriteRef = useRef(false);
 
   const openFilesKey = `yarvis.workspaces.${id}.openFiles`;
   const [openFiles, setOpenFiles] = useState<{ repoId: string; path: string }[]>(() => {
@@ -622,7 +679,7 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
     };
   }, [id, detail?.status]);
 
-  const provision = async () => {
+  const provision = useCallback(async () => {
     setProvisionLog("");
     try {
       const result = await consumeProvision(id, (text) =>
@@ -638,7 +695,25 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  };
+  }, [id, load, onChanged]);
+
+  // Issue-handoff: auto-provision once the detail lands if the workspace is new.
+  useEffect(() => {
+    if (claudePrompt && detail?.status === "creating" && !autoProvisionRef.current) {
+      autoProvisionRef.current = true;
+      void provision();
+    }
+  }, [claudePrompt, detail?.status, provision]);
+
+  // Once provisioned, write the issue-prompt seed file.
+  useEffect(() => {
+    if (claudePrompt && detail?.status === "active" && !promptWriteRef.current) {
+      promptWriteRef.current = true;
+      writeIssuePromptFile(detail.id, claudePrompt)
+        .then(() => setClaudePromptReady(true))
+        .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+    }
+  }, [claudePrompt, detail]);
 
   if (error) return <p className="p-6 text-sm text-red-400">{error}</p>;
   if (!detail) return <p className="p-6 text-sm text-zinc-500">Loading…</p>;
@@ -787,41 +862,58 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
         <div className="flex min-h-0 flex-1">
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             <div className="min-h-0 min-w-0 flex-1">
-              {/* A live remote-control Claude session shows up as a pinned
-                  terminal tab; the workspace's own shells live in the other tabs. */}
-              <TerminalTabs
-                storageKey={`ws:${detail.id}`}
-                cwd={detail.rootPath}
-                activePinnedKey={activePinnedKey}
-                onActivePinnedKeyConsumed={() => setActivePinnedKey(undefined)}
-                onPinnedTabClose={handleClosePinnedTab}
-                pinnedTabs={[
-                  ...(claudeActive
-                    ? [
-                        {
-                          key: "claude",
-                          title: "Claude",
-                          sessionId: `ws-claude:${detail.id}`,
-                          cwd: claudeCwd,
-                        },
-                      ]
-                    : []),
-                  ...openFiles.map((f) => {
-                    const fileName = f.path.split("/").pop() ?? f.path;
-                    return {
-                      key: `diff:${f.repoId}:${f.path}`,
-                      title: `${fileName} (diff)`,
-                      component: (
-                        <WorkspaceFileDiff
-                          workspaceId={detail.id}
-                          repoId={f.repoId}
-                          path={f.path}
-                        />
-                      ),
-                    };
-                  }),
-                ]}
-              />
+              {claudePrompt ? (
+                claudePromptReady ? (
+                  // Fresh, stable id so a reattach never re-runs the prompt.
+                  // Launched at the workspace root (like the standard terminal),
+                  // where the .yarvis/issue-prompt.md file lives.
+                  <TerminalPanel
+                    sessionId={`ws-claude:${detail.id}`}
+                    cwd={detail.rootPath}
+                    initialCommand={CLAUDE_ISSUE_COMMAND}
+                  />
+                ) : (
+                  <div className="flex h-full items-center justify-center text-sm text-zinc-500">
+                    Preparing Claude session…
+                  </div>
+                )
+              ) : (
+                /* A live remote-control Claude session shows up as a pinned
+                   terminal tab; the workspace's own shells live in the other tabs. */
+                <TerminalTabs
+                  storageKey={`ws:${detail.id}`}
+                  cwd={detail.rootPath}
+                  activePinnedKey={activePinnedKey}
+                  onActivePinnedKeyConsumed={() => setActivePinnedKey(undefined)}
+                  onPinnedTabClose={handleClosePinnedTab}
+                  pinnedTabs={[
+                    ...(claudeActive
+                      ? [
+                          {
+                            key: "claude",
+                            title: "Claude",
+                            sessionId: `ws-claude:${detail.id}`,
+                            cwd: claudeCwd,
+                          },
+                        ]
+                      : []),
+                    ...openFiles.map((f) => {
+                      const fileName = f.path.split("/").pop() ?? f.path;
+                      return {
+                        key: `diff:${f.repoId}:${f.path}`,
+                        title: `${fileName} (diff)`,
+                        component: (
+                          <WorkspaceFileDiff
+                            workspaceId={detail.id}
+                            repoId={f.repoId}
+                            path={f.path}
+                          />
+                        ),
+                      };
+                    }),
+                  ]}
+                />
+              )}
             </div>
             {runRepo && (
               <div className="flex min-h-0 min-w-0 flex-1 flex-col border-t border-zinc-800">
