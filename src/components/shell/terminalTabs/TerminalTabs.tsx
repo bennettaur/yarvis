@@ -35,6 +35,24 @@ interface Tab {
   root: Pane;
 }
 
+/**
+ * A tab bound to an externally-managed PTY session (e.g. a Claude session the
+ * core spawned over the control channel). Unlike a normal tab it uses a fixed
+ * session id rather than a derived one, is single-pane (not splittable), and is
+ * shown only while the caller includes it.
+ */
+export interface PinnedTab {
+  key: string;
+  title: string;
+  sessionId: string;
+  cwd?: string;
+  initialCommand?: string;
+}
+
+/** activeTabId value marking a pinned tab as selected. */
+const PINNED_PREFIX = "pinned:";
+const pinnedTabId = (key: string) => `${PINNED_PREFIX}${key}`;
+
 interface SurfaceState {
   tabs: Tab[];
   activeTabId: string;
@@ -78,16 +96,21 @@ function sessionId(storageKey: string, tabId: string, paneId: PaneId): string {
 export default function TerminalTabs({
   storageKey,
   cwd,
+  pinnedTabs = [],
 }: {
   /** Stable namespace for this surface — both for localStorage and PTY ids. */
   storageKey: string;
   /** Working directory for freshly spawned shells in this surface. */
   cwd?: string;
+  /** Tabs bound to externally-managed sessions, shown whenever present. */
+  pinnedTabs?: PinnedTab[];
 }) {
   const [state, setState] = useState<SurfaceState>(() => loadState(storageKey));
   // Refs to xterm handles so a tab/pane switch can move focus into the right shell.
   const handlesRef = useRef<Map<string, TerminalPanelHandle | null>>(new Map());
   const rootRef = useRef<HTMLDivElement | null>(null);
+  // Pinned tab keys seen on the previous render, to detect newly-appeared ones.
+  const prevPinnedKeysRef = useRef<string[]>([]);
 
   // Persist on every change. State changes are coarse (tab/split/focus) so this
   // is plenty cheap to do unconditionally.
@@ -95,11 +118,40 @@ export default function TerminalTabs({
     localStorage.setItem(storageKeyFor(storageKey), JSON.stringify(state));
   }, [storageKey, state]);
 
-  const activeTab = useMemo(
-    () => state.tabs.find((t) => t.id === state.activeTabId) ?? state.tabs[0],
-    [state.tabs, state.activeTabId],
+  const activePinned = useMemo(
+    () => pinnedTabs.find((p) => state.activeTabId === pinnedTabId(p.key)) ?? null,
+    [pinnedTabs, state.activeTabId],
   );
+  // When a pinned tab is active, no regular tab is selected (undefined); the
+  // body renders the pinned session instead of the pane tree.
+  const activeTab = useMemo(() => {
+    const match = state.tabs.find((t) => t.id === state.activeTabId);
+    if (match) return match;
+    return activePinned ? undefined : state.tabs[0];
+  }, [state.tabs, state.activeTabId, activePinned]);
   const focusedPane = activeTab ? (state.focused[activeTab.id] ?? firstLeafId(activeTab.root)) : "";
+
+  // Reconcile pinned tabs: focus one that just appeared (e.g. a Claude session
+  // that started), and fall back to a normal tab when the active pinned tab goes
+  // away. Keyed on the set of keys, not the array identity.
+  const pinnedKeysSig = pinnedTabs.map((p) => p.key).join(",");
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on pinnedKeysSig; pinnedTabs identity changes each render
+  useEffect(() => {
+    const keys = pinnedTabs.map((p) => p.key);
+    const appeared = keys.filter((k) => !prevPinnedKeysRef.current.includes(k));
+    prevPinnedKeysRef.current = keys;
+    setState((prev) => {
+      if (prev.activeTabId.startsWith(PINNED_PREFIX)) {
+        const activeKey = prev.activeTabId.slice(PINNED_PREFIX.length);
+        if (!keys.includes(activeKey)) {
+          return { ...prev, activeTabId: prev.tabs[0]?.id ?? "" };
+        }
+      }
+      const first = appeared[0];
+      if (first) return { ...prev, activeTabId: pinnedTabId(first) };
+      return prev;
+    });
+  }, [pinnedKeysSig]);
 
   const setFocusedPane = useCallback((tabId: string, paneId: PaneId) => {
     setState((prev) => {
@@ -142,6 +194,21 @@ export default function TerminalTabs({
     },
     [state.focused, focusPane],
   );
+
+  const selectPinned = useCallback((key: string) => {
+    setState((prev) => ({ ...prev, activeTabId: pinnedTabId(key) }));
+  }, []);
+
+  // Closing a pinned tab ends its underlying session; the caller stops listing it
+  // on its next poll, which removes the header.
+  const closePinned = useCallback(async (pinned: PinnedTab) => {
+    await killPty(pinned.sessionId).catch(() => undefined);
+    setState((prev) =>
+      prev.activeTabId === pinnedTabId(pinned.key)
+        ? { ...prev, activeTabId: prev.tabs[0]?.id ?? "" }
+        : prev,
+    );
+  }, []);
 
   const closeTab = useCallback(
     async (tabId: string) => {
@@ -268,28 +335,40 @@ export default function TerminalTabs({
     }
   }, [activeTab, state.focused, setFocusedPane]);
 
-  if (!activeTab) return null;
+  if (!activeTab && !activePinned) return null;
 
   return (
     <div ref={rootRef} className="flex h-full min-h-0 w-full min-w-0 flex-col bg-[#09090b]">
       <TabStrip
         tabs={state.tabs}
-        activeId={activeTab.id}
+        pinnedTabs={pinnedTabs}
+        activeId={state.activeTabId}
         onSelect={selectTab}
+        onSelectPinned={selectPinned}
         onClose={(id) => void closeTab(id)}
+        onClosePinned={(p) => void closePinned(p)}
         onNew={openTab}
       />
       <div className="min-h-0 min-w-0 flex-1">
-        <PaneTreeView
-          pane={activeTab.root}
-          tabId={activeTab.id}
-          storageKey={storageKey}
-          cwd={cwd}
-          focusedPane={focusedPane}
-          onPaneFocus={(p) => setFocusedPane(activeTab.id, p)}
-          onPaneClose={(p) => void closePane(p)}
-          handles={handlesRef.current}
-        />
+        {activePinned ? (
+          <TerminalPanel
+            sessionId={activePinned.sessionId}
+            cwd={activePinned.cwd}
+            initialCommand={activePinned.initialCommand}
+            embedded
+          />
+        ) : activeTab ? (
+          <PaneTreeView
+            pane={activeTab.root}
+            tabId={activeTab.id}
+            storageKey={storageKey}
+            cwd={cwd}
+            focusedPane={focusedPane}
+            onPaneFocus={(p) => setFocusedPane(activeTab.id, p)}
+            onPaneClose={(p) => void closePane(p)}
+            handles={handlesRef.current}
+          />
+        ) : null}
       </div>
     </div>
   );
@@ -297,20 +376,58 @@ export default function TerminalTabs({
 
 function TabStrip({
   tabs,
+  pinnedTabs,
   activeId,
   onSelect,
+  onSelectPinned,
   onClose,
+  onClosePinned,
   onNew,
 }: {
   tabs: Tab[];
+  pinnedTabs: PinnedTab[];
   activeId: string;
   onSelect: (id: string) => void;
+  onSelectPinned: (key: string) => void;
   onClose: (id: string) => void;
+  onClosePinned: (pinned: PinnedTab) => void;
   onNew: () => void;
 }) {
   return (
     <div className="flex shrink-0 items-center gap-0.5 border-b border-zinc-800 bg-zinc-950 px-1">
       <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+        {pinnedTabs.map((p) => {
+          const active = activeId === `${PINNED_PREFIX}${p.key}`;
+          return (
+            <div
+              key={`pinned:${p.key}`}
+              className={`group flex shrink-0 items-center gap-1 border-b-2 px-2 py-1 text-xs ${
+                active
+                  ? "border-indigo-400 text-zinc-100"
+                  : "border-transparent text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => onSelectPinned(p.key)}
+                className="flex max-w-40 items-center gap-1 truncate"
+                title={p.title}
+              >
+                <span className="text-emerald-400">●</span>
+                {p.title}
+              </button>
+              <button
+                type="button"
+                onClick={() => onClosePinned(p)}
+                aria-label={`End ${p.title}`}
+                title="End session"
+                className="rounded px-1 text-zinc-500 opacity-0 hover:bg-zinc-800 hover:text-zinc-200 group-hover:opacity-100"
+              >
+                ×
+              </button>
+            </div>
+          );
+        })}
         {tabs.map((t) => {
           const active = t.id === activeId;
           return (

@@ -72,25 +72,37 @@ fn snapshot(scrollback: &Arc<Mutex<Vec<u8>>>) -> Vec<u8> {
     scrollback.lock().map(|sb| sb.clone()).unwrap_or_default()
 }
 
-/// Spawns a shell in a new PTY and starts the reader thread that streams its
-/// output to the frontend. The shell opens in `cwd` when given (e.g. a
-/// workspace folder), otherwise in `$HOME`.
-fn spawn_session(
-    app: &AppHandle,
-    id: &str,
+/// Parameters for spawning a session, grouped so the spawn helpers stay within
+/// a sane argument count.
+struct SpawnSpec {
     cols: u16,
     rows: u16,
     cwd: Option<String>,
-) -> Result<PtySession, String> {
+    /// Typed into the fresh shell to run once on startup (e.g. launching `claude`).
+    initial_command: Option<String>,
+    /// Drop `ANTHROPIC_API_KEY` from the child env so a Claude Code session uses
+    /// the user's subscription login (Remote Control does not support API-key auth).
+    strip_provider_secrets: bool,
+}
+
+/// Spawns a shell in a new PTY and starts the reader thread that streams its
+/// output to the frontend. The shell opens in `spec.cwd` when given (e.g. a
+/// workspace folder), otherwise in `$HOME`.
+fn spawn_session(app: &AppHandle, id: &str, spec: &SpawnSpec) -> Result<PtySession, String> {
     let pty_system = native_pty_system();
     let pair = pty_system
-        .openpty(pty_size(cols, rows))
+        .openpty(pty_size(spec.cols, spec.rows))
         .map_err(|e| e.to_string())?;
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let mut cmd = CommandBuilder::new(shell);
     cmd.env("TERM", "xterm-256color");
-    if let Some(dir) = cwd
+    if spec.strip_provider_secrets {
+        cmd.env_remove("ANTHROPIC_API_KEY");
+    }
+    if let Some(dir) = spec
+        .cwd
+        .clone()
         .filter(|d| !d.is_empty())
         .or_else(|| std::env::var("HOME").ok())
     {
@@ -103,7 +115,14 @@ fn spawn_session(
     drop(pair.slave);
 
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+
+    // Type the startup command into the fresh shell. The PTY buffers it until the
+    // shell is ready to read, and its echo lands in the scrollback like any input.
+    if let Some(command) = spec.initial_command.as_deref() {
+        let _ = writer.write_all(format!("{command}\r").as_bytes());
+        let _ = writer.flush();
+    }
 
     let scrollback = Arc::new(Mutex::new(Vec::<u8>::new()));
     {
@@ -148,6 +167,102 @@ fn read_loop(
     let _ = app.emit(&format!("pty-exit:{id}"), ());
 }
 
+/// Spawns a session and inserts it into `state` under `id`, enforcing the
+/// per-process cap and handling a concurrent spawn of the same id. Shared by
+/// `pty_attach` (frontend) and the control channel (sidecar), so both create
+/// sessions through one path.
+fn spawn_into_state(
+    app: &AppHandle,
+    state: &PtyState,
+    id: &str,
+    spec: SpawnSpec,
+) -> Result<(), String> {
+    // Enforce the per-process cap before spawning, not after, so a flood of
+    // calls doesn't briefly hold MAX_SESSIONS+N live shells.
+    {
+        let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+        if sessions.len() >= MAX_SESSIONS && !sessions.contains_key(id) {
+            return Err(format!(
+                "too many PTY sessions (cap: {MAX_SESSIONS}); close one before opening another"
+            ));
+        }
+    }
+
+    // Spawn outside the lock: openpty + spawn_command + thread do real I/O and
+    // would otherwise block every other PTY command for the duration.
+    let session = spawn_session(app, id, &spec)?;
+
+    let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    if sessions.contains_key(id) {
+        // A concurrent spawn for the same id won the race; keep it, discard ours
+        // so we don't leak an orphan shell.
+        let mut loser = session;
+        let _ = loser.child.kill();
+        return Ok(());
+    }
+    sessions.insert(id.to_string(), session);
+    Ok(())
+}
+
+/// Removes a session and kills its shell. Shared by `pty_kill` and the control
+/// channel. No-op when the session is absent.
+pub fn kill_session(state: &PtyState, id: &str) {
+    if let Ok(mut sessions) = state.sessions.lock() {
+        if let Some(mut session) = sessions.remove(id) {
+            // Killing the child closes its PTY end; the reader thread then sees
+            // EOF and reports teardown via `pty-exit`.
+            let _ = session.child.kill();
+        }
+    }
+}
+
+/// Builds the shell-safe single-quoted form of `s` for injection into a shell
+/// command line. Wraps in single quotes and escapes any embedded single quote.
+fn shell_single_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// Starts a remote-controllable Claude Code session in `cwd` under the stable id
+/// `ws-claude:<workspace_id>`, which the frontend later attaches to. The argv is
+/// constructed here (not supplied by the caller) so the control channel can only
+/// ever launch Claude, never an arbitrary command. Returns once the session is
+/// registered; the session keeps running until killed or the app exits.
+pub fn spawn_claude_session(
+    app: &AppHandle,
+    state: &PtyState,
+    workspace_id: &str,
+    cwd: String,
+    name: &str,
+) -> Result<(), String> {
+    let id = format!("ws-claude:{workspace_id}");
+    let command = format!(
+        "claude --permission-mode auto --remote-control {}",
+        shell_single_quote(name)
+    );
+    spawn_into_state(
+        app,
+        state,
+        &id,
+        SpawnSpec {
+            cols: 120,
+            rows: 32,
+            cwd: Some(cwd),
+            initial_command: Some(command),
+            strip_provider_secrets: true,
+        },
+    )
+}
+
 // --- Commands ---
 
 /// Attaches to the session `id`, returning its scrollback to replay. Spawns a
@@ -172,31 +287,52 @@ pub fn pty_attach(
         }
     }
 
-    // Enforce the per-process cap before spawning, not after, so a flood of
-    // attach calls doesn't briefly hold MAX_SESSIONS+N live shells.
-    {
-        let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
-        if sessions.len() >= MAX_SESSIONS && !sessions.contains_key(&id) {
-            return Err(format!(
-                "too many PTY sessions (cap: {MAX_SESSIONS}); close one before opening another"
-            ));
-        }
+    spawn_into_state(
+        &app,
+        state.inner(),
+        &id,
+        SpawnSpec {
+            cols,
+            rows,
+            cwd,
+            initial_command: None,
+            strip_provider_secrets: false,
+        },
+    )?;
+
+    // Return the scrollback of whatever session now holds the id (a fresh spawn
+    // has none; a race winner may already have output).
+    let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    match sessions.get(&id) {
+        Some(session) => Ok(snapshot(&session.scrollback)),
+        None => Ok(Vec::new()),
     }
+}
 
-    // Spawn outside the lock: openpty + spawn_command + thread do real I/O and
-    // would otherwise block every other PTY command for the duration.
-    let session = spawn_session(&app, &id, cols, rows, cwd)?;
-
+/// True if a live session (its shell still running) exists for `id`. Lets the
+/// frontend tell whether a Claude session is active without spawning one.
+#[tauri::command]
+pub fn pty_exists(state: tauri::State<'_, PtyState>, id: String) -> Result<bool, String> {
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
-    if let Some(existing) = sessions.get(&id) {
-        // A concurrent attach for the same id won the race; keep it, discard
-        // ours so we don't leak an orphan shell.
-        let mut loser = session;
-        let _ = loser.child.kill();
-        return Ok(snapshot(&existing.scrollback));
+    if let Some(session) = sessions.get_mut(&id) {
+        // A dead session is left for lazy reaping on the next attach.
+        return Ok(matches!(session.child.try_wait(), Ok(None)));
     }
-    sessions.insert(id, session);
-    Ok(Vec::new())
+    Ok(false)
+}
+
+/// Starts a remote-controllable Claude session for an existing workspace, so the
+/// frontend can offer a "Start Claude session" action. Mirrors what the control
+/// channel does for the sidecar/agent; both go through `spawn_claude_session`.
+#[tauri::command]
+pub fn pty_start_claude(
+    app: AppHandle,
+    state: tauri::State<'_, PtyState>,
+    workspace_id: String,
+    cwd: String,
+    name: String,
+) -> Result<(), String> {
+    spawn_claude_session(&app, state.inner(), &workspace_id, cwd, &name)
 }
 
 #[tauri::command]
@@ -264,13 +400,7 @@ pub fn pty_is_busy(state: tauri::State<'_, PtyState>, id: String) -> Result<bool
 
 #[tauri::command]
 pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), String> {
-    let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
-    if let Some(mut session) = sessions.remove(&id) {
-        // Killing the child closes its PTY end; the reader thread then sees EOF
-        // and reports teardown via `pty-exit`. Removing the session drops the
-        // master and writer.
-        let _ = session.child.kill();
-    }
+    kill_session(state.inner(), &id);
     Ok(())
 }
 

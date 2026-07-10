@@ -101,11 +101,17 @@ async fn supervise(app: AppHandle, port: u16, token: String, restart: Arc<Notify
     }
 }
 
-fn build_command(_app: &AppHandle, port: u16, token: &str) -> Command {
+fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
     let mut cmd = command_base();
     cmd.env("YARVIS_SIDECAR_PORT", port.to_string());
     cmd.env("YARVIS_SIDECAR_TOKEN", token);
     cmd.env("YARVIS_ALLOWED_ORIGINS", ALLOWED_ORIGINS);
+
+    // Path to the core's control socket, so the sidecar can ask the core to
+    // spawn/kill Claude sessions in workspace PTYs.
+    if let Some(sock) = app.try_state::<crate::control::ControlSocketPath>() {
+        cmd.env("YARVIS_CORE_SOCK", &sock.0);
+    }
 
     // Forward the memory/embedding debug flag when the app was launched with it
     // (e.g. `YARVIS_DEBUG_MEMORY=1 bun run tauri dev`), so the sidecar traces
