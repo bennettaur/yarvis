@@ -81,7 +81,7 @@ export function assertSafeCloneUrl(url: string): void {
 
 /** Absolute path to a repo's primary clone under the workspaces root. */
 export function primaryClonePath(config: Config, owner: string, repo: string): string {
-  return `${config.workspacesRoot}/.repos/${owner}-${repo}`;
+  return `${config.workspacesRoot}/.repos/${owner.toLowerCase()}-${repo.toLowerCase()}`;
 }
 
 export async function createRepo(db: Db, config: Config, input: CreateRepoInput): Promise<Repo> {
@@ -205,7 +205,10 @@ export async function createWorkspace(
 
   // Distinct subfolder per repo; disambiguate name collisions with the owner.
   const nameCounts = new Map<string, number>();
-  for (const repo of selected) nameCounts.set(repo.name, (nameCounts.get(repo.name) ?? 0) + 1);
+  for (const repo of selected) {
+    const lowerName = repo.name.toLowerCase();
+    nameCounts.set(lowerName, (nameCounts.get(lowerName) ?? 0) + 1);
+  }
 
   // One transaction so a mid-create failure never leaves a half-built workspace.
   return db.transaction(async (tx) => {
@@ -221,7 +224,9 @@ export async function createWorkspace(
         branch,
         baseBranch: repo.defaultBranch ?? "main",
         worktreePath: `${rootPath}/${
-          (nameCounts.get(repo.name) ?? 0) > 1 ? `${repo.name}-${repo.owner}` : repo.name
+          (nameCounts.get(repo.name.toLowerCase()) ?? 0) > 1
+            ? `${repo.name.toLowerCase()}-${repo.owner.toLowerCase()}`
+            : repo.name.toLowerCase()
         }`,
       })),
     );
