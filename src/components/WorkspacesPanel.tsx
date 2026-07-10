@@ -806,8 +806,6 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
                       ]
                     : []),
                   ...openFiles.map((f) => {
-                    const repoName =
-                      detail.repos.find((r) => r.id === f.repoId)?.repo.name ?? "repo";
                     const fileName = f.path.split("/").pop() ?? f.path;
                     return {
                       key: `diff:${f.repoId}:${f.path}`,

@@ -166,7 +166,6 @@ export default function TerminalTabs({
           return { ...prev, activeTabId: prev.tabs[0]?.id ?? "" };
         }
       }
-      const first = appeared[0];
       // Only auto-focus newly-appeared pinned tabs if they aren't UI components
       // (which are typically opened explicitly by user action).
       const autoFocusable = appeared.find((k) => {
@@ -384,14 +383,14 @@ export default function TerminalTabs({
         {activePinned ? (
           activePinned.component ? (
             activePinned.component
-          ) : (
+          ) : activePinned.sessionId ? (
             <TerminalPanel
-              sessionId={activePinned.sessionId!}
+              sessionId={activePinned.sessionId}
               cwd={activePinned.cwd}
               initialCommand={activePinned.initialCommand}
               embedded
             />
-          )
+          ) : null
         ) : activeTab ? (
           <PaneTreeView
             pane={activeTab.root}
