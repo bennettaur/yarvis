@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
@@ -168,6 +168,22 @@ describe("provision + archive (injected git runner)", () => {
     const detail = await getWorkspace(db, ws.id);
     expect(detail?.status).toBe("active");
     expect(detail?.repos[0]?.status).toBe("ready");
+  });
+
+  it("writes AGENTS.md and CLAUDE.md to the workspace root describing the repos", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "feature with docs", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+
+    const detail = await getWorkspace(db, ws.id);
+    const agents = readFileSync(`${detail?.rootPath}/AGENTS.md`, "utf-8");
+    expect(agents).toContain("# Workspace: feature with docs");
+    expect(agents).toContain("widget");
+    expect(agents).toContain(`branch \`${detail?.repos[0]?.branch}\``);
+
+    const claude = readFileSync(`${detail?.rootPath}/CLAUDE.md`, "utf-8");
+    expect(claude).toContain("AGENTS.md");
   });
 
   it("archives by removing worktrees and recording a summary", async () => {

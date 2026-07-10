@@ -4,6 +4,8 @@
  * module owns the database state and orchestration.
  */
 
+import { writeFileSync } from "node:fs";
+import { relative } from "node:path";
 import { and, eq, inArray } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
@@ -385,6 +387,51 @@ async function withRepoLock<T>(repoId: string, fn: () => Promise<T>): Promise<T>
 const provisioning = new Set<string>();
 
 /**
+ * (Re)writes AGENTS.md and CLAUDE.md at the workspace root. Claude is started
+ * in the workspace root rather than inside a single repo — so it can work
+ * across every repo checked out there — but that's not its usual layout, and
+ * without help it can assume the workspace root itself is the project. These
+ * files spell out which repos are present, where, and on what branch.
+ * Best-effort: a write failure is logged but must not fail provisioning.
+ */
+function writeContextFiles(detail: WorkspaceDetail): void {
+  const lines = [
+    `# Workspace: ${detail.name}`,
+    "",
+    "This is a Yarvis workspace. Claude is started here, in the workspace root,",
+    "rather than inside a single repo, so it can work across every repo listed",
+    "below in one session. Each repo is already cloned and checked out on its",
+    "own branch — there's no need to clone or switch branches.",
+    "",
+    "## Repos",
+    "",
+    ...detail.repos.map((wr) => {
+      const path = relative(detail.rootPath, wr.worktreePath) || ".";
+      return `- **${wr.repo.name}** (${wr.repo.owner}/${wr.repo.repo}): \`${path}\`, checked out on branch \`${wr.branch}\` (base \`${wr.baseBranch}\`)`;
+    }),
+  ];
+
+  if (detail.tasks.length > 0) {
+    lines.push("", "## Associated tasks", "");
+    for (const task of detail.tasks) {
+      lines.push(`- ${task.title}${task.notes ? `: ${task.notes}` : ""}`);
+    }
+  }
+
+  lines.push("");
+
+  try {
+    writeFileSync(`${detail.rootPath}/AGENTS.md`, lines.join("\n"));
+    writeFileSync(
+      `${detail.rootPath}/CLAUDE.md`,
+      "See [AGENTS.md](./AGENTS.md) for details about this workspace and its repos.\n",
+    );
+  } catch (e) {
+    console.error("[workspaces] failed to write AGENTS.md/CLAUDE.md:", e);
+  }
+}
+
+/**
  * Drives provisioning for a workspace: per repo, ensure the primary clone,
  * refresh its default branch, cut a worktree, and run the setup script —
  * emitting progress events (setup output streams through `emit`). Idempotent
@@ -501,6 +548,7 @@ export async function provisionWorkspace(
 
     // The workspace is active only if every repo provisioned cleanly.
     const after = await getWorkspace(db, id);
+    if (after) writeContextFiles(after);
     const allReady = after?.repos.every((r) => r.status === "ready" || r.status === "removed");
     const status = allReady ? "active" : "error";
     await db
