@@ -37,7 +37,8 @@ const updateRepoSchema = z.object({
 
 const createWorkspaceSchema = z.object({
   name: z.string().min(1),
-  repoIds: z.array(z.string().uuid()).min(1),
+  // Empty is allowed: a scratch workspace (just a folder to run Claude in).
+  repoIds: z.array(z.string().uuid()).default([]),
   taskId: z.string().uuid().nullish(),
 });
 
