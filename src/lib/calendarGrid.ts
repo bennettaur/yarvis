@@ -110,6 +110,34 @@ export function eventsForDay(
   return { allDay, timed };
 }
 
+/** Groups events by their start date (local time). */
+export function groupEventsByDay(
+  events: CalendarEvent[],
+): { date: Date; events: CalendarEvent[] }[] {
+  const groups: Map<string, { date: Date; events: CalendarEvent[] }> = new Map();
+  for (const event of events) {
+    const ms = startMs(event);
+    if (ms === null && !event.allDay) continue;
+
+    let date: Date;
+    if (event.allDay) {
+      const [y, m, d] = event.start.split("-").map(Number);
+      date = new Date(y, m - 1, d);
+    } else {
+      date = new Date(ms!);
+    }
+
+    const key = isoDateKey(date);
+    let group = groups.get(key);
+    if (!group) {
+      group = { date: startOfDay(date), events: [] };
+      groups.set(key, group);
+    }
+    group.events.push(event);
+  }
+  return Array.from(groups.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
+}
+
 /**
  * All-day events use date-only ISO strings with an exclusive end date, so
  * compare on the date span rather than parsed timestamps (which would be
