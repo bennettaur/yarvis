@@ -123,8 +123,10 @@ export function groupEventsByDay(
     if (event.allDay) {
       const [y, m, d] = event.start.split("-").map(Number);
       date = new Date(y, m - 1, d);
+    } else if (ms !== null) {
+      date = new Date(ms);
     } else {
-      date = new Date(ms!);
+      continue;
     }
 
     const key = isoDateKey(date);

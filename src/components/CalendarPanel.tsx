@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { type CalendarEvent, calDisconnect, calEvents } from "../lib/calendar";
 import { isArmable, useEventAlarms } from "../lib/calendarAlarms";
 import {
