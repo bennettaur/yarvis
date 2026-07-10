@@ -4,6 +4,7 @@
  * module owns the database state and orchestration.
  */
 
+import { writeFileSync } from "node:fs";
 import { and, eq, inArray } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
@@ -489,6 +490,33 @@ export async function provisionWorkspace(
     // Distinct repos provision concurrently; withRepoLock still serializes work
     // on a primary clone shared with another workspace.
     await Promise.all(detail.repos.map(provisionRepo));
+
+    // After repo provisioning, create AGENTS.md and CLAUDE.md in the workspace
+    // root to provide context for AI agents.
+    const agentsContent = [
+      `# Workspace: ${detail.name}`,
+      "",
+      "This is a Yarvis workspace containing one or more git worktrees.",
+      "",
+      "## Available Repositories",
+      "",
+      ...detail.repos.map((r) => {
+        const repoPath = `./${(nameCounts.get(r.repo.name) ?? 0) > 1 ? `${r.repo.name}-${r.repo.owner}` : r.repo.name}`;
+        return `- **${r.repo.name}** (${r.repo.owner}/${r.repo.repo})\n  - Path: \`${repoPath}\`\n  - Branch: \`${r.branch}\``;
+      }),
+      "",
+      "Claude is started in this workspace root to allow cross-repo work.",
+    ].join("\n");
+
+    try {
+      writeFileSync(`${detail.rootPath}/AGENTS.md`, agentsContent);
+      writeFileSync(
+        `${detail.rootPath}/CLAUDE.md`,
+        "Please refer to [AGENTS.md](./AGENTS.md) for information about this workspace setup.\n",
+      );
+    } catch (e) {
+      console.error("[workspaces] failed to write AGENTS.md/CLAUDE.md:", e);
+    }
 
     // The workspace is active only if every repo provisioned cleanly.
     const after = await getWorkspace(db, id);
