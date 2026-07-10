@@ -25,9 +25,11 @@ const VIEWS: { key: View; label: string }[] = [
 export default function WorkspaceSidePanel({
   workspaceId,
   repos,
+  onOpenFileDiff,
 }: {
   workspaceId: string;
   repos: WorkspaceRepoDetail[];
+  onOpenFileDiff: (repoId: string, path: string) => void;
 }) {
   const [repoId, setRepoId] = useState(repos[0]?.id ?? "");
   const [view, setView] = useState<View>("changes");
@@ -69,7 +71,13 @@ export default function WorkspaceSidePanel({
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {view === "files" && <FilesView workspaceId={workspaceId} repoId={repo.id} />}
-        {view === "changes" && <ChangesView workspaceId={workspaceId} repoId={repo.id} />}
+        {view === "changes" && (
+          <ChangesView
+            workspaceId={workspaceId}
+            repoId={repo.id}
+            onOpenFile={(path) => onOpenFileDiff(repo.id, path)}
+          />
+        )}
         {view === "checks" && <ChecksView repo={repo} />}
       </div>
     </div>
@@ -195,7 +203,15 @@ const CHANGE_COLORS: Record<string, string> = {
   untracked: "text-zinc-500",
 };
 
-function ChangesView({ workspaceId, repoId }: { workspaceId: string; repoId: string }) {
+function ChangesView({
+  workspaceId,
+  repoId,
+  onOpenFile,
+}: {
+  workspaceId: string;
+  repoId: string;
+  onOpenFile: (path: string) => void;
+}) {
   const { data, error } = usePolledRepoList(
     workspaceId,
     repoId,
@@ -209,22 +225,28 @@ function ChangesView({ workspaceId, repoId }: { workspaceId: string; repoId: str
   return (
     <ul className="font-mono text-xs">
       {data.map((file) => (
-        <li key={file.path} className="flex items-center gap-2 py-0.5">
-          <span
-            className={`shrink-0 ${CHANGE_COLORS[file.status] ?? "text-zinc-400"}`}
-            title={file.status}
+        <li key={file.path}>
+          <button
+            type="button"
+            onClick={() => onOpenFile(file.path)}
+            className="flex w-full items-center gap-2 py-0.5 text-left hover:bg-zinc-800/40"
           >
-            {file.status[0]?.toUpperCase()}
-          </span>
-          <span className="min-w-0 flex-1 truncate text-zinc-400" title={file.path}>
-            {file.path}
-          </span>
-          {(file.additions > 0 || file.deletions > 0) && (
-            <span className="shrink-0 text-zinc-500">
-              <span className="text-emerald-400">+{file.additions}</span>{" "}
-              <span className="text-red-400">−{file.deletions}</span>
+            <span
+              className={`shrink-0 ${CHANGE_COLORS[file.status] ?? "text-zinc-400"}`}
+              title={file.status}
+            >
+              {file.status[0]?.toUpperCase()}
             </span>
-          )}
+            <span className="min-w-0 flex-1 truncate text-zinc-400" title={file.path}>
+              {file.path}
+            </span>
+            {(file.additions > 0 || file.deletions > 0) && (
+              <span className="shrink-0 text-zinc-500">
+                <span className="text-emerald-400">+{file.additions}</span>{" "}
+                <span className="text-red-400">−{file.deletions}</span>
+              </span>
+            )}
+          </button>
         </li>
       ))}
     </ul>

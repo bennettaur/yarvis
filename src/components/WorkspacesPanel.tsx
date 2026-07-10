@@ -18,6 +18,7 @@ import {
 import TerminalTabs from "./shell/terminalTabs/TerminalTabs";
 import TerminalPanel from "./TerminalPanel";
 import WorkspaceSidePanel from "./WorkspaceSidePanel";
+import WorkspaceFileDiff from "./workspaces/WorkspaceFileDiff";
 import ArchiveDialog from "./workspaces/ArchiveDialog";
 import ArchivedView from "./workspaces/ArchivedView";
 import LinkTaskControl from "./workspaces/LinkTaskControl";
@@ -514,6 +515,38 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
   const [provisionLog, setProvisionLog] = useState<string | null>(null);
   const [showArchive, setShowArchive] = useState(false);
   const [claudeActive, setClaudeActive] = useState(false);
+
+  const openFilesKey = `yarvis.workspaces.${id}.openFiles`;
+  const [openFiles, setOpenFiles] = useState<{ repoId: string; path: string }[]>(() => {
+    try {
+      const raw = localStorage.getItem(openFilesKey);
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [activePinnedKey, setActivePinnedKey] = useState<string | undefined>();
+
+  useEffect(() => {
+    localStorage.setItem(openFilesKey, JSON.stringify(openFiles));
+  }, [openFiles, openFilesKey]);
+
+  const handleOpenFileDiff = useCallback((repoId: string, path: string) => {
+    setOpenFiles((prev) => {
+      if (prev.some((f) => f.repoId === repoId && f.path === path)) return prev;
+      return [...prev, { repoId, path }];
+    });
+    setActivePinnedKey(`diff:${repoId}:${path}`);
+  }, []);
+
+  const handleClosePinnedTab = useCallback((key: string) => {
+    if (key.startsWith("diff:")) {
+      const [, repoId, ...pathParts] = key.split(":");
+      const path = pathParts.join(":");
+      setOpenFiles((prev) => prev.filter((f) => !(f.repoId === repoId && f.path === path)));
+    }
+  }, []);
+
   // Bumped when the active id changes (or this view unmounts) so an in-flight
   // load() from a previous selection won't overwrite the new one's detail.
   // Capture the current value at call time; compare on resolve.
@@ -758,8 +791,11 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
               <TerminalTabs
                 storageKey={`ws:${detail.id}`}
                 cwd={detail.rootPath}
-                pinnedTabs={
-                  claudeActive
+                activePinnedKey={activePinnedKey}
+                onActivePinnedKeyConsumed={() => setActivePinnedKey(undefined)}
+                onPinnedTabClose={handleClosePinnedTab}
+                pinnedTabs={[
+                  ...(claudeActive
                     ? [
                         {
                           key: "claude",
@@ -768,8 +804,24 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
                           cwd: claudeCwd,
                         },
                       ]
-                    : []
-                }
+                    : []),
+                  ...openFiles.map((f) => {
+                    const repoName =
+                      detail.repos.find((r) => r.id === f.repoId)?.repo.name ?? "repo";
+                    const fileName = f.path.split("/").pop() ?? f.path;
+                    return {
+                      key: `diff:${f.repoId}:${f.path}`,
+                      title: `${fileName} (diff)`,
+                      component: (
+                        <WorkspaceFileDiff
+                          workspaceId={detail.id}
+                          repoId={f.repoId}
+                          path={f.path}
+                        />
+                      ),
+                    };
+                  }),
+                ]}
               />
             </div>
             {runRepo && (
@@ -797,7 +849,11 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
               </div>
             )}
           </div>
-          <WorkspaceSidePanel workspaceId={detail.id} repos={detail.repos} />
+          <WorkspaceSidePanel
+            workspaceId={detail.id}
+            repos={detail.repos}
+            onOpenFileDiff={handleOpenFileDiff}
+          />
         </div>
       )}
     </div>

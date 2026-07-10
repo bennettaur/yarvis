@@ -38,7 +38,7 @@ export const defaultGitRunner: GitRunner = (args, opts) =>
   run(["git", ...args], { ...opts, env: { GIT_TERMINAL_PROMPT: "0" } });
 
 /** Runs a git command and throws a descriptive error on non-zero exit. */
-async function git(
+export async function git(
   runner: GitRunner,
   args: string[],
   cwd?: string,

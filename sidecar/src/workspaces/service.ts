@@ -29,6 +29,7 @@ import {
   defaultGitRunner,
   detectDefaultBranch,
   ensurePrimaryClone,
+  git,
   type GitRunner,
   listChangedFiles,
   listFiles,
@@ -339,6 +340,30 @@ export async function workspaceRepoChanges(
 ): Promise<ChangedFile[]> {
   const wr = await getWorkspaceRepo(db, workspaceRepoId);
   return listChangedFiles(runner, wr.worktreePath, wr.baseBranch);
+}
+
+/**
+ * Unified diff for a single file in a workspace repo, comparing the working
+ * tree against its base branch. Includes uncommitted and untracked changes.
+ */
+export async function workspaceRepoFileDiff(
+  db: Db,
+  workspaceRepoId: string,
+  path: string,
+  runner: GitRunner = defaultGitRunner,
+): Promise<string> {
+  const wr = await getWorkspaceRepo(db, workspaceRepoId);
+  const base = `origin/${wr.baseBranch}`;
+
+  // Ensure untracked files are visible to `git diff` by adding them to the
+  // index with "intent to add".
+  await git(runner, ["add", "-N", "--", path], wr.worktreePath);
+  try {
+    return await git(runner, ["diff", base, "--", path], wr.worktreePath);
+  } finally {
+    // Drop the intent-to-add so the index is back to its original state.
+    await git(runner, ["restore", "--staged", "--", path], wr.worktreePath).catch(() => undefined);
+  }
 }
 
 // ---------------------------------------------------------------------------

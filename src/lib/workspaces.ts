@@ -151,6 +151,19 @@ export async function workspaceRepoChanges(
   return res.json();
 }
 
+export async function workspaceRepoFileDiff(
+  workspaceId: string,
+  workspaceRepoId: string,
+  path: string,
+): Promise<string> {
+  const res = await sidecarFetch(
+    `/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/diff?path=${encodeURIComponent(path)}`,
+  );
+  if (!res.ok) return readError(res, "get file diff");
+  const { patch } = await res.json();
+  return patch;
+}
+
 export async function linkWorkspaceTask(workspaceId: string, taskId: string): Promise<void> {
   const res = await sidecarFetch(`/api/workspaces/${workspaceId}/tasks`, {
     method: "POST",

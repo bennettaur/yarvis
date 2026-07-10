@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isPtyBusy, killPty } from "../../../lib/pty";
 import TerminalPanel, { type TerminalPanelHandle } from "../../TerminalPanel";
 import {
@@ -44,9 +44,11 @@ interface Tab {
 export interface PinnedTab {
   key: string;
   title: string;
-  sessionId: string;
+  sessionId?: string;
   cwd?: string;
   initialCommand?: string;
+  /** Arbitrary React content to render instead of a terminal panel. */
+  component?: ReactNode;
 }
 
 /** activeTabId value marking a pinned tab as selected. */
@@ -97,6 +99,9 @@ export default function TerminalTabs({
   storageKey,
   cwd,
   pinnedTabs = [],
+  activePinnedKey,
+  onActivePinnedKeyConsumed,
+  onPinnedTabClose,
 }: {
   /** Stable namespace for this surface — both for localStorage and PTY ids. */
   storageKey: string;
@@ -104,6 +109,12 @@ export default function TerminalTabs({
   cwd?: string;
   /** Tabs bound to externally-managed sessions, shown whenever present. */
   pinnedTabs?: PinnedTab[];
+  /** Externally-requested pinned tab to focus (one-shot). */
+  activePinnedKey?: string;
+  /** Callback once `activePinnedKey` has been honored. */
+  onActivePinnedKeyConsumed?: () => void;
+  /** Callback when a pinned tab's [x] is clicked. */
+  onPinnedTabClose?: (key: string) => void;
 }) {
   const [state, setState] = useState<SurfaceState>(() => loadState(storageKey));
   // Refs to xterm handles so a tab/pane switch can move focus into the right shell.
@@ -131,6 +142,14 @@ export default function TerminalTabs({
   }, [state.tabs, state.activeTabId, activePinned]);
   const focusedPane = activeTab ? (state.focused[activeTab.id] ?? firstLeafId(activeTab.root)) : "";
 
+  // Honor external focus requests.
+  useEffect(() => {
+    if (activePinnedKey && pinnedTabs.some((p) => p.key === activePinnedKey)) {
+      setState((prev) => ({ ...prev, activeTabId: pinnedTabId(activePinnedKey) }));
+      onActivePinnedKeyConsumed?.();
+    }
+  }, [activePinnedKey, pinnedTabs, onActivePinnedKeyConsumed]);
+
   // Reconcile pinned tabs: focus one that just appeared (e.g. a Claude session
   // that started), and fall back to a normal tab when the active pinned tab goes
   // away. Keyed on the set of keys, not the array identity.
@@ -148,7 +167,13 @@ export default function TerminalTabs({
         }
       }
       const first = appeared[0];
-      if (first) return { ...prev, activeTabId: pinnedTabId(first) };
+      // Only auto-focus newly-appeared pinned tabs if they aren't UI components
+      // (which are typically opened explicitly by user action).
+      const autoFocusable = appeared.find((k) => {
+        const tab = pinnedTabs.find((p) => p.key === k);
+        return tab && !tab.component;
+      });
+      if (autoFocusable) return { ...prev, activeTabId: pinnedTabId(autoFocusable) };
       return prev;
     });
   }, [pinnedKeysSig]);
@@ -201,14 +226,20 @@ export default function TerminalTabs({
 
   // Closing a pinned tab ends its underlying session; the caller stops listing it
   // on its next poll, which removes the header.
-  const closePinned = useCallback(async (pinned: PinnedTab) => {
-    await killPty(pinned.sessionId).catch(() => undefined);
-    setState((prev) =>
-      prev.activeTabId === pinnedTabId(pinned.key)
-        ? { ...prev, activeTabId: prev.tabs[0]?.id ?? "" }
-        : prev,
-    );
-  }, []);
+  const closePinned = useCallback(
+    async (pinned: PinnedTab) => {
+      if (pinned.sessionId) {
+        await killPty(pinned.sessionId).catch(() => undefined);
+      }
+      onPinnedTabClose?.(pinned.key);
+      setState((prev) =>
+        prev.activeTabId === pinnedTabId(pinned.key)
+          ? { ...prev, activeTabId: prev.tabs[0]?.id ?? "" }
+          : prev,
+      );
+    },
+    [onPinnedTabClose],
+  );
 
   const closeTab = useCallback(
     async (tabId: string) => {
@@ -351,12 +382,16 @@ export default function TerminalTabs({
       />
       <div className="min-h-0 min-w-0 flex-1">
         {activePinned ? (
-          <TerminalPanel
-            sessionId={activePinned.sessionId}
-            cwd={activePinned.cwd}
-            initialCommand={activePinned.initialCommand}
-            embedded
-          />
+          activePinned.component ? (
+            activePinned.component
+          ) : (
+            <TerminalPanel
+              sessionId={activePinned.sessionId!}
+              cwd={activePinned.cwd}
+              initialCommand={activePinned.initialCommand}
+              embedded
+            />
+          )
         ) : activeTab ? (
           <PaneTreeView
             pane={activeTab.root}
