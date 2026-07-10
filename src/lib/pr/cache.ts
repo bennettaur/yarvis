@@ -112,15 +112,24 @@ function useCachedResource<T>(key: string | null, loader: () => Promise<T>): Res
 export const prDetailKey = (ref: PrRef) => `detail:${refKey(ref)}`;
 
 export function usePrDetail(ref: PrRef | null): Resource<PrDetail> {
-  return useCachedResource(ref ? prDetailKey(ref) : null, () => fetchPrDetail(ref!));
+  return useCachedResource(ref ? prDetailKey(ref) : null, () => {
+    if (!ref) throw new Error("ref is required");
+    return fetchPrDetail(ref);
+  });
 }
 
 export function usePrFiles(ref: PrRef | null): Resource<PrFile[]> {
-  return useCachedResource(ref ? `files:${refKey(ref)}` : null, () => fetchPrFiles(ref!));
+  return useCachedResource(ref ? `files:${refKey(ref)}` : null, () => {
+    if (!ref) throw new Error("ref is required");
+    return fetchPrFiles(ref);
+  });
 }
 
 export function usePrStatus(ref: PrRef | null): Resource<PrStatus> {
-  return useCachedResource(ref ? `status:${refKey(ref)}` : null, () => fetchPrStatus(ref!));
+  return useCachedResource(ref ? `status:${refKey(ref)}` : null, () => {
+    if (!ref) throw new Error("ref is required");
+    return fetchPrStatus(ref);
+  });
 }
 
 /**

@@ -29,8 +29,8 @@ import {
   defaultGitRunner,
   detectDefaultBranch,
   ensurePrimaryClone,
-  git,
   type GitRunner,
+  git,
   listChangedFiles,
   listFiles,
   removeWorktree,
@@ -62,8 +62,8 @@ export interface UpdateRepoInput {
 export function parseGitUrl(url: string): { owner: string; repo: string } | null {
   const trimmed = url.trim().replace(/\.git$/, "");
   const match = trimmed.match(/[:/]([^/:]+)\/([^/]+)$/);
-  if (!match) return null;
-  return { owner: match[1]!, repo: match[2]! };
+  if (!match || !match[1] || !match[2]) return null;
+  return { owner: match[1], repo: match[2] };
 }
 
 /**
@@ -102,7 +102,8 @@ export async function createRepo(db: Db, config: Config, input: CreateRepoInput)
       runScript: input.runScript ?? null,
     })
     .returning();
-  return row!;
+  if (!row) throw new Error("failed to create repo");
+  return row;
 }
 
 export async function listRepos(db: Db): Promise<Repo[]> {
@@ -215,9 +216,11 @@ export async function createWorkspace(
       .values({ name: input.name.trim(), slug, rootPath, status: "creating" })
       .returning();
 
+    if (!workspace) throw new Error("failed to create workspace");
+
     await tx.insert(workspaceRepos).values(
       selected.map((repo) => ({
-        workspaceId: workspace!.id,
+        workspaceId: workspace.id,
         repoId: repo.id,
         branch,
         baseBranch: repo.defaultBranch ?? "main",
@@ -228,10 +231,10 @@ export async function createWorkspace(
     );
 
     if (input.taskId) {
-      await tx.update(tasks).set({ workspaceId: workspace!.id }).where(eq(tasks.id, input.taskId));
+      await tx.update(tasks).set({ workspaceId: workspace.id }).where(eq(tasks.id, input.taskId));
     }
 
-    return workspace!;
+    return workspace;
   });
 }
 
@@ -282,11 +285,15 @@ export async function getWorkspace(db: Db, id: string): Promise<WorkspaceDetail 
 
   return {
     ...workspace,
-    repos: wrRows.map((wr) => ({
-      ...wr,
-      repo: repoById.get(wr.repoId)!,
-      pr: prByWr.get(wr.id) ?? null,
-    })),
+    repos: wrRows.map((wr) => {
+      const repo = repoById.get(wr.repoId);
+      if (!repo) throw new Error(`repo ${wr.repoId} not found for workspace repo ${wr.id}`);
+      return {
+        ...wr,
+        repo,
+        pr: prByWr.get(wr.id) ?? null,
+      };
+    }),
     tasks: await tasksForWorkspace(db, id),
   };
 }

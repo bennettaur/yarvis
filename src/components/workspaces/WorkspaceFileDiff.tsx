@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { parsePatch, type DiffRow } from "../../lib/pr/diff";
+import { type DiffRow, parsePatch } from "../../lib/pr/diff";
 import { workspaceRepoFileDiff } from "../../lib/workspaces";
 
 function rowClass(kind: DiffRow["kind"]): string {
@@ -52,7 +52,7 @@ export default function WorkspaceFileDiff({
   return (
     <div className="h-full overflow-y-auto bg-zinc-950 font-mono text-xs leading-relaxed">
       {rows.map((row, i) => (
-        <div key={i} className={`flex ${rowClass(row.kind)}`}>
+        <div key={`${row.kind}-${row.rightLine}-${i}`} className={`flex ${rowClass(row.kind)}`}>
           <span className="w-12 shrink-0 select-none pr-2 text-right text-zinc-600">
             {row.rightLine ?? ""}
           </span>

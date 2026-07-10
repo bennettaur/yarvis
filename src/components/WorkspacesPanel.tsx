@@ -18,10 +18,10 @@ import {
 import TerminalTabs from "./shell/terminalTabs/TerminalTabs";
 import TerminalPanel from "./TerminalPanel";
 import WorkspaceSidePanel from "./WorkspaceSidePanel";
-import WorkspaceFileDiff from "./workspaces/WorkspaceFileDiff";
 import ArchiveDialog from "./workspaces/ArchiveDialog";
 import ArchivedView from "./workspaces/ArchivedView";
 import LinkTaskControl from "./workspaces/LinkTaskControl";
+import WorkspaceFileDiff from "./workspaces/WorkspaceFileDiff";
 
 const STATUS_STYLES: Record<WorkspaceStatus, string> = {
   creating: "bg-amber-900/40 text-amber-200",
@@ -222,6 +222,7 @@ export default function WorkspacesPanel() {
           ))}
           {archivedCount > 0 && (
             <button
+              type="button"
               onClick={() => setShowArchived((v) => !v)}
               className="mt-1 w-full rounded-md px-2 py-1 text-left text-xs text-zinc-500 hover:bg-zinc-800/40 hover:text-zinc-300"
             >

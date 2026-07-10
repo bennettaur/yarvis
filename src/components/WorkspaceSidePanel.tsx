@@ -57,6 +57,7 @@ export default function WorkspaceSidePanel({
         {VIEWS.map((v) => (
           <button
             key={v.key}
+            type="button"
             onClick={() => setView(v.key)}
             className={`border-b-2 px-2 py-1.5 text-xs ${
               view === v.key
