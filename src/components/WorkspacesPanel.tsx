@@ -628,17 +628,14 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
     }
   };
 
-  if (error) return <p className="p-6 text-sm text-red-400">{error}</p>;
-  if (!detail) return <p className="p-6 text-sm text-zinc-500">Loading…</p>;
-
-  const provisioned = detail.status === "active";
+  const provisioned = detail?.status === "active";
   // One repo: work inside its worktree; multiple: the workspace root.
-  const firstRepo = detail.repos[0];
+  const firstRepo = detail?.repos[0];
   const claudeCwd =
-    detail.repos.length === 1 && firstRepo ? firstRepo.worktreePath : detail.rootPath;
+    detail && detail.repos.length === 1 && firstRepo ? firstRepo.worktreePath : detail?.rootPath;
 
   const startClaude = useCallback(async () => {
-    if (!detail) return;
+    if (!detail || !claudeCwd) return;
     try {
       const { claudeCommand } = await getSettings().catch(() => ({ claudeCommand: "claude" }));
       await startClaudeSession(id, claudeCwd, detail.name, claudeCommand);
@@ -659,6 +656,9 @@ function WorkspaceDetailView({ id, onChanged }: { id: string; onChanged: () => v
       }
     }
   }, [id, detail?.status, claudeActive, startClaude]);
+
+  if (error) return <p className="p-6 text-sm text-red-400">{error}</p>;
+  if (!detail) return <p className="p-6 text-sm text-zinc-500">Loading…</p>;
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">

@@ -1,0 +1,2820 @@
+$ biome check . . --max-diagnostics "1000"
+sidecar/src/cc/parse.ts:34:54 lint/suspicious/noExplicitAny ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Unexpected any. Specify a different type.
+
+    32 │ }
+    33 │
+  > 34 │ function parseLines(content: string): Record<string, any>[] {
+       │                                                      ^^^
+    35 │   const out: Record<string, any>[] = [];
+    36 │   for (const line of content.split("\n")) {
+
+  i any disables many type checking rules. Its use should be avoided.
+
+
+sidecar/src/cc/parse.ts:35:29 lint/suspicious/noExplicitAny ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Unexpected any. Specify a different type.
+
+    34 │ function parseLines(content: string): Record<string, any>[] {
+  > 35 │   const out: Record<string, any>[] = [];
+       │                             ^^^
+    36 │   for (const line of content.split("\n")) {
+    37 │     const trimmed = line.trim();
+
+  i any disables many type checking rules. Its use should be avoided.
+
+
+sidecar/src/chat/routes.ts:63:9 lint/suspicious/noImplicitAnyLet ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! This variable implicitly has the any type.
+
+    62 │     const dbh = db();
+  > 63 │     let chatModel;
+       │         ^^^^^^^^^
+    64 │     try {
+    65 │       chatModel = await resolveModel(config, dbh, provider, model);
+
+  i Variable declarations without type annotation and initialization implicitly have the any type. Declare a type or initialize the variable with some value.
+
+
+sidecar/src/github/client.ts:233:34 lint/suspicious/noExplicitAny ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Unexpected any. Specify a different type.
+
+    232 │   async prFiles(owner: string, repo: string, number: number): Promise<PrFile[]> {
+  > 233 │     const files = await this.api<any[]>(
+        │                                  ^^^
+    234 │       `/repos/${owner}/${repo}/pulls/${number}/files?per_page=100`,
+    235 │     );
+
+  i any disables many type checking rules. Its use should be avoided.
+
+
+sidecar/src/github/client.ts:35:28 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    33 │   if (repositoryUrl) {
+    34 │     const m = repositoryUrl.match(/repos\/([^/]+)\/([^/]+)$/);
+  > 35 │     if (m) return { owner: m[1]!, repo: m[2]! };
+       │                            ^^^^^
+    36 │   }
+    37 │   if (htmlUrl) {
+
+
+sidecar/src/github/client.ts:44:35 lint/suspicious/noExplicitAny ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Unexpected any. Specify a different type.
+
+    42 │ }
+    43 │
+  > 44 │ export function toPrSummary(item: any): PrSummary {
+       │                                   ^^^
+    45 │   const { owner, repo } = parseRepo(item.repository_url, item.html_url);
+    46 │   return {
+
+  i any disables many type checking rules. Its use should be avoided.
+
+
+sidecar/src/github/client.ts:60:39 lint/suspicious/noExplicitAny ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Unexpected any. Specify a different type.
+
+    58 │ }
+    59 │
+  > 60 │ export function summarizeChecks(runs: any[]): ChecksSummary {
+       │                                       ^^^
+    61 │   let success = 0;
+    62 │   let failure = 0;
+
+  i any disables many type checking rules. Its use should be avoided.
+
+
+sidecar/src/github/client.ts:77:28 lint/suspicious/noExplicitAny ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Unexpected any. Specify a different type.
+
+    76 │ /** Normalizes a GraphQL statusCheckRollup context into a flat CheckItem. */
+  > 77 │ function toCheckItem(node: any): CheckItem {
+       │                            ^^^
+    78 │   if (node.__typename === "CheckRun") {
+    79 │     return {
+
+  i any disables many type checking rules. Its use should be avoided.
+
+
+sidecar/src/github/client.ts:96:32 lint/suspicious/noExplicitAny ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Unexpected any. Specify a different type.
+
+    95 │ /** Shapes the GraphQL `pullRequest` payload into a flat PrDetail. */
+  > 96 │ export function toPrDetail(pr: any): PrDetail {
+       │                                ^^^
+    97 │   const rollupNodes = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
+    98 │   const threadNodes = pr.reviewThreads?.nodes ?? [];
+
+  i any disables many type checking rules. Its use should be avoided.
+
+
+sidecar/src/github/client.ts:112:45 lint/suspicious/noExplicitAny ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Unexpected any. Specify a different type.
+
+    110 │     mergeable: pr.mergeable ?? "UNKNOWN",
+    111 │     checks: rollupNodes.map(toCheckItem),
+  > 112 │     reviewThreads: threadNodes.map((thread: any) => ({
+        │                                             ^^^
+    113 │       path: thread.path ?? null,
+    114 │       line: thread.line ?? null,
+
+  i any disables many type checking rules. Its use should be avoided.
+
+
+sidecar/src/github/client.ts:116:62 lint/suspicious/noExplicitAny ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Unexpected any. Specify a different type.
+
+    114 │       line: thread.line ?? null,
+    115 │       isResolved: Boolean(thread.isResolved),
+  > 116 │       comments: (thread.comments?.nodes ?? []).map((comment: any) => ({
+        │                                                              ^^^
+    117 │         author: comment.author?.login ?? "",
+    118 │         body: comment.body ?? "",
+
+  i any disables many type checking rules. Its use should be avoided.
+
+
+sidecar/src/github/client.ts:189:43 lint/suspicious/noExplicitAny ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Unexpected any. Specify a different type.
+
+    188 │   async search(query: string): Promise<PrSummary[]> {
+  > 189 │     const data = await this.api<{ items?: any[] }>(
+        │                                           ^^^
+    190 │       `/search/issues?q=${encodeURIComponent(query)}&per_page=50&sort=created&order=desc`,
+    191 │     );
+
+  i any disables many type checking rules. Its use should be avoided.
+
+
+sidecar/src/github/client.ts:196:31 lint/suspicious/noExplicitAny ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Unexpected any. Specify a different type.
+
+    195 │   async prStatus(owner: string, repo: string, number: number): Promise<PrStatus> {
+  > 196 │     const pr = await this.api<any>(`/repos/${owner}/${repo}/pulls/${number}`);
+        │                               ^^^
+    197 │     const checks = await this.api<{ check_runs?: any[] }>(
+    198 │       `/repos/${owner}/${repo}/commits/${pr.head.sha}/check-runs`,
+
+  i any disables many type checking rules. Its use should be avoided.
+
+
+sidecar/src/github/client.ts:197:50 lint/suspicious/noExplicitAny ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Unexpected any. Specify a different type.
+
+    195 │   async prStatus(owner: string, repo: string, number: number): Promise<PrStatus> {
+    196 │     const pr = await this.api<any>(`/repos/${owner}/${repo}/pulls/${number}`);
+  > 197 │     const checks = await this.api<{ check_runs?: any[] }>(
+        │                                                  ^^^
+    198 │       `/repos/${owner}/${repo}/commits/${pr.head.sha}/check-runs`,
+    199 │     );
+
+  i any disables many type checking rules. Its use should be avoided.
+
+
+sidecar/src/github/client.ts:216:34 lint/suspicious/noExplicitAny ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Unexpected any. Specify a different type.
+
+    214 │   async findPrByBranch(owner: string, repo: string, branch: string): Promise<PrSummary | null> {
+    215 │     const head = encodeURIComponent(`${owner}:${branch}`);
+  > 216 │     const items = await this.api<any[]>(
+        │                                  ^^^
+    217 │       `/repos/${owner}/${repo}/pulls?head=${head}&state=all&sort=created&direction=desc&per_page=1`,
+    218 │     );
+
+  i any disables many type checking rules. Its use should be avoided.
+
+
+sidecar/src/github/client.ts:225:36 lint/suspicious/noExplicitAny ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Unexpected any. Specify a different type.
+
+    223 │   async prDetail(owner: string, repo: string, number: number): Promise<PrDetail> {
+    224 │     const data = await this.graphql<{
+  > 225 │       repository?: { pullRequest?: any };
+        │                                    ^^^
+    226 │     }>(PR_DETAIL_QUERY, { owner, repo, number });
+    227 │     const pr = data.repository?.pullRequest;
+
+  i any disables many type checking rules. Its use should be avoided.
+
+
+sidecar/src/github/client.ts:35:41 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    33 │   if (repositoryUrl) {
+    34 │     const m = repositoryUrl.match(/repos\/([^/]+)\/([^/]+)$/);
+  > 35 │     if (m) return { owner: m[1]!, repo: m[2]! };
+       │                                         ^^^^^
+    36 │   }
+    37 │   if (htmlUrl) {
+
+
+sidecar/src/github/client.ts:39:28 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    37 │   if (htmlUrl) {
+    38 │     const m = htmlUrl.match(/github\.com\/([^/]+)\/([^/]+)\/pull/);
+  > 39 │     if (m) return { owner: m[1]!, repo: m[2]! };
+       │                            ^^^^^
+    40 │   }
+    41 │   return { owner: "", repo: "" };
+
+
+sidecar/src/github/client.ts:39:41 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    37 │   if (htmlUrl) {
+    38 │     const m = htmlUrl.match(/github\.com\/([^/]+)\/([^/]+)\/pull/);
+  > 39 │     if (m) return { owner: m[1]!, repo: m[2]! };
+       │                                         ^^^^^
+    40 │   }
+    41 │   return { owner: "", repo: "" };
+
+
+sidecar/src/google/client.ts:57:32 lint/suspicious/noExplicitAny ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Unexpected any. Specify a different type.
+
+    55 │ }
+    56 │
+  > 57 │ function toTokenResponse(data: any): TokenResponse {
+       │                                ^^^
+    58 │   const expiresInSec = Number(data.expires_in ?? 3600);
+    59 │   return {
+
+  i any disables many type checking rules. Its use should be avoided.
+
+
+sidecar/src/google/client.ts:68:25 lint/suspicious/noExplicitAny ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Unexpected any. Specify a different type.
+
+    67 │ /** Picks the best video link Google attaches to an event, if any. */
+  > 68 │ function meetLink(item: any): string | null {
+       │                         ^^^
+    69 │   if (item.hangoutLink) return item.hangoutLink;
+    70 │   const entry = item.conferenceData?.entryPoints?.find((e: any) => e.entryPointType === "video");
+
+  i any disables many type checking rules. Its use should be avoided.
+
+
+sidecar/src/google/client.ts:70:60 lint/suspicious/noExplicitAny ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Unexpected any. Specify a different type.
+
+    68 │ function meetLink(item: any): string | null {
+    69 │   if (item.hangoutLink) return item.hangoutLink;
+  > 70 │   const entry = item.conferenceData?.entryPoints?.find((e: any) => e.entryPointType === "video");
+       │                                                            ^^^
+    71 │   return entry?.uri ?? null;
+    72 │ }
+
+  i any disables many type checking rules. Its use should be avoided.
+
+
+sidecar/src/google/client.ts:75:39 lint/suspicious/noExplicitAny ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Unexpected any. Specify a different type.
+
+    74 │ /** Normalizes a Calendar API event resource into our flat shape. */
+  > 75 │ export function toCalendarEvent(item: any): CalendarEvent {
+       │                                       ^^^
+    76 │   const allDay = Boolean(item.start?.date && !item.start?.dateTime);
+    77 │   return {
+
+  i any disables many type checking rules. Its use should be avoided.
+
+
+sidecar/src/google/client.ts:153:50 lint/suspicious/noExplicitAny ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Unexpected any. Specify a different type.
+
+    151 │     });
+    152 │     if (!res.ok) throw new Error(`google calendar events -> ${res.status}`);
+  > 153 │     const data = (await res.json()) as { items?: any[] };
+        │                                                  ^^^
+    154 │     return (data.items ?? []).map(toCalendarEvent);
+    155 │   }
+
+  i any disables many type checking rules. Its use should be avoided.
+
+
+sidecar/src/lib/urlSafety.ts:58:36 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    56 │   // IPv4-mapped (::ffff:a.b.c.d) — apply the v4 check to the trailing dotted quad.
+    57 │   const mapped = lower.match(/^::ffff:([0-9.]+)$/);
+  > 58 │   if (mapped) return isPrivateIPv4(mapped[1]!);
+       │                                    ^^^^^^^^^^
+    59 │   // Site-local fec0::/10 — deprecated, still treated as private.
+    60 │   if (/^fec[0-9a-f]:/.test(lower)) return true;
+
+
+sidecar/src/llm/providers.ts:118:63 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    116 │   const usable = providers.filter((p) => p.available && p.models.length > 0);
+    117 │   if (usable.length === 0) return null;
+  > 118 │   const preferred = usable.find((p) => p.id !== "bedrock") ?? usable[0]!;
+        │                                                               ^^^^^^^^^^
+    119 │   return { provider: preferred.id, model: preferred.models[0]! };
+    120 │ }
+
+
+sidecar/src/llm/providers.ts:119:43 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    117 │   if (usable.length === 0) return null;
+    118 │   const preferred = usable.find((p) => p.id !== "bedrock") ?? usable[0]!;
+  > 119 │   return { provider: preferred.id, model: preferred.models[0]! };
+        │                                           ^^^^^^^^^^^^^^^^^^^^
+    120 │ }
+    121 │
+
+
+sidecar/src/memory/embedder.ts:75:7 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    73 │         hash = Math.imul(hash, 16777619);
+    74 │       }
+  > 75 │       vec[Math.abs(hash) % this.dimensions]! += 1;
+       │       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    76 │     }
+    77 │     return l2normalize(vec);
+
+
+sidecar/src/memory/embeddingsConfig.ts:46:12 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    44 │       .where(eq(embeddingsConfig.id, existing.id))
+    45 │       .returning();
+  > 46 │     return row!;
+       │            ^^^^
+    47 │   }
+    48 │   const [row] = await db.insert(embeddingsConfig).values(input).returning();
+
+
+sidecar/src/memory/embeddingsConfig.ts:49:10 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    47 │   }
+    48 │   const [row] = await db.insert(embeddingsConfig).values(input).returning();
+  > 49 │   return row!;
+       │          ^^^^
+    50 │ }
+    51 │
+
+
+sidecar/src/memory/index.ts:88:21 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    86 │         `embedder=${this.embedder.kind} → stored`,
+    87 │     );
+  > 88 │     return toRecord(row!);
+       │                     ^^^^
+    89 │   }
+    90 │
+
+
+sidecar/src/memory/index.ts:100:22 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+     98 │           content: item.content,
+     99 │           metadata: this.stamp(item.metadata),
+  > 100 │           embedding: embeddings[i]!,
+        │                      ^^^^^^^^^^^^^^
+    101 │         })),
+    102 │       )
+
+
+sidecar/src/memory/index.ts:222:26 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    220 │             .update(memories)
+    221 │             .set({
+  > 222 │               embedding: embeddings[j]!,
+        │                          ^^^^^^^^^^^^^^
+    223 │               metadata: this.stamp(row.metadata as Record<string, unknown> | null),
+    224 │             })
+
+
+sidecar/src/memory/ingest.ts:137:28 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    135 │     while (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
+    136 │       if (hops++ >= 5) throw new Error("too many redirects");
+  > 137 │       const next = new URL(res.headers.get("location")!, url).toString();
+        │                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    138 │       await assertResolvableOutbound(next);
+    139 │       res = await fetchImpl(next, {
+
+
+sidecar/src/memory/ingest.ts:182:43 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    180 │   if (contentType.includes("html")) {
+    181 │     const titleMatch = body.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  > 182 │     const title = titleMatch ? htmlToText(titleMatch[1]!) : url;
+        │                                           ^^^^^^^^^^^^^^
+    183 │     return { text: htmlToText(body), title };
+    184 │   }
+
+
+sidecar/src/omni/routes.ts:119:9 lint/suspicious/noImplicitAnyLet ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! This variable implicitly has the any type.
+
+    117 │     const { system, messages, provider, model } = parsed.data;
+    118 │
+  > 119 │     let chatModel;
+        │         ^^^^^^^^^
+    120 │     try {
+    121 │       const db = config.databaseUrl ? getDb(config.databaseUrl).db : undefined;
+
+  i Variable declarations without type annotation and initialization implicitly have the any type. Declare a type or initialize the variable with some value.
+
+
+sidecar/src/omni/service.ts:33:10 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    32 │   const [row] = await db.insert(omniLayouts).values({ name, spec }).returning();
+  > 33 │   return row!;
+       │          ^^^^
+    34 │ }
+    35 │
+
+
+sidecar/src/omni/service.ts:29:12 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    27 │       .where(eq(omniLayouts.id, existing.id))
+    28 │       .returning();
+  > 29 │     return row!;
+       │            ^^^^
+    30 │   }
+    31 │
+
+
+sidecar/src/tasks/service.ts:57:10 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    55 │     payload: taskEventPayload(row!),
+    56 │   });
+  > 57 │   return row!;
+       │          ^^^^
+    58 │ }
+    59 │
+
+
+sidecar/src/tasks/service.ts:55:31 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    53 │     type: "task.created",
+    54 │     source: "tasks",
+  > 55 │     payload: taskEventPayload(row!),
+       │                               ^^^^
+    56 │   });
+    57 │   return row!;
+
+
+sidecar/src/telegram/bot.ts:203:54 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    201 │           const name = command?.name;
+    202 │           if (name === "unlock") {
+  > 203 │             await handleUnlock(client, otpGate, msg, command!);
+        │                                                      ^^^^^^^^
+    204 │             return;
+    205 │           }
+
+
+sidecar/src/telegram/bot.ts:221:67 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    219 │           }
+    220 │         }
+  > 221 │         const reply = await handleCommand({ config, db, chatId }, command!);
+        │                                                                   ^^^^^^^^
+    222 │         await client.sendMessage(chatId, reply);
+    223 │         return;
+
+
+sidecar/src/telegram/totp.ts:68:18 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    66 │   const hash = await hmacSha1(base32Decode(secret), counterBytes(counter));
+    67 │   // Dynamic truncation (RFC 4226 §5.3).
+  > 68 │   const offset = hash[hash.length - 1]! & 0x0f;
+       │                  ^^^^^^^^^^^^^^^^^^^^^^
+    69 │   const bin =
+    70 │     ((hash[offset]! & 0x7f) << 24) |
+
+
+sidecar/src/telegram/totp.ts:70:7 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    68 │   const offset = hash[hash.length - 1]! & 0x0f;
+    69 │   const bin =
+  > 70 │     ((hash[offset]! & 0x7f) << 24) |
+       │       ^^^^^^^^^^^^^
+    71 │     (hash[offset + 1]! << 16) |
+    72 │     (hash[offset + 2]! << 8) |
+
+
+sidecar/src/telegram/totp.ts:71:6 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    69 │   const bin =
+    70 │     ((hash[offset]! & 0x7f) << 24) |
+  > 71 │     (hash[offset + 1]! << 16) |
+       │      ^^^^^^^^^^^^^^^^^
+    72 │     (hash[offset + 2]! << 8) |
+    73 │     hash[offset + 3]!;
+
+
+sidecar/src/telegram/totp.ts:72:6 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    70 │     ((hash[offset]! & 0x7f) << 24) |
+    71 │     (hash[offset + 1]! << 16) |
+  > 72 │     (hash[offset + 2]! << 8) |
+       │      ^^^^^^^^^^^^^^^^^
+    73 │     hash[offset + 3]!;
+    74 │   return (bin % 10 ** digits).toString().padStart(digits, "0");
+
+
+sidecar/src/telegram/totp.ts:73:5 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    71 │     (hash[offset + 1]! << 16) |
+    72 │     (hash[offset + 2]! << 8) |
+  > 73 │     hash[offset + 3]!;
+       │     ^^^^^^^^^^^^^^^^^
+    74 │   return (bin % 10 ** digits).toString().padStart(digits, "0");
+    75 │ }
+
+
+sidecar/src/workspaces/service.ts:65:19 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    63 │   const match = trimmed.match(/[:/]([^/:]+)\/([^/]+)$/);
+    64 │   if (!match) return null;
+  > 65 │   return { owner: match[1]!, repo: match[2]! };
+       │                   ^^^^^^^^^
+    66 │ }
+    67 │
+
+
+sidecar/src/workspaces/service.ts:65:36 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    63 │   const match = trimmed.match(/[:/]([^/:]+)\/([^/]+)$/);
+    64 │   if (!match) return null;
+  > 65 │   return { owner: match[1]!, repo: match[2]! };
+       │                                    ^^^^^^^^^
+    66 │ }
+    67 │
+
+
+sidecar/src/workspaces/service.ts:104:10 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    102 │     })
+    103 │     .returning();
+  > 104 │   return row!;
+        │          ^^^^
+    105 │ }
+    106 │
+
+
+sidecar/src/workspaces/service.ts:233:12 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    231 │     }
+    232 │
+  > 233 │     return workspace!;
+        │            ^^^^^^^^^^
+    234 │   });
+    235 │ }
+
+
+sidecar/src/workspaces/service.ts:286:13 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    284 │     repos: wrRows.map((wr) => ({
+    285 │       ...wr,
+  > 286 │       repo: repoById.get(wr.repoId)!,
+        │             ^^^^^^^^^^^^^^^^^^^^^^^^
+    287 │       pr: prByWr.get(wr.id) ?? null,
+    288 │     })),
+
+
+src/components/AlarmOverlay.tsx:34:9 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    32 │       )}
+    33 │       <div className="flex gap-4">
+  > 34 │         <button
+       │         ^^^^^^^
+  > 35 │           onClick={async () => {
+        ...
+  > 39 │           className="rounded-lg bg-indigo-600 px-8 py-3 text-lg font-medium hover:bg-indigo-500"
+  > 40 │         >
+       │         ^
+    41 │           Acknowledge
+    42 │         </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/AlarmOverlay.tsx:43:9 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    41 │           Acknowledge
+    42 │         </button>
+  > 43 │         <button
+       │         ^^^^^^^
+  > 44 │           onClick={async () => {
+        ...
+  > 48 │           className="rounded-lg border border-zinc-600 px-8 py-3 text-lg text-zinc-200 hover:bg-zinc-800"
+  > 49 │         >
+       │         ^
+    50 │           Snooze 5 min
+    51 │         </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/AlarmsPanel.tsx:74:11 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    72 │             className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
+    73 │           />
+  > 74 │           <button
+       │           ^^^^^^^
+  > 75 │             onClick={() => void add()}
+  > 76 │             className="rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium hover:bg-indigo-500"
+  > 77 │           >
+       │           ^
+    78 │             Set
+    79 │           </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/AlarmsPanel.tsx:106:17 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    104 │                   </div>
+    105 │                 </div>
+  > 106 │                 <button
+        │                 ^^^^^^^
+  > 107 │                   onClick={async () => {
+         ...
+  > 111 │                   className="text-sm text-zinc-500 hover:text-red-400"
+  > 112 │                 >
+        │                 ^
+    113 │                   Cancel
+    114 │                 </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/AlarmsPanel.tsx:80:11 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    78 │             Set
+    79 │           </button>
+  > 80 │           <button
+       │           ^^^^^^^
+  > 81 │             onClick={() => void quickTest()}
+  > 82 │             className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
+  > 83 │             title="Fire a test alarm in 5 seconds"
+  > 84 │           >
+       │           ^
+    85 │             Test in 5s
+    86 │           </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/ChatComposer.tsx:69:7 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    67 │         className={`flex-1 resize-none overflow-y-auto rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm outline-none focus:border-zinc-500 disabled:opacity-50 ${textareaClassName}`}
+    68 │       />
+  > 69 │       <button
+       │       ^^^^^^^
+  > 70 │         onClick={onSubmit}
+  > 71 │         disabled={busy}
+  > 72 │         className="h-fit self-end rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500 disabled:opacity-50"
+  > 73 │       >
+       │       ^
+    74 │         {busy ? "…" : submitLabel}
+    75 │       </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/ChatPanel.tsx:138:9 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    136 │     <div className="flex h-full flex-col gap-4 p-6">
+    137 │       <div className="flex flex-wrap items-center gap-2">
+  > 138 │         <button
+        │         ^^^^^^^
+  > 139 │           onClick={() => void newChat()}
+  > 140 │           className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800"
+  > 141 │         >
+        │         ^
+    142 │           New chat
+    143 │         </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/ChatPanel.tsx:197:21 lint/suspicious/noArrayIndexKey ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Avoid using the index of an array as key property in an element.
+
+    195 │         )}
+    196 │         {messages.map((m, i) => (
+  > 197 │           <div key={i} className="text-sm">
+        │                     ^
+    198 │             <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
+    199 │               {messageLabel(m.role, m.metadata)}
+
+  i This is the source of the key value.
+
+    194 │           </p>
+    195 │         )}
+  > 196 │         {messages.map((m, i) => (
+        │                           ^
+    197 │           <div key={i} className="text-sm">
+    198 │             <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
+
+  i The order of the items may change, and this also affects performances and component state.
+
+  i Check the React documentation.
+
+
+src/components/CustomProviderSection.tsx:411:5 lint/a11y/noLabelWithoutControl ━━━━━━━━━━━━━━━━━━━━━
+
+  ! A form label must be associated with an input.
+
+    409 │ }) {
+    410 │   return (
+  > 411 │     <label className={`block text-xs text-zinc-400 ${full ? "sm:col-span-2" : ""}`}>
+        │     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  > 412 │       <span className="mb-1 block uppercase tracking-wide">{label}</span>
+  > 413 │       {children}
+  > 414 │     </label>
+        │     ^^^^^^^^
+    415 │   );
+    416 │ }
+
+  i Consider adding a `for` or `htmlFor` attribute to the label element or moving the input element to inside the label element.
+
+
+src/components/CustomProviderSection.tsx:529:9 lint/a11y/noLabelWithoutControl ━━━━━━━━━━━━━━━━━━━━━
+
+  ! A form label must be associated with an input.
+
+    527 │     <div className="mt-3">
+    528 │       <div className="mb-1 flex items-center justify-between">
+  > 529 │         <label className="text-sm font-medium">{label}</label>
+        │         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    530 │         <span className="flex items-center gap-1.5 text-xs text-zinc-400">
+    531 │           <StatusDot state={present} />
+
+  i Consider adding a `for` or `htmlFor` attribute to the label element or moving the input element to inside the label element.
+
+
+src/components/CustomProviderSection.tsx:205:11 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    203 │         </h2>
+    204 │         {!isEditing && (
+  > 205 │           <button
+        │           ^^^^^^^
+  > 206 │             onClick={beginNew}
+  > 207 │             className="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+  > 208 │           >
+        │           ^
+    209 │             Add provider
+    210 │           </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/CustomProviderSection.tsx:316:9 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    315 │       <div className="mt-4 flex justify-end gap-2">
+  > 316 │         <button
+        │         ^^^^^^^
+  > 317 │           onClick={onCancel}
+  > 318 │           className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
+  > 319 │         >
+        │         ^
+    320 │           Cancel
+    321 │         </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/CustomProviderSection.tsx:322:9 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    320 │           Cancel
+    321 │         </button>
+  > 322 │         <button
+        │         ^^^^^^^
+  > 323 │           onClick={onSave}
+  > 324 │           className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500"
+  > 325 │         >
+        │         ^
+    326 │           Save
+    327 │         </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/CustomProviderSection.tsx:367:13 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    365 │           >
+    366 │             {item}
+  > 367 │             <button
+        │             ^^^^^^^
+  > 368 │               onClick={() => setItems(items.filter((i) => i !== item))}
+  > 369 │               className="text-zinc-500 hover:text-zinc-200"
+  > 370 │               aria-label={`Remove ${item}`}
+  > 371 │             >
+        │             ^
+    372 │               ×
+    373 │             </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/CustomProviderSection.tsx:390:9 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    388 │           className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500"
+    389 │         />
+  > 390 │         <button
+        │         ^^^^^^^
+  > 391 │           onClick={addItem}
+  > 392 │           className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
+  > 393 │         >
+        │         ^
+    394 │           Add
+    395 │         </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/CustomProviderSection.tsx:460:11 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    458 │         </div>
+    459 │         <div className="flex gap-1.5">
+  > 460 │           <button
+        │           ^^^^^^^
+  > 461 │             onClick={onEdit}
+  > 462 │             className="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+  > 463 │           >
+        │           ^
+    464 │             Edit
+    465 │           </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/CustomProviderSection.tsx:466:11 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    464 │             Edit
+    465 │           </button>
+  > 466 │           <button
+        │           ^^^^^^^
+  > 467 │             onClick={onDelete}
+  > 468 │             className="rounded-md border border-red-900/60 px-2.5 py-1 text-xs text-red-300 hover:bg-red-950/50"
+  > 469 │           >
+        │           ^
+    470 │             Delete
+    471 │           </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/CustomProviderSection.tsx:542:9 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    540 │           onChange={setValue}
+    541 │         />
+  > 542 │         <button
+        │         ^^^^^^^
+  > 543 │           onClick={onSave}
+  > 544 │           className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500"
+  > 545 │         >
+        │         ^
+    546 │           Save
+    547 │         </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/CustomProviderSection.tsx:548:9 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    546 │           Save
+    547 │         </button>
+  > 548 │         <button
+        │         ^^^^^^^
+  > 549 │           onClick={onClear}
+  > 550 │           disabled={!present}
+  > 551 │           className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+  > 552 │         >
+        │         ^
+    553 │           Clear
+    554 │         </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/EmbeddingsSection.tsx:374:5 lint/a11y/noLabelWithoutControl ━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! A form label must be associated with an input.
+
+    372 │ }) {
+    373 │   return (
+  > 374 │     <label className={`block text-xs text-zinc-400 ${full ? "sm:col-span-2" : ""}`}>
+        │     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  > 375 │       <span className="mb-1 block uppercase tracking-wide">{label}</span>
+  > 376 │       {children}
+  > 377 │     </label>
+        │     ^^^^^^^^
+    378 │   );
+    379 │ }
+
+  i Consider adding a `for` or `htmlFor` attribute to the label element or moving the input element to inside the label element.
+
+
+src/components/EmbeddingsSection.tsx:528:9 lint/a11y/noLabelWithoutControl ━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! A form label must be associated with an input.
+
+    526 │     <div className="mt-3">
+    527 │       <div className="mb-1 flex items-center justify-between">
+  > 528 │         <label className="text-sm font-medium">{label}</label>
+        │         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    529 │         <span className="flex items-center gap-1.5 text-xs text-zinc-400">
+    530 │           <StatusDot state={present} />
+
+  i Consider adding a `for` or `htmlFor` attribute to the label element or moving the input element to inside the label element.
+
+
+src/components/EmbeddingsSection.tsx:264:11 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    262 │             embedder. Recall mixes incomparable vectors until you re-embed.
+    263 │           </p>
+  > 264 │           <button
+        │           ^^^^^^^
+  > 265 │             onClick={() => void reembed()}
+  > 266 │             disabled={busy !== null}
+  > 267 │             className="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-medium text-amber-50 hover:bg-amber-500 disabled:opacity-40"
+  > 268 │           >
+        │           ^
+    269 │             {busy === "reembed" ? "Re-embedding…" : "Re-embed all"}
+    270 │           </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/EmbeddingsSection.tsx:314:13 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    312 │         <div className="mt-4 flex justify-end gap-2">
+    313 │           {config && (
+  > 314 │             <button
+        │             ^^^^^^^
+  > 315 │               onClick={() => void disableProvider()}
+  > 316 │               disabled={busy !== null}
+  > 317 │               className="rounded-md border border-red-900/60 px-3 py-1.5 text-sm text-red-300 hover:bg-red-950/50 disabled:opacity-40"
+  > 318 │             >
+        │             ^
+    319 │               Disable
+    320 │             </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/EmbeddingsSection.tsx:322:11 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    320 │             </button>
+    321 │           )}
+  > 322 │           <button
+        │           ^^^^^^^
+  > 323 │             onClick={() => void saveConfig()}
+  > 324 │             disabled={busy !== null}
+  > 325 │             className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500 disabled:opacity-40"
+  > 326 │           >
+        │           ^
+    327 │             {busy === "config" ? "Saving…" : "Save"}
+    328 │           </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/EmbeddingsSection.tsx:457:17 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    455 │                   <span className="ml-2 text-zinc-500">{status}</span>
+    456 │                 </span>
+  > 457 │                 <button
+        │                 ^^^^^^^
+  > 458 │                   onClick={() => removeHeader(name)}
+  > 459 │                   className="text-zinc-500 hover:text-zinc-200"
+  > 460 │                   aria-label={`Remove ${name}`}
+  > 461 │                 >
+        │                 ^
+    462 │                   ×
+    463 │                 </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/EmbeddingsSection.tsx:495:9 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    493 │           className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500"
+    494 │         />
+  > 495 │         <button
+        │         ^^^^^^^
+  > 496 │           onClick={addHeader}
+  > 497 │           className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
+  > 498 │         >
+        │         ^
+    499 │           Add
+    500 │         </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/EmbeddingsSection.tsx:543:9 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    541 │           className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-zinc-500"
+    542 │         />
+  > 543 │         <button
+        │         ^^^^^^^
+  > 544 │           onClick={onSave}
+  > 545 │           disabled={disabled}
+  > 546 │           className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500 disabled:opacity-40"
+  > 547 │         >
+        │         ^
+    548 │           Save
+    549 │         </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/EmbeddingsSection.tsx:550:9 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    548 │           Save
+    549 │         </button>
+  > 550 │         <button
+        │         ^^^^^^^
+  > 551 │           onClick={onClear}
+  > 552 │           disabled={!present || disabled}
+  > 553 │           className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+  > 554 │         >
+        │         ^
+    555 │           Clear
+    556 │         </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/KeychainSection.tsx:96:15 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+     94 │                 onChange={(v) => setInputs((prev) => ({ ...prev, [meta.key]: v }))}
+     95 │               />
+   > 96 │               <button
+        │               ^^^^^^^
+   > 97 │                 onClick={() => void onSave(meta.key)}
+   > 98 │                 className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500"
+   > 99 │               >
+        │               ^
+    100 │                 Save
+    101 │               </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/KeychainSection.tsx:102:15 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    100 │                 Save
+    101 │               </button>
+  > 102 │               <button
+        │               ^^^^^^^
+  > 103 │                 onClick={() => void onClear(meta.key)}
+  > 104 │                 disabled={!isPresent(meta.key)}
+  > 105 │                 className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+  > 106 │               >
+        │               ^
+    107 │                 Clear
+    108 │               </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/KeychainSection.tsx:83:15 lint/a11y/noLabelWithoutControl ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! A form label must be associated with an input.
+
+    81 │           <div key={meta.key}>
+    82 │             <div className="mb-1 flex items-center justify-between">
+  > 83 │               <label className="text-sm font-medium">{meta.label}</label>
+       │               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    84 │               <span className="flex items-center gap-1.5 text-xs text-zinc-400">
+    85 │                 <StatusDot state={isPresent(meta.key)} />
+
+  i Consider adding a `for` or `htmlFor` attribute to the label element or moving the input element to inside the label element.
+
+
+src/components/MemoryPanel.tsx:45:7 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    43 │         </div>
+    44 │       </div>
+  > 45 │       <button
+       │       ^^^^^^^
+  > 46 │         onClick={() => onDelete(m.id)}
+  > 47 │         className="text-zinc-600 hover:text-red-400"
+  > 48 │         title="Delete"
+  > 49 │       >
+       │       ^
+    50 │         ✕
+    51 │       </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/MemoryPanel.tsx:142:11 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    140 │         <h2 className="mb-2 text-sm font-medium uppercase tracking-wide text-zinc-500">Recap</h2>
+    141 │         <div className="flex gap-2">
+  > 142 │           <button
+        │           ^^^^^^^
+  > 143 │             onClick={() => void runRecap("day")}
+  > 144 │             disabled={recapBusy}
+  > 145 │             className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800 disabled:opacity-50"
+  > 146 │           >
+        │           ^
+    147 │             Today
+    148 │           </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/MemoryPanel.tsx:149:11 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    147 │             Today
+    148 │           </button>
+  > 149 │           <button
+        │           ^^^^^^^
+  > 150 │             onClick={() => void runRecap("week")}
+  > 151 │             disabled={recapBusy}
+  > 152 │             className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800 disabled:opacity-50"
+  > 153 │           >
+        │           ^
+    154 │             This week
+    155 │           </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/MemoryPanel.tsx:180:11 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    178 │             className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm"
+    179 │           />
+  > 180 │           <button
+        │           ^^^^^^^
+  > 181 │             onClick={() => void addNote()}
+  > 182 │             className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800"
+  > 183 │           >
+        │           ^
+    184 │             Add note
+    185 │           </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/MemoryPanel.tsx:207:11 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    205 │             className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm"
+    206 │           />
+  > 207 │           <button
+        │           ^^^^^^^
+  > 208 │             onClick={() => void ingest()}
+  > 209 │             className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800"
+  > 210 │           >
+        │           ^
+    211 │             Ingest
+    212 │           </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/MemoryPanel.tsx:229:11 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    227 │             className="ml-auto w-48 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm"
+    228 │           />
+  > 229 │           <button
+        │           ^^^^^^^
+  > 230 │             onClick={() => void runSearch()}
+  > 231 │             className="rounded-md border border-zinc-700 px-2 py-1 text-sm hover:bg-zinc-800"
+  > 232 │           >
+        │           ^
+    233 │             Search
+    234 │           </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/MemoryPanel.tsx:236:13 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    234 │           </button>
+    235 │           {searching && (
+  > 236 │             <button
+        │             ^^^^^^^
+  > 237 │               onClick={() => {
+         ...
+  > 241 │               className="text-sm text-zinc-500 hover:text-zinc-300"
+  > 242 │             >
+        │             ^
+    243 │               Clear
+    244 │             </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/PrsPanel.tsx:520:21 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    518 │                       {f.name}
+    519 │                     </button>
+  > 520 │                     <button
+        │                     ^^^^^^^
+  > 521 │                       onClick={async () => {
+         ...
+  > 525 │                       className="text-zinc-600 hover:text-red-400"
+  > 526 │                     >
+        │                     ^
+    527 │                       ✕
+    528 │                     </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/PrsPanel.tsx:61:35 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    59 │     prs: items.sort((a, b) => createdMs(b) - createdMs(a)),
+    60 │   }));
+  > 61 │   groups.sort((a, b) => createdMs(b.prs[0]!) - createdMs(a.prs[0]!));
+       │                                   ^^^^^^^^^
+    62 │   return groups;
+    63 │ }
+
+
+src/components/PrsPanel.tsx:61:58 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    59 │     prs: items.sort((a, b) => createdMs(b) - createdMs(a)),
+    60 │   }));
+  > 61 │   groups.sort((a, b) => createdMs(b.prs[0]!) - createdMs(a.prs[0]!));
+       │                                                          ^^^^^^^^^
+    62 │   return groups;
+    63 │ }
+
+
+src/components/PrsPanel.tsx:109:5 lint/a11y/useKeyWithClickEvents ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Enforce to have the onClick mouse event with the onKeyUp, the onKeyDown, or the onKeyPress keyboard event.
+
+    108 │   return (
+  > 109 │     <li
+        │     ^^^
+  > 110 │       onClick={() => onReview(pr)}
+  > 111 │       className="flex cursor-pointer items-center gap-3 px-4 py-3 hover:bg-zinc-800/50"
+  > 112 │     >
+        │     ^
+    113 │       <button
+    114 │         onClick={(e) => {
+
+  i Actions triggered using mouse events should have corresponding keyboard events to account for keyboard-only navigation.
+
+
+src/components/PrsPanel.tsx:113:7 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    111 │       className="flex cursor-pointer items-center gap-3 px-4 py-3 hover:bg-zinc-800/50"
+    112 │     >
+  > 113 │       <button
+        │       ^^^^^^^
+  > 114 │         onClick={(e) => {
+         ...
+  > 119 │         title={starred ? "Unstar" : "Star"}
+  > 120 │       >
+        │       ^
+    121 │         ★
+    122 │       </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/PrsPanel.tsx:134:7 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    132 │         {formatRelativeTime(pr.updatedAt)}
+    133 │       </span>
+  > 134 │       <button
+        │       ^^^^^^^
+  > 135 │         onClick={(e) => {
+         ...
+  > 140 │         title="Open externally"
+  > 141 │       >
+        │       ^
+    142 │         ↗
+    143 │       </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/PrsPanel.tsx:394:11 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    392 │       <div className="inline-flex rounded-lg border border-zinc-700 p-0.5">
+    393 │         {visibleProviders.map((p) => (
+  > 394 │           <button
+        │           ^^^^^^^
+  > 395 │             key={p.key}
+         ...
+  > 399 │             }`}
+  > 400 │           >
+        │           ^
+    401 │             {p.label}
+    402 │           </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/PrsPanel.tsx:434:15 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    432 │               tab.key === "mine" ? mine.length : tab.key === "review" ? review.length : null;
+    433 │             return (
+  > 434 │               <button
+        │               ^^^^^^^
+  > 435 │                 key={tab.key}
+         ...
+  > 441 │                 }`}
+  > 442 │               >
+        │               ^
+    443 │                 {tab.label}
+    444 │                 {count !== null && <span className="ml-1.5 text-xs text-zinc-600">{count}</span>}
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/PrsPanel.tsx:462:21 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    460 │                     className="flex items-center gap-1 rounded-md border border-zinc-700 px-2 py-1 text-xs"
+    461 │                   >
+  > 462 │                     <button
+        │                     ^^^^^^^
+  > 463 │                       onClick={() => void runGhFilter(f.query)}
+  > 464 │                       className="hover:text-zinc-100"
+  > 465 │                     >
+        │                     ^
+    466 │                       {f.name}
+    467 │                     </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/PrsPanel.tsx:468:21 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    466 │                       {f.name}
+    467 │                     </button>
+  > 468 │                     <button
+        │                     ^^^^^^^
+  > 469 │                       onClick={async () => {
+         ...
+  > 473 │                       className="text-zinc-600 hover:text-red-400"
+  > 474 │                     >
+        │                     ^
+    475 │                       ✕
+    476 │                     </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/PrsPanel.tsx:493:17 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    491 │                   className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
+    492 │                 />
+  > 493 │                 <button
+        │                 ^^^^^^^
+  > 494 │                   onClick={() => void addGhFilter()}
+  > 495 │                   className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800"
+  > 496 │                 >
+        │                 ^
+    497 │                   Add
+    498 │                 </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/PrsPanel.tsx:514:21 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    512 │                     className="flex items-center gap-1 rounded-md border border-zinc-700 px-2 py-1 text-xs"
+    513 │                   >
+  > 514 │                     <button
+        │                     ^^^^^^^
+  > 515 │                       onClick={() => void runAzFilter(f.scope, f.project)}
+  > 516 │                       className="hover:text-zinc-100"
+  > 517 │                     >
+        │                     ^
+    518 │                       {f.name}
+    519 │                     </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/PrsPanel.tsx:555:17 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    553 │                   className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
+    554 │                 />
+  > 555 │                 <button
+        │                 ^^^^^^^
+  > 556 │                   onClick={() => void addAzFilter()}
+  > 557 │                   className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800"
+  > 558 │                 >
+        │                 ^
+    559 │                   Add
+    560 │                 </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/ReposSection.tsx:119:11 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    117 │         <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-500">Repositories</h2>
+    118 │         {!isEditing && (
+  > 119 │           <button
+        │           ^^^^^^^
+  > 120 │             onClick={beginNew}
+  > 121 │             className="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+  > 122 │           >
+        │           ^
+    123 │             Add repo
+    124 │           </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/ReposSection.tsx:210:9 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    209 │       <div className="mt-4 flex justify-end gap-2">
+  > 210 │         <button
+        │         ^^^^^^^
+  > 211 │           onClick={onCancel}
+  > 212 │           className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
+  > 213 │         >
+        │         ^
+    214 │           Cancel
+    215 │         </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/ReposSection.tsx:216:9 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    214 │           Cancel
+    215 │         </button>
+  > 216 │         <button
+        │         ^^^^^^^
+  > 217 │           onClick={onSave}
+  > 218 │           className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500"
+  > 219 │         >
+        │         ^
+    220 │           Save
+    221 │         </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/ReposSection.tsx:292:11 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    290 │         </div>
+    291 │         <div className="flex gap-1.5">
+  > 292 │           <button
+        │           ^^^^^^^
+  > 293 │             onClick={onEdit}
+  > 294 │             className="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+  > 295 │           >
+        │           ^
+    296 │             Edit
+    297 │           </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/ReposSection.tsx:298:11 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    296 │             Edit
+    297 │           </button>
+  > 298 │           <button
+        │           ^^^^^^^
+  > 299 │             onClick={onDelete}
+  > 300 │             className="rounded-md border border-red-900/60 px-2.5 py-1 text-xs text-red-300 hover:bg-red-950/50"
+  > 301 │           >
+        │           ^
+    302 │             Delete
+    303 │           </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/ReposSection.tsx:265:5 lint/a11y/noLabelWithoutControl ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! A form label must be associated with an input.
+
+    263 │ }) {
+    264 │   return (
+  > 265 │     <label className={`block text-xs text-zinc-400 ${full ? "sm:col-span-2" : ""}`}>
+        │     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  > 266 │       <span className="mb-1 block uppercase tracking-wide">{label}</span>
+  > 267 │       {children}
+  > 268 │     </label>
+        │     ^^^^^^^^
+    269 │   );
+    270 │ }
+
+  i Consider adding a `for` or `htmlFor` attribute to the label element or moving the input element to inside the label element.
+
+
+src/components/SessionsPanel.tsx:60:5 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    59 │   const tab = (v: View, label: string) => (
+  > 60 │     <button
+       │     ^^^^^^^
+  > 61 │       onClick={() => setView(v)}
+  > 62 │       className={`rounded-md px-3 py-1 text-sm ${
+  > 63 │         view === v ? "bg-zinc-800 text-zinc-100" : "text-zinc-400 hover:text-zinc-200"
+  > 64 │       }`}
+  > 65 │     >
+       │     ^
+    66 │       {label}
+    67 │     </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/SessionsPanel.tsx:93:15 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    91 │           {transcript ? (
+    92 │             <div className="space-y-3">
+  > 93 │               <button
+       │               ^^^^^^^
+  > 94 │                 onClick={() => setTranscript(null)}
+  > 95 │                 className="text-sm text-zinc-400 hover:text-zinc-200"
+  > 96 │               >
+       │               ^
+    97 │                 ← back to sessions
+    98 │               </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/SessionsPanel.tsx:101:29 lint/suspicious/noArrayIndexKey ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Avoid using the index of an array as key property in an element.
+
+     99 │               <div className="max-h-[55vh] space-y-3 overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
+    100 │                 {transcript.map((e, i) => (
+  > 101 │                   <div key={i} className="text-sm">
+        │                             ^
+    102 │                     <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
+    103 │                       {e.role}
+
+  i This is the source of the key value.
+
+     98 │               </button>
+     99 │               <div className="max-h-[55vh] space-y-3 overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
+  > 100 │                 {transcript.map((e, i) => (
+        │                                     ^
+    101 │                   <div key={i} className="text-sm">
+    102 │                     <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
+
+  i The order of the items may change, and this also affects performances and component state.
+
+  i Check the React documentation.
+
+
+src/components/SessionsPanel.tsx:114:19 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    112 │               {sessions.map((s) => (
+    113 │                 <li key={s.id ?? Math.random()}>
+  > 114 │                   <button
+        │                   ^^^^^^^
+  > 115 │                     onClick={() => s.id && void openTranscript(s.id)}
+  > 116 │                     className="w-full px-4 py-3 text-left hover:bg-zinc-800/50"
+  > 117 │                   >
+        │                   ^
+    118 │                     <div className="text-sm text-zinc-100">
+    119 │                       {s.title ?? s.firstPrompt?.slice(0, 70) ?? s.id}
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/SessionsPanel.tsx:138:15 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    136 │           {planContent ? (
+    137 │             <div className="space-y-3">
+  > 138 │               <button
+        │               ^^^^^^^
+  > 139 │                 onClick={() => setPlanContent(null)}
+  > 140 │                 className="text-sm text-zinc-400 hover:text-zinc-200"
+  > 141 │               >
+        │               ^
+    142 │                 ← back to plans
+    143 │               </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/SessionsPanel.tsx:152:19 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    150 │               {plans.map((p) => (
+    151 │                 <li key={p.name}>
+  > 152 │                   <button
+        │                   ^^^^^^^
+  > 153 │                     onClick={() => void openPlan(p.name)}
+  > 154 │                     className="w-full px-4 py-3 text-left hover:bg-zinc-800/50"
+  > 155 │                   >
+        │                   ^
+    156 │                     <div className="text-sm text-zinc-100">{p.title ?? p.name}</div>
+    157 │                     <div className="mt-0.5 text-xs text-zinc-500">{p.updatedAt.slice(0, 10)}</div>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/SettingsPanel.tsx:43:11 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    41 │       <nav className="flex gap-1 border-b border-zinc-800">
+    42 │         {TABS.map((tab) => (
+  > 43 │           <button
+       │           ^^^^^^^
+  > 44 │             key={tab.key}
+        ...
+  > 50 │             }`}
+  > 51 │           >
+       │           ^
+    52 │             {tab.label}
+    53 │           </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/TasksPanel.tsx:189:11 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    187 │             <option value="weekly">This week</option>
+    188 │           </select>
+  > 189 │           <button
+        │           ^^^^^^^
+  > 190 │             onClick={() => void onAdd()}
+  > 191 │             className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-indigo-500"
+  > 192 │           >
+        │           ^
+    193 │             Add
+    194 │           </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/TelegramSection.tsx:248:17 lint/a11y/noLabelWithoutControl ━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! A form label must be associated with an input.
+
+    246 │               </div>
+    247 │               <div className="flex flex-wrap items-center gap-2 pt-1">
+  > 248 │                 <label className="text-xs text-zinc-400">Re-auth window (min)</label>
+        │                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    249 │                 <input
+    250 │                   type="number"
+
+  i Consider adding a `for` or `htmlFor` attribute to the label element or moving the input element to inside the label element.
+
+
+src/components/TelegramSection.tsx:145:13 lint/a11y/noLabelWithoutControl ━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! A form label must be associated with an input.
+
+    143 │         <div>
+    144 │           <div className="mb-1 flex items-center justify-between">
+  > 145 │             <label className="text-sm font-medium">Bot token</label>
+        │             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    146 │             <span className="flex items-center gap-1.5 text-xs text-zinc-400">
+    147 │               <StatusDot state={isPresent("telegram_bot_token")} />
+
+  i Consider adding a `for` or `htmlFor` attribute to the label element or moving the input element to inside the label element.
+
+
+src/components/TelegramSection.tsx:179:13 lint/a11y/noLabelWithoutControl ━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! A form label must be associated with an input.
+
+    177 │         <div>
+    178 │           <div className="mb-1 flex items-center justify-between">
+  > 179 │             <label className="text-sm font-medium">Allowed chat ids</label>
+        │             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    180 │             <span className="flex items-center gap-1.5 text-xs text-zinc-400">
+    181 │               <StatusDot state={isPresent("telegram_allowed_chat_ids")} />
+
+  i Consider adding a `for` or `htmlFor` attribute to the label element or moving the input element to inside the label element.
+
+
+src/components/TelegramSection.tsx:216:13 lint/a11y/noLabelWithoutControl ━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! A form label must be associated with an input.
+
+    214 │         <div>
+    215 │           <div className="mb-1 flex items-center justify-between">
+  > 216 │             <label className="text-sm font-medium">Two-factor unlock (OTP)</label>
+        │             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    217 │             <span className="flex items-center gap-1.5 text-xs text-zinc-400">
+    218 │               <StatusDot state={isPresent("telegram_otp_secret")} />
+
+  i Consider adding a `for` or `htmlFor` attribute to the label element or moving the input element to inside the label element.
+
+
+src/components/TelegramSection.tsx:160:13 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    158 │               onChange={setToken}
+    159 │             />
+  > 160 │             <button
+        │             ^^^^^^^
+  > 161 │               onClick={() => void save("telegram_bot_token", token, () => setToken(""))}
+  > 162 │               disabled={busy || !token.trim()}
+  > 163 │               className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500 disabled:opacity-40"
+  > 164 │             >
+        │             ^
+    165 │               Save
+    166 │             </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/TelegramSection.tsx:167:13 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    165 │               Save
+    166 │             </button>
+  > 167 │             <button
+        │             ^^^^^^^
+  > 168 │               onClick={() => void clear("telegram_bot_token")}
+  > 169 │               disabled={busy || !isPresent("telegram_bot_token")}
+  > 170 │               className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+  > 171 │             >
+        │             ^
+    172 │               Clear
+    173 │             </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/TelegramSection.tsx:197:13 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    195 │               className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-zinc-500"
+    196 │             />
+  > 197 │             <button
+        │             ^^^^^^^
+  > 198 │               onClick={() => void save("telegram_allowed_chat_ids", chatIds, () => setChatIds(""))}
+  > 199 │               disabled={busy || !chatIds.trim()}
+  > 200 │               className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500 disabled:opacity-40"
+  > 201 │             >
+        │             ^
+    202 │               Save
+    203 │             </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/TelegramSection.tsx:204:13 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    202 │               Save
+    203 │             </button>
+  > 204 │             <button
+        │             ^^^^^^^
+  > 205 │               onClick={() => void clear("telegram_allowed_chat_ids")}
+  > 206 │               disabled={busy || !isPresent("telegram_allowed_chat_ids")}
+  > 207 │               className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+  > 208 │             >
+        │             ^
+    209 │               Clear
+    210 │             </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/TelegramSection.tsx:256:17 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    254 │                   className="w-24 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-zinc-500"
+    255 │                 />
+  > 256 │                 <button
+        │                 ^^^^^^^
+  > 257 │                   onClick={() => void enableOtp()}
+  > 258 │                   disabled={busy}
+  > 259 │                   className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500 disabled:opacity-40"
+  > 260 │                 >
+        │                 ^
+    261 │                   Save & enable
+    262 │                 </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/TelegramSection.tsx:263:17 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    261 │                   Save & enable
+    262 │                 </button>
+  > 263 │                 <button
+        │                 ^^^^^^^
+  > 264 │                   onClick={() => setPendingOtpSecret(null)}
+  > 265 │                   disabled={busy}
+  > 266 │                   className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+  > 267 │                 >
+        │                 ^
+    268 │                   Cancel
+    269 │                 </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/TelegramSection.tsx:274:15 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    272 │           ) : isPresent("telegram_otp_secret") ? (
+    273 │             <div className="flex gap-2">
+  > 274 │               <button
+        │               ^^^^^^^
+  > 275 │                 onClick={() => setPendingOtpSecret(generateOtpSecret())}
+  > 276 │                 disabled={busy}
+  > 277 │                 className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+  > 278 │               >
+        │               ^
+    279 │                 Regenerate
+    280 │               </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/TelegramSection.tsx:281:15 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    279 │                 Regenerate
+    280 │               </button>
+  > 281 │               <button
+        │               ^^^^^^^
+  > 282 │                 onClick={() => void disableOtp()}
+  > 283 │                 disabled={busy}
+  > 284 │                 className="rounded-md border border-red-900/60 px-3 py-1.5 text-sm text-red-300 hover:bg-red-950/40 disabled:opacity-40"
+  > 285 │               >
+        │               ^
+    286 │                 Disable
+    287 │               </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/TelegramSection.tsx:290:13 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    288 │             </div>
+    289 │           ) : (
+  > 290 │             <button
+        │             ^^^^^^^
+  > 291 │               onClick={() => setPendingOtpSecret(generateOtpSecret())}
+  > 292 │               disabled={busy}
+  > 293 │               className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500 disabled:opacity-40"
+  > 294 │             >
+        │             ^
+    295 │               Enable OTP
+    296 │             </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/WorkspaceSidePanel.tsx:154:15 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    152 │   if (prev === null || prev.length !== next.length) return false;
+    153 │   for (let i = 0; i < prev.length; i++) {
+  > 154 │     const a = prev[i]!;
+        │               ^^^^^^^^
+    155 │     const b = next[i]!;
+    156 │     if (
+
+
+src/components/WorkspaceSidePanel.tsx:155:15 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    153 │   for (let i = 0; i < prev.length; i++) {
+    154 │     const a = prev[i]!;
+  > 155 │     const b = next[i]!;
+        │               ^^^^^^^^
+    156 │     if (
+    157 │       a.path !== b.path ||
+
+
+src/components/WorkspaceSidePanel.tsx:56:11 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    54 │       <div className="flex shrink-0 gap-1 border-b border-zinc-800 px-2 pt-1">
+    55 │         {VIEWS.map((v) => (
+  > 56 │           <button
+       │           ^^^^^^^
+  > 57 │             key={v.key}
+        ...
+  > 63 │             }`}
+  > 64 │           >
+       │           ^
+    65 │             {v.label}
+    66 │           </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/WorkspacesPanel.tsx:241:13 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    239 │           ))}
+    240 │           {archivedCount > 0 && (
+  > 241 │             <button
+        │             ^^^^^^^
+  > 242 │               onClick={() => setShowArchived((v) => !v)}
+  > 243 │               className="mt-1 w-full rounded-md px-2 py-1 text-left text-xs text-zinc-500 hover:bg-zinc-800/40 hover:text-zinc-300"
+  > 244 │             >
+        │             ^
+    245 │               {showArchived ? "Hide archived" : `Show archived (${archivedCount})`}
+    246 │             </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/omni/OmniView.tsx:368:15 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    366 │           <div className="flex items-center justify-between gap-2 border-b border-zinc-800 px-4 py-2">
+    367 │             <div className="flex items-center gap-2">
+  > 368 │               <button
+        │               ^^^^^^^
+  > 369 │                 onClick={() => setBuilderCollapsed(true)}
+  > 370 │                 title="Collapse builder"
+  > 371 │                 className="text-zinc-500 hover:text-zinc-300"
+  > 372 │               >
+        │               ^
+    373 │                 ›
+    374 │               </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/omni/OmniView.tsx:335:19 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    333 │               <div className="flex max-w-md flex-col gap-2">
+    334 │                 {EXAMPLES.map((ex) => (
+  > 335 │                   <button
+        │                   ^^^^^^^
+  > 336 │                     key={ex}
+  > 337 │                     onClick={() => void send(ex)}
+  > 338 │                     disabled={busy || !provider || !model}
+  > 339 │                     className="border border-zinc-800 px-3 py-2 text-left text-sm text-zinc-300 hover:border-zinc-600 hover:bg-zinc-900 disabled:opacity-40"
+  > 340 │                   >
+        │                   ^
+    341 │                     {ex}
+    342 │                   </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/omni/OmniView.tsx:353:11 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    351 │       {builderCollapsed ? (
+    352 │         <aside className="flex w-9 shrink-0 flex-col items-center gap-3 border-l border-zinc-800 py-2">
+  > 353 │           <button
+        │           ^^^^^^^
+  > 354 │             onClick={() => setBuilderCollapsed(false)}
+  > 355 │             title="Expand builder"
+  > 356 │             className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+  > 357 │           >
+        │           ^
+    358 │             ‹
+    359 │           </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/omni/OmniView.tsx:379:13 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    377 │               </span>
+    378 │             </div>
+  > 379 │             <button onClick={reset} className="text-xs text-zinc-500 hover:text-zinc-300">
+        │             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    380 │               Clear
+    381 │             </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/omni/OmniView.tsx:429:15 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    427 │                 ))}
+    428 │               </select>
+  > 429 │               <button
+        │               ^^^^^^^
+  > 430 │                 onClick={() => void onDelete()}
+  > 431 │                 disabled={!loadedId}
+  > 432 │                 title="Delete the selected layout"
+  > 433 │                 className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-red-400 disabled:opacity-40"
+  > 434 │               >
+        │               ^
+    435 │                 Delete
+    436 │               </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/omni/OmniView.tsx:449:15 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    447 │                 className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs outline-none focus:border-zinc-500 disabled:opacity-40"
+    448 │               />
+  > 449 │               <button
+        │               ^^^^^^^
+  > 450 │                 onClick={() => void onSave()}
+  > 451 │                 disabled={!hasContent(spec) || !layoutName.trim()}
+  > 452 │                 className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium hover:bg-indigo-500 disabled:opacity-40"
+  > 453 │               >
+        │               ^
+    454 │                 Save
+    455 │               </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/omni/OmniView.tsx:466:25 lint/suspicious/noArrayIndexKey ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Avoid using the index of an array as key property in an element.
+
+    464 │             )}
+    465 │             {messages.map((m, i) => (
+  > 466 │               <div key={i} className="text-sm">
+        │                         ^
+    467 │                 <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">{m.role}</div>
+    468 │                 <div className="whitespace-pre-wrap text-zinc-100">{m.content}</div>
+
+  i This is the source of the key value.
+
+    463 │               </p>
+    464 │             )}
+  > 465 │             {messages.map((m, i) => (
+        │                               ^
+    466 │               <div key={i} className="text-sm">
+    467 │                 <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">{m.role}</div>
+
+  i The order of the items may change, and this also affects performances and component state.
+
+  i Check the React documentation.
+
+
+src/components/omnichat/OmniChat.tsx:150:23 lint/suspicious/noArrayIndexKey ━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Avoid using the index of an array as key property in an element.
+
+    148 │           )}
+    149 │           {messages.map((m, i) => (
+  > 150 │             <div key={i} className="text-sm">
+        │                       ^
+    151 │               <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
+    152 │                 {messageLabel(m.role, m.metadata)}
+
+  i This is the source of the key value.
+
+    147 │             </p>
+    148 │           )}
+  > 149 │           {messages.map((m, i) => (
+        │                             ^
+    150 │             <div key={i} className="text-sm">
+    151 │               <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
+
+  i The order of the items may change, and this also affects performances and component state.
+
+  i Check the React documentation.
+
+
+src/components/pr/PrChecks.tsx:33:35 lint/suspicious/noArrayIndexKey ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Avoid using the index of an array as key property in an element.
+
+    31 │     <ul className="space-y-1">
+    32 │       {checks.map((check, i) => (
+  > 33 │         <li key={`${check.name}-${i}`} className="flex items-center gap-2 text-sm">
+       │                                   ^
+    34 │           <span className={checkColor(check)}>{checkGlyph(check)}</span>
+    35 │           {check.url ? (
+
+  i This is the source of the key value.
+
+    30 │   return (
+    31 │     <ul className="space-y-1">
+  > 32 │       {checks.map((check, i) => (
+       │                           ^
+    33 │         <li key={`${check.name}-${i}`} className="flex items-center gap-2 text-sm">
+    34 │           <span className={checkColor(check)}>{checkGlyph(check)}</span>
+
+  i The order of the items may change, and this also affects performances and component state.
+
+  i Check the React documentation.
+
+
+src/components/pr/PrChecks.tsx:36:13 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    34 │           <span className={checkColor(check)}>{checkGlyph(check)}</span>
+    35 │           {check.url ? (
+  > 36 │             <button
+       │             ^^^^^^^
+  > 37 │               onClick={() => openExternal(check.url)}
+  > 38 │               className="text-left text-zinc-300 hover:underline"
+  > 39 │             >
+       │             ^
+    40 │               {check.name}
+    41 │             </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/pr/PrDescription.tsx:20:21 lint/suspicious/noArrayIndexKey ━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Avoid using the index of an array as key property in an element.
+
+    18 │       <div className="space-y-2">
+    19 │         {thread.comments.map((cm, j) => (
+  > 20 │           <div key={j}>
+       │                     ^
+    21 │             <div className="text-xs font-medium text-zinc-400">{cm.author}</div>
+    22 │             <Markdown>{cm.body}</Markdown>
+
+  i This is the source of the key value.
+
+    17 │       </div>
+    18 │       <div className="space-y-2">
+  > 19 │         {thread.comments.map((cm, j) => (
+       │                                   ^
+    20 │           <div key={j}>
+    21 │             <div className="text-xs font-medium text-zinc-400">{cm.author}</div>
+
+  i The order of the items may change, and this also affects performances and component state.
+
+  i Check the React documentation.
+
+
+src/components/pr/PrDescription.tsx:37:26 lint/suspicious/noArrayIndexKey ━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Avoid using the index of an array as key property in an element.
+
+    35 │     <div className="space-y-3">
+    36 │       {threads.map((t, i) => (
+  > 37 │         <ThreadCard key={i} thread={t} />
+       │                          ^
+    38 │       ))}
+    39 │     </div>
+
+  i This is the source of the key value.
+
+    34 │   return (
+    35 │     <div className="space-y-3">
+  > 36 │       {threads.map((t, i) => (
+       │                        ^
+    37 │         <ThreadCard key={i} thread={t} />
+    38 │       ))}
+
+  i The order of the items may change, and this also affects performances and component state.
+
+  i Check the React documentation.
+
+
+src/components/pr/PrFileDiffs.tsx:135:21 lint/suspicious/noArrayIndexKey ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Avoid using the index of an array as key property in an element.
+
+    133 │           row.rightLine != null ? pending.filter((p) => p.line === row.rightLine) : [];
+    134 │         return (
+  > 135 │           <div key={i}>
+        │                     ^
+    136 │             <div className={`group flex ${rowClass(row.kind)}`}>
+    137 │               <span className="flex w-12 shrink-0 select-none items-center justify-end gap-1 pr-2 text-zinc-600">
+
+  i This is the source of the key value.
+
+    127 │   return (
+    128 │     <div className="overflow-x-auto bg-zinc-950 font-mono text-xs leading-relaxed">
+  > 129 │       {rows.map((row, i) => {
+        │                       ^
+    130 │         const commentable = row.rightLine != null;
+    131 │         const lineThreads = row.rightLine != null ? byLine.get(row.rightLine) : undefined;
+
+  i The order of the items may change, and this also affects performances and component state.
+
+  i Check the React documentation.
+
+
+src/components/pr/PrFileDiffs.tsx:155:41 lint/suspicious/noArrayIndexKey ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Avoid using the index of an array as key property in an element.
+
+    153 │               <div className="space-y-2 px-3 py-2 font-sans">
+    154 │                 {lineThreads?.map((t, j) => (
+  > 155 │                   <ThreadCard key={`t-${j}`} thread={t} />
+        │                                         ^
+    156 │                 ))}
+    157 │                 {linePending.map((p, j) => (
+
+  i This is the source of the key value.
+
+    152 │             {(lineThreads || linePending.length > 0 || activeLine === row.rightLine) && (
+    153 │               <div className="space-y-2 px-3 py-2 font-sans">
+  > 154 │                 {lineThreads?.map((t, j) => (
+        │                                       ^
+    155 │                   <ThreadCard key={`t-${j}`} thread={t} />
+    156 │                 ))}
+
+  i The order of the items may change, and this also affects performances and component state.
+
+  i Check the React documentation.
+
+
+src/components/pr/PrFileDiffs.tsx:159:31 lint/suspicious/noArrayIndexKey ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Avoid using the index of an array as key property in an element.
+
+    157 │                 {linePending.map((p, j) => (
+    158 │                   <div
+  > 159 │                     key={`p-${j}`}
+        │                               ^
+    160 │                     className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-3 text-sm text-zinc-300"
+    161 │                   >
+
+  i This is the source of the key value.
+
+    155 │                   <ThreadCard key={`t-${j}`} thread={t} />
+    156 │                 ))}
+  > 157 │                 {linePending.map((p, j) => (
+        │                                      ^
+    158 │                   <div
+    159 │                     key={`p-${j}`}
+
+  i The order of the items may change, and this also affects performances and component state.
+
+  i Check the React documentation.
+
+
+src/components/pr/PrFloatingHeader.tsx:228:9 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    226 │     <div className="shrink-0 border-b border-zinc-800 bg-[#0a0a0a] px-6 py-3">
+    227 │       <div className="flex items-center gap-3">
+  > 228 │         <button
+        │         ^^^^^^^
+  > 229 │           onClick={onBack}
+  > 230 │           className="rounded-md border border-zinc-700 px-2 py-1 text-sm hover:bg-zinc-800"
+  > 231 │         >
+        │         ^
+    232 │           ← Back
+    233 │         </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/pr/PrFloatingHeader.tsx:268:17 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    266 │             return (
+    267 │               <div key={cfg.key} className="relative">
+  > 268 │                 <button
+        │                 ^^^^^^^
+  > 269 │                   onClick={onClick}
+  > 270 │                   disabled={pending !== null}
+  > 271 │                   className={`rounded-md px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors disabled:opacity-50 ${cfg.className}`}
+  > 272 │                 >
+        │                 ^
+    273 │                   {isPending ? "…" : cfg.label}
+    274 │                 </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/pr/PrFloatingHeader.tsx:290:11 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    288 │             );
+    289 │           })}
+  > 290 │           <button
+        │           ^^^^^^^
+  > 291 │             onClick={() => openExternal(pr.url)}
+  > 292 │             className="rounded-md border border-zinc-700 px-2 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+  > 293 │             title={`Open on ${refProviderName(prRef)}`}
+  > 294 │           >
+        │           ^
+    295 │             ↗
+    296 │           </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/shell/BootGate.tsx:97:13 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+     95 │           {detail && <p className="break-words text-xs text-zinc-500">{detail}</p>}
+     96 │           <div className="flex gap-2">
+   > 97 │             <button
+        │             ^^^^^^^
+   > 98 │               onClick={() => void retry()}
+   > 99 │               className="rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium hover:bg-indigo-500"
+  > 100 │             >
+        │             ^
+    101 │               Retry
+    102 │             </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/shell/BootGate.tsx:103:13 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    101 │               Retry
+    102 │             </button>
+  > 103 │             <button
+        │             ^^^^^^^
+  > 104 │               onClick={proceed}
+  > 105 │               className="rounded-md border border-zinc-700 px-4 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
+  > 106 │             >
+        │             ^
+    107 │               Continue anyway
+    108 │             </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/shell/BootGate.tsx:116:13 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    114 │           <p className="text-sm text-zinc-400">{STATUS_MESSAGE[phase]}</p>
+    115 │           {slow && (
+  > 116 │             <button
+        │             ^^^^^^^
+  > 117 │               onClick={proceed}
+  > 118 │               className="text-xs text-zinc-500 underline hover:text-zinc-300"
+  > 119 │             >
+        │             ^
+    120 │               Continue anyway
+    121 │             </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/workspaces/ArchiveDialog.tsx:85:11 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    84 │         <div className="flex justify-end gap-2">
+  > 85 │           <button
+       │           ^^^^^^^
+  > 86 │             onClick={onClose}
+  > 87 │             disabled={busy}
+  > 88 │             className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+  > 89 │           >
+       │           ^
+    90 │             Cancel
+    91 │           </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/workspaces/ArchiveDialog.tsx:93:13 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+    91 │           </button>
+    92 │           {needsForce ? (
+  > 93 │             <button
+       │             ^^^^^^^
+  > 94 │               onClick={() => void run(true)}
+  > 95 │               disabled={busy}
+  > 96 │               className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium hover:bg-red-500 disabled:opacity-40"
+  > 97 │             >
+       │             ^
+    98 │               Force remove
+    99 │             </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/components/workspaces/ArchiveDialog.tsx:101:13 lint/a11y/useButtonType ━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Provide an explicit type prop for the button element.
+
+     99 │             </button>
+    100 │           ) : (
+  > 101 │             <button
+        │             ^^^^^^^
+  > 102 │               onClick={() => void run(false)}
+  > 103 │               disabled={busy}
+  > 104 │               className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500 disabled:opacity-40"
+  > 105 │             >
+        │             ^
+    106 │               {busy ? "Archiving…" : "Archive"}
+    107 │             </button>
+
+  i The default type of a button is submit, which causes the submission of a form when placed inside a `form` element. This is likely not the behaviour that you want inside a React application.
+
+  i Allowed button types are: submit, button or reset
+
+
+src/lib/pr/cache.ts:123:86 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    122 │ export function usePrStatus(ref: PrRef | null): Resource<PrStatus> {
+  > 123 │   return useCachedResource(ref ? `status:${refKey(ref)}` : null, () => fetchPrStatus(ref!));
+        │                                                                                      ^^^^
+    124 │ }
+    125 │
+
+
+src/lib/pr/cache.ts:119:84 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    118 │ export function usePrFiles(ref: PrRef | null): Resource<PrFile[]> {
+  > 119 │   return useCachedResource(ref ? `files:${refKey(ref)}` : null, () => fetchPrFiles(ref!));
+        │                                                                                    ^^^^
+    120 │ }
+    121 │
+
+
+src/lib/pr/cache.ts:115:79 lint/style/noNonNullAssertion ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Forbidden non-null assertion.
+
+    114 │ export function usePrDetail(ref: PrRef | null): Resource<PrDetail> {
+  > 115 │   return useCachedResource(ref ? prDetailKey(ref) : null, () => fetchPrDetail(ref!));
+        │                                                                               ^^^^
+    116 │ }
+    117 │
+
+
+Checked 237 files in 389ms. No fixes applied.
+Found 161 warnings.
