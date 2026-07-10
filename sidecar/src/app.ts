@@ -10,6 +10,7 @@ import { pingDb } from "./db/client.ts";
 import { createEventRoutes } from "./events/routes.ts";
 import { createGithubRoutes } from "./github/routes.ts";
 import { createCalendarRoutes, createGoogleCallbackRoutes } from "./google/routes.ts";
+import { createIssueRoutes } from "./issues/routes.ts";
 import { redactSecrets } from "./llm/errors.ts";
 import { createMemoryRoutes } from "./memory/routes.ts";
 import { createOmniRoutes } from "./omni/routes.ts";
@@ -100,6 +101,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/custom-providers", createCustomProviderRoutes(config));
   app.route("/api/cc", createCcRoutes());
   app.route("/api/github", createGithubRoutes(config));
+  app.route("/api/issues", createIssueRoutes(config));
   app.route("/api/azure", createAzureRoutes(config));
   app.route("/api/memory", createMemoryRoutes(config));
   app.route("/api/events", createEventRoutes(config));

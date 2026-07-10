@@ -253,6 +253,7 @@ export const repos = pgTable(
     primaryClonePath: text("primary_clone_path").notNull(), // absolute path to the primary clone
     setupScript: text("setup_script"), // shell, run in each worktree after creation
     runScript: text("run_script"), // long-lived service command, run in a terminal
+    pullIssues: boolean("pull_issues").notNull().default(false), // include this repo in the Issues dashboard
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -328,6 +329,76 @@ export const workspaceRepoPr = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex("workspace_repo_pr_wr_idx").on(t.workspaceRepoId)],
+);
+
+/**
+ * Ticket-system integration (GitHub Issues today, JIRA later). These tables are
+ * deliberately source-agnostic: a ticket is identified by (`provider`,
+ * `sourceKey`, `externalId`) rather than GitHub-specific columns, so a second
+ * provider slots in without a schema change. For GitHub, `sourceKey` is
+ * "owner/repo" and `externalId` is the issue number as a string; for JIRA,
+ * `sourceKey` would be the project key and `externalId` the issue key.
+ *
+ * Issue *content* (title/body/labels) is fetched live from the provider like PR
+ * search — it is not cached here. Only local state lives in these tables:
+ * the link to a workspace + the local lifecycle status, saved filters, stars.
+ */
+
+/** Local lifecycle status for a tracked issue, independent of the provider's own state. */
+export const issueLocalStatus = pgEnum("issue_local_status", ["todo", "in_progress", "done"]);
+
+/**
+ * Links a tracked issue to the workspace opened to work on it, and records its
+ * local lifecycle status. Created when "Start work" opens a workspace for an
+ * issue. One row per issue (unique on provider/sourceKey/externalId); archiving
+ * the linked workspace marks the issue `done`.
+ */
+export const issueLinks = pgTable(
+  "issue_links",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    provider: text("provider").notNull(), // "github" | "jira"
+    sourceKey: text("source_key").notNull(), // github: "owner/repo"; jira: project key
+    externalId: text("external_id").notNull(), // github: issue number; jira: issue key
+    title: text("title"),
+    url: text("url"),
+    localStatus: issueLocalStatus("local_status").notNull().default("todo"),
+    // The workspace opened to work on this issue. Null if the workspace was
+    // deleted; the link + status survive so the issue stays flagged.
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("issue_links_issue_idx").on(t.provider, t.sourceKey, t.externalId)],
+);
+
+/**
+ * Saved issue searches. Provider-tagged free-text query (GitHub search syntax
+ * today; JQL later), mirroring `github_filters` but source-agnostic.
+ */
+export const issueFilters = pgTable("issue_filters", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  provider: text("provider").notNull(),
+  name: text("name").notNull(),
+  query: text("query").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Starred issues, identified by the same source-agnostic triple. */
+export const issueStars = pgTable(
+  "issue_stars",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    provider: text("provider").notNull(),
+    sourceKey: text("source_key").notNull(),
+    externalId: text("external_id").notNull(),
+    title: text("title"),
+    url: text("url"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("issue_stars_issue_idx").on(t.provider, t.sourceKey, t.externalId)],
 );
 
 /**
@@ -414,3 +485,9 @@ export type WorkspaceRepo = typeof workspaceRepos.$inferSelect;
 export type NewWorkspaceRepo = typeof workspaceRepos.$inferInsert;
 export type WorkspaceRepoPr = typeof workspaceRepoPr.$inferSelect;
 export type NewWorkspaceRepoPr = typeof workspaceRepoPr.$inferInsert;
+export type IssueLink = typeof issueLinks.$inferSelect;
+export type NewIssueLink = typeof issueLinks.$inferInsert;
+export type IssueFilter = typeof issueFilters.$inferSelect;
+export type NewIssueFilter = typeof issueFilters.$inferInsert;
+export type IssueStar = typeof issueStars.$inferSelect;
+export type NewIssueStar = typeof issueStars.$inferInsert;

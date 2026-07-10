@@ -48,6 +48,7 @@ export interface CreateRepoInput {
   name?: string;
   setupScript?: string | null;
   runScript?: string | null;
+  pullIssues?: boolean;
 }
 
 export interface UpdateRepoInput {
@@ -55,6 +56,7 @@ export interface UpdateRepoInput {
   cloneUrl?: string;
   setupScript?: string | null;
   runScript?: string | null;
+  pullIssues?: boolean;
 }
 
 /** Extracts {owner, repo} from an ssh or https git remote, or null. */
@@ -99,6 +101,7 @@ export async function createRepo(db: Db, config: Config, input: CreateRepoInput)
       primaryClonePath: primaryClonePath(config, owner, repo),
       setupScript: input.setupScript ?? null,
       runScript: input.runScript ?? null,
+      pullIssues: input.pullIssues ?? false,
     })
     .returning();
   return row!;
@@ -118,6 +121,7 @@ export async function updateRepo(db: Db, id: string, patch: UpdateRepoInput): Pr
   if (patch.name !== undefined) values.name = patch.name;
   if (patch.setupScript !== undefined) values.setupScript = patch.setupScript;
   if (patch.runScript !== undefined) values.runScript = patch.runScript;
+  if (patch.pullIssues !== undefined) values.pullIssues = patch.pullIssues;
   if (patch.cloneUrl !== undefined) {
     assertSafeCloneUrl(patch.cloneUrl);
     const parsed = parseGitUrl(patch.cloneUrl);

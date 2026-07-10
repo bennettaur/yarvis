@@ -92,6 +92,13 @@
       "when": 1782066538176,
       "tag": "0012_bright_overlord",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1783518992843,
+      "tag": "0013_zippy_sharon_ventura",
+      "breakpoints": true
     }
   ]
 }
