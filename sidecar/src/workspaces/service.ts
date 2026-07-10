@@ -424,7 +424,7 @@ function writeContextFiles(detail: WorkspaceDetail): void {
     writeFileSync(`${detail.rootPath}/AGENTS.md`, lines.join("\n"));
     writeFileSync(
       `${detail.rootPath}/CLAUDE.md`,
-      "See [AGENTS.md](./AGENTS.md) for details about this workspace and its repos.\n",
+      "@AGENTS.md",
     );
   } catch (e) {
     console.error("[workspaces] failed to write AGENTS.md/CLAUDE.md:", e);
