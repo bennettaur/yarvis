@@ -216,6 +216,34 @@ pub fn kill_session(state: &PtyState, id: &str) {
     }
 }
 
+/// Base command used to launch Claude Code. Overridable via the
+/// `YARVIS_CLAUDE_COMMAND` env var so a user can bake in default options (e.g. a
+/// different permission mode or model). Remote-control sessions append
+/// `--remote-control <name>` to whatever this resolves to.
+const DEFAULT_CLAUDE_COMMAND: &str = "claude --permission-mode auto";
+
+/// The configured (or default) base command used to start Claude Code. Read from
+/// the environment on each use so a restart-injected change is picked up without
+/// a rebuild; an empty override falls back to the default.
+fn claude_base_command() -> String {
+    std::env::var("YARVIS_CLAUDE_COMMAND")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_CLAUDE_COMMAND.to_string())
+}
+
+/// Composes the remote-control launch line from a base command and a session
+/// name. Extracted from `spawn_claude_session` so the composition is unit-testable
+/// without reading the environment or spawning a PTY.
+fn remote_control_command(base: &str, name: &str) -> String {
+    format!(
+        "{} --remote-control {}",
+        base.trim(),
+        shell_single_quote(name)
+    )
+}
+
 /// Builds the shell-safe single-quoted form of `s` for injection into a shell
 /// command line. Wraps in single quotes and escapes any embedded single quote.
 fn shell_single_quote(s: &str) -> String {
@@ -245,10 +273,7 @@ pub fn spawn_claude_session(
     name: &str,
 ) -> Result<(), String> {
     let id = format!("ws-claude:{workspace_id}");
-    let command = format!(
-        "claude --permission-mode auto --remote-control {}",
-        shell_single_quote(name)
-    );
+    let command = remote_control_command(&claude_base_command(), name);
     spawn_into_state(
         app,
         state,
@@ -335,6 +360,14 @@ pub fn pty_start_claude(
     spawn_claude_session(&app, state.inner(), &workspace_id, cwd, &name)
 }
 
+/// Returns the configured base command used to start Claude Code, so the
+/// frontend's own Claude launches (e.g. the issue "Start work" terminal) match
+/// the command remote-control sessions are built from.
+#[tauri::command]
+pub fn get_claude_command() -> String {
+    claude_base_command()
+}
+
 #[tauri::command]
 pub fn pty_write(
     state: tauri::State<'_, PtyState>,
@@ -406,7 +439,31 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 
 #[cfg(test)]
 mod tests {
-    use super::{append_capped, MAX_SCROLLBACK};
+    use super::{append_capped, remote_control_command, MAX_SCROLLBACK};
+
+    #[test]
+    fn remote_control_command_appends_flag_and_quotes_name() {
+        let cmd = remote_control_command("claude --permission-mode auto", "Rename the API");
+        assert_eq!(
+            cmd,
+            "claude --permission-mode auto --remote-control 'Rename the API'"
+        );
+    }
+
+    #[test]
+    fn remote_control_command_uses_a_custom_base() {
+        let cmd = remote_control_command("claude --model opus --permission-mode plan", "Fix bug");
+        assert_eq!(
+            cmd,
+            "claude --model opus --permission-mode plan --remote-control 'Fix bug'"
+        );
+    }
+
+    #[test]
+    fn remote_control_command_escapes_single_quotes_in_the_name() {
+        let cmd = remote_control_command("claude", "Mike's task");
+        assert_eq!(cmd, "claude --remote-control 'Mike'\\''s task'");
+    }
 
     #[test]
     fn append_capped_leaves_under_cap_untouched() {

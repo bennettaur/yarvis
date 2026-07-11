@@ -108,6 +108,14 @@ directory, `~/dev/yarvis-workspaces` by default and overridable with the
 secrets above). Add repos and edit their per-repo setup/run scripts in the
 Settings tab's Repositories section.
 
+Creating a workspace provisions its worktrees, opens a terminal, and — once the
+setup scripts finish — starts a Claude Code session in it and focuses that tab.
+The command used to start Claude is `claude --permission-mode auto` by default
+and overridable with the `YARVIS_CLAUDE_COMMAND` env var (also non-secret
+config), so you can bake in default options such as a model or permission mode.
+Remote-control sessions (started by the agent or from the Workspaces tab) use
+the same base command with `--remote-control <session name>` appended.
+
 ### Telegram remote control
 
 Chat with Yarvis — and issue control commands — from Telegram. The sidecar runs
