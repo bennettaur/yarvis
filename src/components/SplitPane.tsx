@@ -64,7 +64,6 @@ export default function SplitPane({
       <div className="min-h-0 min-w-0 shrink-0 grow-0" style={{ flexBasis: `${clamped * 100}%` }}>
         {first}
       </div>
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer-driven divider; keyboard resize isn't a workflow here */}
       <div
         onPointerDown={(e) => {
           e.preventDefault();
