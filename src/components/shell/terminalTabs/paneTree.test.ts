@@ -6,6 +6,7 @@ import {
   leaf,
   nextFocusAfterRemove,
   removePane,
+  setRatioAtPath,
   splitPane,
 } from "./paneTree";
 
@@ -94,6 +95,32 @@ describe("paneTree", () => {
 
   it("nextFocusAfterRemove returns null when the last leaf is removed", () => {
     expect(nextFocusAfterRemove(leaf("a"), "a")).toBeNull();
+  });
+
+  it("setRatioAtPath sets the ratio on the root split", () => {
+    const tree = splitPane(leaf("a"), "a", "vertical", "b");
+    const next = setRatioAtPath(tree, [], 0.7);
+    if (next.kind !== "split") throw new Error("expected split");
+    expect(next.ratio).toBe(0.7);
+  });
+
+  it("setRatioAtPath reaches a nested split without touching its parent", () => {
+    let tree = splitPane(leaf("a"), "a", "vertical", "b"); // a | b
+    tree = splitPane(tree, "b", "horizontal", "c"); // a | (b / c)
+    const next = setRatioAtPath(tree, ["second"], 0.25);
+    if (next.kind !== "split") throw new Error("expected split");
+    expect(next.ratio).toBeUndefined();
+    if (next.second.kind !== "split") throw new Error("expected nested split");
+    expect(next.second.ratio).toBe(0.25);
+  });
+
+  it("setRatioAtPath is a no-op when the path misses a split", () => {
+    const tree = splitPane(leaf("a"), "a", "vertical", "b");
+    // Path steps into a leaf, so there is no split to update.
+    expect(setRatioAtPath(tree, ["first"], 0.3)).toBe(tree);
+    // Root itself is a leaf.
+    const solo = leaf("a");
+    expect(setRatioAtPath(solo, [], 0.3)).toBe(solo);
   });
 
   it("hasPane finds a leaf at any depth", () => {

@@ -18,6 +18,7 @@ import {
 import { catalog } from "../../omni/catalog";
 import { registry } from "../../omni/registry";
 import ChatComposer from "../ChatComposer";
+import SplitPane, { usePersistedRatio } from "../SplitPane";
 
 interface Display {
   role: "user" | "assistant";
@@ -85,6 +86,8 @@ export default function OmniView() {
   const [builderCollapsed, setBuilderCollapsed] = useState<boolean>(
     () => localStorage.getItem(BUILDER_COLLAPSED_KEY) === "1",
   );
+  // Fraction of the width given to the canvas when the builder is expanded.
+  const [canvasRatio, setCanvasRatio] = usePersistedRatio("yarvis.omni.canvasRatio", 0.72);
   const threadRef = useRef<HTMLDivElement>(null);
 
   // The catalog defines what the agent may compose; turn it into a system
@@ -301,202 +304,221 @@ export default function OmniView() {
     }
   }, [loadedId, refreshLayouts]);
 
-  return (
-    <div className="flex h-full min-h-0">
-      {/* Canvas */}
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <div
-          className={`h-0.5 shrink-0 ${busy ? "animate-pulse bg-indigo-500" : "bg-transparent"}`}
-          aria-hidden="true"
-        />
-        <div className="min-h-0 flex-1 overflow-y-auto p-1">
-          {hasContent(spec) ? (
-            <div className="min-h-full">
-              <JSONUIProvider registry={registry}>
-                <Renderer spec={spec} registry={registry} loading={busy} />
-              </JSONUIProvider>
+  // Canvas fills whatever box it's placed in (a flex-1 slot when the builder is
+  // collapsed, or a SplitPane pane when it's expanded).
+  const canvas = (
+    <div className="flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden">
+      <div
+        className={`h-0.5 shrink-0 ${busy ? "animate-pulse bg-indigo-500" : "bg-transparent"}`}
+        aria-hidden="true"
+      />
+      <div className="min-h-0 flex-1 overflow-y-auto p-1">
+        {hasContent(spec) ? (
+          <div className="min-h-full">
+            <JSONUIProvider registry={registry}>
+              <Renderer spec={spec} registry={registry} loading={busy} />
+            </JSONUIProvider>
+          </div>
+        ) : busy ? (
+          <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-zinc-400">
+            <Spinner />
+            Generating your layout…
+          </div>
+        ) : (
+          <div className="flex h-full flex-col items-center justify-center gap-6 text-center">
+            <div>
+              <h2 className="text-lg font-semibold text-zinc-200">Omni</h2>
+              <p className="mt-1 max-w-md text-sm text-zinc-500">
+                Ask the chat to build a view from your widgets — tasks, calendar, PRs, memory,
+                sessions, alarms, and chat windows — in any layout.
+              </p>
             </div>
-          ) : busy ? (
-            <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-zinc-400">
-              <Spinner />
-              Generating your layout…
+            <div className="flex max-w-md flex-col gap-2">
+              {EXAMPLES.map((ex) => (
+                <button
+                  key={ex}
+                  onClick={() => void send(ex)}
+                  disabled={busy || !provider || !model}
+                  className="border border-zinc-800 px-3 py-2 text-left text-sm text-zinc-300 hover:border-zinc-600 hover:bg-zinc-900 disabled:opacity-40"
+                >
+                  {ex}
+                </button>
+              ))}
             </div>
-          ) : (
-            <div className="flex h-full flex-col items-center justify-center gap-6 text-center">
-              <div>
-                <h2 className="text-lg font-semibold text-zinc-200">Omni</h2>
-                <p className="mt-1 max-w-md text-sm text-zinc-500">
-                  Ask the chat to build a view from your widgets — tasks, calendar, PRs, memory,
-                  sessions, alarms, and chat windows — in any layout.
-                </p>
-              </div>
-              <div className="flex max-w-md flex-col gap-2">
-                {EXAMPLES.map((ex) => (
-                  <button
-                    key={ex}
-                    onClick={() => void send(ex)}
-                    disabled={busy || !provider || !model}
-                    className="border border-zinc-800 px-3 py-2 text-left text-sm text-zinc-300 hover:border-zinc-600 hover:bg-zinc-900 disabled:opacity-40"
-                  >
-                    {ex}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  // Builder side panel — collapsible to give the canvas full width.
+  const collapsedRail = (
+    <aside className="flex w-9 shrink-0 flex-col items-center gap-3 border-l border-zinc-800 py-2">
+      <button
+        onClick={() => setBuilderCollapsed(false)}
+        title="Expand builder"
+        className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+      >
+        ‹
+      </button>
+      <span className="text-xs font-medium uppercase tracking-wide text-zinc-500 [writing-mode:vertical-rl]">
+        Builder
+      </span>
+    </aside>
+  );
+
+  const builderPanel = (
+    <aside className="flex h-full w-full flex-col">
+      <div className="flex items-center justify-between gap-2 border-b border-zinc-800 px-4 py-2">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setBuilderCollapsed(true)}
+            title="Collapse builder"
+            className="text-zinc-500 hover:text-zinc-300"
+          >
+            ›
+          </button>
+          <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">Builder</span>
+        </div>
+        <button onClick={reset} className="text-xs text-zinc-500 hover:text-zinc-300">
+          Clear
+        </button>
+      </div>
+
+      <div className="flex flex-wrap gap-2 border-b border-zinc-800 px-4 py-2">
+        <select
+          value={provider}
+          onChange={(e) => {
+            const id = e.target.value as ProviderId;
+            setProvider(id);
+            setModel(modelsFor(id)[0] ?? "");
+          }}
+          className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs"
+        >
+          {providers.map((p) => (
+            <option key={p.id} value={p.id} disabled={!p.available}>
+              {p.label}
+              {p.available ? "" : " (no key)"}
+            </option>
+          ))}
+        </select>
+        <select
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+          className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs"
+        >
+          {(provider ? modelsFor(provider) : []).map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* Saved layouts */}
+      <div className="space-y-2 border-b border-zinc-800 px-4 py-2">
+        <div className="flex gap-2">
+          <select
+            value={loadedId}
+            onChange={(e) => void onLoad(e.target.value)}
+            className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs"
+          >
+            <option value="">— load layout —</option>
+            {layouts.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.name}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={() => void onDelete()}
+            disabled={!loadedId}
+            title="Delete the selected layout"
+            className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-red-400 disabled:opacity-40"
+          >
+            Delete
+          </button>
+        </div>
+        <div className="flex gap-2">
+          <input
+            value={layoutName}
+            placeholder="Save current layout as…"
+            disabled={!hasContent(spec)}
+            onChange={(e) => setLayoutName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void onSave();
+            }}
+            className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs outline-none focus:border-zinc-500 disabled:opacity-40"
+          />
+          <button
+            onClick={() => void onSave()}
+            disabled={!hasContent(spec) || !layoutName.trim()}
+            className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium hover:bg-indigo-500 disabled:opacity-40"
+          >
+            Save
+          </button>
         </div>
       </div>
 
-      {/* Builder side panel — collapsible to give the canvas full width */}
+      <div ref={threadRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
+        {messages.length === 0 && !streaming && (
+          <p className="text-sm text-zinc-600">
+            Describe the layout you want. Follow-ups refine the current view.
+          </p>
+        )}
+        {messages.map((m, i) => (
+          <div key={i} className="text-sm">
+            <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">{m.role}</div>
+            <div className="whitespace-pre-wrap text-zinc-100">{m.content}</div>
+          </div>
+        ))}
+        {streaming && (
+          <div className="text-sm">
+            <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">assistant</div>
+            <div className="whitespace-pre-wrap text-zinc-100">{streaming}</div>
+          </div>
+        )}
+        {busy && !streaming && (
+          <div className="text-sm">
+            <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">assistant</div>
+            <div className="flex items-center gap-2 text-zinc-400">
+              <Spinner />
+              Thinking…
+            </div>
+          </div>
+        )}
+      </div>
+
+      {error && <p className="px-4 pb-2 text-sm text-red-400">{error}</p>}
+
+      <ChatComposer
+        value={input}
+        onChange={setInput}
+        onSubmit={() => void send(input)}
+        busy={busy}
+        placeholder="Describe a layout..."
+        submitLabel="Build"
+        className="flex gap-2 border-t border-zinc-800 p-3"
+      />
+    </aside>
+  );
+
+  return (
+    <div className="flex h-full min-h-0">
       {builderCollapsed ? (
-        <aside className="flex w-9 shrink-0 flex-col items-center gap-3 border-l border-zinc-800 py-2">
-          <button
-            onClick={() => setBuilderCollapsed(false)}
-            title="Expand builder"
-            className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
-          >
-            ‹
-          </button>
-          <span className="text-xs font-medium uppercase tracking-wide text-zinc-500 [writing-mode:vertical-rl]">
-            Builder
-          </span>
-        </aside>
+        <>
+          <div className="min-w-0 flex-1">{canvas}</div>
+          {collapsedRail}
+        </>
       ) : (
-        <aside className="flex w-96 shrink-0 flex-col border-l border-zinc-800">
-          <div className="flex items-center justify-between gap-2 border-b border-zinc-800 px-4 py-2">
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setBuilderCollapsed(true)}
-                title="Collapse builder"
-                className="text-zinc-500 hover:text-zinc-300"
-              >
-                ›
-              </button>
-              <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">
-                Builder
-              </span>
-            </div>
-            <button onClick={reset} className="text-xs text-zinc-500 hover:text-zinc-300">
-              Clear
-            </button>
-          </div>
-
-          <div className="flex flex-wrap gap-2 border-b border-zinc-800 px-4 py-2">
-            <select
-              value={provider}
-              onChange={(e) => {
-                const id = e.target.value as ProviderId;
-                setProvider(id);
-                setModel(modelsFor(id)[0] ?? "");
-              }}
-              className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs"
-            >
-              {providers.map((p) => (
-                <option key={p.id} value={p.id} disabled={!p.available}>
-                  {p.label}
-                  {p.available ? "" : " (no key)"}
-                </option>
-              ))}
-            </select>
-            <select
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs"
-            >
-              {(provider ? modelsFor(provider) : []).map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Saved layouts */}
-          <div className="space-y-2 border-b border-zinc-800 px-4 py-2">
-            <div className="flex gap-2">
-              <select
-                value={loadedId}
-                onChange={(e) => void onLoad(e.target.value)}
-                className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs"
-              >
-                <option value="">— load layout —</option>
-                {layouts.map((l) => (
-                  <option key={l.id} value={l.id}>
-                    {l.name}
-                  </option>
-                ))}
-              </select>
-              <button
-                onClick={() => void onDelete()}
-                disabled={!loadedId}
-                title="Delete the selected layout"
-                className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-red-400 disabled:opacity-40"
-              >
-                Delete
-              </button>
-            </div>
-            <div className="flex gap-2">
-              <input
-                value={layoutName}
-                placeholder="Save current layout as…"
-                disabled={!hasContent(spec)}
-                onChange={(e) => setLayoutName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void onSave();
-                }}
-                className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs outline-none focus:border-zinc-500 disabled:opacity-40"
-              />
-              <button
-                onClick={() => void onSave()}
-                disabled={!hasContent(spec) || !layoutName.trim()}
-                className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium hover:bg-indigo-500 disabled:opacity-40"
-              >
-                Save
-              </button>
-            </div>
-          </div>
-
-          <div ref={threadRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
-            {messages.length === 0 && !streaming && (
-              <p className="text-sm text-zinc-600">
-                Describe the layout you want. Follow-ups refine the current view.
-              </p>
-            )}
-            {messages.map((m, i) => (
-              <div key={i} className="text-sm">
-                <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">{m.role}</div>
-                <div className="whitespace-pre-wrap text-zinc-100">{m.content}</div>
-              </div>
-            ))}
-            {streaming && (
-              <div className="text-sm">
-                <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">assistant</div>
-                <div className="whitespace-pre-wrap text-zinc-100">{streaming}</div>
-              </div>
-            )}
-            {busy && !streaming && (
-              <div className="text-sm">
-                <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">assistant</div>
-                <div className="flex items-center gap-2 text-zinc-400">
-                  <Spinner />
-                  Thinking…
-                </div>
-              </div>
-            )}
-          </div>
-
-          {error && <p className="px-4 pb-2 text-sm text-red-400">{error}</p>}
-
-          <ChatComposer
-            value={input}
-            onChange={setInput}
-            onSubmit={() => void send(input)}
-            busy={busy}
-            placeholder="Describe a layout..."
-            submitLabel="Build"
-            className="flex gap-2 border-t border-zinc-800 p-3"
-          />
-        </aside>
+        <SplitPane
+          className="h-full flex-1"
+          orientation="horizontal"
+          ratio={canvasRatio}
+          onRatioChange={setCanvasRatio}
+          first={canvas}
+          second={builderPanel}
+        />
       )}
     </div>
   );

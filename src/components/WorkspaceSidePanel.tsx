@@ -36,7 +36,7 @@ export default function WorkspaceSidePanel({
   if (!repo) return null;
 
   return (
-    <div className="flex h-full min-h-0 w-80 shrink-0 flex-col border-l border-zinc-800">
+    <div className="flex h-full min-h-0 w-full flex-col">
       {repos.length > 1 && (
         <select
           value={repo.id}

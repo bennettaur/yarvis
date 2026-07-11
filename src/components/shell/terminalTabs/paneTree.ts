@@ -13,7 +13,14 @@ export type SplitDirection = "vertical" | "horizontal";
 
 export type Pane =
   | { kind: "leaf"; id: PaneId }
-  | { kind: "split"; direction: SplitDirection; first: Pane; second: Pane };
+  | {
+      kind: "split";
+      direction: SplitDirection;
+      first: Pane;
+      second: Pane;
+      /** Fraction of the split's main axis given to `first` (0–1). Absent means an even 0.5 split (older persisted trees predate this field). */
+      ratio?: number;
+    };
 
 export const leaf = (id: PaneId): Pane => ({ kind: "leaf", id });
 
@@ -85,6 +92,33 @@ export function removePane(pane: Pane, target: PaneId): Pane | null {
 export function nextFocusAfterRemove(pane: Pane, removed: PaneId): PaneId | null {
   const next = removePane(pane, removed);
   return next ? firstLeafId(next) : null;
+}
+
+/**
+ * A location in the tree: the sequence of "first"/"second" steps taken from the
+ * root to reach a node. `[]` is the root. Splits carry no id, so this is how a
+ * divider names the split it belongs to when reporting a resize.
+ */
+export type PanePath = ("first" | "second")[];
+
+/**
+ * Returns a copy of the tree with the split reached by `path` set to `ratio`.
+ * Returns the tree unchanged if the path doesn't land on a split (e.g. a stale
+ * path after the layout changed under it), so callers can treat it as a no-op.
+ */
+export function setRatioAtPath(pane: Pane, path: PanePath, ratio: number): Pane {
+  if (path.length === 0) {
+    if (pane.kind !== "split") return pane;
+    return { ...pane, ratio };
+  }
+  if (pane.kind !== "split") return pane;
+  const [step, ...rest] = path;
+  if (step === "first") {
+    const first = setRatioAtPath(pane.first, rest, ratio);
+    return first === pane.first ? pane : { ...pane, first };
+  }
+  const second = setRatioAtPath(pane.second, rest, ratio);
+  return second === pane.second ? pane : { ...pane, second };
 }
 
 /** True if the tree contains a leaf with the given id. */

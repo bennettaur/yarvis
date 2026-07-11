@@ -17,6 +17,7 @@ import {
   type WorkspaceStatus,
   type WorkspaceSummary,
 } from "../lib/workspaces";
+import SplitPane, { usePersistedRatio } from "./SplitPane";
 import TerminalTabs from "./shell/terminalTabs/TerminalTabs";
 import TerminalPanel from "./TerminalPanel";
 import WorkspaceSidePanel from "./WorkspaceSidePanel";
@@ -576,6 +577,10 @@ function WorkspaceDetailView({
   // load() from a previous selection won't overwrite the new one's detail.
   // Capture the current value at call time; compare on resolve.
   const generationRef = useRef(0);
+  // Draggable split sizes, shared across all workspaces (one preference, not
+  // per-id) so a size you like sticks as you move between workspaces.
+  const [sideRatio, setSideRatio] = usePersistedRatio("yarvis.workspaces.sideRatio", 0.72);
+  const [runRatio, setRunRatio] = usePersistedRatio("yarvis.workspaces.runRatio", 0.6);
 
   const load = useCallback(async () => {
     const gen = generationRef.current;
@@ -831,47 +836,54 @@ function WorkspaceDetailView({
       ) : detail.status === "archived" ? (
         <ArchivedView detail={detail} />
       ) : (
-        <div className="flex min-h-0 flex-1">
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-            <div className="min-h-0 min-w-0 flex-1">
-              {claudePrompt ? (
-                claudePromptReady ? (
-                  // Fresh, stable id so a reattach never re-runs the prompt.
-                  // Launched at the workspace root (like the standard terminal),
-                  // where the .yarvis/issue-prompt.md file lives.
-                  <TerminalPanel
-                    sessionId={`ws-claude:${detail.id}`}
-                    cwd={detail.rootPath}
-                    initialCommand={CLAUDE_ISSUE_COMMAND}
-                  />
+        <SplitPane
+          className="flex-1"
+          orientation="horizontal"
+          ratio={sideRatio}
+          onRatioChange={setSideRatio}
+          first={(() => {
+            const terminalArea = (
+              <div className="h-full min-h-0 min-w-0">
+                {claudePrompt ? (
+                  claudePromptReady ? (
+                    // Fresh, stable id so a reattach never re-runs the prompt.
+                    // Launched at the workspace root (like the standard terminal),
+                    // where the .yarvis/issue-prompt.md file lives.
+                    <TerminalPanel
+                      sessionId={`ws-claude:${detail.id}`}
+                      cwd={detail.rootPath}
+                      initialCommand={CLAUDE_ISSUE_COMMAND}
+                    />
+                  ) : (
+                    <div className="flex h-full items-center justify-center text-sm text-zinc-500">
+                      Preparing Claude session…
+                    </div>
+                  )
                 ) : (
-                  <div className="flex h-full items-center justify-center text-sm text-zinc-500">
-                    Preparing Claude session…
-                  </div>
-                )
-              ) : (
-                /* A live remote-control Claude session shows up as a pinned
-                   terminal tab; the workspace's own shells live in the other tabs. */
-                <TerminalTabs
-                  storageKey={`ws:${detail.id}`}
-                  cwd={detail.rootPath}
-                  pinnedTabs={
-                    claudeActive
-                      ? [
-                          {
-                            key: "claude",
-                            title: "Claude",
-                            sessionId: `ws-claude:${detail.id}`,
-                            cwd: claudeCwd,
-                          },
-                        ]
-                      : []
-                  }
-                />
-              )}
-            </div>
-            {runRepo && (
-              <div className="flex min-h-0 min-w-0 flex-1 flex-col border-t border-zinc-800">
+                  /* A live remote-control Claude session shows up as a pinned
+                       terminal tab; the workspace's own shells live in the other tabs. */
+                  <TerminalTabs
+                    storageKey={`ws:${detail.id}`}
+                    cwd={detail.rootPath}
+                    pinnedTabs={
+                      claudeActive
+                        ? [
+                            {
+                              key: "claude",
+                              title: "Claude",
+                              sessionId: `ws-claude:${detail.id}`,
+                              cwd: claudeCwd,
+                            },
+                          ]
+                        : []
+                    }
+                  />
+                )}
+              </div>
+            );
+            if (!runRepo) return terminalArea;
+            const runPanel = (
+              <div className="flex h-full min-h-0 min-w-0 flex-col">
                 <div className="flex shrink-0 items-center justify-between bg-zinc-900 px-3 py-1 text-xs text-zinc-400">
                   <span>
                     run · {runRepo.repo.name}{" "}
@@ -893,10 +905,20 @@ function WorkspaceDetailView({
                   />
                 </div>
               </div>
-            )}
-          </div>
-          <WorkspaceSidePanel workspaceId={detail.id} repos={detail.repos} />
-        </div>
+            );
+            return (
+              <SplitPane
+                className="h-full w-full"
+                orientation="vertical"
+                ratio={runRatio}
+                onRatioChange={setRunRatio}
+                first={terminalArea}
+                second={runPanel}
+              />
+            );
+          })()}
+          second={<WorkspaceSidePanel workspaceId={detail.id} repos={detail.repos} />}
+        />
       )}
     </div>
   );
