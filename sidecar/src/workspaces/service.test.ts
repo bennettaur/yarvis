@@ -62,4 +62,10 @@ describe("primaryClonePath", () => {
       "/home/me/dev/yarvis-workspaces/.repos/acme-widget",
     );
   });
+
+  it("lowercases the owner and repo names", () => {
+    expect(primaryClonePath(config, "Acme", "Widget")).toBe(
+      "/home/me/dev/yarvis-workspaces/.repos/acme-widget",
+    );
+  });
 });

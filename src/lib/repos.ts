@@ -11,6 +11,7 @@ export interface Repo {
   primaryClonePath: string;
   setupScript: string | null;
   runScript: string | null;
+  pullIssues: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -20,6 +21,7 @@ export interface CreateRepoInput {
   name?: string;
   setupScript?: string | null;
   runScript?: string | null;
+  pullIssues?: boolean;
 }
 
 export interface UpdateRepoInput {
@@ -27,6 +29,7 @@ export interface UpdateRepoInput {
   cloneUrl?: string;
   setupScript?: string | null;
   runScript?: string | null;
+  pullIssues?: boolean;
 }
 
 async function readError(res: Response, action: string): Promise<never> {

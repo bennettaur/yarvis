@@ -51,6 +51,17 @@ Status of the build against the original vision. The full V1 plan lives at
   on Azure (no provider equivalent). Toggling a file viewed collapses its diff
   (and re-expands when unmarked). The provider toggle only shows providers
   whose viewer probe lands, so an unconfigured option never flashes.
+- **Issues dashboard (GitHub)** — a global Issues tab mirroring the PR
+  dashboard: "Assigned to me" / "All open" / saved-filter views, grouped by
+  repo, with stars, search, and "in progress" badges. Issues are pulled from
+  repos flagged with a per-repo "Pull issues" toggle. The issue detail view
+  (title, labels, assignees, markdown body, comments) has a "Start work"
+  action that creates a workspace for the issue, links it, best-effort assigns
+  the issue to the viewer and labels it in-progress on GitHub, then provisions
+  the worktree and launches a Claude session seeded with the issue title +
+  description (written to `.yarvis/issue-prompt.md`). The data model, provider
+  layer, and `/api/issues/:provider` routes are source-agnostic (keyed by
+  provider / sourceKey / externalId) so JIRA can be added without a rewrite.
 - **Memory & knowledge** — notes, daily/weekly recaps (tasks completed + notes,
   LLM-summarized or offline raw), document/URL ingestion (chunk → embed →
   store), and a management UI to search/delete (Memory tab). Reuses the

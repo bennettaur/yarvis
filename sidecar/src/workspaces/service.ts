@@ -4,7 +4,8 @@
  * module owns the database state and orchestration.
  */
 
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { relative } from "node:path";
 import { and, eq, inArray } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
@@ -49,6 +50,7 @@ export interface CreateRepoInput {
   name?: string;
   setupScript?: string | null;
   runScript?: string | null;
+  pullIssues?: boolean;
 }
 
 export interface UpdateRepoInput {
@@ -56,6 +58,7 @@ export interface UpdateRepoInput {
   cloneUrl?: string;
   setupScript?: string | null;
   runScript?: string | null;
+  pullIssues?: boolean;
 }
 
 /** Extracts {owner, repo} from an ssh or https git remote, or null. */
@@ -82,7 +85,7 @@ export function assertSafeCloneUrl(url: string): void {
 
 /** Absolute path to a repo's primary clone under the workspaces root. */
 export function primaryClonePath(config: Config, owner: string, repo: string): string {
-  return `${config.workspacesRoot}/.repos/${owner}-${repo}`;
+  return `${config.workspacesRoot}/.repos/${owner.toLowerCase()}-${repo.toLowerCase()}`;
 }
 
 export async function createRepo(db: Db, config: Config, input: CreateRepoInput): Promise<Repo> {
@@ -100,6 +103,7 @@ export async function createRepo(db: Db, config: Config, input: CreateRepoInput)
       primaryClonePath: primaryClonePath(config, owner, repo),
       setupScript: input.setupScript ?? null,
       runScript: input.runScript ?? null,
+      pullIssues: input.pullIssues ?? false,
     })
     .returning();
   return row!;
@@ -119,6 +123,7 @@ export async function updateRepo(db: Db, id: string, patch: UpdateRepoInput): Pr
   if (patch.name !== undefined) values.name = patch.name;
   if (patch.setupScript !== undefined) values.setupScript = patch.setupScript;
   if (patch.runScript !== undefined) values.runScript = patch.runScript;
+  if (patch.pullIssues !== undefined) values.pullIssues = patch.pullIssues;
   if (patch.cloneUrl !== undefined) {
     assertSafeCloneUrl(patch.cloneUrl);
     const parsed = parseGitUrl(patch.cloneUrl);
@@ -212,7 +217,10 @@ export async function createWorkspace(
 
   // Distinct subfolder per repo; disambiguate name collisions with the owner.
   const nameCounts = new Map<string, number>();
-  for (const repo of selected) nameCounts.set(repo.name, (nameCounts.get(repo.name) ?? 0) + 1);
+  for (const repo of selected) {
+    const lowerName = repo.name.toLowerCase();
+    nameCounts.set(lowerName, (nameCounts.get(lowerName) ?? 0) + 1);
+  }
 
   // One transaction so a mid-create failure never leaves a half-built workspace.
   return db.transaction(async (tx) => {
@@ -231,7 +239,9 @@ export async function createWorkspace(
           branch,
           baseBranch: repo.defaultBranch ?? "main",
           worktreePath: `${rootPath}/${
-            (nameCounts.get(repo.name) ?? 0) > 1 ? `${repo.name}-${repo.owner}` : repo.name
+            (nameCounts.get(repo.name.toLowerCase()) ?? 0) > 1
+              ? `${repo.name.toLowerCase()}-${repo.owner.toLowerCase()}`
+              : repo.name.toLowerCase()
           }`,
         })),
       );
@@ -387,6 +397,48 @@ async function withRepoLock<T>(repoId: string, fn: () => Promise<T>): Promise<T>
 const provisioning = new Set<string>();
 
 /**
+ * (Re)writes AGENTS.md and CLAUDE.md at the workspace root. Claude is started
+ * in the workspace root rather than inside a single repo — so it can work
+ * across every repo checked out there — but that's not its usual layout, and
+ * without help it can assume the workspace root itself is the project. These
+ * files spell out which repos are present, where, and on what branch.
+ * Best-effort: a write failure is logged but must not fail provisioning.
+ */
+function writeContextFiles(detail: WorkspaceDetail): void {
+  const lines = [
+    `# Workspace: ${detail.name}`,
+    "",
+    "This is a Yarvis workspace. Claude is started here, in the workspace root,",
+    "rather than inside a single repo, so it can work across every repo listed",
+    "below in one session. Each repo is already cloned and checked out on its",
+    "own branch — there's no need to clone or switch branches.",
+    "",
+    "## Repos",
+    "",
+    ...detail.repos.map((wr) => {
+      const path = relative(detail.rootPath, wr.worktreePath) || ".";
+      return `- **${wr.repo.name}** (${wr.repo.owner}/${wr.repo.repo}): \`${path}\`, checked out on branch \`${wr.branch}\` (base \`${wr.baseBranch}\`)`;
+    }),
+  ];
+
+  if (detail.tasks.length > 0) {
+    lines.push("", "## Associated tasks", "");
+    for (const task of detail.tasks) {
+      lines.push(`- ${task.title}${task.notes ? `: ${task.notes}` : ""}`);
+    }
+  }
+
+  lines.push("");
+
+  try {
+    writeFileSync(`${detail.rootPath}/AGENTS.md`, lines.join("\n"));
+    writeFileSync(`${detail.rootPath}/CLAUDE.md`, "@AGENTS.md");
+  } catch (e) {
+    console.error("[workspaces] failed to write AGENTS.md/CLAUDE.md:", e);
+  }
+}
+
+/**
  * Drives provisioning for a workspace: per repo, ensure the primary clone,
  * refresh its default branch, cut a worktree, and run the setup script —
  * emitting progress events (setup output streams through `emit`). Idempotent
@@ -509,6 +561,7 @@ export async function provisionWorkspace(
 
     // The workspace is active only if every repo provisioned cleanly.
     const after = await getWorkspace(db, id);
+    if (after) writeContextFiles(after);
     const allReady = after?.repos.every((r) => r.status === "ready" || r.status === "removed");
     const status = allReady ? "active" : "error";
     await db
