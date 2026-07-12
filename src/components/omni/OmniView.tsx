@@ -18,6 +18,7 @@ import {
 import { catalog } from "../../omni/catalog";
 import { registry } from "../../omni/registry";
 import ChatComposer from "../ChatComposer";
+import ThinkingIndicator, { Spinner } from "../ThinkingIndicator";
 
 interface Display {
   role: "user" | "assistant";
@@ -61,12 +62,6 @@ function loadMessages(): Display[] {
   } catch {
     return [];
   }
-}
-
-function Spinner() {
-  return (
-    <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-zinc-600 border-t-indigo-400" />
-  );
 }
 
 export default function OmniView() {
@@ -474,15 +469,7 @@ export default function OmniView() {
                 <div className="whitespace-pre-wrap text-zinc-100">{streaming}</div>
               </div>
             )}
-            {busy && !streaming && (
-              <div className="text-sm">
-                <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">assistant</div>
-                <div className="flex items-center gap-2 text-zinc-400">
-                  <Spinner />
-                  Thinking…
-                </div>
-              </div>
-            )}
+            {busy && !streaming && <ThinkingIndicator />}
           </div>
 
           {error && <p className="px-4 pb-2 text-sm text-red-400">{error}</p>}

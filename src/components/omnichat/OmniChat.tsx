@@ -4,6 +4,7 @@ import { OMNI_CHAT_SESSION_KEY } from "../../lib/omniChat";
 import { collectContext, formatContext } from "../../lib/omniChatContext";
 import { useChatThread } from "../../lib/useChatThread";
 import ChatComposer from "../ChatComposer";
+import ThinkingIndicator from "../ThinkingIndicator";
 
 /**
  * A centered, summon-from-anywhere chat overlay. It stays mounted while hidden
@@ -160,6 +161,7 @@ export default function OmniChat({
               <div className="whitespace-pre-wrap text-zinc-100">{streaming}</div>
             </div>
           )}
+          {busy && !streaming && <ThinkingIndicator />}
         </div>
 
         {error && <p className="text-sm text-red-400">{error}</p>}
