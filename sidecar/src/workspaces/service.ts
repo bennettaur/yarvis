@@ -684,6 +684,18 @@ export interface ArchiveResult {
 }
 
 /**
+ * The URL of a PR raised from this workspace, so archival can record it even
+ * when the PR hasn't merged yet. Prefers a merged PR (the landed change) and
+ * otherwise falls back to a still-open one; a closed PR is an abandoned change,
+ * so it's never treated as the workspace's outcome.
+ */
+function linkedPrUrl(detail: WorkspaceDetail): string | null {
+  const withPr = detail.repos.filter((r) => r.pr?.prUrl && r.pr.prState !== "closed");
+  const merged = withPr.find((r) => r.pr?.prState === "merged");
+  return (merged ?? withPr[0])?.pr?.prUrl ?? null;
+}
+
+/**
  * Tears down a workspace's worktrees and marks it archived. Idempotent and
  * partial-failure safe: a repo whose worktree won't remove (e.g. uncommitted
  * changes without `force`) keeps the workspace in `archiving` with the error
@@ -742,7 +754,7 @@ export async function archiveWorkspace(
     .set({
       status,
       summary: input.summary ?? detail.summary,
-      mergedPrUrl: input.mergedPrUrl ?? detail.mergedPrUrl,
+      mergedPrUrl: input.mergedPrUrl ?? detail.mergedPrUrl ?? linkedPrUrl(detail),
       error: fullyRemoved ? null : "one or more worktrees could not be removed",
       archivedAt: fullyRemoved ? new Date() : null,
       updatedAt: new Date(),

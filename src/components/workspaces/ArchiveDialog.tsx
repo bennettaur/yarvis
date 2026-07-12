@@ -2,9 +2,9 @@ import { useState } from "react";
 import { archiveWorkspace, type WorkspaceDetail } from "../../lib/workspaces";
 
 /**
- * Confirms archiving a workspace: captures a summary + merged-PR URL (prefilled
- * from a linked PR the poller saw merged) and tears down the worktrees. A dirty
- * worktree surfaces the error and offers a Force remove.
+ * Confirms archiving a workspace: captures a summary + PR URL (prefilled from a
+ * linked PR the poller saw, preferring a merged one) and tears down the
+ * worktrees. A dirty worktree surfaces the error and offers a Force remove.
  */
 export default function ArchiveDialog({
   detail,
@@ -17,9 +17,11 @@ export default function ArchiveDialog({
   onArchived: () => Promise<void>;
   onError: (message: string) => void;
 }) {
-  const mergedPr = detail.repos.find((r) => r.pr?.prState === "merged")?.pr;
+  const linkedPr =
+    detail.repos.find((r) => r.pr?.prState === "merged")?.pr ??
+    detail.repos.find((r) => r.pr?.prUrl && r.pr.prState !== "closed")?.pr;
   const [summary, setSummary] = useState(detail.summary ?? "");
-  const [prUrl, setPrUrl] = useState(detail.mergedPrUrl ?? mergedPr?.prUrl ?? "");
+  const [prUrl, setPrUrl] = useState(detail.mergedPrUrl ?? linkedPr?.prUrl ?? "");
   const [needsForce, setNeedsForce] = useState(false);
   const [busy, setBusy] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
@@ -70,7 +72,7 @@ export default function ArchiveDialog({
         </label>
 
         <label className="block text-xs text-zinc-400">
-          <span className="mb-1 block uppercase tracking-wide">Merged PR URL</span>
+          <span className="mb-1 block uppercase tracking-wide">PR URL</span>
           <input
             value={prUrl}
             placeholder="https://github.com/owner/repo/pull/123"
