@@ -208,6 +208,11 @@ describe("azure client", () => {
       baseRef: "main",
       headRef: "feature",
       mergeable: "MERGEABLE",
+      // Azure exposes no in-app merge controls, so the fields stay empty/off.
+      mergeMethods: [],
+      autoMergeEnabled: false,
+      canEnableAutoMerge: false,
+      canDisableAutoMerge: false,
     });
     expect(detail.checks).toEqual([
       { name: "Build", status: "COMPLETED", conclusion: "SUCCESS", url: null },

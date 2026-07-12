@@ -102,6 +102,14 @@ describe("github merge validation", () => {
     });
     expect(res.status).toBe(400);
   });
+
+  it("rejects a non-numeric PR number on cancel-auto-merge with 400", async () => {
+    const res = await configured.request("/api/github/pr/octo/repo/abc/auto-merge", {
+      method: "DELETE",
+      headers: { ...auth },
+    });
+    expect(res.status).toBe(400);
+  });
 });
 
 describe("github not-configured handling", () => {

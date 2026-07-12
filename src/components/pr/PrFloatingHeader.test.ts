@@ -172,7 +172,28 @@ describe("mergeControlsFor", () => {
   });
 
   it("offers nothing on a terminal PR even if the detail still says mergeable", () => {
-    const controls = mergeControlsFor(detail({ canEnableAutoMerge: true }), "merged");
+    expect(mergeControlsFor(detail({ canEnableAutoMerge: true }), "merged")).toEqual({
+      merge: false,
+      enableAuto: false,
+      disableAuto: false,
+    });
+    expect(mergeControlsFor(detail({ canEnableAutoMerge: true }), "closed")).toEqual({
+      merge: false,
+      enableAuto: false,
+      disableAuto: false,
+    });
+  });
+
+  it("offers nothing when the viewer lacks permission to arm auto-merge", () => {
+    const controls = mergeControlsFor(detail({ canEnableAutoMerge: false }), "awaiting_review");
+    expect(controls).toEqual({ merge: false, enableAuto: false, disableAuto: false });
+  });
+
+  it("offers nothing when auto-merge is armed but the viewer can't cancel it", () => {
+    const controls = mergeControlsFor(
+      detail({ autoMergeEnabled: true, canDisableAutoMerge: false }),
+      "awaiting_review",
+    );
     expect(controls).toEqual({ merge: false, enableAuto: false, disableAuto: false });
   });
 });
