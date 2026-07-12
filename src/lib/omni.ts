@@ -1,5 +1,5 @@
 import type { Spec } from "@json-render/core";
-import { sidecarFetch, streamSSE } from "./api";
+import { ensureOk, sidecarFetch, streamSSE } from "./api";
 import type { ProviderId } from "./chat";
 
 /** A conversational turn sent to the Omni generator. */
@@ -51,7 +51,7 @@ export interface OmniLayoutDetail extends OmniLayoutSummary {
 
 export async function listLayouts(): Promise<OmniLayoutSummary[]> {
   const res = await sidecarFetch("/api/omni/layouts");
-  if (!res.ok) throw new Error(`list layouts failed: ${res.status}`);
+  await ensureOk(res, "list layouts");
   return res.json();
 }
 
@@ -62,17 +62,17 @@ export async function saveLayout(name: string, spec: Spec): Promise<OmniLayoutSu
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, spec }),
   });
-  if (!res.ok) throw new Error(`save layout failed: ${res.status}`);
+  await ensureOk(res, "save layout");
   return res.json();
 }
 
 export async function getLayout(id: string): Promise<OmniLayoutDetail> {
   const res = await sidecarFetch(`/api/omni/layouts/${id}`);
-  if (!res.ok) throw new Error(`get layout failed: ${res.status}`);
+  await ensureOk(res, "get layout");
   return res.json();
 }
 
 export async function deleteLayout(id: string): Promise<void> {
   const res = await sidecarFetch(`/api/omni/layouts/${id}`, { method: "DELETE" });
-  if (!res.ok) throw new Error(`delete layout failed: ${res.status}`);
+  await ensureOk(res, "delete layout");
 }

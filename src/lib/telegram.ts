@@ -1,4 +1,4 @@
-import { sidecarFetch } from "./api";
+import { ensureOk, sidecarFetch } from "./api";
 
 export type TelegramSecurityEventType = "unlock" | "lock" | "failed" | "lockout";
 
@@ -14,7 +14,7 @@ export interface TelegramSecurityEvent {
 /** Fetches Telegram auth events with a sequence greater than `since`. */
 export async function getSecurityEvents(since: number): Promise<TelegramSecurityEvent[]> {
   const res = await sidecarFetch(`/api/telegram/security-events?since=${since}`);
-  if (!res.ok) throw new Error(`telegram security-events failed: ${res.status}`);
+  await ensureOk(res, "telegram security-events");
   const data = (await res.json()) as { events: TelegramSecurityEvent[] };
   return data.events;
 }

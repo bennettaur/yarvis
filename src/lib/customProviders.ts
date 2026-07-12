@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { sidecarFetch } from "./api";
+import { ensureOk, sidecarFetch } from "./api";
 
 /**
  * Wire protocol the proxy speaks:
@@ -48,7 +48,7 @@ export interface CustomProviderSecretStatus {
 
 export async function listCustomProviders(): Promise<CustomProvider[]> {
   const res = await sidecarFetch("/api/custom-providers");
-  if (!res.ok) throw new Error(`list custom providers failed: ${res.status}`);
+  await ensureOk(res, "list custom providers");
   return res.json();
 }
 
@@ -58,7 +58,7 @@ export async function createCustomProvider(input: CustomProviderInput): Promise<
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
-  if (!res.ok) throw new Error(`create custom provider failed: ${res.status}`);
+  await ensureOk(res, "create custom provider");
   return res.json();
 }
 
@@ -71,7 +71,7 @@ export async function updateCustomProvider(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   });
-  if (!res.ok) throw new Error(`update custom provider failed: ${res.status}`);
+  await ensureOk(res, "update custom provider");
   return res.json();
 }
 
@@ -79,9 +79,7 @@ export async function deleteCustomProvider(id: string): Promise<void> {
   const res = await sidecarFetch(`/api/custom-providers/${id}`, {
     method: "DELETE",
   });
-  if (!res.ok && res.status !== 204) {
-    throw new Error(`delete custom provider failed: ${res.status}`);
-  }
+  await ensureOk(res, "delete custom provider");
 }
 
 /* ---------- Secrets (Tauri commands, Keychain-backed) ---------- */

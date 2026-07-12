@@ -1,4 +1,4 @@
-import { sidecarFetch, streamSSE } from "./api";
+import { ensureOk, sidecarFetch, streamSSE } from "./api";
 
 /**
  * Built-in providers use their bare name; user-configured proxies are
@@ -69,13 +69,13 @@ export interface ChatEvent {
 
 export async function listProviders(): Promise<ProviderInfo[]> {
   const res = await sidecarFetch("/api/chat/providers");
-  if (!res.ok) throw new Error(`providers failed: ${res.status}`);
+  await ensureOk(res, "providers");
   return res.json();
 }
 
 export async function listSessions(): Promise<ChatSession[]> {
   const res = await sidecarFetch("/api/chat/sessions");
-  if (!res.ok) throw new Error(`sessions failed: ${res.status}`);
+  await ensureOk(res, "sessions");
   return res.json();
 }
 
@@ -85,13 +85,13 @@ export async function createSession(title?: string): Promise<ChatSession> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title: title ?? null }),
   });
-  if (!res.ok) throw new Error(`create session failed: ${res.status}`);
+  await ensureOk(res, "create session");
   return res.json();
 }
 
 export async function getMessages(sessionId: string): Promise<ChatMessage[]> {
   const res = await sidecarFetch(`/api/chat/sessions/${sessionId}/messages`);
-  if (!res.ok) throw new Error(`messages failed: ${res.status}`);
+  await ensureOk(res, "messages");
   return res.json();
 }
 
