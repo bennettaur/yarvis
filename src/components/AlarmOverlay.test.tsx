@@ -1,4 +1,4 @@
-import { describe, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import type { Alarm } from "../lib/alarms";
 import { renderToHtml } from "../test/render";
@@ -37,6 +37,11 @@ const baseAlarm: Alarm = {
 };
 
 describe("AlarmOverlay", () => {
+  beforeEach(() => {
+    opened.length = 0;
+    invoked.length = 0;
+  });
+
   it("shows a Join meeting button for meeting alarms", async () => {
     const html = await renderToHtml(
       createElement(AlarmOverlay, {
@@ -55,10 +60,11 @@ describe("AlarmOverlay", () => {
   });
 
   it("opens the link and ends the alarm when Join meeting is clicked", async () => {
-    opened.length = 0;
-    invoked.length = 0;
     let done = false;
 
+    // Mounted by hand rather than via renderToHtml: the click has to happen
+    // between render and reading effects, and renderToHtml only returns a
+    // static HTML string with no live handle to dispatch the click on.
     const host = document.createElement("div");
     document.body.appendChild(host);
     const { createRoot } = await import("react-dom/client");
@@ -81,7 +87,7 @@ describe("AlarmOverlay", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(opened).toEqual(["https://meet.google.com/abc"]);
-    expect(invoked.some((c) => c.command === "acknowledge_alarm")).toBe(true);
+    expect(invoked).toContainEqual({ command: "acknowledge_alarm", args: { id: "a1" } });
     expect(done).toBe(true);
 
     root.unmount();
