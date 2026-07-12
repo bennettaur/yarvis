@@ -117,12 +117,12 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
   /**
    * Starts a Claude session in an already-active workspace and shapes the tool
    * result. Shared by create_workspace_session (after provisioning) and
-   * start_workspace_session (existing workspace). One repo → its worktree;
-   * multiple → the workspace root so Claude sees each worktree as a subfolder.
+   * start_workspace_session (existing workspace). Always launches at the
+   * workspace root so Claude sees each repo's worktree as a subfolder and can
+   * read the `.yarvis/issue-prompt.md` that start_work_on_issue seeds there.
    */
   const launchClaude = async (detail: WorkspaceDetail) => {
-    const [firstRepo] = detail.repos;
-    const cwd = detail.repos.length === 1 && firstRepo ? firstRepo.worktreePath : detail.rootPath;
+    const cwd = detail.rootPath;
     try {
       const session = await startClaude({ workspaceId: detail.id, cwd, name: detail.name });
       return {

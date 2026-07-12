@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
@@ -104,7 +104,7 @@ describe("workspace tools", () => {
     expect(result[0]!.name).toBe("widget");
   });
 
-  it("create_workspace_session provisions and starts a session in the worktree", async () => {
+  it("create_workspace_session provisions and starts a session at the workspace root", async () => {
     const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
     let startedCwd = "";
     let startedWorkspaceId = "";
@@ -125,9 +125,10 @@ describe("workspace tools", () => {
     expect(result.error).toBeUndefined();
     expect(result.status).toBe("active");
     expect(result.sessionKey).toBe(`ws-claude:${startedWorkspaceId}`);
-    // Single-repo workspace launches inside the repo's worktree.
+    // The session launches at the workspace root, not inside the repo's worktree,
+    // so each repo shows up as a subfolder.
     expect(startedCwd).toContain("rename-the-api");
-    expect(startedCwd).toContain("widget");
+    expect(startedCwd).not.toContain("widget");
   });
 
   it("create_scratch_workspace_session provisions a repo-less workspace at its root", async () => {
@@ -204,7 +205,7 @@ describe("workspace tools", () => {
     expect(created.status).toBe("active");
     const wsId = created.workspaceId as string;
 
-    // Starting again on the existing workspace succeeds and reuses its worktree.
+    // Starting again on the existing workspace succeeds and reuses its root.
     const result = (await tools.start_workspace_session.execute!({ workspaceId: wsId }, opts)) as {
       error?: string;
       sessionKey?: string;
@@ -270,11 +271,13 @@ describe("workspace tools", () => {
     const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
     const { client, calls } = fakeGitHub();
     let startedWorkspaceId = "";
+    let startedCwd = "";
     const tools = buildWorkspaceTools(db, config, {
       gitRunner: okRunner,
       githubClient: client,
       startClaudeSession: async (input) => {
         startedWorkspaceId = input.workspaceId;
+        startedCwd = input.cwd;
         return { sessionKey: `ws-claude:${input.workspaceId}` };
       },
     });
@@ -296,6 +299,17 @@ describe("workspace tools", () => {
     expect(result.sessionKey).toBe(`ws-claude:${startedWorkspaceId}`);
     expect(result.issue?.number).toBe(99);
     expect(result.warnings).toEqual([]);
+    // The session launches at the workspace root, where .yarvis/issue-prompt.md
+    // is seeded — not inside the lone repo's worktree.
+    const [ws] = await db
+      .select({ rootPath: schema.workspaces.rootPath })
+      .from(schema.workspaces)
+      .where(eq(schema.workspaces.id, result.workspaceId ?? ""));
+    expect(startedCwd).toBe(ws!.rootPath);
+    // The whole point of launching there: the seeded prompt is readable by the
+    // relative path the session is told to open.
+    const promptPath = join(startedCwd, ".yarvis", "issue-prompt.md");
+    expect(readFileSync(promptPath, "utf8")).toContain("The widget is broken.");
     // GitHub side effects ran.
     expect(calls.assigned).toEqual([["octocat"]]);
     expect(calls.labeled).toEqual([["in progress"]]);
