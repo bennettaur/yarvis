@@ -4,6 +4,7 @@ import { invalidate, prDetailKey } from "../../lib/pr/cache";
 import { refDisplayRepo, refNumber, refProviderName } from "../../lib/pr/ref";
 import type { CheckItem, PrDetail, PrRef, PrSummary } from "../../lib/pr/types";
 import { openExternal } from "../../lib/url";
+import PrWorkspaceLink from "./PrWorkspaceLink";
 
 /**
  * The high-level lifecycle states the UI shows in the floating header.
@@ -257,6 +258,7 @@ export default function PrFloatingHeader({
           {STATUS_LABEL[status]}
         </span>
         <div className="flex shrink-0 items-center gap-2">
+          <PrWorkspaceLink prRef={prRef} />
           {actions.map((cfg) => {
             const isPending = pending === cfg.key;
             const isOpen = open === cfg.key;

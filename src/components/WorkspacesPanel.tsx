@@ -25,6 +25,7 @@ import ArchiveDialog from "./workspaces/ArchiveDialog";
 import ArchivedView from "./workspaces/ArchivedView";
 import LinkTaskControl from "./workspaces/LinkTaskControl";
 import WorkspaceFileDiff from "./workspaces/WorkspaceFileDiff";
+import WorkspacePrStatus from "./workspaces/WorkspacePrStatus";
 
 const STATUS_STYLES: Record<WorkspaceStatus, string> = {
   creating: "bg-amber-900/40 text-amber-200",
@@ -827,6 +828,20 @@ function WorkspaceDetailView({
             </div>
           ))}
         </div>
+        {provisioned && detail.repos.some((wr) => wr.status === "ready") && (
+          <div className="mt-2 space-y-1.5 border-t border-zinc-800 pt-2">
+            {detail.repos
+              .filter((wr) => wr.status === "ready")
+              .map((wr) => (
+                <WorkspacePrStatus
+                  key={wr.id}
+                  workspaceId={detail.id}
+                  repo={wr}
+                  showRepoName={detail.repos.length > 1}
+                />
+              ))}
+          </div>
+        )}
         {detail.tasks.length > 0 && (
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
             <span className="uppercase tracking-wide">Tasks</span>
