@@ -119,7 +119,7 @@ function DiffBody({
   };
 
   return (
-    <div className="overflow-x-auto bg-zinc-950 font-mono text-xs leading-relaxed">
+    <div className="overflow-x-auto rounded-b-lg bg-zinc-950 font-mono text-xs leading-relaxed">
       {rows.map((row, i) => {
         const commentable = row.rightLine != null;
         const lineThreads = row.rightLine != null ? byLine.get(row.rightLine) : undefined;
@@ -259,11 +259,21 @@ function FileDiff({
       id={prFileAnchorId(prRef, index)}
       open={open}
       onToggle={(e) => setOpen(e.currentTarget.open)}
-      className={`scroll-mt-4 overflow-hidden rounded-lg border border-zinc-800 ${
-        isViewed ? "opacity-70" : ""
-      }`}
+      className={`scroll-mt-4 rounded-lg border border-zinc-800 ${isViewed ? "opacity-70" : ""}`}
     >
-      <summary className="flex cursor-pointer items-center gap-2 bg-zinc-900 px-3 py-2 text-sm">
+      {/* The header sticks to the top of the scrolling review body while its
+          diff is in view, so the filename and the Viewed toggle stay reachable
+          all the way to the end of a long file. It stops sticking once the
+          file's own box scrolls past — the next file's header takes over.
+          `overflow-hidden` is deliberately absent from the `<details>`: a
+          clipping ancestor would confine the sticky header to that box and
+          break the effect, so the corners are rounded on the header/body
+          directly instead. */}
+      <summary
+        className={`sticky top-0 z-10 flex cursor-pointer items-center gap-2 bg-zinc-900 px-3 py-2 text-sm ${
+          open ? "rounded-t-lg" : "rounded-lg"
+        }`}
+      >
         <span
           className={`min-w-0 truncate font-mono ${
             isViewed ? "text-zinc-500 line-through" : "text-zinc-200"
