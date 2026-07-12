@@ -59,9 +59,11 @@ Status of the build against the original vision. The full V1 plan lives at
   action that creates a workspace for the issue, links it, best-effort assigns
   the issue to the viewer and labels it in-progress on GitHub, then provisions
   the worktree and launches a Claude session seeded with the issue title +
-  description (written to `.yarvis/issue-prompt.md`). The data model, provider
-  layer, and `/api/issues/:provider` routes are source-agnostic (keyed by
-  provider / sourceKey / externalId) so JIRA can be added without a rewrite.
+  description (written to `.yarvis/issue-prompt.md`). The chat agent can drive
+  the same start-work flow conversationally via its `list_repo_issues` /
+  `start_work_on_issue` tools. The data model, provider layer, and
+  `/api/issues/:provider` routes are source-agnostic (keyed by provider /
+  sourceKey / externalId) so JIRA can be added without a rewrite.
 - **Memory & knowledge** — notes, daily/weekly recaps (tasks completed + notes,
   LLM-summarized or offline raw), document/URL ingestion (chunk → embed →
   store), and a management UI to search/delete (Memory tab). Reuses the
@@ -116,7 +118,12 @@ Status of the build against the original vision. The full V1 plan lives at
   the active snapshot is sent to the agent as a nonce-delimited, non-instruction
   screen-context message (kept out of the system prompt). A `request_attention`
   tool lets the agent raise a nav-rail badge + an OS notification when it finishes
-  background work or needs a decision. Tab shortcuts too: Cmd/Ctrl+1–9 jump to a
+  background work or needs a decision. The agent also holds workspace tools: it
+  can list repos and their open issues, spin up workspaces (from repos, from an
+  issue like the "Start work" button, or scratch) and start remote-controllable
+  Claude sessions, report a workspace's PR / CI-check / mergeable status, and
+  archive workspaces — all from natural language, and reachable from Chat, Omni,
+  and the Telegram bot alike. Tab shortcuts too: Cmd/Ctrl+1–9 jump to a
   tab, Cmd/Ctrl+Shift+[ / ] cycle through them.
 - **Telegram remote control** — chat with Yarvis and issue control commands from
   Telegram. A long-poll bot in the sidecar drives the same chat agent (extracted

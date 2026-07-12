@@ -12,6 +12,7 @@ import {
   deleteFilter,
   findRepoBySourceKey,
   getWorkspaceRoot,
+  IN_PROGRESS_LABEL,
   listFilters,
   listIssueRepos,
   listLinks,
@@ -22,9 +23,6 @@ import {
   writeIssuePrompt,
 } from "./service.ts";
 import type { IssueProvider } from "./types.ts";
-
-/** Default label applied to an issue when work starts (creatable in-repo). */
-const IN_PROGRESS_LABEL = "in progress";
 
 /**
  * Same owner/repo validation the PR routes use — these params are interpolated
