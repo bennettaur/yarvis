@@ -48,7 +48,7 @@ const baseUrl = z
   .max(2048)
   .superRefine((value, ctx) => {
     try {
-      validateOutboundUrl(value);
+      validateOutboundUrl(value, { allowLoopback: true });
     } catch (e) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
