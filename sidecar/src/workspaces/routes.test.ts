@@ -58,11 +58,11 @@ afterAll(async () => {
   rmSync(workspacesRoot, { recursive: true, force: true });
 });
 
-async function addRepo(): Promise<{ id: string }> {
+async function addRepo(cloneUrl = "git@github.com:acme/widget.git"): Promise<{ id: string }> {
   const res = await app.request("/api/repos", {
     method: "POST",
     headers: jsonAuth,
-    body: JSON.stringify({ cloneUrl: "git@github.com:acme/widget.git" }),
+    body: JSON.stringify({ cloneUrl }),
   });
   return (await res.json()) as { id: string };
 }
@@ -265,6 +265,113 @@ describe("provision + archive (injected git runner)", () => {
     expect(detail?.status).toBe("archived");
     expect(detail?.summary).toBe("did the thing");
     expect(detail?.repos[0]?.status).toBe("removed");
+  });
+
+  it("auto-includes a linked PR on archive even when it hasn't merged", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "open-pr", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    const [wr] = await db
+      .select()
+      .from(workspaceRepos)
+      .where(eq(workspaceRepos.workspaceId, ws.id));
+    await db.insert(workspaceRepoPr).values({
+      workspaceRepoId: wr!.id,
+      prNumber: 7,
+      prUrl: "https://example/pr/7",
+      prState: "open",
+    });
+
+    const result = await archiveWorkspace(db, ws.id, {}, fakeGit);
+    expect(result.status).toBe("archived");
+
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.mergedPrUrl).toBe("https://example/pr/7");
+  });
+
+  it("prefers a merged PR over an open one when auto-including on archive", async () => {
+    const db = getDb(url).db;
+    const openRepo = await addRepo();
+    const mergedRepo = await addRepo("git@github.com:acme/gadget.git");
+    const ws = await createWorkspace(db, config, {
+      name: "multi-pr",
+      repoIds: [openRepo.id, mergedRepo.id],
+    });
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    const wrs = await db.select().from(workspaceRepos).where(eq(workspaceRepos.workspaceId, ws.id));
+    const openWr = wrs.find((w) => w.repoId === openRepo.id);
+    const mergedWr = wrs.find((w) => w.repoId === mergedRepo.id);
+    // Insert the open PR first so a plain first-match fallback would pick it.
+    await db.insert(workspaceRepoPr).values({
+      workspaceRepoId: openWr!.id,
+      prNumber: 1,
+      prUrl: "https://example/pr/open",
+      prState: "open",
+    });
+    await db.insert(workspaceRepoPr).values({
+      workspaceRepoId: mergedWr!.id,
+      prNumber: 2,
+      prUrl: "https://example/pr/merged",
+      prState: "merged",
+    });
+
+    await archiveWorkspace(db, ws.id, {}, fakeGit);
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.mergedPrUrl).toBe("https://example/pr/merged");
+  });
+
+  it("records an explicit PR URL over an auto-included one on archive", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "explicit-pr", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    const [wr] = await db
+      .select()
+      .from(workspaceRepos)
+      .where(eq(workspaceRepos.workspaceId, ws.id));
+    await db.insert(workspaceRepoPr).values({
+      workspaceRepoId: wr!.id,
+      prNumber: 3,
+      prUrl: "https://example/pr/linked",
+      prState: "open",
+    });
+
+    await archiveWorkspace(db, ws.id, { mergedPrUrl: "https://example/pr/explicit" }, fakeGit);
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.mergedPrUrl).toBe("https://example/pr/explicit");
+  });
+
+  it("ignores a closed PR when auto-including on archive", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "closed-pr", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    const [wr] = await db
+      .select()
+      .from(workspaceRepos)
+      .where(eq(workspaceRepos.workspaceId, ws.id));
+    await db.insert(workspaceRepoPr).values({
+      workspaceRepoId: wr!.id,
+      prNumber: 4,
+      prUrl: "https://example/pr/closed",
+      prState: "closed",
+    });
+
+    await archiveWorkspace(db, ws.id, {}, fakeGit);
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.mergedPrUrl).toBeNull();
+  });
+
+  it("leaves the archived PR URL empty when no PR is linked", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "no-pr", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+
+    await archiveWorkspace(db, ws.id, {}, fakeGit);
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.mergedPrUrl).toBeNull();
   });
 
   it("suffixes the branch when it already exists in the repo", async () => {
