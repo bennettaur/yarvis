@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { applyReviewAction, type ReviewAction } from "../../lib/pr/api";
+import {
+  applyReviewAction,
+  disableAutoMerge,
+  enableAutoMerge,
+  mergePr,
+  type ReviewAction,
+} from "../../lib/pr/api";
 import { invalidate, prDetailKey } from "../../lib/pr/cache";
 import { refDisplayRepo, refNumber, refProviderName } from "../../lib/pr/ref";
-import type { CheckItem, PrDetail, PrRef, PrSummary } from "../../lib/pr/types";
+import type { CheckItem, MergeMethod, PrDetail, PrRef, PrSummary } from "../../lib/pr/types";
 import { openExternal } from "../../lib/url";
 import PrWorkspaceLink from "./PrWorkspaceLink";
 
@@ -182,6 +188,95 @@ function actionsForStatus(status: PrUiStatus): ActionConfig[] {
   return [APPROVE, REQUEST_CHANGES];
 }
 
+/** Human labels for the merge strategies, mirroring GitHub's own wording. */
+const MERGE_METHOD_LABEL: Record<MergeMethod, string> = {
+  MERGE: "Create a merge commit",
+  SQUASH: "Squash and merge",
+  REBASE: "Rebase and merge",
+};
+
+/** Which merge controls the header should offer for the current PR. */
+export interface MergeControls {
+  /** Merge now (PR is mergeable and checks are green). */
+  merge: boolean;
+  /** Arm auto-merge (repo allows it and the viewer has permission). */
+  enableAuto: boolean;
+  /** Cancel an already-armed auto-merge. */
+  disableAuto: boolean;
+}
+
+const NO_MERGE_CONTROLS: MergeControls = { merge: false, enableAuto: false, disableAuto: false };
+
+/**
+ * Decides which merge buttons are available for a PR. Terminal PRs and any PR
+ * whose repo exposes no merge methods (e.g. Azure) get none. When auto-merge is
+ * already armed the only control is cancelling it. Otherwise "Merge" shows once
+ * the PR is ready to merge, and "Enable auto-merge" shows when it isn't yet but
+ * the viewer may arm it — the two are complementary, never both at once.
+ */
+export function mergeControlsFor(detail: PrDetail | null, status: PrUiStatus): MergeControls {
+  if (!detail) return NO_MERGE_CONTROLS;
+  if (status === "merged" || status === "closed") return NO_MERGE_CONTROLS;
+  if (detail.autoMergeEnabled) {
+    return { merge: false, enableAuto: false, disableAuto: detail.canDisableAutoMerge };
+  }
+  if (detail.mergeMethods.length === 0) return NO_MERGE_CONTROLS;
+  const merge = status === "ready_to_merge";
+  return { merge, enableAuto: !merge && detail.canEnableAutoMerge, disableAuto: false };
+}
+
+/**
+ * A button that opens a small popover of the repo's allowed merge strategies;
+ * picking one fires the action. Used for both "Merge" and "Enable auto-merge",
+ * which share the strategy choice but differ in what they do with it.
+ */
+function MergeMenu({
+  label,
+  className,
+  methods,
+  pending,
+  isOpen,
+  disabled,
+  onToggle,
+  onPick,
+}: {
+  label: string;
+  className: string;
+  methods: MergeMethod[];
+  pending: boolean;
+  isOpen: boolean;
+  disabled: boolean;
+  onToggle: () => void;
+  onPick: (method: MergeMethod) => void;
+}) {
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={onToggle}
+        disabled={disabled}
+        className={`rounded-md px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors disabled:opacity-50 ${className}`}
+      >
+        {pending ? "…" : label}
+      </button>
+      {isOpen && (
+        <div className="absolute right-0 top-full z-20 mt-1 flex flex-col gap-1 rounded-md border border-zinc-700 bg-zinc-900 p-1 shadow-lg">
+          {methods.map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => onPick(m)}
+              className="whitespace-nowrap rounded px-2 py-1 text-left text-xs text-zinc-200 hover:bg-zinc-800"
+            >
+              {MERGE_METHOD_LABEL[m]}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * The static title/status bar at the top of the in-app PR review. Sits above
  * the scrolling body (the parent `PrDetailView` is a flex column whose body
@@ -205,9 +300,15 @@ export default function PrFloatingHeader({
   const [open, setOpen] = useState<ReviewAction | null>(null);
   const [pending, setPending] = useState<ReviewAction | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Merge controls run on their own pending flag so a merge in flight and a
+  // review in flight don't clobber each other's spinner.
+  const [mergeMenu, setMergeMenu] = useState<null | "merge" | "auto_merge">(null);
+  const [mergePending, setMergePending] = useState(false);
 
   const status = derivePrUiStatus(detail, pr);
   const actions = actionsForStatus(status);
+  const mergeControls = mergeControlsFor(detail, status);
+  const busy = pending !== null || mergePending;
 
   const run = async (action: ReviewAction, body?: string) => {
     setPending(action);
@@ -220,6 +321,34 @@ export default function PrFloatingHeader({
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setPending(null);
+    }
+  };
+
+  const runMerge = async (op: "merge" | "auto_merge", method: MergeMethod) => {
+    setMergePending(true);
+    setError(null);
+    try {
+      if (op === "merge") await mergePr(prRef, method);
+      else await enableAutoMerge(prRef, method);
+      invalidate(prDetailKey(prRef));
+      setMergeMenu(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setMergePending(false);
+    }
+  };
+
+  const runDisableAutoMerge = async () => {
+    setMergePending(true);
+    setError(null);
+    try {
+      await disableAutoMerge(prRef);
+      invalidate(prDetailKey(prRef));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setMergePending(false);
     }
   };
 
@@ -269,7 +398,7 @@ export default function PrFloatingHeader({
               <div key={cfg.key} className="relative">
                 <button
                   onClick={onClick}
-                  disabled={pending !== null}
+                  disabled={busy}
                   className={`rounded-md px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors disabled:opacity-50 ${cfg.className}`}
                 >
                   {isPending ? "…" : cfg.label}
@@ -289,6 +418,45 @@ export default function PrFloatingHeader({
               </div>
             );
           })}
+          {detail?.autoMergeEnabled && (
+            <span className="rounded bg-sky-900/60 px-2 py-0.5 text-xs font-medium text-sky-200">
+              Auto-merge on
+            </span>
+          )}
+          {mergeControls.merge && detail && (
+            <MergeMenu
+              label="Merge"
+              className="bg-emerald-600 hover:bg-emerald-500"
+              methods={detail.mergeMethods}
+              pending={mergePending}
+              isOpen={mergeMenu === "merge"}
+              disabled={busy}
+              onToggle={() => setMergeMenu(mergeMenu === "merge" ? null : "merge")}
+              onPick={(method) => void runMerge("merge", method)}
+            />
+          )}
+          {mergeControls.enableAuto && detail && (
+            <MergeMenu
+              label="Enable auto-merge"
+              className="bg-sky-600 hover:bg-sky-500"
+              methods={detail.mergeMethods}
+              pending={mergePending}
+              isOpen={mergeMenu === "auto_merge"}
+              disabled={busy}
+              onToggle={() => setMergeMenu(mergeMenu === "auto_merge" ? null : "auto_merge")}
+              onPick={(method) => void runMerge("auto_merge", method)}
+            />
+          )}
+          {mergeControls.disableAuto && (
+            <button
+              type="button"
+              onClick={() => void runDisableAutoMerge()}
+              disabled={busy}
+              className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800 disabled:opacity-50"
+            >
+              {mergePending ? "…" : "Cancel auto-merge"}
+            </button>
+          )}
           <button
             onClick={() => openExternal(pr.url)}
             className="rounded-md border border-zinc-700 px-2 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"

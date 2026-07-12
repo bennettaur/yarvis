@@ -187,4 +187,88 @@ describe("github client", () => {
     const detail = await gh.prDetail("o", "r", 9);
     expect(detail).toMatchObject({ number: 9, draft: true, checks: [] });
   });
+
+  it("reads merge methods and auto-merge state from the detail payload", () => {
+    const detail = toPrDetail(
+      {
+        number: 5,
+        title: "t",
+        state: "OPEN",
+        isDraft: false,
+        mergeable: "MERGEABLE",
+        autoMergeRequest: { enabledAt: "2026-01-01" },
+        viewerCanEnableAutoMerge: false,
+        viewerCanDisableAutoMerge: true,
+        author: { login: "me" },
+        reviewThreads: { nodes: [] },
+        commits: { nodes: [] },
+      },
+      { mergeCommitAllowed: false, squashMergeAllowed: true, rebaseMergeAllowed: true },
+    );
+    expect(detail.mergeMethods).toEqual(["SQUASH", "REBASE"]);
+    expect(detail.autoMergeEnabled).toBe(true);
+    expect(detail.canEnableAutoMerge).toBe(false);
+    expect(detail.canDisableAutoMerge).toBe(true);
+  });
+
+  it("defaults merge fields off when no repository node is supplied", () => {
+    const detail = toPrDetail({
+      number: 5,
+      state: "OPEN",
+      author: { login: "me" },
+      reviewThreads: { nodes: [] },
+      commits: { nodes: [] },
+    });
+    expect(detail.mergeMethods).toEqual([]);
+    expect(detail.autoMergeEnabled).toBe(false);
+    expect(detail.canEnableAutoMerge).toBe(false);
+    expect(detail.canDisableAutoMerge).toBe(false);
+  });
+
+  it("merges a PR with the chosen method after resolving its node id", async () => {
+    const bodies: Array<Record<string, any>> = [];
+    const capturing = (async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(
+        JSON.stringify({ data: { repository: { pullRequest: { id: "PR_node1" } } } }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const gh = new GitHubClient("t", capturing);
+    await gh.mergePullRequest("o", "r", 3, "SQUASH");
+    // First call resolves the node id; second runs the merge mutation.
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]!.query).toContain("mergePullRequest");
+    expect(bodies[1]!.variables).toEqual({ id: "PR_node1", method: "SQUASH" });
+  });
+
+  it("enables auto-merge with the chosen method", async () => {
+    const bodies: Array<Record<string, any>> = [];
+    const capturing = (async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(
+        JSON.stringify({ data: { repository: { pullRequest: { id: "PR_node2" } } } }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const gh = new GitHubClient("t", capturing);
+    await gh.enableAutoMerge("o", "r", 4, "MERGE");
+    expect(bodies[1]!.query).toContain("enablePullRequestAutoMerge");
+    expect(bodies[1]!.variables).toEqual({ id: "PR_node2", method: "MERGE" });
+  });
+
+  it("disables auto-merge by node id", async () => {
+    const bodies: Array<Record<string, any>> = [];
+    const capturing = (async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(
+        JSON.stringify({ data: { repository: { pullRequest: { id: "PR_node3" } } } }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const gh = new GitHubClient("t", capturing);
+    await gh.disableAutoMerge("o", "r", 5);
+    expect(bodies[1]!.query).toContain("disablePullRequestAutoMerge");
+    expect(bodies[1]!.variables).toEqual({ id: "PR_node3" });
+  });
 });

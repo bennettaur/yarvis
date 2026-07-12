@@ -84,6 +84,34 @@ describe("github viewed-files validation", () => {
   });
 });
 
+describe("github merge validation", () => {
+  it("rejects an unknown merge method with 400", async () => {
+    const res = await configured.request("/api/github/pr/octo/repo/1/merge", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ method: "FAST_FORWARD" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a non-numeric PR number on auto-merge with 400", async () => {
+    const res = await configured.request("/api/github/pr/octo/repo/abc/auto-merge", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ method: "SQUASH" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a non-numeric PR number on cancel-auto-merge with 400", async () => {
+    const res = await configured.request("/api/github/pr/octo/repo/abc/auto-merge", {
+      method: "DELETE",
+      headers: { ...auth },
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("github not-configured handling", () => {
   it("requires the bearer token", async () => {
     const res = await configured.request("/api/github/viewer");

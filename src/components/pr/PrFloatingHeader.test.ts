@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { PrDetail, PrSummary } from "../../lib/pr/types";
-import { derivePrUiStatus } from "./PrFloatingHeader";
+import { derivePrUiStatus, mergeControlsFor } from "./PrFloatingHeader";
 
 const summary = (overrides: Partial<PrSummary> = {}): PrSummary => ({
   ref: { provider: "github", owner: "octo", repo: "repo", number: 1 },
@@ -26,6 +26,10 @@ const detail = (overrides: Partial<PrDetail> = {}): PrDetail => ({
   additions: 0,
   deletions: 0,
   mergeable: "UNKNOWN",
+  mergeMethods: ["MERGE", "SQUASH", "REBASE"],
+  autoMergeEnabled: false,
+  canEnableAutoMerge: false,
+  canDisableAutoMerge: false,
   checks: [],
   reviewThreads: [],
   ...overrides,
@@ -129,5 +133,67 @@ describe("derivePrUiStatus", () => {
   it("returns closed for an azure `abandoned` state", () => {
     const s = derivePrUiStatus(detail({ state: "abandoned" }), summary({ state: "abandoned" }));
     expect(s).toBe("closed");
+  });
+});
+
+describe("mergeControlsFor", () => {
+  it("offers nothing while detail is still loading", () => {
+    expect(mergeControlsFor(null, "ready_to_merge")).toEqual({
+      merge: false,
+      enableAuto: false,
+      disableAuto: false,
+    });
+  });
+
+  it("offers a merge button once the PR is ready to merge", () => {
+    const controls = mergeControlsFor(detail({ canEnableAutoMerge: true }), "ready_to_merge");
+    expect(controls).toEqual({ merge: true, enableAuto: false, disableAuto: false });
+  });
+
+  it("offers enable-auto-merge when the PR isn't ready but the viewer may arm it", () => {
+    const controls = mergeControlsFor(detail({ canEnableAutoMerge: true }), "awaiting_review");
+    expect(controls).toEqual({ merge: false, enableAuto: true, disableAuto: false });
+  });
+
+  it("offers only cancel once auto-merge is already armed", () => {
+    const controls = mergeControlsFor(
+      detail({ autoMergeEnabled: true, canDisableAutoMerge: true, canEnableAutoMerge: false }),
+      "awaiting_review",
+    );
+    expect(controls).toEqual({ merge: false, enableAuto: false, disableAuto: true });
+  });
+
+  it("offers nothing when the repo exposes no merge methods (e.g. Azure)", () => {
+    const controls = mergeControlsFor(
+      detail({ mergeMethods: [], canEnableAutoMerge: true }),
+      "ready_to_merge",
+    );
+    expect(controls).toEqual({ merge: false, enableAuto: false, disableAuto: false });
+  });
+
+  it("offers nothing on a terminal PR even if the detail still says mergeable", () => {
+    expect(mergeControlsFor(detail({ canEnableAutoMerge: true }), "merged")).toEqual({
+      merge: false,
+      enableAuto: false,
+      disableAuto: false,
+    });
+    expect(mergeControlsFor(detail({ canEnableAutoMerge: true }), "closed")).toEqual({
+      merge: false,
+      enableAuto: false,
+      disableAuto: false,
+    });
+  });
+
+  it("offers nothing when the viewer lacks permission to arm auto-merge", () => {
+    const controls = mergeControlsFor(detail({ canEnableAutoMerge: false }), "awaiting_review");
+    expect(controls).toEqual({ merge: false, enableAuto: false, disableAuto: false });
+  });
+
+  it("offers nothing when auto-merge is armed but the viewer can't cancel it", () => {
+    const controls = mergeControlsFor(
+      detail({ autoMergeEnabled: true, canDisableAutoMerge: false }),
+      "awaiting_review",
+    );
+    expect(controls).toEqual({ merge: false, enableAuto: false, disableAuto: false });
   });
 });

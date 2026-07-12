@@ -64,6 +64,12 @@ const viewedSchema = z.object({
   viewed: z.boolean(),
 });
 
+// The merge / auto-merge body carries the chosen strategy. GitHub defaults to a
+// merge commit when omitted, so `method` is optional.
+const mergeSchema = z.object({
+  method: z.enum(["MERGE", "SQUASH", "REBASE"]).optional(),
+});
+
 /** GitHub PR dashboard routes, mounted under /api/github. */
 export function createGithubRoutes(config: Config): Hono {
   const router = new Hono();
@@ -187,6 +193,62 @@ export function createGithubRoutes(config: Config): Hono {
         parsed.data.body,
       );
       return c.json({ ok: true }, 201);
+    } catch (e) {
+      return c.json({ error: String(e) }, 502);
+    }
+  });
+
+  // Merge the PR now with the given strategy (defaults to a merge commit).
+  router.post("/pr/:owner/:repo/:number/merge", async (c) => {
+    const gh = client();
+    if (!gh) return c.json({ error: "github token not configured" }, 400);
+    const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
+    if ("error" in params) return c.json({ error: params.error }, 400);
+    const parsed = mergeSchema.safeParse((await c.req.json().catch(() => null)) ?? {});
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    try {
+      await gh.mergePullRequest(
+        params.owner,
+        params.repo,
+        params.number,
+        parsed.data.method ?? "MERGE",
+      );
+      return c.json({ ok: true });
+    } catch (e) {
+      return c.json({ error: String(e) }, 502);
+    }
+  });
+
+  // Arm auto-merge so GitHub merges once branch protections pass.
+  router.post("/pr/:owner/:repo/:number/auto-merge", async (c) => {
+    const gh = client();
+    if (!gh) return c.json({ error: "github token not configured" }, 400);
+    const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
+    if ("error" in params) return c.json({ error: params.error }, 400);
+    const parsed = mergeSchema.safeParse((await c.req.json().catch(() => null)) ?? {});
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    try {
+      await gh.enableAutoMerge(
+        params.owner,
+        params.repo,
+        params.number,
+        parsed.data.method ?? "MERGE",
+      );
+      return c.json({ ok: true });
+    } catch (e) {
+      return c.json({ error: String(e) }, 502);
+    }
+  });
+
+  // Cancel a pending auto-merge.
+  router.delete("/pr/:owner/:repo/:number/auto-merge", async (c) => {
+    const gh = client();
+    if (!gh) return c.json({ error: "github token not configured" }, 400);
+    const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
+    if ("error" in params) return c.json({ error: params.error }, 400);
+    try {
+      await gh.disableAutoMerge(params.owner, params.repo, params.number);
+      return c.json({ ok: true });
     } catch (e) {
       return c.json({ error: String(e) }, 502);
     }
