@@ -4,7 +4,7 @@
  * module owns the database state and orchestration.
  */
 
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { relative } from "node:path";
 import { and, eq, inArray } from "drizzle-orm";
 import type { Config } from "../config.ts";
@@ -148,6 +148,11 @@ export async function deleteRepo(db: Db, id: string): Promise<boolean> {
 
 export interface CreateWorkspaceInput {
   name: string;
+  /**
+   * Repos to build worktrees for. Empty means a *scratch* workspace: just a
+   * folder to run Claude in, for experimentation and exploration — no repo,
+   * clone, or worktree.
+   */
   repoIds: string[];
   taskId?: string | null;
 }
@@ -199,9 +204,10 @@ export async function createWorkspace(
   config: Config,
   input: CreateWorkspaceInput,
 ): Promise<Workspace> {
-  if (input.repoIds.length === 0) throw new Error("a workspace needs at least one repo");
-
-  const selected = await db.select().from(repos).where(inArray(repos.id, input.repoIds));
+  // No repos is allowed: that's a scratch workspace (just a folder).
+  const selected = input.repoIds.length
+    ? await db.select().from(repos).where(inArray(repos.id, input.repoIds))
+    : [];
   if (selected.length !== input.repoIds.length) {
     throw new Error("one or more repos not found");
   }
@@ -224,19 +230,23 @@ export async function createWorkspace(
       .values({ name: input.name.trim(), slug, rootPath, status: "creating" })
       .returning();
 
-    await tx.insert(workspaceRepos).values(
-      selected.map((repo) => ({
-        workspaceId: workspace!.id,
-        repoId: repo.id,
-        branch,
-        baseBranch: repo.defaultBranch ?? "main",
-        worktreePath: `${rootPath}/${
-          (nameCounts.get(repo.name.toLowerCase()) ?? 0) > 1
-            ? `${repo.name.toLowerCase()}-${repo.owner.toLowerCase()}`
-            : repo.name.toLowerCase()
-        }`,
-      })),
-    );
+    // A scratch workspace has no repo rows; skip the insert (Drizzle rejects an
+    // empty values array).
+    if (selected.length) {
+      await tx.insert(workspaceRepos).values(
+        selected.map((repo) => ({
+          workspaceId: workspace!.id,
+          repoId: repo.id,
+          branch,
+          baseBranch: repo.defaultBranch ?? "main",
+          worktreePath: `${rootPath}/${
+            (nameCounts.get(repo.name.toLowerCase()) ?? 0) > 1
+              ? `${repo.name.toLowerCase()}-${repo.owner.toLowerCase()}`
+              : repo.name.toLowerCase()
+          }`,
+        })),
+      );
+    }
 
     if (input.taskId) {
       await tx.update(tasks).set({ workspaceId: workspace!.id }).where(eq(tasks.id, input.taskId));
@@ -471,6 +481,12 @@ export async function provisionWorkspace(
     if (!detail) {
       await safeEmit({ type: "error", message: "workspace not found" });
       return;
+    }
+
+    // A scratch workspace (no repos) has no worktree to cut its root folder as a
+    // side effect, so create it explicitly here.
+    if (detail.repos.length === 0) {
+      mkdirSync(detail.rootPath, { recursive: true });
     }
 
     const provisionRepo = async (wr: WorkspaceRepoDetail): Promise<void> => {

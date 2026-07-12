@@ -115,6 +115,35 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
       },
     }),
 
+    create_scratch_workspace_session: tool({
+      description:
+        "Create a scratch workspace — just a folder, no repo or git worktree — provision it, and start a remote-controllable Claude Code session in it. Use this for experimentation and exploration when the user doesn't need a specific repo checked out. The session is drivable from claude.ai/code or the Claude mobile app by its name and appears as a live terminal in the Workspaces tab.",
+      inputSchema: z.object({
+        name: z.string().describe("Human-readable workspace name, e.g. 'Scratchpad'"),
+        taskId: z
+          .string()
+          .uuid()
+          .optional()
+          .describe("Optional task to link; archiving the workspace completes it"),
+      }),
+      execute: async ({ name, taskId }) => {
+        const ws = await createWorkspace(db, config, { name, repoIds: [], taskId });
+        await provisionWorkspace(db, ws.id, () => undefined, gitRunner);
+
+        const detail = await getWorkspace(db, ws.id);
+        if (!detail) return { error: "workspace vanished after creation" };
+        if (detail.status !== "active") {
+          return {
+            error: "workspace provisioning failed; Claude session not started",
+            workspaceId: ws.id,
+            status: detail.status,
+          };
+        }
+
+        return launchClaude(detail);
+      },
+    }),
+
     list_workspaces: tool({
       description:
         "List existing workspaces (id, name, status, repos) so you can act on one — e.g. start a Claude session in it with start_workspace_session.",

@@ -91,7 +91,7 @@ function groupWorkspaces(items: WorkspaceSummary[]): Group[] {
   const multi: Group[] = [];
   for (const ws of items) {
     if (ws.repoNames.length <= 1) {
-      const repo = ws.repoNames[0] ?? "(no repo)";
+      const repo = ws.repoNames[0] ?? "Scratch";
       const arr = singleByRepo.get(repo) ?? [];
       arr.push(ws);
       singleByRepo.set(repo, arr);
@@ -336,8 +336,8 @@ function NewWorkspaceForm({
   };
 
   const submit = async () => {
-    if (!name.trim() || selected.size === 0) {
-      setError("Pick a name and at least one repo.");
+    if (!name.trim()) {
+      setError("Pick a name.");
       return;
     }
     try {
@@ -388,7 +388,9 @@ function NewWorkspaceForm({
 
         <div>
           <div className="mb-1 flex items-center justify-between">
-            <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">Repos</div>
+            <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+              Repos <span className="normal-case text-zinc-600">(optional)</span>
+            </div>
             <button
               type="button"
               onClick={() => setShowAddRepo((v) => !v)}
@@ -397,6 +399,10 @@ function NewWorkspaceForm({
               {showAddRepo ? "Cancel" : "+ Add new"}
             </button>
           </div>
+          <p className="mb-1 text-xs text-zinc-500">
+            Leave empty for a scratch workspace — just a folder to run Claude in, for
+            experimentation and exploration.
+          </p>
           {repos.length === 0 && !showAddRepo && (
             <p className="text-xs text-zinc-500">
               No repos registered. Click "+ Add new" to register one without leaving this page.
@@ -823,7 +829,11 @@ function WorkspaceDetailView({
             onClick={() => void provision()}
             className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500"
           >
-            {detail.status === "error" ? "Retry provisioning" : "Provision worktrees"}
+            {detail.status === "error"
+              ? "Retry provisioning"
+              : detail.repos.length === 0
+                ? "Create folder"
+                : "Provision worktrees"}
           </button>
         </div>
       )}

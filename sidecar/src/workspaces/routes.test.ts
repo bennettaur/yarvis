@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
@@ -145,13 +145,28 @@ describe("workspace routes", () => {
     expect(res.status).toBe(404);
   });
 
-  it("rejects a workspace with no repos", async () => {
+  it("creates a scratch workspace with no repos", async () => {
     const res = await app.request("/api/workspaces", {
       method: "POST",
       headers: jsonAuth,
-      body: JSON.stringify({ name: "empty", repoIds: [] }),
+      body: JSON.stringify({ name: "scratch", repoIds: [] }),
     });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(201);
+    const ws = (await res.json()) as { id: string; status: string };
+    expect(ws.status).toBe("creating");
+
+    const detail = await app.request(`/api/workspaces/${ws.id}`, { headers: auth });
+    const body = (await detail.json()) as { repos: unknown[] };
+    expect(body.repos.length).toBe(0);
+  });
+
+  it("creates a scratch workspace when repoIds is omitted", async () => {
+    const res = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "scratch-default" }),
+    });
+    expect(res.status).toBe(201);
   });
 });
 
@@ -168,6 +183,20 @@ describe("provision + archive (injected git runner)", () => {
     const detail = await getWorkspace(db, ws.id);
     expect(detail?.status).toBe("active");
     expect(detail?.repos[0]?.status).toBe("ready");
+  });
+
+  it("provisions a scratch workspace to active and creates its root folder", async () => {
+    const db = getDb(url).db;
+    const ws = await createWorkspace(db, config, { name: "scratchpad", repoIds: [] });
+
+    const events: string[] = [];
+    await provisionWorkspace(db, ws.id, (e) => void events.push(e.type), fakeGit);
+
+    expect(events).toContain("done");
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.status).toBe("active");
+    expect(detail?.repos.length).toBe(0);
+    expect(existsSync(join(workspacesRoot, "scratchpad"))).toBe(true);
   });
 
   it("writes AGENTS.md and CLAUDE.md to the workspace root describing the repos", async () => {
