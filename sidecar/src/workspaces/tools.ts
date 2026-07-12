@@ -117,20 +117,12 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
   /**
    * Starts a Claude session in an already-active workspace and shapes the tool
    * result. Shared by create_workspace_session (after provisioning) and
-   * start_workspace_session (existing workspace). One repo → its worktree;
-   * multiple → the workspace root so Claude sees each worktree as a subfolder.
-   *
-   * `cwdOverride` forces a specific working directory: start_work_on_issue seeds
-   * `.yarvis/issue-prompt.md` under the workspace root (outside any worktree), so
-   * it launches at the root instead of the lone repo's worktree — otherwise the
-   * remotely-driven session would start inside the repo and couldn't read the
-   * relative prompt path.
+   * start_workspace_session (existing workspace). Always launches at the
+   * workspace root so Claude sees each repo's worktree as a subfolder and can
+   * read the `.yarvis/issue-prompt.md` that start_work_on_issue seeds there.
    */
-  const launchClaude = async (detail: WorkspaceDetail, cwdOverride?: string) => {
-    const [firstRepo] = detail.repos;
-    const cwd =
-      cwdOverride ??
-      (detail.repos.length === 1 && firstRepo ? firstRepo.worktreePath : detail.rootPath);
+  const launchClaude = async (detail: WorkspaceDetail) => {
+    const cwd = detail.rootPath;
     try {
       const session = await startClaude({ workspaceId: detail.id, cwd, name: detail.name });
       return {
@@ -283,9 +275,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           warnings.push(`could not write issue prompt: ${errorMessage(e)}`);
         }
 
-        // Launch at the workspace root, where the seeded .yarvis/issue-prompt.md
-        // lives, so the session can read it by its relative path.
-        const launch = await launchClaude(detail, detail.rootPath);
+        const launch = await launchClaude(detail);
         return {
           ...launch,
           issue: { number: issueNumber, title: issue.title, url: issue.url },
