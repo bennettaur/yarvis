@@ -2,6 +2,7 @@ import { sidecarFetch } from "../api";
 import { refApiPath } from "./ref";
 import type {
   GhFilter,
+  MergeMethod,
   NewComment,
   PrDetail,
   PrFile,
@@ -81,6 +82,15 @@ export const ghSubmitReview = (
   event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
   body?: string,
 ) => send<{ ok: boolean }>(`${refApiPath(ref)}/reviews`, "POST", { event, body });
+
+export const ghMergePr = (ref: PrRef, method: MergeMethod) =>
+  send<{ ok: boolean }>(`${refApiPath(ref)}/merge`, "POST", { method });
+
+export const ghEnableAutoMerge = (ref: PrRef, method: MergeMethod) =>
+  send<{ ok: boolean }>(`${refApiPath(ref)}/auto-merge`, "POST", { method });
+
+export const ghDisableAutoMerge = (ref: PrRef) =>
+  send<{ ok: boolean }>(`${refApiPath(ref)}/auto-merge`, "DELETE");
 
 export const ghFilters = () => get<GhFilter[]>("/api/github/filters");
 export const ghCreateFilter = (name: string, query: string) =>

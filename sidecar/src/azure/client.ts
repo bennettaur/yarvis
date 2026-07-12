@@ -327,6 +327,12 @@ export class AzureDevOpsClient {
       additions: 0,
       deletions: 0,
       mergeable: mapMergeStatus(pr.mergeStatus).enum,
+      // Azure's completion/auto-complete flow isn't wired to the review UI yet,
+      // so the merge controls stay hidden for Azure PRs.
+      mergeMethods: [],
+      autoMergeEnabled: false,
+      canEnableAutoMerge: false,
+      canDisableAutoMerge: false,
       checks,
       reviewThreads,
     };
