@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchPrDetail, fetchPrFileDiff, fetchPrFiles, fetchPrStatus } from "./api";
 import { refKey } from "./ref";
 import type { PrDetail, PrFile, PrRef, PrStatus } from "./types";
@@ -24,6 +24,26 @@ interface CacheEntry<T> {
 }
 
 const cache = new Map<string, CacheEntry<unknown>>();
+
+/**
+ * Subscribers currently mounted against each key. `invalidate` notifies them so
+ * a component already showing a resource refetches immediately, rather than the
+ * dropped entry only being reloaded the next time the key is mounted.
+ */
+const listeners = new Map<string, Set<() => void>>();
+
+function subscribe(key: string, fn: () => void): () => void {
+  let set = listeners.get(key);
+  if (!set) {
+    set = new Set();
+    listeners.set(key, set);
+  }
+  set.add(fn);
+  return () => {
+    set.delete(fn);
+    if (set.size === 0) listeners.delete(key);
+  };
+}
 
 export function cachedFetch<T>(
   key: string,
@@ -53,9 +73,16 @@ export function cachedFetch<T>(
   return promise;
 }
 
-/** Drops a cached entry so the next subscriber refetches (e.g. after a write). */
+/**
+ * Drops a cached entry and notifies any mounted subscribers so they refetch
+ * now (e.g. after a write). Without the notification a component already
+ * showing the resource would keep its stale value until the key next mounts —
+ * so publishing a draft PR wouldn't flip the header's status badge to open.
+ */
 export function invalidate(key: string): void {
   cache.delete(key);
+  const set = listeners.get(key);
+  if (set) for (const fn of set) fn();
 }
 
 export interface Resource<T> {
@@ -76,6 +103,12 @@ function useCachedResource<T>(key: string | null, loader: () => Promise<T>): Res
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(key !== null);
 
+  // `loader` is recreated each render but closes over the same values `key`
+  // encodes (see the contract above), so we read it through a ref and key the
+  // effect on `key` alone — no re-subscribe on every render.
+  const loaderRef = useRef(loader);
+  loaderRef.current = loader;
+
   useEffect(() => {
     if (key === null) {
       setData(null);
@@ -84,27 +117,30 @@ function useCachedResource<T>(key: string | null, loader: () => Promise<T>): Res
       return;
     }
     let active = true;
-    setLoading(true);
-    setError(null);
-    cachedFetch(key, loader)
-      .then((value) => {
-        if (!active) return;
-        setData(value);
-        setLoading(false);
-      })
-      .catch((err) => {
-        if (!active) return;
-        setError(err instanceof Error ? err.message : String(err));
-        setLoading(false);
-      });
+    const load = () => {
+      setLoading(true);
+      setError(null);
+      cachedFetch(key, loaderRef.current)
+        .then((value) => {
+          if (!active) return;
+          setData(value);
+          setLoading(false);
+        })
+        .catch((err) => {
+          if (!active) return;
+          setError(err instanceof Error ? err.message : String(err));
+          setLoading(false);
+        });
+    };
+    load();
+    // Refetch in place when this key is invalidated by a write elsewhere, so a
+    // component already showing the resource updates without remounting.
+    const unsubscribe = subscribe(key, load);
     return () => {
       active = false;
+      unsubscribe();
     };
-    // `key` is the resource's full identity (see the contract above). `loader`
-    // is recreated each render, but it closes over the same values `key`
-    // encodes, so a re-run from its changing identity is served by the cache
-    // rather than refetching.
-  }, [key, loader]);
+  }, [key]);
 
   return { data, error, loading };
 }
