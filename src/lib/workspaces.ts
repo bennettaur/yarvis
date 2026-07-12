@@ -68,6 +68,7 @@ export interface ChangedFile {
 
 export interface CreateWorkspaceInput {
   name: string;
+  /** Empty for a scratch workspace: just a folder to run Claude in. */
   repoIds: string[];
   taskId?: string | null;
 }

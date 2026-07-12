@@ -13,6 +13,7 @@ import {
   streamChat,
 } from "../lib/chat";
 import ChatComposer from "./ChatComposer";
+import ThinkingIndicator from "./ThinkingIndicator";
 
 interface Display {
   role: string;
@@ -207,6 +208,7 @@ export default function ChatPanel() {
             <div className="whitespace-pre-wrap text-zinc-100">{streaming}</div>
           </div>
         )}
+        {busy && !streaming && <ThinkingIndicator />}
       </div>
 
       {error && <p className="text-sm text-red-400">{error}</p>}

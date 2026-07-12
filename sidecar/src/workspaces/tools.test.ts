@@ -75,6 +75,32 @@ describe("workspace tools", () => {
     expect(startedCwd).toContain("widget");
   });
 
+  it("create_scratch_workspace_session provisions a repo-less workspace at its root", async () => {
+    let startedCwd = "";
+    let startedWorkspaceId = "";
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => {
+        startedCwd = input.cwd;
+        startedWorkspaceId = input.workspaceId;
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+
+    const result = (await tools.create_scratch_workspace_session.execute!(
+      { name: "Scratchpad" },
+      opts,
+    )) as { status?: string; sessionKey?: string; repos?: string[]; error?: string };
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe("active");
+    expect(result.repos).toEqual([]);
+    expect(result.sessionKey).toBe(`ws-claude:${startedWorkspaceId}`);
+    // No repo, so the session launches at the workspace root (the slug folder).
+    expect(startedCwd).toContain("scratchpad");
+    expect(startedCwd).not.toContain("widget");
+  });
+
   it("does not start a session when provisioning fails", async () => {
     const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
     let started = false;
