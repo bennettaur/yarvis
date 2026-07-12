@@ -7,6 +7,7 @@ import type { IssueDetail, IssueLabel, IssueSummary } from "../issues/types.ts";
 import type {
   CheckItem,
   ChecksSummary,
+  MergeMethod,
   NewComment,
   PrDetail,
   PrFile,
@@ -19,6 +20,7 @@ import type {
 export type {
   CheckItem,
   ChecksSummary,
+  MergeMethod,
   NewComment,
   PrDetail,
   PrFile,
@@ -165,8 +167,24 @@ function toCheckItem(node: any): CheckItem {
   };
 }
 
-/** Shapes the GraphQL `pullRequest` payload into a flat PrDetail. */
-export function toPrDetail(pr: any): PrDetail {
+/**
+ * The repo-level merge settings that gate which strategies the merge / auto-merge
+ * UI may offer. Read off the `repository` node alongside the pull request.
+ */
+function allowedMergeMethods(repo: any): MergeMethod[] {
+  const methods: MergeMethod[] = [];
+  if (repo?.mergeCommitAllowed) methods.push("MERGE");
+  if (repo?.squashMergeAllowed) methods.push("SQUASH");
+  if (repo?.rebaseMergeAllowed) methods.push("REBASE");
+  return methods;
+}
+
+/**
+ * Shapes the GraphQL `pullRequest` payload into a flat PrDetail. `repo` carries
+ * the sibling `repository` node whose merge-method flags the UI needs; it's
+ * optional so unit tests can shape a PR without it (merge buttons stay hidden).
+ */
+export function toPrDetail(pr: any, repo?: any): PrDetail {
   const rollupNodes = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
   const threadNodes = pr.reviewThreads?.nodes ?? [];
   return {
@@ -181,6 +199,10 @@ export function toPrDetail(pr: any): PrDetail {
     additions: pr.additions ?? 0,
     deletions: pr.deletions ?? 0,
     mergeable: pr.mergeable ?? "UNKNOWN",
+    mergeMethods: allowedMergeMethods(repo),
+    autoMergeEnabled: Boolean(pr.autoMergeRequest),
+    canEnableAutoMerge: Boolean(pr.viewerCanEnableAutoMerge),
+    canDisableAutoMerge: Boolean(pr.viewerCanDisableAutoMerge),
     checks: rollupNodes.map(toCheckItem),
     reviewThreads: threadNodes.map((thread: any) => ({
       path: thread.path ?? null,
@@ -198,8 +220,11 @@ export function toPrDetail(pr: any): PrDetail {
 const PR_DETAIL_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!){
   repository(owner:$owner,name:$repo){
+    mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed
     pullRequest(number:$number){
       number title body state isDraft additions deletions mergeable
+      autoMergeRequest{ enabledAt }
+      viewerCanEnableAutoMerge viewerCanDisableAutoMerge
       author{login}
       baseRefName headRefName
       reviewThreads(first:50){
@@ -299,7 +324,7 @@ export class GitHubClient {
     }>(PR_DETAIL_QUERY, { owner, repo, number });
     const pr = data.repository?.pullRequest;
     if (!pr) throw new Error(`pull request ${owner}/${repo}#${number} not found`);
-    return toPrDetail(pr);
+    return toPrDetail(pr, data.repository);
   }
 
   async prFiles(owner: string, repo: string, number: number): Promise<PrFile[]> {
@@ -325,6 +350,58 @@ export class GitHubClient {
     await this.graphql<unknown>(
       `mutation($id:ID!){
         markPullRequestReadyForReview(input:{pullRequestId:$id}){ clientMutationId }
+      }`,
+      { id },
+    );
+  }
+
+  /**
+   * Merges the pull request now with the chosen strategy (the GraphQL
+   * equivalent of the green "Merge" button). Keyed by the PR's node id, so a
+   * preflight resolves it first. GitHub rejects a method the repo disallows or
+   * a PR that isn't currently mergeable; the error is surfaced to the caller.
+   */
+  async mergePullRequest(
+    owner: string,
+    repo: string,
+    number: number,
+    method: MergeMethod,
+  ): Promise<void> {
+    const id = await this.resolvePrNodeId(owner, repo, number);
+    await this.graphql<unknown>(
+      `mutation($id:ID!,$method:PullRequestMergeMethod!){
+        mergePullRequest(input:{pullRequestId:$id, mergeMethod:$method}){ clientMutationId }
+      }`,
+      { id, method },
+    );
+  }
+
+  /**
+   * Arms auto-merge: GitHub merges the PR automatically once its branch
+   * protections pass. Requires the repo to allow auto-merge and the chosen
+   * method; GitHub rejects otherwise.
+   */
+  async enableAutoMerge(
+    owner: string,
+    repo: string,
+    number: number,
+    method: MergeMethod,
+  ): Promise<void> {
+    const id = await this.resolvePrNodeId(owner, repo, number);
+    await this.graphql<unknown>(
+      `mutation($id:ID!,$method:PullRequestMergeMethod!){
+        enablePullRequestAutoMerge(input:{pullRequestId:$id, mergeMethod:$method}){ clientMutationId }
+      }`,
+      { id, method },
+    );
+  }
+
+  /** Cancels a pending auto-merge so the PR won't merge on its own. */
+  async disableAutoMerge(owner: string, repo: string, number: number): Promise<void> {
+    const id = await this.resolvePrNodeId(owner, repo, number);
+    await this.graphql<unknown>(
+      `mutation($id:ID!){
+        disablePullRequestAutoMerge(input:{pullRequestId:$id}){ clientMutationId }
       }`,
       { id },
     );

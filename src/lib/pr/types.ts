@@ -48,6 +48,9 @@ export interface CheckItem {
   url: string | null;
 }
 
+/** A merge strategy the repo allows, in GitHub's GraphQL vocabulary. */
+export type MergeMethod = "MERGE" | "SQUASH" | "REBASE";
+
 export interface PrDetail {
   number: number;
   title: string;
@@ -60,6 +63,17 @@ export interface PrDetail {
   additions: number;
   deletions: number;
   mergeable: string;
+  /**
+   * Merge methods the repo permits, so the UI only offers valid ones. Empty
+   * when the provider doesn't expose them (Azure) — merge buttons stay hidden.
+   */
+  mergeMethods: MergeMethod[];
+  /** True when auto-merge is already armed on the PR. */
+  autoMergeEnabled: boolean;
+  /** Viewer may arm auto-merge (repo allows it, viewer has permission). */
+  canEnableAutoMerge: boolean;
+  /** Viewer may cancel an already-armed auto-merge. */
+  canDisableAutoMerge: boolean;
   checks: CheckItem[];
   reviewThreads: ReviewThread[];
 }

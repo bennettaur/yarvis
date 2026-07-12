@@ -47,6 +47,20 @@ describe("validateOutboundUrl", () => {
     expect(() => validateOutboundUrl("http://100.64.0.1/")).toThrow(UrlSafetyError);
   });
 
+  it("rejects IPv4-mapped IPv6 literals for private embedded addresses", () => {
+    // Node's URL parser normalizes `[::ffff:169.254.169.254]` to the hex form
+    // `::ffff:a9fe:a9fe`; the private check must decode it, not just the dotted form.
+    expect(() => validateOutboundUrl("http://[::ffff:169.254.169.254]/")).toThrow(UrlSafetyError);
+    expect(() => validateOutboundUrl("http://[::ffff:10.0.0.1]/")).toThrow(UrlSafetyError);
+    expect(() => validateOutboundUrl("http://[::ffff:192.168.1.1]/")).toThrow(UrlSafetyError);
+    expect(() => validateOutboundUrl("http://[::ffff:127.0.0.1]/")).toThrow(UrlSafetyError);
+  });
+
+  it("accepts IPv4-mapped IPv6 literals for public embedded addresses", () => {
+    // Node normalizes the mapped literal to its hex form (`::ffff:808:808`).
+    expect(validateOutboundUrl("http://[::ffff:8.8.8.8]/").hostname).toBe("[::ffff:808:808]");
+  });
+
   it("rejects hostname aliases for loopback", () => {
     expect(() => validateOutboundUrl("http://localhost/")).toThrow(UrlSafetyError);
     expect(() => validateOutboundUrl("http://anything.local/")).toThrow(UrlSafetyError);
@@ -58,5 +72,45 @@ describe("validateOutboundUrl", () => {
     expect(validateOutboundUrl("https://[2001:4860:4860::8888]/").hostname).toBe(
       "[2001:4860:4860::8888]",
     );
+  });
+});
+
+describe("validateOutboundUrl with allowLoopback", () => {
+  const opts = { allowLoopback: true };
+
+  it("accepts loopback literals for a local provider (e.g. Ollama)", () => {
+    expect(validateOutboundUrl("http://127.0.0.1:11434/", opts).hostname).toBe("127.0.0.1");
+    expect(validateOutboundUrl("http://127.255.255.255/", opts).hostname).toBe("127.255.255.255");
+    expect(validateOutboundUrl("http://[::1]:11434/", opts).hostname).toBe("[::1]");
+  });
+
+  it("accepts loopback hostname aliases", () => {
+    expect(validateOutboundUrl("http://localhost:11434/", opts).hostname).toBe("localhost");
+    expect(validateOutboundUrl("http://ollama.localhost/", opts).hostname).toBe("ollama.localhost");
+  });
+
+  it("still rejects non-loopback private ranges", () => {
+    expect(() => validateOutboundUrl("http://10.0.0.1/", opts)).toThrow(UrlSafetyError);
+    expect(() => validateOutboundUrl("http://192.168.1.1/", opts)).toThrow(UrlSafetyError);
+    expect(() => validateOutboundUrl("http://169.254.169.254/", opts)).toThrow(UrlSafetyError);
+    expect(() => validateOutboundUrl("http://[fe80::1]/", opts)).toThrow(UrlSafetyError);
+  });
+
+  it("accepts IPv4-mapped IPv6 loopback but not mapped non-loopback", () => {
+    expect(validateOutboundUrl("http://[::ffff:127.0.0.1]/", opts).hostname).toBe(
+      "[::ffff:7f00:1]",
+    );
+    expect(() => validateOutboundUrl("http://[::ffff:169.254.169.254]/", opts)).toThrow(
+      UrlSafetyError,
+    );
+  });
+
+  it("still rejects .local mDNS hosts, which are not loopback", () => {
+    expect(() => validateOutboundUrl("http://anything.local/", opts)).toThrow(UrlSafetyError);
+  });
+
+  it("still enforces scheme and credential rules", () => {
+    expect(() => validateOutboundUrl("file:///etc/passwd", opts)).toThrow(UrlSafetyError);
+    expect(() => validateOutboundUrl("http://user:pw@127.0.0.1/", opts)).toThrow(UrlSafetyError);
   });
 });

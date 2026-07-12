@@ -122,7 +122,8 @@ export function pickDefaultModel(
 function resolveCustom(row: CustomProviderRow, config: Config, modelId: string): LanguageModel {
   // Defense-in-depth: the create/update routes already validate, but DB rows
   // can have been seeded by an earlier version, so re-check at resolve time.
-  validateOutboundUrl(row.baseUrl);
+  // Local providers (e.g. a local Ollama server) legitimately live on loopback.
+  validateOutboundUrl(row.baseUrl, { allowLoopback: true });
   const secrets = config.customProviderSecrets[row.id] ?? { headers: {} };
   const options = {
     baseURL: row.baseUrl,

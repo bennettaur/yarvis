@@ -1,7 +1,8 @@
-import { sidecarFetch } from "../api";
+import { ensureOk, sidecarFetch } from "../api";
 import { refApiPath } from "./ref";
 import type {
   GhFilter,
+  MergeMethod,
   NewComment,
   PrDetail,
   PrFile,
@@ -27,7 +28,7 @@ interface GhRawSummary {
 
 async function get<T>(path: string): Promise<T> {
   const res = await sidecarFetch(path);
-  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+  await ensureOk(res, path);
   return res.json();
 }
 
@@ -37,7 +38,7 @@ async function send<T>(path: string, method: string, body?: unknown): Promise<T>
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+  await ensureOk(res, path);
   return res.json();
 }
 
@@ -81,6 +82,15 @@ export const ghSubmitReview = (
   event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
   body?: string,
 ) => send<{ ok: boolean }>(`${refApiPath(ref)}/reviews`, "POST", { event, body });
+
+export const ghMergePr = (ref: PrRef, method: MergeMethod) =>
+  send<{ ok: boolean }>(`${refApiPath(ref)}/merge`, "POST", { method });
+
+export const ghEnableAutoMerge = (ref: PrRef, method: MergeMethod) =>
+  send<{ ok: boolean }>(`${refApiPath(ref)}/auto-merge`, "POST", { method });
+
+export const ghDisableAutoMerge = (ref: PrRef) =>
+  send<{ ok: boolean }>(`${refApiPath(ref)}/auto-merge`, "DELETE");
 
 export const ghFilters = () => get<GhFilter[]>("/api/github/filters");
 export const ghCreateFilter = (name: string, query: string) =>

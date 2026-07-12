@@ -1,4 +1,4 @@
-import { sidecarFetch } from "../api";
+import { ensureOk, sidecarFetch } from "../api";
 import type {
   IssueDetail,
   IssueFilter,
@@ -19,7 +19,7 @@ import type {
 
 async function get<T>(path: string): Promise<T> {
   const res = await sidecarFetch(path);
-  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+  await ensureOk(res, path);
   return res.json();
 }
 
@@ -29,7 +29,7 @@ async function send<T>(path: string, method: string, body?: unknown): Promise<T>
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+  await ensureOk(res, path);
   return res.json();
 }
 

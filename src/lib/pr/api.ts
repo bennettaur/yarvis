@@ -17,7 +17,10 @@ import {
 } from "./azure";
 import {
   ghAddStar,
+  ghDisableAutoMerge,
+  ghEnableAutoMerge,
   ghMarkReady,
+  ghMergePr,
   ghPostComment,
   ghPrDetail,
   ghPrFiles,
@@ -25,7 +28,7 @@ import {
   ghRemoveStar,
   ghSubmitReview,
 } from "./github";
-import type { NewComment, PrDetail, PrFile, PrRef, PrStatus } from "./types";
+import type { MergeMethod, NewComment, PrDetail, PrFile, PrRef, PrStatus } from "./types";
 
 export const fetchPrStatus = (ref: PrRef): Promise<PrStatus> =>
   ref.provider === "github" ? ghPrStatus(ref) : azPrStatus(ref);
@@ -84,4 +87,30 @@ export async function applyReviewAction(
   // Azure votes are numeric: 10 = approved, -10 = rejected.
   const vote = action === "approve" ? 10 : -10;
   await azSubmitVote(ref, vote, body);
+}
+
+/**
+ * Merge / auto-merge are GitHub-only for now — Azure's completion flow isn't
+ * wired up, and its PR detail reports no merge methods, so the UI never offers
+ * these on an Azure PR. The dispatch guards the boundary regardless.
+ */
+function requireGithub(ref: PrRef): void {
+  if (ref.provider !== "github") {
+    throw new Error("merge is only supported for GitHub pull requests");
+  }
+}
+
+export function mergePr(ref: PrRef, method: MergeMethod): Promise<{ ok: boolean }> {
+  requireGithub(ref);
+  return ghMergePr(ref, method);
+}
+
+export function enableAutoMerge(ref: PrRef, method: MergeMethod): Promise<{ ok: boolean }> {
+  requireGithub(ref);
+  return ghEnableAutoMerge(ref, method);
+}
+
+export function disableAutoMerge(ref: PrRef): Promise<{ ok: boolean }> {
+  requireGithub(ref);
+  return ghDisableAutoMerge(ref);
 }

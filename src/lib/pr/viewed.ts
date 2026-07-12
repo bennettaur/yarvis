@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { sidecarFetch } from "../api";
+import { ensureOk, sidecarFetch } from "../api";
 import { refApiPath, refKey } from "./ref";
 import type { PrRef } from "./types";
 
@@ -44,7 +44,7 @@ function writeAzureViewed(ref: PrRef, viewed: Set<string>): void {
 export async function listViewed(ref: PrRef): Promise<Set<string>> {
   if (ref.provider === "azure") return readAzureViewed(ref);
   const res = await sidecarFetch(`${refApiPath(ref)}/viewed`);
-  if (!res.ok) throw new Error(`list viewed -> ${res.status}`);
+  await ensureOk(res, "list viewed");
   const paths: string[] = await res.json();
   return new Set(paths);
 }
@@ -63,7 +63,7 @@ export async function setViewed(ref: PrRef, path: string, viewed: boolean): Prom
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path, viewed }),
   });
-  if (!res.ok) throw new Error(`set viewed -> ${res.status}`);
+  await ensureOk(res, "set viewed");
 }
 
 /**

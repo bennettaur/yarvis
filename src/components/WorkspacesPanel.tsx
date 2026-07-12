@@ -111,12 +111,11 @@ function groupWorkspaces(items: WorkspaceSummary[]): Group[] {
 const SELECTED_WORKSPACE_KEY = "yarvis.workspaces.selectedId";
 const SHOW_ARCHIVED_KEY = "yarvis.workspaces.showArchived";
 
-/** Where a workspace's Claude session runs: the lone repo's worktree, or the
- *  workspace root when it spans several (so Claude sees each worktree as a
- *  subfolder). */
+/** Where a workspace's Claude session runs: always the workspace root, so Claude
+ *  sees each repo's worktree as a subfolder and can read the
+ *  `.yarvis/issue-prompt.md` seeded there for an issue "Start work" session. */
 function claudeCwdForWorkspace(detail: WorkspaceDetail): string {
-  const first = detail.repos[0];
-  return detail.repos.length === 1 && first ? first.worktreePath : detail.rootPath;
+  return detail.rootPath;
 }
 
 export default function WorkspacesPanel({
