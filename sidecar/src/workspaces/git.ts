@@ -220,3 +220,34 @@ export async function listChangedFiles(
 
   return [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path));
 }
+
+/**
+ * The unified-diff patch for a single changed file versus `origin/<baseBranch>`,
+ * matching the two-dot range used by `listChangedFiles` so committed and
+ * uncommitted work both show. Untracked files have no base to diff against, so
+ * they fall back to a `--no-index` diff of `/dev/null` against the file, which
+ * renders their whole contents as additions. Returns an empty string when there
+ * is no textual diff (unchanged, or a binary file). `--` separates the pathspec
+ * so a filename can never be read as a git option.
+ */
+export async function fileDiff(
+  runner: GitRunner,
+  worktreePath: string,
+  baseBranch: string,
+  path: string,
+): Promise<string> {
+  const tracked = await git(runner, ["diff", `origin/${baseBranch}`, "--", path], worktreePath);
+  if (tracked.trim()) return tracked;
+
+  // `git diff --no-index` exits 1 when the files differ — the normal outcome for
+  // a new file — so only a code above 1 signals a real failure.
+  const untracked = await runner(["diff", "--no-index", "--", "/dev/null", path], {
+    cwd: worktreePath,
+  });
+  if (untracked.exitCode > 1) {
+    throw new Error(
+      `git diff --no-index failed (${untracked.exitCode}): ${untracked.stderr.trim()}`,
+    );
+  }
+  return untracked.stdout;
+}

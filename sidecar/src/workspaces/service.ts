@@ -31,6 +31,7 @@ import {
   defaultGitRunner,
   detectDefaultBranch,
   ensurePrimaryClone,
+  fileDiff,
   type GitRunner,
   listChangedFiles,
   listFiles,
@@ -350,6 +351,18 @@ export async function workspaceRepoChanges(
 ): Promise<ChangedFile[]> {
   const wr = await getWorkspaceRepo(db, workspaceRepoId);
   return listChangedFiles(runner, wr.worktreePath, wr.baseBranch);
+}
+
+/** The unified-diff patch for one changed file in a workspace repo's worktree. */
+export async function workspaceRepoFileDiff(
+  db: Db,
+  workspaceRepoId: string,
+  path: string,
+  runner: GitRunner = defaultGitRunner,
+): Promise<{ path: string; patch: string }> {
+  const wr = await getWorkspaceRepo(db, workspaceRepoId);
+  const patch = await fileDiff(runner, wr.worktreePath, wr.baseBranch, path);
+  return { path, patch };
 }
 
 // ---------------------------------------------------------------------------

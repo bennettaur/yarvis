@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isPtyBusy, killPty } from "../../../lib/pty";
 import SplitPane from "../../SplitPane";
 import TerminalPanel, { type TerminalPanelHandle } from "../../TerminalPanel";
@@ -32,11 +32,32 @@ import {
  *  - Cmd+Shift+D:  split focused pane horizontally (new pane below)
  */
 
-interface Tab {
+/** A normal tab: a splittable tree of terminal panes. */
+interface TerminalTab {
   id: string;
   title: string;
+  kind: "terminal";
   root: Pane;
 }
+
+/**
+ * A tab viewing the diff of a changed file. The tab only tracks which file it
+ * shows (repo + path); the surface's owner supplies the actual renderer via
+ * `renderFileDiff`. Tracking the file here is what lets us avoid opening the
+ * same file twice — a repeat request just re-selects this tab.
+ */
+interface DiffTab {
+  id: string;
+  title: string;
+  kind: "diff";
+  repoId: string;
+  path: string;
+}
+
+type Tab = TerminalTab | DiffTab;
+
+/** Tab title for a diff tab: the file's basename, which is short and unique enough. */
+const fileTitle = (path: string) => path.split("/").pop() || path;
 
 /**
  * A tab bound to an externally-managed PTY session (e.g. a Claude session the
@@ -70,7 +91,7 @@ function freshState(): SurfaceState {
   const paneId = uid("p");
   const tabId = uid("t");
   return {
-    tabs: [{ id: tabId, title: "Terminal", root: leaf(paneId) }],
+    tabs: [{ id: tabId, title: "Terminal", kind: "terminal", root: leaf(paneId) }],
     activeTabId: tabId,
     focused: { [tabId]: paneId },
   };
@@ -86,6 +107,11 @@ function loadState(key: string): SurfaceState {
     if (!raw) return freshState();
     const parsed = JSON.parse(raw) as SurfaceState;
     if (!parsed.tabs?.length) return freshState();
+    // Backfill `kind` for states persisted before diff tabs existed: a tab with a
+    // pane tree is a terminal tab.
+    parsed.tabs = parsed.tabs.map((t) =>
+      (t as Tab).kind ? t : ({ ...t, kind: "terminal" } as TerminalTab),
+    );
     return parsed;
   } catch {
     return freshState();
@@ -96,10 +122,19 @@ function sessionId(storageKey: string, tabId: string, paneId: PaneId): string {
   return `${storageKey}/${tabId}/${paneId}`;
 }
 
+/** A request to open (or re-focus) a diff tab for a changed file. */
+export interface OpenFileDiff {
+  repoId: string;
+  path: string;
+}
+
 export default function TerminalTabs({
   storageKey,
   cwd,
   pinnedTabs = [],
+  openFileDiff = null,
+  onFileDiffOpened,
+  renderFileDiff,
 }: {
   /** Stable namespace for this surface — both for localStorage and PTY ids. */
   storageKey: string;
@@ -107,6 +142,17 @@ export default function TerminalTabs({
   cwd?: string;
   /** Tabs bound to externally-managed sessions, shown whenever present. */
   pinnedTabs?: PinnedTab[];
+  /**
+   * A changed file to open in a diff tab. Setting this opens a new tab, or
+   * re-focuses the existing tab already viewing that file. Cleared by the caller
+   * via `onFileDiffOpened` once consumed, mirroring the request/consume pattern
+   * used elsewhere for cross-component navigation.
+   */
+  openFileDiff?: OpenFileDiff | null;
+  /** Called once an `openFileDiff` request has been handled. */
+  onFileDiffOpened?: () => void;
+  /** Supplies a diff tab's body. When omitted, diff tabs are not used. */
+  renderFileDiff?: (file: OpenFileDiff) => ReactNode;
 }) {
   const [state, setState] = useState<SurfaceState>(() => loadState(storageKey));
   // Refs to xterm handles so a tab/pane switch can move focus into the right shell.
@@ -132,7 +178,10 @@ export default function TerminalTabs({
     if (match) return match;
     return activePinned ? undefined : state.tabs[0];
   }, [state.tabs, state.activeTabId, activePinned]);
-  const focusedPane = activeTab ? (state.focused[activeTab.id] ?? firstLeafId(activeTab.root)) : "";
+  const focusedPane =
+    activeTab?.kind === "terminal"
+      ? (state.focused[activeTab.id] ?? firstLeafId(activeTab.root))
+      : "";
 
   // Reconcile pinned tabs: focus one that just appeared (e.g. a Claude session
   // that started), and fall back to a normal tab when the active pinned tab goes
@@ -176,9 +225,11 @@ export default function TerminalTabs({
     setState((prev) => {
       const tabId = uid("t");
       const paneId = uid("p");
-      const tab: Tab = {
+      const terminalCount = prev.tabs.filter((t) => t.kind === "terminal").length;
+      const tab: TerminalTab = {
         id: tabId,
-        title: `Terminal ${prev.tabs.length + 1}`,
+        title: `Terminal ${terminalCount + 1}`,
+        kind: "terminal",
         root: leaf(paneId),
       };
       return {
@@ -188,6 +239,35 @@ export default function TerminalTabs({
       };
     });
   }, []);
+
+  // Open a diff tab for a changed file, or re-focus the tab already showing it.
+  const openDiff = useCallback((file: OpenFileDiff) => {
+    setState((prev) => {
+      const existing = prev.tabs.find(
+        (t) => t.kind === "diff" && t.repoId === file.repoId && t.path === file.path,
+      );
+      if (existing) {
+        return prev.activeTabId === existing.id ? prev : { ...prev, activeTabId: existing.id };
+      }
+      const tabId = uid("t");
+      const tab: DiffTab = {
+        id: tabId,
+        title: fileTitle(file.path),
+        kind: "diff",
+        repoId: file.repoId,
+        path: file.path,
+      };
+      return { ...prev, tabs: [...prev.tabs, tab], activeTabId: tabId };
+    });
+  }, []);
+
+  // Consume an open-diff request from the surface owner, then signal completion
+  // so a repeat click on the same (or another) file fires the effect again.
+  useEffect(() => {
+    if (!openFileDiff) return;
+    openDiff(openFileDiff);
+    onFileDiffOpened?.();
+  }, [openFileDiff, openDiff, onFileDiffOpened]);
 
   const selectTab = useCallback(
     (tabId: string) => {
@@ -217,7 +297,8 @@ export default function TerminalTabs({
     async (tabId: string) => {
       const tab = state.tabs.find((t) => t.id === tabId);
       if (!tab) return;
-      const leafIds = allLeafIds(tab.root);
+      // Diff tabs own no PTY, so they close with no busy check or kill.
+      const leafIds = tab.kind === "terminal" ? allLeafIds(tab.root) : [];
       // Heuristic: any pane busy → confirm. The user opted into "confirm if a
       // process is running"; idle shells close silently.
       const busyChecks = await Promise.all(
@@ -250,12 +331,14 @@ export default function TerminalTabs({
 
   const splitFocused = useCallback(
     (direction: SplitDirection) => {
-      if (!activeTab) return;
+      if (activeTab?.kind !== "terminal") return;
       const target = focusedPane;
       const newId = uid("p");
       setState((prev) => {
         const tabs = prev.tabs.map((t) =>
-          t.id === activeTab.id ? { ...t, root: splitPane(t.root, target, direction, newId) } : t,
+          t.id === activeTab.id && t.kind === "terminal"
+            ? { ...t, root: splitPane(t.root, target, direction, newId) }
+            : t,
         );
         return { ...prev, tabs, focused: { ...prev.focused, [activeTab.id]: newId } };
       });
@@ -268,14 +351,16 @@ export default function TerminalTabs({
     setState((prev) => ({
       ...prev,
       tabs: prev.tabs.map((t) =>
-        t.id === tabId ? { ...t, root: setRatioAtPath(t.root, path, ratio) } : t,
+        t.id === tabId && t.kind === "terminal"
+          ? { ...t, root: setRatioAtPath(t.root, path, ratio) }
+          : t,
       ),
     }));
   }, []);
 
   const closePane = useCallback(
     async (paneId: PaneId) => {
-      if (!activeTab) return;
+      if (activeTab?.kind !== "terminal") return;
       const sid = sessionId(storageKey, activeTab.id, paneId);
       const busy = await isPtyBusy(sid).catch(() => false);
       if (busy) {
@@ -295,7 +380,7 @@ export default function TerminalTabs({
       setState((prev) => ({
         ...prev,
         tabs: prev.tabs.map((t) => {
-          if (t.id !== activeTab.id) return t;
+          if (t.id !== activeTab.id || t.kind !== "terminal") return t;
           const root = removePane(t.root, paneId);
           // null is impossible here because we just confirmed `next` exists.
           return root ? { ...t, root } : t;
@@ -340,7 +425,7 @@ export default function TerminalTabs({
   // Defensive: a saved focus may point at a leaf that no longer exists (e.g.
   // a stale localStorage from a previous schema). Snap it back to a real leaf.
   useEffect(() => {
-    if (!activeTab) return;
+    if (activeTab?.kind !== "terminal") return;
     const fp = state.focused[activeTab.id];
     if (!fp || !hasPane(activeTab.root, fp)) {
       setFocusedPane(activeTab.id, firstLeafId(activeTab.root));
@@ -369,6 +454,8 @@ export default function TerminalTabs({
             initialCommand={activePinned.initialCommand}
             embedded
           />
+        ) : activeTab?.kind === "diff" ? (
+          (renderFileDiff?.({ repoId: activeTab.repoId, path: activeTab.path }) ?? null)
         ) : activeTab ? (
           <PaneTreeView
             pane={activeTab.root}
@@ -456,9 +543,10 @@ function TabStrip({
               <button
                 type="button"
                 onClick={() => onSelect(t.id)}
-                className="max-w-40 truncate"
-                title={t.title}
+                className="flex max-w-40 items-center gap-1 truncate"
+                title={t.kind === "diff" ? t.path : t.title}
               >
+                {t.kind === "diff" && <span className="text-sky-400">±</span>}
                 {t.title}
               </button>
               <button
