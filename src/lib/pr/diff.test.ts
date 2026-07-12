@@ -35,4 +35,24 @@ describe("parsePatch", () => {
     const rows = parsePatch(patch);
     expect(rows[2]).toMatchObject({ kind: "meta", rightLine: null });
   });
+
+  it("skips the git file-header block so it neither renders nor skews line numbers", () => {
+    const patch = [
+      "diff --git a/foo.ts b/foo.ts",
+      "index 0729d53..093d8c2 100644",
+      "--- a/foo.ts",
+      "+++ b/foo.ts",
+      "@@ -1,2 +1,3 @@",
+      " a",
+      "+b",
+      " c",
+    ].join("\n");
+    const rows = parsePatch(patch);
+    expect(rows.map((r) => [r.kind, r.rightLine])).toEqual([
+      ["hunk", null],
+      ["context", 1],
+      ["add", 2],
+      ["context", 3],
+    ]);
+  });
 });
