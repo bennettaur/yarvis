@@ -18,11 +18,12 @@ import {
   type WorkspaceSummary,
 } from "../lib/workspaces";
 import SplitPane, { usePersistedRatio } from "./SplitPane";
-import TerminalTabs, { type OpenFileDiff, type PinnedTab } from "./shell/terminalTabs/TerminalTabs";
+import TerminalTabs, { type OpenFileDiff } from "./shell/terminalTabs/TerminalTabs";
 import TerminalPanel from "./TerminalPanel";
 import WorkspaceSidePanel from "./WorkspaceSidePanel";
 import ArchiveDialog from "./workspaces/ArchiveDialog";
 import ArchivedView from "./workspaces/ArchivedView";
+import { DEFAULT_CLAUDE_COMMAND, resolveClaudeTab } from "./workspaces/claudeTab";
 import LinkTaskControl from "./workspaces/LinkTaskControl";
 import WorkspaceFileDiff from "./workspaces/WorkspaceFileDiff";
 import WorkspacePrStatus from "./workspaces/WorkspacePrStatus";
@@ -109,29 +110,6 @@ function groupWorkspaces(items: WorkspaceSummary[]): Group[] {
 
 const SELECTED_WORKSPACE_KEY = "yarvis.workspaces.selectedId";
 const SHOW_ARCHIVED_KEY = "yarvis.workspaces.showArchived";
-
-/**
- * Instruction handed to Claude for an "Start work on issue" session. The issue
- * details are written to a known file under the workspace root (see the sidecar
- * `/prompt-file` route), so a static instruction to read that file is enough —
- * no need to inline the (potentially large) body into the command.
- */
-const CLAUDE_ISSUE_INSTRUCTION =
-  "Read the ticket details in .yarvis/issue-prompt.md and implement a first pass at the ticket, following the repository's conventions.";
-
-/** Fallback base command while the configured one is still loading (matches the
- *  Rust core's default). */
-const DEFAULT_CLAUDE_COMMAND = "claude --permission-mode auto";
-
-/**
- * Builds the issue "Start work" launch line from the configured base command
- * (e.g. `claude --permission-mode auto`), appending the instruction as a
- * double-quoted argument. The instruction contains an apostrophe but no double
- * quotes, so double-quote wrapping is safe.
- */
-function buildClaudeIssueCommand(base: string): string {
-  return `${base} "${CLAUDE_ISSUE_INSTRUCTION}"`;
-}
 
 /** Where a workspace's Claude session runs: the lone repo's worktree, or the
  *  workspace root when it spans several (so Claude sees each worktree as a
@@ -931,28 +909,17 @@ function WorkspaceDetailView({
             // The workspace's Claude session always rides along as a pinned
             // terminal tab, so every workspace — including ones started from an
             // issue — keeps iTerm-style tabs and Cmd+D pane splits for its own
-            // shells. The issue "Start work" flow launches Claude via the tab's
-            // one-shot initial command, run at the workspace root where
-            // .yarvis/issue-prompt.md lives; other flows attach to a session the
-            // core already spawned, so they wait on `claudeActive`.
-            const claudeTab: PinnedTab | null = claudePrompt
-              ? claudePromptReady
-                ? {
-                    key: "claude",
-                    title: "Claude",
-                    sessionId: `ws-claude:${detail.id}`,
-                    cwd: detail.rootPath,
-                    initialCommand: buildClaudeIssueCommand(claudeCommand),
-                  }
-                : null
-              : claudeActive
-                ? {
-                    key: "claude",
-                    title: "Claude",
-                    sessionId: `ws-claude:${detail.id}`,
-                    cwd: claudeCwd,
-                  }
-                : null;
+            // shells. See `resolveClaudeTab` for how the issue and remote-control
+            // flows differ.
+            const claudeTab = resolveClaudeTab({
+              claudePrompt,
+              claudePromptReady,
+              claudeActive,
+              workspaceId: detail.id,
+              rootPath: detail.rootPath,
+              claudeCwd,
+              claudeCommand,
+            });
             const terminalArea = (
               <div className="h-full min-h-0 min-w-0">
                 <TerminalTabs
