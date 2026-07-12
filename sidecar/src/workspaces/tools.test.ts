@@ -57,10 +57,17 @@ function issueSummary(number: number, title: string): IssueSummary {
  * so tests can assert assign/label happened without a token or network.
  */
 function fakeGitHub(overrides: Partial<WorkspaceGitHubClient> = {}) {
-  const calls = { assigned: [] as string[][], labeled: [] as string[][] };
+  const calls = {
+    assigned: [] as string[][],
+    labeled: [] as string[][],
+    listOpts: [] as ({ assignee?: string; state?: string } | undefined)[],
+  };
   const client: WorkspaceGitHubClient = {
     viewer: async () => ({ login: "octocat" }),
-    listRepoIssues: async () => [issueSummary(99, "Fix the widget")],
+    listRepoIssues: async (_o, _r, listOpts) => {
+      calls.listOpts.push(listOpts);
+      return [issueSummary(99, "Fix the widget")];
+    },
     issueDetail: async (_o, _r, number): Promise<IssueDetail> => ({
       ...issueSummary(number, "Fix the widget"),
       body: "The widget is broken.",
@@ -374,5 +381,189 @@ describe("workspace tools", () => {
     expect(result.error).toBeUndefined();
     expect(result.status).toBe("archived");
     expect(result.errors).toEqual([]);
+  });
+
+  it("list_repo_issues forwards the viewer login when assignedToMe is set", async () => {
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
+    const { client, calls } = fakeGitHub();
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner, githubClient: client });
+
+    await tools.list_repo_issues.execute!({ repoId: repo.id, assignedToMe: true }, opts);
+
+    expect(calls.listOpts).toEqual([{ assignee: "octocat" }]);
+  });
+
+  it("list_repo_issues surfaces a github error as a tool error", async () => {
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
+    const { client } = fakeGitHub({
+      listRepoIssues: async () => {
+        throw new Error("github /issues -> 502");
+      },
+    });
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner, githubClient: client });
+
+    const result = (await tools.list_repo_issues.execute!({ repoId: repo.id }, opts)) as {
+      error?: string;
+    };
+    expect(result.error).toContain("502");
+  });
+
+  it("start_work_on_issue keeps a failed github write as a warning and still starts", async () => {
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
+    const { client } = fakeGitHub({
+      assignIssue: async () => {
+        throw new Error("read-only token");
+      },
+    });
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      githubClient: client,
+      startClaudeSession: async (input) => ({ sessionKey: `ws-claude:${input.workspaceId}` }),
+    });
+
+    const result = (await tools.start_work_on_issue.execute!(
+      { repoId: repo.id, issueNumber: 99, assignSelf: true, applyLabel: true },
+      opts,
+    )) as { status?: string; sessionKey?: string; warnings?: string[] };
+
+    // The GitHub write failed but the workspace + session still succeeded.
+    expect(result.status).toBe("active");
+    expect(result.sessionKey).toBeDefined();
+    expect(result.warnings?.some((w) => w.includes("could not assign issue"))).toBe(true);
+  });
+
+  it("start_work_on_issue does not link or touch github when provisioning fails", async () => {
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
+    const { client, calls } = fakeGitHub();
+    let started = false;
+    const failRunner: GitRunner = async (args) => {
+      if (args[0] === "symbolic-ref") return { stdout: "origin/main\n", stderr: "", exitCode: 0 };
+      if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 };
+      if (args[0] === "worktree" && args[1] === "add") {
+        return { stdout: "", stderr: "boom", exitCode: 1 };
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    };
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: failRunner,
+      githubClient: client,
+      startClaudeSession: async () => {
+        started = true;
+        return { sessionKey: "ws-claude:unused" };
+      },
+    });
+
+    const result = (await tools.start_work_on_issue.execute!(
+      { repoId: repo.id, issueNumber: 99, assignSelf: true, applyLabel: true },
+      opts,
+    )) as { error?: string; status?: string };
+
+    expect(result.error).toBeDefined();
+    expect(result.status).toBe("error");
+    expect(started).toBe(false);
+    // Early return before upsertLink and the GitHub side effects.
+    expect(await db.select().from(schema.issueLinks)).toEqual([]);
+    expect(calls.assigned).toEqual([]);
+    expect(calls.labeled).toEqual([]);
+  });
+
+  it("start_work_on_issue errors without a github client", async () => {
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner, githubClient: null });
+
+    const result = (await tools.start_work_on_issue.execute!(
+      { repoId: repo.id, issueNumber: 99, assignSelf: true, applyLabel: true },
+      opts,
+    )) as { error?: string };
+    expect(result.error).toContain("GitHub token not configured");
+  });
+
+  it("get_workspace_status distinguishes a polled-but-PR-less repo", async () => {
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => ({ sessionKey: `ws-claude:${input.workspaceId}` }),
+    });
+    const created = (await tools.create_workspace_session.execute!(
+      { name: "No PR WS", repoIds: [repo.id] },
+      opts,
+    )) as { workspaceId: string };
+
+    // A poll ran but found no PR yet: the row exists with a null prNumber.
+    const [wr] = await db
+      .select()
+      .from(schema.workspaceRepos)
+      .where(eq(schema.workspaceRepos.workspaceId, created.workspaceId));
+    await db.insert(schema.workspaceRepoPr).values({
+      workspaceRepoId: wr!.id,
+      prNumber: null,
+      checkRollup: "none",
+      lastPolledAt: new Date(),
+    });
+
+    const result = (await tools.get_workspace_status.execute!(
+      { workspaceId: created.workspaceId },
+      opts,
+    )) as { repos: Array<{ pr: unknown; note?: string }> };
+
+    expect(result.repos[0]!.pr).toBeNull();
+    expect(result.repos[0]!.note).toBe("no PR opened yet");
+  });
+
+  it("get_workspace_status errors on an unknown workspace", async () => {
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
+
+    const result = (await tools.get_workspace_status.execute!(
+      { workspaceId: "00000000-0000-0000-0000-000000000000" },
+      opts,
+    )) as { error?: string };
+    expect(result.error).toBe("workspace not found");
+  });
+
+  it("archive_workspace refuses uncommitted work, then succeeds with force", async () => {
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
+    // A worktree that refuses removal unless --force is passed — the real git
+    // behavior when the worktree has uncommitted changes.
+    const refuseUnlessForced: GitRunner = async (args) => {
+      if (args[0] === "symbolic-ref") return { stdout: "origin/main\n", stderr: "", exitCode: 0 };
+      if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 };
+      if (args[0] === "worktree" && args[1] === "remove" && !args.includes("--force")) {
+        return { stdout: "", stderr: "contains modified files", exitCode: 1 };
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    };
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: refuseUnlessForced,
+      startClaudeSession: async (input) => ({ sessionKey: `ws-claude:${input.workspaceId}` }),
+    });
+    const created = (await tools.create_workspace_session.execute!(
+      { name: "Dirty WS", repoIds: [repo.id] },
+      opts,
+    )) as { workspaceId: string };
+
+    const refused = (await tools.archive_workspace.execute!(
+      { workspaceId: created.workspaceId, force: false },
+      opts,
+    )) as { status?: string; errors?: unknown[]; note?: string };
+    expect(refused.status).toBe("archiving");
+    expect(refused.errors?.length).toBe(1);
+    expect(refused.note).toContain("force=true");
+
+    const forced = (await tools.archive_workspace.execute!(
+      { workspaceId: created.workspaceId, force: true },
+      opts,
+    )) as { status?: string; errors?: unknown[] };
+    expect(forced.status).toBe("archived");
+    expect(forced.errors).toEqual([]);
+  });
+
+  it("archive_workspace errors on an unknown workspace", async () => {
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
+
+    const result = (await tools.archive_workspace.execute!(
+      { workspaceId: "00000000-0000-0000-0000-000000000000", force: false },
+      opts,
+    )) as { error?: string };
+    expect(result.error).toContain("not found");
   });
 });

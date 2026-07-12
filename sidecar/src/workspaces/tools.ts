@@ -6,7 +6,9 @@ import { GitHubClient } from "../github/client.ts";
 import {
   applyStartWorkSideEffects,
   buildIssuePrompt,
+  IN_PROGRESS_LABEL,
   type StartWorkSideEffectClient,
+  sanitizeIssueText,
   upsertLink,
   writeIssuePrompt,
 } from "../issues/service.ts";
@@ -27,11 +29,7 @@ import {
   type WorkspaceDetail,
 } from "./service.ts";
 
-/** Default label applied to an issue when work starts — mirrors the value the
- *  issue-view "Start work" route uses so both entry points behave identically. */
-const IN_PROGRESS_LABEL = "in progress";
-
-const describe = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 /**
  * Shapes a workspace's cached PR + checks state (populated by the background
@@ -140,7 +138,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
       // The workspace is ready; only the Claude launch failed (commonly: not
       // logged in). Surface that without discarding the usable workspace.
       return {
-        error: e instanceof Error ? e.message : String(e),
+        error: errorMessage(e),
         workspaceId: detail.id,
         name: detail.name,
         status: detail.status,
@@ -177,16 +175,19 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         try {
           const assignee = assignedToMe ? (await github.viewer()).login : undefined;
           const issues = await github.listRepoIssues(repo.owner, repo.repo, { assignee });
+          // Issue titles are third-party-authored free text flowing into the chat
+          // model's context; strip the hidden/bidi/comment characters that could
+          // smuggle instructions the user wouldn't see on the rendered issue.
           return issues.map((i) => ({
             number: Number(i.externalId),
-            title: i.title,
+            title: sanitizeIssueText(i.title),
             url: i.url,
             author: i.author,
             assignees: i.assignees,
             labels: i.labels.map((l) => l.name),
           }));
         } catch (e) {
-          return { error: e instanceof Error ? e.message : String(e) };
+          return { error: errorMessage(e) };
         }
       },
     }),
@@ -215,7 +216,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         try {
           issue = await github.issueDetail(repo.owner, repo.repo, issueNumber);
         } catch (e) {
-          return { error: `could not load issue #${issueNumber}: ${describe(e)}` };
+          return { error: `could not load issue #${issueNumber}: ${errorMessage(e)}` };
         }
 
         const ws = await createWorkspace(db, config, { name: issue.title, repoIds: [repo.id] });
@@ -271,7 +272,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         try {
           await writeIssuePrompt(detail.rootPath, prompt);
         } catch (e) {
-          warnings.push(`could not write issue prompt: ${describe(e)}`);
+          warnings.push(`could not write issue prompt: ${errorMessage(e)}`);
         }
 
         const launch = await launchClaude(detail);
@@ -450,7 +451,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
                 : "Archive incomplete; some worktrees could not be removed (often uncommitted changes). Retry with force=true to discard them.",
           };
         } catch (e) {
-          return { error: describe(e) };
+          return { error: errorMessage(e) };
         }
       },
     }),

@@ -154,6 +154,11 @@ export interface StartWorkSideEffectOptions {
   label: string;
 }
 
+/** Label applied to an issue when work starts (creatable in-repo). Shared by the
+ *  issue-view "Start work" route and the chat agent's start_work_on_issue tool
+ *  so both entry points label issues identically. */
+export const IN_PROGRESS_LABEL = "in progress";
+
 /**
  * Applies the best-effort GitHub side effects of starting work — assign the
  * issue to the viewer and label it in-progress. The workspace + link are the
