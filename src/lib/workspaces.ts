@@ -152,6 +152,25 @@ export async function workspaceRepoChanges(
   return res.json();
 }
 
+export interface FileDiff {
+  path: string;
+  /** Unified-diff patch; empty when the file has no textual diff (binary/unchanged). */
+  patch: string;
+}
+
+/** Unified diff for a single changed file in a workspace repo's worktree. */
+export async function workspaceRepoFileDiff(
+  workspaceId: string,
+  workspaceRepoId: string,
+  path: string,
+): Promise<FileDiff> {
+  const res = await sidecarFetch(
+    `/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/diff?path=${encodeURIComponent(path)}`,
+  );
+  if (!res.ok) return readError(res, "load file diff");
+  return res.json();
+}
+
 export async function linkWorkspaceTask(workspaceId: string, taskId: string): Promise<void> {
   const res = await sidecarFetch(`/api/workspaces/${workspaceId}/tasks`, {
     method: "POST",

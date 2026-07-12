@@ -17,12 +17,13 @@ import {
   type WorkspaceStatus,
   type WorkspaceSummary,
 } from "../lib/workspaces";
-import TerminalTabs from "./shell/terminalTabs/TerminalTabs";
+import TerminalTabs, { type OpenFileDiff } from "./shell/terminalTabs/TerminalTabs";
 import TerminalPanel from "./TerminalPanel";
 import WorkspaceSidePanel from "./WorkspaceSidePanel";
 import ArchiveDialog from "./workspaces/ArchiveDialog";
 import ArchivedView from "./workspaces/ArchivedView";
 import LinkTaskControl from "./workspaces/LinkTaskControl";
+import WorkspaceFileDiff from "./workspaces/WorkspaceFileDiff";
 
 const STATUS_STYLES: Record<WorkspaceStatus, string> = {
   creating: "bg-amber-900/40 text-amber-200",
@@ -575,6 +576,9 @@ function WorkspaceDetailView({
   // Flips once the issue prompt file has been written (post-provision), gating
   // the Claude terminal launch.
   const [claudePromptReady, setClaudePromptReady] = useState(false);
+  // A changed file the side panel asked to open in a diff tab; consumed by
+  // TerminalTabs, which either opens a new tab or re-focuses the existing one.
+  const [diffRequest, setDiffRequest] = useState<OpenFileDiff | null>(null);
   const autoProvisionRef = useRef(false);
   const promptWriteRef = useRef(false);
   const [claudeActive, setClaudeActive] = useState(false);
@@ -865,6 +869,11 @@ function WorkspaceDetailView({
                 <TerminalTabs
                   storageKey={`ws:${detail.id}`}
                   cwd={detail.rootPath}
+                  openFileDiff={diffRequest}
+                  onFileDiffOpened={() => setDiffRequest(null)}
+                  renderFileDiff={({ repoId, path }) => (
+                    <WorkspaceFileDiff workspaceId={detail.id} repoId={repoId} path={path} />
+                  )}
                   pinnedTabs={
                     claudeActive
                       ? [
@@ -905,7 +914,11 @@ function WorkspaceDetailView({
               </div>
             )}
           </div>
-          <WorkspaceSidePanel workspaceId={detail.id} repos={detail.repos} />
+          <WorkspaceSidePanel
+            workspaceId={detail.id}
+            repos={detail.repos}
+            onOpenFile={(repoId, path) => setDiffRequest({ repoId, path })}
+          />
         </div>
       )}
     </div>

@@ -6,6 +6,7 @@ import {
   branchExists,
   createWorktree,
   detectDefaultBranch,
+  fileDiff,
   type GitRunner,
   type GitRunResult,
   listChangedFiles,
@@ -146,5 +147,34 @@ describe("listChangedFiles", () => {
       deletions: 0,
     });
     expect(byPath.get("src/c.ts")?.status).toBe("untracked");
+  });
+});
+
+describe("fileDiff", () => {
+  it("diffs a tracked file against origin/<base> with a guarded pathspec", async () => {
+    const { runner, calls } = fakeRunner((args) =>
+      args[0] === "diff" ? { stdout: "@@ -1 +1 @@\n-old\n+new\n" } : {},
+    );
+    expect(await fileDiff(runner, "/wt", "main", "src/a.ts")).toContain("+new");
+    expect(calls[0]).toEqual(["diff", "origin/main", "--", "src/a.ts"]);
+  });
+
+  it("falls back to a --no-index diff for an untracked file", async () => {
+    const { runner, calls } = fakeRunner((args) => {
+      if (args.includes("--no-index"))
+        return { stdout: "@@ -0,0 +1 @@\n+brand new\n", exitCode: 1 };
+      return { stdout: "" }; // tracked diff is empty for an untracked path
+    });
+    const patch = await fileDiff(runner, "/wt", "main", "new.ts");
+    expect(patch).toContain("+brand new");
+    expect(calls[1]).toEqual(["diff", "--no-index", "--", "/dev/null", "new.ts"]);
+  });
+
+  it("throws when --no-index fails for a real reason (exit > 1)", async () => {
+    const { runner } = fakeRunner((args) => {
+      if (args.includes("--no-index")) return { stderr: "boom", exitCode: 128 };
+      return { stdout: "" };
+    });
+    await expect(fileDiff(runner, "/wt", "main", "missing.ts")).rejects.toThrow("boom");
   });
 });

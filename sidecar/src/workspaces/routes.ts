@@ -18,6 +18,7 @@ import {
   unlinkTask,
   updateRepo,
   workspaceRepoChanges,
+  workspaceRepoFileDiff,
   workspaceRepoFiles,
 } from "./service.ts";
 
@@ -166,6 +167,17 @@ export function createWorkspaceRoutes(config: Config): Hono {
   router.get("/:id/repos/:wrId/changes", async (c) => {
     try {
       return c.json(await workspaceRepoChanges(db(), c.req.param("wrId")));
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
+    }
+  });
+
+  // Unified diff for a single changed file (opened in a workspace diff tab).
+  router.get("/:id/repos/:wrId/diff", async (c) => {
+    const path = c.req.query("path");
+    if (!path) return c.json({ error: "path query parameter is required" }, 400);
+    try {
+      return c.json(await workspaceRepoFileDiff(db(), c.req.param("wrId"), path));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
     }

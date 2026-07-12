@@ -7,20 +7,14 @@ import {
   usePrFileDiff,
   usePrFiles,
 } from "../../lib/pr/cache";
-import { type DiffRow, parsePatch } from "../../lib/pr/diff";
+import { parsePatch } from "../../lib/pr/diff";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
+import { rowClass } from "../diff/DiffView";
 import { ThreadCard } from "./PrDescription";
 import { prFileAnchorId } from "./shared";
 
 /** Files whose diffs are fetched eagerly so the top of the view is populated. */
 const PREFETCH_COUNT = 4;
-
-function rowClass(kind: DiffRow["kind"]): string {
-  if (kind === "hunk") return "bg-sky-950/60 text-sky-300";
-  if (kind === "add") return "bg-emerald-950/50 text-emerald-300";
-  if (kind === "del") return "bg-red-950/50 text-red-300";
-  return "text-zinc-400";
-}
 
 /** Inline composer for a new line comment. */
 function CommentComposer({
