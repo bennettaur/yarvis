@@ -18,7 +18,7 @@ import {
   type WorkspaceSummary,
 } from "../lib/workspaces";
 import SplitPane, { usePersistedRatio } from "./SplitPane";
-import TerminalTabs, { type OpenFileDiff } from "./shell/terminalTabs/TerminalTabs";
+import TerminalTabs, { type OpenFileDiff, type PinnedTab } from "./shell/terminalTabs/TerminalTabs";
 import TerminalPanel from "./TerminalPanel";
 import WorkspaceSidePanel from "./WorkspaceSidePanel";
 import ArchiveDialog from "./workspaces/ArchiveDialog";
@@ -928,48 +928,43 @@ function WorkspaceDetailView({
           ratio={sideRatio}
           onRatioChange={setSideRatio}
           first={(() => {
+            // The workspace's Claude session always rides along as a pinned
+            // terminal tab, so every workspace — including ones started from an
+            // issue — keeps iTerm-style tabs and Cmd+D pane splits for its own
+            // shells. The issue "Start work" flow launches Claude via the tab's
+            // one-shot initial command, run at the workspace root where
+            // .yarvis/issue-prompt.md lives; other flows attach to a session the
+            // core already spawned, so they wait on `claudeActive`.
+            const claudeTab: PinnedTab | null = claudePrompt
+              ? claudePromptReady
+                ? {
+                    key: "claude",
+                    title: "Claude",
+                    sessionId: `ws-claude:${detail.id}`,
+                    cwd: detail.rootPath,
+                    initialCommand: buildClaudeIssueCommand(claudeCommand),
+                  }
+                : null
+              : claudeActive
+                ? {
+                    key: "claude",
+                    title: "Claude",
+                    sessionId: `ws-claude:${detail.id}`,
+                    cwd: claudeCwd,
+                  }
+                : null;
             const terminalArea = (
               <div className="h-full min-h-0 min-w-0">
-                {claudePrompt ? (
-                  claudePromptReady ? (
-                    // Fresh, stable id so a reattach never re-runs the prompt.
-                    // Launched at the workspace root (like the standard terminal),
-                    // where the .yarvis/issue-prompt.md file lives.
-                    <TerminalPanel
-                      sessionId={`ws-claude:${detail.id}`}
-                      cwd={detail.rootPath}
-                      initialCommand={buildClaudeIssueCommand(claudeCommand)}
-                    />
-                  ) : (
-                    <div className="flex h-full items-center justify-center text-sm text-zinc-500">
-                      Preparing Claude session…
-                    </div>
-                  )
-                ) : (
-                  /* A live remote-control Claude session shows up as a pinned
-                       terminal tab; the workspace's own shells live in the other tabs. */
-                  <TerminalTabs
-                    storageKey={`ws:${detail.id}`}
-                    cwd={detail.rootPath}
-                    openFileDiff={diffRequest}
-                    onFileDiffOpened={() => setDiffRequest(null)}
-                    renderFileDiff={({ repoId, path }) => (
-                      <WorkspaceFileDiff workspaceId={detail.id} repoId={repoId} path={path} />
-                    )}
-                    pinnedTabs={
-                      claudeActive
-                        ? [
-                            {
-                              key: "claude",
-                              title: "Claude",
-                              sessionId: `ws-claude:${detail.id}`,
-                              cwd: claudeCwd,
-                            },
-                          ]
-                        : []
-                    }
-                  />
-                )}
+                <TerminalTabs
+                  storageKey={`ws:${detail.id}`}
+                  cwd={detail.rootPath}
+                  openFileDiff={diffRequest}
+                  onFileDiffOpened={() => setDiffRequest(null)}
+                  renderFileDiff={({ repoId, path }) => (
+                    <WorkspaceFileDiff workspaceId={detail.id} repoId={repoId} path={path} />
+                  )}
+                  pinnedTabs={claudeTab ? [claudeTab] : []}
+                />
               </div>
             );
             if (!runRepo) return terminalArea;
