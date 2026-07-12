@@ -32,16 +32,16 @@ const cache = new Map<string, CacheEntry<unknown>>();
  */
 const listeners = new Map<string, Set<() => void>>();
 
-function subscribe(key: string, fn: () => void): () => void {
-  let set = listeners.get(key);
-  if (!set) {
-    set = new Set();
-    listeners.set(key, set);
+function subscribe(key: string, notify: () => void): () => void {
+  let subscribers = listeners.get(key);
+  if (!subscribers) {
+    subscribers = new Set();
+    listeners.set(key, subscribers);
   }
-  set.add(fn);
+  subscribers.add(notify);
   return () => {
-    set.delete(fn);
-    if (set.size === 0) listeners.delete(key);
+    subscribers.delete(notify);
+    if (subscribers.size === 0) listeners.delete(key);
   };
 }
 
@@ -81,8 +81,8 @@ export function cachedFetch<T>(
  */
 export function invalidate(key: string): void {
   cache.delete(key);
-  const set = listeners.get(key);
-  if (set) for (const fn of set) fn();
+  const subscribers = listeners.get(key);
+  if (subscribers) for (const notify of subscribers) notify();
 }
 
 export interface Resource<T> {
@@ -117,17 +117,22 @@ function useCachedResource<T>(key: string | null, loader: () => Promise<T>): Res
       return;
     }
     let active = true;
+    // An invalidation can fire `load` while a prior load is still in flight;
+    // track the latest so an out-of-order resolution can't write back a stale
+    // value over the newer one.
+    let latest = 0;
     const load = () => {
+      const seq = ++latest;
       setLoading(true);
       setError(null);
       cachedFetch(key, loaderRef.current)
         .then((value) => {
-          if (!active) return;
+          if (!active || seq !== latest) return;
           setData(value);
           setLoading(false);
         })
         .catch((err) => {
-          if (!active) return;
+          if (!active || seq !== latest) return;
           setError(err instanceof Error ? err.message : String(err));
           setLoading(false);
         });
