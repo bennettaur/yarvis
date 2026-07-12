@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isPtyBusy, killPty } from "../../../lib/pty";
+import SplitPane from "../../SplitPane";
 import TerminalPanel, { type TerminalPanelHandle } from "../../TerminalPanel";
 import {
   allLeafIds,
@@ -9,8 +10,10 @@ import {
   nextFocusAfterRemove,
   type Pane,
   type PaneId,
+  type PanePath,
   removePane,
   type SplitDirection,
+  setRatioAtPath,
   splitPane,
 } from "./paneTree";
 
@@ -344,6 +347,17 @@ export default function TerminalTabs({
     [activeTab, focusedPane, focusPane],
   );
 
+  const resizePane = useCallback((tabId: string, path: PanePath, ratio: number) => {
+    setState((prev) => ({
+      ...prev,
+      tabs: prev.tabs.map((t) =>
+        t.id === tabId && t.kind === "terminal"
+          ? { ...t, root: setRatioAtPath(t.root, path, ratio) }
+          : t,
+      ),
+    }));
+  }, []);
+
   const closePane = useCallback(
     async (paneId: PaneId) => {
       if (activeTab?.kind !== "terminal") return;
@@ -445,12 +459,14 @@ export default function TerminalTabs({
         ) : activeTab ? (
           <PaneTreeView
             pane={activeTab.root}
+            path={[]}
             tabId={activeTab.id}
             storageKey={storageKey}
             cwd={cwd}
             focusedPane={focusedPane}
             onPaneFocus={(p) => setFocusedPane(activeTab.id, p)}
             onPaneClose={(p) => void closePane(p)}
+            onPaneResize={(path, ratio) => resizePane(activeTab.id, path, ratio)}
             handles={handlesRef.current}
           />
         ) : null}
@@ -561,21 +577,26 @@ function TabStrip({
 
 function PaneTreeView({
   pane,
+  path,
   tabId,
   storageKey,
   cwd,
   focusedPane,
   onPaneFocus,
   onPaneClose,
+  onPaneResize,
   handles,
 }: {
   pane: Pane;
+  /** This node's location in the tree, so a divider drag names its split. */
+  path: PanePath;
   tabId: string;
   storageKey: string;
   cwd?: string;
   focusedPane: PaneId;
   onPaneFocus: (p: PaneId) => void;
   onPaneClose: (p: PaneId) => void;
+  onPaneResize: (path: PanePath, ratio: number) => void;
   handles: Map<string, TerminalPanelHandle | null>;
 }) {
   if (pane.kind === "leaf") {
@@ -614,39 +635,42 @@ function PaneTreeView({
       </div>
     );
   }
-  const flexDir = pane.direction === "vertical" ? "flex-row" : "flex-col";
+  // paneTree "vertical" = vertical divider / panes side-by-side, which is a
+  // "horizontal" flow for SplitPane; "horizontal" = stacked panes = "vertical".
   return (
-    <div className={`flex h-full min-h-0 w-full ${flexDir}`}>
-      <div className="min-h-0 min-w-0 flex-1">
+    <SplitPane
+      className="h-full w-full"
+      orientation={pane.direction === "vertical" ? "horizontal" : "vertical"}
+      ratio={pane.ratio ?? 0.5}
+      onRatioChange={(ratio) => onPaneResize(path, ratio)}
+      first={
         <PaneTreeView
           pane={pane.first}
+          path={[...path, "first"]}
           tabId={tabId}
           storageKey={storageKey}
           cwd={cwd}
           focusedPane={focusedPane}
           onPaneFocus={onPaneFocus}
           onPaneClose={onPaneClose}
+          onPaneResize={onPaneResize}
           handles={handles}
         />
-      </div>
-      <div
-        className={
-          pane.direction === "vertical" ? "w-px shrink-0 bg-zinc-800" : "h-px shrink-0 bg-zinc-800"
-        }
-        aria-hidden="true"
-      />
-      <div className="min-h-0 min-w-0 flex-1">
+      }
+      second={
         <PaneTreeView
           pane={pane.second}
+          path={[...path, "second"]}
           tabId={tabId}
           storageKey={storageKey}
           cwd={cwd}
           focusedPane={focusedPane}
           onPaneFocus={onPaneFocus}
           onPaneClose={onPaneClose}
+          onPaneResize={onPaneResize}
           handles={handles}
         />
-      </div>
-    </div>
+      }
+    />
   );
 }
