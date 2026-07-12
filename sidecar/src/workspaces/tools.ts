@@ -119,10 +119,18 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
    * result. Shared by create_workspace_session (after provisioning) and
    * start_workspace_session (existing workspace). One repo → its worktree;
    * multiple → the workspace root so Claude sees each worktree as a subfolder.
+   *
+   * `cwdOverride` forces a specific working directory: start_work_on_issue seeds
+   * `.yarvis/issue-prompt.md` under the workspace root (outside any worktree), so
+   * it launches at the root instead of the lone repo's worktree — otherwise the
+   * remotely-driven session would start inside the repo and couldn't read the
+   * relative prompt path.
    */
-  const launchClaude = async (detail: WorkspaceDetail) => {
+  const launchClaude = async (detail: WorkspaceDetail, cwdOverride?: string) => {
     const [firstRepo] = detail.repos;
-    const cwd = detail.repos.length === 1 && firstRepo ? firstRepo.worktreePath : detail.rootPath;
+    const cwd =
+      cwdOverride ??
+      (detail.repos.length === 1 && firstRepo ? firstRepo.worktreePath : detail.rootPath);
     try {
       const session = await startClaude({ workspaceId: detail.id, cwd, name: detail.name });
       return {
@@ -275,7 +283,9 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           warnings.push(`could not write issue prompt: ${errorMessage(e)}`);
         }
 
-        const launch = await launchClaude(detail);
+        // Launch at the workspace root, where the seeded .yarvis/issue-prompt.md
+        // lives, so the session can read it by its relative path.
+        const launch = await launchClaude(detail, detail.rootPath);
         return {
           ...launch,
           issue: { number: issueNumber, title: issue.title, url: issue.url },
