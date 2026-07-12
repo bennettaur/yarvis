@@ -33,6 +33,12 @@ export const ptyExists = (id: string) => invoke<boolean>("pty_exists", { id });
 export const startClaudeSession = (workspaceId: string, cwd: string, name: string) =>
   invoke("pty_start_claude", { workspaceId, cwd, name });
 
+/** The configured base command used to start Claude Code (default
+ * `claude --permission-mode auto`, overridable via YARVIS_CLAUDE_COMMAND). The
+ * frontend builds its own Claude launches (e.g. the issue terminal) on top of
+ * this so they match remote-control sessions. */
+export const getClaudeCommand = () => invoke<string>("get_claude_command");
+
 /** True when a non-shell foreground process is running in the session — used to
  * decide whether closing should require confirmation. False for unknown
  * sessions and for platforms that can't report a foreground process group. */

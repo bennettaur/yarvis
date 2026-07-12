@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { writeIssuePromptFile } from "../lib/issues/api";
 import type { OpenWorkspaceRequest } from "../lib/nav";
-import { ptyExists, startClaudeSession } from "../lib/pty";
+import { getClaudeCommand, ptyExists, startClaudeSession } from "../lib/pty";
 import { createRepo, listRepos, type Repo } from "../lib/repos";
 import { listTasks, type Task } from "../lib/tasks";
 import {
@@ -109,14 +109,35 @@ const SELECTED_WORKSPACE_KEY = "yarvis.workspaces.selectedId";
 const SHOW_ARCHIVED_KEY = "yarvis.workspaces.showArchived";
 
 /**
- * Command that launches Claude for an "Start work on issue" session. The issue
+ * Instruction handed to Claude for an "Start work on issue" session. The issue
  * details are written to a known file under the workspace root (see the sidecar
  * `/prompt-file` route), so a static instruction to read that file is enough —
- * no need to inline the (potentially large) body into the command. `auto`
- * permission mode lets Claude act without per-tool prompts.
+ * no need to inline the (potentially large) body into the command.
  */
-const CLAUDE_ISSUE_COMMAND =
-  'claude --permission-mode auto "Read the ticket details in .yarvis/issue-prompt.md and implement a first pass at the ticket, following the repository\'s conventions."';
+const CLAUDE_ISSUE_INSTRUCTION =
+  "Read the ticket details in .yarvis/issue-prompt.md and implement a first pass at the ticket, following the repository's conventions.";
+
+/** Fallback base command while the configured one is still loading (matches the
+ *  Rust core's default). */
+const DEFAULT_CLAUDE_COMMAND = "claude --permission-mode auto";
+
+/**
+ * Builds the issue "Start work" launch line from the configured base command
+ * (e.g. `claude --permission-mode auto`), appending the instruction as a
+ * double-quoted argument. The instruction contains an apostrophe but no double
+ * quotes, so double-quote wrapping is safe.
+ */
+function buildClaudeIssueCommand(base: string): string {
+  return `${base} "${CLAUDE_ISSUE_INSTRUCTION}"`;
+}
+
+/** Where a workspace's Claude session runs: the lone repo's worktree, or the
+ *  workspace root when it spans several (so Claude sees each worktree as a
+ *  subfolder). */
+function claudeCwdForWorkspace(detail: WorkspaceDetail): string {
+  const first = detail.repos[0];
+  return detail.repos.length === 1 && first ? first.worktreePath : detail.rootPath;
+}
 
 export default function WorkspacesPanel({
   requested = null,
@@ -135,6 +156,10 @@ export default function WorkspacesPanel({
   // A pending "Start work" Claude launch, scoped to one workspace id. Cleared
   // when the user navigates to a different workspace so the prompt never leaks.
   const [claudeRequest, setClaudeRequest] = useState<{ id: string; prompt: string } | null>(null);
+  // The workspace just created in this session. The detail view auto-starts a
+  // Claude session for it once provisioned; cleared when the user navigates
+  // elsewhere so selecting an existing workspace never auto-launches Claude.
+  const [justCreatedId, setJustCreatedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [showArchived, setShowArchived] = useState<boolean>(
     () => localStorage.getItem(SHOW_ARCHIVED_KEY) === "1",
@@ -169,6 +194,7 @@ export default function WorkspacesPanel({
     if (!requested) return;
     setCreating(false);
     setSelectedId(requested.id);
+    setJustCreatedId(null);
     setClaudeRequest(
       requested.claudePrompt ? { id: requested.id, prompt: requested.claudePrompt } : null,
     );
@@ -198,6 +224,7 @@ export default function WorkspacesPanel({
   const beginNew = () => {
     setCreating(true);
     setSelectedId(null);
+    setJustCreatedId(null);
     setClaudeRequest(null);
   };
 
@@ -205,6 +232,8 @@ export default function WorkspacesPanel({
     setCreating(false);
     void refresh();
     setSelectedId(id);
+    // Marks this workspace for the detail view's one-shot Claude auto-start.
+    setJustCreatedId(id);
   };
 
   const onRepoAdded = useCallback((repo: Repo) => {
@@ -244,6 +273,7 @@ export default function WorkspacesPanel({
                       onClick={() => {
                         setCreating(false);
                         setSelectedId(ws.id);
+                        setJustCreatedId(null);
                         setClaudeRequest(null);
                       }}
                       className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-zinc-800/60 ${
@@ -283,6 +313,7 @@ export default function WorkspacesPanel({
             id={selectedId}
             onChanged={refresh}
             claudePrompt={claudeRequest?.id === selectedId ? claudeRequest.prompt : undefined}
+            autoStartClaude={justCreatedId === selectedId}
           />
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-zinc-500">
@@ -561,12 +592,16 @@ function WorkspaceDetailView({
   id,
   onChanged,
   claudePrompt,
+  autoStartClaude = false,
 }: {
   id: string;
   onChanged: () => void;
   /** When set (Issues "Start work"), auto-provision then launch a Claude session
    * seeded with this prompt. */
   claudePrompt?: string;
+  /** When true (a workspace just created here, no issue prompt), start a
+   * remote-control Claude session once provisioning finishes and focus it. */
+  autoStartClaude?: boolean;
 }) {
   const [detail, setDetail] = useState<WorkspaceDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -576,11 +611,15 @@ function WorkspaceDetailView({
   // Flips once the issue prompt file has been written (post-provision), gating
   // the Claude terminal launch.
   const [claudePromptReady, setClaudePromptReady] = useState(false);
+  // The configured base command for Claude, loaded from the core; used to build
+  // the issue "Start work" launch line. Falls back to the default until loaded.
+  const [claudeCommand, setClaudeCommand] = useState(DEFAULT_CLAUDE_COMMAND);
   // A changed file the side panel asked to open in a diff tab; consumed by
   // TerminalTabs, which either opens a new tab or re-focuses the existing one.
   const [diffRequest, setDiffRequest] = useState<OpenFileDiff | null>(null);
   const autoProvisionRef = useRef(false);
   const promptWriteRef = useRef(false);
+  const autoStartClaudeRef = useRef(false);
   const [claudeActive, setClaudeActive] = useState(false);
   // Bumped when the active id changes (or this view unmounts) so an in-flight
   // load() from a previous selection won't overwrite the new one's detail.
@@ -697,24 +736,42 @@ function WorkspaceDetailView({
     }
   }, [claudePrompt, detail]);
 
-  if (error) return <p className="p-6 text-sm text-red-400">{error}</p>;
-  if (!detail) return <p className="p-6 text-sm text-zinc-500">Loading…</p>;
+  // Load the configured base Claude command up front so the issue terminal
+  // launches with it; harmless when there's no issue prompt.
+  useEffect(() => {
+    getClaudeCommand()
+      .then((cmd) => setClaudeCommand(cmd || DEFAULT_CLAUDE_COMMAND))
+      .catch(() => setClaudeCommand(DEFAULT_CLAUDE_COMMAND));
+  }, []);
 
-  const provisioned = detail.status === "active";
-  // One repo: work inside its worktree; multiple: the workspace root.
-  const firstRepo = detail.repos[0];
-  const claudeCwd =
-    detail.repos.length === 1 && firstRepo ? firstRepo.worktreePath : detail.rootPath;
-
-  const startClaude = async () => {
+  const startClaude = useCallback(async () => {
+    if (!detail) return;
     try {
-      await startClaudeSession(id, claudeCwd, detail.name);
+      await startClaudeSession(id, claudeCwdForWorkspace(detail), detail.name);
       // The session now exists; reflect it immediately (the poll would catch up).
       setClaudeActive(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  };
+  }, [id, detail]);
+
+  // "New workspace" handoff: once a freshly created workspace is provisioned,
+  // start a remote-control Claude session so it's ready to drive. The pinned
+  // Claude tab that appears is auto-focused by TerminalTabs, navigating to it.
+  // Ref-guarded to fire once; skipped for the issue flow (its own launch path).
+  useEffect(() => {
+    if (!autoStartClaude || claudePrompt) return;
+    if (detail?.status !== "active") return;
+    if (claudeActive || autoStartClaudeRef.current) return;
+    autoStartClaudeRef.current = true;
+    void startClaude();
+  }, [autoStartClaude, claudePrompt, detail?.status, claudeActive, startClaude]);
+
+  if (error) return <p className="p-6 text-sm text-red-400">{error}</p>;
+  if (!detail) return <p className="p-6 text-sm text-zinc-500">Loading…</p>;
+
+  const provisioned = detail.status === "active";
+  const claudeCwd = claudeCwdForWorkspace(detail);
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
@@ -856,7 +913,7 @@ function WorkspaceDetailView({
                   <TerminalPanel
                     sessionId={`ws-claude:${detail.id}`}
                     cwd={detail.rootPath}
-                    initialCommand={CLAUDE_ISSUE_COMMAND}
+                    initialCommand={buildClaudeIssueCommand(claudeCommand)}
                   />
                 ) : (
                   <div className="flex h-full items-center justify-center text-sm text-zinc-500">
