@@ -145,7 +145,7 @@ export function DiffBody({
             </div>
             {(lineThreads ||
               linePending.length > 0 ||
-              (row.rightLine != null && activeLine === row.rightLine)) && (
+              (commentable && activeLine === row.rightLine)) && (
               <div className="space-y-2 px-3 py-2 font-sans">
                 {lineThreads?.map((t, j) => (
                   <ThreadCard key={`t-${j}`} thread={t} />
@@ -159,7 +159,7 @@ export function DiffBody({
                     {p.body}
                   </div>
                 ))}
-                {activeLine === row.rightLine && row.rightLine != null && (
+                {commentable && activeLine === row.rightLine && (
                   <CommentComposer
                     onSubmit={(body) => submit(row.rightLine as number, body)}
                     onCancel={() => setActiveLine(null)}
