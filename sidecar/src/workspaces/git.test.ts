@@ -116,8 +116,29 @@ describe("listFiles", () => {
 });
 
 describe("listChangedFiles", () => {
+  it("diffs against the merge-base start ref, not origin's tip", async () => {
+    const { runner, calls } = fakeRunner((args) => {
+      if (args[0] === "merge-base") return { stdout: "abc123\n" };
+      return {};
+    });
+    await listChangedFiles(runner, "/wt", "main");
+    expect(calls[0]).toEqual(["merge-base", "origin/main", "HEAD"]);
+    // Both the name-status and numstat diffs use the resolved start ref.
+    expect(calls.filter((c) => c[0] === "diff").every((c) => c[2] === "abc123")).toBe(true);
+  });
+
+  it("falls back to origin/<base> when there is no merge-base", async () => {
+    const { runner, calls } = fakeRunner((args) => {
+      if (args[0] === "merge-base") return { exitCode: 1 };
+      return {};
+    });
+    await listChangedFiles(runner, "/wt", "main");
+    expect(calls.filter((c) => c[0] === "diff").every((c) => c[2] === "origin/main")).toBe(true);
+  });
+
   it("merges name-status, numstat, and untracked files", async () => {
     const { runner } = fakeRunner((args) => {
+      if (args[0] === "merge-base") return { stdout: "abc123\n" };
       if (args[1] === "--name-status") {
         return { stdout: "M\tsrc/a.ts\nA\tsrc/b.ts\nR100\told.ts\tnew.ts\n" };
       }
@@ -151,27 +172,31 @@ describe("listChangedFiles", () => {
 });
 
 describe("fileDiff", () => {
-  it("diffs a tracked file against origin/<base> with a guarded pathspec", async () => {
-    const { runner, calls } = fakeRunner((args) =>
-      args[0] === "diff" ? { stdout: "@@ -1 +1 @@\n-old\n+new\n" } : {},
-    );
+  it("diffs a tracked file against the merge-base start ref with a guarded pathspec", async () => {
+    const { runner, calls } = fakeRunner((args) => {
+      if (args[0] === "merge-base") return { stdout: "abc123\n" };
+      return args[0] === "diff" ? { stdout: "@@ -1 +1 @@\n-old\n+new\n" } : {};
+    });
     expect(await fileDiff(runner, "/wt", "main", "src/a.ts")).toContain("+new");
-    expect(calls[0]).toEqual(["diff", "origin/main", "--", "src/a.ts"]);
+    expect(calls[0]).toEqual(["merge-base", "origin/main", "HEAD"]);
+    expect(calls[1]).toEqual(["diff", "abc123", "--", "src/a.ts"]);
   });
 
   it("falls back to a --no-index diff for an untracked file", async () => {
     const { runner, calls } = fakeRunner((args) => {
+      if (args[0] === "merge-base") return { stdout: "abc123\n" };
       if (args.includes("--no-index"))
         return { stdout: "@@ -0,0 +1 @@\n+brand new\n", exitCode: 1 };
       return { stdout: "" }; // tracked diff is empty for an untracked path
     });
     const patch = await fileDiff(runner, "/wt", "main", "new.ts");
     expect(patch).toContain("+brand new");
-    expect(calls[1]).toEqual(["diff", "--no-index", "--", "/dev/null", "new.ts"]);
+    expect(calls[2]).toEqual(["diff", "--no-index", "--", "/dev/null", "new.ts"]);
   });
 
   it("throws when --no-index fails for a real reason (exit > 1)", async () => {
     const { runner } = fakeRunner((args) => {
+      if (args[0] === "merge-base") return { stdout: "abc123\n" };
       if (args.includes("--no-index")) return { stderr: "boom", exitCode: 128 };
       return { stdout: "" };
     });

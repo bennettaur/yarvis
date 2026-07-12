@@ -147,6 +147,28 @@ export async function removeWorktree(
   await git(runner, ["worktree", "prune"], primaryClonePath);
 }
 
+/**
+ * Resolves the ref to diff a worktree's branch against: the merge-base of
+ * `origin/<baseBranch>` and the worktree's `HEAD` — i.e. the commit the branch
+ * was cut from. Diffing against this start ref rather than `origin/<baseBranch>`
+ * directly keeps the "files changed" view stable when origin advances past the
+ * branch point: new upstream commits aren't ancestors of HEAD, so the merge-base
+ * doesn't move and they never show up as spurious deletions.
+ *
+ * Falls back to `origin/<baseBranch>` when no merge-base exists (unrelated
+ * histories) so callers always get a usable ref.
+ */
+async function resolveDiffBase(
+  runner: GitRunner,
+  worktreePath: string,
+  baseBranch: string,
+): Promise<string> {
+  const remoteBase = `origin/${baseBranch}`;
+  const result = await runner(["merge-base", remoteBase, "HEAD"], { cwd: worktreePath });
+  if (result.exitCode !== 0) return remoteBase;
+  return result.stdout.trim() || remoteBase;
+}
+
 /** All tracked files in the worktree (`git ls-files`). */
 export async function listFiles(runner: GitRunner, worktreePath: string): Promise<string[]> {
   const out = await git(runner, ["ls-files"], worktreePath);
@@ -172,15 +194,16 @@ const STATUS_LETTERS: Record<string, string> = {
 
 /**
  * Files changed on this branch versus its base, including uncommitted work and
- * untracked files. Diffs the working tree against `origin/<baseBranch>` (two-dot,
- * so committed + uncommitted are both captured), then appends untracked files.
+ * untracked files. Diffs the working tree against the branch's start ref (the
+ * merge-base with `origin/<baseBranch>`, two-dot so committed + uncommitted are
+ * both captured), then appends untracked files.
  */
 export async function listChangedFiles(
   runner: GitRunner,
   worktreePath: string,
   baseBranch: string,
 ): Promise<ChangedFile[]> {
-  const base = `origin/${baseBranch}`;
+  const base = await resolveDiffBase(runner, worktreePath, baseBranch);
   const byPath = new Map<string, ChangedFile>();
 
   // name-status gives the change kind (A/M/D/R…).
@@ -222,13 +245,14 @@ export async function listChangedFiles(
 }
 
 /**
- * The unified-diff patch for a single changed file versus `origin/<baseBranch>`,
- * matching the two-dot range used by `listChangedFiles` so committed and
- * uncommitted work both show. Untracked files have no base to diff against, so
- * they fall back to a `--no-index` diff of `/dev/null` against the file, which
- * renders their whole contents as additions. Returns an empty string when there
- * is no textual diff (unchanged, or a binary file). `--` separates the pathspec
- * so a filename can never be read as a git option.
+ * The unified-diff patch for a single changed file versus the branch's start ref
+ * (the merge-base with `origin/<baseBranch>`), matching the two-dot range used by
+ * `listChangedFiles` so committed and uncommitted work both show. Untracked files
+ * have no base to diff against, so they fall back to a `--no-index` diff of
+ * `/dev/null` against the file, which renders their whole contents as additions.
+ * Returns an empty string when there is no textual diff (unchanged, or a binary
+ * file). `--` separates the pathspec so a filename can never be read as a git
+ * option.
  */
 export async function fileDiff(
   runner: GitRunner,
@@ -236,7 +260,8 @@ export async function fileDiff(
   baseBranch: string,
   path: string,
 ): Promise<string> {
-  const tracked = await git(runner, ["diff", `origin/${baseBranch}`, "--", path], worktreePath);
+  const base = await resolveDiffBase(runner, worktreePath, baseBranch);
+  const tracked = await git(runner, ["diff", base, "--", path], worktreePath);
   if (tracked.trim()) return tracked;
 
   // `git diff --no-index` exits 1 when the files differ — the normal outcome for
