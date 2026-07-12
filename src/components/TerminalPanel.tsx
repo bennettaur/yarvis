@@ -87,7 +87,11 @@ export default function TerminalPanel({
     term.open(container);
     term.attachCustomKeyEventHandler((e) => {
       if (e.key === "Enter" && e.shiftKey && e.type === "keydown") {
-        void writePty(id, "\n");
+        // Claude Code's TUI treats a bare line feed the same as Enter
+        // (submit). It only inserts a newline for the Meta/Option+Enter
+        // sequence — ESC followed by carriage return — which is what its own
+        // /terminal-setup binds Shift+Enter to in iTerm2/VSCode.
+        void writePty(id, "\x1b\r");
         return false;
       }
       return true;
