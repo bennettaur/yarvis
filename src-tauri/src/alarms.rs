@@ -29,6 +29,10 @@ pub struct Alarm {
     pub fire_at_ms: i64,
     #[serde(default = "default_true")]
     pub sound: bool,
+    /// Join URL for a meeting-derived alarm, so the takeover can offer a
+    /// "Join meeting" action. Absent for manually created alarms.
+    #[serde(default)]
+    pub meet_link: Option<String>,
     /// "scheduled" | "fired" | "acknowledged" | "cancelled"
     pub status: String,
 }
@@ -233,12 +237,14 @@ pub fn create_alarm(
     label: String,
     fire_at_ms: i64,
     sound: Option<bool>,
+    meet_link: Option<String>,
 ) -> Result<Alarm, String> {
     let alarm = Alarm {
         id: random_id(),
         label,
         fire_at_ms,
         sound: sound.unwrap_or(true),
+        meet_link,
         status: "scheduled".to_string(),
     };
     if let Ok(mut alarms) = state.alarms.lock() {

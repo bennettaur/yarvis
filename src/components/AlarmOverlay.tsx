@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { type Alarm, acknowledgeAlarm, snoozeAlarm } from "../lib/alarms";
+import { openExternal } from "../lib/url";
 
 /** Full-screen takeover shown when an alarm fires. */
 export default function AlarmOverlay({ alarm, onDone }: { alarm: Alarm; onDone: () => void }) {
@@ -31,6 +32,18 @@ export default function AlarmOverlay({ alarm, onDone }: { alarm: Alarm; onDone: 
         <div className="text-red-300">Overdue by {secondsPast}s — please acknowledge</div>
       )}
       <div className="flex gap-4">
+        {alarm.meetLink && (
+          <button
+            onClick={async () => {
+              openExternal(alarm.meetLink);
+              await acknowledgeAlarm(alarm.id);
+              onDone();
+            }}
+            className="rounded-lg bg-emerald-600 px-8 py-3 text-lg font-medium hover:bg-emerald-500"
+          >
+            Join meeting
+          </button>
+        )}
         <button
           onClick={async () => {
             await acknowledgeAlarm(alarm.id);
