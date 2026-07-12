@@ -7,7 +7,7 @@ import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import { tasks } from "../db/schema.ts";
+import { tasks, workspaceRepoPr, workspaceRepos } from "../db/schema.ts";
 import type { GitRunner } from "./git.ts";
 import {
   archiveWorkspace,
@@ -34,6 +34,7 @@ const config: Config = {
   telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
 };
 const app = createApp(config);
+const db = getDb(url).db;
 const auth = { Authorization: "Bearer test-token" };
 const jsonAuth = { ...auth, "Content-Type": "application/json" };
 
@@ -135,6 +136,37 @@ describe("workspace routes", () => {
     const list = (await res.json()) as { name: string; repoNames: string[] }[];
     expect(list).toHaveLength(1);
     expect(list[0]?.repoNames).toEqual(["widget"]);
+  });
+
+  it("finds the workspace a cached PR was raised from, case-insensitively", async () => {
+    const repo = await addRepo();
+    const created = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "pr backlink", repoIds: [repo.id] }),
+    });
+    const ws = (await created.json()) as { id: string; name: string };
+    const [wr] = await db
+      .select()
+      .from(workspaceRepos)
+      .where(eq(workspaceRepos.workspaceId, ws.id));
+    await db.insert(workspaceRepoPr).values({ workspaceRepoId: wr!.id, prNumber: 42 });
+
+    const res = await app.request("/api/workspaces/for-pr?owner=ACME&repo=Widget&number=42", {
+      headers: auth,
+    });
+    expect(res.status).toBe(200);
+    const found = (await res.json()) as { id: string; name: string } | null;
+    expect(found?.id).toBe(ws.id);
+    expect(found?.name).toBe("pr backlink");
+  });
+
+  it("returns null when no workspace matches the PR", async () => {
+    const res = await app.request("/api/workspaces/for-pr?owner=acme&repo=widget&number=999", {
+      headers: auth,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toBeNull();
   });
 
   it("returns 404 for files of an unknown workspace repo", async () => {

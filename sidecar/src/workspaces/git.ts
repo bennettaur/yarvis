@@ -88,6 +88,67 @@ export async function detectDefaultBranch(
   return read();
 }
 
+/**
+ * Fetches every remote ref (branches + the base) into the remote-tracking refs,
+ * pruning deleted ones. Used before computing branch divergence so the
+ * push/pull counts reflect the current remote. No checkout, so worktrees are
+ * undisturbed.
+ */
+export async function fetchRemote(runner: GitRunner, primaryClonePath: string): Promise<void> {
+  await git(runner, ["fetch", "origin", "--prune"], primaryClonePath, NETWORK_TIMEOUT_MS);
+}
+
+/** How a branch has diverged from its remote and its base, for push/pull hints. */
+export interface BranchSync {
+  /** Local commits not yet on the remote branch — changes to push. */
+  ahead: number;
+  /** Remote-branch commits missing locally — changes to pull. 0 until pushed. */
+  behind: number;
+  /** Commits the base branch has moved on by since this branch — pull/rebase. */
+  baseBehind: number;
+  /** Whether the branch has been pushed (a remote-tracking branch exists). */
+  hasRemote: boolean;
+}
+
+/**
+ * Counts how far this branch is ahead/behind its remote and its base, from the
+ * remote-tracking refs (call `fetchRemote` first for fresh counts). Before the
+ * branch is pushed there is no `origin/<branch>`, so `ahead` falls back to the
+ * commits it carries over its base and `behind` is 0. `baseBehind` measures how
+ * far the base has advanced past this branch — the "pull is the priority" signal.
+ */
+export async function branchSync(
+  runner: GitRunner,
+  worktreePath: string,
+  branch: string,
+  baseBranch: string,
+): Promise<BranchSync> {
+  const remoteBranch = `origin/${branch}`;
+  const base = `origin/${baseBranch}`;
+
+  const count = async (range: string): Promise<number> => {
+    const out = await git(runner, ["rev-list", "--count", range], worktreePath);
+    return Number(out.trim()) || 0;
+  };
+
+  const remoteCheck = await runner(
+    ["rev-parse", "--verify", "--quiet", `refs/remotes/${remoteBranch}`],
+    { cwd: worktreePath },
+  );
+  const hasRemote = remoteCheck.exitCode === 0;
+
+  const baseBehind = await count(`HEAD..${base}`);
+  if (hasRemote) {
+    return {
+      ahead: await count(`${remoteBranch}..HEAD`),
+      behind: await count(`HEAD..${remoteBranch}`),
+      baseBehind,
+      hasRemote: true,
+    };
+  }
+  return { ahead: await count(`${base}..HEAD`), behind: 0, baseBehind, hasRemote: false };
+}
+
 /** Fetches the latest default branch into the remote-tracking ref. No checkout. */
 export async function updateDefaultBranch(
   runner: GitRunner,

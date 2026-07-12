@@ -8,6 +8,7 @@ import {
   createRepo,
   createWorkspace,
   deleteRepo,
+  findWorkspaceForPr,
   getRepo,
   getWorkspace,
   linkTask,
@@ -20,6 +21,7 @@ import {
   workspaceRepoChanges,
   workspaceRepoFileDiff,
   workspaceRepoFiles,
+  workspaceRepoSync,
 } from "./service.ts";
 
 const createRepoSchema = z.object({
@@ -121,6 +123,19 @@ export function createWorkspaceRoutes(config: Config): Hono {
 
   router.get("/", async (c) => c.json(await listWorkspaces(db())));
 
+  // The active workspace (if any) a GitHub PR was raised from, so the PR view
+  // can link back to it. Registered before "/:id" so "for-pr" isn't read as an
+  // id. Returns null (200) when there's no match.
+  router.get("/for-pr", async (c) => {
+    const owner = c.req.query("owner");
+    const repo = c.req.query("repo");
+    const number = Number(c.req.query("number"));
+    if (!owner || !repo || !Number.isInteger(number)) {
+      return c.json({ error: "owner, repo, and number are required" }, 400);
+    }
+    return c.json(await findWorkspaceForPr(db(), owner, repo, number));
+  });
+
   router.post("/", async (c) => {
     const body = await c.req.json().catch(() => null);
     const parsed = createWorkspaceSchema.safeParse(body);
@@ -167,6 +182,15 @@ export function createWorkspaceRoutes(config: Config): Hono {
   router.get("/:id/repos/:wrId/changes", async (c) => {
     try {
       return c.json(await workspaceRepoChanges(db(), c.req.param("wrId")));
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
+    }
+  });
+
+  // Push/pull divergence for a workspace repo's branch (header status strip).
+  router.get("/:id/repos/:wrId/sync", async (c) => {
+    try {
+      return c.json(await workspaceRepoSync(db(), c.req.param("wrId")));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
     }

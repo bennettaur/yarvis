@@ -6,7 +6,7 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { relative } from "node:path";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import {
@@ -25,12 +25,15 @@ import { completeTasksByWorkspace, tasksForWorkspace } from "../tasks/service.ts
 import { stopClaudeSession } from "./claudeSession.ts";
 import { runStreaming } from "./exec.ts";
 import {
+  type BranchSync,
   branchExists,
+  branchSync,
   type ChangedFile,
   createWorktree,
   defaultGitRunner,
   detectDefaultBranch,
   ensurePrimaryClone,
+  fetchRemote,
   fileDiff,
   type GitRunner,
   listChangedFiles,
@@ -373,6 +376,81 @@ export async function workspaceRepoFileDiff(
   const wr = await getWorkspaceRepo(db, workspaceRepoId);
   const patch = await fileDiff(runner, wr.worktreePath, wr.baseBranch, path);
   return { path, patch };
+}
+
+export interface WorkspaceRepoSync extends BranchSync {
+  /** Set when the pre-count fetch failed (offline, auth); counts are then
+   *  last-known rather than current. */
+  fetchError: string | null;
+}
+
+/**
+ * Push/pull divergence for a workspace repo's branch. Fetches the remote first
+ * (under the repo lock, so it never races a worktree add/remove) so the counts
+ * are current; a fetch failure is reported but still returns the last-known
+ * counts from the local refs.
+ */
+export async function workspaceRepoSync(
+  db: Db,
+  workspaceRepoId: string,
+  runner: GitRunner = defaultGitRunner,
+): Promise<WorkspaceRepoSync> {
+  const wr = await getWorkspaceRepo(db, workspaceRepoId);
+  const [repo] = await db.select().from(repos).where(eq(repos.id, wr.repoId));
+  if (!repo) throw new Error("repo not found");
+
+  let fetchError: string | null = null;
+  try {
+    await withRepoLock(wr.repoId, () => fetchRemote(runner, repo.primaryClonePath));
+  } catch (e) {
+    fetchError = e instanceof Error ? e.message : String(e);
+  }
+
+  const sync = await branchSync(runner, wr.worktreePath, wr.branch, wr.baseBranch);
+  return { ...sync, fetchError };
+}
+
+/** A workspace the PR view can link back to, keyed by a cached PR match. */
+export interface WorkspaceForPr {
+  id: string;
+  name: string;
+  slug: string;
+  status: Workspace["status"];
+}
+
+/**
+ * Finds a non-archived workspace whose repo raised the given GitHub PR, matched
+ * through the poller's PR cache (owner/repo + PR number). Only GitHub PRs are
+ * cached, so Azure lookups always miss. Owner/repo are compared case-folded
+ * since GitHub treats them case-insensitively.
+ */
+export async function findWorkspaceForPr(
+  db: Db,
+  owner: string,
+  repo: string,
+  prNumber: number,
+): Promise<WorkspaceForPr | null> {
+  const [row] = await db
+    .select({
+      id: workspaces.id,
+      name: workspaces.name,
+      slug: workspaces.slug,
+      status: workspaces.status,
+    })
+    .from(workspaceRepoPr)
+    .innerJoin(workspaceRepos, eq(workspaceRepoPr.workspaceRepoId, workspaceRepos.id))
+    .innerJoin(repos, eq(workspaceRepos.repoId, repos.id))
+    .innerJoin(workspaces, eq(workspaceRepos.workspaceId, workspaces.id))
+    .where(
+      and(
+        eq(workspaceRepoPr.prNumber, prNumber),
+        eq(sql`lower(${repos.owner})`, owner.toLowerCase()),
+        eq(sql`lower(${repos.repo})`, repo.toLowerCase()),
+        ne(workspaces.status, "archived"),
+      ),
+    )
+    .limit(1);
+  return row ?? null;
 }
 
 // ---------------------------------------------------------------------------

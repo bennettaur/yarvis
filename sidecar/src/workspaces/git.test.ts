@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   branchExists,
+  branchSync,
   createWorktree,
   detectDefaultBranch,
   fileDiff,
@@ -201,5 +202,44 @@ describe("fileDiff", () => {
       return { stdout: "" };
     });
     await expect(fileDiff(runner, "/wt", "main", "missing.ts")).rejects.toThrow("boom");
+  });
+});
+
+describe("branchSync", () => {
+  it("counts ahead/behind versus the remote branch when it has been pushed", async () => {
+    const { runner } = fakeRunner((args) => {
+      if (args[0] === "rev-parse") return { exitCode: 0 }; // origin/<branch> exists
+      if (args[0] === "rev-list") {
+        const range = args[2];
+        if (range === "HEAD..origin/main") return { stdout: "2\n" }; // base moved on
+        if (range === "origin/feature..HEAD") return { stdout: "3\n" }; // to push
+        if (range === "HEAD..origin/feature") return { stdout: "1\n" }; // to pull
+      }
+      return {};
+    });
+    expect(await branchSync(runner, "/wt", "feature", "main")).toEqual({
+      ahead: 3,
+      behind: 1,
+      baseBehind: 2,
+      hasRemote: true,
+    });
+  });
+
+  it("counts commits over the base and reports behind=0 before the branch is pushed", async () => {
+    const { runner } = fakeRunner((args) => {
+      if (args[0] === "rev-parse") return { exitCode: 1 }; // no origin/<branch> yet
+      if (args[0] === "rev-list") {
+        const range = args[2];
+        if (range === "HEAD..origin/main") return { stdout: "0\n" };
+        if (range === "origin/main..HEAD") return { stdout: "4\n" };
+      }
+      return {};
+    });
+    expect(await branchSync(runner, "/wt", "feature", "main")).toEqual({
+      ahead: 4,
+      behind: 0,
+      baseBehind: 0,
+      hasRemote: false,
+    });
   });
 });

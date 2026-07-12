@@ -66,6 +66,28 @@ export interface ChangedFile {
   deletions: number;
 }
 
+/** Push/pull divergence of a workspace repo's branch (from `/sync`). */
+export interface WorkspaceRepoSync {
+  /** Local commits not yet on the remote branch — changes to push. */
+  ahead: number;
+  /** Remote-branch commits missing locally — changes to pull. 0 until pushed. */
+  behind: number;
+  /** Commits the base branch has moved on by since this branch — pull/rebase. */
+  baseBehind: number;
+  /** Whether the branch has been pushed (a remote-tracking branch exists). */
+  hasRemote: boolean;
+  /** Set when the pre-count fetch failed; counts are then last-known. */
+  fetchError: string | null;
+}
+
+/** An active workspace a PR was raised from, for the PR-view backlink. */
+export interface WorkspaceForPr {
+  id: string;
+  name: string;
+  slug: string;
+  status: WorkspaceStatus;
+}
+
 export interface CreateWorkspaceInput {
   name: string;
   /** Empty for a scratch workspace: just a folder to run Claude in. */
@@ -168,6 +190,31 @@ export async function workspaceRepoFileDiff(
     `/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/diff?path=${encodeURIComponent(path)}`,
   );
   if (!res.ok) return readError(res, "load file diff");
+  return res.json();
+}
+
+/** Push/pull divergence for a workspace repo's branch (fetches remote first). */
+export async function workspaceRepoSync(
+  workspaceId: string,
+  workspaceRepoId: string,
+): Promise<WorkspaceRepoSync> {
+  const res = await sidecarFetch(`/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/sync`);
+  if (!res.ok) return readError(res, "load sync status");
+  return res.json();
+}
+
+/**
+ * The active workspace a GitHub PR was raised from, or null. Only GitHub PRs
+ * are tracked, so Azure lookups always return null.
+ */
+export async function findWorkspaceForPr(
+  owner: string,
+  repo: string,
+  prNumber: number,
+): Promise<WorkspaceForPr | null> {
+  const query = new URLSearchParams({ owner, repo, number: String(prNumber) });
+  const res = await sidecarFetch(`/api/workspaces/for-pr?${query}`);
+  if (!res.ok) return readError(res, "find workspace for PR");
   return res.json();
 }
 
