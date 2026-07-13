@@ -171,9 +171,13 @@ fn notify(app: &AppHandle, alarm: &Alarm) -> Result<(), String> {
 async fn ring_until_stopped(stop: Arc<Notify>, fired_at: i64) {
     loop {
         let escalated = now_ms() - fired_at >= ESCALATE_AFTER_SECS * 1000;
+        // afplay's failure is discarded below, so a missing sound file fails
+        // silently with no fallback or log. Use only built-in macOS sounds
+        // that ship across releases; Sonar.aiff is absent on current macOS,
+        // which is why the escalated path uses Submarine.aiff.
         let (sound, volume, gap) = if escalated {
             (
-                "/System/Library/Sounds/Sonar.aiff",
+                "/System/Library/Sounds/Submarine.aiff",
                 "2",
                 Duration::from_secs(2),
             )
