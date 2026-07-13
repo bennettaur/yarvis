@@ -30,9 +30,10 @@ const PR_STATE_STYLES: Record<string, string> = {
 };
 
 /**
- * GitHub's `mergeable_state` is "dirty" when the PR has merge conflicts against
- * its base. The poller caches that string (older rows may hold the GraphQL
- * "CONFLICTING"), so match either.
+ * True when the cached mergeable value signals conflicts against the base.
+ * GitHub reports "dirty" (its `mergeable_state`); Azure reports "CONFLICTING"
+ * (the shared enum the poller stores), which older GitHub GraphQL rows also
+ * used — so match either, case-insensitively.
  */
 function hasConflicts(mergeable: string | null): boolean {
   const m = (mergeable ?? "").toLowerCase();

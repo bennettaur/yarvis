@@ -86,6 +86,30 @@ describe("azure client", () => {
     });
   });
 
+  it("derives the org from a legacy visualstudio.com org URL's subdomain", async () => {
+    // The org lives in the subdomain, not a path segment — the summary's `org`
+    // must be "myorg", matching what parseRepoRemote extracts from a clone URL
+    // so the poller's cross-org comparison lines up.
+    const az = new AzureDevOpsClient(
+      "pat",
+      "https://myorg.visualstudio.com",
+      fakeFetch([
+        {
+          match: (u) => u.includes("connectionData"),
+          body: { authenticatedUser: { id: "user-1" } },
+        },
+        {
+          match: (u) => u.includes("/_apis/git/pullrequests"),
+          body: {
+            value: [{ pullRequestId: 1, status: "active", repository: { name: "web" } }],
+          },
+        },
+      ]),
+    );
+    const prs = await az.search("mine");
+    expect(prs[0]?.org).toBe("myorg");
+  });
+
   it("finds a PR by its source branch, scoped to the repo", async () => {
     let requestedUrl = "";
     const az = new AzureDevOpsClient(

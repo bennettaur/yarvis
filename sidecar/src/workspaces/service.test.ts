@@ -87,6 +87,18 @@ describe("parseRepoRemote", () => {
     });
   });
 
+  it("classifies a legacy visualstudio.com remote with a DefaultCollection segment", () => {
+    expect(
+      parseRepoRemote("https://myorg.visualstudio.com/DefaultCollection/MyProject/_git/web"),
+    ).toEqual({ provider: "azure", org: "myorg", project: "MyProject", repo: "web" });
+  });
+
+  it("returns null for an Azure host with no _git or v3 marker", () => {
+    // dev.azure.com host but not a repo clone URL — reaches the Azure block's
+    // own null return, not the earlier splitRemote bail.
+    expect(parseRepoRemote("https://dev.azure.com/myorg/MyProject")).toBeNull();
+  });
+
   it("strips a trailing .git from an Azure repo name", () => {
     expect(parseRepoRemote("https://dev.azure.com/myorg/MyProject/_git/web.git")?.repo).toBe("web");
   });

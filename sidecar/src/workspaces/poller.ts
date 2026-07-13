@@ -158,8 +158,8 @@ export async function pollOnce(db: Db, clients: PollerClients): Promise<void> {
       // GitHub owner/repo are stored on the row at registration; fall back to
       // them when the clone URL doesn't parse.
       const owner = remote?.provider === "github" ? remote.owner : repo.owner;
-      const name = remote?.provider === "github" ? remote.repo : repo.repo;
-      await pollGithubRepo(db, clients.github, wr.id, owner, name, wr.branch);
+      const repoName = remote?.provider === "github" ? remote.repo : repo.repo;
+      await pollGithubRepo(db, clients.github, wr.id, owner, repoName, wr.branch);
     } catch (e) {
       // One repo's failure (rate limit, 5xx) must not abort the cycle.
       const message = e instanceof Error ? e.message : String(e);

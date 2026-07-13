@@ -37,6 +37,16 @@ describe("parseRepoRemote", () => {
     });
   });
 
+  it("classifies a legacy visualstudio.com remote with a DefaultCollection segment", () => {
+    expect(
+      parseRepoRemote("https://myorg.visualstudio.com/DefaultCollection/MyProject/_git/web"),
+    ).toEqual({ provider: "azure", org: "myorg", project: "MyProject", repo: "web" });
+  });
+
+  it("returns null for an Azure host with no _git or v3 marker", () => {
+    expect(parseRepoRemote("https://dev.azure.com/myorg/MyProject")).toBeNull();
+  });
+
   it("returns null for an unparseable url", () => {
     expect(parseRepoRemote("not-a-url")).toBeNull();
   });

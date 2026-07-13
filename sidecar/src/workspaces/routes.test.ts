@@ -215,6 +215,30 @@ describe("workspace routes", () => {
     expect(found?.id).toBe(ws.id);
   });
 
+  it("does not match across providers on a shared PR number", async () => {
+    // A GitHub repo caches PR #55; an Azure query for id 55 must not resolve it,
+    // even though the number matches — the clone-URL provider disambiguates.
+    const repo = await addRepo("git@github.com:acme/widget.git");
+    const created = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "provider collision", repoIds: [repo.id] }),
+    });
+    const ws = (await created.json()) as { id: string };
+    const [wr] = await db
+      .select()
+      .from(workspaceRepos)
+      .where(eq(workspaceRepos.workspaceId, ws.id));
+    await db.insert(workspaceRepoPr).values({ workspaceRepoId: wr!.id, prNumber: 55 });
+
+    const res = await app.request(
+      "/api/workspaces/for-pr?provider=azure&org=acme&project=Shop&repo=widget&number=55",
+      { headers: auth },
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toBeNull();
+  });
+
   it("returns 404 for files of an unknown workspace repo", async () => {
     const res = await app.request(
       "/api/workspaces/x/repos/00000000-0000-0000-0000-000000000000/files",

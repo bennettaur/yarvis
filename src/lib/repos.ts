@@ -42,12 +42,13 @@ export type RepoRemote =
   | { provider: "github"; owner: string; repo: string }
   | { provider: "azure"; org: string; project: string; repo: string };
 
+// Legacy org lives in the subdomain (`{org}.visualstudio.com`), so bare
+// `visualstudio.com` is not a real remote host and is intentionally excluded.
 function isAzureHost(host: string): boolean {
   return (
     host === "dev.azure.com" ||
     host === "ssh.dev.azure.com" ||
     host === "vs-ssh.visualstudio.com" ||
-    host === "visualstudio.com" ||
     host.endsWith(".visualstudio.com")
   );
 }

@@ -82,18 +82,22 @@ export function parseGitUrl(url: string): { owner: string; repo: string } | null
  * a repo's provider — the `repos` table stores only the raw clone URL, so the
  * poller and the PR→workspace backlink both parse it here rather than persisting
  * a provider column.
+ *
+ * Keep in sync with the frontend copy in `src/lib/repos.ts` — the two bundles
+ * share no importable module, so both must classify a clone URL identically.
  */
 export type RepoRemote =
   | { provider: "github"; owner: string; repo: string }
   | { provider: "azure"; org: string; project: string; repo: string };
 
-/** Hosts that identify an Azure DevOps remote (modern and legacy forms). */
+/** Hosts that identify an Azure DevOps remote (modern and legacy forms). The
+ *  legacy org lives in the subdomain (`{org}.visualstudio.com`), so a bare
+ *  `visualstudio.com` is not a real remote host and is intentionally excluded. */
 function isAzureHost(host: string): boolean {
   return (
     host === "dev.azure.com" ||
     host === "ssh.dev.azure.com" ||
     host === "vs-ssh.visualstudio.com" ||
-    host === "visualstudio.com" ||
     host.endsWith(".visualstudio.com")
   );
 }
@@ -562,7 +566,10 @@ function eqFold(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
 }
 
-/** True when a repo's parsed clone URL is the same repo the locator names. */
+/** True when a repo's parsed clone URL is the same repo the locator names. The
+ *  provider is already equal after the first guard; each branch re-checks both
+ *  sides only so TypeScript narrows the union on `remote` and `locator` together
+ *  (the final `return false` is likewise unreachable but required for that). */
 function remoteMatchesLocator(remote: RepoRemote | null, locator: PrLocator): boolean {
   if (!remote || remote.provider !== locator.provider) return false;
   if (remote.provider === "github" && locator.provider === "github") {

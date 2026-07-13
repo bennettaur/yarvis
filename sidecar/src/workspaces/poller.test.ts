@@ -25,14 +25,17 @@ function clientWith(handlers: (path: string) => unknown): GitHubClient {
   return new GitHubClient("test-token", fetchImpl);
 }
 
-/** Builds an AzureDevOpsClient (org `acme`) whose fetch returns canned payloads
- *  keyed by URL, mirroring `clientWith`. */
-function azureClientWith(handlers: (url: string) => unknown): AzureDevOpsClient {
+/** Builds an AzureDevOpsClient whose fetch returns canned payloads keyed by URL,
+ *  mirroring `clientWith`. Defaults to org `acme` on dev.azure.com. */
+function azureClientWith(
+  handlers: (url: string) => unknown,
+  orgUrl = "https://dev.azure.com/acme",
+): AzureDevOpsClient {
   const fetchImpl = (async (input: string | URL | Request) => {
     const u = typeof input === "string" ? input : input.toString();
     return new Response(JSON.stringify(handlers(u)), { status: 200 });
   }) as typeof fetch;
-  return new AzureDevOpsClient("test-token", "https://dev.azure.com/acme", fetchImpl);
+  return new AzureDevOpsClient("test-token", orgUrl, fetchImpl);
 }
 
 /** Seeds one active workspace with one ready repo `r<suffix>` on `yarvis/<suffix>`.
@@ -256,6 +259,38 @@ describe("pollOnce", () => {
     expect(row?.prUrl).toBe("https://dev.azure.com/acme/Shop/_git/web/pullrequest/55");
     expect(row?.checkRollup).toBe("none");
     expect(row?.lastError).toBeNull();
+  });
+
+  it("records a no-PR state for an Azure branch with no open PR yet", async () => {
+    const wrId = await seedReadyRepo("z", "https://dev.azure.com/acme/Shop/_git/web");
+    const az = azureClientWith(() => ({ value: [] }));
+
+    await pollOnce(db, { azure: az });
+
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row?.prNumber).toBeNull();
+    expect(row?.checkRollup).toBe("none");
+    expect(row?.lastPolledAt).not.toBeNull();
+    expect(row?.lastError).toBeNull();
+  });
+
+  it("matches a legacy visualstudio.com repo to its subdomain-org client", async () => {
+    // Regression: a visualstudio.com config org URL must resolve org "acme" (the
+    // subdomain), matching the clone URL's org, so the cross-org guard doesn't
+    // skip legacy repos. A host-as-org bug ("acme.visualstudio.com") would skip.
+    const wrId = await seedReadyRepo("z", "https://acme.visualstudio.com/Shop/_git/web");
+    const az = azureClientWith(
+      (url) =>
+        url.includes("/repositories/web/pullrequests")
+          ? { value: [{ pullRequestId: 7, status: "active", repository: { name: "web" } }] }
+          : {},
+      "https://acme.visualstudio.com",
+    );
+
+    await pollOnce(db, { azure: az });
+
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row?.prNumber).toBe(7);
   });
 
   it("skips an Azure repo in a different org than the configured client", async () => {
