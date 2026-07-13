@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 /**
  * Generates the `.claude/settings.json` hook config that makes a Yarvis-launched
@@ -105,13 +105,14 @@ export function writeClaudeSettings(rootPath: string, workspaceId: string): void
     const dir = `${rootPath}/.claude`;
     const file = `${dir}/settings.json`;
     let existing: Record<string, unknown> = {};
-    if (existsSync(file)) {
-      try {
-        const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
-        if (parsed && typeof parsed === "object") existing = parsed as Record<string, unknown>;
-      } catch {
-        // A corrupt file shouldn't block provisioning; overwrite it.
-      }
+    // Read-and-catch rather than existsSync-then-read: a separate existence check
+    // is a time-of-check/time-of-use race, and a missing OR corrupt file is handled
+    // identically here — start from empty and overwrite.
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+      if (parsed && typeof parsed === "object") existing = parsed as Record<string, unknown>;
+    } catch {
+      // No readable existing settings; provision fresh.
     }
     mkdirSync(dir, { recursive: true });
     writeFileSync(file, `${JSON.stringify(buildClaudeSettings(workspaceId, existing), null, 2)}\n`);
