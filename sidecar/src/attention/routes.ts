@@ -6,15 +6,19 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { type AttentionNavTarget, workspaces } from "../db/schema.ts";
-import { publish, subscribe } from "./hub.ts";
+import { type AttentionStreamEvent, publish, subscribe } from "./hub.ts";
 import {
   type AttentionKind,
+  type AttentionStatus,
   createAttention,
   listAttention,
   updateAttentionStatus,
 } from "./service.ts";
 
 const KIND = z.enum(["permission", "idle", "completed", "error", "info"]);
+
+/** Cap on a single stream's pending-write queue, so a stalled reader is bounded. */
+const MAX_STREAM_QUEUE = 256;
 
 /**
  * Body a Claude Code hook posts. Only safe, literal values (a uuid, the
@@ -23,7 +27,7 @@ const KIND = z.enum(["permission", "idle", "completed", "error", "info"]);
  * shell/JSON escaping to get wrong. The display title is looked up from the
  * workspace here instead.
  */
-const ingestSchema = z.object({
+export const ingestSchema = z.object({
   workspaceId: z.string().min(1),
   sessionKey: z.string().min(1),
   kind: KIND,
@@ -114,43 +118,30 @@ export function createAttentionRoutes(config: Config): Hono {
 
   const db = () => getDb(config.databaseUrl as string).db;
 
-  // Supports ?status=<status>&since=<seq>&limit=. Newest-first.
+  const parseStatus = (value: string | undefined): AttentionStatus | undefined =>
+    value === "pending" || value === "read" || value === "resolved" || value === "dismissed"
+      ? value
+      : undefined;
+
+  // Supports ?status=<status>. Newest-first.
   router.get("/", async (c) => {
-    const statusParam = c.req.query("status");
-    const status =
-      statusParam === "pending" ||
-      statusParam === "read" ||
-      statusParam === "resolved" ||
-      statusParam === "dismissed"
-        ? statusParam
-        : undefined;
-    const sinceRaw = c.req.query("since");
-    const since =
-      sinceRaw !== undefined && Number.isFinite(Number(sinceRaw)) ? Number(sinceRaw) : undefined;
-    const items = await listAttention(db(), { status, since });
+    const items = await listAttention(db(), { status: parseStatus(c.req.query("status")) });
     return c.json(items);
   });
 
-  // Live stream. Optionally replays pending items with seq > `since` first (a
-  // reconnect backfill), then forwards new items as they are published.
+  // Live stream: forwards each item as it is published. A client that misses
+  // events while disconnected recovers by re-hydrating from `GET /` on reconnect,
+  // so the stream itself is purely forward — no replay/backfill.
   router.get("/stream", async (c) => {
-    const sinceRaw = c.req.query("since");
-    const since =
-      sinceRaw !== undefined && Number.isFinite(Number(sinceRaw)) ? Number(sinceRaw) : undefined;
-
     return streamSSE(c, async (stream) => {
-      if (since !== undefined) {
-        const backfill = await listAttention(db(), { status: "pending", since, ascending: true });
-        for (const item of backfill) {
-          await stream.writeSSE({ data: JSON.stringify({ type: "item", item }) });
-        }
-      }
-
-      // Bridge published rows into this stream via a queue drained below.
-      const queue: unknown[] = [];
+      // Bridge published rows into this stream via a bounded queue drained below.
+      // The cap drops the oldest if a client stops reading, so a stalled consumer
+      // can't grow this without limit.
+      const queue: AttentionStreamEvent[] = [];
       let wake: (() => void) | null = null;
       const unsubscribe = subscribe((item) => {
         queue.push({ type: "item", item });
+        if (queue.length > MAX_STREAM_QUEUE) queue.shift();
         wake?.();
       });
 

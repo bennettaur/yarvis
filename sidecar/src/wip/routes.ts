@@ -12,10 +12,9 @@ export function createWipRoutes(config: Config): Hono {
     return next();
   });
 
-  router.get("/", async (c) => {
-    const db = getDb(config.databaseUrl as string).db;
-    return c.json(await getWipList(db, config));
-  });
+  const db = () => getDb(config.databaseUrl as string).db;
+
+  router.get("/", async (c) => c.json(await getWipList(db(), config)));
 
   return router;
 }

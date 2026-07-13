@@ -56,11 +56,11 @@ describe("attention service", () => {
     expect(await listAttention(db, { status: "pending" })).toHaveLength(2);
   });
 
-  it("filters by the seq cursor", async () => {
+  it("lists newest-first by the seq cursor", async () => {
     const a = await createAttention(db, { ...base, sessionKey: "ws-claude:a" });
     const b = await createAttention(db, { ...base, sessionKey: "ws-claude:b" });
-    const after = await listAttention(db, { since: a.seq, ascending: true });
-    expect(after.map((r) => r.id)).toEqual([b.id]);
+    const pending = await listAttention(db, { status: "pending" });
+    expect(pending.map((r) => r.id)).toEqual([b.id, a.id]);
   });
 
   it("stamps readAt and resolvedAt on status changes", async () => {

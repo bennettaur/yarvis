@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, ne, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, ne, sql } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { type AttentionItemRow, type AttentionNavTarget, attentionItems } from "../db/schema.ts";
 
@@ -87,32 +87,24 @@ export async function createAttention(
 
 export interface ListAttentionOptions {
   status?: AttentionStatus;
-  /** Only items with `seq` greater than this cursor (SSE reconnect backfill). */
-  since?: number;
-  /** Oldest-first (for ordered stream replay) instead of the default newest-first. */
-  ascending?: boolean;
   limit?: number;
 }
 
 /** Upper bound on a single list response. */
 const MAX_LIMIT = 500;
 
-/** Lists attention items with optional status/cursor filters. */
+/** Lists attention items filtered by status, newest-first (by the `seq` cursor). */
 export async function listAttention(
   db: Db,
   options: ListAttentionOptions = {},
 ): Promise<AttentionItemRow[]> {
-  const conditions: SQL[] = [];
-  if (options.status) conditions.push(eq(attentionItems.status, options.status));
-  if (options.since !== undefined) conditions.push(gt(attentionItems.seq, options.since));
-
   const limit = options.limit && options.limit > 0 ? Math.min(options.limit, MAX_LIMIT) : MAX_LIMIT;
 
   return db
     .select()
     .from(attentionItems)
-    .where(conditions.length ? and(...conditions) : undefined)
-    .orderBy(options.ascending ? asc(attentionItems.seq) : desc(attentionItems.seq))
+    .where(options.status ? eq(attentionItems.status, options.status) : undefined)
+    .orderBy(desc(attentionItems.seq))
     .limit(limit);
 }
 
@@ -134,13 +126,4 @@ export async function updateAttentionStatus(
     .where(eq(attentionItems.id, id))
     .returning();
   return row;
-}
-
-/** Count of items still needing the user, for the badge. */
-export async function countPending(db: Db): Promise<number> {
-  const rows = await db
-    .select({ id: attentionItems.id })
-    .from(attentionItems)
-    .where(eq(attentionItems.status, "pending"));
-  return rows.length;
 }

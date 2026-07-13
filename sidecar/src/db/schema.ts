@@ -511,10 +511,9 @@ export type AttentionNavTarget =
  * memory), these rows are *mutable* — the user reads, resolves, or dismisses
  * them — so this is a distinct table rather than an overload of the event log.
  *
- * `seq` is a monotonic cursor used to order the stream and to backfill any items
- * a client missed while its SSE connection was down (reconnect with `?since`).
- * A partial unique index on (`sessionKey`, `kind`) restricted to pending rows
- * lets ingestion coalesce a re-prompting session into one live item instead of
+ * `seq` is a monotonic cursor that orders the stream newest-first. A partial
+ * unique index on (`sessionKey`, `kind`) restricted to pending rows lets
+ * ingestion coalesce a re-prompting session into one live item instead of
  * stacking duplicates.
  */
 export const attentionItems = pgTable(

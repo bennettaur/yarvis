@@ -61,14 +61,12 @@ export async function patchAttention(
 
 /**
  * Opens the live SSE stream and yields each parsed frame. `signal` aborts the
- * underlying fetch so the store can tear the stream down on unsubscribe.
+ * underlying fetch so the store can tear the stream down on unsubscribe. The
+ * stream is forward-only; a client recovers missed events by re-hydrating from
+ * `getAttention` on reconnect.
  */
-export async function* streamAttention(
-  signal: AbortSignal,
-  since?: number,
-): AsyncGenerator<AttentionStreamEvent> {
-  const query = since !== undefined ? `?since=${since}` : "";
-  for await (const data of streamSSE(`/api/attention/stream${query}`, { signal })) {
+export async function* streamAttention(signal: AbortSignal): AsyncGenerator<AttentionStreamEvent> {
+  for await (const data of streamSSE("/api/attention/stream", { signal })) {
     try {
       yield JSON.parse(data) as AttentionStreamEvent;
     } catch {

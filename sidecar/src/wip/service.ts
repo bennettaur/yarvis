@@ -72,19 +72,19 @@ export function buildWipItems(inputs: WipInputs): WipItem[] {
   }
 
   const inProgressKeys = new Set(
-    inputs.inProgressIssues.map((l) => issueKey(l.provider, l.sourceKey, l.externalId)),
+    inputs.inProgressIssues.map((link) => issueKey(link.provider, link.sourceKey, link.externalId)),
   );
-  for (const l of inputs.inProgressIssues) {
+  for (const link of inputs.inProgressIssues) {
     items.push({
-      id: `issue:${issueKey(l.provider, l.sourceKey, l.externalId)}`,
+      id: `issue:${issueKey(link.provider, link.sourceKey, link.externalId)}`,
       source: "issue",
-      title: l.title ?? `${l.sourceKey}#${l.externalId}`,
-      subtitle: l.sourceKey,
+      title: link.title ?? `${link.sourceKey}#${link.externalId}`,
+      subtitle: link.sourceKey,
       navTarget: {
         type: "issue",
-        provider: l.provider,
-        sourceKey: l.sourceKey,
-        externalId: l.externalId,
+        provider: link.provider,
+        sourceKey: link.sourceKey,
+        externalId: link.externalId,
       },
     });
   }
