@@ -3,15 +3,18 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  addExistingBranchWorktree,
   branchExists,
   branchSync,
   createWorktree,
   detectDefaultBranch,
+  fetchBranch,
   fileDiff,
   type GitRunner,
   type GitRunResult,
   listChangedFiles,
   listFiles,
+  listRemoteBranches,
   removeWorktree,
   updateDefaultBranch,
 } from "./git.ts";
@@ -92,6 +95,36 @@ describe("createWorktree", () => {
     await createWorktree(runner, "/repo", worktreePath, "yarvis/task", "main");
     expect(calls[0]).toEqual(["worktree", "prune"]);
     expect(calls[1]).toEqual(["worktree", "add", "-b", "yarvis/task", worktreePath, "origin/main"]);
+  });
+});
+
+describe("fetchBranch", () => {
+  it("fetches a single branch with no checkout", async () => {
+    const { runner, calls } = fakeRunner(() => ({}));
+    await fetchBranch(runner, "/repo", "feat/login");
+    expect(calls[0]).toEqual(["fetch", "origin", "feat/login"]);
+  });
+});
+
+describe("listRemoteBranches", () => {
+  it("strips the origin/ prefix and drops origin/HEAD", async () => {
+    const { runner, calls } = fakeRunner(() => ({
+      stdout: "origin/HEAD\norigin/main\norigin/feat/login\n",
+    }));
+    expect(await listRemoteBranches(runner, "/repo")).toEqual(["main", "feat/login"]);
+    expect(calls[0]).toEqual(["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin"]);
+  });
+});
+
+describe("addExistingBranchWorktree", () => {
+  it("prunes then adds a worktree on the bare branch name", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "yarvis-wt-"));
+    tmpDirs.push(parent);
+    const { runner, calls } = fakeRunner(() => ({}));
+    const worktreePath = join(parent, "service-a");
+    await addExistingBranchWorktree(runner, "/repo", worktreePath, "feat/login");
+    expect(calls[0]).toEqual(["worktree", "prune"]);
+    expect(calls[1]).toEqual(["worktree", "add", worktreePath, "feat/login"]);
   });
 });
 

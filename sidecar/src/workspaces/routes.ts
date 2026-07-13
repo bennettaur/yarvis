@@ -12,6 +12,7 @@ import {
   getRepo,
   getWorkspace,
   linkTask,
+  listRepoBranches,
   listRepos,
   listWorkspaces,
   type ProvisionEvent,
@@ -44,6 +45,8 @@ const createWorkspaceSchema = z.object({
   name: z.string().min(1),
   // Empty is allowed: a scratch workspace (just a folder to run Claude in).
   repoIds: z.array(z.string().uuid()).default([]),
+  // repo id -> existing branch to check out instead of a fresh branch.
+  existingBranches: z.record(z.string().uuid(), z.string()).optional(),
   taskId: z.string().uuid().nullish(),
 });
 
@@ -81,6 +84,19 @@ export function createRepoRoutes(config: Config): Hono {
     const repo = await getRepo(db(), c.req.param("id"));
     if (!repo) return c.json({ error: "not found" }, 404);
     return c.json(repo);
+  });
+
+  // Remote branch names, for offering an existing branch when creating a
+  // workspace. Ensures the clone exists and fetches first, so it can be slow.
+  router.get("/:id/branches", async (c) => {
+    const repo = await getRepo(db(), c.req.param("id"));
+    if (!repo) return c.json({ error: "not found" }, 404);
+    try {
+      return c.json(await listRepoBranches(db(), repo.id));
+    } catch (e) {
+      // A clone/fetch failure (offline, auth) — not a missing repo.
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
   });
 
   router.patch("/:id", async (c) => {

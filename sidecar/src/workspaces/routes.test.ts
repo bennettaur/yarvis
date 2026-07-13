@@ -11,8 +11,10 @@ import { tasks, workspaceRepoPr, workspaceRepos } from "../db/schema.ts";
 import type { GitRunner } from "./git.ts";
 import {
   archiveWorkspace,
+  assertSafeBranchName,
   createWorkspace,
   getWorkspace,
+  listRepoBranches,
   provisionWorkspace,
   unlinkTask,
 } from "./service.ts";
@@ -43,8 +45,11 @@ const fakeGit: GitRunner = async (args) => {
   if (args[0] === "symbolic-ref") return { stdout: "origin/main\n", stderr: "", exitCode: 0 };
   if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 }; // branch absent
   // Create the worktree dir like real git would, so setup scripts have a cwd.
-  if (args[0] === "worktree" && args[1] === "add" && args[4]) {
-    mkdirSync(args[4], { recursive: true });
+  // New branch: "worktree add -b <branch> <path> <base>" (path is args[4]).
+  // Existing branch: "worktree add <path> <branch>" (path is args[2]).
+  if (args[0] === "worktree" && args[1] === "add") {
+    const path = args[2] === "-b" ? args[4] : args[2];
+    if (path) mkdirSync(path, { recursive: true });
   }
   return { stdout: "", stderr: "", exitCode: 0 };
 };
@@ -66,6 +71,24 @@ async function addRepo(cloneUrl = "git@github.com:acme/widget.git"): Promise<{ i
   });
   return (await res.json()) as { id: string };
 }
+
+describe("assertSafeBranchName", () => {
+  it("accepts ordinary branch names", () => {
+    for (const name of ["main", "feat/login", "release-2.1", "fix_bug"]) {
+      expect(() => assertSafeBranchName(name)).not.toThrow();
+    }
+  });
+
+  it("rejects a leading dash so git can't read it as a flag", () => {
+    expect(() => assertSafeBranchName("--upload-pack=x")).toThrow("unsupported branch name");
+  });
+
+  it("rejects whitespace and git-forbidden characters", () => {
+    for (const name of ["", "a b", "a~1", "a^", "a:b", "a?b", "a*b", "a[b", "a\\b"]) {
+      expect(() => assertSafeBranchName(name)).toThrow("unsupported branch name");
+    }
+  });
+});
 
 describe("repo routes", () => {
   it("requires authentication", async () => {
@@ -215,6 +238,92 @@ describe("provision + archive (injected git runner)", () => {
     const detail = await getWorkspace(db, ws.id);
     expect(detail?.status).toBe("active");
     expect(detail?.repos[0]?.status).toBe("ready");
+  });
+
+  it("checks out an existing branch when one is chosen, without cutting a new one", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, {
+      name: "on-existing",
+      repoIds: [repo.id],
+      existingBranches: { [repo.id]: "feat/login" },
+    });
+
+    const worktreeAdds: string[][] = [];
+    const trackingGit: GitRunner = async (args) => {
+      if (args[0] === "worktree" && args[1] === "add") worktreeAdds.push(args);
+      return fakeGit(args, {});
+    };
+    await provisionWorkspace(db, ws.id, () => {}, trackingGit);
+
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.status).toBe("active");
+    const wr = detail?.repos[0];
+    expect(wr?.branch).toBe("feat/login");
+    expect(wr?.existingBranch).toBe(true);
+    // Adds the worktree on the bare branch name — never with -b (no new branch).
+    expect(worktreeAdds).toEqual([["worktree", "add", wr!.worktreePath, "feat/login"]]);
+  });
+
+  it("fetches the existing branch before adding its worktree and keeps the diff base", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, {
+      name: "fetch-order",
+      repoIds: [repo.id],
+      existingBranches: { [repo.id]: "feat/login" },
+    });
+
+    const order: string[] = [];
+    const orderingGit: GitRunner = async (args) => {
+      if (args[0] === "fetch" && args[2] === "feat/login") order.push("fetch");
+      if (args[0] === "worktree" && args[1] === "add") order.push("worktree-add");
+      return fakeGit(args, {});
+    };
+    await provisionWorkspace(db, ws.id, () => {}, orderingGit);
+
+    // DWIM tracking depends on origin/feat/login existing before the add.
+    expect(order).toEqual(["fetch", "worktree-add"]);
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.repos[0]?.baseBranch).toBe("main");
+  });
+
+  it("mixes an existing-branch repo with a new-branch repo in one workspace", async () => {
+    const db = getDb(url).db;
+    const r1 = await addRepo("git@github.com:acme/widget.git");
+    const r2 = await addRepo("git@github.com:acme/gadget.git");
+    const ws = await createWorkspace(db, config, {
+      name: "mixed",
+      repoIds: [r1.id, r2.id],
+      // Only the first repo gets an existing branch; the second falls back.
+      existingBranches: { [r1.id]: "feat/login", [r2.id]: "" },
+    });
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+
+    const detail = await getWorkspace(db, ws.id);
+    const byRepo = new Map(detail?.repos.map((wr) => [wr.repoId, wr]));
+    expect(byRepo.get(r1.id)?.existingBranch).toBe(true);
+    expect(byRepo.get(r1.id)?.branch).toBe("feat/login");
+    expect(byRepo.get(r2.id)?.existingBranch).toBe(false);
+    expect(byRepo.get(r2.id)?.branch).toBe("yarvis/mixed");
+  });
+
+  it("lists the repo's remote branches, stripping origin/ and origin/HEAD", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const branchGit: GitRunner = async (args) => {
+      if (args[0] === "for-each-ref") {
+        return { stdout: "origin/HEAD\norigin/main\norigin/feat/login\n", stderr: "", exitCode: 0 };
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    };
+    expect(await listRepoBranches(db, repo.id, branchGit)).toEqual(["main", "feat/login"]);
+  });
+
+  it("throws 'repo not found' listing branches for an unknown repo", async () => {
+    const db = getDb(url).db;
+    const missing = "00000000-0000-0000-0000-000000000000";
+    expect(listRepoBranches(db, missing, fakeGit)).rejects.toThrow("repo not found");
   });
 
   it("provisions a scratch workspace to active and creates its root folder", async () => {

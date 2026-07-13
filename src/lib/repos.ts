@@ -70,3 +70,10 @@ export async function deleteRepo(id: string): Promise<void> {
   const res = await sidecarFetch(`/api/repos/${id}`, { method: "DELETE" });
   if (!res.ok) return readError(res, "delete repo");
 }
+
+/** The repo's remote branch names, for creating a workspace on an existing branch. */
+export async function listRepoBranches(id: string): Promise<string[]> {
+  const res = await sidecarFetch(`/api/repos/${id}/branches`);
+  if (!res.ok) return readError(res, "list branches");
+  return res.json();
+}
