@@ -18,7 +18,7 @@ const baseRepo: WorkspaceRepoDetail = {
   createdAt: "2026-01-01T00:00:00Z",
   repo: {
     id: "r1",
-    name: "thing",
+    name: "acme-web",
     owner: "octo",
     repo: "thing",
     cloneUrl: "git@github.com:octo/thing.git",
@@ -41,7 +41,7 @@ describe("WorkspaceSetupLog", () => {
     const html = await render(baseRepo);
     expect(html).toContain("error: script failed");
     expect(html).toContain("setup script exited 1");
-    expect(html).toContain("thing");
+    expect(html).toContain("acme-web");
   });
 
   // A repo that failed before running setup (e.g. a clone/worktree error) has an

@@ -186,7 +186,7 @@ export default function TerminalTabs({
   /** Called once an `openSetupLog` request has been handled. */
   onSetupLogOpened?: () => void;
   /** Supplies a setup-log tab's body. When omitted, setup-log tabs are not used. */
-  renderSetupLog?: (req: { workspaceRepoId: string }) => ReactNode;
+  renderSetupLog?: (req: Pick<OpenSetupLog, "workspaceRepoId">) => ReactNode;
 }) {
   const [state, setState] = useState<SurfaceState>(() => loadState(storageKey));
   // Refs to xterm handles so a tab/pane switch can move focus into the right shell.

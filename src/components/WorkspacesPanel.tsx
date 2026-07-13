@@ -8,8 +8,6 @@ import {
   createWorkspace,
   getWorkspace,
   listWorkspaces,
-  type ProvisionEvent,
-  provisionWorkspace,
   unlinkWorkspaceTask,
   type WorkspaceDetail,
   type WorkspaceRepoDetail,
@@ -28,6 +26,7 @@ import ArchiveDialog from "./workspaces/ArchiveDialog";
 import ArchivedView from "./workspaces/ArchivedView";
 import { DEFAULT_CLAUDE_COMMAND, resolveClaudeTab } from "./workspaces/claudeTab";
 import LinkTaskControl from "./workspaces/LinkTaskControl";
+import { consumeProvision } from "./workspaces/provisionStream";
 import WorkspaceFileDiff from "./workspaces/WorkspaceFileDiff";
 import WorkspacePrStatus from "./workspaces/WorkspacePrStatus";
 import WorkspaceSetupLog from "./workspaces/WorkspaceSetupLog";
@@ -56,36 +55,6 @@ function RepoStatusBadge({ status }: { status: WorkspaceRepoStatus }) {
   return (
     <span className={`rounded px-1.5 py-0.5 text-xs ${REPO_STATUS_STYLES[status]}`}>{status}</span>
   );
-}
-
-/** Human-readable line for a provisioning progress event, or null to ignore. */
-function provisionEventLine(ev: ProvisionEvent): string | null {
-  if (ev.type === "log") return ev.text;
-  if (ev.type === "repo-start") return `\n=== ${ev.repo} ===\n`;
-  if (ev.type === "repo-error") return `\n[error] ${ev.message}\n`;
-  return null;
-}
-
-/**
- * Drives a provision stream, appending progress text via `onLine`. Resolves
- * with the outcome so callers can react (select the workspace, reload, etc.).
- * `ok` is false when a repo failed too — the stream still ends with a `done`
- * event carrying an `error` status, not a top-level `error` event — and
- * `failedRepoId` names the first such repo so the caller can surface its log.
- */
-async function consumeProvision(
-  id: string,
-  onLine: (text: string) => void,
-): Promise<{ ok: boolean; error?: string; failedRepoId?: string }> {
-  let failedRepoId: string | undefined;
-  for await (const ev of provisionWorkspace(id)) {
-    const line = provisionEventLine(ev);
-    if (line !== null) onLine(line);
-    if (ev.type === "repo-error") failedRepoId ??= ev.workspaceRepoId;
-    else if (ev.type === "error") return { ok: false, error: ev.message };
-    else if (ev.type === "done") return { ok: ev.status !== "error", failedRepoId };
-  }
-  return { ok: true };
 }
 
 interface Group {
@@ -700,7 +669,7 @@ function WorkspaceDetailView({
   // When a workspace with a failed repo loads — whether provisioning just failed
   // here, or the user reopened an errored workspace — auto-open that repo's
   // setup-log tab so the failure is visible without hunting for it. Fires once
-  // per mount; the badge button below reopens it after a manual close.
+  // per mount; the per-repo "Setup log" button below reopens it after a close.
   useEffect(() => {
     if (setupAutoOpenedRef.current || !detail) return;
     const failed = detail.repos.find((wr) => wr.status === "error");
