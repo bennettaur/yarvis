@@ -39,6 +39,8 @@ export interface WorkspaceRepoDetail {
   repoId: string;
   status: WorkspaceRepoStatus;
   branch: string;
+  /** Whether `branch` is a pre-existing branch rather than a fresh one. */
+  existingBranch: boolean;
   baseBranch: string;
   worktreePath: string;
   setupLog: string | null;
@@ -92,6 +94,11 @@ export interface CreateWorkspaceInput {
   name: string;
   /** Empty for a scratch workspace: just a folder to run Claude in. */
   repoIds: string[];
+  /**
+   * Per-repo (keyed by repo id) existing branch to check out instead of cutting
+   * a fresh branch. Omit a repo, or map it to "", for the default new-branch flow.
+   */
+  existingBranches?: Record<string, string>;
   taskId?: string | null;
 }
 
