@@ -6,11 +6,14 @@ import {
   getMessages,
   listProviders,
   listSessions,
+  type PendingApproval,
   type ProviderId,
   type ProviderInfo,
+  respondToToolApproval,
   streamChat,
 } from "../lib/chat";
 import ChatComposer from "./ChatComposer";
+import { ToolApprovalPrompt } from "./ToolApprovalPrompt";
 
 interface Display {
   role: string;
@@ -31,7 +34,17 @@ export default function ChatPanel() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const threadRef = useRef<HTMLDivElement>(null);
+
+  const respondApproval = useCallback(async (id: string, approved: boolean) => {
+    setApprovals((prev) => prev.filter((a) => a.id !== id));
+    try {
+      await respondToToolApproval(id, approved);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
 
   useEffect(() => {
     void (async () => {
@@ -114,6 +127,12 @@ export default function ChatPanel() {
         if (evt.type === "delta" && evt.text) {
           acc += evt.text;
           setStreaming(acc);
+        } else if (evt.type === "tool_approval_request" && evt.id) {
+          const id = evt.id;
+          setApprovals((prev) => [
+            ...prev,
+            { id, name: evt.name ?? id, server: evt.server ?? "", args: evt.args },
+          ]);
         } else if (evt.type === "error") {
           setError(evt.message ?? "stream error");
         }
@@ -124,6 +143,8 @@ export default function ChatPanel() {
       if (acc) setMessages((prev) => [...prev, { role: "assistant", content: acc }]);
       setStreaming("");
       setBusy(false);
+      // Any approvals not acted on are moot once the turn ends.
+      setApprovals([]);
     }
   }, [input, provider, model, busy, sessionId]);
 
@@ -200,6 +221,13 @@ export default function ChatPanel() {
             <div className="whitespace-pre-wrap text-zinc-100">{streaming}</div>
           </div>
         )}
+        {approvals.map((a) => (
+          <ToolApprovalPrompt
+            key={a.id}
+            approval={a}
+            onRespond={(approved) => void respondApproval(a.id, approved)}
+          />
+        ))}
       </div>
 
       {error && <p className="text-sm text-red-400">{error}</p>}

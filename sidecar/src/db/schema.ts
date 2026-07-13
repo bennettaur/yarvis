@@ -1,4 +1,5 @@
 import {
+  boolean,
   date,
   integer,
   jsonb,
@@ -185,6 +186,64 @@ export const embeddingsConfig = pgTable("embeddings_config", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * Connected MCP (Model Context Protocol) servers. Structural data only — like
+ * `custom_providers`, any credentials (HTTP auth header values, stdio env-var
+ * secrets) stay in the macOS Keychain and reach the sidecar via the
+ * `YARVIS_MCP_SECRETS` env var on spawn.
+ *
+ * `transport` is "http" (Streamable HTTP / SSE, using `url` + `headerNames`) or
+ * "stdio" (a local subprocess, using `command` + `args`).
+ */
+export const mcpServers = pgTable("mcp_servers", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  transport: text("transport").notNull(), // "http" | "stdio"
+  url: text("url"),
+  command: text("command"),
+  args: jsonb("args").$type<string[]>().notNull().default([]),
+  headerNames: jsonb("header_names").$type<string[]>().notNull().default([]),
+  enabled: boolean("enabled").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const toolSource = pgEnum("tool_source", ["builtin", "mcp"]);
+export const toolPolicy = pgEnum("tool_policy", ["always", "search", "disabled"]);
+
+/**
+ * The unified tool registry: one row per tool the agent can use, spanning both
+ * the app's built-in tools (source "builtin") and tools discovered from
+ * connected MCP servers (source "mcp"). Each tool's name + description is
+ * embedded so the agent's `search_tools` tool can find relevant ones by vector
+ * search; `policy` governs how a tool is exposed:
+ *   - "always"   → always mounted (always in the model's context),
+ *   - "search"   → discoverable via search and mounted on demand,
+ *   - "disabled" → never registered with the model.
+ *
+ * `id` is a stable string key: "builtin:<name>" or "mcp:<serverId>:<toolName>".
+ * `contentHash` lets a resync skip re-embedding tools whose name/description/
+ * schema are unchanged.
+ */
+export const agentTools = pgTable("agent_tools", {
+  id: text("id").primaryKey(),
+  source: toolSource("source").notNull(),
+  serverId: uuid("server_id").references(() => mcpServers.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  inputSchema: jsonb("input_schema"),
+  policy: toolPolicy("policy").notNull().default("search"),
+  contentHash: text("content_hash").notNull(),
+  embedding: vector("embedding", { dimensions: EMBED_DIM }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type McpServerRow = typeof mcpServers.$inferSelect;
+export type NewMcpServerRow = typeof mcpServers.$inferInsert;
+export type AgentToolRow = typeof agentTools.$inferSelect;
+export type NewAgentToolRow = typeof agentTools.$inferInsert;
 
 export type EmbeddingsConfigRow = typeof embeddingsConfig.$inferSelect;
 export type NewEmbeddingsConfigRow = typeof embeddingsConfig.$inferInsert;

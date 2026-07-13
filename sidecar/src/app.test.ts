@@ -12,6 +12,7 @@ function testConfig(overrides: Partial<Config> = {}): Config {
     databaseUrl: undefined,
     secrets: {},
     customProviderSecrets: {},
+    mcpSecrets: {},
     embeddingsSecrets: { headers: {} },
     ...overrides,
   };

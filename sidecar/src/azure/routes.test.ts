@@ -14,6 +14,7 @@ function appWith(secrets: Config["secrets"]): ReturnType<typeof createApp> {
     databaseUrl: "postgres://localhost/unused",
     secrets,
     customProviderSecrets: {},
+    mcpSecrets: {},
     embeddingsSecrets: { headers: {} },
   });
 }

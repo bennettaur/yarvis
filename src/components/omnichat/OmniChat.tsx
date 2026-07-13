@@ -4,6 +4,7 @@ import { OMNI_CHAT_SESSION_KEY } from "../../lib/omniChat";
 import { collectContext, formatContext } from "../../lib/omniChatContext";
 import { useChatThread } from "../../lib/useChatThread";
 import ChatComposer from "../ChatComposer";
+import { ToolApprovalPrompt } from "../ToolApprovalPrompt";
 
 /**
  * A centered, summon-from-anywhere chat overlay. It stays mounted while hidden
@@ -32,6 +33,8 @@ export default function OmniChat({
     streaming,
     busy,
     error,
+    approvals,
+    respondApproval,
     send,
     newChat,
   } = useChatThread({
@@ -158,6 +161,13 @@ export default function OmniChat({
               <div className="whitespace-pre-wrap text-zinc-100">{streaming}</div>
             </div>
           )}
+          {approvals.map((a) => (
+            <ToolApprovalPrompt
+              key={a.id}
+              approval={a}
+              onRespond={(approved) => void respondApproval(a.id, approved)}
+            />
+          ))}
         </div>
 
         {error && <p className="text-sm text-red-400">{error}</p>}

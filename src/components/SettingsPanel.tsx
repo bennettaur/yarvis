@@ -1,10 +1,13 @@
 import CustomProviderSection from "./CustomProviderSection";
 import EmbeddingsSection from "./EmbeddingsSection";
 import KeychainSection from "./KeychainSection";
+import McpServerSection from "./McpServerSection";
+import ToolManagerSection from "./ToolManagerSection";
 
 /**
- * The Settings tab — where the user configures credentials and custom LLM
- * providers. Health/status indicators stay on the Dashboard tab.
+ * The Settings tab — where the user configures credentials, custom LLM
+ * providers, MCP servers, and tool policies. Health/status indicators stay on
+ * the Dashboard tab.
  */
 export default function SettingsPanel() {
   return (
@@ -12,6 +15,8 @@ export default function SettingsPanel() {
       <KeychainSection />
       <CustomProviderSection />
       <EmbeddingsSection />
+      <McpServerSection />
+      <ToolManagerSection />
     </div>
   );
 }

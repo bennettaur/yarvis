@@ -18,6 +18,7 @@ function configWithSecrets(secrets: Config["customProviderSecrets"] = {}): Confi
     databaseUrl: url,
     secrets: {},
     customProviderSecrets: secrets,
+    mcpSecrets: {},
     embeddingsSecrets: { headers: {} },
   };
 }

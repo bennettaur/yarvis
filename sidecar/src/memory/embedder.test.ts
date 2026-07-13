@@ -25,6 +25,7 @@ function configWith(secrets: Partial<Config["secrets"]> = {}): Config {
       ...secrets,
     },
     customProviderSecrets: {},
+    mcpSecrets: {},
     embeddingsSecrets: { headers: {} },
   };
 }

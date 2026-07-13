@@ -19,6 +19,7 @@ const baseConfig: Config = {
   databaseUrl: url,
   secrets: {},
   customProviderSecrets: {},
+  mcpSecrets: {},
   embeddingsSecrets: { headers: {} },
 };
 

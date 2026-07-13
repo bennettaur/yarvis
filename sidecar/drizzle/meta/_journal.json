@@ -57,6 +57,13 @@
       "when": 1781586857854,
       "tag": "0007_narrow_wallop",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1782053269827,
+      "tag": "0008_dashing_sentry",
+      "breakpoints": true
     }
   ]
 }

@@ -1,7 +1,10 @@
+import { syncBuiltins } from "./agentTools/registry.ts";
 import { createApp } from "./app.ts";
 import { loadConfig } from "./config.ts";
+import { getDb } from "./db/client.ts";
 import { runMigrations } from "./db/migrate.ts";
 import { redactSecrets } from "./llm/errors.ts";
+import { chooseEmbedder } from "./memory/embedder.ts";
 import { createReadiness } from "./readiness.ts";
 
 const config = loadConfig();
@@ -40,8 +43,17 @@ if (config.tokenGenerated) {
 
 if (config.databaseUrl) {
   runMigrations(config.databaseUrl)
-    .then(() => {
+    .then(async () => {
       readiness.set("ready");
+      // Seed the built-in tools into the unified registry so the Tool Manager
+      // and tool search see them. Best-effort: a failure here (e.g. embedder
+      // misconfig) must not take the service down.
+      try {
+        const db = getDb(config.databaseUrl as string).db;
+        await syncBuiltins(db, await chooseEmbedder(config, db));
+      } catch (e) {
+        console.error("[sidecar] built-in tool sync failed:", redactSecrets(String(e)));
+      }
     })
     .catch((e) => {
       // Redact before storing the message because `/health` (unauthenticated)

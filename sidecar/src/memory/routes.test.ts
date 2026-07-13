@@ -14,6 +14,7 @@ const config: Config = {
   databaseUrl: url,
   secrets: {},
   customProviderSecrets: {},
+  mcpSecrets: {},
   embeddingsSecrets: { headers: {} },
 };
 const app = createApp(config);
