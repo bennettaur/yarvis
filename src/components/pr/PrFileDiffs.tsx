@@ -92,7 +92,7 @@ function threadsByLine(threads: ReviewThread[]): Map<number, ReviewThread[]> {
   return map;
 }
 
-function DiffBody({
+export function DiffBody({
   prRef,
   file,
   patch,
@@ -143,7 +143,9 @@ function DiffBody({
               </span>
               <span className="whitespace-pre">{row.text || " "}</span>
             </div>
-            {(lineThreads || linePending.length > 0 || activeLine === row.rightLine) && (
+            {(lineThreads ||
+              linePending.length > 0 ||
+              (commentable && activeLine === row.rightLine)) && (
               <div className="space-y-2 px-3 py-2 font-sans">
                 {lineThreads?.map((t, j) => (
                   <ThreadCard key={`t-${j}`} thread={t} />
@@ -157,7 +159,7 @@ function DiffBody({
                     {p.body}
                   </div>
                 ))}
-                {activeLine === row.rightLine && row.rightLine != null && (
+                {commentable && activeLine === row.rightLine && (
                   <CommentComposer
                     onSubmit={(body) => submit(row.rightLine as number, body)}
                     onCancel={() => setActiveLine(null)}
