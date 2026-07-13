@@ -522,7 +522,7 @@ function TabStrip({
                 onClick={() => onClosePinned(p)}
                 aria-label={`End ${p.title}`}
                 title="End session"
-                className="rounded px-1 text-zinc-500 opacity-0 hover:bg-zinc-800 hover:text-zinc-200 group-hover:opacity-100"
+                className="rounded px-1.5 py-0.5 text-sm leading-none text-zinc-500 opacity-0 hover:bg-zinc-800 hover:text-zinc-200 group-hover:opacity-100"
               >
                 ×
               </button>
@@ -554,7 +554,7 @@ function TabStrip({
                 onClick={() => onClose(t.id)}
                 aria-label={`Close ${t.title}`}
                 title="Close tab (⌘W)"
-                className="rounded px-1 text-zinc-500 opacity-0 hover:bg-zinc-800 hover:text-zinc-200 group-hover:opacity-100"
+                className="rounded px-1.5 py-0.5 text-sm leading-none text-zinc-500 opacity-0 hover:bg-zinc-800 hover:text-zinc-200 group-hover:opacity-100"
               >
                 ×
               </button>
@@ -628,7 +628,7 @@ function PaneTreeView({
           }}
           title="Close pane"
           aria-label="Close pane"
-          className="absolute right-1 top-1 rounded bg-zinc-900/80 px-1 text-xs text-zinc-400 opacity-0 hover:bg-zinc-800 hover:text-zinc-100 group-hover:opacity-100"
+          className="absolute right-1 top-1 rounded bg-zinc-900/80 px-1.5 py-0.5 text-sm leading-none text-zinc-400 opacity-0 hover:bg-zinc-800 hover:text-zinc-100 group-hover:opacity-100"
         >
           ×
         </button>
