@@ -24,6 +24,20 @@ fn summon_omni_chat(app: &tauri::AppHandle) {
     let _ = app.emit("omni-chat-summon", ());
 }
 
+/// Brings the main window to the foreground. Invoked when the user clicks an
+/// attention item so the app surfaces even if it was minimized or behind another
+/// window. Mirrors the window handling in `summon_omni_chat`, without the
+/// Omni-specific emit.
+#[tauri::command]
+fn focus_main_window(app: tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
@@ -120,6 +134,7 @@ pub fn run() {
             pty::pty_start_claude,
             pty::pty_is_busy,
             pty::get_claude_command,
+            focus_main_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

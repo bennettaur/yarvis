@@ -4,7 +4,7 @@
  * module owns the database state and orchestration.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { relative } from "node:path";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import type { Config } from "../config.ts";
@@ -530,6 +530,76 @@ function writeContextFiles(detail: WorkspaceDetail): void {
 }
 
 /**
+ * Builds the shell command a Claude Code hook runs to raise an attention item.
+ * It consumes the hook's stdin (so the hook never blocks), then posts a minimal,
+ * fully-literal body to the sidecar's attention-ingest endpoint. The sidecar
+ * port + scoped token come from the session's environment (injected by the Rust
+ * core when it launches Claude in this workspace), so no secret is written to
+ * disk; only a uuid, the "ws-claude:<uuid>" key, and a fixed kind are embedded,
+ * none of which can contain a shell metacharacter.
+ */
+function attentionHookCommand(
+  workspaceId: string,
+  sessionKey: string,
+  kind: "permission" | "idle" | "completed",
+): string {
+  const body = JSON.stringify({ workspaceId, sessionKey, kind });
+  return (
+    `cat >/dev/null 2>&1; ` +
+    `curl -sf -m 5 -X POST "http://127.0.0.1:\${YARVIS_SIDECAR_PORT}/ingest/attention" ` +
+    `-H "Authorization: Bearer \${YARVIS_ATTENTION_TOKEN}" ` +
+    `-H "Content-Type: application/json" ` +
+    `-d '${body}' >/dev/null 2>&1 || true`
+  );
+}
+
+/**
+ * (Re)writes `.claude/settings.json` at the workspace root so a Claude Code
+ * session launched here signals Yarvis when it needs the user: a
+ * `PermissionRequest` hook (blocked on a tool approval), a `Notification` hook
+ * matched to `idle_prompt` (waiting for input), and a `Stop` hook (finished).
+ * Both launch flows start Claude with cwd = the workspace root, so a project
+ * settings file here covers them. Best-effort, and it merges into any existing
+ * settings so unrelated user keys survive. A failure is logged, not fatal.
+ */
+function writeClaudeSettings(detail: WorkspaceDetail): void {
+  const sessionKey = `ws-claude:${detail.id}`;
+  const command = (kind: "permission" | "idle" | "completed") => ({
+    type: "command" as const,
+    command: attentionHookCommand(detail.id, sessionKey, kind),
+  });
+
+  const ourHooks = {
+    PermissionRequest: [{ hooks: [command("permission")] }],
+    Notification: [{ matcher: "idle_prompt", hooks: [command("idle")] }],
+    Stop: [{ hooks: [command("completed")] }],
+  };
+
+  try {
+    const dir = `${detail.rootPath}/.claude`;
+    const file = `${dir}/settings.json`;
+    let existing: Record<string, unknown> = {};
+    if (existsSync(file)) {
+      try {
+        const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+        if (parsed && typeof parsed === "object") existing = parsed as Record<string, unknown>;
+      } catch {
+        // A corrupt file shouldn't block provisioning; overwrite it.
+      }
+    }
+    const existingHooks =
+      existing.hooks && typeof existing.hooks === "object"
+        ? (existing.hooks as Record<string, unknown>)
+        : {};
+    const merged = { ...existing, hooks: { ...existingHooks, ...ourHooks } };
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(file, `${JSON.stringify(merged, null, 2)}\n`);
+  } catch (e) {
+    console.error("[workspaces] failed to write .claude/settings.json:", e);
+  }
+}
+
+/**
  * Drives provisioning for a workspace: per repo, ensure the primary clone,
  * refresh its default branch, cut a worktree, and run the setup script —
  * emitting progress events (setup output streams through `emit`). Idempotent
@@ -652,7 +722,10 @@ export async function provisionWorkspace(
 
     // The workspace is active only if every repo provisioned cleanly.
     const after = await getWorkspace(db, id);
-    if (after) writeContextFiles(after);
+    if (after) {
+      writeContextFiles(after);
+      writeClaudeSettings(after);
+    }
     const allReady = after?.repos.every((r) => r.status === "ready" || r.status === "removed");
     const status = allReady ? "active" : "error";
     await db

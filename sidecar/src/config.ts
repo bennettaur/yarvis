@@ -73,6 +73,12 @@ export interface Config {
   token: string;
   /** Whether the token was generated here (standalone) vs supplied by the host. */
   tokenGenerated: boolean;
+  /**
+   * A scoped token authorizing only the attention-ingest endpoint. Injected into
+   * Yarvis-launched Claude Code session shells (via the Rust core), so a session's
+   * hooks can POST an attention item without holding the full-access bearer above.
+   */
+  attentionToken: string;
   /** Allowed values for the Origin header, or null to skip the check (dev). */
   allowedOrigins: string[] | null;
   /** Postgres connection string. May be undefined until the user configures it. */
@@ -204,6 +210,7 @@ export function loadConfig(): Config {
     port: env.YARVIS_SIDECAR_PORT ? Number(env.YARVIS_SIDECAR_PORT) : 8765,
     token,
     tokenGenerated: suppliedToken === undefined,
+    attentionToken: env.YARVIS_ATTENTION_TOKEN ?? randomToken(),
     allowedOrigins: parseOrigins(env.YARVIS_ALLOWED_ORIGINS),
     databaseUrl: env.DATABASE_URL,
     workspacesRoot: env.YARVIS_WORKSPACES_ROOT ?? join(homedir(), "dev", "yarvis-workspaces"),

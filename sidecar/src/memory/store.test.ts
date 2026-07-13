@@ -15,6 +15,7 @@ const baseConfig: Config = {
   port: 0,
   token: "t",
   tokenGenerated: true,
+  attentionToken: "test-attention-token",
   allowedOrigins: null,
   databaseUrl: url,
   workspacesRoot: "/tmp/yarvis-test-workspaces",

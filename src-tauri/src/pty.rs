@@ -14,7 +14,7 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Upper bound on per-session captured output, in bytes. Older output is
 /// dropped from the front once exceeded so memory stays bounded.
@@ -85,6 +85,22 @@ struct SpawnSpec {
     strip_provider_secrets: bool,
 }
 
+/// Environment a Yarvis-launched Claude session needs so its attention hooks can
+/// reach the sidecar's ingest endpoint. Only workspace Claude sessions (keyed
+/// `ws-claude:<workspaceId>`) get the token; every other PTY (plain terminals)
+/// gets nothing. Pure so the gating is unit-testable without a live PTY.
+fn attention_env(id: &str, port: u16, token: &str) -> Vec<(String, String)> {
+    let Some(workspace_id) = id.strip_prefix("ws-claude:") else {
+        return Vec::new();
+    };
+    vec![
+        ("YARVIS_SIDECAR_PORT".to_string(), port.to_string()),
+        ("YARVIS_ATTENTION_TOKEN".to_string(), token.to_string()),
+        ("YARVIS_WORKSPACE_ID".to_string(), workspace_id.to_string()),
+        ("YARVIS_SESSION_KEY".to_string(), id.to_string()),
+    ]
+}
+
 /// Spawns a shell in a new PTY and starts the reader thread that streams its
 /// output to the frontend. The shell opens in `spec.cwd` when given (e.g. a
 /// workspace folder), otherwise in `$HOME`.
@@ -99,6 +115,17 @@ fn spawn_session(app: &AppHandle, id: &str, spec: &SpawnSpec) -> Result<PtySessi
     cmd.env("TERM", "xterm-256color");
     if spec.strip_provider_secrets {
         cmd.env_remove("ANTHROPIC_API_KEY");
+    }
+    // Workspace Claude sessions carry the sidecar port + scoped attention token so
+    // their Claude Code hooks can post to the ingest endpoint. Both launch flows
+    // (core-spawned and the issue "Start work" shell) route through here.
+    if let (Some(info), Some(attn)) = (
+        app.try_state::<crate::sidecar::SidecarInfo>(),
+        app.try_state::<crate::sidecar::AttentionIngestToken>(),
+    ) {
+        for (key, value) in attention_env(id, info.port, &attn.0) {
+            cmd.env(key, value);
+        }
     }
     if let Some(dir) = spec
         .cwd
@@ -439,7 +466,7 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 
 #[cfg(test)]
 mod tests {
-    use super::{append_capped, remote_control_command, MAX_SCROLLBACK};
+    use super::{append_capped, attention_env, remote_control_command, MAX_SCROLLBACK};
 
     #[test]
     fn remote_control_command_appends_flag_and_quotes_name() {
@@ -463,6 +490,29 @@ mod tests {
     fn remote_control_command_escapes_single_quotes_in_the_name() {
         let cmd = remote_control_command("claude", "Mike's task");
         assert_eq!(cmd, "claude --remote-control 'Mike'\\''s task'");
+    }
+
+    #[test]
+    fn attention_env_populates_workspace_claude_sessions() {
+        let env = attention_env("ws-claude:abc-123", 8765, "tok");
+        assert_eq!(
+            env,
+            vec![
+                ("YARVIS_SIDECAR_PORT".to_string(), "8765".to_string()),
+                ("YARVIS_ATTENTION_TOKEN".to_string(), "tok".to_string()),
+                ("YARVIS_WORKSPACE_ID".to_string(), "abc-123".to_string()),
+                (
+                    "YARVIS_SESSION_KEY".to_string(),
+                    "ws-claude:abc-123".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn attention_env_is_empty_for_non_claude_sessions() {
+        // A plain terminal PTY must not receive the ingest token.
+        assert!(attention_env("tab:terminal/abc/def", 8765, "tok").is_empty());
     }
 
     #[test]
