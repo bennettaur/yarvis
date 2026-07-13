@@ -11,12 +11,14 @@ import {
   findWorkspaceForPr,
   getRepo,
   getWorkspace,
+  linkIssue,
   linkTask,
   listRepoBranches,
   listRepos,
   listWorkspaces,
   type ProvisionEvent,
   provisionWorkspace,
+  unlinkIssue,
   unlinkTask,
   updateRepo,
   workspaceRepoChanges,
@@ -54,6 +56,18 @@ const archiveSchema = z.object({
   summary: z.string().nullish(),
   mergedPrUrl: z.string().nullish(),
   force: z.boolean().optional(),
+});
+
+// The source-agnostic triple identifying an issue across providers.
+const issueRefSchema = z.object({
+  provider: z.enum(["github", "jira"]),
+  sourceKey: z.string().min(1),
+  externalId: z.string().min(1),
+});
+
+const linkIssueSchema = issueRefSchema.extend({
+  title: z.string().nullish(),
+  url: z.string().nullish(),
 });
 
 /** Repo registry CRUD, mounted under /api/repos. */
@@ -245,6 +259,43 @@ export function createWorkspaceRoutes(config: Config): Hono {
     try {
       const ok = await unlinkTask(db(), c.req.param("id"), taskId);
       if (!ok) return c.json({ error: "task not found" }, 404);
+      return c.json({ ok: true });
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+  });
+
+  // Link / unlink a GitHub or JIRA issue (archiving the workspace marks it done).
+  router.post("/:id/issues", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const parsed = linkIssueSchema.safeParse(body);
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    try {
+      const link = await linkIssue(db(), c.req.param("id"), parsed.data);
+      return c.json(link);
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+  });
+
+  // sourceKey ("owner/repo") carries a slash, so the issue is identified by
+  // query params rather than path segments.
+  router.delete("/:id/issues", async (c) => {
+    const parsed = issueRefSchema.safeParse({
+      provider: c.req.query("provider"),
+      sourceKey: c.req.query("sourceKey"),
+      externalId: c.req.query("externalId"),
+    });
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    try {
+      const ok = await unlinkIssue(
+        db(),
+        c.req.param("id"),
+        parsed.data.provider,
+        parsed.data.sourceKey,
+        parsed.data.externalId,
+      );
+      if (!ok) return c.json({ error: "issue link not found" }, 404);
       return c.json({ ok: true });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);

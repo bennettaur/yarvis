@@ -7,7 +7,7 @@ import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import { tasks, workspaceRepoPr, workspaceRepos } from "../db/schema.ts";
+import { issueLinks, tasks, workspaceRepoPr, workspaceRepos } from "../db/schema.ts";
 import type { GitRunner } from "./git.ts";
 import {
   archiveWorkspace,
@@ -55,7 +55,7 @@ const fakeGit: GitRunner = async (args) => {
 };
 
 beforeEach(async () => {
-  await sql`TRUNCATE repos, workspaces, workspace_repos, workspace_repo_pr, tasks RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE repos, workspaces, workspace_repos, workspace_repo_pr, tasks, issue_links RESTART IDENTITY CASCADE`;
 });
 
 afterAll(async () => {
@@ -222,6 +222,109 @@ describe("workspace routes", () => {
       body: JSON.stringify({ name: "scratch-default" }),
     });
     expect(res.status).toBe(201);
+  });
+});
+
+describe("workspace issue links", () => {
+  async function makeWorkspace(name: string): Promise<string> {
+    const res = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ name, repoIds: [] }),
+    });
+    return ((await res.json()) as { id: string }).id;
+  }
+
+  const githubIssue = {
+    provider: "github",
+    sourceKey: "acme/widget",
+    externalId: "42",
+    title: "Fix the thing",
+    url: "https://github.com/acme/widget/issues/42",
+  };
+
+  it("links a GitHub issue and surfaces it on the workspace detail", async () => {
+    const id = await makeWorkspace("link gh");
+    const res = await app.request(`/api/workspaces/${id}/issues`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify(githubIssue),
+    });
+    expect(res.status).toBe(200);
+
+    const detail = await app.request(`/api/workspaces/${id}`, { headers: auth });
+    const body = (await detail.json()) as { issues: { externalId: string; localStatus: string }[] };
+    expect(body.issues).toHaveLength(1);
+    expect(body.issues[0]?.externalId).toBe("42");
+    expect(body.issues[0]?.localStatus).toBe("in_progress");
+  });
+
+  it("re-links the same issue idempotently, re-pointing it at the new workspace", async () => {
+    const first = await makeWorkspace("first");
+    const second = await makeWorkspace("second");
+    await app.request(`/api/workspaces/${first}/issues`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify(githubIssue),
+    });
+    await app.request(`/api/workspaces/${second}/issues`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify(githubIssue),
+    });
+
+    const rows = await db.select().from(issueLinks);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.workspaceId).toBe(second);
+  });
+
+  it("links a JIRA ticket entered by key", async () => {
+    const id = await makeWorkspace("link jira");
+    const res = await app.request(`/api/workspaces/${id}/issues`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ provider: "jira", sourceKey: "PROJ", externalId: "PROJ-7" }),
+    });
+    expect(res.status).toBe(200);
+    const detail = await app.request(`/api/workspaces/${id}`, { headers: auth });
+    const body = (await detail.json()) as { issues: { provider: string }[] };
+    expect(body.issues[0]?.provider).toBe("jira");
+  });
+
+  it("rejects an unknown provider", async () => {
+    const id = await makeWorkspace("bad provider");
+    const res = await app.request(`/api/workspaces/${id}/issues`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ ...githubIssue, provider: "gitlab" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("unlinks an issue and 404s when it isn't linked", async () => {
+    const id = await makeWorkspace("unlink");
+    await app.request(`/api/workspaces/${id}/issues`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify(githubIssue),
+    });
+    const query = new URLSearchParams({
+      provider: "github",
+      sourceKey: "acme/widget",
+      externalId: "42",
+    });
+    const del = await app.request(`/api/workspaces/${id}/issues?${query}`, {
+      method: "DELETE",
+      headers: auth,
+    });
+    expect(del.status).toBe(200);
+    expect(await db.select().from(issueLinks)).toHaveLength(0);
+
+    const again = await app.request(`/api/workspaces/${id}/issues?${query}`, {
+      method: "DELETE",
+      headers: auth,
+    });
+    expect(again.status).toBe(404);
   });
 });
 
