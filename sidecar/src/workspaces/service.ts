@@ -400,8 +400,19 @@ export interface LinkIssueInput {
 }
 
 /** Links a GitHub/JIRA issue to a workspace via the shared issue-link table.
- *  Idempotent per issue: re-linking re-points the issue at this workspace. */
-export function linkIssue(db: Db, workspaceId: string, input: LinkIssueInput): Promise<IssueLink> {
+ *  Idempotent per issue: re-linking re-points the issue at this workspace.
+ *  Returns null if the workspace doesn't exist (parity with `linkTask`), rather
+ *  than letting the issue_links FK surface a raw constraint error. */
+export async function linkIssue(
+  db: Db,
+  workspaceId: string,
+  input: LinkIssueInput,
+): Promise<IssueLink | null> {
+  const [ws] = await db
+    .select({ id: workspaces.id })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId));
+  if (!ws) return null;
   return upsertLink(db, { ...input, workspaceId, localStatus: "in_progress" });
 }
 

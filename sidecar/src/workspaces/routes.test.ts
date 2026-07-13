@@ -253,10 +253,33 @@ describe("workspace issue links", () => {
     expect(res.status).toBe(200);
 
     const detail = await app.request(`/api/workspaces/${id}`, { headers: auth });
-    const body = (await detail.json()) as { issues: { externalId: string; localStatus: string }[] };
+    const body = (await detail.json()) as {
+      issues: { externalId: string; localStatus: string; title: string; url: string }[];
+    };
     expect(body.issues).toHaveLength(1);
     expect(body.issues[0]?.externalId).toBe("42");
     expect(body.issues[0]?.localStatus).toBe("in_progress");
+    expect(body.issues[0]?.title).toBe("Fix the thing");
+    expect(body.issues[0]?.url).toBe("https://github.com/acme/widget/issues/42");
+  });
+
+  it("404s when linking to a workspace that doesn't exist", async () => {
+    const res = await app.request("/api/workspaces/00000000-0000-0000-0000-000000000000/issues", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify(githubIssue),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects a non-http(s) url", async () => {
+    const id = await makeWorkspace("bad url");
+    const res = await app.request(`/api/workspaces/${id}/issues`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ ...githubIssue, url: "javascript:alert(1)" }),
+    });
+    expect(res.status).toBe(400);
   });
 
   it("re-links the same issue idempotently, re-pointing it at the new workspace", async () => {
@@ -325,6 +348,37 @@ describe("workspace issue links", () => {
       headers: auth,
     });
     expect(again.status).toBe(404);
+  });
+
+  it("does not unlink an issue owned by a different workspace", async () => {
+    const first = await makeWorkspace("owner-a");
+    const second = await makeWorkspace("owner-b");
+    await app.request(`/api/workspaces/${first}/issues`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify(githubIssue),
+    });
+    // Re-point the single link at the second workspace.
+    await app.request(`/api/workspaces/${second}/issues`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify(githubIssue),
+    });
+
+    const query = new URLSearchParams({
+      provider: "github",
+      sourceKey: "acme/widget",
+      externalId: "42",
+    });
+    // Deleting via the first (no longer owning) workspace must not touch the link.
+    const del = await app.request(`/api/workspaces/${first}/issues?${query}`, {
+      method: "DELETE",
+      headers: auth,
+    });
+    expect(del.status).toBe(404);
+    const rows = await db.select().from(issueLinks);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.workspaceId).toBe(second);
   });
 });
 

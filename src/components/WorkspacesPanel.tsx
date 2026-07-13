@@ -4,6 +4,7 @@ import type { OpenWorkspaceRequest } from "../lib/nav";
 import { getClaudeCommand, ptyExists, startClaudeSession } from "../lib/pty";
 import { createRepo, listRepoBranches, listRepos, type Repo } from "../lib/repos";
 import { listTasks, type Task } from "../lib/tasks";
+import { openExternal } from "../lib/url";
 import {
   createWorkspace,
   getWorkspace,
@@ -928,8 +929,10 @@ function WorkspaceDetailView({
                 {issue.url ? (
                   <a
                     href={issue.url}
-                    target="_blank"
-                    rel="noreferrer"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      openExternal(issue.url);
+                    }}
                     className="text-zinc-300 hover:text-zinc-100"
                   >
                     {issue.title ?? issue.externalId}

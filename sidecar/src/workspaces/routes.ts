@@ -61,13 +61,20 @@ const archiveSchema = z.object({
 // The source-agnostic triple identifying an issue across providers.
 const issueRefSchema = z.object({
   provider: z.enum(["github", "jira"]),
-  sourceKey: z.string().min(1),
-  externalId: z.string().min(1),
+  sourceKey: z.string().min(1).max(256),
+  externalId: z.string().min(1).max(256),
 });
 
+// The stored url is later rendered as an anchor href; restrict it to http(s)
+// so a pasted `javascript:`/`file:` URL can't reach the DOM as a link target.
+const httpUrl = z
+  .string()
+  .max(2048)
+  .refine((u) => /^https?:\/\//i.test(u), "url must be http(s)");
+
 const linkIssueSchema = issueRefSchema.extend({
-  title: z.string().nullish(),
-  url: z.string().nullish(),
+  title: z.string().max(1024).nullish(),
+  url: httpUrl.nullish(),
 });
 
 /** Repo registry CRUD, mounted under /api/repos. */
@@ -272,6 +279,7 @@ export function createWorkspaceRoutes(config: Config): Hono {
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
       const link = await linkIssue(db(), c.req.param("id"), parsed.data);
+      if (!link) return c.json({ error: "workspace not found" }, 404);
       return c.json(link);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);

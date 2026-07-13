@@ -2,7 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { issuesAll } from "../../lib/issues/api";
 import { type IssueSummary, issueKey } from "../../lib/issues/types";
 import { listTasks, type Task } from "../../lib/tasks";
-import { linkWorkspaceIssue, linkWorkspaceTask, type WorkspaceDetail } from "../../lib/workspaces";
+import {
+  type LinkIssueInput,
+  linkWorkspaceIssue,
+  linkWorkspaceTask,
+  type WorkspaceDetail,
+} from "../../lib/workspaces";
 
 type Tab = "tasks" | "github" | "jira";
 
@@ -160,14 +165,12 @@ function TasksTab({
       .catch(() => setTasks([]));
   }, []);
 
-  const available = (tasks ?? [])
-    .filter((t) => !linkedIds.includes(t.id))
-    .filter((t) => t.title.toLowerCase().includes(query.toLowerCase()));
-
   if (tasks === null) return <Hint>Loading tasks…</Hint>;
-  if (tasks.length === 0 || linkedIds.length === (tasks?.length ?? 0)) {
-    return <Hint>No open tasks to link.</Hint>;
-  }
+
+  const linkable = tasks.filter((t) => !linkedIds.includes(t.id));
+  if (linkable.length === 0) return <Hint>No open tasks to link.</Hint>;
+
+  const available = linkable.filter((t) => t.title.toLowerCase().includes(query.toLowerCase()));
 
   return (
     <div className="space-y-2">
@@ -258,13 +261,7 @@ function JiraTab({
   onSubmit,
 }: {
   disabled: boolean;
-  onSubmit: (input: {
-    provider: "jira";
-    sourceKey: string;
-    externalId: string;
-    title?: string | null;
-    url?: string | null;
-  }) => void;
+  onSubmit: (input: LinkIssueInput) => void;
 }) {
   const [key, setKey] = useState("");
   const [title, setTitle] = useState("");
