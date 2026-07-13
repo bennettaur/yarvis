@@ -1,6 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import type { Config } from "../config.ts";
-import { assertSafeCloneUrl, parseGitUrl, primaryClonePath, slugify } from "./service.ts";
+import {
+  assertSafeCloneUrl,
+  parseGitUrl,
+  parseRepoRemote,
+  primaryClonePath,
+  slugify,
+} from "./service.ts";
 
 const config = { workspacesRoot: "/home/me/dev/yarvis-workspaces" } as Config;
 
@@ -25,6 +31,68 @@ describe("parseGitUrl", () => {
 
   it("returns null for an unparseable url", () => {
     expect(parseGitUrl("not-a-url")).toBeNull();
+  });
+});
+
+describe("parseRepoRemote", () => {
+  it("classifies a GitHub ssh remote", () => {
+    expect(parseRepoRemote("git@github.com:acme/widget.git")).toEqual({
+      provider: "github",
+      owner: "acme",
+      repo: "widget",
+    });
+  });
+
+  it("classifies a GitHub https remote", () => {
+    expect(parseRepoRemote("https://github.com/acme/widget")).toEqual({
+      provider: "github",
+      owner: "acme",
+      repo: "widget",
+    });
+  });
+
+  it("classifies a modern Azure DevOps https remote", () => {
+    expect(parseRepoRemote("https://dev.azure.com/myorg/MyProject/_git/web")).toEqual({
+      provider: "azure",
+      org: "myorg",
+      project: "MyProject",
+      repo: "web",
+    });
+  });
+
+  it("classifies an Azure DevOps https remote with an org in the userinfo", () => {
+    expect(parseRepoRemote("https://myorg@dev.azure.com/myorg/MyProject/_git/web")).toEqual({
+      provider: "azure",
+      org: "myorg",
+      project: "MyProject",
+      repo: "web",
+    });
+  });
+
+  it("classifies an Azure DevOps ssh remote", () => {
+    expect(parseRepoRemote("git@ssh.dev.azure.com:v3/myorg/MyProject/web")).toEqual({
+      provider: "azure",
+      org: "myorg",
+      project: "MyProject",
+      repo: "web",
+    });
+  });
+
+  it("classifies a legacy visualstudio.com remote (org in the subdomain)", () => {
+    expect(parseRepoRemote("https://myorg.visualstudio.com/MyProject/_git/web")).toEqual({
+      provider: "azure",
+      org: "myorg",
+      project: "MyProject",
+      repo: "web",
+    });
+  });
+
+  it("strips a trailing .git from an Azure repo name", () => {
+    expect(parseRepoRemote("https://dev.azure.com/myorg/MyProject/_git/web.git")?.repo).toBe("web");
+  });
+
+  it("returns null for an unparseable url", () => {
+    expect(parseRepoRemote("not-a-url")).toBeNull();
   });
 });
 

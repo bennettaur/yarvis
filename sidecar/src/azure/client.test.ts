@@ -86,6 +86,80 @@ describe("azure client", () => {
     });
   });
 
+  it("finds a PR by its source branch, scoped to the repo", async () => {
+    let requestedUrl = "";
+    const az = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([
+        {
+          match: (u) => {
+            requestedUrl = String(u);
+            return u.includes("/repositories/web/pullrequests");
+          },
+          body: {
+            value: [
+              {
+                pullRequestId: 42,
+                status: "active",
+                isDraft: true,
+                mergeStatus: "succeeded",
+                repository: {
+                  name: "web",
+                  webUrl: "https://dev.azure.com/acme/Shop/_git/web",
+                  project: { name: "Shop" },
+                },
+              },
+            ],
+          },
+        },
+      ]),
+    );
+    const pr = await az.findPrByBranch("Shop", "web", "feature/x");
+    expect(requestedUrl).toContain("searchCriteria.sourceRefName=refs%2Fheads%2Ffeature%2Fx");
+    expect(requestedUrl).toContain("searchCriteria.status=all");
+    expect(pr).toEqual({
+      number: 42,
+      url: "https://dev.azure.com/acme/Shop/_git/web/pullrequest/42",
+      draft: true,
+      state: "open",
+      mergeable: "MERGEABLE",
+    });
+  });
+
+  it("returns null when no PR exists for the branch", async () => {
+    const az = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([
+        { match: (u) => u.includes("/repositories/web/pullrequests"), body: { value: [] } },
+      ]),
+    );
+    expect(await az.findPrByBranch("Shop", "web", "feature/x")).toBeNull();
+  });
+
+  it("maps a completed PR to merged state", async () => {
+    const az = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([
+        {
+          match: (u) => u.includes("/repositories/web/pullrequests"),
+          body: {
+            value: [
+              {
+                pullRequestId: 9,
+                status: "completed",
+                repository: { name: "web", project: { name: "Shop" } },
+              },
+            ],
+          },
+        },
+      ]),
+    );
+    expect((await az.findPrByBranch("Shop", "web", "b"))?.state).toBe("merged");
+  });
+
   it("searches by reviewer for the review scope", async () => {
     let reviewerQueried = false;
     const az = new AzureDevOpsClient(

@@ -1,4 +1,5 @@
 import { sidecarFetch } from "./api";
+import type { PrRef } from "./pr/types";
 
 /** A repo yarvis manages a primary clone + worktrees for. */
 export interface Repo {
@@ -30,6 +31,101 @@ export interface UpdateRepoInput {
   setupScript?: string | null;
   runScript?: string | null;
   pullIssues?: boolean;
+}
+
+/**
+ * A clone URL classified by provider — mirrors the sidecar's `parseRepoRemote`.
+ * The workspace PR cache stores only a PR number, so the UI parses the repo's
+ * clone URL to know whether to build a GitHub or Azure DevOps `PrRef`.
+ */
+export type RepoRemote =
+  | { provider: "github"; owner: string; repo: string }
+  | { provider: "azure"; org: string; project: string; repo: string };
+
+function isAzureHost(host: string): boolean {
+  return (
+    host === "dev.azure.com" ||
+    host === "ssh.dev.azure.com" ||
+    host === "vs-ssh.visualstudio.com" ||
+    host === "visualstudio.com" ||
+    host.endsWith(".visualstudio.com")
+  );
+}
+
+function splitRemote(url: string): { host: string; segments: string[] } | null {
+  const trimmed = url.trim().replace(/\.git$/, "");
+  const scp = trimmed.match(/^[^/]+@([^/:]+):(.+)$/);
+  let host = "";
+  let path = "";
+  if (scp) {
+    host = scp[1]!;
+    path = scp[2]!;
+  } else {
+    try {
+      const u = new URL(trimmed);
+      host = u.hostname;
+      path = u.pathname;
+    } catch {
+      return null;
+    }
+  }
+  if (!host) return null;
+  return { host, segments: path.split("/").filter(Boolean) };
+}
+
+/**
+ * Classifies a clone URL as GitHub {owner, repo} or Azure DevOps
+ * {org, project, repo}. Handles Azure's modern HTTPS (`dev.azure.com/{org}/
+ * {project}/_git/{repo}`), SSH (`v3/{org}/{project}/{repo}`), and legacy
+ * `{org}.visualstudio.com` forms; any other host falls back to GitHub.
+ */
+export function parseRepoRemote(url: string): RepoRemote | null {
+  const parts = splitRemote(url);
+  if (!parts) return null;
+  const { host, segments } = parts;
+
+  if (isAzureHost(host)) {
+    if (segments[0] === "v3" && segments.length >= 4) {
+      return { provider: "azure", org: segments[1]!, project: segments[2]!, repo: segments[3]! };
+    }
+    const gitIdx = segments.indexOf("_git");
+    if (gitIdx >= 1 && segments.length > gitIdx + 1) {
+      const org = host.endsWith("visualstudio.com") ? host.split(".")[0]! : segments[0]!;
+      return {
+        provider: "azure",
+        org,
+        project: segments[gitIdx - 1]!,
+        repo: segments[gitIdx + 1]!,
+      };
+    }
+    return null;
+  }
+
+  const match = url
+    .trim()
+    .replace(/\.git$/, "")
+    .match(/[:/]([^/:]+)\/([^/]+)$/);
+  return match ? { provider: "github", owner: match[1]!, repo: match[2]! } : null;
+}
+
+/**
+ * Builds the {@link PrRef} for a workspace repo's cached PR. The provider comes
+ * from the clone URL; an Azure clone yields an Azure ref, everything else a
+ * GitHub ref keyed by the repo's stored owner/repo. `prNumber` is the PR number
+ * for GitHub and the pull-request id for Azure.
+ */
+export function repoPrRef(repo: Repo, prNumber: number): PrRef {
+  const remote = parseRepoRemote(repo.cloneUrl);
+  if (remote?.provider === "azure") {
+    return {
+      provider: "azure",
+      org: remote.org,
+      project: remote.project,
+      repo: remote.repo,
+      prId: prNumber,
+    };
+  }
+  return { provider: "github", owner: repo.owner, repo: repo.repo, number: prNumber };
 }
 
 async function readError(res: Response, action: string): Promise<never> {

@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { requestOpenPr } from "../../lib/nav";
 import type { PrSummary } from "../../lib/pr/types";
+import { repoPrRef } from "../../lib/repos";
 import { openExternal } from "../../lib/url";
 import {
   type CheckRollup,
@@ -43,7 +44,7 @@ function buildPrSummary(repo: WorkspaceRepoDetail): PrSummary | null {
   const pr = repo.pr;
   if (!pr?.prNumber || !pr.prUrl) return null;
   return {
-    ref: { provider: "github", owner: repo.repo.owner, repo: repo.repo.repo, number: pr.prNumber },
+    ref: repoPrRef(repo.repo, pr.prNumber),
     title: "",
     url: pr.prUrl,
     author: "",

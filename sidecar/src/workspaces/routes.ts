@@ -139,17 +139,29 @@ export function createWorkspaceRoutes(config: Config): Hono {
 
   router.get("/", async (c) => c.json(await listWorkspaces(db())));
 
-  // The active workspace (if any) a GitHub PR was raised from, so the PR view
-  // can link back to it. Registered before "/:id" so "for-pr" isn't read as an
-  // id. Returns null (200) when there's no match.
+  // The active workspace (if any) a PR was raised from, so the PR view can link
+  // back to it. Registered before "/:id" so "for-pr" isn't read as an id.
+  // Returns null (200) when there's no match. `provider` selects which identity
+  // fields are required (GitHub owner/repo vs Azure org/project/repo).
   router.get("/for-pr", async (c) => {
+    const number = Number(c.req.query("number"));
+    if (!Number.isInteger(number)) return c.json({ error: "number is required" }, 400);
+    const provider = c.req.query("provider") ?? "github";
+    if (provider === "azure") {
+      const org = c.req.query("org");
+      const project = c.req.query("project");
+      const repo = c.req.query("repo");
+      if (!org || !project || !repo) {
+        return c.json({ error: "org, project, and repo are required" }, 400);
+      }
+      return c.json(
+        await findWorkspaceForPr(db(), { provider: "azure", org, project, repo, number }),
+      );
+    }
     const owner = c.req.query("owner");
     const repo = c.req.query("repo");
-    const number = Number(c.req.query("number"));
-    if (!owner || !repo || !Number.isInteger(number)) {
-      return c.json({ error: "owner, repo, and number are required" }, 400);
-    }
-    return c.json(await findWorkspaceForPr(db(), owner, repo, number));
+    if (!owner || !repo) return c.json({ error: "owner and repo are required" }, 400);
+    return c.json(await findWorkspaceForPr(db(), { provider: "github", owner, repo, number }));
   });
 
   router.post("/", async (c) => {

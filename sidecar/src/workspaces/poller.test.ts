@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
+import { AzureDevOpsClient } from "../azure/client.ts";
 import { getDb } from "../db/client.ts";
 import { repos, workspaceRepoPr, workspaceRepos, workspaces } from "../db/schema.ts";
 import { GitHubClient } from "../github/client.ts";
@@ -24,15 +25,29 @@ function clientWith(handlers: (path: string) => unknown): GitHubClient {
   return new GitHubClient("test-token", fetchImpl);
 }
 
-/** Seeds one active workspace with one ready repo `r<suffix>` on `yarvis/<suffix>`. */
-async function seedReadyRepo(suffix = "x"): Promise<string> {
+/** Builds an AzureDevOpsClient (org `acme`) whose fetch returns canned payloads
+ *  keyed by URL, mirroring `clientWith`. */
+function azureClientWith(handlers: (url: string) => unknown): AzureDevOpsClient {
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const u = typeof input === "string" ? input : input.toString();
+    return new Response(JSON.stringify(handlers(u)), { status: 200 });
+  }) as typeof fetch;
+  return new AzureDevOpsClient("test-token", "https://dev.azure.com/acme", fetchImpl);
+}
+
+/** Seeds one active workspace with one ready repo `r<suffix>` on `yarvis/<suffix>`.
+ *  `cloneUrl` defaults to a GitHub remote; pass an Azure URL to exercise routing. */
+async function seedReadyRepo(
+  suffix = "x",
+  cloneUrl = `git@github.com:o${suffix}/r${suffix}.git`,
+): Promise<string> {
   const [repo] = await db
     .insert(repos)
     .values({
       name: `r${suffix}`,
       owner: `o${suffix}`,
       repo: `r${suffix}`,
-      cloneUrl: `git@github.com:o${suffix}/r${suffix}.git`,
+      cloneUrl,
       primaryClonePath: `/tmp/primary-${suffix}`,
     })
     .returning();
@@ -101,7 +116,7 @@ describe("pollOnce", () => {
       return {};
     });
 
-    await pollOnce(db, gh);
+    await pollOnce(db, { github: gh });
 
     const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
     expect(row?.prNumber).toBe(7);
@@ -125,7 +140,7 @@ describe("pollOnce", () => {
       return {};
     });
 
-    await pollOnce(db, gh);
+    await pollOnce(db, { github: gh });
     const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
     expect(row?.checkRollup).toBe("pending");
   });
@@ -150,7 +165,7 @@ describe("pollOnce", () => {
       return {};
     });
 
-    await pollOnce(db, gh);
+    await pollOnce(db, { github: gh });
     const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
     expect(row?.checkRollup).toBe("pending");
     expect(row?.checks).toEqual({ total: 3, success: 1, failure: 1, pending: 1 });
@@ -160,7 +175,7 @@ describe("pollOnce", () => {
     const wrId = await seedReadyRepo();
     const gh = clientWith((path) => (path.includes("head=") ? [] : {}));
 
-    await pollOnce(db, gh);
+    await pollOnce(db, { github: gh });
 
     const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
     expect(row?.prNumber).toBeNull();
@@ -185,7 +200,7 @@ describe("pollOnce", () => {
       return {};
     });
 
-    await pollOnce(db, gh);
+    await pollOnce(db, { github: gh });
     const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
     expect(row?.prState).toBe("merged");
     expect(row?.checkRollup).toBe("none");
@@ -203,12 +218,59 @@ describe("pollOnce", () => {
       return {};
     });
 
-    await pollOnce(db, gh);
+    await pollOnce(db, { github: gh });
 
     const [rowA] = await db.select().from(workspaceRepoPr).where(eqWr(a));
     const [rowB] = await db.select().from(workspaceRepoPr).where(eqWr(b));
     expect(rowA?.lastError).not.toBeNull();
     expect(rowB?.prNumber).toBe(3); // the loop continued past a's failure
+  });
+
+  it("caches an Azure repo's PR by routing on the clone URL", async () => {
+    const wrId = await seedReadyRepo("z", "https://dev.azure.com/acme/Shop/_git/web");
+    const az = azureClientWith((url) =>
+      url.includes("/repositories/web/pullrequests")
+        ? {
+            value: [
+              {
+                pullRequestId: 55,
+                status: "active",
+                isDraft: false,
+                mergeStatus: "succeeded",
+                repository: {
+                  name: "web",
+                  webUrl: "https://dev.azure.com/acme/Shop/_git/web",
+                  project: { name: "Shop" },
+                },
+              },
+            ],
+          }
+        : {},
+    );
+
+    await pollOnce(db, { azure: az });
+
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row?.prNumber).toBe(55);
+    expect(row?.prState).toBe("open");
+    expect(row?.prUrl).toBe("https://dev.azure.com/acme/Shop/_git/web/pullrequest/55");
+    expect(row?.checkRollup).toBe("none");
+    expect(row?.lastError).toBeNull();
+  });
+
+  it("skips an Azure repo in a different org than the configured client", async () => {
+    const wrId = await seedReadyRepo("z", "https://dev.azure.com/other-org/Shop/_git/web");
+    let queried = false;
+    const az = azureClientWith((url) => {
+      if (url.includes("/pullrequests")) queried = true;
+      return { value: [] };
+    });
+
+    await pollOnce(db, { azure: az });
+
+    expect(queried).toBe(false);
+    const rows = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(rows).toHaveLength(0); // untouched — no client for its org
   });
 
   it("backs off the whole cycle on a 429 rate limit", async () => {
@@ -218,7 +280,7 @@ describe("pollOnce", () => {
     // PR row is ever written (poll order across the two repos is unspecified).
     const gh = clientWith((path) => (path.includes("head=") ? { __status: 429 } : {}));
 
-    await pollOnce(db, gh);
+    await pollOnce(db, { github: gh });
 
     const rows = await db.select().from(workspaceRepoPr);
     expect(rows).toHaveLength(1);

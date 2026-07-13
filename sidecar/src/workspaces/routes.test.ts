@@ -192,6 +192,29 @@ describe("workspace routes", () => {
     expect(await res.json()).toBeNull();
   });
 
+  it("finds the workspace an Azure PR was raised from, matched on the clone URL", async () => {
+    const repo = await addRepo("https://dev.azure.com/acme/Shop/_git/web");
+    const created = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "azure backlink", repoIds: [repo.id] }),
+    });
+    const ws = (await created.json()) as { id: string };
+    const [wr] = await db
+      .select()
+      .from(workspaceRepos)
+      .where(eq(workspaceRepos.workspaceId, ws.id));
+    await db.insert(workspaceRepoPr).values({ workspaceRepoId: wr!.id, prNumber: 55 });
+
+    const res = await app.request(
+      "/api/workspaces/for-pr?provider=azure&org=acme&project=Shop&repo=web&number=55",
+      { headers: auth },
+    );
+    expect(res.status).toBe(200);
+    const found = (await res.json()) as { id: string } | null;
+    expect(found?.id).toBe(ws.id);
+  });
+
   it("returns 404 for files of an unknown workspace repo", async () => {
     const res = await app.request(
       "/api/workspaces/x/repos/00000000-0000-0000-0000-000000000000/files",

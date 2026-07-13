@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { requestOpenPr } from "../lib/nav";
 import type { PrSummary } from "../lib/pr/types";
+import { repoPrRef } from "../lib/repos";
 import { openExternal } from "../lib/url";
 import {
   type ChangedFile,
@@ -287,19 +288,14 @@ function describeChecks(checks: {
  * Builds a minimal PrSummary from the workspace poller's cache. Fields the
  * poller doesn't store (title, author, timestamps) are filled with placeholders
  * — PrDetailView refetches the full detail anyway, so the only visible gap is
- * a brief blank title while the detail loads.
+ * a brief blank title while the detail loads. The ref's provider comes from the
+ * repo's clone URL, so an Azure PR opens as an Azure ref.
  */
 function buildPrSummary(repo: WorkspaceRepoDetail): PrSummary | null {
   const pr = repo.pr;
   if (!pr?.prNumber || !pr.prUrl) return null;
   return {
-    // The poller is GitHub-only today; Azure PRs are never cached here.
-    ref: {
-      provider: "github",
-      owner: repo.repo.owner,
-      repo: repo.repo.repo,
-      number: pr.prNumber,
-    },
+    ref: repoPrRef(repo.repo, pr.prNumber),
     title: "",
     url: pr.prUrl,
     author: "",

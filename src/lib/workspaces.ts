@@ -1,4 +1,5 @@
 import { sidecarFetch, streamSSE } from "./api";
+import type { PrRef } from "./pr/types";
 import type { Repo } from "./repos";
 import type { Task } from "./tasks";
 
@@ -211,15 +212,26 @@ export async function workspaceRepoSync(
 }
 
 /**
- * The active workspace a GitHub PR was raised from, or null. Only GitHub PRs
- * are tracked, so Azure lookups always return null.
+ * The active workspace a PR was raised from, or null. The provider-tagged ref
+ * selects which identity the poller cache is matched on (GitHub owner/repo vs
+ * Azure org/project/repo).
  */
-export async function findWorkspaceForPr(
-  owner: string,
-  repo: string,
-  prNumber: number,
-): Promise<WorkspaceForPr | null> {
-  const query = new URLSearchParams({ owner, repo, number: String(prNumber) });
+export async function findWorkspaceForPr(ref: PrRef): Promise<WorkspaceForPr | null> {
+  const query =
+    ref.provider === "azure"
+      ? new URLSearchParams({
+          provider: "azure",
+          org: ref.org,
+          project: ref.project,
+          repo: ref.repo,
+          number: String(ref.prId),
+        })
+      : new URLSearchParams({
+          provider: "github",
+          owner: ref.owner,
+          repo: ref.repo,
+          number: String(ref.number),
+        });
   const res = await sidecarFetch(`/api/workspaces/for-pr?${query}`);
   if (!res.ok) return readError(res, "find workspace for PR");
   return res.json();
