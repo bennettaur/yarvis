@@ -18,7 +18,10 @@ import {
   type WorkspaceSummary,
 } from "../lib/workspaces";
 import SplitPane, { usePersistedRatio } from "./SplitPane";
-import TerminalTabs, { type OpenFileDiff } from "./shell/terminalTabs/TerminalTabs";
+import TerminalTabs, {
+  type OpenFileDiff,
+  type OpenSetupLog,
+} from "./shell/terminalTabs/TerminalTabs";
 import TerminalPanel from "./TerminalPanel";
 import WorkspaceSidePanel from "./WorkspaceSidePanel";
 import ArchiveDialog from "./workspaces/ArchiveDialog";
@@ -27,6 +30,7 @@ import { DEFAULT_CLAUDE_COMMAND, resolveClaudeTab } from "./workspaces/claudeTab
 import LinkTaskControl from "./workspaces/LinkTaskControl";
 import WorkspaceFileDiff from "./workspaces/WorkspaceFileDiff";
 import WorkspacePrStatus from "./workspaces/WorkspacePrStatus";
+import WorkspaceSetupLog from "./workspaces/WorkspaceSetupLog";
 
 const STATUS_STYLES: Record<WorkspaceStatus, string> = {
   creating: "bg-amber-900/40 text-amber-200",
@@ -65,16 +69,21 @@ function provisionEventLine(ev: ProvisionEvent): string | null {
 /**
  * Drives a provision stream, appending progress text via `onLine`. Resolves
  * with the outcome so callers can react (select the workspace, reload, etc.).
+ * `ok` is false when a repo failed too — the stream still ends with a `done`
+ * event carrying an `error` status, not a top-level `error` event — and
+ * `failedRepoId` names the first such repo so the caller can surface its log.
  */
 async function consumeProvision(
   id: string,
   onLine: (text: string) => void,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; failedRepoId?: string }> {
+  let failedRepoId: string | undefined;
   for await (const ev of provisionWorkspace(id)) {
     const line = provisionEventLine(ev);
     if (line !== null) onLine(line);
+    if (ev.type === "repo-error") failedRepoId ??= ev.workspaceRepoId;
     else if (ev.type === "error") return { ok: false, error: ev.message };
-    else if (ev.type === "done") return { ok: true };
+    else if (ev.type === "done") return { ok: ev.status !== "error", failedRepoId };
   }
   return { ok: true };
 }
@@ -358,8 +367,12 @@ function NewWorkspaceForm({
       });
       setPhase("provisioning");
       const result = await consumeProvision(ws.id, (text) => setLog((prev) => prev + text));
-      if (result.ok) onCreated(ws.id);
-      else setError(result.error ?? "provisioning failed");
+      // A hard top-level error (workspace not found, already provisioning) has no
+      // useful detail view, so stay on the log screen. Otherwise — success or a
+      // repo whose setup failed — open the workspace: its detail view auto-opens
+      // the failed repo's setup-log tab.
+      if (result.error) setError(result.error);
+      else onCreated(ws.id);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -596,6 +609,12 @@ function WorkspaceDetailView({
   // A changed file the side panel asked to open in a diff tab; consumed by
   // TerminalTabs, which either opens a new tab or re-focuses the existing one.
   const [diffRequest, setDiffRequest] = useState<OpenFileDiff | null>(null);
+  // A failed repo's setup log to open in a tab (same request/consume shape as
+  // diffRequest). Set by the auto-open effect below and the per-repo button.
+  const [setupLogRequest, setSetupLogRequest] = useState<OpenSetupLog | null>(null);
+  // Guards the one-shot auto-open of a failed repo's setup log. Per-mount, and
+  // the view is keyed by workspace id, so it re-arms when you switch workspaces.
+  const setupAutoOpenedRef = useRef(false);
   const autoProvisionRef = useRef(false);
   const promptWriteRef = useRef(false);
   const autoStartClaudeRef = useRef(false);
@@ -678,19 +697,33 @@ function WorkspaceDetailView({
     };
   }, [id, detail?.status]);
 
+  // When a workspace with a failed repo loads — whether provisioning just failed
+  // here, or the user reopened an errored workspace — auto-open that repo's
+  // setup-log tab so the failure is visible without hunting for it. Fires once
+  // per mount; the badge button below reopens it after a manual close.
+  useEffect(() => {
+    if (setupAutoOpenedRef.current || !detail) return;
+    const failed = detail.repos.find((wr) => wr.status === "error");
+    if (!failed) return;
+    setupAutoOpenedRef.current = true;
+    setSetupLogRequest({ workspaceRepoId: failed.id, title: failed.repo.name });
+  }, [detail]);
+
   const provision = useCallback(async () => {
     setProvisionLog("");
     try {
       const result = await consumeProvision(id, (text) =>
         setProvisionLog((prev) => (prev ?? "") + text),
       );
-      if (!result.ok) {
-        setError(result.error ?? "provisioning failed");
-        return;
-      }
+      // Clear the live log and reload regardless of outcome: a repo failure lands
+      // on the detail view, where the auto-open effect surfaces the setup-log tab.
+      // Re-arm that one-shot so this fresh failure opens even after an earlier one.
       setProvisionLog(null);
+      setupAutoOpenedRef.current = false;
       await load();
       onChanged();
+      // Only a hard top-level error collapses the view; a repo failure stays put.
+      if (result.error) setError(result.error);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -800,6 +833,17 @@ function WorkspaceDetailView({
                   className="rounded border border-zinc-700 px-1.5 py-0.5 text-zinc-300 hover:bg-zinc-800"
                 >
                   Run
+                </button>
+              )}
+              {wr.status === "error" && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSetupLogRequest({ workspaceRepoId: wr.id, title: wr.repo.name })
+                  }
+                  className="rounded border border-red-900/60 px-1.5 py-0.5 text-red-300 hover:bg-red-950/40"
+                >
+                  Setup log
                 </button>
               )}
             </div>
@@ -929,6 +973,18 @@ function WorkspaceDetailView({
                   renderFileDiff={({ repoId, path }) => (
                     <WorkspaceFileDiff workspaceId={detail.id} repoId={repoId} path={path} />
                   )}
+                  openSetupLog={setupLogRequest}
+                  onSetupLogOpened={() => setSetupLogRequest(null)}
+                  renderSetupLog={({ workspaceRepoId }) => {
+                    const wr = detail.repos.find((r) => r.id === workspaceRepoId);
+                    return wr ? (
+                      <WorkspaceSetupLog repo={wr} />
+                    ) : (
+                      <p className="p-3 text-xs text-zinc-500">
+                        This repo is no longer part of the workspace.
+                      </p>
+                    );
+                  }}
                   pinnedTabs={claudeTab ? [claudeTab] : []}
                 />
               </div>
