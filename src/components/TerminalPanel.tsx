@@ -73,6 +73,9 @@ export default function TerminalPanel({
     const container = containerRef.current;
     if (!container) return;
     let disposed = false;
+    // True only while xterm is parsing the replayed scrollback. Set here so both
+    // the onData handler and the attach effect below can see it.
+    let replayingScrollback = false;
     const cleanups: Array<() => void> = [];
 
     const term = new Terminal({
@@ -112,7 +115,13 @@ export default function TerminalPanel({
       // below fits it once it has dimensions.
     }
 
-    const dataSub = term.onData((data) => void writePty(id, data));
+    const dataSub = term.onData((data) => {
+      // While replaying captured scrollback, xterm answers the app's original
+      // terminal queries (see the reattach path below). Those replies are stale
+      // and must not reach the PTY, so drop everything for the replay's duration.
+      if (replayingScrollback) return;
+      void writePty(id, data);
+    });
     cleanups.push(() => dataSub.dispose());
 
     void (async () => {
@@ -144,8 +153,20 @@ export default function TerminalPanel({
         // scrollback is authoritative, so drop the buffer to avoid duplicating
         // bytes already in the snapshot.
         const fresh = scrollback.length === 0;
-        if (!fresh) term.write(new Uint8Array(scrollback));
-        else for (const chunk of pending) term.write(chunk);
+        if (!fresh) {
+          // Replaying the snapshot re-feeds the app's original terminal queries
+          // (Device Attributes, DECRQM, OSC color) to xterm's parser, which
+          // answers each one via onData. Those queries were already answered
+          // during the live session, so gate onData until the parser drains the
+          // replay — otherwise the stale replies leak into the PTY as stray
+          // input (e.g. `[?1;2c]11;rgb:...`), the garbage seen on reattach.
+          replayingScrollback = true;
+          term.write(new Uint8Array(scrollback), () => {
+            replayingScrollback = false;
+          });
+        } else {
+          for (const chunk of pending) term.write(chunk);
+        }
         pending.length = 0;
         ready = true;
         void resizePty(id, term.cols, term.rows);
