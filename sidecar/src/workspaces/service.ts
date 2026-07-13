@@ -10,6 +10,7 @@ import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import {
+  type IssueLink,
   type Repo,
   repos,
   type Task,
@@ -21,6 +22,7 @@ import {
   workspaceRepos,
   workspaces,
 } from "../db/schema.ts";
+import { deleteLinkForWorkspace, listLinksForWorkspace, upsertLink } from "../issues/service.ts";
 import { completeTasksByWorkspace, tasksForWorkspace } from "../tasks/service.ts";
 import { stopClaudeSession } from "./claudeSession.ts";
 import { runStreaming } from "./exec.ts";
@@ -212,6 +214,8 @@ export interface WorkspaceRepoDetail extends WorkspaceRepo {
 export interface WorkspaceDetail extends Workspace {
   repos: WorkspaceRepoDetail[];
   tasks: Task[];
+  // GitHub/JIRA issues linked to this workspace, via the shared issue-link table.
+  issues: IssueLink[];
 }
 
 /** Filesystem- and branch-safe slug derived from a workspace name. */
@@ -361,6 +365,7 @@ export async function getWorkspace(db: Db, id: string): Promise<WorkspaceDetail 
       pr: prByWr.get(wr.id) ?? null,
     })),
     tasks: await tasksForWorkspace(db, id),
+    issues: await listLinksForWorkspace(db, id),
   };
 }
 
@@ -384,6 +389,43 @@ export async function unlinkTask(db: Db, workspaceId: string, taskId: string): P
     .where(and(eq(tasks.id, taskId), eq(tasks.workspaceId, workspaceId)))
     .returning({ id: tasks.id });
   return rows.length > 0;
+}
+
+export interface LinkIssueInput {
+  provider: string;
+  sourceKey: string;
+  externalId: string;
+  title?: string | null;
+  url?: string | null;
+}
+
+/** Links a GitHub/JIRA issue to a workspace via the shared issue-link table.
+ *  Idempotent per issue: re-linking re-points the issue at this workspace.
+ *  Returns null if the workspace doesn't exist (parity with `linkTask`), rather
+ *  than letting the issue_links FK surface a raw constraint error. */
+export async function linkIssue(
+  db: Db,
+  workspaceId: string,
+  input: LinkIssueInput,
+): Promise<IssueLink | null> {
+  const [ws] = await db
+    .select({ id: workspaces.id })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId));
+  if (!ws) return null;
+  return upsertLink(db, { ...input, workspaceId, localStatus: "in_progress" });
+}
+
+/** Detaches an issue from a workspace; scoped so it only affects this
+ *  workspace's link. Returns false if no such linked issue exists. */
+export function unlinkIssue(
+  db: Db,
+  workspaceId: string,
+  provider: string,
+  sourceKey: string,
+  externalId: string,
+): Promise<boolean> {
+  return deleteLinkForWorkspace(db, workspaceId, provider, sourceKey, externalId);
 }
 
 async function getWorkspaceRepo(db: Db, workspaceRepoId: string): Promise<WorkspaceRepo> {

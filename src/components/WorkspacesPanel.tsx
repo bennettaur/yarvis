@@ -4,12 +4,14 @@ import type { OpenWorkspaceRequest } from "../lib/nav";
 import { getClaudeCommand, ptyExists, startClaudeSession } from "../lib/pty";
 import { createRepo, listRepoBranches, listRepos, type Repo } from "../lib/repos";
 import { listTasks, type Task } from "../lib/tasks";
+import { openExternal } from "../lib/url";
 import {
   createWorkspace,
   getWorkspace,
   listWorkspaces,
   type ProvisionEvent,
   provisionWorkspace,
+  unlinkWorkspaceIssue,
   unlinkWorkspaceTask,
   type WorkspaceDetail,
   type WorkspaceRepoDetail,
@@ -24,7 +26,7 @@ import WorkspaceSidePanel from "./WorkspaceSidePanel";
 import ArchiveDialog from "./workspaces/ArchiveDialog";
 import ArchivedView from "./workspaces/ArchivedView";
 import { DEFAULT_CLAUDE_COMMAND, resolveClaudeTab } from "./workspaces/claudeTab";
-import LinkTaskControl from "./workspaces/LinkTaskControl";
+import LinkWorkModal from "./workspaces/LinkWorkModal";
 import WorkspaceFileDiff from "./workspaces/WorkspaceFileDiff";
 import WorkspacePrStatus from "./workspaces/WorkspacePrStatus";
 
@@ -650,6 +652,7 @@ function WorkspaceDetailView({
   const [runRepo, setRunRepo] = useState<WorkspaceRepoDetail | null>(null);
   const [provisionLog, setProvisionLog] = useState<string | null>(null);
   const [showArchive, setShowArchive] = useState(false);
+  const [showLinkModal, setShowLinkModal] = useState(false);
   // Flips once the issue prompt file has been written (post-provision), gating
   // the Claude terminal launch.
   const [claudePromptReady, setClaudePromptReady] = useState(false);
@@ -912,19 +915,73 @@ function WorkspaceDetailView({
             ))}
           </div>
         )}
+        {detail.issues.length > 0 && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+            <span className="uppercase tracking-wide">Issues</span>
+            {detail.issues.map((issue) => (
+              <span
+                key={`${issue.provider}:${issue.sourceKey}#${issue.externalId}`}
+                className="flex items-center gap-1 rounded-md border border-zinc-800 px-2 py-0.5"
+              >
+                <span className="rounded bg-zinc-800 px-1 text-[10px] uppercase text-zinc-400">
+                  {issue.provider}
+                </span>
+                {issue.url ? (
+                  <a
+                    href={issue.url}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      openExternal(issue.url);
+                    }}
+                    className="text-zinc-300 hover:text-zinc-100"
+                  >
+                    {issue.title ?? issue.externalId}
+                  </a>
+                ) : (
+                  <span className="text-zinc-300">{issue.title ?? issue.externalId}</span>
+                )}
+                {detail.status !== "archived" && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void unlinkWorkspaceIssue(id, issue).then(() => {
+                        void load();
+                        onChanged();
+                      })
+                    }
+                    className="text-zinc-600 hover:text-zinc-300"
+                    aria-label="Unlink issue"
+                  >
+                    ×
+                  </button>
+                )}
+              </span>
+            ))}
+          </div>
+        )}
         {detail.status !== "archived" && (
           <div className="mt-2">
-            <LinkTaskControl
-              workspaceId={id}
-              linkedIds={detail.tasks.map((t) => t.id)}
-              onLinked={async () => {
-                await load();
-                onChanged();
-              }}
-            />
+            <button
+              type="button"
+              onClick={() => setShowLinkModal(true)}
+              className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-700"
+            >
+              + Link work…
+            </button>
           </div>
         )}
       </div>
+
+      {showLinkModal && (
+        <LinkWorkModal
+          detail={detail}
+          onClose={() => setShowLinkModal(false)}
+          onLinked={async () => {
+            await load();
+            onChanged();
+          }}
+        />
+      )}
 
       {showArchive && (
         <ArchiveDialog
