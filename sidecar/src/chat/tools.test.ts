@@ -44,4 +44,28 @@ describe("task tools", () => {
     const result = (await tools.list_tasks.execute!({ status: "open" }, opts)) as unknown[];
     expect(result.length).toBe(1);
   });
+
+  it("delete_task removes a task by id", async () => {
+    const session = await createSession(db);
+    const tools = buildTaskTools(db, session.id);
+    await tools.create_task.execute!({ title: "scrap this", scope: "daily" }, opts);
+    const [task] = await listTasks(db, { status: "open" });
+
+    const result = (await tools.delete_task.execute!({ id: task!.id }, opts)) as {
+      deleted?: boolean;
+    };
+    expect(result.deleted).toBe(true);
+    expect((await listTasks(db)).length).toBe(0);
+  });
+
+  it("delete_task reports not found for an unknown id", async () => {
+    const session = await createSession(db);
+    const tools = buildTaskTools(db, session.id);
+
+    const result = (await tools.delete_task.execute!(
+      { id: "00000000-0000-0000-0000-000000000000" },
+      opts,
+    )) as { error?: string };
+    expect(result.error).toBe("not found");
+  });
 });

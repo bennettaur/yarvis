@@ -140,6 +140,16 @@ export async function updateTask(db: Db, id: string, patch: UpdateTaskInput): Pr
 }
 
 /**
+ * Permanently removes a task. Returns the deleted row, or null if no task
+ * matched the id. Unlike completion, this leaves no trace in the event log —
+ * a removed task was never meant to be tracked.
+ */
+export async function deleteTask(db: Db, id: string): Promise<Task | null> {
+  const [row] = await db.delete(tasks).where(eq(tasks.id, id)).returning();
+  return row ?? null;
+}
+
+/**
  * Moves still-open tasks from one target date to another (e.g. rolling
  * yesterday's unfinished work into today). Returns the updated tasks.
  */
