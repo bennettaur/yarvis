@@ -17,6 +17,7 @@ import type {
   JiraIssueType,
   JiraLinkedIssue,
   JiraProject,
+  JiraStatusCategory,
   JiraTransition,
   JiraUser,
   JiraViewer,
@@ -61,7 +62,7 @@ const SUMMARY_FIELDS = [
 const DETAIL_FIELDS = [...SUMMARY_FIELDS, "description", "issuelinks"];
 
 /** Maps a JIRA statusCategory key onto the shared token used for grouping/colour. */
-function mapStatusCategory(key: string | undefined): string {
+function mapStatusCategory(key: string | undefined): JiraStatusCategory {
   switch (key) {
     case "done":
       return "done";
@@ -177,7 +178,9 @@ export class JiraClient {
       labels: toIssueLabels(f.labels),
       createdAt: f.created ?? "",
       updatedAt: f.updated ?? "",
-      commentCount: f.comment?.total ?? 0,
+      // List queries don't fetch the comment field, so summaries carry 0; the
+      // detail view sets the real count from the comments it loads.
+      commentCount: 0,
       statusName: f.status?.name ?? "",
       statusCategory,
       issueType: f.issuetype?.name ?? "",
@@ -190,14 +193,14 @@ export class JiraClient {
         const linked = link.inwardIssue ?? link.outwardIssue;
         if (!linked) return null;
         const linkType = link.inwardIssue ? (link.type?.inward ?? "") : (link.type?.outward ?? "");
-        const lf = linked.fields ?? {};
+        const linkedFields = linked.fields ?? {};
         return {
           key: linked.key,
-          summary: lf.summary ?? "",
-          statusName: lf.status?.name ?? "",
-          statusCategory: mapStatusCategory(lf.status?.statusCategory?.key),
+          summary: linkedFields.summary ?? "",
+          statusName: linkedFields.status?.name ?? "",
+          statusCategory: mapStatusCategory(linkedFields.status?.statusCategory?.key),
           linkType,
-          issueType: lf.issuetype?.name ?? "",
+          issueType: linkedFields.issuetype?.name ?? "",
           url: this.browseUrl(linked.key),
         };
       })
@@ -386,7 +389,6 @@ export class JiraClient {
       accountId: u.accountId,
       displayName: u.displayName ?? "",
       email: u.emailAddress ?? null,
-      avatarUrl: u.avatarUrls?.["24x24"] ?? null,
     };
   }
 

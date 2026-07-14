@@ -267,4 +267,76 @@ describe("JiraClient mutations", () => {
       "Field 'summary' is required",
     );
   });
+
+  it("sends no request when updateFields is given no fields", async () => {
+    const calls: RecordedRequest[] = [];
+    const jira = client({}, calls);
+    await jira.updateFields("PROJ-1", {});
+    expect(calls).toHaveLength(0);
+  });
+
+  it("creates an issue then fetches its summary (two-step)", async () => {
+    const calls: RecordedRequest[] = [];
+    const jira = client(
+      {
+        // More specific key first so the GET summary matches before the POST key.
+        "/issue/PROJ-5": { key: "PROJ-5", fields: issueFields() },
+        "/issue": { key: "PROJ-5" },
+      },
+      calls,
+    );
+    const created = await jira.createIssue({
+      projectKey: "PROJ",
+      summary: "New one",
+      issueTypeName: "Task",
+      description: "hi",
+    });
+    expect(calls[0]?.method).toBe("POST");
+    const body = calls[0]?.body as { fields: Record<string, unknown> };
+    expect(body.fields.project).toEqual({ key: "PROJ" });
+    expect(body.fields.issuetype).toEqual({ name: "Task" });
+    expect(body.fields.description).toBeDefined(); // ADF attached when described
+    expect(created).toMatchObject({ externalId: "PROJ-5", provider: "jira" });
+  });
+
+  it("omits the description field when none is provided", async () => {
+    const calls: RecordedRequest[] = [];
+    const jira = client(
+      { "/issue/PROJ-6": { key: "PROJ-6", fields: issueFields() }, "/issue": { key: "PROJ-6" } },
+      calls,
+    );
+    await jira.createIssue({ projectKey: "PROJ", summary: "No desc", issueTypeName: "Task" });
+    const body = calls[0]?.body as { fields: Record<string, unknown> };
+    expect(body.fields.description).toBeUndefined();
+  });
+
+  it("shapes an outward linked issue using the outward relationship label", async () => {
+    const jira = client({
+      "/issue/PROJ-1?fields": {
+        key: "PROJ-1",
+        fields: issueFields({
+          issuelinks: [
+            {
+              type: { inward: "is blocked by", outward: "blocks" },
+              outwardIssue: {
+                key: "PROJ-2",
+                fields: {
+                  summary: "Downstream",
+                  status: { name: "Done", statusCategory: { key: "done" } },
+                },
+              },
+            },
+          ],
+        }),
+      },
+      "/issue/PROJ-1/comment": { comments: [] },
+      "/issue/PROJ-1/transitions": { transitions: [] },
+    });
+    const detail = await jira.issueDetail("PROJ-1");
+    expect(detail.linkedIssues[0]).toMatchObject({
+      key: "PROJ-2",
+      linkType: "blocks",
+      statusCategory: "done",
+    });
+  });
 });

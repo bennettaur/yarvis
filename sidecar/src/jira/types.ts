@@ -8,6 +8,13 @@
 
 import type { IssueDetail } from "../issues/types.ts";
 
+/**
+ * The three JIRA status categories, normalized from the API's category keys
+ * ("new"/"indeterminate"/"done"). Used to group and colour rows and to pick the
+ * in-progress transition when starting work.
+ */
+export type JiraStatusCategory = "todo" | "in_progress" | "done";
+
 /** The authenticated JIRA user. `login` mirrors `IssueViewer` for shared code. */
 export interface JiraViewer {
   login: string;
@@ -19,7 +26,6 @@ export interface JiraUser {
   accountId: string;
   displayName: string;
   email: string | null;
-  avatarUrl: string | null;
 }
 
 /** An issue linked to this one (blocks / is blocked by / relates to …). */
@@ -27,7 +33,7 @@ export interface JiraLinkedIssue {
   key: string;
   summary: string;
   statusName: string;
-  statusCategory: string;
+  statusCategory: JiraStatusCategory;
   /** Human relationship label, e.g. "blocks", "is blocked by", "relates to". */
   linkType: string;
   issueType: string;
@@ -39,7 +45,7 @@ export interface JiraTransition {
   id: string;
   name: string;
   toStatusName: string;
-  toStatusCategory: string;
+  toStatusCategory: JiraStatusCategory;
 }
 
 /** Rich JIRA detail for the issue detail view. */

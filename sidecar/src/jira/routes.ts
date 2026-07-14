@@ -147,6 +147,8 @@ export function createJiraRoutes(config: Config): Hono {
     if (client instanceof Response) return client;
     const jql = c.req.query("jql");
     if (!jql) return c.json({ error: "missing jql" }, 400);
+    // Bound the query length, consistent with the body-field caps elsewhere.
+    if (jql.length > 2000) return c.json({ error: "jql too long" }, 400);
     try {
       return c.json(await client.searchIssues(jql));
     } catch (e) {

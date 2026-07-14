@@ -46,9 +46,10 @@ function clientFromConfig(config: Config): JiraClient | null {
  * JIRA tools for the chat agent: search issues by JQL, read one issue, create an
  * issue, and start work on a ticket (create + provision a workspace, seed the
  * issue prompt, assign + transition the issue, and launch a remote Claude Code
- * session) — the JIRA analogue of the GitHub issue tools. All issue text is run
- * through `sanitizeIssueText` before it reaches the model, since ticket content
- * is third-party-authored and could otherwise smuggle instructions.
+ * session) — the JIRA analogue of the GitHub issue tools. Free-text,
+ * third-party-authored fields (summaries, descriptions, comments, display
+ * names, labels) are run through `sanitizeIssueText` before reaching the model,
+ * since ticket content could otherwise smuggle hidden instructions.
  */
 export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) {
   const startClaude = deps.startClaudeSession ?? defaultStartClaudeSession;
@@ -95,15 +96,18 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
         if (!jira) return { error: "JIRA not configured in Settings" };
         try {
           const issues = await jira.searchIssues(jql);
+          // Free-text, third-party-authored fields (summary, display names,
+          // labels) are sanitized; status/type/project are JIRA-controlled
+          // identifiers rendered verbatim.
           return issues.map((i) => ({
             key: i.externalId,
             summary: sanitizeIssueText(i.title),
             status: i.statusName,
             type: i.issueType,
             project: i.sourceKey,
-            assignee: i.assignees[0] ?? null,
-            reporter: i.author,
-            labels: i.labels.map((l) => l.name),
+            assignee: i.assignees[0] ? sanitizeIssueText(i.assignees[0]) : null,
+            reporter: sanitizeIssueText(i.author),
+            labels: i.labels.map((l) => sanitizeIssueText(l.name)),
             url: i.url,
           }));
         } catch (e) {
@@ -127,9 +131,9 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
             status: d.statusName,
             type: d.issueType,
             priority: d.priority,
-            assignee: d.assignee,
-            reporter: d.reporter,
-            labels: d.labels.map((l) => l.name),
+            assignee: d.assignee ? sanitizeIssueText(d.assignee) : null,
+            reporter: sanitizeIssueText(d.reporter),
+            labels: d.labels.map((l) => sanitizeIssueText(l.name)),
             url: d.url,
             linkedIssues: d.linkedIssues.map((l) => ({
               key: l.key,
@@ -172,7 +176,7 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
           });
           return {
             key: created.externalId,
-            summary: created.title,
+            summary: sanitizeIssueText(created.title),
             status: created.statusName,
             url: created.url,
           };

@@ -105,9 +105,10 @@ function AssigneeEditor({
             type="button"
             disabled={busy}
             onClick={() => void pick(u.accountId)}
-            className="block w-full px-2 py-1.5 text-left text-sm text-zinc-200 hover:bg-zinc-800"
+            className="block w-full px-2 py-1.5 text-left hover:bg-zinc-800"
           >
-            {u.displayName}
+            <span className="block text-sm text-zinc-200">{u.displayName}</span>
+            {u.email && <span className="block text-xs text-zinc-500">{u.email}</span>}
           </button>
         ))}
         <button

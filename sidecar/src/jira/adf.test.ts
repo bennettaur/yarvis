@@ -127,4 +127,78 @@ describe("textToAdf", () => {
     const text = "First paragraph.\n\nSecond paragraph.";
     expect(adfToMarkdown(textToAdf(text))).toBe(text);
   });
+
+  it("normalizes CRLF to LF", () => {
+    const doc = textToAdf("a\r\nb");
+    expect(doc.content).toEqual([
+      {
+        type: "paragraph",
+        content: [{ type: "text", text: "a" }, { type: "hardBreak" }, { type: "text", text: "b" }],
+      },
+    ]);
+  });
+});
+
+describe("adfToMarkdown block edge cases", () => {
+  const para = (text: string) => ({ type: "paragraph", content: [{ type: "text", text }] });
+
+  it("numbers ordered lists", () => {
+    const doc = {
+      type: "doc",
+      content: [
+        {
+          type: "orderedList",
+          content: [
+            { type: "listItem", content: [para("first")] },
+            { type: "listItem", content: [para("second")] },
+          ],
+        },
+      ],
+    };
+    expect(adfToMarkdown(doc)).toBe("1. first\n2. second");
+  });
+
+  it("renders blockquotes and horizontal rules", () => {
+    const doc = {
+      type: "doc",
+      content: [{ type: "blockquote", content: [para("quoted")] }, { type: "rule" }],
+    };
+    expect(adfToMarkdown(doc)).toBe("> quoted\n\n---");
+  });
+
+  it("renders a table with a header row and escapes pipes", () => {
+    const cell = (text: string) => ({ type: "tableCell", content: [para(text)] });
+    const doc = {
+      type: "doc",
+      content: [
+        {
+          type: "table",
+          content: [
+            { type: "tableRow", content: [cell("a"), cell("b")] },
+            { type: "tableRow", content: [cell("c | d"), cell("e")] },
+          ],
+        },
+      ],
+    };
+    expect(adfToMarkdown(doc)).toBe("| a | b |\n| --- | --- |\n| c \\| d | e |");
+  });
+
+  it("applies em/strike marks and falls back to bare text for a link without href", () => {
+    const doc = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "italic", marks: [{ type: "em" }] },
+            { type: "text", text: " and " },
+            { type: "text", text: "gone", marks: [{ type: "strike" }] },
+            { type: "text", text: " and " },
+            { type: "text", text: "plain", marks: [{ type: "link" }] },
+          ],
+        },
+      ],
+    };
+    expect(adfToMarkdown(doc)).toBe("*italic* and ~~gone~~ and plain");
+  });
 });

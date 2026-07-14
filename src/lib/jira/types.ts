@@ -6,6 +6,9 @@
 
 import type { IssueComment, IssueLabel } from "../issues/types";
 
+/** Normalized JIRA status category (see sidecar jira/types.ts). */
+export type JiraStatusCategory = "todo" | "in_progress" | "done";
+
 export interface JiraViewer {
   login: string;
   accountId: string;
@@ -15,14 +18,13 @@ export interface JiraUser {
   accountId: string;
   displayName: string;
   email: string | null;
-  avatarUrl: string | null;
 }
 
 export interface JiraLinkedIssue {
   key: string;
   summary: string;
   statusName: string;
-  statusCategory: string;
+  statusCategory: JiraStatusCategory;
   linkType: string;
   issueType: string;
   url: string;
@@ -32,7 +34,7 @@ export interface JiraTransition {
   id: string;
   name: string;
   toStatusName: string;
-  toStatusCategory: string;
+  toStatusCategory: JiraStatusCategory;
 }
 
 export interface JiraIssueDetail {

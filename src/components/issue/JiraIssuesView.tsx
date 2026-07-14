@@ -15,7 +15,8 @@ import {
   type IssueSummary,
   issueKey,
 } from "../../lib/issues/types";
-import { jiraAssigned, jiraCreated, jiraSearch } from "../../lib/jira/api";
+import { jiraAssigned, jiraCreated, jiraSearch, jiraViewer } from "../../lib/jira/api";
+import { useOmniChatContext } from "../../lib/omniChatContext";
 import { openExternal } from "../../lib/url";
 import JiraCreateIssueModal from "./JiraCreateIssueModal";
 import JiraIssueDetailView from "./JiraIssueDetailView";
@@ -225,6 +226,28 @@ export default function JiraIssuesView() {
     [stars],
   );
 
+  useOmniChatContext("issues", () => {
+    if (selected) {
+      return {
+        source: "issues",
+        summary: `Viewing JIRA issue ${selected.displayId} "${selected.title}" in ${selected.sourceLabel}`,
+        details: { url: selected.url },
+      };
+    }
+    const count =
+      activeTab === "assigned"
+        ? assigned.length
+        : activeTab === "created"
+          ? created.length
+          : activeTab === "starred"
+            ? starredIssues.length
+            : (searchResults?.length ?? 0);
+    return {
+      source: "issues",
+      summary: `On the Issues tab (JIRA ${activeTab} list, ${count} shown)`,
+    };
+  }, [selected, activeTab, assigned.length, created.length, starredIssues.length, searchResults]);
+
   const loadStars = useCallback(async () => {
     setStars(await issueStars("jira"));
   }, []);
@@ -239,6 +262,9 @@ export default function JiraIssuesView() {
     setNotConfigured(false);
     setLoading(true);
     try {
+      // Probe config/connectivity first so the "not configured" state (400) is
+      // shown precisely, distinct from an upstream failure.
+      await jiraViewer();
       const [assignedList, createdList] = await Promise.all([jiraAssigned(), jiraCreated()]);
       setAssigned(assignedList);
       setCreated(createdList);
@@ -302,16 +328,19 @@ export default function JiraIssuesView() {
   const onSubmitSearch = useCallback(() => {
     const text = searchText.trim();
     if (!text) return;
-    // A bare issue key opens that issue directly; anything else is JQL.
+    // A bare issue key opens that issue directly; anything else is JQL. JIRA
+    // keys are upper-case, so normalise once and derive every field from it so
+    // the composite issueKey() matches stored stars/links.
     if (ISSUE_KEY_RE.test(text)) {
-      const projectKey = text.replace(/-\d+$/, "");
+      const key = text.toUpperCase();
+      const projectKey = key.replace(/-\d+$/, "");
       setSelected({
         provider: "jira",
         sourceKey: projectKey,
         sourceLabel: projectKey,
-        externalId: text.toUpperCase(),
-        displayId: text.toUpperCase(),
-        title: text.toUpperCase(),
+        externalId: key,
+        displayId: key,
+        title: key,
         url: "",
         state: "open",
         author: "",

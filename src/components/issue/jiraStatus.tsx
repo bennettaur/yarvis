@@ -5,7 +5,7 @@
  */
 
 /** Tailwind classes for a status pill, keyed by JIRA status category. */
-export function statusCategoryClasses(category: string | undefined): string {
+function statusCategoryClasses(category: string | undefined): string {
   switch (category) {
     case "done":
       return "bg-emerald-900 text-emerald-200";
