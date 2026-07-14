@@ -289,6 +289,38 @@ export function listLinks(db: Db, provider: string): Promise<IssueLink[]> {
   return db.select().from(issueLinks).where(eq(issueLinks.provider, provider));
 }
 
+/** Issue links attached to a workspace, for its detail view. */
+export function listLinksForWorkspace(db: Db, workspaceId: string): Promise<IssueLink[]> {
+  return db.select().from(issueLinks).where(eq(issueLinks.workspaceId, workspaceId));
+}
+
+/**
+ * Detaches an issue from a workspace, scoped so it only removes this
+ * workspace's link. Deletes the row outright: an explicit unlink drops the
+ * tracked issue rather than orphaning its local status. Returns false if no
+ * matching link exists.
+ */
+export async function deleteLinkForWorkspace(
+  db: Db,
+  workspaceId: string,
+  provider: string,
+  sourceKey: string,
+  externalId: string,
+): Promise<boolean> {
+  const rows = await db
+    .delete(issueLinks)
+    .where(
+      and(
+        eq(issueLinks.workspaceId, workspaceId),
+        eq(issueLinks.provider, provider),
+        eq(issueLinks.sourceKey, sourceKey),
+        eq(issueLinks.externalId, externalId),
+      ),
+    )
+    .returning({ id: issueLinks.id });
+  return rows.length > 0;
+}
+
 export interface UpsertLinkInput {
   provider: string;
   sourceKey: string;
