@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect } from "react";
 import { recordEvent } from "../lib/events";
 import { usePrDetail } from "../lib/pr/cache";
 import { refKey } from "../lib/pr/ref";
@@ -9,7 +9,7 @@ import PrDescription from "./pr/PrDescription";
 import PrFileDiffs from "./pr/PrFileDiffs";
 import PrFileList from "./pr/PrFileList";
 import PrFloatingHeader from "./pr/PrFloatingHeader";
-import SplitPane, { usePersistedRatio } from "./SplitPane";
+import SplitPane, { usePersistedBoolean, usePersistedRatio } from "./SplitPane";
 
 const FILE_LIST_COLLAPSED_KEY = "yarvis.pr.fileListCollapsed";
 const FILE_LIST_RATIO_KEY = "yarvis.pr.fileListRatio";
@@ -83,12 +83,10 @@ export default function PrDetailView({ pr, onBack }: { pr: PrSummary; onBack: ()
   // The file list panel is resizable (ratio) and fully collapsible, both
   // persisted so a chosen layout survives navigating between PRs.
   const [fileListRatio, setFileListRatio] = usePersistedRatio(FILE_LIST_RATIO_KEY, 0.25);
-  const [fileListCollapsed, setFileListCollapsed] = useState<boolean>(
-    () => localStorage.getItem(FILE_LIST_COLLAPSED_KEY) === "1",
+  const [fileListCollapsed, setFileListCollapsed] = usePersistedBoolean(
+    FILE_LIST_COLLAPSED_KEY,
+    false,
   );
-  useEffect(() => {
-    localStorage.setItem(FILE_LIST_COLLAPSED_KEY, fileListCollapsed ? "1" : "0");
-  }, [fileListCollapsed]);
 
   // Record opening a PR for review. Keyed strictly by PR identity (the ref key)
   // so re-renders (and metadata edits like a rename) don't re-fire; a different
@@ -130,6 +128,7 @@ export default function PrDetailView({ pr, onBack }: { pr: PrSummary; onBack: ()
                   type="button"
                   onClick={() => setFileListCollapsed(false)}
                   title="Show file list"
+                  aria-label="Show file list"
                   className="sticky top-0 flex h-8 w-8 shrink-0 items-center justify-center self-start rounded text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
                 >
                   ›
@@ -149,7 +148,7 @@ export default function PrDetailView({ pr, onBack }: { pr: PrSummary; onBack: ()
                 onRatioChange={setFileListRatio}
                 minRatio={0.12}
                 first={
-                  <div className="sticky top-0 max-h-[80vh] self-start overflow-auto pr-2">
+                  <div className="sticky top-0 max-h-[80vh] overflow-auto pr-2">
                     <PrFileList
                       prRef={prRef}
                       viewed={viewedFiles.viewed}

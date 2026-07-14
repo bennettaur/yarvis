@@ -58,4 +58,16 @@ describe("buildFileTree", () => {
     const tree = buildFileTree([file("a.ts"), file("dir/b.ts")]);
     expect(tree.map((n) => n.type)).toEqual(["dir", "file"]);
   });
+
+  it("sorts same-type siblings alphabetically regardless of input order", () => {
+    const tree = buildFileTree([file("src/z.ts"), file("src/a.ts")]);
+    const dir = tree[0];
+    if (!isDir(dir)) throw new Error("expected dir");
+    expect(dir.children.map((c) => c.name)).toEqual(["a.ts", "z.ts"]);
+  });
+
+  it("sorts sibling directories alphabetically regardless of input order", () => {
+    const tree = buildFileTree([file("zeta/one.ts"), file("alpha/two.ts")]);
+    expect(tree.map((n) => n.name)).toEqual(["alpha", "zeta"]);
+  });
 });

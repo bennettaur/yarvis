@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { usePrFiles } from "../../lib/pr/cache";
 import type { PrRef } from "../../lib/pr/types";
-import { buildFileTree, type FileTreeNode } from "./fileTree";
+import { buildFileTree, type FileTreeFile, type FileTreeNode } from "./fileTree";
 import { prFileAnchorId } from "./shared";
 
 const STATUS_LETTER: Record<string, { letter: string; color: string }> = {
@@ -13,6 +13,8 @@ const STATUS_LETTER: Record<string, { letter: string; color: string }> = {
 
 /** Left padding per tree depth, so nested rows line up under their folder. */
 const INDENT_PER_DEPTH = 12;
+/** Base left padding for a depth-0 row, matching the `px-2` on each row. */
+const ROW_PADDING_LEFT = 8;
 
 /**
  * Compact tree of a PR's changed files. Files nest under collapsible folders
@@ -67,6 +69,7 @@ export default function PrFileList({
             type="button"
             onClick={onCollapse}
             title="Collapse file list"
+            aria-label="Collapse file list"
             className="text-zinc-500 hover:text-zinc-300"
           >
             ‹
@@ -131,7 +134,7 @@ function TreeRows({
       <details open className="group">
         <summary
           className="flex cursor-pointer items-center gap-1 rounded px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
-          style={{ paddingLeft: depth * INDENT_PER_DEPTH + 8 }}
+          style={{ paddingLeft: depth * INDENT_PER_DEPTH + ROW_PADDING_LEFT }}
         >
           <span className="text-zinc-600 transition-transform group-open:rotate-90">▶</span>
           <span className="min-w-0 flex-1 truncate font-mono">{node.name}</span>
@@ -162,7 +165,7 @@ function FileRow({
   onClick,
   onToggleViewed,
 }: {
-  node: Extract<FileTreeNode, { type: "file" }>;
+  node: FileTreeFile;
   depth: number;
   selected: number | null;
   viewed: Set<string>;
@@ -178,14 +181,15 @@ function FileRow({
         className={`flex w-full items-center gap-2 rounded px-2 py-1 hover:bg-zinc-800 ${
           selected === index ? "bg-zinc-800" : ""
         } ${isViewed ? "opacity-60" : ""}`}
-        style={{ paddingLeft: depth * INDENT_PER_DEPTH + 8 }}
+        style={{ paddingLeft: depth * INDENT_PER_DEPTH + ROW_PADDING_LEFT }}
       >
         <input
           type="checkbox"
           checked={isViewed}
           onChange={(e) => {
-            // Toggling viewed shouldn't scroll the diff into view —
-            // stop the click from bubbling to the row button below.
+            // Toggling viewed must never trigger the row's file-select scroll.
+            // The checkbox is a sibling of that button today, but stop the event
+            // defensively so a future row-level handler can't hijack the toggle.
             e.stopPropagation();
             onToggleViewed(file.filename);
           }}
