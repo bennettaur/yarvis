@@ -92,7 +92,7 @@ function threadsByLine(threads: ReviewThread[]): Map<number, ReviewThread[]> {
   return map;
 }
 
-function DiffBody({
+export function DiffBody({
   prRef,
   file,
   patch,
@@ -143,7 +143,9 @@ function DiffBody({
               </span>
               <span className="whitespace-pre">{row.text || " "}</span>
             </div>
-            {(lineThreads || linePending.length > 0 || activeLine === row.rightLine) && (
+            {(lineThreads ||
+              linePending.length > 0 ||
+              (commentable && activeLine === row.rightLine)) && (
               <div className="space-y-2 px-3 py-2 font-sans">
                 {lineThreads?.map((t, j) => (
                   <ThreadCard key={`t-${j}`} thread={t} />
@@ -157,7 +159,7 @@ function DiffBody({
                     {p.body}
                   </div>
                 ))}
-                {activeLine === row.rightLine && row.rightLine != null && (
+                {commentable && activeLine === row.rightLine && (
                   <CommentComposer
                     onSubmit={(body) => submit(row.rightLine as number, body)}
                     onCancel={() => setActiveLine(null)}
@@ -250,8 +252,30 @@ function FileDiff({
   // and pops back open if they undo. Keeping them coupled here avoids a flash
   // where the diff is still expanded under a "Viewed" pill (or vice versa).
   const toggleViewed = () => {
+    const nowViewed = !isViewed;
     setOpen(isViewed);
     onToggleViewed(file.filename);
+    // Collapsing a file you've scrolled into yanks everything below it upward
+    // while the scroll position stays put, so the viewport lands mid-way through
+    // a different file — it reads as the whole page jumping/"refreshing". When
+    // the file's own header is already pinned at (or scrolled above) the top of
+    // the review pane, re-anchor that header to the top after the collapse so
+    // the user stays oriented on the file they just finished. Files still fully
+    // below the fold don't move the top of the viewport, so they're left alone.
+    if (!nowViewed) return;
+    // The rAF lets React commit the collapse first, so we measure the folded
+    // layout. The scroll pane is found via the `data-pr-scroll` marker set in
+    // PrDetailView. Instant (not smooth) scroll: this is a re-anchor to keep the
+    // header in place, not a navigation, so an animation would just look like a
+    // stutter on collapse.
+    requestAnimationFrame(() => {
+      const fileEl = document.getElementById(prFileAnchorId(prRef, index));
+      const pane = fileEl?.closest("[data-pr-scroll]");
+      if (!fileEl || !pane) return;
+      if (fileEl.getBoundingClientRect().top <= pane.getBoundingClientRect().top) {
+        fileEl.scrollIntoView({ block: "start" });
+      }
+    });
   };
 
   return (

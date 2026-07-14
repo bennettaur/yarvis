@@ -29,6 +29,10 @@ pub struct Alarm {
     pub fire_at_ms: i64,
     #[serde(default = "default_true")]
     pub sound: bool,
+    /// Join URL for a meeting-derived alarm, so the takeover can offer a
+    /// "Join meeting" action. Absent for manually created alarms.
+    #[serde(default)]
+    pub meet_link: Option<String>,
     /// "scheduled" | "fired" | "acknowledged" | "cancelled"
     pub status: String,
 }
@@ -167,9 +171,13 @@ fn notify(app: &AppHandle, alarm: &Alarm) -> Result<(), String> {
 async fn ring_until_stopped(stop: Arc<Notify>, fired_at: i64) {
     loop {
         let escalated = now_ms() - fired_at >= ESCALATE_AFTER_SECS * 1000;
+        // afplay's failure is discarded below, so a missing sound file fails
+        // silently with no fallback or log. Use only built-in macOS sounds
+        // that ship across releases; Sonar.aiff is absent on current macOS,
+        // which is why the escalated path uses Submarine.aiff.
         let (sound, volume, gap) = if escalated {
             (
-                "/System/Library/Sounds/Sonar.aiff",
+                "/System/Library/Sounds/Submarine.aiff",
                 "2",
                 Duration::from_secs(2),
             )
@@ -233,12 +241,14 @@ pub fn create_alarm(
     label: String,
     fire_at_ms: i64,
     sound: Option<bool>,
+    meet_link: Option<String>,
 ) -> Result<Alarm, String> {
     let alarm = Alarm {
         id: random_id(),
         label,
         fire_at_ms,
         sound: sound.unwrap_or(true),
+        meet_link,
         status: "scheduled".to_string(),
     };
     if let Ok(mut alarms) = state.alarms.lock() {

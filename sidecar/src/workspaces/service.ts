@@ -6,10 +6,11 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { relative } from "node:path";
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import {
+  type IssueLink,
   type Repo,
   repos,
   type Task,
@@ -21,11 +22,13 @@ import {
   workspaceRepos,
   workspaces,
 } from "../db/schema.ts";
+import { deleteLinkForWorkspace, listLinksForWorkspace, upsertLink } from "../issues/service.ts";
 import { completeTasksByWorkspace, tasksForWorkspace } from "../tasks/service.ts";
 import { stopClaudeSession } from "./claudeSession.ts";
 import { writeClaudeSettings } from "./claudeSettings.ts";
 import { runStreaming } from "./exec.ts";
 import {
+  addExistingBranchWorktree,
   type BranchSync,
   branchExists,
   branchSync,
@@ -34,11 +37,13 @@ import {
   defaultGitRunner,
   detectDefaultBranch,
   ensurePrimaryClone,
+  fetchBranch,
   fetchRemote,
   fileDiff,
   type GitRunner,
   listChangedFiles,
   listFiles,
+  listRemoteBranches,
   removeWorktree,
   updateDefaultBranch,
 } from "./git.ts";
@@ -75,6 +80,92 @@ export function parseGitUrl(url: string): { owner: string; repo: string } | null
 }
 
 /**
+ * A clone URL classified by provider. GitHub is addressed by owner/repo; Azure
+ * DevOps by org/project/repo. This is the single place the workspace flow learns
+ * a repo's provider — the `repos` table stores only the raw clone URL, so the
+ * poller and the PR→workspace backlink both parse it here rather than persisting
+ * a provider column.
+ *
+ * Keep in sync with the frontend copy in `src/lib/repos.ts` — the two bundles
+ * share no importable module, so both must classify a clone URL identically.
+ */
+export type RepoRemote =
+  | { provider: "github"; owner: string; repo: string }
+  | { provider: "azure"; org: string; project: string; repo: string };
+
+/** Hosts that identify an Azure DevOps remote (modern and legacy forms). The
+ *  legacy org lives in the subdomain (`{org}.visualstudio.com`), so a bare
+ *  `visualstudio.com` is not a real remote host and is intentionally excluded. */
+function isAzureHost(host: string): boolean {
+  return (
+    host === "dev.azure.com" ||
+    host === "ssh.dev.azure.com" ||
+    host === "vs-ssh.visualstudio.com" ||
+    host.endsWith(".visualstudio.com")
+  );
+}
+
+/** Splits a git remote into its host and path segments, spanning scp-like
+ *  (`git@host:path`) and URL (`https://…`, `ssh://…`) forms. */
+function splitRemote(url: string): { host: string; segments: string[] } | null {
+  const trimmed = url.trim().replace(/\.git$/, "");
+  // scp-like syntax (`user@host:path`) has no scheme and a `:` before the path.
+  const scp = trimmed.match(/^[^/]+@([^/:]+):(.+)$/);
+  const [host, path] = scp
+    ? [scp[1]!, scp[2]!]
+    : (() => {
+        try {
+          const u = new URL(trimmed);
+          return [u.hostname, u.pathname] as const;
+        } catch {
+          return ["", ""] as const;
+        }
+      })();
+  if (!host) return null;
+  return { host, segments: path.split("/").filter(Boolean) };
+}
+
+/**
+ * Classifies a clone URL as GitHub or Azure DevOps, extracting the identity each
+ * provider's PR lookup needs. Azure DevOps encodes org/project/repo three ways:
+ * modern HTTPS `dev.azure.com/{org}/{project}/_git/{repo}`, SSH
+ * `ssh.dev.azure.com:v3/{org}/{project}/{repo}`, and legacy
+ * `{org}.visualstudio.com/…/{project}/_git/{repo}` (org in the subdomain). Any
+ * non-Azure host falls back to GitHub owner/repo. Returns null when unparseable.
+ */
+export function parseRepoRemote(url: string): RepoRemote | null {
+  const parts = splitRemote(url);
+  if (!parts) return null;
+  const { host, segments } = parts;
+
+  if (isAzureHost(host)) {
+    // SSH form: v3/{org}/{project}/{repo}.
+    if (segments[0] === "v3" && segments.length >= 4) {
+      return { provider: "azure", org: segments[1]!, project: segments[2]!, repo: segments[3]! };
+    }
+    // HTTPS form: the `_git` marker precedes the repo and follows the project.
+    const gitIdx = segments.indexOf("_git");
+    if (gitIdx >= 1 && segments.length > gitIdx + 1) {
+      // Legacy visualstudio.com carries the org in the subdomain; dev.azure.com
+      // carries it as the first path segment.
+      const isLegacyVisualStudioHost =
+        host === "visualstudio.com" || host.endsWith(".visualstudio.com");
+      const org = isLegacyVisualStudioHost ? host.split(".")[0]! : segments[0]!;
+      return {
+        provider: "azure",
+        org,
+        project: segments[gitIdx - 1]!,
+        repo: segments[gitIdx + 1]!,
+      };
+    }
+    return null;
+  }
+
+  const github = parseGitUrl(url);
+  return github ? { provider: "github", ...github } : null;
+}
+
+/**
  * Allowed clone-URL transports. Git's `ext::`/`fd::` remote helpers execute
  * arbitrary commands, and a leading `-` is read as a flag — both would turn a
  * registry entry into code execution, so only these schemes are accepted.
@@ -85,6 +176,22 @@ const ALLOWED_CLONE_URL = /^(https?:\/\/|git:\/\/|ssh:\/\/|[A-Za-z0-9._-]+@[A-Za
 export function assertSafeCloneUrl(url: string): void {
   if (!ALLOWED_CLONE_URL.test(url.trim())) {
     throw new Error(`unsupported clone URL transport: ${url}`);
+  }
+}
+
+/**
+ * Throws if a branch name git could misread. The important case is a leading
+ * `-`, which git's option parser reads as a flag rather than a ref (the same
+ * class of risk `assertSafeCloneUrl` guards against) — so a chosen existing
+ * branch can't smuggle a git option into `fetch`/`worktree add`. Also rejects
+ * whitespace and the characters git forbids in ref names, so a real remote
+ * branch (which the picker offers) always passes.
+ */
+export function assertSafeBranchName(branch: string): void {
+  const trimmed = branch.trim();
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: git bars control chars in ref names.
+  if (!trimmed || trimmed.startsWith("-") || /[\s~^:?*[\\\x00-\x1f]/.test(trimmed)) {
+    throw new Error(`unsupported branch name: ${branch}`);
   }
 }
 
@@ -146,6 +253,25 @@ export async function deleteRepo(db: Db, id: string): Promise<boolean> {
   return rows.length > 0;
 }
 
+/**
+ * The repo's remote branch names, so a workspace can be created on an existing
+ * branch. Ensures the primary clone exists and fetches first (under the repo
+ * lock, so it never races a worktree add/remove) so the list is current.
+ */
+export async function listRepoBranches(
+  db: Db,
+  repoId: string,
+  runner: GitRunner = defaultGitRunner,
+): Promise<string[]> {
+  const repo = await getRepo(db, repoId);
+  if (!repo) throw new Error("repo not found");
+  return withRepoLock(repo.id, async () => {
+    await ensurePrimaryClone(runner, repo.cloneUrl, repo.primaryClonePath);
+    await fetchRemote(runner, repo.primaryClonePath);
+    return listRemoteBranches(runner, repo.primaryClonePath);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Workspaces
 // ---------------------------------------------------------------------------
@@ -158,6 +284,12 @@ export interface CreateWorkspaceInput {
    * clone, or worktree.
    */
   repoIds: string[];
+  /**
+   * Per-repo (keyed by repo id) existing branch to check out instead of cutting
+   * a fresh branch. A repo absent from this map, or mapped to a blank string,
+   * gets the default new-branch flow.
+   */
+  existingBranches?: Record<string, string>;
   taskId?: string | null;
 }
 
@@ -169,6 +301,8 @@ export interface WorkspaceRepoDetail extends WorkspaceRepo {
 export interface WorkspaceDetail extends Workspace {
   repos: WorkspaceRepoDetail[];
   tasks: Task[];
+  // GitHub/JIRA issues linked to this workspace, via the shared issue-link table.
+  issues: IssueLink[];
 }
 
 /** Filesystem- and branch-safe slug derived from a workspace name. */
@@ -238,17 +372,22 @@ export async function createWorkspace(
     // empty values array).
     if (selected.length) {
       await tx.insert(workspaceRepos).values(
-        selected.map((repo) => ({
-          workspaceId: workspace!.id,
-          repoId: repo.id,
-          branch,
-          baseBranch: repo.defaultBranch ?? "main",
-          worktreePath: `${rootPath}/${
-            (nameCounts.get(repo.name.toLowerCase()) ?? 0) > 1
-              ? `${repo.name.toLowerCase()}-${repo.owner.toLowerCase()}`
-              : repo.name.toLowerCase()
-          }`,
-        })),
+        selected.map((repo) => {
+          const existing = input.existingBranches?.[repo.id]?.trim();
+          if (existing) assertSafeBranchName(existing);
+          return {
+            workspaceId: workspace!.id,
+            repoId: repo.id,
+            branch: existing || branch,
+            existingBranch: Boolean(existing),
+            baseBranch: repo.defaultBranch ?? "main",
+            worktreePath: `${rootPath}/${
+              (nameCounts.get(repo.name.toLowerCase()) ?? 0) > 1
+                ? `${repo.name.toLowerCase()}-${repo.owner.toLowerCase()}`
+                : repo.name.toLowerCase()
+            }`,
+          };
+        }),
       );
     }
 
@@ -313,6 +452,7 @@ export async function getWorkspace(db: Db, id: string): Promise<WorkspaceDetail 
       pr: prByWr.get(wr.id) ?? null,
     })),
     tasks: await tasksForWorkspace(db, id),
+    issues: await listLinksForWorkspace(db, id),
   };
 }
 
@@ -336,6 +476,43 @@ export async function unlinkTask(db: Db, workspaceId: string, taskId: string): P
     .where(and(eq(tasks.id, taskId), eq(tasks.workspaceId, workspaceId)))
     .returning({ id: tasks.id });
   return rows.length > 0;
+}
+
+export interface LinkIssueInput {
+  provider: string;
+  sourceKey: string;
+  externalId: string;
+  title?: string | null;
+  url?: string | null;
+}
+
+/** Links a GitHub/JIRA issue to a workspace via the shared issue-link table.
+ *  Idempotent per issue: re-linking re-points the issue at this workspace.
+ *  Returns null if the workspace doesn't exist (parity with `linkTask`), rather
+ *  than letting the issue_links FK surface a raw constraint error. */
+export async function linkIssue(
+  db: Db,
+  workspaceId: string,
+  input: LinkIssueInput,
+): Promise<IssueLink | null> {
+  const [ws] = await db
+    .select({ id: workspaces.id })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId));
+  if (!ws) return null;
+  return upsertLink(db, { ...input, workspaceId, localStatus: "in_progress" });
+}
+
+/** Detaches an issue from a workspace; scoped so it only affects this
+ *  workspace's link. Returns false if no such linked issue exists. */
+export function unlinkIssue(
+  db: Db,
+  workspaceId: string,
+  provider: string,
+  sourceKey: string,
+  externalId: string,
+): Promise<boolean> {
+  return deleteLinkForWorkspace(db, workspaceId, provider, sourceKey, externalId);
 }
 
 async function getWorkspaceRepo(db: Db, workspaceRepoId: string): Promise<WorkspaceRepo> {
@@ -420,38 +597,68 @@ export interface WorkspaceForPr {
 }
 
 /**
- * Finds a non-archived workspace whose repo raised the given GitHub PR, matched
- * through the poller's PR cache (owner/repo + PR number). Only GitHub PRs are
- * cached, so Azure lookups always miss. Owner/repo are compared case-folded
- * since GitHub treats them case-insensitively.
+ * A PR identity the backlink matches against, tagged by provider so GitHub
+ * (owner/repo) and Azure DevOps (org/project/repo) are compared on the right
+ * fields. `number` is the PR number for GitHub and the pull-request id for Azure
+ * — both are stored in the same cached `prNumber` column.
+ */
+export type PrLocator =
+  | { provider: "github"; owner: string; repo: string; number: number }
+  | { provider: "azure"; org: string; project: string; repo: string; number: number };
+
+/** Case-folded equality, matching how both providers treat these identifiers. */
+function eqFold(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+/** True when a repo's parsed clone URL is the same repo the locator names. The
+ *  provider is already equal after the first guard; each branch re-checks both
+ *  sides only so TypeScript narrows the union on `remote` and `locator` together
+ *  (the final `return false` is likewise unreachable but required for that). */
+function remoteMatchesLocator(remote: RepoRemote | null, locator: PrLocator): boolean {
+  if (!remote || remote.provider !== locator.provider) return false;
+  if (remote.provider === "github" && locator.provider === "github") {
+    return eqFold(remote.owner, locator.owner) && eqFold(remote.repo, locator.repo);
+  }
+  if (remote.provider === "azure" && locator.provider === "azure") {
+    return (
+      eqFold(remote.org, locator.org) &&
+      eqFold(remote.project, locator.project) &&
+      eqFold(remote.repo, locator.repo)
+    );
+  }
+  return false;
+}
+
+/**
+ * Finds a non-archived workspace whose repo raised the given PR, matched through
+ * the poller's PR cache. The cache row carries only the PR number, so candidates
+ * are narrowed by number in SQL and then confirmed by parsing each repo's clone
+ * URL — this keeps the match provider-aware (GitHub owner/repo, Azure
+ * org/project/repo) without a provider column on `repos`.
  */
 export async function findWorkspaceForPr(
   db: Db,
-  owner: string,
-  repo: string,
-  prNumber: number,
+  locator: PrLocator,
 ): Promise<WorkspaceForPr | null> {
-  const [row] = await db
+  const candidates = await db
     .select({
       id: workspaces.id,
       name: workspaces.name,
       slug: workspaces.slug,
       status: workspaces.status,
+      cloneUrl: repos.cloneUrl,
     })
     .from(workspaceRepoPr)
     .innerJoin(workspaceRepos, eq(workspaceRepoPr.workspaceRepoId, workspaceRepos.id))
     .innerJoin(repos, eq(workspaceRepos.repoId, repos.id))
     .innerJoin(workspaces, eq(workspaceRepos.workspaceId, workspaces.id))
-    .where(
-      and(
-        eq(workspaceRepoPr.prNumber, prNumber),
-        eq(sql`lower(${repos.owner})`, owner.toLowerCase()),
-        eq(sql`lower(${repos.repo})`, repo.toLowerCase()),
-        ne(workspaces.status, "archived"),
-      ),
-    )
-    .limit(1);
-  return row ?? null;
+    .where(and(eq(workspaceRepoPr.prNumber, locator.number), ne(workspaces.status, "archived")));
+
+  for (const { cloneUrl, ...ws } of candidates) {
+    if (remoteMatchesLocator(parseRepoRemote(cloneUrl), locator)) return ws;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -592,16 +799,32 @@ export async function provisionWorkspace(
 
           await updateDefaultBranch(runner, repo.primaryClonePath, base);
 
-          // Avoid colliding with a branch left behind by a prior workspace.
-          let branch = wr.branch;
-          if (await branchExists(runner, repo.primaryClonePath, branch)) {
-            branch = `${wr.branch}-${id.slice(0, 8)}`;
+          if (wr.existingBranch) {
+            // Check out the branch the user chose as-is; `base` still stands as
+            // the diff base so changes show against the default branch.
+            await fetchBranch(runner, repo.primaryClonePath, wr.branch);
+            await addExistingBranchWorktree(
+              runner,
+              repo.primaryClonePath,
+              wr.worktreePath,
+              wr.branch,
+            );
+            await db
+              .update(workspaceRepos)
+              .set({ baseBranch: base })
+              .where(eq(workspaceRepos.id, wr.id));
+          } else {
+            // Avoid colliding with a branch left behind by a prior workspace.
+            let branch = wr.branch;
+            if (await branchExists(runner, repo.primaryClonePath, branch)) {
+              branch = `${wr.branch}-${id.slice(0, 8)}`;
+            }
+            await createWorktree(runner, repo.primaryClonePath, wr.worktreePath, branch, base);
+            await db
+              .update(workspaceRepos)
+              .set({ branch, baseBranch: base })
+              .where(eq(workspaceRepos.id, wr.id));
           }
-          await createWorktree(runner, repo.primaryClonePath, wr.worktreePath, branch, base);
-          await db
-            .update(workspaceRepos)
-            .set({ branch, baseBranch: base })
-            .where(eq(workspaceRepos.id, wr.id));
         });
 
         let exitCode = 0;

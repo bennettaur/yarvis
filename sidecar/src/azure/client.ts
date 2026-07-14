@@ -108,7 +108,7 @@ function mapChangeType(changeType: string): string {
 /** Maps an Azure mergeStatus onto the shared mergeable enum. */
 function mapMergeStatus(mergeStatus: string | undefined): {
   mergeable: boolean | null;
-  enum: string;
+  enum: MergeableEnum;
 } {
   switch (mergeStatus) {
     case "succeeded":
@@ -143,9 +143,42 @@ export function mapPolicyEvaluation(evaluation: AzurePolicyEvaluation): CheckIte
   };
 }
 
+/** The shared mergeable vocabulary both providers map onto. */
+export type MergeableEnum = "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+
+/** A branch's active PR, shaped for the workspace poller's cache row. */
+export interface AzureBranchPr {
+  number: number;
+  url: string;
+  draft: boolean;
+  /** Normalized to the poller's stored PR-state vocabulary. */
+  state: "open" | "closed" | "merged";
+  /** Azure mergeStatus mapped onto the shared mergeable enum. */
+  mergeable: MergeableEnum;
+}
+
+/**
+ * The organization name from a configured org URL. Modern URLs carry it as the
+ * first path segment (`dev.azure.com/{org}`); legacy accounts carry it in the
+ * subdomain (`{org}.visualstudio.com`). Deriving it the same way
+ * `parseRepoRemote` derives a clone URL's org is what lets the poller's
+ * cross-org comparison line up for both forms.
+ */
+function orgFromOrgUrl(orgUrl: string): string {
+  try {
+    const url = new URL(orgUrl);
+    if (url.hostname.endsWith(".visualstudio.com")) return url.hostname.split(".")[0] ?? "";
+    return url.pathname.split("/").filter(Boolean)[0] ?? "";
+  } catch {
+    return orgUrl.split("/").filter(Boolean).pop() ?? "";
+  }
+}
+
 export class AzureDevOpsClient {
   private readonly orgUrl: string;
-  private readonly org: string;
+  /** The configured organization (last segment of the org URL). Public so the
+   *  poller can skip repos that live in a different org than this client. */
+  readonly org: string;
 
   constructor(
     private readonly token: string,
@@ -153,9 +186,9 @@ export class AzureDevOpsClient {
     private readonly fetchImpl: FetchFn = fetch,
   ) {
     this.orgUrl = orgUrl.replace(/\/+$/, "");
-    // Last path segment of https://dev.azure.com/<org> is the org name; kept for
-    // display/cache identity the frontend echoes back.
-    this.org = this.orgUrl.split("/").filter(Boolean).pop() ?? "";
+    // Kept for display/cache identity the frontend echoes back, and for the
+    // poller's cross-org skip — so it must match `parseRepoRemote`'s org.
+    this.org = orgFromOrgUrl(this.orgUrl);
   }
 
   private authHeader(): string {
@@ -257,19 +290,54 @@ export class AzureDevOpsClient {
     return (data.value ?? []).map((pr) => this.toSummary(pr));
   }
 
-  private toSummary(pr: AzurePullRequest): AzurePrSummary {
+  /**
+   * The most recent PR whose source branch is `branch` in the given
+   * project/repo, or null. Used by the workspace poller to auto-detect a
+   * worktree branch's PR. `status=all` mirrors the GitHub client so a
+   * merged/abandoned PR still resolves; Azure returns newest first, so `$top=1`
+   * picks the latest.
+   */
+  async findPrByBranch(
+    project: string,
+    repo: string,
+    branch: string,
+  ): Promise<AzureBranchPr | null> {
+    const base = `${this.orgUrl}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(
+      repo,
+    )}/pullrequests`;
+    const sourceRef = encodeURIComponent(`refs/heads/${branch}`);
+    const data = await this.get<AzureList<AzurePullRequest>>(
+      `${base}?searchCriteria.sourceRefName=${sourceRef}&searchCriteria.status=all&$top=1`,
+    );
+    const pr = data.value?.[0];
+    if (!pr) return null;
+    return {
+      number: pr.pullRequestId,
+      url: this.prWebUrl(pr),
+      draft: Boolean(pr.isDraft),
+      state: pr.status === "completed" ? "merged" : pr.status === "abandoned" ? "closed" : "open",
+      mergeable: mapMergeStatus(pr.mergeStatus).enum,
+    };
+  }
+
+  /** The PR's web (browser) URL, from the repo's `webUrl` when present or
+   *  reconstructed from the org/project/repo otherwise. */
+  private prWebUrl(pr: AzurePullRequest): string {
     const project = pr.repository?.project?.name ?? "";
     const repo = pr.repository?.name ?? "";
-    const webUrl = pr.repository?.webUrl
+    return pr.repository?.webUrl
       ? `${pr.repository.webUrl}/pullrequest/${pr.pullRequestId}`
       : `${this.orgUrl}/${project}/_git/${repo}/pullrequest/${pr.pullRequestId}`;
+  }
+
+  private toSummary(pr: AzurePullRequest): AzurePrSummary {
     return {
       prId: pr.pullRequestId,
       title: pr.title ?? "",
-      url: webUrl,
+      url: this.prWebUrl(pr),
       org: this.org,
-      project,
-      repo,
+      project: pr.repository?.project?.name ?? "",
+      repo: pr.repository?.name ?? "",
       author: pr.createdBy?.displayName ?? "",
       draft: Boolean(pr.isDraft),
       status: pr.status ?? "active",

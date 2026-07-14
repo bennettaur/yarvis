@@ -163,6 +163,36 @@ export async function updateDefaultBranch(
   );
 }
 
+/** Fetches a single branch into its `origin/<branch>` remote-tracking ref. No checkout. */
+export async function fetchBranch(
+  runner: GitRunner,
+  primaryClonePath: string,
+  branch: string,
+): Promise<void> {
+  await git(runner, ["fetch", "origin", branch], primaryClonePath, NETWORK_TIMEOUT_MS);
+}
+
+/**
+ * The names of the repo's remote branches (from `origin/*`, minus `origin/HEAD`),
+ * for offering an existing branch to check out. Call `fetchRemote` first so the
+ * list reflects the current remote.
+ */
+export async function listRemoteBranches(
+  runner: GitRunner,
+  primaryClonePath: string,
+): Promise<string[]> {
+  const out = await git(
+    runner,
+    ["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin"],
+    primaryClonePath,
+  );
+  return out
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((ref) => ref && ref !== "origin/HEAD")
+    .map((ref) => ref.replace(/^origin\//, ""));
+}
+
 /** True if a local branch already exists in the primary clone. */
 export async function branchExists(
   runner: GitRunner,
@@ -194,6 +224,25 @@ export async function createWorktree(
     ["worktree", "add", "-b", newBranch, worktreePath, `origin/${baseBranch}`],
     primaryClonePath,
   );
+}
+
+/**
+ * Creates a worktree at `worktreePath` checked out on an existing branch. Passing
+ * the bare branch name lets git's DWIM create a local branch tracking
+ * `origin/<branch>` when none exists locally, or reuse the local branch if it
+ * does — so a branch pushed by someone else, or left by a prior workspace, is
+ * picked up. Fetch `origin/<branch>` first (see `fetchBranch`). Prunes stale
+ * worktree metadata so a path freed by an out-of-band folder delete can be reused.
+ */
+export async function addExistingBranchWorktree(
+  runner: GitRunner,
+  primaryClonePath: string,
+  worktreePath: string,
+  branch: string,
+): Promise<void> {
+  await git(runner, ["worktree", "prune"], primaryClonePath);
+  mkdirSync(dirname(worktreePath), { recursive: true });
+  await git(runner, ["worktree", "add", worktreePath, branch], primaryClonePath);
 }
 
 /** Removes a worktree and prunes its metadata. `force` discards uncommitted work. */

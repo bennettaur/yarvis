@@ -6,6 +6,7 @@ import { listEvents } from "../events/service.ts";
 import {
   completeTask,
   createTask,
+  deleteTask,
   listTasks,
   rolloverTasks,
   tasksCompletedBetween,
@@ -60,6 +61,28 @@ describe("task service", () => {
   it("returns null when completing a missing task", async () => {
     const missing = await completeTask(db, "00000000-0000-0000-0000-000000000000");
     expect(missing).toBeNull();
+  });
+
+  it("deletes a task and removes it from the list", async () => {
+    const task = await createTask(db, { title: "Delete me", scope: "daily" });
+    const deleted = await deleteTask(db, task.id);
+    expect(deleted?.id).toBe(task.id);
+    expect((await listTasks(db)).length).toBe(0);
+  });
+
+  it("returns null when deleting a missing task", async () => {
+    const missing = await deleteTask(db, "00000000-0000-0000-0000-000000000000");
+    expect(missing).toBeNull();
+  });
+
+  it("deleting a task emits no event", async () => {
+    const task = await createTask(db, { title: "Untracked removal", scope: "daily" });
+    const before = (await listEvents(db)).length;
+    await deleteTask(db, task.id);
+
+    // A deleted task is intentionally left out of the event log, so the delete
+    // adds nothing beyond the task.created event from setup.
+    expect((await listEvents(db)).length).toBe(before);
   });
 
   it("reopening a task clears completedAt", async () => {

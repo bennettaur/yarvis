@@ -31,7 +31,8 @@ Status of the build against the original vision. The full V1 plan lives at
   Stars and saved filters too. A provider toggle switches between GitHub and
   Azure DevOps, which share one provider-agnostic UI (PRs tab).
 - **Alarms** — full-screen takeover + escalating sound/notification, with
-  acknowledge/snooze (Alarms tab).
+  acknowledge/snooze, plus a Join-meeting action on meeting-derived alarms that
+  opens the meet link and ends the alarm (Alarms tab).
 - **Embedded PR review** — in-app PR detail view (description, normalized checks,
   review threads, file diffs) rendered with markdown and per-line diff coloring
   (PRs tab → row click). Decomposed into reusable, prop-driven components that

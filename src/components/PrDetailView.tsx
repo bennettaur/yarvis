@@ -88,8 +88,15 @@ export default function PrDetailView({ pr, onBack }: { pr: PrSummary; onBack: ()
     <div className="flex h-full min-h-0 flex-col">
       <PrFloatingHeader pr={pr} detail={detail} onBack={onBack} />
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-        <div className="space-y-5">
+      {/* The vertical padding lives on the inner wrapper, not this scroll
+          container: a sticky file header uses `top-0` against this container, and
+          a `padding-top` here would offset the sticky stop below the pane's top
+          edge, letting diff content scroll up into the gap above the header.
+          `data-pr-scroll` marks this element as the scroll pane so a collapsing
+          file diff can re-anchor its header to the top (see PrFileDiffs'
+          `toggleViewed`); keep the attribute if this markup moves. */}
+      <div data-pr-scroll className="min-h-0 flex-1 overflow-y-auto px-6">
+        <div className="space-y-5 py-5">
           {error && <p className="text-sm text-red-400">{error}</p>}
 
           <PrDescription prRef={prRef} />

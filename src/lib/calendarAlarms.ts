@@ -108,7 +108,7 @@ export function useEventAlarms() {
       const fireAt = fireAtFor(event);
       if (fireAt === null || !isArmable(event)) return;
       if (findArmed(event, alarms)) return;
-      await createAlarm(alarmLabel(event), fireAt);
+      await createAlarm(alarmLabel(event), fireAt, true, event.meetLink);
       await refreshAlarms();
     },
     [alarms],
