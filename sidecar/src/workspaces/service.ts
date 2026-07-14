@@ -10,6 +10,7 @@ import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import {
+  type IssueLink,
   type Repo,
   repos,
   type Task,
@@ -21,10 +22,12 @@ import {
   workspaceRepos,
   workspaces,
 } from "../db/schema.ts";
+import { deleteLinkForWorkspace, listLinksForWorkspace, upsertLink } from "../issues/service.ts";
 import { completeTasksByWorkspace, tasksForWorkspace } from "../tasks/service.ts";
 import { stopClaudeSession } from "./claudeSession.ts";
 import { runStreaming } from "./exec.ts";
 import {
+  addExistingBranchWorktree,
   type BranchSync,
   branchExists,
   branchSync,
@@ -33,11 +36,13 @@ import {
   defaultGitRunner,
   detectDefaultBranch,
   ensurePrimaryClone,
+  fetchBranch,
   fetchRemote,
   fileDiff,
   type GitRunner,
   listChangedFiles,
   listFiles,
+  listRemoteBranches,
   removeWorktree,
   updateDefaultBranch,
 } from "./git.ts";
@@ -84,6 +89,22 @@ const ALLOWED_CLONE_URL = /^(https?:\/\/|git:\/\/|ssh:\/\/|[A-Za-z0-9._-]+@[A-Za
 export function assertSafeCloneUrl(url: string): void {
   if (!ALLOWED_CLONE_URL.test(url.trim())) {
     throw new Error(`unsupported clone URL transport: ${url}`);
+  }
+}
+
+/**
+ * Throws if a branch name git could misread. The important case is a leading
+ * `-`, which git's option parser reads as a flag rather than a ref (the same
+ * class of risk `assertSafeCloneUrl` guards against) — so a chosen existing
+ * branch can't smuggle a git option into `fetch`/`worktree add`. Also rejects
+ * whitespace and the characters git forbids in ref names, so a real remote
+ * branch (which the picker offers) always passes.
+ */
+export function assertSafeBranchName(branch: string): void {
+  const trimmed = branch.trim();
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: git bars control chars in ref names.
+  if (!trimmed || trimmed.startsWith("-") || /[\s~^:?*[\\\x00-\x1f]/.test(trimmed)) {
+    throw new Error(`unsupported branch name: ${branch}`);
   }
 }
 
@@ -145,6 +166,25 @@ export async function deleteRepo(db: Db, id: string): Promise<boolean> {
   return rows.length > 0;
 }
 
+/**
+ * The repo's remote branch names, so a workspace can be created on an existing
+ * branch. Ensures the primary clone exists and fetches first (under the repo
+ * lock, so it never races a worktree add/remove) so the list is current.
+ */
+export async function listRepoBranches(
+  db: Db,
+  repoId: string,
+  runner: GitRunner = defaultGitRunner,
+): Promise<string[]> {
+  const repo = await getRepo(db, repoId);
+  if (!repo) throw new Error("repo not found");
+  return withRepoLock(repo.id, async () => {
+    await ensurePrimaryClone(runner, repo.cloneUrl, repo.primaryClonePath);
+    await fetchRemote(runner, repo.primaryClonePath);
+    return listRemoteBranches(runner, repo.primaryClonePath);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Workspaces
 // ---------------------------------------------------------------------------
@@ -157,6 +197,12 @@ export interface CreateWorkspaceInput {
    * clone, or worktree.
    */
   repoIds: string[];
+  /**
+   * Per-repo (keyed by repo id) existing branch to check out instead of cutting
+   * a fresh branch. A repo absent from this map, or mapped to a blank string,
+   * gets the default new-branch flow.
+   */
+  existingBranches?: Record<string, string>;
   taskId?: string | null;
 }
 
@@ -168,6 +214,8 @@ export interface WorkspaceRepoDetail extends WorkspaceRepo {
 export interface WorkspaceDetail extends Workspace {
   repos: WorkspaceRepoDetail[];
   tasks: Task[];
+  // GitHub/JIRA issues linked to this workspace, via the shared issue-link table.
+  issues: IssueLink[];
 }
 
 /** Filesystem- and branch-safe slug derived from a workspace name. */
@@ -237,17 +285,22 @@ export async function createWorkspace(
     // empty values array).
     if (selected.length) {
       await tx.insert(workspaceRepos).values(
-        selected.map((repo) => ({
-          workspaceId: workspace!.id,
-          repoId: repo.id,
-          branch,
-          baseBranch: repo.defaultBranch ?? "main",
-          worktreePath: `${rootPath}/${
-            (nameCounts.get(repo.name.toLowerCase()) ?? 0) > 1
-              ? `${repo.name.toLowerCase()}-${repo.owner.toLowerCase()}`
-              : repo.name.toLowerCase()
-          }`,
-        })),
+        selected.map((repo) => {
+          const existing = input.existingBranches?.[repo.id]?.trim();
+          if (existing) assertSafeBranchName(existing);
+          return {
+            workspaceId: workspace!.id,
+            repoId: repo.id,
+            branch: existing || branch,
+            existingBranch: Boolean(existing),
+            baseBranch: repo.defaultBranch ?? "main",
+            worktreePath: `${rootPath}/${
+              (nameCounts.get(repo.name.toLowerCase()) ?? 0) > 1
+                ? `${repo.name.toLowerCase()}-${repo.owner.toLowerCase()}`
+                : repo.name.toLowerCase()
+            }`,
+          };
+        }),
       );
     }
 
@@ -312,6 +365,7 @@ export async function getWorkspace(db: Db, id: string): Promise<WorkspaceDetail 
       pr: prByWr.get(wr.id) ?? null,
     })),
     tasks: await tasksForWorkspace(db, id),
+    issues: await listLinksForWorkspace(db, id),
   };
 }
 
@@ -335,6 +389,43 @@ export async function unlinkTask(db: Db, workspaceId: string, taskId: string): P
     .where(and(eq(tasks.id, taskId), eq(tasks.workspaceId, workspaceId)))
     .returning({ id: tasks.id });
   return rows.length > 0;
+}
+
+export interface LinkIssueInput {
+  provider: string;
+  sourceKey: string;
+  externalId: string;
+  title?: string | null;
+  url?: string | null;
+}
+
+/** Links a GitHub/JIRA issue to a workspace via the shared issue-link table.
+ *  Idempotent per issue: re-linking re-points the issue at this workspace.
+ *  Returns null if the workspace doesn't exist (parity with `linkTask`), rather
+ *  than letting the issue_links FK surface a raw constraint error. */
+export async function linkIssue(
+  db: Db,
+  workspaceId: string,
+  input: LinkIssueInput,
+): Promise<IssueLink | null> {
+  const [ws] = await db
+    .select({ id: workspaces.id })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId));
+  if (!ws) return null;
+  return upsertLink(db, { ...input, workspaceId, localStatus: "in_progress" });
+}
+
+/** Detaches an issue from a workspace; scoped so it only affects this
+ *  workspace's link. Returns false if no such linked issue exists. */
+export function unlinkIssue(
+  db: Db,
+  workspaceId: string,
+  provider: string,
+  sourceKey: string,
+  externalId: string,
+): Promise<boolean> {
+  return deleteLinkForWorkspace(db, workspaceId, provider, sourceKey, externalId);
 }
 
 async function getWorkspaceRepo(db: Db, workspaceRepoId: string): Promise<WorkspaceRepo> {
@@ -591,16 +682,32 @@ export async function provisionWorkspace(
 
           await updateDefaultBranch(runner, repo.primaryClonePath, base);
 
-          // Avoid colliding with a branch left behind by a prior workspace.
-          let branch = wr.branch;
-          if (await branchExists(runner, repo.primaryClonePath, branch)) {
-            branch = `${wr.branch}-${id.slice(0, 8)}`;
+          if (wr.existingBranch) {
+            // Check out the branch the user chose as-is; `base` still stands as
+            // the diff base so changes show against the default branch.
+            await fetchBranch(runner, repo.primaryClonePath, wr.branch);
+            await addExistingBranchWorktree(
+              runner,
+              repo.primaryClonePath,
+              wr.worktreePath,
+              wr.branch,
+            );
+            await db
+              .update(workspaceRepos)
+              .set({ baseBranch: base })
+              .where(eq(workspaceRepos.id, wr.id));
+          } else {
+            // Avoid colliding with a branch left behind by a prior workspace.
+            let branch = wr.branch;
+            if (await branchExists(runner, repo.primaryClonePath, branch)) {
+              branch = `${wr.branch}-${id.slice(0, 8)}`;
+            }
+            await createWorktree(runner, repo.primaryClonePath, wr.worktreePath, branch, base);
+            await db
+              .update(workspaceRepos)
+              .set({ branch, baseBranch: base })
+              .where(eq(workspaceRepos.id, wr.id));
           }
-          await createWorktree(runner, repo.primaryClonePath, wr.worktreePath, branch, base);
-          await db
-            .update(workspaceRepos)
-            .set({ branch, baseBranch: base })
-            .where(eq(workspaceRepos.id, wr.id));
         });
 
         let exitCode = 0;

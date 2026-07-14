@@ -2,12 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { writeIssuePromptFile } from "../lib/issues/api";
 import type { OpenWorkspaceRequest } from "../lib/nav";
 import { getClaudeCommand, ptyExists, startClaudeSession } from "../lib/pty";
-import { createRepo, listRepos, type Repo } from "../lib/repos";
+import { createRepo, listRepoBranches, listRepos, type Repo } from "../lib/repos";
 import { listTasks, type Task } from "../lib/tasks";
+import { openExternal } from "../lib/url";
 import {
   createWorkspace,
   getWorkspace,
   listWorkspaces,
+  unlinkWorkspaceIssue,
   unlinkWorkspaceTask,
   type WorkspaceDetail,
   type WorkspaceRepoDetail,
@@ -25,7 +27,7 @@ import WorkspaceSidePanel from "./WorkspaceSidePanel";
 import ArchiveDialog from "./workspaces/ArchiveDialog";
 import ArchivedView from "./workspaces/ArchivedView";
 import { DEFAULT_CLAUDE_COMMAND, resolveClaudeTab } from "./workspaces/claudeTab";
-import LinkTaskControl from "./workspaces/LinkTaskControl";
+import LinkWorkModal from "./workspaces/LinkWorkModal";
 import { consumeProvision } from "./workspaces/provisionStream";
 import WorkspaceFileDiff from "./workspaces/WorkspaceFileDiff";
 import WorkspacePrStatus from "./workspaces/WorkspacePrStatus";
@@ -295,6 +297,12 @@ function NewWorkspaceForm({
 }) {
   const [name, setName] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // repo id -> chosen existing branch ("" means cut a fresh branch).
+  const [selectedBranchByRepo, setSelectedBranchByRepo] = useState<Record<string, string>>({});
+  // repo id -> its fetched remote branches, or a loading/error sentinel.
+  const [remoteBranchesByRepo, setRemoteBranchesByRepo] = useState<
+    Record<string, string[] | "loading" | "error">
+  >({});
   const [taskId, setTaskId] = useState("");
   const [openTasks, setOpenTasks] = useState<Task[]>([]);
   const [phase, setPhase] = useState<"form" | "provisioning">("form");
@@ -314,11 +322,23 @@ function NewWorkspaceForm({
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
   }, [log]);
 
+  // Fetch a repo's remote branches once, when it's first selected, so the
+  // existing-branch dropdown can be populated without an upfront fetch per repo.
+  const loadBranches = (id: string) => {
+    setRemoteBranchesByRepo((prev) => (prev[id] ? prev : { ...prev, [id]: "loading" }));
+    listRepoBranches(id)
+      .then((branches) => setRemoteBranchesByRepo((prev) => ({ ...prev, [id]: branches })))
+      .catch(() => setRemoteBranchesByRepo((prev) => ({ ...prev, [id]: "error" })));
+  };
+
   const toggle = (id: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
-      else next.add(id);
+      else {
+        next.add(id);
+        if (!remoteBranchesByRepo[id]) loadBranches(id);
+      }
       return next;
     });
   };
@@ -328,10 +348,17 @@ function NewWorkspaceForm({
       setError("Pick a name.");
       return;
     }
+    // Only send branch choices for still-selected repos, dropping the "new
+    // branch" default so the map carries just the existing-branch picks.
+    const existingBranches: Record<string, string> = {};
+    for (const id of selected) {
+      if (selectedBranchByRepo[id]) existingBranches[id] = selectedBranchByRepo[id]!;
+    }
     try {
       const ws = await createWorkspace({
         name: name.trim(),
         repoIds: [...selected],
+        existingBranches: Object.keys(existingBranches).length ? existingBranches : undefined,
         taskId: taskId || undefined,
       });
       setPhase("provisioning");
@@ -402,21 +429,58 @@ function NewWorkspaceForm({
           )}
           {repos.length > 0 && (
             <ul className="divide-y divide-zinc-800 rounded-lg border border-zinc-800">
-              {repos.map((repo) => (
-                <li key={repo.id}>
-                  <label className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-800/40">
-                    <input
-                      type="checkbox"
-                      checked={selected.has(repo.id)}
-                      onChange={() => toggle(repo.id)}
-                    />
-                    <span className="text-zinc-200">{repo.name}</span>
-                    <span className="text-xs text-zinc-500">
-                      {repo.owner}/{repo.repo}
-                    </span>
-                  </label>
-                </li>
-              ))}
+              {repos.map((repo) => {
+                const branches = remoteBranchesByRepo[repo.id];
+                return (
+                  <li key={repo.id}>
+                    <label className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-800/40">
+                      <input
+                        type="checkbox"
+                        checked={selected.has(repo.id)}
+                        onChange={() => toggle(repo.id)}
+                      />
+                      <span className="text-zinc-200">{repo.name}</span>
+                      <span className="text-xs text-zinc-500">
+                        {repo.owner}/{repo.repo}
+                      </span>
+                    </label>
+                    {selected.has(repo.id) && (
+                      <div className="flex items-center gap-2 px-3 pb-2 pl-8 text-xs text-zinc-400">
+                        <span className="uppercase tracking-wide text-zinc-500">Branch</span>
+                        <select
+                          value={selectedBranchByRepo[repo.id] ?? ""}
+                          disabled={branches === "loading" || branches === "error"}
+                          onChange={(e) =>
+                            setSelectedBranchByRepo((prev) => ({
+                              ...prev,
+                              [repo.id]: e.target.value,
+                            }))
+                          }
+                          className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-zinc-500 disabled:opacity-60"
+                        >
+                          <option value="">New branch</option>
+                          {Array.isArray(branches) &&
+                            branches.map((branch) => (
+                              <option key={branch} value={branch}>
+                                {branch}
+                              </option>
+                            ))}
+                        </select>
+                        {branches === "loading" && <span className="text-zinc-500">loading…</span>}
+                        {branches === "error" && (
+                          <button
+                            type="button"
+                            onClick={() => loadBranches(repo.id)}
+                            className="text-indigo-400 hover:text-indigo-300"
+                          >
+                            retry
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           )}
           {showAddRepo && (
@@ -424,6 +488,7 @@ function NewWorkspaceForm({
               onAdded={(repo) => {
                 onRepoAdded(repo);
                 setSelected((prev) => new Set(prev).add(repo.id));
+                loadBranches(repo.id);
                 setShowAddRepo(false);
               }}
               onError={setError}
@@ -569,6 +634,7 @@ function WorkspaceDetailView({
   const [runRepo, setRunRepo] = useState<WorkspaceRepoDetail | null>(null);
   const [provisionLog, setProvisionLog] = useState<string | null>(null);
   const [showArchive, setShowArchive] = useState(false);
+  const [showLinkModal, setShowLinkModal] = useState(false);
   // Flips once the issue prompt file has been written (post-provision), gating
   // the Claude terminal launch.
   const [claudePromptReady, setClaudePromptReady] = useState(false);
@@ -862,19 +928,73 @@ function WorkspaceDetailView({
             ))}
           </div>
         )}
+        {detail.issues.length > 0 && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+            <span className="uppercase tracking-wide">Issues</span>
+            {detail.issues.map((issue) => (
+              <span
+                key={`${issue.provider}:${issue.sourceKey}#${issue.externalId}`}
+                className="flex items-center gap-1 rounded-md border border-zinc-800 px-2 py-0.5"
+              >
+                <span className="rounded bg-zinc-800 px-1 text-[10px] uppercase text-zinc-400">
+                  {issue.provider}
+                </span>
+                {issue.url ? (
+                  <a
+                    href={issue.url}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      openExternal(issue.url);
+                    }}
+                    className="text-zinc-300 hover:text-zinc-100"
+                  >
+                    {issue.title ?? issue.externalId}
+                  </a>
+                ) : (
+                  <span className="text-zinc-300">{issue.title ?? issue.externalId}</span>
+                )}
+                {detail.status !== "archived" && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void unlinkWorkspaceIssue(id, issue).then(() => {
+                        void load();
+                        onChanged();
+                      })
+                    }
+                    className="text-zinc-600 hover:text-zinc-300"
+                    aria-label="Unlink issue"
+                  >
+                    ×
+                  </button>
+                )}
+              </span>
+            ))}
+          </div>
+        )}
         {detail.status !== "archived" && (
           <div className="mt-2">
-            <LinkTaskControl
-              workspaceId={id}
-              linkedIds={detail.tasks.map((t) => t.id)}
-              onLinked={async () => {
-                await load();
-                onChanged();
-              }}
-            />
+            <button
+              type="button"
+              onClick={() => setShowLinkModal(true)}
+              className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-700"
+            >
+              + Link work…
+            </button>
           </div>
         )}
       </div>
+
+      {showLinkModal && (
+        <LinkWorkModal
+          detail={detail}
+          onClose={() => setShowLinkModal(false)}
+          onLinked={async () => {
+            await load();
+            onChanged();
+          }}
+        />
+      )}
 
       {showArchive && (
         <ArchiveDialog

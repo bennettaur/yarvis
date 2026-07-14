@@ -7,12 +7,14 @@ import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import { tasks, workspaceRepoPr, workspaceRepos } from "../db/schema.ts";
+import { issueLinks, tasks, workspaceRepoPr, workspaceRepos } from "../db/schema.ts";
 import type { GitRunner } from "./git.ts";
 import {
   archiveWorkspace,
+  assertSafeBranchName,
   createWorkspace,
   getWorkspace,
+  listRepoBranches,
   provisionWorkspace,
   unlinkTask,
 } from "./service.ts";
@@ -43,14 +45,17 @@ const fakeGit: GitRunner = async (args) => {
   if (args[0] === "symbolic-ref") return { stdout: "origin/main\n", stderr: "", exitCode: 0 };
   if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 }; // branch absent
   // Create the worktree dir like real git would, so setup scripts have a cwd.
-  if (args[0] === "worktree" && args[1] === "add" && args[4]) {
-    mkdirSync(args[4], { recursive: true });
+  // New branch: "worktree add -b <branch> <path> <base>" (path is args[4]).
+  // Existing branch: "worktree add <path> <branch>" (path is args[2]).
+  if (args[0] === "worktree" && args[1] === "add") {
+    const path = args[2] === "-b" ? args[4] : args[2];
+    if (path) mkdirSync(path, { recursive: true });
   }
   return { stdout: "", stderr: "", exitCode: 0 };
 };
 
 beforeEach(async () => {
-  await sql`TRUNCATE repos, workspaces, workspace_repos, workspace_repo_pr, tasks RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE repos, workspaces, workspace_repos, workspace_repo_pr, tasks, issue_links RESTART IDENTITY CASCADE`;
 });
 
 afterAll(async () => {
@@ -66,6 +71,24 @@ async function addRepo(cloneUrl = "git@github.com:acme/widget.git"): Promise<{ i
   });
   return (await res.json()) as { id: string };
 }
+
+describe("assertSafeBranchName", () => {
+  it("accepts ordinary branch names", () => {
+    for (const name of ["main", "feat/login", "release-2.1", "fix_bug"]) {
+      expect(() => assertSafeBranchName(name)).not.toThrow();
+    }
+  });
+
+  it("rejects a leading dash so git can't read it as a flag", () => {
+    expect(() => assertSafeBranchName("--upload-pack=x")).toThrow("unsupported branch name");
+  });
+
+  it("rejects whitespace and git-forbidden characters", () => {
+    for (const name of ["", "a b", "a~1", "a^", "a:b", "a?b", "a*b", "a[b", "a\\b"]) {
+      expect(() => assertSafeBranchName(name)).toThrow("unsupported branch name");
+    }
+  });
+});
 
 describe("repo routes", () => {
   it("requires authentication", async () => {
@@ -202,6 +225,163 @@ describe("workspace routes", () => {
   });
 });
 
+describe("workspace issue links", () => {
+  async function makeWorkspace(name: string): Promise<string> {
+    const res = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ name, repoIds: [] }),
+    });
+    return ((await res.json()) as { id: string }).id;
+  }
+
+  const githubIssue = {
+    provider: "github",
+    sourceKey: "acme/widget",
+    externalId: "42",
+    title: "Fix the thing",
+    url: "https://github.com/acme/widget/issues/42",
+  };
+
+  it("links a GitHub issue and surfaces it on the workspace detail", async () => {
+    const id = await makeWorkspace("link gh");
+    const res = await app.request(`/api/workspaces/${id}/issues`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify(githubIssue),
+    });
+    expect(res.status).toBe(200);
+
+    const detail = await app.request(`/api/workspaces/${id}`, { headers: auth });
+    const body = (await detail.json()) as {
+      issues: { externalId: string; localStatus: string; title: string; url: string }[];
+    };
+    expect(body.issues).toHaveLength(1);
+    expect(body.issues[0]?.externalId).toBe("42");
+    expect(body.issues[0]?.localStatus).toBe("in_progress");
+    expect(body.issues[0]?.title).toBe("Fix the thing");
+    expect(body.issues[0]?.url).toBe("https://github.com/acme/widget/issues/42");
+  });
+
+  it("404s when linking to a workspace that doesn't exist", async () => {
+    const res = await app.request("/api/workspaces/00000000-0000-0000-0000-000000000000/issues", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify(githubIssue),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects a non-http(s) url", async () => {
+    const id = await makeWorkspace("bad url");
+    const res = await app.request(`/api/workspaces/${id}/issues`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ ...githubIssue, url: "javascript:alert(1)" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("re-links the same issue idempotently, re-pointing it at the new workspace", async () => {
+    const first = await makeWorkspace("first");
+    const second = await makeWorkspace("second");
+    await app.request(`/api/workspaces/${first}/issues`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify(githubIssue),
+    });
+    await app.request(`/api/workspaces/${second}/issues`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify(githubIssue),
+    });
+
+    const rows = await db.select().from(issueLinks);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.workspaceId).toBe(second);
+  });
+
+  it("links a JIRA ticket entered by key", async () => {
+    const id = await makeWorkspace("link jira");
+    const res = await app.request(`/api/workspaces/${id}/issues`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ provider: "jira", sourceKey: "PROJ", externalId: "PROJ-7" }),
+    });
+    expect(res.status).toBe(200);
+    const detail = await app.request(`/api/workspaces/${id}`, { headers: auth });
+    const body = (await detail.json()) as { issues: { provider: string }[] };
+    expect(body.issues[0]?.provider).toBe("jira");
+  });
+
+  it("rejects an unknown provider", async () => {
+    const id = await makeWorkspace("bad provider");
+    const res = await app.request(`/api/workspaces/${id}/issues`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ ...githubIssue, provider: "gitlab" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("unlinks an issue and 404s when it isn't linked", async () => {
+    const id = await makeWorkspace("unlink");
+    await app.request(`/api/workspaces/${id}/issues`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify(githubIssue),
+    });
+    const query = new URLSearchParams({
+      provider: "github",
+      sourceKey: "acme/widget",
+      externalId: "42",
+    });
+    const del = await app.request(`/api/workspaces/${id}/issues?${query}`, {
+      method: "DELETE",
+      headers: auth,
+    });
+    expect(del.status).toBe(200);
+    expect(await db.select().from(issueLinks)).toHaveLength(0);
+
+    const again = await app.request(`/api/workspaces/${id}/issues?${query}`, {
+      method: "DELETE",
+      headers: auth,
+    });
+    expect(again.status).toBe(404);
+  });
+
+  it("does not unlink an issue owned by a different workspace", async () => {
+    const first = await makeWorkspace("owner-a");
+    const second = await makeWorkspace("owner-b");
+    await app.request(`/api/workspaces/${first}/issues`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify(githubIssue),
+    });
+    // Re-point the single link at the second workspace.
+    await app.request(`/api/workspaces/${second}/issues`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify(githubIssue),
+    });
+
+    const query = new URLSearchParams({
+      provider: "github",
+      sourceKey: "acme/widget",
+      externalId: "42",
+    });
+    // Deleting via the first (no longer owning) workspace must not touch the link.
+    const del = await app.request(`/api/workspaces/${first}/issues?${query}`, {
+      method: "DELETE",
+      headers: auth,
+    });
+    expect(del.status).toBe(404);
+    const rows = await db.select().from(issueLinks);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.workspaceId).toBe(second);
+  });
+});
+
 describe("provision + archive (injected git runner)", () => {
   it("provisions every repo to ready and marks the workspace active", async () => {
     const db = getDb(url).db;
@@ -215,6 +395,92 @@ describe("provision + archive (injected git runner)", () => {
     const detail = await getWorkspace(db, ws.id);
     expect(detail?.status).toBe("active");
     expect(detail?.repos[0]?.status).toBe("ready");
+  });
+
+  it("checks out an existing branch when one is chosen, without cutting a new one", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, {
+      name: "on-existing",
+      repoIds: [repo.id],
+      existingBranches: { [repo.id]: "feat/login" },
+    });
+
+    const worktreeAdds: string[][] = [];
+    const trackingGit: GitRunner = async (args) => {
+      if (args[0] === "worktree" && args[1] === "add") worktreeAdds.push(args);
+      return fakeGit(args, {});
+    };
+    await provisionWorkspace(db, ws.id, () => {}, trackingGit);
+
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.status).toBe("active");
+    const wr = detail?.repos[0];
+    expect(wr?.branch).toBe("feat/login");
+    expect(wr?.existingBranch).toBe(true);
+    // Adds the worktree on the bare branch name — never with -b (no new branch).
+    expect(worktreeAdds).toEqual([["worktree", "add", wr!.worktreePath, "feat/login"]]);
+  });
+
+  it("fetches the existing branch before adding its worktree and keeps the diff base", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, {
+      name: "fetch-order",
+      repoIds: [repo.id],
+      existingBranches: { [repo.id]: "feat/login" },
+    });
+
+    const order: string[] = [];
+    const orderingGit: GitRunner = async (args) => {
+      if (args[0] === "fetch" && args[2] === "feat/login") order.push("fetch");
+      if (args[0] === "worktree" && args[1] === "add") order.push("worktree-add");
+      return fakeGit(args, {});
+    };
+    await provisionWorkspace(db, ws.id, () => {}, orderingGit);
+
+    // DWIM tracking depends on origin/feat/login existing before the add.
+    expect(order).toEqual(["fetch", "worktree-add"]);
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.repos[0]?.baseBranch).toBe("main");
+  });
+
+  it("mixes an existing-branch repo with a new-branch repo in one workspace", async () => {
+    const db = getDb(url).db;
+    const r1 = await addRepo("git@github.com:acme/widget.git");
+    const r2 = await addRepo("git@github.com:acme/gadget.git");
+    const ws = await createWorkspace(db, config, {
+      name: "mixed",
+      repoIds: [r1.id, r2.id],
+      // Only the first repo gets an existing branch; the second falls back.
+      existingBranches: { [r1.id]: "feat/login", [r2.id]: "" },
+    });
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+
+    const detail = await getWorkspace(db, ws.id);
+    const byRepo = new Map(detail?.repos.map((wr) => [wr.repoId, wr]));
+    expect(byRepo.get(r1.id)?.existingBranch).toBe(true);
+    expect(byRepo.get(r1.id)?.branch).toBe("feat/login");
+    expect(byRepo.get(r2.id)?.existingBranch).toBe(false);
+    expect(byRepo.get(r2.id)?.branch).toBe("yarvis/mixed");
+  });
+
+  it("lists the repo's remote branches, stripping origin/ and origin/HEAD", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const branchGit: GitRunner = async (args) => {
+      if (args[0] === "for-each-ref") {
+        return { stdout: "origin/HEAD\norigin/main\norigin/feat/login\n", stderr: "", exitCode: 0 };
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    };
+    expect(await listRepoBranches(db, repo.id, branchGit)).toEqual(["main", "feat/login"]);
+  });
+
+  it("throws 'repo not found' listing branches for an unknown repo", async () => {
+    const db = getDb(url).db;
+    const missing = "00000000-0000-0000-0000-000000000000";
+    expect(listRepoBranches(db, missing, fakeGit)).rejects.toThrow("repo not found");
   });
 
   it("provisions a scratch workspace to active and creates its root folder", async () => {

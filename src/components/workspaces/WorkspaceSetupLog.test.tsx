@@ -10,6 +10,7 @@ const baseRepo: WorkspaceRepoDetail = {
   repoId: "r1",
   status: "error",
   branch: "yarvis/thing",
+  existingBranch: false,
   baseBranch: "main",
   worktreePath: "/work/ws1/thing",
   setupLog: "$ bun install\nerror: script failed",

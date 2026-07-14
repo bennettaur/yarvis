@@ -1,4 +1,5 @@
 import { sidecarFetch, streamSSE } from "./api";
+import type { IssueLink } from "./issues/types";
 import type { Repo } from "./repos";
 import type { Task } from "./tasks";
 
@@ -39,6 +40,8 @@ export interface WorkspaceRepoDetail {
   repoId: string;
   status: WorkspaceRepoStatus;
   branch: string;
+  /** Whether `branch` is a pre-existing branch rather than a fresh one. */
+  existingBranch: boolean;
   baseBranch: string;
   worktreePath: string;
   setupLog: string | null;
@@ -52,6 +55,8 @@ export interface WorkspaceRepoDetail {
 export interface WorkspaceDetail extends Workspace {
   repos: WorkspaceRepoDetail[];
   tasks: Task[];
+  /** GitHub/JIRA issues linked to this workspace. */
+  issues: IssueLink[];
 }
 
 /** A workspace list row, with its repo names for sidebar grouping. */
@@ -92,6 +97,11 @@ export interface CreateWorkspaceInput {
   name: string;
   /** Empty for a scratch workspace: just a folder to run Claude in. */
   repoIds: string[];
+  /**
+   * Per-repo (keyed by repo id) existing branch to check out instead of cutting
+   * a fresh branch. Omit a repo, or map it to "", for the default new-branch flow.
+   */
+  existingBranches?: Record<string, string>;
   taskId?: string | null;
 }
 
@@ -232,6 +242,44 @@ export async function unlinkWorkspaceTask(workspaceId: string, taskId: string): 
     method: "DELETE",
   });
   if (!res.ok) return readError(res, "unlink task");
+}
+
+/** A GitHub or JIRA issue to attach to a workspace, keyed by the source-agnostic
+ *  triple (provider, sourceKey, externalId). */
+export interface LinkIssueInput {
+  provider: "github" | "jira";
+  sourceKey: string;
+  externalId: string;
+  title?: string | null;
+  url?: string | null;
+}
+
+export async function linkWorkspaceIssue(
+  workspaceId: string,
+  input: LinkIssueInput,
+): Promise<IssueLink> {
+  const res = await sidecarFetch(`/api/workspaces/${workspaceId}/issues`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) return readError(res, "link issue");
+  return res.json();
+}
+
+export async function unlinkWorkspaceIssue(
+  workspaceId: string,
+  issue: { provider: string; sourceKey: string; externalId: string },
+): Promise<void> {
+  const query = new URLSearchParams({
+    provider: issue.provider,
+    sourceKey: issue.sourceKey,
+    externalId: issue.externalId,
+  });
+  const res = await sidecarFetch(`/api/workspaces/${workspaceId}/issues?${query}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) return readError(res, "unlink issue");
 }
 
 export async function archiveWorkspace(

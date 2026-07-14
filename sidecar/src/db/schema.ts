@@ -294,6 +294,9 @@ export const workspaceRepos = pgTable(
       .references(() => repos.id, { onDelete: "restrict" }), // don't orphan worktrees
     status: workspaceRepoStatus("status").notNull().default("pending"),
     branch: text("branch").notNull(), // resolved worktree branch name
+    // When true, `branch` is a pre-existing branch checked out into the worktree
+    // rather than a fresh branch cut from `baseBranch`.
+    existingBranch: boolean("existing_branch").notNull().default(false),
     baseBranch: text("base_branch").notNull(), // default branch it was cut from
     worktreePath: text("worktree_path").notNull(), // absolute subfolder
     setupLog: text("setup_log"), // capped tail of the last setup run
