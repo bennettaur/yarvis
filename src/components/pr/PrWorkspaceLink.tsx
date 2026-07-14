@@ -6,22 +6,18 @@ import { findWorkspaceForPr, type WorkspaceForPr } from "../../lib/workspaces";
 
 /**
  * When this PR was raised from an active workspace, shows a button that jumps
- * back to it (via the cross-tab open-workspace request). Only GitHub PRs are
- * tracked by the workspace poller, so Azure refs never match and render nothing.
- * Renders nothing while loading or when there's no match, so it stays out of the
- * way for PRs opened outside a workspace.
+ * back to it (via the cross-tab open-workspace request). Works for GitHub and
+ * Azure DevOps PRs — both are tracked by the workspace poller. Renders nothing
+ * while loading or when there's no match, so it stays out of the way for PRs
+ * opened outside a workspace.
  */
 export default function PrWorkspaceLink({ prRef }: { prRef: PrRef }) {
   const [workspace, setWorkspace] = useState<WorkspaceForPr | null>(null);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on ref identity, not the unstable ref object
   useEffect(() => {
-    if (prRef.provider !== "github") {
-      setWorkspace(null);
-      return;
-    }
     let live = true;
-    findWorkspaceForPr(prRef.owner, prRef.repo, prRef.number)
+    findWorkspaceForPr(prRef)
       .then((w) => live && setWorkspace(w))
       .catch(() => live && setWorkspace(null));
     return () => {

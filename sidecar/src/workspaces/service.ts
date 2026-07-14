@@ -6,7 +6,7 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { relative } from "node:path";
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import {
@@ -76,6 +76,92 @@ export function parseGitUrl(url: string): { owner: string; repo: string } | null
   const match = trimmed.match(/[:/]([^/:]+)\/([^/]+)$/);
   if (!match) return null;
   return { owner: match[1]!, repo: match[2]! };
+}
+
+/**
+ * A clone URL classified by provider. GitHub is addressed by owner/repo; Azure
+ * DevOps by org/project/repo. This is the single place the workspace flow learns
+ * a repo's provider — the `repos` table stores only the raw clone URL, so the
+ * poller and the PR→workspace backlink both parse it here rather than persisting
+ * a provider column.
+ *
+ * Keep in sync with the frontend copy in `src/lib/repos.ts` — the two bundles
+ * share no importable module, so both must classify a clone URL identically.
+ */
+export type RepoRemote =
+  | { provider: "github"; owner: string; repo: string }
+  | { provider: "azure"; org: string; project: string; repo: string };
+
+/** Hosts that identify an Azure DevOps remote (modern and legacy forms). The
+ *  legacy org lives in the subdomain (`{org}.visualstudio.com`), so a bare
+ *  `visualstudio.com` is not a real remote host and is intentionally excluded. */
+function isAzureHost(host: string): boolean {
+  return (
+    host === "dev.azure.com" ||
+    host === "ssh.dev.azure.com" ||
+    host === "vs-ssh.visualstudio.com" ||
+    host.endsWith(".visualstudio.com")
+  );
+}
+
+/** Splits a git remote into its host and path segments, spanning scp-like
+ *  (`git@host:path`) and URL (`https://…`, `ssh://…`) forms. */
+function splitRemote(url: string): { host: string; segments: string[] } | null {
+  const trimmed = url.trim().replace(/\.git$/, "");
+  // scp-like syntax (`user@host:path`) has no scheme and a `:` before the path.
+  const scp = trimmed.match(/^[^/]+@([^/:]+):(.+)$/);
+  const [host, path] = scp
+    ? [scp[1]!, scp[2]!]
+    : (() => {
+        try {
+          const u = new URL(trimmed);
+          return [u.hostname, u.pathname] as const;
+        } catch {
+          return ["", ""] as const;
+        }
+      })();
+  if (!host) return null;
+  return { host, segments: path.split("/").filter(Boolean) };
+}
+
+/**
+ * Classifies a clone URL as GitHub or Azure DevOps, extracting the identity each
+ * provider's PR lookup needs. Azure DevOps encodes org/project/repo three ways:
+ * modern HTTPS `dev.azure.com/{org}/{project}/_git/{repo}`, SSH
+ * `ssh.dev.azure.com:v3/{org}/{project}/{repo}`, and legacy
+ * `{org}.visualstudio.com/…/{project}/_git/{repo}` (org in the subdomain). Any
+ * non-Azure host falls back to GitHub owner/repo. Returns null when unparseable.
+ */
+export function parseRepoRemote(url: string): RepoRemote | null {
+  const parts = splitRemote(url);
+  if (!parts) return null;
+  const { host, segments } = parts;
+
+  if (isAzureHost(host)) {
+    // SSH form: v3/{org}/{project}/{repo}.
+    if (segments[0] === "v3" && segments.length >= 4) {
+      return { provider: "azure", org: segments[1]!, project: segments[2]!, repo: segments[3]! };
+    }
+    // HTTPS form: the `_git` marker precedes the repo and follows the project.
+    const gitIdx = segments.indexOf("_git");
+    if (gitIdx >= 1 && segments.length > gitIdx + 1) {
+      // Legacy visualstudio.com carries the org in the subdomain; dev.azure.com
+      // carries it as the first path segment.
+      const isLegacyVisualStudioHost =
+        host === "visualstudio.com" || host.endsWith(".visualstudio.com");
+      const org = isLegacyVisualStudioHost ? host.split(".")[0]! : segments[0]!;
+      return {
+        provider: "azure",
+        org,
+        project: segments[gitIdx - 1]!,
+        repo: segments[gitIdx + 1]!,
+      };
+    }
+    return null;
+  }
+
+  const github = parseGitUrl(url);
+  return github ? { provider: "github", ...github } : null;
 }
 
 /**
@@ -510,38 +596,68 @@ export interface WorkspaceForPr {
 }
 
 /**
- * Finds a non-archived workspace whose repo raised the given GitHub PR, matched
- * through the poller's PR cache (owner/repo + PR number). Only GitHub PRs are
- * cached, so Azure lookups always miss. Owner/repo are compared case-folded
- * since GitHub treats them case-insensitively.
+ * A PR identity the backlink matches against, tagged by provider so GitHub
+ * (owner/repo) and Azure DevOps (org/project/repo) are compared on the right
+ * fields. `number` is the PR number for GitHub and the pull-request id for Azure
+ * — both are stored in the same cached `prNumber` column.
+ */
+export type PrLocator =
+  | { provider: "github"; owner: string; repo: string; number: number }
+  | { provider: "azure"; org: string; project: string; repo: string; number: number };
+
+/** Case-folded equality, matching how both providers treat these identifiers. */
+function eqFold(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+/** True when a repo's parsed clone URL is the same repo the locator names. The
+ *  provider is already equal after the first guard; each branch re-checks both
+ *  sides only so TypeScript narrows the union on `remote` and `locator` together
+ *  (the final `return false` is likewise unreachable but required for that). */
+function remoteMatchesLocator(remote: RepoRemote | null, locator: PrLocator): boolean {
+  if (!remote || remote.provider !== locator.provider) return false;
+  if (remote.provider === "github" && locator.provider === "github") {
+    return eqFold(remote.owner, locator.owner) && eqFold(remote.repo, locator.repo);
+  }
+  if (remote.provider === "azure" && locator.provider === "azure") {
+    return (
+      eqFold(remote.org, locator.org) &&
+      eqFold(remote.project, locator.project) &&
+      eqFold(remote.repo, locator.repo)
+    );
+  }
+  return false;
+}
+
+/**
+ * Finds a non-archived workspace whose repo raised the given PR, matched through
+ * the poller's PR cache. The cache row carries only the PR number, so candidates
+ * are narrowed by number in SQL and then confirmed by parsing each repo's clone
+ * URL — this keeps the match provider-aware (GitHub owner/repo, Azure
+ * org/project/repo) without a provider column on `repos`.
  */
 export async function findWorkspaceForPr(
   db: Db,
-  owner: string,
-  repo: string,
-  prNumber: number,
+  locator: PrLocator,
 ): Promise<WorkspaceForPr | null> {
-  const [row] = await db
+  const candidates = await db
     .select({
       id: workspaces.id,
       name: workspaces.name,
       slug: workspaces.slug,
       status: workspaces.status,
+      cloneUrl: repos.cloneUrl,
     })
     .from(workspaceRepoPr)
     .innerJoin(workspaceRepos, eq(workspaceRepoPr.workspaceRepoId, workspaceRepos.id))
     .innerJoin(repos, eq(workspaceRepos.repoId, repos.id))
     .innerJoin(workspaces, eq(workspaceRepos.workspaceId, workspaces.id))
-    .where(
-      and(
-        eq(workspaceRepoPr.prNumber, prNumber),
-        eq(sql`lower(${repos.owner})`, owner.toLowerCase()),
-        eq(sql`lower(${repos.repo})`, repo.toLowerCase()),
-        ne(workspaces.status, "archived"),
-      ),
-    )
-    .limit(1);
-  return row ?? null;
+    .where(and(eq(workspaceRepoPr.prNumber, locator.number), ne(workspaces.status, "archived")));
+
+  for (const { cloneUrl, ...ws } of candidates) {
+    if (remoteMatchesLocator(parseRepoRemote(cloneUrl), locator)) return ws;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

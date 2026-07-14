@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { requestOpenPr } from "../../lib/nav";
 import type { PrSummary } from "../../lib/pr/types";
+import { repoPrRef } from "../../lib/repos";
 import { openExternal } from "../../lib/url";
 import {
   type CheckRollup,
@@ -29,9 +30,10 @@ const PR_STATE_STYLES: Record<string, string> = {
 };
 
 /**
- * GitHub's `mergeable_state` is "dirty" when the PR has merge conflicts against
- * its base. The poller caches that string (older rows may hold the GraphQL
- * "CONFLICTING"), so match either.
+ * True when the cached mergeable value signals conflicts against the base.
+ * GitHub reports "dirty" (its `mergeable_state`); Azure reports "CONFLICTING"
+ * (the shared enum the poller stores), which older GitHub GraphQL rows also
+ * used — so match either, case-insensitively.
  */
 function hasConflicts(mergeable: string | null): boolean {
   const m = (mergeable ?? "").toLowerCase();
@@ -43,7 +45,7 @@ function buildPrSummary(repo: WorkspaceRepoDetail): PrSummary | null {
   const pr = repo.pr;
   if (!pr?.prNumber || !pr.prUrl) return null;
   return {
-    ref: { provider: "github", owner: repo.repo.owner, repo: repo.repo.repo, number: pr.prNumber },
+    ref: repoPrRef(repo.repo, pr.prNumber),
     title: "",
     url: pr.prUrl,
     author: "",
