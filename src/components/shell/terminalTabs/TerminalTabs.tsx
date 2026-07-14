@@ -54,7 +54,21 @@ interface DiffTab {
   path: string;
 }
 
-type Tab = TerminalTab | DiffTab;
+/**
+ * A tab showing a workspace repo's setup-script output (and any provisioning
+ * error) after a failed provision. Like a diff tab it owns no PTY and only
+ * tracks which repo it shows; the surface's owner renders the body via
+ * `renderSetupLog`. Tracking the repo here lets a repeat request re-select the
+ * existing tab instead of opening a second one.
+ */
+interface SetupLogTab {
+  id: string;
+  title: string;
+  kind: "setup";
+  workspaceRepoId: string;
+}
+
+type Tab = TerminalTab | DiffTab | SetupLogTab;
 
 /** Tab title for a diff tab: the file's basename, which is short and unique enough. */
 const fileTitle = (path: string) => path.split("/").pop() || path;
@@ -128,6 +142,13 @@ export interface OpenFileDiff {
   path: string;
 }
 
+/** A request to open (or re-focus) a setup-log tab for a workspace repo. */
+export interface OpenSetupLog {
+  workspaceRepoId: string;
+  /** Tab title, typically the repo's name. */
+  title: string;
+}
+
 export default function TerminalTabs({
   storageKey,
   cwd,
@@ -135,6 +156,9 @@ export default function TerminalTabs({
   openFileDiff = null,
   onFileDiffOpened,
   renderFileDiff,
+  openSetupLog = null,
+  onSetupLogOpened,
+  renderSetupLog,
 }: {
   /** Stable namespace for this surface — both for localStorage and PTY ids. */
   storageKey: string;
@@ -153,6 +177,16 @@ export default function TerminalTabs({
   onFileDiffOpened?: () => void;
   /** Supplies a diff tab's body. When omitted, diff tabs are not used. */
   renderFileDiff?: (file: OpenFileDiff) => ReactNode;
+  /**
+   * A workspace repo's setup log to open in a tab, using the same
+   * request/consume pattern as `openFileDiff`. Setting this opens a new tab or
+   * re-focuses the existing one for that repo; cleared via `onSetupLogOpened`.
+   */
+  openSetupLog?: OpenSetupLog | null;
+  /** Called once an `openSetupLog` request has been handled. */
+  onSetupLogOpened?: () => void;
+  /** Supplies a setup-log tab's body. When omitted, setup-log tabs are not used. */
+  renderSetupLog?: (req: Pick<OpenSetupLog, "workspaceRepoId">) => ReactNode;
 }) {
   const [state, setState] = useState<SurfaceState>(() => loadState(storageKey));
   // Refs to xterm handles so a tab/pane switch can move focus into the right shell.
@@ -268,6 +302,34 @@ export default function TerminalTabs({
     openDiff(openFileDiff);
     onFileDiffOpened?.();
   }, [openFileDiff, openDiff, onFileDiffOpened]);
+
+  // Open a setup-log tab for a workspace repo, or re-focus the tab already
+  // showing it (a repo has a single setup log, so dedupe on its id).
+  const openSetup = useCallback((req: OpenSetupLog) => {
+    setState((prev) => {
+      const existing = prev.tabs.find(
+        (t) => t.kind === "setup" && t.workspaceRepoId === req.workspaceRepoId,
+      );
+      if (existing) {
+        return prev.activeTabId === existing.id ? prev : { ...prev, activeTabId: existing.id };
+      }
+      const tabId = uid("t");
+      const tab: SetupLogTab = {
+        id: tabId,
+        title: req.title,
+        kind: "setup",
+        workspaceRepoId: req.workspaceRepoId,
+      };
+      return { ...prev, tabs: [...prev.tabs, tab], activeTabId: tabId };
+    });
+  }, []);
+
+  // Consume an open-setup-log request, mirroring the open-diff flow above.
+  useEffect(() => {
+    if (!openSetupLog) return;
+    openSetup(openSetupLog);
+    onSetupLogOpened?.();
+  }, [openSetupLog, openSetup, onSetupLogOpened]);
 
   const selectTab = useCallback(
     (tabId: string) => {
@@ -456,6 +518,8 @@ export default function TerminalTabs({
           />
         ) : activeTab?.kind === "diff" ? (
           (renderFileDiff?.({ repoId: activeTab.repoId, path: activeTab.path }) ?? null)
+        ) : activeTab?.kind === "setup" ? (
+          (renderSetupLog?.({ workspaceRepoId: activeTab.workspaceRepoId }) ?? null)
         ) : activeTab ? (
           <PaneTreeView
             pane={activeTab.root}
@@ -547,6 +611,7 @@ function TabStrip({
                 title={t.kind === "diff" ? t.path : t.title}
               >
                 {t.kind === "diff" && <span className="text-sky-400">±</span>}
+                {t.kind === "setup" && <span className="text-red-400">⚠</span>}
                 {t.title}
               </button>
               <button
