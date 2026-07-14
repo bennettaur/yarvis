@@ -65,6 +65,12 @@ export async function updateTask(
   return res.json();
 }
 
+export async function deleteTask(id: string): Promise<Task> {
+  const res = await sidecarFetch(`/api/tasks/${id}`, { method: "DELETE" });
+  await ensureOk(res, "delete task");
+  return res.json();
+}
+
 export async function rolloverTasks(
   fromDate: string,
   toDate: string,

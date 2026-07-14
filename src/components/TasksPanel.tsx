@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { completeTask, createTask, listTasks, type Task } from "../lib/tasks";
+import { completeTask, createTask, deleteTask, listTasks, type Task } from "../lib/tasks";
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
@@ -24,7 +24,15 @@ function isOverdue(target: string | null): boolean {
   return target < todayIso();
 }
 
-function TaskRow({ task, onComplete }: { task: Task; onComplete: (id: string) => void }) {
+function TaskRow({
+  task,
+  onComplete,
+  onDelete,
+}: {
+  task: Task;
+  onComplete: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
   const overdue = task.status === "open" && isOverdue(task.targetDate);
   return (
     <li className="group flex items-center gap-3 rounded-md px-2 py-2 transition-colors hover:bg-zinc-800/40">
@@ -70,6 +78,22 @@ function TaskRow({ task, onComplete }: { task: Task; onComplete: (id: string) =>
           {describeDate(task.targetDate)}
         </span>
       )}
+      <button
+        type="button"
+        onClick={() => onDelete(task.id)}
+        aria-label="Delete task"
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-zinc-600 opacity-0 transition-opacity hover:text-red-400 focus:opacity-100 group-hover:opacity-100"
+      >
+        <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" aria-hidden="true">
+          <path
+            d="M4 4l8 8M12 4l-8 8"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+          />
+        </svg>
+      </button>
     </li>
   );
 }
@@ -79,12 +103,14 @@ function TaskGroup({
   caption,
   tasks,
   onComplete,
+  onDelete,
   accent,
 }: {
   title: string;
   caption?: string;
   tasks: Task[];
   onComplete: (id: string) => void;
+  onDelete: (id: string) => void;
   accent: "indigo" | "violet" | "zinc";
 }) {
   const accentBar: Record<typeof accent, string> = {
@@ -109,7 +135,7 @@ function TaskGroup({
       ) : (
         <ul className="divide-y divide-zinc-800/60 px-2 py-1">
           {tasks.map((t) => (
-            <TaskRow key={t.id} task={t} onComplete={onComplete} />
+            <TaskRow key={t.id} task={t} onComplete={onComplete} onDelete={onDelete} />
           ))}
         </ul>
       )}
@@ -151,6 +177,14 @@ export default function TasksPanel() {
   const onComplete = useCallback(
     async (id: string) => {
       await completeTask(id);
+      await refresh();
+    },
+    [refresh],
+  );
+
+  const onDelete = useCallback(
+    async (id: string) => {
+      await deleteTask(id);
       await refresh();
     },
     [refresh],
@@ -201,16 +235,24 @@ export default function TasksPanel() {
           caption="Carry over or complete to clear"
           tasks={overdue}
           onComplete={onComplete}
+          onDelete={onDelete}
           accent="zinc"
         />
       )}
 
-      <TaskGroup title="Today" tasks={daily} onComplete={onComplete} accent="indigo" />
+      <TaskGroup
+        title="Today"
+        tasks={daily}
+        onComplete={onComplete}
+        onDelete={onDelete}
+        accent="indigo"
+      />
       <TaskGroup
         title="This week"
         caption="No fixed day"
         tasks={weekly}
         onComplete={onComplete}
+        onDelete={onDelete}
         accent="violet"
       />
 

@@ -74,6 +74,29 @@ describe("task routes", () => {
     expect(((await complete.json()) as { status: string }).status).toBe("done");
   });
 
+  it("deletes a task", async () => {
+    const create = await app.request("/api/tasks", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ title: "delete me", scope: "daily" }),
+    });
+    const task = (await create.json()) as { id: string };
+
+    const del = await app.request(`/api/tasks/${task.id}`, { method: "DELETE", headers: auth });
+    expect(del.status).toBe(200);
+
+    const list = await app.request("/api/tasks", { headers: auth });
+    expect(((await list.json()) as unknown[]).length).toBe(0);
+  });
+
+  it("returns 404 when deleting a missing task", async () => {
+    const res = await app.request("/api/tasks/00000000-0000-0000-0000-000000000000", {
+      method: "DELETE",
+      headers: auth,
+    });
+    expect(res.status).toBe(404);
+  });
+
   it("rolls tasks over to a new date", async () => {
     await app.request("/api/tasks", {
       method: "POST",
