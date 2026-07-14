@@ -164,6 +164,10 @@ function tableToMarkdown(node: AdfNode): string {
       .map(blockToMarkdown)
       .join(" ")
       .replace(/\n+/g, " ")
+      // Escape backslashes before pipes so a literal "\" in the cell can't
+      // combine with the pipe escaping (or a following char) and corrupt the
+      // table markup.
+      .replace(/\\/g, "\\\\")
       .replace(/\|/g, "\\|")
       .trim();
   const toCells = (row: AdfNode) => (row.content ?? []).map(cellText);

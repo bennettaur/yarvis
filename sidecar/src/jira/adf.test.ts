@@ -166,7 +166,7 @@ describe("adfToMarkdown block edge cases", () => {
     expect(adfToMarkdown(doc)).toBe("> quoted\n\n---");
   });
 
-  it("renders a table with a header row and escapes pipes", () => {
+  it("renders a table with a header row and escapes pipes and backslashes", () => {
     const cell = (text: string) => ({ type: "tableCell", content: [para(text)] });
     const doc = {
       type: "doc",
@@ -175,12 +175,14 @@ describe("adfToMarkdown block edge cases", () => {
           type: "table",
           content: [
             { type: "tableRow", content: [cell("a"), cell("b")] },
-            { type: "tableRow", content: [cell("c | d"), cell("e")] },
+            // A literal backslash must be doubled before the pipe is escaped, so
+            // "\" can't merge with the pipe escaping and corrupt the markup.
+            { type: "tableRow", content: [cell("c | d"), cell("x\\y")] },
           ],
         },
       ],
     };
-    expect(adfToMarkdown(doc)).toBe("| a | b |\n| --- | --- |\n| c \\| d | e |");
+    expect(adfToMarkdown(doc)).toBe("| a | b |\n| --- | --- |\n| c \\| d | x\\\\y |");
   });
 
   it("applies em/strike marks and falls back to bare text for a link without href", () => {
