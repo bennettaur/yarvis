@@ -91,7 +91,7 @@ export function parseRepoRemote(url: string): RepoRemote | null {
     }
     const gitIdx = segments.indexOf("_git");
     if (gitIdx >= 1 && segments.length > gitIdx + 1) {
-      const org = host.endsWith("visualstudio.com") ? host.split(".")[0]! : segments[0]!;
+      const org = host.endsWith(".visualstudio.com") ? host.split(".")[0]! : segments[0]!;
       return {
         provider: "azure",
         org,

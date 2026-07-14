@@ -147,7 +147,9 @@ export function parseRepoRemote(url: string): RepoRemote | null {
     if (gitIdx >= 1 && segments.length > gitIdx + 1) {
       // Legacy visualstudio.com carries the org in the subdomain; dev.azure.com
       // carries it as the first path segment.
-      const org = host.endsWith("visualstudio.com") ? host.split(".")[0]! : segments[0]!;
+      const isLegacyVisualStudioHost =
+        host === "visualstudio.com" || host.endsWith(".visualstudio.com");
+      const org = isLegacyVisualStudioHost ? host.split(".")[0]! : segments[0]!;
       return {
         provider: "azure",
         org,
