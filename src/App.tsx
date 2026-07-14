@@ -23,6 +23,7 @@ import WorkspacesPanel from "./components/WorkspacesPanel";
 import { type Alarm, onAlarmFired } from "./lib/alarms";
 import type { AttentionItem } from "./lib/attention";
 import { markAttention } from "./lib/attentionStore";
+import type { IssueSummary } from "./lib/issues/types";
 import { type OpenWorkspaceRequest, useOpenPrListener, useOpenWorkspaceListener } from "./lib/nav";
 import { notify } from "./lib/notify";
 import { onOmniChatSummon } from "./lib/omniChat";
@@ -53,6 +54,8 @@ export default function App() {
   // A workspace another view (Issues "Start work") has asked us to open, with an
   // optional Claude prompt to launch. WorkspacesPanel consumes and clears it.
   const [requestedWorkspace, setRequestedWorkspace] = useState<OpenWorkspaceRequest | null>(null);
+  // An issue the attention/WIP panel asked us to open. IssuesPanel consumes it.
+  const [requestedIssue, setRequestedIssue] = useState<IssueSummary | null>(null);
 
   useTabShortcuts(tab, setTab);
 
@@ -101,9 +104,11 @@ export default function App() {
       .finally(() => setWipLoading(false));
   }, []);
 
-  // Routes a nav target to the right tab/overlay. Shared by both panel streams.
+  // Routes a nav target to the right tab/overlay, selecting the exact item where
+  // the destination supports it. `title` (when known) seeds the detail view's
+  // header until it re-fetches. Shared by both panel streams.
   const navigateTo = useCallback(
-    (target: WipItem["navTarget"]) => {
+    (target: WipItem["navTarget"], title?: string) => {
       if (!target) return;
       void invoke("focus_main_window").catch(() => {});
       setAttentionPanelOpen(false);
@@ -117,9 +122,45 @@ export default function App() {
           openOmniChat();
           break;
         case "pr":
+          // The detail view fetches from `ref`; the rest is a minimal seed.
+          setRequestedPr({
+            ref: {
+              provider: "github",
+              owner: target.owner,
+              repo: target.repo,
+              number: target.number,
+            },
+            title: title ?? "",
+            url: "",
+            author: "",
+            draft: false,
+            state: "open",
+            createdAt: "",
+            updatedAt: "",
+          });
           setTab("prs");
           break;
         case "issue":
+          // The detail view re-fetches from (provider, sourceKey, externalId).
+          setRequestedIssue({
+            provider: target.provider === "jira" ? "jira" : "github",
+            sourceKey: target.sourceKey,
+            sourceLabel: target.sourceKey,
+            externalId: target.externalId,
+            displayId: `#${target.externalId}`,
+            title: title ?? "",
+            url:
+              target.provider === "github"
+                ? `https://github.com/${target.sourceKey}/issues/${target.externalId}`
+                : "",
+            state: "open",
+            author: "",
+            assignees: [],
+            labels: [],
+            createdAt: "",
+            updatedAt: "",
+            commentCount: 0,
+          });
           setTab("issues");
           break;
         case "task":
@@ -133,12 +174,15 @@ export default function App() {
   const openAttentionItem = useCallback(
     (item: AttentionItem) => {
       void markAttention(item.id, "read");
-      navigateTo(item.navTarget);
+      navigateTo(item.navTarget, item.title);
     },
     [navigateTo],
   );
 
-  const openWipItem = useCallback((item: WipItem) => navigateTo(item.navTarget), [navigateTo]);
+  const openWipItem = useCallback(
+    (item: WipItem) => navigateTo(item.navTarget, item.title),
+    [navigateTo],
+  );
 
   // The agent flagged it needs the user. If they aren't already looking at the
   // overlay, raise a badge + an OS notification.
@@ -195,7 +239,10 @@ export default function App() {
         ) : tab === "issues" ? (
           // Issues owns its scroll so the issue detail view can pin a header and
           // scroll only its body, matching the PRs tab.
-          <IssuesPanel />
+          <IssuesPanel
+            requested={requestedIssue}
+            onRequestConsumed={() => setRequestedIssue(null)}
+          />
         ) : (
           <div className="h-full overflow-y-auto p-6">
             {tab === "tasks" && <TasksPanel />}

@@ -163,7 +163,14 @@ function IssueGroupedList({
   );
 }
 
-export default function IssuesPanel() {
+export default function IssuesPanel({
+  requested,
+  onRequestConsumed,
+}: {
+  /** An issue another view (the attention/WIP panel) asked us to open directly. */
+  requested?: IssueSummary | null;
+  onRequestConsumed?: () => void;
+} = {}) {
   const [activeTab, setActiveTab] = useState<TabKey>("assigned");
   const [assigned, setAssigned] = useState<IssueSummary[]>([]);
   const [all, setAll] = useState<IssueSummary[]>([]);
@@ -175,6 +182,15 @@ export default function IssuesPanel() {
   const [selected, setSelected] = useState<IssueSummary | null>(null);
   const [configuredCount, setConfiguredCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Open an issue another view asked for directly (attention/WIP panel). The
+  // detail view re-fetches from the (provider, sourceKey, externalId) triple, so
+  // a minimal synthesized summary is enough to open it.
+  useEffect(() => {
+    if (!requested) return;
+    setSelected(requested);
+    onRequestConsumed?.();
+  }, [requested, onRequestConsumed]);
 
   useOmniChatContext("issues", () => {
     if (selected) {
