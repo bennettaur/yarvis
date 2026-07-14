@@ -1,3 +1,4 @@
+import type { Context, Next } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
@@ -69,8 +70,14 @@ const promptFileSchema = z.object({
   prompt: z.string().min(1),
 });
 
-/** Providers with issue support today. JIRA slots in here later. */
-const SUPPORTED_PROVIDERS: IssueProvider[] = ["github"];
+/**
+ * Providers whose issues are stored/linked through these source-agnostic routes.
+ * JIRA reuses the DB-backed slices here (stars, saved filters, workspace links,
+ * prompt-file), but its live queries and mutations — keyed by issue key, not
+ * owner/repo/number — live under `/api/jira`. The GitHub-shaped live routes
+ * below (repos, assigned, all, search, detail, start-work) stay GitHub-only.
+ */
+const SUPPORTED_PROVIDERS: IssueProvider[] = ["github", "jira"];
 
 /**
  * Ticket-system issue routes, mounted under /api/issues. Source-agnostic:
@@ -93,6 +100,20 @@ export function createIssueRoutes(config: Config): Hono {
     }
     return next();
   });
+
+  // The GitHub-shaped live routes (owner/repo/number addressing + GitHub side
+  // effects) are GitHub-only; JIRA serves the equivalents under /api/jira. Guard
+  // them so a non-GitHub provider 404s here rather than getting GitHub data.
+  const githubOnly = async (c: Context, next: Next) => {
+    if (c.req.param("provider") !== "github") {
+      return c.json({ error: "route is github-only" }, 404);
+    }
+    return next();
+  };
+  for (const path of ["/repos", "/assigned", "/all", "/search", "/start-work"]) {
+    router.use(`/:provider${path}`, githubOnly);
+  }
+  router.use("/:provider/detail/*", githubOnly);
 
   const db = () => getDb(config.databaseUrl as string).db;
   const github = () =>
