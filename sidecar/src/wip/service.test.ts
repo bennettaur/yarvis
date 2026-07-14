@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { GithubStar, IssueLink, IssueStar, Task } from "../db/schema.ts";
+import type { IssueSummary } from "../issues/types.ts";
 import type { PrSummary } from "../pr/types.ts";
 import type { WorkspaceSummary } from "../workspaces/service.ts";
 import { buildWipItems, type WipInputs } from "./service.ts";
@@ -8,10 +9,30 @@ const emptyInputs: WipInputs = {
   starredPrs: [],
   myPrs: [],
   inProgressIssues: [],
+  labeledIssues: [],
   starredIssues: [],
   todayTasks: [],
   activeWorkspaces: [],
 };
+
+function labeledIssue(externalId: string): IssueSummary {
+  return {
+    provider: "github",
+    sourceKey: "me/app",
+    sourceLabel: "me/app",
+    externalId,
+    displayId: `#${externalId}`,
+    title: `Labeled ${externalId}`,
+    url: `https://github.com/me/app/issues/${externalId}`,
+    state: "open",
+    author: "me",
+    assignees: ["me"],
+    labels: [{ name: "in-progress", color: null }],
+    createdAt: "2026-07-12T00:00:00Z",
+    updatedAt: "2026-07-12T00:00:00Z",
+    commentCount: 0,
+  };
+}
 
 function pr(number: number, owner = "me", repo = "app"): PrSummary {
   return {
@@ -147,5 +168,27 @@ describe("buildWipItems", () => {
   it("excludes tasks that are already done", () => {
     const items = buildWipItems({ ...emptyInputs, todayTasks: [task("t1", "done")] });
     expect(items).toHaveLength(0);
+  });
+
+  it("lists labeled issues after in-progress ones", () => {
+    const items = buildWipItems({
+      ...emptyInputs,
+      inProgressIssues: [link("1")],
+      labeledIssues: [labeledIssue("2")],
+    });
+    expect(items.map((i) => i.id)).toEqual([
+      "issue:github:me/app:1",
+      "labeled-issue:github:me/app:2",
+    ]);
+  });
+
+  it("does not list an issue that is both in-progress and labeled twice", () => {
+    const items = buildWipItems({
+      ...emptyInputs,
+      inProgressIssues: [link("3")],
+      labeledIssues: [labeledIssue("3")],
+    });
+    expect(items).toHaveLength(1);
+    expect(items[0]!.id).toBe("issue:github:me/app:3");
   });
 });

@@ -553,6 +553,32 @@ export const attentionItems = pgTable(
 export type AttentionItemRow = typeof attentionItems.$inferSelect;
 export type NewAttentionItemRow = typeof attentionItems.$inferInsert;
 
+/** Which work-in-progress sources are included in the roll-up. */
+export interface WipSourcesConfig {
+  myPrs: boolean;
+  starredPrs: boolean;
+  issues: boolean;
+  tasks: boolean;
+  workspaces: boolean;
+}
+
+/**
+ * User configuration for the work-in-progress stream. Singleton (like
+ * `embeddings_config` / `google_tokens`): the service keeps at most one row.
+ * `sources` toggles each roll-up source on/off; `issueLabels` drives an extra
+ * "labeled issues" source — open GitHub issues assigned to the user carrying any
+ * of these labels, across the repos flagged for issue tracking.
+ */
+export const wipConfig = pgTable("wip_config", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sources: jsonb("sources").$type<WipSourcesConfig>().notNull(),
+  issueLabels: jsonb("issue_labels").$type<string[]>().notNull().default([]),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type WipConfigRow = typeof wipConfig.$inferSelect;
+
 export type CustomProviderRow = typeof customProviders.$inferSelect;
 export type NewCustomProviderRow = typeof customProviders.$inferInsert;
 

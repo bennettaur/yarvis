@@ -4,8 +4,9 @@ import EmbeddingsSection from "./EmbeddingsSection";
 import KeychainSection from "./KeychainSection";
 import ReposSection from "./ReposSection";
 import TelegramSection from "./TelegramSection";
+import WipSection from "./WipSection";
 
-type TabKey = "credentials" | "providers" | "repos" | "embeddings" | "telegram";
+type TabKey = "credentials" | "providers" | "repos" | "embeddings" | "telegram" | "wip";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "credentials", label: "Credentials" },
@@ -13,6 +14,7 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "repos", label: "Repositories" },
   { key: "embeddings", label: "Embeddings" },
   { key: "telegram", label: "Telegram" },
+  { key: "wip", label: "Work in progress" },
 ];
 
 const TAB_STORAGE_KEY = "yarvis.settings.activeTab";
@@ -57,6 +59,7 @@ export default function SettingsPanel() {
       {active === "repos" && <ReposSection />}
       {active === "embeddings" && <EmbeddingsSection />}
       {active === "telegram" && <TelegramSection />}
+      {active === "wip" && <WipSection />}
     </div>
   );
 }
