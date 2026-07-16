@@ -7,6 +7,7 @@
  */
 
 import type { JiraClient } from "./client.ts";
+import type { JiraTransition } from "./types.ts";
 
 function msg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -15,13 +16,41 @@ function msg(e: unknown): string {
 export interface JiraStartWorkOptions {
   assignSelf: boolean;
   transitionToInProgress: boolean;
+  /**
+   * An explicit transition id to apply, overriding the in-progress heuristic —
+   * set when the user picks the target status in the Start Work dialog, since
+   * which status means "started" varies per JIRA workflow.
+   */
+  transitionId?: string;
 }
 
 /**
- * Assigns the issue to the viewer and transitions it into an in-progress status
- * (the JIRA analogue of GitHub's assign + "in progress" label). Picks the first
- * transition whose destination is in the in-progress category; if none exists
- * (some workflows gate it), that becomes a warning rather than a failure.
+ * Chooses the transition to apply when starting work. An explicit `transitionId`
+ * wins (the user picked it). Otherwise the best in-progress match: the
+ * in-progress *category* also covers statuses like "Blocked", so a status
+ * literally named "In Progress" is preferred, then any status whose name
+ * contains "progress", then the first in-progress-category transition.
+ */
+export function pickStartWorkTransition(
+  transitions: JiraTransition[],
+  transitionId?: string,
+): JiraTransition | null {
+  if (transitionId) return transitions.find((t) => t.id === transitionId) ?? null;
+  const inProgress = transitions.filter((t) => t.toStatusCategory === "in_progress");
+  return (
+    inProgress.find((t) => /^in[\s-]?progress$/i.test(t.toStatusName.trim())) ??
+    inProgress.find((t) => /progress/i.test(t.toStatusName)) ??
+    inProgress[0] ??
+    null
+  );
+}
+
+/**
+ * Assigns the issue to the viewer and transitions it to a started status (the
+ * JIRA analogue of GitHub's assign + "in progress" label). The target status is
+ * `opts.transitionId` when the caller chose one, else the best in-progress
+ * match; if neither resolves (some workflows gate it), that becomes a warning
+ * rather than a failure.
  */
 export async function applyJiraStartWorkSideEffects(
   jira: JiraClient,
@@ -40,7 +69,7 @@ export async function applyJiraStartWorkSideEffects(
   if (opts.transitionToInProgress) {
     try {
       const transitions = await jira.transitions(key);
-      const target = transitions.find((t) => t.toStatusCategory === "in_progress");
+      const target = pickStartWorkTransition(transitions, opts.transitionId);
       if (target) {
         await jira.transitionIssue(key, target.id);
       } else {

@@ -61,6 +61,9 @@ const startWorkSchema = z.object({
   repoIds: z.array(z.string().uuid()).default([]),
   assignSelf: z.boolean().default(true),
   transitionToInProgress: z.boolean().default(true),
+  // Explicit target transition chosen in the Start Work dialog; falls back to
+  // the in-progress heuristic when omitted.
+  transitionId: z.string().min(1).max(64).optional(),
 });
 
 export function createJiraRoutes(config: Config): Hono {
@@ -322,6 +325,7 @@ export function createJiraRoutes(config: Config): Hono {
     const warnings = await applyJiraStartWorkSideEffects(client, input.externalId, {
       assignSelf: input.assignSelf,
       transitionToInProgress: input.transitionToInProgress,
+      transitionId: input.transitionId,
     });
 
     const prompt = buildIssuePrompt({

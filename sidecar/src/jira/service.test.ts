@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { JiraClient } from "./client.ts";
-import { applyJiraStartWorkSideEffects } from "./service.ts";
+import { applyJiraStartWorkSideEffects, pickStartWorkTransition } from "./service.ts";
 import type { JiraTransition } from "./types.ts";
 
 interface Recorded {
@@ -48,6 +48,33 @@ const done: JiraTransition = {
   toStatusName: "Done",
   toStatusCategory: "done",
 };
+// JIRA classifies "Blocked" in the in-progress category too, so it must not be
+// picked ahead of an actual "In Progress" status.
+const blocked: JiraTransition = {
+  id: "11",
+  name: "Block",
+  toStatusName: "Blocked",
+  toStatusCategory: "in_progress",
+};
+
+describe("pickStartWorkTransition", () => {
+  it("prefers a status named 'In Progress' over other in-progress-category statuses", () => {
+    // Blocked comes first in the list but In Progress should win.
+    expect(pickStartWorkTransition([blocked, inProgress])?.id).toBe("21");
+  });
+
+  it("honours an explicit transition id, ignoring the heuristic", () => {
+    expect(pickStartWorkTransition([blocked, inProgress], "11")?.id).toBe("11");
+  });
+
+  it("falls back to the first in-progress-category transition when none is named progress", () => {
+    expect(pickStartWorkTransition([blocked, done])?.id).toBe("11");
+  });
+
+  it("returns null when no in-progress transition exists", () => {
+    expect(pickStartWorkTransition([done])).toBeNull();
+  });
+});
 
 describe("applyJiraStartWorkSideEffects", () => {
   it("assigns self and transitions to the first in-progress status", async () => {
@@ -59,6 +86,25 @@ describe("applyJiraStartWorkSideEffects", () => {
     expect(warnings).toEqual([]);
     expect(recorded.assigned).toBe("acc-me");
     expect(recorded.transitionId).toBe("21");
+  });
+
+  it("does not transition to Blocked when an In Progress status is available", async () => {
+    const { client, recorded } = fakeClient({ transitions: [blocked, inProgress] });
+    await applyJiraStartWorkSideEffects(client, "PROJ-1", {
+      assignSelf: false,
+      transitionToInProgress: true,
+    });
+    expect(recorded.transitionId).toBe("21");
+  });
+
+  it("applies an explicit transition id when provided", async () => {
+    const { client, recorded } = fakeClient({ transitions: [blocked, inProgress] });
+    await applyJiraStartWorkSideEffects(client, "PROJ-1", {
+      assignSelf: false,
+      transitionToInProgress: true,
+      transitionId: "11",
+    });
+    expect(recorded.transitionId).toBe("11");
   });
 
   it("skips both side effects when the options are off", async () => {

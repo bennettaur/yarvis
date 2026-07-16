@@ -1,32 +1,59 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import type { JiraTransition } from "../../lib/jira/types";
 import { listRepos, type Repo } from "../../lib/repos";
 
+/** The transition to pre-select: prefer a status named "In Progress", then any
+ *  in-progress-category status, else none (JIRA's in-progress category also
+ *  covers statuses like "Blocked", so name-matching avoids picking those). */
+function defaultTransition(transitions: JiraTransition[]): JiraTransition | undefined {
+  const inProgress = transitions.filter((t) => t.toStatusCategory === "in_progress");
+  return inProgress.find((t) => /in[\s-]?progress/i.test(t.toStatusName)) ?? inProgress[0];
+}
+
+export interface StartWorkChoice {
+  repoIds: string[];
+  transitionToInProgress: boolean;
+  transitionId?: string;
+}
+
 /**
- * Repo picker shown when starting work on a JIRA ticket. A JIRA issue isn't tied
- * to a repo, so the user chooses which registered repos the new workspace should
- * include (an empty selection yields a scratch workspace). The last selection is
- * remembered per JIRA project in localStorage, so repeat tickets in the same
- * project pre-select the repos worked last time.
+ * The Start Work dialog for a JIRA ticket. A JIRA issue isn't tied to a repo, so
+ * the user chooses which registered repos the new workspace should include (an
+ * empty selection yields a scratch workspace; the last choice is remembered per
+ * project). They also choose the target status, since which status means
+ * "started" varies per JIRA workflow — it defaults to the in-progress status but
+ * can be changed or skipped.
  */
 export default function JiraRepoPickerModal({
   projectKey,
   issueKey,
+  transitions,
   busy,
   onConfirm,
   onClose,
 }: {
   projectKey: string;
   issueKey: string;
+  transitions: JiraTransition[];
   busy: boolean;
-  onConfirm: (repoIds: string[]) => void;
+  onConfirm: (choice: StartWorkChoice) => void;
   onClose: () => void;
 }) {
   const [repos, setRepos] = useState<Repo[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [statusChoice, setStatusChoice] = useState<string>("none");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const storageKey = `yarvis:jira-start-repos:${projectKey}`;
+  const defaultTransitionId = useMemo(
+    () => defaultTransition(transitions)?.id ?? "none",
+    [transitions],
+  );
+
+  useEffect(() => {
+    setStatusChoice(defaultTransitionId);
+  }, [defaultTransitionId]);
 
   useEffect(() => {
     let live = true;
@@ -68,7 +95,12 @@ export default function JiraRepoPickerModal({
     } catch {
       // A full/unavailable localStorage shouldn't block starting work.
     }
-    onConfirm(ids);
+    const transitionToInProgress = statusChoice !== "none";
+    onConfirm({
+      repoIds: ids,
+      transitionToInProgress,
+      transitionId: transitionToInProgress ? statusChoice : undefined,
+    });
   };
 
   return (
@@ -118,6 +150,24 @@ export default function JiraRepoPickerModal({
               ))}
             </ul>
           )}
+
+          <div className="mt-4 border-t border-zinc-800 pt-3">
+            <label className="block text-xs text-zinc-400">
+              Move ticket to
+              <select
+                value={statusChoice}
+                onChange={(e) => setStatusChoice(e.target.value)}
+                className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100"
+              >
+                <option value="none">Don’t change status</option>
+                {transitions.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.toStatusName}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
         </div>
 
         <div className="flex items-center justify-end gap-2 border-t border-zinc-800 px-5 py-3">

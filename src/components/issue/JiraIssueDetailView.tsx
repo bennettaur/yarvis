@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { IssueSummary } from "../../lib/issues/types";
 import {
   jiraAddComment,
@@ -14,7 +14,7 @@ import { requestOpenWorkspace } from "../../lib/nav";
 import { formatRelativeTime } from "../../lib/time";
 import { openExternal } from "../../lib/url";
 import Markdown from "../Markdown";
-import JiraRepoPickerModal from "./JiraRepoPickerModal";
+import JiraRepoPickerModal, { type StartWorkChoice } from "./JiraRepoPickerModal";
 import { StatusBadge } from "./jiraStatus";
 
 const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -38,6 +38,25 @@ function AssigneeEditor({
   const [results, setResults] = useState<JiraUser[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Dismiss the open dropdown on an outside click or Escape.
+  useEffect(() => {
+    if (!editing) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node))
+        setEditing(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setEditing(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [editing]);
 
   useEffect(() => {
     if (!editing) return;
@@ -82,8 +101,10 @@ function AssigneeEditor({
   }
 
   return (
-    <div className="relative inline-block">
+    <div ref={containerRef} className="relative inline-block">
       <input
+        // biome-ignore lint/a11y/noAutofocus: focus the search field when the picker opens
+        autoFocus
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         placeholder="Search users…"
@@ -234,7 +255,7 @@ export default function JiraIssueDetailView({
     }
   };
 
-  const startWork = async (repoIds: string[]) => {
+  const startWork = async (choice: StartWorkChoice) => {
     if (!detail) return;
     setStarting(true);
     setError(null);
@@ -246,7 +267,9 @@ export default function JiraIssueDetailView({
         title: detail.title,
         body: detail.body,
         url: detail.url,
-        repoIds,
+        repoIds: choice.repoIds,
+        transitionToInProgress: choice.transitionToInProgress,
+        transitionId: choice.transitionId,
       });
       setWarnings(result.warnings);
       setPickingRepos(false);
@@ -313,7 +336,7 @@ export default function JiraIssueDetailView({
                   disabled={busyField || !summaryDraft.trim()}
                   className="rounded-md bg-indigo-600 px-2 py-1.5 text-xs font-medium hover:bg-indigo-500 disabled:opacity-50"
                 >
-                  Save
+                  {busyField ? "Saving…" : "Save"}
                 </button>
                 <button
                   type="button"
@@ -419,7 +442,7 @@ export default function JiraIssueDetailView({
                   disabled={busyField}
                   className="rounded-md bg-indigo-600 px-2 py-1.5 text-xs font-medium hover:bg-indigo-500 disabled:opacity-50"
                 >
-                  Save
+                  {busyField ? "Saving…" : "Save"}
                 </button>
                 <button
                   type="button"
@@ -491,7 +514,7 @@ export default function JiraIssueDetailView({
                     disabled={busyField}
                     className="rounded-md bg-indigo-600 px-2 py-1.5 text-xs font-medium hover:bg-indigo-500 disabled:opacity-50"
                   >
-                    Save
+                    {busyField ? "Saving…" : "Save"}
                   </button>
                   <button
                     type="button"
@@ -577,8 +600,9 @@ export default function JiraIssueDetailView({
         <JiraRepoPickerModal
           projectKey={detail.sourceKey}
           issueKey={detail.displayId}
+          transitions={detail.transitions}
           busy={starting}
-          onConfirm={(repoIds) => void startWork(repoIds)}
+          onConfirm={(choice) => void startWork(choice)}
           onClose={() => setPickingRepos(false)}
         />
       )}

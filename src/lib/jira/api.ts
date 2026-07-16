@@ -90,6 +90,8 @@ export interface JiraStartWorkInput {
   repoIds: string[];
   assignSelf?: boolean;
   transitionToInProgress?: boolean;
+  /** Explicit target transition; falls back to the in-progress heuristic. */
+  transitionId?: string;
 }
 
 export const jiraStartWork = (input: JiraStartWorkInput) =>
