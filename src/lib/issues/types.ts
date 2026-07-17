@@ -26,6 +26,10 @@ export interface IssueSummary {
   createdAt: string;
   updatedAt: string;
   commentCount: number;
+  /** JIRA workflow status/type; unset for GitHub (see sidecar issues/types.ts). */
+  statusName?: string;
+  statusCategory?: string;
+  issueType?: string;
 }
 
 export interface IssueComment {

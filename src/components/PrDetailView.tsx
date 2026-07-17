@@ -9,6 +9,10 @@ import PrDescription from "./pr/PrDescription";
 import PrFileDiffs from "./pr/PrFileDiffs";
 import PrFileList from "./pr/PrFileList";
 import PrFloatingHeader from "./pr/PrFloatingHeader";
+import SplitPane, { usePersistedBoolean, usePersistedRatio } from "./SplitPane";
+
+const FILE_LIST_COLLAPSED_KEY = "yarvis.pr.fileListCollapsed";
+const FILE_LIST_RATIO_KEY = "yarvis.pr.fileListRatio";
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -76,6 +80,14 @@ export default function PrDetailView({ pr, onBack }: { pr: PrSummary; onBack: ()
   // Shared so the file list and diffs stay in lockstep.
   const viewedFiles = usePrViewedFiles(prRef);
 
+  // The file list panel is resizable (ratio) and fully collapsible, both
+  // persisted so a chosen layout survives navigating between PRs.
+  const [fileListRatio, setFileListRatio] = usePersistedRatio(FILE_LIST_RATIO_KEY, 0.25);
+  const [fileListCollapsed, setFileListCollapsed] = usePersistedBoolean(
+    FILE_LIST_COLLAPSED_KEY,
+    false,
+  );
+
   // Record opening a PR for review. Keyed strictly by PR identity (the ref key)
   // so re-renders (and metadata edits like a rename) don't re-fire; a different
   // PR records a new event. Fire-and-forget.
@@ -110,22 +122,52 @@ export default function PrDetailView({ pr, onBack }: { pr: PrSummary; onBack: ()
           </CollapsibleSection>
 
           <Section title="Files">
-            <div className="flex gap-4">
-              <div className="sticky top-0 max-h-[80vh] w-64 shrink-0 self-start overflow-auto">
-                <PrFileList
-                  prRef={prRef}
-                  viewed={viewedFiles.viewed}
-                  onToggleViewed={viewedFiles.toggle}
-                />
+            {fileListCollapsed ? (
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setFileListCollapsed(false)}
+                  title="Show file list"
+                  aria-label="Show file list"
+                  className="sticky top-0 flex h-8 w-8 shrink-0 items-center justify-center self-start rounded text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+                >
+                  ›
+                </button>
+                <div className="min-w-0 flex-1">
+                  <PrFileDiffs
+                    prRef={prRef}
+                    viewed={viewedFiles.viewed}
+                    onToggleViewed={viewedFiles.toggle}
+                  />
+                </div>
               </div>
-              <div className="min-w-0 flex-1">
-                <PrFileDiffs
-                  prRef={prRef}
-                  viewed={viewedFiles.viewed}
-                  onToggleViewed={viewedFiles.toggle}
-                />
-              </div>
-            </div>
+            ) : (
+              <SplitPane
+                orientation="horizontal"
+                ratio={fileListRatio}
+                onRatioChange={setFileListRatio}
+                minRatio={0.12}
+                first={
+                  <div className="sticky top-0 max-h-[80vh] overflow-auto pr-2">
+                    <PrFileList
+                      prRef={prRef}
+                      viewed={viewedFiles.viewed}
+                      onToggleViewed={viewedFiles.toggle}
+                      onCollapse={() => setFileListCollapsed(true)}
+                    />
+                  </div>
+                }
+                second={
+                  <div className="min-w-0 pl-2">
+                    <PrFileDiffs
+                      prRef={prRef}
+                      viewed={viewedFiles.viewed}
+                      onToggleViewed={viewedFiles.toggle}
+                    />
+                  </div>
+                }
+              />
+            )}
           </Section>
         </div>
       </div>
