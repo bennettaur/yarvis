@@ -26,6 +26,7 @@ import TerminalPanel from "./TerminalPanel";
 import WorkspaceSidePanel from "./WorkspaceSidePanel";
 import ArchiveDialog from "./workspaces/ArchiveDialog";
 import ArchivedView from "./workspaces/ArchivedView";
+import BranchCombobox from "./workspaces/BranchCombobox";
 import { DEFAULT_CLAUDE_COMMAND, resolveClaudeTab } from "./workspaces/claudeTab";
 import LinkWorkModal from "./workspaces/LinkWorkModal";
 import { consumeProvision } from "./workspaces/provisionStream";
@@ -447,25 +448,16 @@ function NewWorkspaceForm({
                     {selected.has(repo.id) && (
                       <div className="flex items-center gap-2 px-3 pb-2 pl-8 text-xs text-zinc-400">
                         <span className="uppercase tracking-wide text-zinc-500">Branch</span>
-                        <select
+                        <BranchCombobox
+                          branches={branches ?? "loading"}
                           value={selectedBranchByRepo[repo.id] ?? ""}
-                          disabled={branches === "loading" || branches === "error"}
-                          onChange={(e) =>
+                          onChange={(branch) =>
                             setSelectedBranchByRepo((prev) => ({
                               ...prev,
-                              [repo.id]: e.target.value,
+                              [repo.id]: branch,
                             }))
                           }
-                          className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-zinc-500 disabled:opacity-60"
-                        >
-                          <option value="">New branch</option>
-                          {Array.isArray(branches) &&
-                            branches.map((branch) => (
-                              <option key={branch} value={branch}>
-                                {branch}
-                              </option>
-                            ))}
-                        </select>
+                        />
                         {branches === "loading" && <span className="text-zinc-500">loading…</span>}
                         {branches === "error" && (
                           <button
