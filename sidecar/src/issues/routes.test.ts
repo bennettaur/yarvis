@@ -39,7 +39,14 @@ describe("issue routes: auth + guards", () => {
     expect(res.status).toBe(401);
   });
 
-  it("404s an unsupported provider (the JIRA-later contract)", async () => {
+  it("404s an unsupported provider", async () => {
+    const res = await configured.request("/api/issues/linear/repos", { headers: auth });
+    expect(res.status).toBe(404);
+  });
+
+  it("404s a GitHub-only route for JIRA (JIRA serves these under /api/jira)", async () => {
+    // JIRA is a supported provider for the DB-backed routes (stars/filters/
+    // links), but the GitHub-shaped live routes stay GitHub-only.
     const res = await configured.request("/api/issues/jira/repos", { headers: auth });
     expect(res.status).toBe(404);
   });

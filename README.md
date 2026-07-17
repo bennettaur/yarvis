@@ -53,7 +53,8 @@ Secrets are entered in the app's **Settings** screen and stored in the macOS
 Keychain — not in env files: the database URL, provider keys (Anthropic,
 Gemini), a GitHub token and/or an Azure DevOps token + organization URL (for the
 PR dashboard + embedded review — either provider can back it, selected with a
-toggle in the PRs tab), a Google Cloud OAuth client id/secret (for the Calendar
+toggle in the PRs tab), a JIRA base URL + account email + API token (for the JIRA
+issues integration on the Issues tab), a Google Cloud OAuth client id/secret (for the Calendar
 integration), an optional embeddings-provider secret (an API key and/or
 custom header values for an OpenAI-compatible embeddings endpoint), and an
 optional Telegram bot token + allowed chat-id list (and, when the optional second
@@ -63,6 +64,11 @@ see below. AWS Bedrock uses the standard AWS credential chain.
 The Azure DevOps token is a Personal Access Token with **Code (read)** and
 **Pull Request Threads (read & write)** scopes; the organization URL is the
 `https://dev.azure.com/your-org` base (project is chosen per search).
+
+The JIRA credentials are for Atlassian Cloud: the base URL is your
+`https://your-org.atlassian.net` site, and the API token (created at
+id.atlassian.com → Security → API tokens) is paired with your account email for
+Basic auth.
 
 ### Embeddings
 
@@ -186,7 +192,10 @@ render real components with the `renderToHtml` helper in `src/test/render.tsx`.
 src/            React frontend (Vite + TS + Tailwind)
   lib/          sidecar API client, Keychain wrappers, Omni Chat context registry, notifications, cross-tab nav (nav.ts)
     pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs, per-file viewed state)
+    issues/     provider-neutral issue data layer (GitHub + JIRA) — types + api client
+    jira/       JIRA-specific data layer (issue detail, transitions, comments, create) — types + api client
   components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, Terminal, Workspaces, …)
+    issue/      Issues tab views: GitHub + JIRA issue lists, detail, create/repo-picker modals
     workspaces/  workspace detail subviews + Omni widgets
     shell/      desktop shell: nav rail, top bar, boot loading screen, tab shortcuts
     omni/       Omni view — chat-driven dynamic-UI canvas
@@ -206,6 +215,8 @@ sidecar/        Bun + TS service (Hono)
   src/github/   GitHub PR dashboard + embedded review (REST + GraphQL)
   src/azure/    Azure DevOps PR dashboard + embedded review (REST; diffs built with jsdiff)
   src/pr/       provider-neutral PR types shared by the github/ and azure/ clients
+  src/issues/   provider-neutral issue routes/service (stars, filters, workspace links, start-work)
+  src/jira/     JIRA Cloud REST client + routes + agent tools + ADF↔Markdown conversion
   src/google/   Google Calendar OAuth + events
   src/omni/     Omni UI generation (streaming) + saved layouts
   src/workspaces/ repo registry + git-worktree provisioning (/api/repos, /api/workspaces)
