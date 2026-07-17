@@ -100,7 +100,10 @@ export default function App() {
     setWipLoading(true);
     getWip()
       .then(setWip)
-      .catch(() => setWip([]))
+      .catch((e) => {
+        console.error("[wip] failed to load the work-in-progress list:", e);
+        setWip([]);
+      })
       .finally(() => setWipLoading(false));
   }, []);
 
@@ -110,7 +113,9 @@ export default function App() {
   const navigateTo = useCallback(
     (target: WipItem["navTarget"], title?: string) => {
       if (!target) return;
-      void invoke("focus_main_window").catch(() => {});
+      void invoke("focus_main_window").catch((e) => {
+        console.error("[app] focus_main_window failed:", e);
+      });
       setAttentionPanelOpen(false);
       switch (target.type) {
         case "workspace-claude":

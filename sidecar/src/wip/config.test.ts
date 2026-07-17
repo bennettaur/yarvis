@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import * as schema from "../db/schema.ts";
+import { type WipSourcesConfig, wipConfig } from "../db/schema.ts";
 import { DEFAULT_WIP_CONFIG, getWipConfig, saveWipConfig } from "./config.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -40,9 +41,10 @@ describe("wip config", () => {
   });
 
   it("backfills a missing source key from defaults", async () => {
-    // Simulate a row written before a new source key existed.
-    await sql`INSERT INTO wip_config (sources, issue_labels)
-              VALUES (${sql.json({ myPrs: false })}, ${sql.json([])})`;
+    // Simulate a row written before a new source key existed (partial sources).
+    await db
+      .insert(wipConfig)
+      .values({ sources: { myPrs: false } as WipSourcesConfig, issueLabels: [] });
     const config = await getWipConfig(db);
     expect(config.sources.myPrs).toBe(false); // saved value wins
     expect(config.sources.workspaces).toBe(true); // missing key defaults on

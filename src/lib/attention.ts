@@ -69,8 +69,9 @@ export async function* streamAttention(signal: AbortSignal): AsyncGenerator<Atte
   for await (const data of streamSSE("/api/attention/stream", { signal })) {
     try {
       yield JSON.parse(data) as AttentionStreamEvent;
-    } catch {
-      // Ignore an unparseable frame rather than killing the stream.
+    } catch (e) {
+      // Ignore an unparseable frame rather than killing the stream, but log it.
+      console.warn("[attention] dropped unparseable stream frame:", e);
     }
   }
 }

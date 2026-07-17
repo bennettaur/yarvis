@@ -85,8 +85,9 @@ function applyItem(item: AttentionItem): void {
 async function hydrate(): Promise<void> {
   try {
     hydrateFrom(await getAttention("pending"));
-  } catch {
+  } catch (e) {
     // Sidecar not ready yet; the stream loop re-hydrates on the next attempt.
+    console.warn("[attention] hydrate failed (will retry):", e);
   }
 }
 
@@ -105,8 +106,9 @@ function start(): void {
         for await (const event of streamAttention(signal)) {
           if (event.type === "item") applyItem(event.item);
         }
-      } catch {
+      } catch (e) {
         // Stream dropped (sidecar restart, network blip) — fall through to reconnect.
+        if (!signal.aborted) console.warn("[attention] stream dropped, reconnecting:", e);
       }
       if (signal.aborted) break;
       // Re-hydrate on reconnect so anything missed while disconnected reappears.
@@ -152,7 +154,8 @@ export async function markAttention(
   }
   try {
     await patchAttention(id, status);
-  } catch {
+  } catch (e) {
     // The item stays gone locally; a re-hydrate will restore it if it's still pending.
+    console.error(`[attention] failed to mark ${id} as ${status}:`, e);
   }
 }

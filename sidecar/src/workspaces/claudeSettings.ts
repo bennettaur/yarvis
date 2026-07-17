@@ -111,8 +111,12 @@ export function writeClaudeSettings(rootPath: string, workspaceId: string): void
     try {
       const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
       if (parsed && typeof parsed === "object") existing = parsed as Record<string, unknown>;
-    } catch {
-      // No readable existing settings; provision fresh.
+    } catch (e) {
+      // A missing file is the normal first-provision case; anything else (a
+      // corrupt/unreadable settings.json we're about to overwrite) is worth a log.
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+        console.error(`[workspaces] unreadable .claude/settings.json at ${file}:`, e);
+      }
     }
     mkdirSync(dir, { recursive: true });
     writeFileSync(file, `${JSON.stringify(buildClaudeSettings(workspaceId, existing), null, 2)}\n`);
