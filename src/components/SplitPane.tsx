@@ -121,3 +121,34 @@ export function usePersistedRatio(key: string, initial: number): [number, (ratio
   );
   return [ratio, set];
 }
+
+/**
+ * A boolean flag persisted in localStorage under `key`, stored as "1"/"0".
+ * Companion to `usePersistedRatio` for panel state (e.g. collapsed) so both
+ * layout preferences guard storage failures the same way.
+ */
+export function usePersistedBoolean(
+  key: string,
+  initial: boolean,
+): [boolean, (value: boolean) => void] {
+  const [value, setValue] = useState<boolean>(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw === null ? initial : raw === "1";
+    } catch {
+      return initial;
+    }
+  });
+  const set = useCallback(
+    (v: boolean) => {
+      setValue(v);
+      try {
+        localStorage.setItem(key, v ? "1" : "0");
+      } catch {
+        // Private-mode / quota failures are non-fatal; the choice just won't stick.
+      }
+    },
+    [key],
+  );
+  return [value, set];
+}
