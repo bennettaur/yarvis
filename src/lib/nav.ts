@@ -69,3 +69,36 @@ export function onOpenWorkspace(handler: (request: OpenWorkspaceRequest) => void
 export function useOpenWorkspaceListener(handler: (request: OpenWorkspaceRequest) => void): void {
   useEffect(() => onOpenWorkspace(handler), [handler]);
 }
+
+const NEW_WORKSPACE_EVENT = "yarvis:new-workspace";
+
+/**
+ * A request to open the New Workspace form on the Workspaces tab, pre-filled
+ * from another view. `taskId` links the new workspace to an existing task on
+ * create. `claudePrompt`, when set, launches a Claude session seeded with that
+ * prompt once the workspace is provisioned (the task "Start work" flow).
+ */
+export interface NewWorkspaceRequest {
+  name?: string;
+  taskId?: string;
+  claudePrompt?: string;
+}
+
+interface NewWorkspaceEvent extends Event {
+  detail: NewWorkspaceRequest;
+}
+
+export function requestNewWorkspace(request: NewWorkspaceRequest): void {
+  target.dispatchEvent(new CustomEvent(NEW_WORKSPACE_EVENT, { detail: request }));
+}
+
+export function onNewWorkspace(handler: (request: NewWorkspaceRequest) => void): () => void {
+  const listener = (e: Event) => handler((e as NewWorkspaceEvent).detail);
+  target.addEventListener(NEW_WORKSPACE_EVENT, listener);
+  return () => target.removeEventListener(NEW_WORKSPACE_EVENT, listener);
+}
+
+/** React-friendly hook over `onNewWorkspace` for the App shell. */
+export function useNewWorkspaceListener(handler: (request: NewWorkspaceRequest) => void): void {
+  useEffect(() => onNewWorkspace(handler), [handler]);
+}

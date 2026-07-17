@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { writeIssuePromptFile } from "../lib/issues/api";
-import type { OpenWorkspaceRequest } from "../lib/nav";
+import type { NewWorkspaceRequest, OpenWorkspaceRequest } from "../lib/nav";
 import { getClaudeCommand, ptyExists, startClaudeSession } from "../lib/pty";
 import { createRepo, listRepoBranches, listRepos, type Repo } from "../lib/repos";
 import { listTasks, type Task } from "../lib/tasks";
@@ -101,11 +101,17 @@ function claudeCwdForWorkspace(detail: WorkspaceDetail): string {
 export default function WorkspacesPanel({
   requested = null,
   onRequestConsumed,
+  requestedNew = null,
+  onNewRequestConsumed,
 }: {
   /** A workspace another tab asked us to open, optionally with a Claude prompt. */
   requested?: OpenWorkspaceRequest | null;
   /** Called once we've consumed `requested` so the parent can clear it. */
   onRequestConsumed?: () => void;
+  /** Another tab asked us to open the New Workspace form pre-filled (Tasks). */
+  requestedNew?: NewWorkspaceRequest | null;
+  /** Called once we've consumed `requestedNew` so the parent can clear it. */
+  onNewRequestConsumed?: () => void;
 } = {}) {
   const [items, setItems] = useState<WorkspaceSummary[]>([]);
   const [repos, setRepos] = useState<Repo[]>([]);
@@ -120,6 +126,10 @@ export default function WorkspacesPanel({
   // elsewhere so selecting an existing workspace never auto-launches Claude.
   const [justCreatedId, setJustCreatedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  // Pre-fill (name/taskId) plus a pending Claude prompt for the New Workspace
+  // form, applied when another tab (Tasks) hands off a "create workspace" or
+  // "start work" request. Cleared alongside `creating`.
+  const [newWorkspacePrefill, setNewWorkspacePrefill] = useState<NewWorkspaceRequest | null>(null);
   const [showArchived, setShowArchived] = useState<boolean>(
     () => localStorage.getItem(SHOW_ARCHIVED_KEY) === "1",
   );
@@ -160,6 +170,19 @@ export default function WorkspacesPanel({
     onRequestConsumed?.();
   }, [requested, onRequestConsumed]);
 
+  // Honor a cross-tab "new workspace" request (Tasks): open the New form with
+  // the task's name and link pre-filled. The Claude prompt (if any) is held
+  // here and handed to the detail view once the workspace is created.
+  useEffect(() => {
+    if (!requestedNew) return;
+    setSelectedId(null);
+    setJustCreatedId(null);
+    setClaudeRequest(null);
+    setNewWorkspacePrefill(requestedNew);
+    setCreating(true);
+    onNewRequestConsumed?.();
+  }, [requestedNew, onNewRequestConsumed]);
+
   useEffect(() => {
     if (showArchived) localStorage.setItem(SHOW_ARCHIVED_KEY, "1");
     else localStorage.removeItem(SHOW_ARCHIVED_KEY);
@@ -182,17 +205,26 @@ export default function WorkspacesPanel({
 
   const beginNew = () => {
     setCreating(true);
+    setNewWorkspacePrefill(null);
     setSelectedId(null);
     setJustCreatedId(null);
     setClaudeRequest(null);
   };
 
-  const onCreated = (id: string) => {
+  const onCreated = (id: string, claudePrompt?: string) => {
     setCreating(false);
+    setNewWorkspacePrefill(null);
     void refresh();
     setSelectedId(id);
-    // Marks this workspace for the detail view's one-shot Claude auto-start.
-    setJustCreatedId(id);
+    if (claudePrompt) {
+      // A "Start work" handoff seeds the detail view's Claude launch path;
+      // skip the remote-control auto-start so the two don't fight.
+      setClaudeRequest({ id, prompt: claudePrompt });
+      setJustCreatedId(null);
+    } else {
+      // Marks this workspace for the detail view's one-shot Claude auto-start.
+      setJustCreatedId(id);
+    }
   };
 
   const onRepoAdded = useCallback((repo: Repo) => {
@@ -261,8 +293,16 @@ export default function WorkspacesPanel({
       <main className="min-w-0 flex-1">
         {creating ? (
           <NewWorkspaceForm
+            // Key on the prefill so a fresh handoff (e.g. a second task's
+            // "Start work" while the form is already open) resets every field
+            // — the form's state is initialized only on mount.
+            key={newWorkspacePrefill?.taskId ?? "blank"}
             repos={repos}
-            onCancel={() => setCreating(false)}
+            prefill={newWorkspacePrefill}
+            onCancel={() => {
+              setCreating(false);
+              setNewWorkspacePrefill(null);
+            }}
             onCreated={onCreated}
             onRepoAdded={onRepoAdded}
           />
@@ -286,16 +326,21 @@ export default function WorkspacesPanel({
 
 function NewWorkspaceForm({
   repos,
+  prefill,
   onCancel,
   onCreated,
   onRepoAdded,
 }: {
   repos: Repo[];
+  /** Pre-fill from a cross-tab handoff (Tasks): name, taskId, Claude prompt. */
+  prefill?: NewWorkspaceRequest | null;
   onCancel: () => void;
-  onCreated: (id: string) => void;
+  /** `claudePrompt` is set for the "Start work" handoff so the detail view can
+   *  launch a Claude session seeded with it once the workspace is provisioned. */
+  onCreated: (id: string, claudePrompt?: string) => void;
   onRepoAdded: (repo: Repo) => void;
 }) {
-  const [name, setName] = useState("");
+  const [name, setName] = useState(prefill?.name ?? "");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // repo id -> chosen existing branch ("" means cut a fresh branch).
   const [selectedBranchByRepo, setSelectedBranchByRepo] = useState<Record<string, string>>({});
@@ -303,7 +348,7 @@ function NewWorkspaceForm({
   const [remoteBranchesByRepo, setRemoteBranchesByRepo] = useState<
     Record<string, string[] | "loading" | "error">
   >({});
-  const [taskId, setTaskId] = useState("");
+  const [taskId, setTaskId] = useState(prefill?.taskId ?? "");
   const [openTasks, setOpenTasks] = useState<Task[]>([]);
   const [phase, setPhase] = useState<"form" | "provisioning">("form");
   const [log, setLog] = useState("");
@@ -368,7 +413,7 @@ function NewWorkspaceForm({
       // repo whose setup failed — open the workspace: its detail view auto-opens
       // the failed repo's setup-log tab.
       if (result.error) setError(result.error);
-      else onCreated(ws.id);
+      else onCreated(ws.id, prefill?.claudePrompt);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
