@@ -141,6 +141,15 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
     if let Some(url) = secret_from_root(&secrets, "azure_devops_org_url") {
         cmd.env("AZURE_DEVOPS_ORG_URL", url);
     }
+    if let Some(url) = secret_from_root(&secrets, "jira_base_url") {
+        cmd.env("JIRA_BASE_URL", url);
+    }
+    if let Some(email) = secret_from_root(&secrets, "jira_email") {
+        cmd.env("JIRA_EMAIL", email);
+    }
+    if let Some(token) = secret_from_root(&secrets, "jira_api_token") {
+        cmd.env("JIRA_API_TOKEN", token);
+    }
     if let Some(id) = secret_from_root(&secrets, "google_client_id") {
         cmd.env("GOOGLE_CLIENT_ID", id);
     }

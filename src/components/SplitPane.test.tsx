@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { createElement as h, useEffect } from "react";
 import { renderToHtml } from "../test/render";
-import SplitPane, { usePersistedRatio } from "./SplitPane";
+import SplitPane, { usePersistedBoolean, usePersistedRatio } from "./SplitPane";
 
 describe("SplitPane", () => {
   it("renders both panes and a draggable divider", async () => {
@@ -76,5 +76,35 @@ describe("usePersistedRatio", () => {
     await renderToHtml(h(Probe));
     expect(seen).toBe(0.75);
     expect(localStorage.getItem("test.ratio.b")).toBe("0.75");
+  });
+});
+
+describe("usePersistedBoolean", () => {
+  it("falls back to the initial value when nothing is stored", async () => {
+    localStorage.removeItem("test.flag.a");
+    let seen = false;
+    function Probe() {
+      const [flag] = usePersistedBoolean("test.flag.a", true);
+      seen = flag;
+      return null;
+    }
+    await renderToHtml(h(Probe));
+    expect(seen).toBe(true);
+  });
+
+  it("reads a stored '1'/'0' and persists updates", async () => {
+    localStorage.setItem("test.flag.b", "0");
+    let seen = false;
+    function Probe() {
+      const [flag, setFlag] = usePersistedBoolean("test.flag.b", true);
+      seen = flag;
+      useEffect(() => {
+        setFlag(true);
+      }, [setFlag]);
+      return null;
+    }
+    await renderToHtml(h(Probe));
+    expect(seen).toBe(true);
+    expect(localStorage.getItem("test.flag.b")).toBe("1");
   });
 });

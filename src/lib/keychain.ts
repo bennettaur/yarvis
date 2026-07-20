@@ -7,6 +7,9 @@ export type SecretKey =
   | "github_token"
   | "azure_devops_token"
   | "azure_devops_org_url"
+  | "jira_base_url"
+  | "jira_email"
+  | "jira_api_token"
   | "database_url"
   | "google_client_id"
   | "google_client_secret"
@@ -61,6 +64,24 @@ export const SECRETS: SecretMeta[] = [
     label: "Azure DevOps org URL",
     placeholder: "https://dev.azure.com/your-org",
     help: "Organization base URL for the PR dashboard. Project is chosen per search.",
+  },
+  {
+    key: "jira_base_url",
+    label: "JIRA base URL",
+    placeholder: "https://your-org.atlassian.net",
+    help: "Atlassian Cloud site base URL for the Issues dashboard.",
+  },
+  {
+    key: "jira_email",
+    label: "JIRA email",
+    placeholder: "you@example.com",
+    help: "Atlassian account email paired with the API token.",
+  },
+  {
+    key: "jira_api_token",
+    label: "JIRA API token",
+    placeholder: "Atlassian API token",
+    help: "Create at id.atlassian.com under Security → API tokens.",
   },
   {
     key: "google_client_id",
