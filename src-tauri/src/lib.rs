@@ -90,6 +90,10 @@ pub fn run() {
         .setup(|app| {
             use tauri::Manager;
             app.manage(pty::PtyState::default());
+            #[cfg(unix)]
+            if let Err(e) = pty::raise_fd_limit() {
+                eprintln!("[pty] raising the file descriptor limit failed: {e}");
+            }
             // Bind the control channel before spawning the sidecar so its socket
             // path is available to inject into the sidecar's environment.
             if let Err(e) = control::init(app.handle()) {
