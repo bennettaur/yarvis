@@ -34,28 +34,43 @@ const MAX_WRITE_BYTES: usize = 64 * 1024;
 /// chosen value as `maxPtySessions`.
 pub const DEFAULT_MAX_SESSIONS: usize = 60;
 
+/// Hard ceiling on the configured cap. The setting is writable from the webview
+/// and persists across restarts, so a value that outlived whatever wrote it must
+/// not be able to retire the guard entirely. Sits below what `DESIRED_FD_LIMIT`
+/// affords at roughly three descriptors per session, since past that point the
+/// cap stops being what fails first and an `EMFILE` surfaces somewhere unrelated
+/// instead.
+pub const MAX_CONFIGURABLE_SESSIONS: usize = 1000;
+
 /// The configured (or default) cap on live PTY sessions. Read on each use so a
 /// change made in Settings applies to the next terminal opened rather than
-/// waiting for a restart.
+/// waiting for a restart. Falls back to the default when settings failed to
+/// load, since `setup` logs that and carries on rather than aborting launch.
 fn max_sessions(app: &AppHandle) -> usize {
-    resolve_max_sessions(app.state::<SettingsState>().snapshot().max_pty_sessions)
+    resolve_max_sessions(
+        app.try_state::<SettingsState>()
+            .and_then(|state| state.snapshot().max_pty_sessions),
+    )
 }
 
 /// Resolves the session cap from the stored setting. Extracted from
-/// `max_sessions` so the fallback is unit-testable without app state. An unset
-/// or zero setting falls back to the default — a zero cap would make every
-/// session unopenable.
+/// `max_sessions` so the bounds are unit-testable without app state. An unset or
+/// zero setting falls back to the default — a zero cap would make every session
+/// unopenable — and anything above the ceiling is clamped rather than rejected,
+/// so a stored value the frontend never validated still yields a usable cap.
 fn resolve_max_sessions(configured: Option<usize>) -> usize {
     configured
         .filter(|n| *n > 0)
+        .map(|n| n.min(MAX_CONFIGURABLE_SESSIONS))
         .unwrap_or(DEFAULT_MAX_SESSIONS)
 }
 
 /// Soft file-descriptor limit aimed for at startup. Each live session holds
 /// several descriptors (the PTY master plus the cloned reader and the writer
 /// taken from it), so the session cap alone doesn't bound fd use. Chosen with
-/// room to spare above what `DEFAULT_MAX_SESSIONS` sessions need, and low
-/// enough to stay under the per-process ceiling `setrlimit` enforces.
+/// room to spare above what `MAX_CONFIGURABLE_SESSIONS` sessions need, and
+/// under macOS's `kern.maxfilesperproc`, above which `setrlimit` refuses the
+/// request outright.
 #[cfg(unix)]
 const DESIRED_FD_LIMIT: libc::rlim_t = 4096;
 
@@ -72,7 +87,7 @@ pub fn raise_fd_limit() -> Result<(), String> {
         rlim_cur: 0,
         rlim_max: 0,
     };
-    // SAFETY: `getrlimit`/`setrlimit` only read and write the `rlimit` we own.
+    // SAFETY: `getrlimit` only writes the initialized `rlimit` we own.
     if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
         return Err(std::io::Error::last_os_error().to_string());
     }
@@ -80,6 +95,8 @@ pub fn raise_fd_limit() -> Result<(), String> {
         return Ok(());
     };
     limit.rlim_cur = target;
+    // SAFETY: `setrlimit` only reads the initialized `rlimit` we own. `rlim_max`
+    // is passed back as read, so the hard limit is never raised or lowered.
     if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } != 0 {
         return Err(std::io::Error::last_os_error().to_string());
     }
@@ -541,7 +558,7 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 mod tests {
     use super::{
         append_capped, attention_env, remote_control_command, resolve_max_sessions,
-        DEFAULT_MAX_SESSIONS, MAX_SCROLLBACK,
+        DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS, MAX_SCROLLBACK,
     };
 
     #[cfg(unix)]
@@ -598,6 +615,26 @@ mod tests {
     #[test]
     fn resolve_max_sessions_falls_back_on_a_zero_cap() {
         assert_eq!(resolve_max_sessions(Some(0)), DEFAULT_MAX_SESSIONS);
+    }
+
+    #[test]
+    fn resolve_max_sessions_clamps_a_cap_above_the_ceiling() {
+        assert_eq!(
+            resolve_max_sessions(Some(MAX_CONFIGURABLE_SESSIONS + 1)),
+            MAX_CONFIGURABLE_SESSIONS
+        );
+        assert_eq!(
+            resolve_max_sessions(Some(usize::MAX)),
+            MAX_CONFIGURABLE_SESSIONS
+        );
+    }
+
+    #[test]
+    fn resolve_max_sessions_leaves_the_ceiling_itself_alone() {
+        assert_eq!(
+            resolve_max_sessions(Some(MAX_CONFIGURABLE_SESSIONS)),
+            MAX_CONFIGURABLE_SESSIONS
+        );
     }
 
     #[test]

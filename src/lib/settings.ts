@@ -10,9 +10,10 @@ import { invoke } from "@tauri-apps/api/core";
 export interface Settings {
   /** Cap on live terminal sessions; null means the built-in default applies. */
   maxPtySessions: number | null;
-  /** The cap that applies while `maxPtySessions` is null. Sent by the core so
-   * the UI doesn't restate a constant it can't keep in sync. */
+  /** The cap that applies while `maxPtySessions` is null. */
   defaultMaxPtySessions: number;
+  /** The highest cap the core will honour; anything above is clamped to it. */
+  maxConfigurablePtySessions: number;
 }
 
 export const getSettings = () => invoke<Settings>("get_settings");

@@ -2,27 +2,35 @@ import { useCallback, useEffect, useState } from "react";
 import { getSettings, type Settings, setMaxPtySessions } from "../lib/settings";
 
 /**
- * Terminal preferences the Rust core enforces. Currently just the cap on live
- * sessions: each one is a real shell, so the cap trades memory and process
- * count for how many workspaces can stay open at once. Sits beside Repositories
- * because workspaces are what open terminals in bulk.
+ * Terminal preferences the Rust core enforces — currently just the live-session
+ * cap. Sits beside Repositories because workspaces are what open terminals in
+ * bulk.
  */
 export default function TerminalSection() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const apply = useCallback((next: Settings) => {
+  const adopt = useCallback((next: Settings) => {
     setSettings(next);
     setDraft(next.maxPtySessions === null ? "" : String(next.maxPtySessions));
   }, []);
 
   useEffect(() => {
     getSettings()
-      .then(apply)
+      .then(adopt)
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
-  }, [apply]);
+  }, [adopt]);
+
+  const edit = useCallback((value: string) => {
+    setDraft(value);
+    // A stale "Saved." next to an edited field would claim the new value is
+    // stored.
+    setNotice(null);
+    setError(null);
+  }, []);
 
   const save = useCallback(async () => {
     setError(null);
@@ -36,15 +44,22 @@ export default function TerminalSection() {
         setError("Enter a whole number of 1 or more, or leave it blank for the default.");
         return;
       }
+      if (settings && parsed > settings.maxConfigurablePtySessions) {
+        setError(`The highest supported limit is ${settings.maxConfigurablePtySessions}.`);
+        return;
+      }
       value = parsed;
     }
+    setBusy(true);
     try {
-      apply(await setMaxPtySessions(value));
+      adopt(await setMaxPtySessions(value));
       setNotice("Saved. Applies to the next terminal you open.");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
     }
-  }, [apply, draft]);
+  }, [adopt, draft, settings]);
 
   const defaultCap = settings?.defaultMaxPtySessions;
 
@@ -54,35 +69,39 @@ export default function TerminalSection() {
       <p className="mb-4 text-xs text-zinc-500">
         The most terminal sessions that can be live at once. Opening more fails until one is closed.
         Each session is a real shell, so this trades memory and process count for how many
-        workspaces you can keep open. Changes apply to the next terminal opened.
+        workspaces you can keep open.
       </p>
 
       {error && <p className="mb-3 text-sm text-red-400">{error}</p>}
       {notice && <p className="mb-3 text-sm text-emerald-400">{notice}</p>}
 
-      <label className="block text-xs text-zinc-400">
-        <span className="mb-1 block uppercase tracking-wide">Session limit</span>
-        <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2">
+        <label className="text-xs text-zinc-400">
+          <span className="mb-1 block uppercase tracking-wide">Session limit</span>
           <input
             type="number"
             min={1}
+            max={settings?.maxConfigurablePtySessions}
             value={draft}
             placeholder={defaultCap === undefined ? "" : String(defaultCap)}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => edit(e.target.value)}
             className="w-24 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-zinc-500"
           />
-          <button
-            onClick={save}
-            disabled={settings === null}
-            className="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
-          >
-            Save
-          </button>
-          <span className="text-xs text-zinc-500">
-            {defaultCap === undefined ? "" : `Blank uses the default of ${defaultCap}.`}
+        </label>
+        <button
+          type="button"
+          onClick={save}
+          disabled={settings === null || busy}
+          className="mt-5 rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+        >
+          {busy ? "Saving…" : "Save"}
+        </button>
+        {defaultCap !== undefined && (
+          <span className="mt-5 text-xs text-zinc-500">
+            Blank uses the default of {defaultCap}.
           </span>
-        </div>
-      </label>
+        )}
+      </div>
     </section>
   );
 }
