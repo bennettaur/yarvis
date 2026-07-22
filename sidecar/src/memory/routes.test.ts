@@ -24,7 +24,9 @@ const auth = { Authorization: "Bearer test-token" };
 const jsonAuth = { ...auth, "Content-Type": "application/json" };
 
 beforeEach(async () => {
-  await sql`TRUNCATE memories, tasks, chat_messages, chat_sessions RESTART IDENTITY CASCADE`;
+  // embeddings_config is in the list because these routes pick an embedder from
+  // it: a provider row left by another file decides which embedder runs here.
+  await sql`TRUNCATE memories, tasks, chat_messages, chat_sessions, embeddings_config RESTART IDENTITY CASCADE`;
 });
 
 afterAll(async () => {
