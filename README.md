@@ -125,7 +125,8 @@ the same base command with `--remote-control <session name>` appended.
 At most 60 terminal sessions can be live at once; opening more fails until one
 is closed. Raise or lower that with the `YARVIS_MAX_PTY_SESSIONS` env var (also
 non-secret config) — each session is a real shell, so the cap trades memory and
-process count for how many workspaces you can keep open.
+process count for how many workspaces you can keep open. A value that isn't a
+positive integer is ignored and the default applies.
 
 ### Telegram remote control
 

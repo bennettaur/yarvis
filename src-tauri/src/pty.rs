@@ -222,7 +222,7 @@ fn spawn_into_state(
     spec: SpawnSpec,
 ) -> Result<(), String> {
     // Enforce the per-process cap before spawning, not after, so a flood of
-    // calls doesn't briefly hold cap+N live shells.
+    // calls doesn't briefly hold more shells than the cap allows.
     {
         let cap = max_sessions();
         let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
@@ -496,13 +496,27 @@ mod tests {
 
     #[test]
     fn resolve_max_sessions_parses_a_valid_override() {
+        assert_eq!(resolve_max_sessions(Some("120")), 120);
+    }
+
+    #[test]
+    fn resolve_max_sessions_trims_surrounding_whitespace() {
         assert_eq!(resolve_max_sessions(Some(" 120 ")), 120);
+    }
+
+    #[test]
+    fn resolve_max_sessions_accepts_the_smallest_usable_override() {
+        assert_eq!(resolve_max_sessions(Some("1")), 1);
     }
 
     #[test]
     fn resolve_max_sessions_falls_back_on_unusable_overrides() {
         for raw in ["", "   ", "many", "-1", "0"] {
-            assert_eq!(resolve_max_sessions(Some(raw)), DEFAULT_MAX_SESSIONS);
+            assert_eq!(
+                resolve_max_sessions(Some(raw)),
+                DEFAULT_MAX_SESSIONS,
+                "raw = {raw:?}"
+            );
         }
     }
 
