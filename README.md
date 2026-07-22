@@ -122,6 +122,11 @@ config), so you can bake in default options such as a model or permission mode.
 Remote-control sessions (started by the agent or from the Workspaces tab) use
 the same base command with `--remote-control <session name>` appended.
 
+At most 60 terminal sessions can be live at once; opening more fails until one
+is closed. Raise or lower that with the `YARVIS_MAX_PTY_SESSIONS` env var (also
+non-secret config) — each session is a real shell, so the cap trades memory and
+process count for how many workspaces you can keep open.
+
 ### Telegram remote control
 
 Chat with Yarvis — and issue control commands — from Telegram. The sidecar runs

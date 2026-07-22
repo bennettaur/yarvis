@@ -25,11 +25,28 @@ const READ_BUF_SIZE: usize = 4096;
 /// shell in one IPC call. The shell still receives an aggregate of separate
 /// writes, so this isn't a strong defense — it's an extra layer.
 const MAX_WRITE_BYTES: usize = 64 * 1024;
-/// Cap on the number of live PTY sessions. A multi-repo workspace opens a
-/// parent terminal plus a run-script session per repo, so several workspaces
+/// Default cap on the number of live PTY sessions. A multi-repo workspace opens
+/// a parent terminal plus a run-script session per repo, so several workspaces
 /// can be live at once; this still bounds `pty_attach` with novel ids from
-/// spawning shells without limit.
-const MAX_SESSIONS: usize = 24;
+/// spawning shells without limit. Overridable via `YARVIS_MAX_PTY_SESSIONS`.
+const DEFAULT_MAX_SESSIONS: usize = 60;
+
+/// The configured (or default) cap on live PTY sessions. Read from the
+/// environment on each use so a restart-injected change is picked up without a
+/// rebuild.
+fn max_sessions() -> usize {
+    resolve_max_sessions(std::env::var("YARVIS_MAX_PTY_SESSIONS").ok().as_deref())
+}
+
+/// Resolves the session cap from a raw override value. Extracted from
+/// `max_sessions` so the parsing is unit-testable without mutating the process
+/// environment. An absent, empty, unparseable or zero override falls back to the
+/// default — a zero cap would make every session unopenable.
+fn resolve_max_sessions(raw: Option<&str>) -> usize {
+    raw.and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_MAX_SESSIONS)
+}
 
 struct PtySession {
     /// Writes user input into the PTY (taken once from the master).
@@ -205,12 +222,13 @@ fn spawn_into_state(
     spec: SpawnSpec,
 ) -> Result<(), String> {
     // Enforce the per-process cap before spawning, not after, so a flood of
-    // calls doesn't briefly hold MAX_SESSIONS+N live shells.
+    // calls doesn't briefly hold cap+N live shells.
     {
+        let cap = max_sessions();
         let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
-        if sessions.len() >= MAX_SESSIONS && !sessions.contains_key(id) {
+        if sessions.len() >= cap && !sessions.contains_key(id) {
             return Err(format!(
-                "too many PTY sessions (cap: {MAX_SESSIONS}); close one before opening another"
+                "too many PTY sessions (cap: {cap}); close one before opening another"
             ));
         }
     }
@@ -466,7 +484,27 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 
 #[cfg(test)]
 mod tests {
-    use super::{append_capped, attention_env, remote_control_command, MAX_SCROLLBACK};
+    use super::{
+        append_capped, attention_env, remote_control_command, resolve_max_sessions,
+        DEFAULT_MAX_SESSIONS, MAX_SCROLLBACK,
+    };
+
+    #[test]
+    fn resolve_max_sessions_uses_the_default_without_an_override() {
+        assert_eq!(resolve_max_sessions(None), DEFAULT_MAX_SESSIONS);
+    }
+
+    #[test]
+    fn resolve_max_sessions_parses_a_valid_override() {
+        assert_eq!(resolve_max_sessions(Some(" 120 ")), 120);
+    }
+
+    #[test]
+    fn resolve_max_sessions_falls_back_on_unusable_overrides() {
+        for raw in ["", "   ", "many", "-1", "0"] {
+            assert_eq!(resolve_max_sessions(Some(raw)), DEFAULT_MAX_SESSIONS);
+        }
+    }
 
     #[test]
     fn remote_control_command_appends_flag_and_quotes_name() {
