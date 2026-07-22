@@ -123,10 +123,12 @@ Remote-control sessions (started by the agent or from the Workspaces tab) use
 the same base command with `--remote-control <session name>` appended.
 
 At most 60 terminal sessions can be live at once; opening more fails until one
-is closed. Raise or lower that with the `YARVIS_MAX_PTY_SESSIONS` env var (also
-non-secret config) — each session is a real shell, so the cap trades memory and
-process count for how many workspaces you can keep open. A value that isn't a
-positive integer is ignored and the default applies.
+is closed. Raise or lower that in the Settings tab's Repositories section —
+each session is a real shell, so the cap trades memory and process count for
+how many workspaces you can keep open. Leaving the field blank restores the
+default. The value applies to the next terminal opened, without a restart, and
+is stored in `settings.json` in the app data directory rather than in the
+sidecar's database, since the Rust core is what enforces it.
 
 ### Telegram remote control
 

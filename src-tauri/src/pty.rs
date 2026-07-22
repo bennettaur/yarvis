@@ -16,6 +16,8 @@ use std::sync::{Arc, Mutex};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::settings::SettingsState;
+
 /// Upper bound on per-session captured output, in bytes. Older output is
 /// dropped from the front once exceeded so memory stays bounded.
 const MAX_SCROLLBACK: usize = 1024 * 1024;
@@ -28,22 +30,23 @@ const MAX_WRITE_BYTES: usize = 64 * 1024;
 /// Default cap on the number of live PTY sessions. A multi-repo workspace opens
 /// a parent terminal plus a run-script session per repo, so several workspaces
 /// can be live at once; this still bounds `pty_attach` with novel ids from
-/// spawning shells without limit. Overridable via `YARVIS_MAX_PTY_SESSIONS`.
-const DEFAULT_MAX_SESSIONS: usize = 60;
+/// spawning shells without limit. Overridable in Settings, which persists the
+/// chosen value as `maxPtySessions`.
+pub const DEFAULT_MAX_SESSIONS: usize = 60;
 
-/// The configured (or default) cap on live PTY sessions. Read from the
-/// environment on each use so a restart-injected change is picked up without a
-/// rebuild.
-fn max_sessions() -> usize {
-    resolve_max_sessions(std::env::var("YARVIS_MAX_PTY_SESSIONS").ok().as_deref())
+/// The configured (or default) cap on live PTY sessions. Read on each use so a
+/// change made in Settings applies to the next terminal opened rather than
+/// waiting for a restart.
+fn max_sessions(app: &AppHandle) -> usize {
+    resolve_max_sessions(app.state::<SettingsState>().snapshot().max_pty_sessions)
 }
 
-/// Resolves the session cap from a raw override value. Extracted from
-/// `max_sessions` so the parsing is unit-testable without mutating the process
-/// environment. An absent, empty, unparseable or zero override falls back to the
-/// default — a zero cap would make every session unopenable.
-fn resolve_max_sessions(raw: Option<&str>) -> usize {
-    raw.and_then(|s| s.trim().parse::<usize>().ok())
+/// Resolves the session cap from the stored setting. Extracted from
+/// `max_sessions` so the fallback is unit-testable without app state. An unset
+/// or zero setting falls back to the default — a zero cap would make every
+/// session unopenable.
+fn resolve_max_sessions(configured: Option<usize>) -> usize {
+    configured
         .filter(|n| *n > 0)
         .unwrap_or(DEFAULT_MAX_SESSIONS)
 }
@@ -276,7 +279,7 @@ fn spawn_into_state(
     // Enforce the per-process cap before spawning, not after, so a flood of
     // calls doesn't briefly hold more shells than the cap allows.
     {
-        let cap = max_sessions();
+        let cap = max_sessions(app);
         let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
         if sessions.len() >= cap && !sessions.contains_key(id) {
             return Err(format!(
@@ -578,34 +581,23 @@ mod tests {
     }
 
     #[test]
-    fn resolve_max_sessions_uses_the_default_without_an_override() {
+    fn resolve_max_sessions_uses_the_default_when_unset() {
         assert_eq!(resolve_max_sessions(None), DEFAULT_MAX_SESSIONS);
     }
 
     #[test]
-    fn resolve_max_sessions_parses_a_valid_override() {
-        assert_eq!(resolve_max_sessions(Some("120")), 120);
+    fn resolve_max_sessions_uses_a_configured_value() {
+        assert_eq!(resolve_max_sessions(Some(120)), 120);
     }
 
     #[test]
-    fn resolve_max_sessions_trims_surrounding_whitespace() {
-        assert_eq!(resolve_max_sessions(Some(" 120 ")), 120);
+    fn resolve_max_sessions_accepts_the_smallest_usable_value() {
+        assert_eq!(resolve_max_sessions(Some(1)), 1);
     }
 
     #[test]
-    fn resolve_max_sessions_accepts_the_smallest_usable_override() {
-        assert_eq!(resolve_max_sessions(Some("1")), 1);
-    }
-
-    #[test]
-    fn resolve_max_sessions_falls_back_on_unusable_overrides() {
-        for raw in ["", "   ", "many", "-1", "0"] {
-            assert_eq!(
-                resolve_max_sessions(Some(raw)),
-                DEFAULT_MAX_SESSIONS,
-                "raw = {raw:?}"
-            );
-        }
+    fn resolve_max_sessions_falls_back_on_a_zero_cap() {
+        assert_eq!(resolve_max_sessions(Some(0)), DEFAULT_MAX_SESSIONS);
     }
 
     #[test]
