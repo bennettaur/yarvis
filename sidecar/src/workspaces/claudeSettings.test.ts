@@ -1,0 +1,83 @@
+import { describe, expect, it } from "bun:test";
+import { ingestSchema } from "../attention/routes.ts";
+import { attentionHookCommand, buildClaudeSettings } from "./claudeSettings.ts";
+
+const WORKSPACE_ID = "11111111-1111-1111-1111-111111111111";
+
+/** Pulls the JSON body out of the command's `-d '...'` argument. */
+function payloadOf(command: string): unknown {
+  const match = command.match(/-d '([^']*)'/);
+  if (!match) throw new Error("no -d payload in command");
+  return JSON.parse(match[1]!);
+}
+
+describe("attentionHookCommand", () => {
+  it("emits a body that satisfies the ingest route's schema", () => {
+    // The whole feature silently breaks if these two sides drift, so pin them.
+    const command = attentionHookCommand(WORKSPACE_ID, `ws-claude:${WORKSPACE_ID}`, "permission");
+    const parsed = ingestSchema.safeParse(payloadOf(command));
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data).toEqual({
+      workspaceId: WORKSPACE_ID,
+      sessionKey: `ws-claude:${WORKSPACE_ID}`,
+      kind: "permission",
+    });
+  });
+
+  it("reads the sidecar port + token from the environment, not from disk", () => {
+    const command = attentionHookCommand(WORKSPACE_ID, `ws-claude:${WORKSPACE_ID}`, "idle");
+    // Asserting the literal shell env-var references the hook relies on.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal env refs, not a template
+    expect(command).toContain("${YARVIS_SIDECAR_PORT}");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal env refs, not a template
+    expect(command).toContain("${YARVIS_ATTENTION_TOKEN}");
+  });
+});
+
+describe("buildClaudeSettings", () => {
+  it("writes the three attention hooks with the idle_prompt matcher on Notification", () => {
+    const settings = buildClaudeSettings(WORKSPACE_ID) as {
+      hooks: Record<string, { matcher?: string }[]>;
+    };
+    expect(Object.keys(settings.hooks).sort()).toEqual([
+      "Notification",
+      "PermissionRequest",
+      "Stop",
+    ]);
+    expect(settings.hooks.Notification![0]!.matcher).toBe("idle_prompt");
+    expect(settings.hooks.PermissionRequest![0]!.matcher).toBeUndefined();
+  });
+
+  it("preserves unrelated top-level keys and the user's own hooks for our events", () => {
+    const existing = {
+      permissions: { allow: ["Bash"] },
+      hooks: {
+        PermissionRequest: [{ hooks: [{ type: "command", command: "echo user-hook" }] }],
+        UserPromptSubmit: [{ hooks: [{ type: "command", command: "echo other-event" }] }],
+      },
+    };
+    const settings = buildClaudeSettings(WORKSPACE_ID, existing) as {
+      permissions: unknown;
+      hooks: Record<string, { hooks: { command: string }[] }[]>;
+    };
+    // Unrelated top-level key and unrelated hook event both survive.
+    expect(settings.permissions).toEqual({ allow: ["Bash"] });
+    expect(settings.hooks.UserPromptSubmit).toHaveLength(1);
+    // Our entry is appended alongside the user's own PermissionRequest hook.
+    const commands = settings.hooks.PermissionRequest!.flatMap((e) =>
+      e.hooks.map((h) => h.command),
+    );
+    expect(commands).toContain("echo user-hook");
+    expect(commands.some((c) => c.includes("/ingest/attention"))).toBe(true);
+  });
+
+  it("is idempotent: re-applying does not stack duplicate Yarvis hooks", () => {
+    const once = buildClaudeSettings(WORKSPACE_ID);
+    const twice = buildClaudeSettings(WORKSPACE_ID, once) as {
+      hooks: Record<string, unknown[]>;
+    };
+    expect(twice.hooks.PermissionRequest).toHaveLength(1);
+    expect(twice.hooks.Notification).toHaveLength(1);
+    expect(twice.hooks.Stop).toHaveLength(1);
+  });
+});

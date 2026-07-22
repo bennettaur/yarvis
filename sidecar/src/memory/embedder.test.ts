@@ -14,6 +14,7 @@ function configWith(secrets: Partial<Config["secrets"]> = {}): Config {
     port: 0,
     token: "t",
     tokenGenerated: true,
+    attentionToken: "test-attention-token",
     allowedOrigins: null,
     databaseUrl: undefined,
     workspacesRoot: "/tmp/yarvis-test-workspaces",

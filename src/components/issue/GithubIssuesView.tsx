@@ -173,7 +173,14 @@ function IssueGroupedList({
  * across configured repos, and saved search filters. Shown when the Issues
  * panel's provider toggle is set to GitHub.
  */
-export default function GithubIssuesView() {
+export default function GithubIssuesView({
+  requested,
+  onRequestConsumed,
+}: {
+  /** A GitHub issue the attention/WIP panel asked us to open directly. */
+  requested?: IssueSummary | null;
+  onRequestConsumed?: () => void;
+} = {}) {
   const [activeTab, setActiveTab] = useState<TabKey>("assigned");
   const [assigned, setAssigned] = useState<IssueSummary[]>([]);
   const [all, setAll] = useState<IssueSummary[]>([]);
@@ -185,6 +192,15 @@ export default function GithubIssuesView() {
   const [selected, setSelected] = useState<IssueSummary | null>(null);
   const [configuredCount, setConfiguredCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Open an issue another view asked for directly (attention/WIP panel). The
+  // detail view re-fetches from the (provider, sourceKey, externalId) triple, so
+  // a minimal synthesized summary is enough to open it.
+  useEffect(() => {
+    if (!requested) return;
+    setSelected(requested);
+    onRequestConsumed?.();
+  }, [requested, onRequestConsumed]);
 
   useOmniChatContext("issues", () => {
     if (selected) {
