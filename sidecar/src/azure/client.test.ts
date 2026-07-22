@@ -51,7 +51,7 @@ describe("mapReviewer", () => {
     [10, "approved", false],
     [5, "approved", false],
     [-10, "changes_requested", false],
-    [-5, "commented", false],
+    [-5, "changes_requested", false],
     [0, "pending", true],
     [undefined, "pending", true],
   ] as const)("maps vote %p to %s (requested=%s)", (vote, state, isRequested) => {
