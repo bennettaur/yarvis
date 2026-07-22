@@ -116,6 +116,14 @@ config), so you can bake in default options such as a model or permission mode.
 Remote-control sessions (started by the agent or from the Workspaces tab) use
 the same base command with `--remote-control <session name>` appended.
 
+Provisioning also writes a few context files into the workspace root, since
+Claude starts there rather than inside a single repo: `AGENTS.md` (plus a
+`CLAUDE.md` that includes it) describing which repos are present and on what
+branch, and a `.claude/settings.json` that registers each repo's
+`.claude/skills` and `.claude/agents` so those skills and agents still load
+even though Claude runs one directory above the repos. The settings file is
+merged, not overwritten, so any other keys already present are left intact.
+
 ### Telegram remote control
 
 Chat with Yarvis — and issue control commands — from Telegram. The sidecar runs

@@ -54,6 +54,20 @@ const fakeGit: GitRunner = async (args) => {
   return { stdout: "", stderr: "", exitCode: 0 };
 };
 
+/** Like fakeGit, but also lays down .claude/skills and .claude/agents in the
+ * worktree, as a checkout of a repo carrying them would. */
+const skillsGit: GitRunner = async (args, opts) => {
+  const res = await fakeGit(args, opts);
+  if (args[0] === "worktree" && args[1] === "add") {
+    const path = args[2] === "-b" ? args[4] : args[2];
+    if (path) {
+      mkdirSync(join(path, ".claude", "skills"), { recursive: true });
+      mkdirSync(join(path, ".claude", "agents"), { recursive: true });
+    }
+  }
+  return res;
+};
+
 beforeEach(async () => {
   await sql`TRUNCATE repos, workspaces, workspace_repos, workspace_repo_pr, tasks, issue_links RESTART IDENTITY CASCADE`;
 });
@@ -565,20 +579,6 @@ describe("provision + archive (injected git runner)", () => {
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "skills ws", repoIds: [repo.id] });
 
-    // Lay down .claude/skills and .claude/agents in the worktree, as a checkout
-    // of a repo carrying them would.
-    const skillsGit: GitRunner = async (args, opts) => {
-      const res = await fakeGit(args, opts);
-      if (args[0] === "worktree" && args[1] === "add") {
-        const path = args[2] === "-b" ? args[4] : args[2];
-        if (path) {
-          mkdirSync(join(path, ".claude", "skills"), { recursive: true });
-          mkdirSync(join(path, ".claude", "agents"), { recursive: true });
-        }
-      }
-      return res;
-    };
-
     await provisionWorkspace(db, ws.id, () => {}, skillsGit);
 
     const detail = await getWorkspace(db, ws.id);
@@ -622,6 +622,67 @@ describe("provision + archive (injected git runner)", () => {
     const settings = JSON.parse(readFileSync(join(dotClaude, "settings.json"), "utf-8"));
     expect(settings.hooks).toBeDefined();
     expect(settings.hooks.Stop).toEqual([]);
+  });
+
+  it("merges registered skills alongside a pre-existing hooks key", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "merge ws", repoIds: [repo.id] });
+
+    const detail0 = await getWorkspace(db, ws.id);
+    const dotClaude = join(detail0?.rootPath ?? "", ".claude");
+    mkdirSync(dotClaude, { recursive: true });
+    writeFileSync(join(dotClaude, "settings.json"), JSON.stringify({ hooks: { Stop: [] } }));
+
+    await provisionWorkspace(db, ws.id, () => {}, skillsGit);
+
+    const settings = JSON.parse(readFileSync(join(dotClaude, "settings.json"), "utf-8"));
+    expect(settings.hooks.Stop).toEqual([]);
+    expect(settings.skills.enabled).toBe(true);
+    expect(settings.agents.enabled).toBe(true);
+  });
+
+  it("drops stale skills/agents keys on a re-provision that loses the .claude dir", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "stale ws", repoIds: [repo.id] });
+
+    // A prior run left skills/agents (plus an unrelated key) in settings.json.
+    const detail0 = await getWorkspace(db, ws.id);
+    const dotClaude = join(detail0?.rootPath ?? "", ".claude");
+    mkdirSync(dotClaude, { recursive: true });
+    writeFileSync(
+      join(dotClaude, "settings.json"),
+      JSON.stringify({
+        hooks: { Stop: [] },
+        skills: { enabled: true, paths: ["/old/skills"] },
+        agents: { enabled: true, paths: ["/old/agents"] },
+      }),
+    );
+
+    // Re-provision with a repo that has no .claude dir (fakeGit lays none down).
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+
+    const settings = JSON.parse(readFileSync(join(dotClaude, "settings.json"), "utf-8"));
+    expect(settings.skills).toBeUndefined();
+    expect(settings.agents).toBeUndefined();
+    expect(settings.hooks.Stop).toEqual([]);
+  });
+
+  it("leaves an unparseable settings.json untouched rather than clobbering it", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "corrupt ws", repoIds: [repo.id] });
+
+    const detail0 = await getWorkspace(db, ws.id);
+    const dotClaude = join(detail0?.rootPath ?? "", ".claude");
+    mkdirSync(dotClaude, { recursive: true });
+    writeFileSync(join(dotClaude, "settings.json"), "{ not valid json");
+
+    await provisionWorkspace(db, ws.id, () => {}, skillsGit);
+
+    // The corrupt file is preserved as-is; skills registration is skipped.
+    expect(readFileSync(join(dotClaude, "settings.json"), "utf-8")).toBe("{ not valid json");
   });
 
   it("archives by removing worktrees and recording a summary", async () => {

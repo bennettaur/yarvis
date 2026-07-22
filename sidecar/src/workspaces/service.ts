@@ -737,6 +737,26 @@ function writeContextFiles(detail: WorkspaceDetail): void {
 }
 
 /**
+ * Reads an existing `.claude/settings.json` as a plain object to merge into.
+ * Returns null if it can't be parsed or isn't a JSON object (array, primitive,
+ * or null) — the caller treats that as "don't touch the file" rather than
+ * overwrite content it can't safely merge.
+ */
+function parseSettingsObject(path: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      console.error("[workspaces] existing .claude/settings.json is not an object, leaving as-is");
+      return null;
+    }
+    return parsed as Record<string, unknown>;
+  } catch (e) {
+    console.error("[workspaces] existing .claude/settings.json is unparseable, leaving as-is:", e);
+    return null;
+  }
+}
+
+/**
  * Points the workspace's Claude session at each repo's `.claude` skills and
  * agents. Claude starts in the workspace root, above the repos, so it only
  * auto-discovers `.claude` at the root — a repo's own skills and agents, one
@@ -752,10 +772,10 @@ function writeClaudeSettings(detail: WorkspaceDetail): void {
   const skillPaths: string[] = [];
   const agentPaths: string[] = [];
   for (const wr of detail.repos) {
-    const skills = join(wr.worktreePath, ".claude", "skills");
-    const agents = join(wr.worktreePath, ".claude", "agents");
-    if (existsSync(skills)) skillPaths.push(skills);
-    if (existsSync(agents)) agentPaths.push(agents);
+    const skillsDir = join(wr.worktreePath, ".claude", "skills");
+    const agentsDir = join(wr.worktreePath, ".claude", "agents");
+    if (existsSync(skillsDir)) skillPaths.push(skillsDir);
+    if (existsSync(agentsDir)) agentPaths.push(agentsDir);
   }
 
   const settingsPath = join(detail.rootPath, ".claude", "settings.json");
@@ -765,11 +785,11 @@ function writeClaudeSettings(detail: WorkspaceDetail): void {
     // the skill/agent path lists, which this function fully owns.
     let settings: Record<string, unknown> = {};
     if (existsSync(settingsPath)) {
-      try {
-        settings = JSON.parse(readFileSync(settingsPath, "utf8"));
-      } catch (e) {
-        console.error("[workspaces] existing .claude/settings.json is unparseable, rewriting:", e);
-      }
+      const existing = parseSettingsObject(settingsPath);
+      // Bail rather than overwrite: a file we can't safely merge into may hold
+      // the attention hooks, and clobbering it would silently drop them.
+      if (!existing) return;
+      settings = existing;
     }
 
     // These keys are fully owned here, so recompute them from the current repo
