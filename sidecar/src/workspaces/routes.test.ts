@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
@@ -558,6 +558,70 @@ describe("provision + archive (injected git runner)", () => {
 
     const claude = readFileSync(`${detail?.rootPath}/CLAUDE.md`, "utf-8");
     expect(claude).toContain("AGENTS.md");
+  });
+
+  it("registers each repo's .claude skills and agents in the root settings.json", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "skills ws", repoIds: [repo.id] });
+
+    // Lay down .claude/skills and .claude/agents in the worktree, as a checkout
+    // of a repo carrying them would.
+    const skillsGit: GitRunner = async (args, opts) => {
+      const res = await fakeGit(args, opts);
+      if (args[0] === "worktree" && args[1] === "add") {
+        const path = args[2] === "-b" ? args[4] : args[2];
+        if (path) {
+          mkdirSync(join(path, ".claude", "skills"), { recursive: true });
+          mkdirSync(join(path, ".claude", "agents"), { recursive: true });
+        }
+      }
+      return res;
+    };
+
+    await provisionWorkspace(db, ws.id, () => {}, skillsGit);
+
+    const detail = await getWorkspace(db, ws.id);
+    const worktree = detail?.repos[0]?.worktreePath ?? "";
+    const settings = JSON.parse(
+      readFileSync(join(detail?.rootPath ?? "", ".claude", "settings.json"), "utf-8"),
+    );
+    expect(settings.skills.enabled).toBe(true);
+    expect(settings.skills.paths).toContain(join(worktree, ".claude", "skills"));
+    expect(settings.agents.enabled).toBe(true);
+    expect(settings.agents.paths).toContain(join(worktree, ".claude", "agents"));
+  });
+
+  it("omits skills/agents keys when a repo has no .claude directory", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "bare ws", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+
+    const detail = await getWorkspace(db, ws.id);
+    const settings = JSON.parse(
+      readFileSync(join(detail?.rootPath ?? "", ".claude", "settings.json"), "utf-8"),
+    );
+    expect(settings.skills).toBeUndefined();
+    expect(settings.agents).toBeUndefined();
+  });
+
+  it("preserves existing settings.json keys (e.g. hooks) when registering skills", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "hooks ws", repoIds: [repo.id] });
+
+    // A prior writer (e.g. Yarvis' attention hooks) already left a settings.json.
+    const detail0 = await getWorkspace(db, ws.id);
+    const dotClaude = join(detail0?.rootPath ?? "", ".claude");
+    mkdirSync(dotClaude, { recursive: true });
+    writeFileSync(join(dotClaude, "settings.json"), JSON.stringify({ hooks: { Stop: [] } }));
+
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+
+    const settings = JSON.parse(readFileSync(join(dotClaude, "settings.json"), "utf-8"));
+    expect(settings.hooks).toBeDefined();
+    expect(settings.hooks.Stop).toEqual([]);
   });
 
   it("archives by removing worktrees and recording a summary", async () => {
