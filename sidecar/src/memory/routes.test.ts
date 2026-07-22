@@ -23,7 +23,9 @@ const auth = { Authorization: "Bearer test-token" };
 const jsonAuth = { ...auth, "Content-Type": "application/json" };
 
 beforeEach(async () => {
-  await sql`TRUNCATE memories, tasks, chat_messages, chat_sessions RESTART IDENTITY CASCADE`;
+  // embeddings_config too: another test file can leave a wrong-dimension row
+  // behind, which would make chooseEmbedder pick it and fail these routes.
+  await sql`TRUNCATE memories, tasks, chat_messages, chat_sessions, embeddings_config RESTART IDENTITY CASCADE`;
 });
 
 afterAll(async () => {
