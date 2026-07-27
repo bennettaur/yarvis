@@ -66,12 +66,21 @@ impl SettingsState {
     }
 
     /// Stores the live-PTY-session cap, or clears it back to the default when
-    /// given `None`. Rejects zero rather than storing a value that would make
-    /// every terminal unopenable. The in-memory value applies as soon as it is
-    /// set; an error means only that it won't survive a restart.
+    /// given `None`. Rejects a value outside what the core will enforce rather
+    /// than storing one and echoing it back, which would show a cap that isn't
+    /// the one in force — `pty::resolve_max_sessions` clamps whatever it reads,
+    /// so a hand-edited file is still bounded. The in-memory value applies as
+    /// soon as it is set; an error means only that it won't survive a restart.
     fn set_max_pty_sessions(&self, value: Option<usize>) -> Result<(), String> {
-        if value == Some(0) {
-            return Err("the session cap must be at least 1".to_string());
+        match value {
+            Some(0) => return Err("the session cap must be at least 1".to_string()),
+            Some(n) if n > crate::pty::MAX_CONFIGURABLE_SESSIONS => {
+                return Err(format!(
+                    "the session cap can be at most {}",
+                    crate::pty::MAX_CONFIGURABLE_SESSIONS
+                ))
+            }
+            _ => {}
         }
         {
             let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
@@ -135,7 +144,10 @@ mod tests {
     /// real file (matching how the store is used) without a dev-dependency on a
     /// temp-file crate or interference between tests.
     fn temp_store(name: &str) -> SettingsState {
-        let path = std::env::temp_dir().join(format!("yarvis-settings-{name}.json"));
+        // Keyed by pid as well as name so concurrent test binaries don't share
+        // a file; the previous run's leftovers are cleared rather than reused.
+        let pid = std::process::id();
+        let path = std::env::temp_dir().join(format!("yarvis-settings-{pid}-{name}.json"));
         let _ = std::fs::remove_file(&path);
         SettingsState::load(path)
     }
@@ -173,6 +185,27 @@ mod tests {
         let store = temp_store("zero");
         assert!(store.set_max_pty_sessions(Some(0)).is_err());
         assert_eq!(store.snapshot().max_pty_sessions, None);
+    }
+
+    #[test]
+    fn a_cap_above_the_ceiling_is_rejected_and_nothing_is_stored() {
+        let store = temp_store("above-ceiling");
+        assert!(store
+            .set_max_pty_sessions(Some(crate::pty::MAX_CONFIGURABLE_SESSIONS + 1))
+            .is_err());
+        assert_eq!(store.snapshot().max_pty_sessions, None);
+    }
+
+    #[test]
+    fn the_ceiling_itself_is_accepted() {
+        let store = temp_store("at-ceiling");
+        store
+            .set_max_pty_sessions(Some(crate::pty::MAX_CONFIGURABLE_SESSIONS))
+            .unwrap();
+        assert_eq!(
+            store.snapshot().max_pty_sessions,
+            Some(crate::pty::MAX_CONFIGURABLE_SESSIONS)
+        );
     }
 
     #[test]
