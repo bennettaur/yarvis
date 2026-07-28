@@ -50,8 +50,13 @@ Status of the build against the original vision. The full V1 plan lives at
   when provided). Per-file "Viewed" pill checkboxes mark files done — synced
   to github.com natively via GraphQL on GitHub, and persisted to localStorage
   on Azure (no provider equivalent). Toggling a file viewed collapses its diff
-  (and re-expands when unmarked). The provider toggle only shows providers
-  whose viewer probe lands, so an unconfigured option never flashes.
+  (and re-expands when unmarked). A "Reviewers" panel lists requested reviewers
+  alongside anyone who has already reviewed, with a per-verdict badge (approved
+  / changes requested / pending / commented / dismissed) and a compact summary
+  in the collapsed header — GitHub via `reviewRequests` + `latestReviews`,
+  Azure via reviewer vote codes on the PR payload. The provider toggle only
+  shows providers whose viewer probe lands, so an unconfigured option never
+  flashes.
 - **Issues dashboard (GitHub)** — a global Issues tab mirroring the PR
   dashboard: "Assigned to me" / "All open" / saved-filter views, grouped by
   repo, with stars, search, and "in progress" badges. Issues are pulled from

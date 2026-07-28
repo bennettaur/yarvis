@@ -2,13 +2,14 @@ import { type ReactNode, useEffect } from "react";
 import { recordEvent } from "../lib/events";
 import { usePrDetail } from "../lib/pr/cache";
 import { refKey } from "../lib/pr/ref";
-import type { CheckItem, PrSummary } from "../lib/pr/types";
+import type { CheckItem, PrSummary, Reviewer } from "../lib/pr/types";
 import { usePrViewedFiles } from "../lib/pr/viewed";
 import PrChecks from "./pr/PrChecks";
 import PrDescription from "./pr/PrDescription";
 import PrFileDiffs from "./pr/PrFileDiffs";
 import PrFileList from "./pr/PrFileList";
 import PrFloatingHeader from "./pr/PrFloatingHeader";
+import PrReviewers from "./pr/PrReviewers";
 import SplitPane, { usePersistedBoolean, usePersistedRatio } from "./SplitPane";
 
 const FILE_LIST_COLLAPSED_KEY = "yarvis.pr.fileListCollapsed";
@@ -38,6 +39,26 @@ function checksSummary(checks: CheckItem[]): string {
   if (passing) parts.push(`${passing} passing`);
   if (failing) parts.push(`${failing} failing`);
   if (pending) parts.push(`${pending} pending`);
+  return parts.join(" · ");
+}
+
+/** Short "2 approved · 1 pending" summary so the collapsed Reviewers header still reads. */
+function reviewersSummary(reviewers: Reviewer[]): string {
+  let approved = 0;
+  let changes = 0;
+  let pending = 0;
+  let commented = 0;
+  for (const r of reviewers) {
+    if (r.state === "pending") pending++;
+    else if (r.state === "approved") approved++;
+    else if (r.state === "changes_requested") changes++;
+    else if (r.state === "commented") commented++;
+  }
+  const parts: string[] = [];
+  if (approved) parts.push(`${approved} approved`);
+  if (changes) parts.push(`${changes} requested changes`);
+  if (pending) parts.push(`${pending} pending`);
+  if (commented) parts.push(`${commented} commented`);
   return parts.join(" · ");
 }
 
@@ -112,6 +133,14 @@ export default function PrDetailView({ pr, onBack }: { pr: PrSummary; onBack: ()
           {error && <p className="text-sm text-red-400">{error}</p>}
 
           <PrDescription prRef={prRef} />
+
+          <CollapsibleSection
+            title="Reviewers"
+            summary={detail ? reviewersSummary(detail.reviewers) : undefined}
+            defaultOpen={true}
+          >
+            <PrReviewers prRef={prRef} />
+          </CollapsibleSection>
 
           <CollapsibleSection
             title="Checks"

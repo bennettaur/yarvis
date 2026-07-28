@@ -211,6 +211,38 @@ describe("github client", () => {
     expect(detail.canDisableAutoMerge).toBe(true);
   });
 
+  it("merges review requests and latest reviews into one reviewer list", () => {
+    const detail = toPrDetail({
+      number: 1,
+      state: "OPEN",
+      author: { login: "me" },
+      reviewThreads: { nodes: [] },
+      commits: { nodes: [] },
+      reviewRequests: {
+        nodes: [
+          { requestedReviewer: { __typename: "User", login: "alice" } },
+          { requestedReviewer: { __typename: "Team", combinedSlug: "org/frontend" } },
+        ],
+      },
+      latestReviews: {
+        nodes: [
+          { author: { login: "bob" }, state: "APPROVED" },
+          { author: { login: "carol" }, state: "CHANGES_REQUESTED" },
+          // A re-requested user who previously commented should surface as
+          // pending — the outstanding request wins over the historical review.
+          { author: { login: "alice" }, state: "COMMENTED" },
+        ],
+      },
+    });
+
+    expect(detail.reviewers).toEqual([
+      { login: "bob", state: "approved", isRequested: false },
+      { login: "carol", state: "changes_requested", isRequested: false },
+      { login: "alice", state: "pending", isRequested: true },
+      { login: "org/frontend", state: "pending", isRequested: true },
+    ]);
+  });
+
   it("defaults merge fields off when no repository node is supplied", () => {
     const detail = toPrDetail({
       number: 5,
