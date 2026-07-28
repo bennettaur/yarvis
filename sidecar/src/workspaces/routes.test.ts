@@ -55,6 +55,20 @@ const fakeGit: GitRunner = async (args) => {
   return { stdout: "", stderr: "", exitCode: 0 };
 };
 
+/** Like fakeGit, but also lays down .claude/skills and .claude/agents in the
+ * worktree, as a checkout of a repo carrying them would. */
+const skillsGit: GitRunner = async (args, opts) => {
+  const res = await fakeGit(args, opts);
+  if (args[0] === "worktree" && args[1] === "add") {
+    const path = args[2] === "-b" ? args[4] : args[2];
+    if (path) {
+      mkdirSync(join(path, ".claude", "skills"), { recursive: true });
+      mkdirSync(join(path, ".claude", "agents"), { recursive: true });
+    }
+  }
+  return res;
+};
+
 beforeEach(async () => {
   await sql`TRUNCATE repos, workspaces, workspace_repos, workspace_repo_pr, tasks, issue_links RESTART IDENTITY CASCADE`;
 });
@@ -559,6 +573,55 @@ describe("provision + archive (injected git runner)", () => {
 
     const claude = readFileSync(`${detail?.rootPath}/CLAUDE.md`, "utf-8");
     expect(claude).toContain("AGENTS.md");
+  });
+
+  it("registers each repo's .claude skills and agents in the root settings.json", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "skills ws", repoIds: [repo.id] });
+
+    await provisionWorkspace(db, ws.id, () => {}, skillsGit);
+
+    const detail = await getWorkspace(db, ws.id);
+    const worktree = detail?.repos[0]?.worktreePath ?? "";
+    const settings = JSON.parse(
+      readFileSync(join(detail?.rootPath ?? "", ".claude", "settings.json"), "utf-8"),
+    );
+    expect(settings.skills.enabled).toBe(true);
+    expect(settings.skills.paths).toContain(join(worktree, ".claude", "skills"));
+    expect(settings.agents.enabled).toBe(true);
+    expect(settings.agents.paths).toContain(join(worktree, ".claude", "agents"));
+  });
+
+  it("omits skills/agents keys when a repo has no .claude directory", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "bare ws", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+
+    const detail = await getWorkspace(db, ws.id);
+    const settings = JSON.parse(
+      readFileSync(join(detail?.rootPath ?? "", ".claude", "settings.json"), "utf-8"),
+    );
+    expect(settings.skills).toBeUndefined();
+    expect(settings.agents).toBeUndefined();
+  });
+
+  it("registers skills alongside the attention hooks in the same settings.json", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "merge ws", repoIds: [repo.id] });
+
+    await provisionWorkspace(db, ws.id, () => {}, skillsGit);
+
+    const detail = await getWorkspace(db, ws.id);
+    const settings = JSON.parse(
+      readFileSync(join(detail?.rootPath ?? "", ".claude", "settings.json"), "utf-8"),
+    );
+    // Both the attention hooks and the registered skills coexist in one file.
+    expect(settings.hooks.Stop).toBeDefined();
+    expect(settings.skills.enabled).toBe(true);
+    expect(settings.agents.enabled).toBe(true);
   });
 
   it("archives by removing worktrees and recording a summary", async () => {

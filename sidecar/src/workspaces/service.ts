@@ -878,7 +878,11 @@ export async function provisionWorkspace(
     const after = await getWorkspace(db, id);
     if (after) {
       writeContextFiles(after);
-      writeClaudeSettings(after.rootPath, after.id);
+      writeClaudeSettings(
+        after.rootPath,
+        after.id,
+        after.repos.map((wr) => wr.worktreePath),
+      );
     }
     const allReady = after?.repos.every((r) => r.status === "ready" || r.status === "removed");
     const status = allReady ? "active" : "error";
