@@ -48,6 +48,24 @@ export interface CheckItem {
   url: string | null;
 }
 
+/**
+ * Provider-neutral reviewer verdict. `pending` covers both "requested but not
+ * yet reviewed" and "vote reset"; `isRequested` distinguishes an outstanding
+ * request from a review that was submitted and then dismissed.
+ */
+export type ReviewerState =
+  | "approved"
+  | "changes_requested"
+  | "commented"
+  | "pending"
+  | "dismissed";
+
+export interface Reviewer {
+  login: string;
+  state: ReviewerState;
+  isRequested: boolean;
+}
+
 /** A merge strategy the repo allows, in GitHub's GraphQL vocabulary. */
 export type MergeMethod = "MERGE" | "SQUASH" | "REBASE";
 
@@ -76,6 +94,8 @@ export interface PrDetail {
   canDisableAutoMerge: boolean;
   checks: CheckItem[];
   reviewThreads: ReviewThread[];
+  /** Requested reviewers plus anyone who has already submitted a review. */
+  reviewers: Reviewer[];
 }
 
 export interface PrFile {

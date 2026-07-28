@@ -14,7 +14,9 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::settings::SettingsState;
 
 /// Upper bound on per-session captured output, in bytes. Older output is
 /// dropped from the front once exceeded so memory stays bounded.
@@ -25,11 +27,98 @@ const READ_BUF_SIZE: usize = 4096;
 /// shell in one IPC call. The shell still receives an aggregate of separate
 /// writes, so this isn't a strong defense — it's an extra layer.
 const MAX_WRITE_BYTES: usize = 64 * 1024;
-/// Cap on the number of live PTY sessions. A multi-repo workspace opens a
-/// parent terminal plus a run-script session per repo, so several workspaces
+/// Default cap on the number of live PTY sessions. A multi-repo workspace opens
+/// a parent terminal plus a run-script session per repo, so several workspaces
 /// can be live at once; this still bounds `pty_attach` with novel ids from
-/// spawning shells without limit.
-const MAX_SESSIONS: usize = 24;
+/// spawning shells without limit. Overridable in Settings, which persists the
+/// chosen value as `maxPtySessions`.
+pub const DEFAULT_MAX_SESSIONS: usize = 60;
+
+/// Hard ceiling on the configured cap. The setting is writable from the webview
+/// and persists across restarts, so a value that outlived whatever wrote it must
+/// not be able to retire the guard entirely. Sits below what `DESIRED_FD_LIMIT`
+/// affords at roughly three descriptors per session, since past that point the
+/// cap stops being what fails first and an `EMFILE` surfaces somewhere unrelated
+/// instead.
+pub const MAX_CONFIGURABLE_SESSIONS: usize = 1000;
+
+/// The configured (or default) cap on live PTY sessions. Read on each use so a
+/// change made in Settings applies to the next terminal opened rather than
+/// waiting for a restart. Falls back to the default when settings failed to
+/// load, since `setup` logs that and carries on rather than aborting launch.
+fn max_sessions(app: &AppHandle) -> usize {
+    resolve_max_sessions(
+        app.try_state::<SettingsState>()
+            .and_then(|state| state.snapshot().max_pty_sessions),
+    )
+}
+
+/// Resolves the session cap from the stored setting. Extracted from
+/// `max_sessions` so the bounds are unit-testable without app state. An unset or
+/// zero setting falls back to the default — a zero cap would make every session
+/// unopenable — and anything above the ceiling is clamped rather than rejected,
+/// so a stored value the frontend never validated still yields a usable cap.
+fn resolve_max_sessions(configured: Option<usize>) -> usize {
+    configured
+        .filter(|n| *n > 0)
+        .map(|n| n.min(MAX_CONFIGURABLE_SESSIONS))
+        .unwrap_or(DEFAULT_MAX_SESSIONS)
+}
+
+/// Soft file-descriptor limit aimed for at startup. Each live session holds
+/// several descriptors (the PTY master plus the cloned reader and the writer
+/// taken from it), so the session cap alone doesn't bound fd use. Chosen with
+/// room to spare above what `MAX_CONFIGURABLE_SESSIONS` sessions need, and
+/// under macOS's `kern.maxfilesperproc`, above which `setrlimit` refuses the
+/// request outright.
+#[cfg(unix)]
+const DESIRED_FD_LIMIT: libc::rlim_t = 4096;
+
+/// Raises the soft file-descriptor limit toward `DESIRED_FD_LIMIT` so the
+/// session cap, not the fd budget, is what stops new terminals. A macOS app
+/// launched from Finder inherits a soft limit of 256 regardless of the shell's,
+/// which several dozen live sessions plus the webview's own descriptors can
+/// exhaust — and an `EMFILE` surfaces on whatever opens a descriptor next
+/// (control socket, keychain, resource loads) rather than as the session-cap
+/// error. Best effort: a failure here leaves the inherited limit in place.
+#[cfg(unix)]
+pub fn raise_fd_limit() -> Result<(), String> {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `getrlimit` only writes the initialized `rlimit` we own.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    let Some(target) = target_fd_limit(limit.rlim_cur, limit.rlim_max) else {
+        return Ok(());
+    };
+    limit.rlim_cur = target;
+    // SAFETY: `setrlimit` only reads the initialized `rlimit` we own. `rlim_max`
+    // is passed back as read, so the hard limit is never raised or lowered.
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } != 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
+/// The soft limit to raise to, or `None` when the inherited one already suffices
+/// and the call can be skipped. Never lowers an existing limit and never exceeds
+/// the hard limit, which is what a process without privileges is allowed to ask
+/// for. Extracted from `raise_fd_limit` so the arithmetic is unit-testable
+/// without touching the process's real limits.
+#[cfg(unix)]
+fn target_fd_limit(soft: libc::rlim_t, hard: libc::rlim_t) -> Option<libc::rlim_t> {
+    // An infinite hard limit imposes no ceiling of its own, so ask for the full
+    // desired amount.
+    let ceiling = if hard == libc::RLIM_INFINITY {
+        DESIRED_FD_LIMIT
+    } else {
+        hard.min(DESIRED_FD_LIMIT)
+    };
+    (soft < ceiling).then_some(ceiling)
+}
 
 struct PtySession {
     /// Writes user input into the PTY (taken once from the master).
@@ -85,6 +174,22 @@ struct SpawnSpec {
     strip_provider_secrets: bool,
 }
 
+/// Environment a Yarvis-launched Claude session needs so its attention hooks can
+/// reach the sidecar's ingest endpoint. Only workspace Claude sessions (keyed
+/// `ws-claude:<workspaceId>`) get the token; every other PTY (plain terminals)
+/// gets nothing. Pure so the gating is unit-testable without a live PTY.
+fn attention_env(id: &str, port: u16, token: &str) -> Vec<(String, String)> {
+    let Some(workspace_id) = id.strip_prefix("ws-claude:") else {
+        return Vec::new();
+    };
+    vec![
+        ("YARVIS_SIDECAR_PORT".to_string(), port.to_string()),
+        ("YARVIS_ATTENTION_TOKEN".to_string(), token.to_string()),
+        ("YARVIS_WORKSPACE_ID".to_string(), workspace_id.to_string()),
+        ("YARVIS_SESSION_KEY".to_string(), id.to_string()),
+    ]
+}
+
 /// Spawns a shell in a new PTY and starts the reader thread that streams its
 /// output to the frontend. The shell opens in `spec.cwd` when given (e.g. a
 /// workspace folder), otherwise in `$HOME`.
@@ -99,6 +204,17 @@ fn spawn_session(app: &AppHandle, id: &str, spec: &SpawnSpec) -> Result<PtySessi
     cmd.env("TERM", "xterm-256color");
     if spec.strip_provider_secrets {
         cmd.env_remove("ANTHROPIC_API_KEY");
+    }
+    // Workspace Claude sessions carry the sidecar port + scoped attention token so
+    // their Claude Code hooks can post to the ingest endpoint. Both launch flows
+    // (core-spawned and the issue "Start work" shell) route through here.
+    if let (Some(info), Some(attn)) = (
+        app.try_state::<crate::sidecar::SidecarInfo>(),
+        app.try_state::<crate::sidecar::AttentionIngestToken>(),
+    ) {
+        for (key, value) in attention_env(id, info.port, &attn.0) {
+            cmd.env(key, value);
+        }
     }
     if let Some(dir) = spec
         .cwd
@@ -178,12 +294,13 @@ fn spawn_into_state(
     spec: SpawnSpec,
 ) -> Result<(), String> {
     // Enforce the per-process cap before spawning, not after, so a flood of
-    // calls doesn't briefly hold MAX_SESSIONS+N live shells.
+    // calls doesn't briefly hold more shells than the cap allows.
     {
+        let cap = max_sessions(app);
         let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
-        if sessions.len() >= MAX_SESSIONS && !sessions.contains_key(id) {
+        if sessions.len() >= cap && !sessions.contains_key(id) {
             return Err(format!(
-                "too many PTY sessions (cap: {MAX_SESSIONS}); close one before opening another"
+                "too many PTY sessions (cap: {cap}); close one before opening another"
             ));
         }
     }
@@ -439,7 +556,86 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 
 #[cfg(test)]
 mod tests {
-    use super::{append_capped, remote_control_command, MAX_SCROLLBACK};
+    use super::{
+        append_capped, attention_env, remote_control_command, resolve_max_sessions,
+        DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS, MAX_SCROLLBACK,
+    };
+
+    #[cfg(unix)]
+    mod fd_limit {
+        use super::super::{target_fd_limit, DESIRED_FD_LIMIT};
+
+        #[test]
+        fn raises_a_low_inherited_soft_limit() {
+            // The soft limit a macOS app inherits from a Finder launch.
+            assert_eq!(target_fd_limit(256, 1 << 20), Some(DESIRED_FD_LIMIT));
+        }
+
+        #[test]
+        fn stops_at_the_hard_limit() {
+            assert_eq!(target_fd_limit(256, 1024), Some(1024));
+        }
+
+        #[test]
+        fn asks_for_the_full_amount_when_the_hard_limit_is_infinite() {
+            assert_eq!(
+                target_fd_limit(256, libc::RLIM_INFINITY),
+                Some(DESIRED_FD_LIMIT)
+            );
+        }
+
+        #[test]
+        fn skips_a_soft_limit_that_already_suffices() {
+            assert_eq!(target_fd_limit(DESIRED_FD_LIMIT, 1 << 20), None);
+            assert_eq!(target_fd_limit(1 << 20, 1 << 20), None);
+        }
+
+        #[test]
+        fn never_lowers_a_soft_limit_above_the_hard_limit() {
+            // Nonsensical, but a silent lowering would be worse than a no-op.
+            assert_eq!(target_fd_limit(2048, 1024), None);
+        }
+    }
+
+    #[test]
+    fn resolve_max_sessions_uses_the_default_when_unset() {
+        assert_eq!(resolve_max_sessions(None), DEFAULT_MAX_SESSIONS);
+    }
+
+    #[test]
+    fn resolve_max_sessions_uses_a_configured_value() {
+        assert_eq!(resolve_max_sessions(Some(120)), 120);
+    }
+
+    #[test]
+    fn resolve_max_sessions_accepts_the_smallest_usable_value() {
+        assert_eq!(resolve_max_sessions(Some(1)), 1);
+    }
+
+    #[test]
+    fn resolve_max_sessions_falls_back_on_a_zero_cap() {
+        assert_eq!(resolve_max_sessions(Some(0)), DEFAULT_MAX_SESSIONS);
+    }
+
+    #[test]
+    fn resolve_max_sessions_clamps_a_cap_above_the_ceiling() {
+        assert_eq!(
+            resolve_max_sessions(Some(MAX_CONFIGURABLE_SESSIONS + 1)),
+            MAX_CONFIGURABLE_SESSIONS
+        );
+        assert_eq!(
+            resolve_max_sessions(Some(usize::MAX)),
+            MAX_CONFIGURABLE_SESSIONS
+        );
+    }
+
+    #[test]
+    fn resolve_max_sessions_leaves_the_ceiling_itself_alone() {
+        assert_eq!(
+            resolve_max_sessions(Some(MAX_CONFIGURABLE_SESSIONS)),
+            MAX_CONFIGURABLE_SESSIONS
+        );
+    }
 
     #[test]
     fn remote_control_command_appends_flag_and_quotes_name() {
@@ -463,6 +659,29 @@ mod tests {
     fn remote_control_command_escapes_single_quotes_in_the_name() {
         let cmd = remote_control_command("claude", "Mike's task");
         assert_eq!(cmd, "claude --remote-control 'Mike'\\''s task'");
+    }
+
+    #[test]
+    fn attention_env_populates_workspace_claude_sessions() {
+        let env = attention_env("ws-claude:abc-123", 8765, "tok");
+        assert_eq!(
+            env,
+            vec![
+                ("YARVIS_SIDECAR_PORT".to_string(), "8765".to_string()),
+                ("YARVIS_ATTENTION_TOKEN".to_string(), "tok".to_string()),
+                ("YARVIS_WORKSPACE_ID".to_string(), "abc-123".to_string()),
+                (
+                    "YARVIS_SESSION_KEY".to_string(),
+                    "ws-claude:abc-123".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn attention_env_is_empty_for_non_claude_sessions() {
+        // A plain terminal PTY must not receive the ingest token.
+        assert!(attention_env("tab:terminal/abc/def", 8765, "tok").is_empty());
     }
 
     #[test]

@@ -25,6 +25,7 @@ import {
 import { deleteLinkForWorkspace, listLinksForWorkspace, upsertLink } from "../issues/service.ts";
 import { completeTasksByWorkspace, tasksForWorkspace } from "../tasks/service.ts";
 import { stopClaudeSession } from "./claudeSession.ts";
+import { writeClaudeSettings } from "./claudeSettings.ts";
 import { runStreaming } from "./exec.ts";
 import {
   addExistingBranchWorktree,
@@ -875,7 +876,10 @@ export async function provisionWorkspace(
 
     // The workspace is active only if every repo provisioned cleanly.
     const after = await getWorkspace(db, id);
-    if (after) writeContextFiles(after);
+    if (after) {
+      writeContextFiles(after);
+      writeClaudeSettings(after.rootPath, after.id);
+    }
     const allReady = after?.repos.every((r) => r.status === "ready" || r.status === "removed");
     const status = allReady ? "active" : "error";
     await db

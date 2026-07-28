@@ -13,6 +13,8 @@ import type {
   PrFile,
   PrStatus,
   PrSummary,
+  Reviewer,
+  ReviewerState,
 } from "../pr/types.ts";
 
 // Re-exported so existing `from "./client.ts"` imports keep resolving the
@@ -27,6 +29,8 @@ export type {
   PrStatus,
   PrSummary,
   ReviewComment,
+  Reviewer,
+  ReviewerState,
   ReviewThread,
 } from "../pr/types.ts";
 
@@ -179,6 +183,51 @@ function allowedMergeMethods(repo: any): MergeMethod[] {
   return methods;
 }
 
+/** Maps GitHub's PullRequestReviewState enum onto the shared ReviewerState. */
+function mapReviewState(state: string | undefined | null): ReviewerState {
+  switch ((state ?? "").toUpperCase()) {
+    case "APPROVED":
+      return "approved";
+    case "CHANGES_REQUESTED":
+      return "changes_requested";
+    case "COMMENTED":
+      return "commented";
+    case "DISMISSED":
+      return "dismissed";
+    default:
+      return "pending";
+  }
+}
+
+/**
+ * Merges GitHub's two reviewer sources — `reviewRequests` (still-outstanding
+ * requests) and `latestReviews` (the latest review per person that already
+ * submitted one) — into a single provider-neutral list. When both name the
+ * same login (a re-request after a previous review), the request wins: the
+ * viewer needs to know a fresh look is expected.
+ */
+function toReviewers(pr: any): Reviewer[] {
+  const byLogin = new Map<string, Reviewer>();
+  const reviewNodes = pr.latestReviews?.nodes ?? [];
+  for (const node of reviewNodes) {
+    const login = node?.author?.login;
+    if (!login) continue;
+    byLogin.set(login, { login, state: mapReviewState(node.state), isRequested: false });
+  }
+  const requestNodes = pr.reviewRequests?.nodes ?? [];
+  // Runs after `latestReviews` so a re-request overwrites the historical review
+  // — a fresh look is expected, and the viewer should see "pending" rather than
+  // the stale earlier verdict.
+  for (const node of requestNodes) {
+    const reviewer = node?.requestedReviewer;
+    // GraphQL union: User/Mannequin/Bot carry `login`, Team carries `combinedSlug`.
+    const login = reviewer?.login ?? reviewer?.combinedSlug;
+    if (!login) continue;
+    byLogin.set(login, { login, state: "pending", isRequested: true });
+  }
+  return Array.from(byLogin.values());
+}
+
 /**
  * Shapes the GraphQL `pullRequest` payload into a flat PrDetail. `repo` carries
  * the sibling `repository` node whose merge-method flags the UI needs; it's
@@ -204,6 +253,7 @@ export function toPrDetail(pr: any, repo?: any): PrDetail {
     canEnableAutoMerge: Boolean(pr.viewerCanEnableAutoMerge),
     canDisableAutoMerge: Boolean(pr.viewerCanDisableAutoMerge),
     checks: rollupNodes.map(toCheckItem),
+    reviewers: toReviewers(pr),
     reviewThreads: threadNodes.map((thread: any) => ({
       path: thread.path ?? null,
       line: thread.line ?? null,
@@ -227,6 +277,20 @@ query($owner:String!,$repo:String!,$number:Int!){
       viewerCanEnableAutoMerge viewerCanDisableAutoMerge
       author{login}
       baseRefName headRefName
+      reviewRequests(first:50){
+        nodes{
+          requestedReviewer{
+            __typename
+            ... on User { login }
+            ... on Mannequin { login }
+            ... on Bot { login }
+            ... on Team { combinedSlug }
+          }
+        }
+      }
+      latestReviews(first:50){
+        nodes{ author{login} state }
+      }
       reviewThreads(first:50){
         nodes{
           isResolved path line
@@ -561,7 +625,7 @@ export class GitHubClient {
   async listRepoIssues(
     owner: string,
     repo: string,
-    opts: { assignee?: string; state?: string } = {},
+    opts: { assignee?: string; state?: string; labels?: string[] } = {},
   ): Promise<IssueSummary[]> {
     const params = new URLSearchParams({
       state: opts.state ?? "open",
@@ -570,6 +634,9 @@ export class GitHubClient {
       direction: "desc",
     });
     if (opts.assignee) params.set("assignee", opts.assignee);
+    // GitHub's REST issues endpoint filters by a comma-separated label list
+    // (AND semantics — an issue must carry every listed label).
+    if (opts.labels?.length) params.set("labels", opts.labels.join(","));
     const items = await this.api<any[]>(`/repos/${owner}/${repo}/issues?${params.toString()}`);
     return items.filter((i) => !i.pull_request).map((i) => toIssueSummary(i, { owner, repo }));
   }

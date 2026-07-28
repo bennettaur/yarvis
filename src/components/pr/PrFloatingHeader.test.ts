@@ -32,6 +32,7 @@ const detail = (overrides: Partial<PrDetail> = {}): PrDetail => ({
   canDisableAutoMerge: false,
   checks: [],
   reviewThreads: [],
+  reviewers: [],
   ...overrides,
 });
 

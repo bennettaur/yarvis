@@ -62,6 +62,7 @@ export interface AzurePullRequest {
   mergeStatus?: string;
   lastMergeSourceCommit?: AzureCommitRef;
   lastMergeTargetCommit?: AzureCommitRef;
+  reviewers?: AzureReviewer[];
 }
 
 /** A policy evaluation (our "checks"). */
@@ -98,6 +99,21 @@ export interface AzureThread {
 
 export interface AzureIteration {
   id: number;
+}
+
+/**
+ * A reviewer on a pull request. `vote` is Azure's signed enum (10 approved,
+ * 5 approved-with-suggestions, 0 no vote, -5 waiting-for-author, -10 rejected);
+ * `isRequired` distinguishes required reviewers from optional ones. Returned
+ * inline on the PR `getPullRequestById` response by default.
+ */
+export interface AzureReviewer {
+  id?: string;
+  displayName?: string;
+  vote?: number;
+  isRequired?: boolean;
+  hasDeclined?: boolean;
+  isFlagged?: boolean;
 }
 
 export interface AzureChangeEntry {

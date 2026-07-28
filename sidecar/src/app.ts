@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { cors } from "hono/cors";
+import { createAttentionIngestRoutes, createAttentionRoutes } from "./attention/routes.ts";
 import { createAzureRoutes } from "./azure/routes.ts";
 import { createCcRoutes } from "./cc/routes.ts";
 import { createChatRoutes } from "./chat/routes.ts";
@@ -18,6 +19,7 @@ import { createOmniRoutes } from "./omni/routes.ts";
 import { createReadiness, type Readiness } from "./readiness.ts";
 import { createTaskRoutes } from "./tasks/routes.ts";
 import { createTelegramRoutes } from "./telegram/routes.ts";
+import { createWipRoutes } from "./wip/routes.ts";
 import { createRepoRoutes, createWorkspaceRoutes } from "./workspaces/routes.ts";
 
 const SERVICE_NAME = "yarvis-sidecar";
@@ -74,6 +76,11 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   // a state nonce and exposes nothing sensitive.
   app.route("/", createGoogleCallbackRoutes(config));
 
+  // Attention-ingest sits OUTSIDE the main bearer wall and authenticates with its
+  // own scoped token (checked inside the router), so a Claude session shell can
+  // raise an attention flag without holding the full-access bearer.
+  app.route("/ingest", createAttentionIngestRoutes(config));
+
   // Everything past this point requires the bearer token.
   app.use("/api/*", bearerAuth({ token: config.token }));
 
@@ -107,6 +114,8 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/azure", createAzureRoutes(config));
   app.route("/api/memory", createMemoryRoutes(config));
   app.route("/api/events", createEventRoutes(config));
+  app.route("/api/attention", createAttentionRoutes(config));
+  app.route("/api/wip", createWipRoutes(config));
   app.route("/api/calendar", createCalendarRoutes(config));
   app.route("/api/omni", createOmniRoutes(config));
   app.route("/api/telegram", createTelegramRoutes());

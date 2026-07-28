@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { IssueProvider } from "../lib/issues/types";
+import { useEffect, useState } from "react";
+import type { IssueProvider, IssueSummary } from "../lib/issues/types";
 import GithubIssuesView from "./issue/GithubIssuesView";
 import JiraIssuesView from "./issue/JiraIssuesView";
 
@@ -14,8 +14,20 @@ const PROVIDERS: { key: IssueProvider; label: string }[] = [
   { key: "jira", label: "JIRA" },
 ];
 
-export default function IssuesPanel() {
+export default function IssuesPanel({
+  requested,
+  onRequestConsumed,
+}: {
+  /** An issue another view (the attention/WIP panel) asked us to open directly. */
+  requested?: IssueSummary | null;
+  onRequestConsumed?: () => void;
+} = {}) {
   const [provider, setProvider] = useState<IssueProvider>("github");
+
+  // A deep-link request switches to its provider so the matching view opens it.
+  useEffect(() => {
+    if (requested) setProvider(requested.provider);
+  }, [requested]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -38,7 +50,14 @@ export default function IssuesPanel() {
         </div>
       </div>
       <div className="min-h-0 flex-1">
-        {provider === "github" ? <GithubIssuesView /> : <JiraIssuesView />}
+        {provider === "github" ? (
+          <GithubIssuesView
+            requested={requested?.provider === "github" ? requested : null}
+            onRequestConsumed={onRequestConsumed}
+          />
+        ) : (
+          <JiraIssuesView />
+        )}
       </div>
     </div>
   );

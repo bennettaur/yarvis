@@ -19,6 +19,7 @@ function configWithSecrets(secrets: Config["customProviderSecrets"] = {}): Confi
     port: 0,
     token: "t",
     tokenGenerated: false,
+    attentionToken: "test-attention-token",
     allowedOrigins: null,
     databaseUrl: url,
     workspacesRoot: "/tmp/yarvis-test-workspaces",
