@@ -21,6 +21,9 @@ import { useTabShortcuts } from "./components/shell/useTabShortcuts";
 import TasksPanel from "./components/TasksPanel";
 import WorkspacesPanel from "./components/WorkspacesPanel";
 import { type Alarm, onAlarmFired } from "./lib/alarms";
+import type { AttentionItem } from "./lib/attention";
+import { markAttention } from "./lib/attentionStore";
+import type { IssueSummary } from "./lib/issues/types";
 import {
   type NewWorkspaceRequest,
   type OpenWorkspaceRequest,
