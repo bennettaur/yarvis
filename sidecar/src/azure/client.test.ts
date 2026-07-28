@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { AzureDevOpsClient, isAllowedAzureOrgUrl, mapPolicyEvaluation } from "./client.ts";
+import {
+  AzureDevOpsClient,
+  isAllowedAzureOrgUrl,
+  mapPolicyEvaluation,
+  mapReviewer,
+} from "./client.ts";
 
 const ORG = "https://dev.azure.com/acme";
 
@@ -39,6 +44,22 @@ describe("mapPolicyEvaluation", () => {
       }
     });
   }
+});
+
+describe("mapReviewer", () => {
+  it.each([
+    [10, "approved", false],
+    [5, "approved", false],
+    [-10, "changes_requested", false],
+    [-5, "changes_requested", false],
+    [0, "pending", true],
+    [undefined, "pending", true],
+  ] as const)("maps vote %p to %s (requested=%s)", (vote, state, isRequested) => {
+    const reviewer = mapReviewer({ displayName: "Alex", vote });
+    expect(reviewer.state).toBe(state);
+    expect(reviewer.isRequested).toBe(isRequested);
+    expect(reviewer.login).toBe("Alex");
+  });
 });
 
 describe("azure client", () => {

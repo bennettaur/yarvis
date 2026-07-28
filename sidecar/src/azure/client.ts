@@ -15,6 +15,8 @@ import type {
   PrDetail,
   PrFile,
   PrStatus,
+  Reviewer,
+  ReviewerState,
   ReviewThread,
   Viewer,
 } from "../pr/types.ts";
@@ -28,6 +30,7 @@ import type {
   AzureList,
   AzurePolicyEvaluation,
   AzurePullRequest,
+  AzureReviewer,
   AzureThread,
 } from "./apiTypes.ts";
 import { buildPatch } from "./diff.ts";
@@ -119,6 +122,43 @@ function mapMergeStatus(mergeStatus: string | undefined): {
     default:
       return { mergeable: null, enum: "UNKNOWN" };
   }
+}
+
+/**
+ * Maps an Azure reviewer vote onto the shared ReviewerState. Azure's vote
+ * vocabulary is signed: 10 approved, 5 approved-with-suggestions, 0 no vote
+ * yet, -5 waiting-for-author, -10 rejected. Both `-10` (rejected) and `-5`
+ * (waiting-for-author) mean the reviewer is blocking the merge on the author
+ * — collapsing them into `changes_requested` matches how GitHub renders the
+ * equivalent state.
+ */
+function mapReviewerVote(vote: number | undefined): ReviewerState {
+  switch (vote) {
+    case 10:
+    case 5:
+      return "approved";
+    case -10:
+    case -5:
+      return "changes_requested";
+    default:
+      return "pending";
+  }
+}
+
+/**
+ * Maps an Azure reviewer entry onto the shared Reviewer shape. Azure does not
+ * have a login concept, so `displayName` (a human-readable name) is what fills
+ * `login`; this matches how `PrDetail.author` handles the same conflation. A
+ * zero/absent vote is Azure's closest analogue to GitHub's "review requested":
+ * the reviewer is on the PR but hasn't weighed in yet.
+ */
+export function mapReviewer(reviewer: AzureReviewer): Reviewer {
+  const vote = reviewer.vote ?? 0;
+  return {
+    login: reviewer.displayName ?? "",
+    state: mapReviewerVote(vote),
+    isRequested: vote === 0,
+  };
 }
 
 /** Maps an Azure policy evaluation status onto the shared CheckItem shape. */
@@ -403,6 +443,7 @@ export class AzureDevOpsClient {
       canDisableAutoMerge: false,
       checks,
       reviewThreads,
+      reviewers: (pr.reviewers ?? []).map(mapReviewer).filter((r) => r.login),
     };
   }
 

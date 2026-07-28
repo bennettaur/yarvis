@@ -20,6 +20,7 @@ import {
   listStars,
   mergeIssues,
   removeStar,
+  sanitizeIssueText,
   upsertLink,
   writeIssuePrompt,
 } from "./service.ts";
@@ -320,6 +321,12 @@ export function createIssueRoutes(config: Config): Hono {
    * absolute path. Called after provisioning completes (the worktrees, and thus
    * the workspace root, exist by then); the terminal then launches Claude with
    * this file.
+   *
+   * The prompt is passed through `sanitizeIssueText` at the boundary so every
+   * producer (issues, tasks, future flows) gets the same defense against hidden
+   * instructions (zero-width / bidi format characters, HTML comments, control
+   * codes) surviving into the auto-approved Claude session. Sanitizing already-
+   * sanitized content is a no-op.
    */
   router.post("/:provider/prompt-file", async (c) => {
     const parsed = promptFileSchema.safeParse(await c.req.json().catch(() => null));
@@ -327,7 +334,7 @@ export function createIssueRoutes(config: Config): Hono {
     const root = await getWorkspaceRoot(db(), parsed.data.workspaceId);
     if (!root) return c.json({ error: "workspace not found" }, 404);
     try {
-      const path = await writeIssuePrompt(root, parsed.data.prompt);
+      const path = await writeIssuePrompt(root, sanitizeIssueText(parsed.data.prompt));
       return c.json({ path });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);

@@ -130,6 +130,13 @@ branch, and a `.claude/settings.json` that registers each repo's
 even though Claude runs one directory above the repos. The settings file is
 merged, not overwritten, so any other keys already present are left intact.
 
+At most 60 terminal sessions can be live at once; opening more fails until one
+is closed. Raise or lower that under Settings → Repositories → Terminals (up to
+1000) — each session is a real shell, so the cap trades memory and process count
+for how many workspaces you can keep open. Leaving the field blank restores the
+default. The value applies to the next terminal opened, without a restart, and
+is stored in `settings.json` in the app data directory.
+
 ### Telegram remote control
 
 Chat with Yarvis — and issue control commands — from Telegram. The sidecar runs

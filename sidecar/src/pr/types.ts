@@ -51,6 +51,29 @@ export interface ReviewThread {
   comments: ReviewComment[];
 }
 
+/**
+ * A reviewer on the PR, provider-neutral. Combines "requested but not yet
+ * voted" and "already submitted a review" into a single list so the UI can
+ * render one section that shows who's expected to weigh in and what they've
+ * said so far. `state` captures the current verdict; `isRequested` marks a
+ * reviewer whose review is still outstanding — a requested reviewer with no
+ * review yet is `pending`, an approver whose approval was invalidated by a new
+ * commit and re-requested is `pending` again.
+ */
+export type ReviewerState =
+  | "approved"
+  | "changes_requested"
+  | "commented"
+  | "pending"
+  | "dismissed";
+
+export interface Reviewer {
+  login: string;
+  state: ReviewerState;
+  /** True when the reviewer's review is still outstanding (a fresh request). */
+  isRequested: boolean;
+}
+
 /** A normalized CI check (CheckRun, commit status, or policy evaluation). */
 export interface CheckItem {
   name: string;
@@ -88,6 +111,8 @@ export interface PrDetail {
   canDisableAutoMerge: boolean;
   checks: CheckItem[];
   reviewThreads: ReviewThread[];
+  /** Requested reviewers plus anyone who has already submitted a review. */
+  reviewers: Reviewer[];
 }
 
 /** A changed file with its unified-diff patch (`patch` is null until loaded). */
