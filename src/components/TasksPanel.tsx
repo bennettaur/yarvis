@@ -1,5 +1,23 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { requestNewWorkspace } from "../lib/nav";
 import { completeTask, createTask, deleteTask, listTasks, type Task } from "../lib/tasks";
+
+/**
+ * Prompt handed to Claude when the user clicks "Start work" on a task. Mirrors
+ * the issue "Start work" prompt in shape (a single markdown file written into
+ * the workspace's `.yarvis/issue-prompt.md`) so the same Claude launch line
+ * ("Read the ticket details…") drives both entry points.
+ */
+export function buildTaskPrompt(task: Task): string {
+  const lines = [
+    "Work on the following task from the Yarvis task list.",
+    "",
+    `# ${task.title}`,
+    "",
+    (task.notes ?? "").trim() || "_(no notes)_",
+  ];
+  return `${lines.join("\n")}\n`;
+}
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
@@ -34,6 +52,7 @@ function TaskRow({
   onDelete: (id: string) => void;
 }) {
   const overdue = task.status === "open" && isOverdue(task.targetDate);
+  const canWorkOn = task.status === "open";
   return (
     <li className="group flex items-center gap-3 rounded-md px-2 py-2 transition-colors hover:bg-zinc-800/40">
       <button
@@ -77,6 +96,51 @@ function TaskRow({
         >
           {describeDate(task.targetDate)}
         </span>
+      )}
+      {canWorkOn && (
+        <>
+          <button
+            type="button"
+            onClick={() => requestNewWorkspace({ name: task.title, taskId: task.id })}
+            aria-label="Create workspace for this task"
+            title="Create workspace"
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-zinc-500 opacity-0 transition-opacity hover:text-indigo-300 focus:opacity-100 group-hover:opacity-100"
+          >
+            <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" aria-hidden="true">
+              <path
+                d="M2 4a1 1 0 0 1 1-1h4l1.5 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4Z"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M8 7v4M6 9h4"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              requestNewWorkspace({
+                name: task.title,
+                taskId: task.id,
+                claudePrompt: buildTaskPrompt(task),
+              })
+            }
+            aria-label="Start work on this task"
+            title="Start work"
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-zinc-500 opacity-0 transition-opacity hover:text-indigo-300 focus:opacity-100 group-hover:opacity-100"
+          >
+            <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" aria-hidden="true">
+              <path d="M5 3.5v9l7-4.5-7-4.5Z" fill="currentColor" />
+            </svg>
+          </button>
+        </>
       )}
       <button
         type="button"

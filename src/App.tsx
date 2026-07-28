@@ -24,7 +24,13 @@ import { type Alarm, onAlarmFired } from "./lib/alarms";
 import type { AttentionItem } from "./lib/attention";
 import { markAttention } from "./lib/attentionStore";
 import type { IssueSummary } from "./lib/issues/types";
-import { type OpenWorkspaceRequest, useOpenPrListener, useOpenWorkspaceListener } from "./lib/nav";
+import {
+  type NewWorkspaceRequest,
+  type OpenWorkspaceRequest,
+  useNewWorkspaceListener,
+  useOpenPrListener,
+  useOpenWorkspaceListener,
+} from "./lib/nav";
 import { notify } from "./lib/notify";
 import { onOmniChatSummon } from "./lib/omniChat";
 import { useOmniChatContext } from "./lib/omniChatContext";
@@ -54,6 +60,11 @@ export default function App() {
   // A workspace another view (Issues "Start work") has asked us to open, with an
   // optional Claude prompt to launch. WorkspacesPanel consumes and clears it.
   const [requestedWorkspace, setRequestedWorkspace] = useState<OpenWorkspaceRequest | null>(null);
+  // A request to open the New Workspace form pre-filled (Tasks "Create workspace" /
+  // "Start work"). WorkspacesPanel consumes and clears it.
+  const [requestedNewWorkspace, setRequestedNewWorkspace] = useState<NewWorkspaceRequest | null>(
+    null,
+  );
   // An issue the attention/WIP panel asked us to open. IssuesPanel consumes it.
   const [requestedIssue, setRequestedIssue] = useState<IssueSummary | null>(null);
 
@@ -70,6 +81,12 @@ export default function App() {
     setTab("workspaces");
   }, []);
   useOpenWorkspaceListener(handleOpenWorkspace);
+
+  const handleNewWorkspace = useCallback((request: NewWorkspaceRequest) => {
+    setRequestedNewWorkspace(request);
+    setTab("workspaces");
+  }, []);
+  useNewWorkspaceListener(handleNewWorkspace);
 
   // Surface Telegram unlock/failed/lockout activity as OS notifications, app-wide.
   useTelegramSecurityAlerts();
@@ -234,6 +251,8 @@ export default function App() {
           <WorkspacesPanel
             requested={requestedWorkspace}
             onRequestConsumed={() => setRequestedWorkspace(null)}
+            requestedNew={requestedNewWorkspace}
+            onNewRequestConsumed={() => setRequestedNewWorkspace(null)}
           />
         ) : tab === "prs" ? (
           // PRs owns its scroll so the PR detail view can pin a static header
