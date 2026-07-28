@@ -11,12 +11,14 @@ export default function AppShell({
   tab,
   onTabChange,
   onOpenOmniChat,
+  onOpenAttention,
   attentionPending,
   children,
 }: {
   tab: Tab;
   onTabChange: (tab: Tab) => void;
   onOpenOmniChat: () => void;
+  onOpenAttention: () => void;
   attentionPending: boolean;
   children: React.ReactNode;
 }) {
@@ -29,7 +31,7 @@ export default function AppShell({
         attentionPending={attentionPending}
       />
       <div className="flex min-w-0 flex-1 flex-col">
-        <TopBar title={tabLabel(tab)} />
+        <TopBar title={tabLabel(tab)} onOpenAttention={onOpenAttention} />
         <main className="min-h-0 flex-1 overflow-hidden">{children}</main>
       </div>
     </div>

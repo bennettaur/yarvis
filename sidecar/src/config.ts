@@ -28,6 +28,14 @@ export interface ProviderSecrets {
   // keep the injection path uniform with the other provider credentials.
   azureDevopsToken?: string;
   azureDevopsOrgUrl?: string;
+  // JIRA Cloud credentials for the Issues integration. `jiraBaseUrl` is the
+  // Atlassian site (e.g. https://your-org.atlassian.net) and, like the Azure
+  // org URL, is configuration rather than a secret but rides the same Keychain
+  // blob. JIRA Cloud REST auth is HTTP Basic with `email:apiToken`, so both the
+  // account email and the API token are needed alongside the base URL.
+  jiraBaseUrl?: string;
+  jiraEmail?: string;
+  jiraApiToken?: string;
   // Google Cloud OAuth app credentials for the calendar integration. Created by
   // the user in Google Cloud Console (Desktop app client) and injected by the
   // Rust core from the Keychain, like the other secrets.
@@ -73,6 +81,12 @@ export interface Config {
   token: string;
   /** Whether the token was generated here (standalone) vs supplied by the host. */
   tokenGenerated: boolean;
+  /**
+   * A scoped token authorizing only the attention-ingest endpoint. Injected into
+   * Yarvis-launched Claude Code session shells (via the Rust core), so a session's
+   * hooks can POST an attention item without holding the full-access bearer above.
+   */
+  attentionToken: string;
   /** Allowed values for the Origin header, or null to skip the check (dev). */
   allowedOrigins: string[] | null;
   /** Postgres connection string. May be undefined until the user configures it. */
@@ -204,6 +218,7 @@ export function loadConfig(): Config {
     port: env.YARVIS_SIDECAR_PORT ? Number(env.YARVIS_SIDECAR_PORT) : 8765,
     token,
     tokenGenerated: suppliedToken === undefined,
+    attentionToken: env.YARVIS_ATTENTION_TOKEN ?? randomToken(),
     allowedOrigins: parseOrigins(env.YARVIS_ALLOWED_ORIGINS),
     databaseUrl: env.DATABASE_URL,
     workspacesRoot: env.YARVIS_WORKSPACES_ROOT ?? join(homedir(), "dev", "yarvis-workspaces"),
@@ -213,6 +228,9 @@ export function loadConfig(): Config {
       githubToken: env.GITHUB_TOKEN,
       azureDevopsToken: env.AZURE_DEVOPS_TOKEN,
       azureDevopsOrgUrl: env.AZURE_DEVOPS_ORG_URL,
+      jiraBaseUrl: env.JIRA_BASE_URL,
+      jiraEmail: env.JIRA_EMAIL,
+      jiraApiToken: env.JIRA_API_TOKEN,
       googleClientId: env.GOOGLE_CLIENT_ID,
       googleClientSecret: env.GOOGLE_CLIENT_SECRET,
     },

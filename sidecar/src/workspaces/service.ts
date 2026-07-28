@@ -4,8 +4,8 @@
  * module owns the database state and orchestration.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { relative } from "node:path";
 import { and, eq, inArray, ne } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
@@ -25,6 +25,7 @@ import {
 import { deleteLinkForWorkspace, listLinksForWorkspace, upsertLink } from "../issues/service.ts";
 import { completeTasksByWorkspace, tasksForWorkspace } from "../tasks/service.ts";
 import { stopClaudeSession } from "./claudeSession.ts";
+import { writeClaudeSettings } from "./claudeSettings.ts";
 import { runStreaming } from "./exec.ts";
 import {
   addExistingBranchWorktree,
@@ -737,83 +738,6 @@ function writeContextFiles(detail: WorkspaceDetail): void {
 }
 
 /**
- * Reads an existing `.claude/settings.json` as a plain object to merge into.
- * Returns null if it can't be parsed or isn't a JSON object (array, primitive,
- * or null) — the caller treats that as "don't touch the file" rather than
- * overwrite content it can't safely merge.
- */
-function parseSettingsObject(path: string): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      console.error("[workspaces] existing .claude/settings.json is not an object, leaving as-is");
-      return null;
-    }
-    return parsed as Record<string, unknown>;
-  } catch (e) {
-    console.error("[workspaces] existing .claude/settings.json is unparseable, leaving as-is:", e);
-    return null;
-  }
-}
-
-/**
- * Points the workspace's Claude session at each repo's `.claude` skills and
- * agents. Claude starts in the workspace root, above the repos, so it only
- * auto-discovers `.claude` at the root — a repo's own skills and agents, one
- * directory down, would otherwise stay invisible and quietly limit Claude in
- * that repo. Rather than copy or symlink them, we register their paths in the
- * root `.claude/settings.json`, which lets Claude load them in place.
- *
- * The file is merged, not overwritten: only the `skills` and `agents` keys are
- * owned here, so anything else already present (notably Yarvis' attention
- * hooks) is preserved. Best-effort — a failure is logged, not fatal.
- */
-function writeClaudeSettings(detail: WorkspaceDetail): void {
-  const skillPaths: string[] = [];
-  const agentPaths: string[] = [];
-  for (const wr of detail.repos) {
-    const skillsDir = join(wr.worktreePath, ".claude", "skills");
-    const agentsDir = join(wr.worktreePath, ".claude", "agents");
-    if (existsSync(skillsDir)) skillPaths.push(skillsDir);
-    if (existsSync(agentsDir)) agentPaths.push(agentsDir);
-  }
-
-  const settingsPath = join(detail.rootPath, ".claude", "settings.json");
-
-  try {
-    // Preserve any existing settings (e.g. attention hooks) and only replace
-    // the skill/agent path lists, which this function fully owns.
-    let settings: Record<string, unknown> = {};
-    if (existsSync(settingsPath)) {
-      const existing = parseSettingsObject(settingsPath);
-      // Bail rather than overwrite: a file we can't safely merge into may hold
-      // the attention hooks, and clobbering it would silently drop them.
-      if (!existing) return;
-      settings = existing;
-    }
-
-    // These keys are fully owned here, so recompute them from the current repo
-    // set — dropping them when nothing is left, so a re-provision that loses a
-    // repo doesn't leave a stale path behind.
-    if (skillPaths.length > 0) {
-      settings.skills = { enabled: true, paths: skillPaths };
-    } else {
-      delete settings.skills;
-    }
-    if (agentPaths.length > 0) {
-      settings.agents = { enabled: true, paths: agentPaths };
-    } else {
-      delete settings.agents;
-    }
-
-    mkdirSync(join(detail.rootPath, ".claude"), { recursive: true });
-    writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
-  } catch (e) {
-    console.error("[workspaces] failed to write .claude/settings.json:", e);
-  }
-}
-
-/**
  * Drives provisioning for a workspace: per repo, ensure the primary clone,
  * refresh its default branch, cut a worktree, and run the setup script —
  * emitting progress events (setup output streams through `emit`). Idempotent
@@ -954,7 +878,11 @@ export async function provisionWorkspace(
     const after = await getWorkspace(db, id);
     if (after) {
       writeContextFiles(after);
-      writeClaudeSettings(after);
+      writeClaudeSettings(
+        after.rootPath,
+        after.id,
+        after.repos.map((wr) => wr.worktreePath),
+      );
     }
     const allReady = after?.repos.every((r) => r.status === "ready" || r.status === "removed");
     const status = allReady ? "active" : "error";

@@ -36,6 +36,7 @@ function config(): Config {
     port: 0,
     token: "t",
     tokenGenerated: false,
+    attentionToken: "test-attention-token",
     allowedOrigins: null,
     databaseUrl: "postgres://localhost/unused",
     workspacesRoot: "/tmp/yarvis-test-workspaces",

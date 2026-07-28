@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   bigint,
+  bigserial,
   boolean,
   date,
   index,
@@ -458,6 +459,125 @@ export const events = pgTable(
 
 export type EventRow = typeof events.$inferSelect;
 export type NewEventRow = typeof events.$inferInsert;
+
+/**
+ * Where an attention item originates. `claude-hook` is a Yarvis-launched Claude
+ * Code session signalling through a Claude Code hook; `chat-agent` is the in-app
+ * chat/Omni agent's `request_attention`; `system` is reserved for future
+ * producers (e.g. an MCP tool).
+ */
+export const attentionSource = pgEnum("attention_source", ["claude-hook", "chat-agent", "system"]);
+
+/**
+ * The nature of the signal. `permission`/`idle` mean a session is *blocked* and
+ * cannot proceed without the user; `completed` means it finished; `error` a
+ * failure; `info` a generic nudge (the chat agent's request_attention).
+ */
+export const attentionKind = pgEnum("attention_kind", [
+  "permission",
+  "idle",
+  "completed",
+  "error",
+  "info",
+]);
+
+/**
+ * Lifecycle of an attention item. `pending` is unread/unactioned (drives the
+ * badge count + notification); `read` the user has seen it; `resolved` the
+ * underlying need is gone (e.g. the session finished, superseding its own
+ * waiting prompts); `dismissed` the user swiped it away.
+ */
+export const attentionStatus = pgEnum("attention_status", [
+  "pending",
+  "read",
+  "resolved",
+  "dismissed",
+]);
+
+/**
+ * Where clicking an attention item should take the user. A discriminated union
+ * stored as JSON so producers can address any in-app destination without a
+ * schema change; the frontend maps each variant onto its navigation primitive.
+ */
+export type AttentionNavTarget =
+  | { type: "workspace-claude"; workspaceId: string }
+  | { type: "workspace"; workspaceId: string }
+  | { type: "chat" }
+  | { type: "pr"; owner: string; repo: string; number: number }
+  | { type: "issue"; provider: string; sourceKey: string; externalId: string }
+  | { type: "task"; taskId: string };
+
+/**
+ * The attention stream: things that want the user's attention, most urgently a
+ * Yarvis-launched Claude Code session that is blocked on a permission prompt or
+ * idle waiting for input. Unlike `events` (an append-only trail folded into
+ * memory), these rows are *mutable* — the user reads, resolves, or dismisses
+ * them — so this is a distinct table rather than an overload of the event log.
+ *
+ * `seq` is a monotonic cursor that orders the stream newest-first. A partial
+ * unique index on (`sessionKey`, `kind`) restricted to pending rows lets
+ * ingestion coalesce a re-prompting session into one live item instead of
+ * stacking duplicates.
+ */
+export const attentionItems = pgTable(
+  "attention_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    seq: bigserial("seq", { mode: "number" }).notNull(),
+    source: attentionSource("source").notNull(),
+    // "ws-claude:<workspaceId>" for a Claude session; null for sourceless nudges.
+    sessionKey: text("session_key"),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, { onDelete: "set null" }),
+    kind: attentionKind("kind").notNull(),
+    title: text("title").notNull(),
+    body: text("body"),
+    status: attentionStatus("status").notNull().default("pending"),
+    navTarget: jsonb("nav_target").$type<AttentionNavTarget>(),
+    // Raw producer payload (e.g. the Claude hook stdin) kept for debugging + future use.
+    payload: jsonb("payload"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    readAt: timestamp("read_at", { withTimezone: true }),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  },
+  (t) => [
+    // The stream reads by status, ordered by the monotonic cursor.
+    index("attention_status_seq_idx").on(t.status, t.seq),
+    // At most one pending item per (session, kind), so a re-prompt coalesces.
+    uniqueIndex("attention_pending_dedupe_idx")
+      .on(t.sessionKey, t.kind)
+      .where(sql`${t.status} = 'pending'`),
+  ],
+);
+
+export type AttentionItemRow = typeof attentionItems.$inferSelect;
+export type NewAttentionItemRow = typeof attentionItems.$inferInsert;
+
+/** Which work-in-progress sources are included in the roll-up. */
+export interface WipSourcesConfig {
+  myPrs: boolean;
+  starredPrs: boolean;
+  issues: boolean;
+  tasks: boolean;
+  workspaces: boolean;
+}
+
+/**
+ * User configuration for the work-in-progress stream. Singleton (like
+ * `embeddings_config` / `google_tokens`): the service keeps at most one row.
+ * `sources` toggles each roll-up source on/off; `issueLabels` drives an extra
+ * "labeled issues" source — open GitHub issues assigned to the user carrying any
+ * of these labels, across the repos flagged for issue tracking.
+ */
+export const wipConfig = pgTable("wip_config", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sources: jsonb("sources").$type<WipSourcesConfig>().notNull(),
+  issueLabels: jsonb("issue_labels").$type<string[]>().notNull().default([]),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type WipConfigRow = typeof wipConfig.$inferSelect;
 
 export type CustomProviderRow = typeof customProviders.$inferSelect;
 export type NewCustomProviderRow = typeof customProviders.$inferInsert;

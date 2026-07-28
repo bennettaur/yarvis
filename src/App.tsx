@@ -1,7 +1,9 @@
+import { invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import AlarmOverlay from "./components/AlarmOverlay";
 import AlarmsPanel from "./components/AlarmsPanel";
+import AttentionPanel from "./components/attention/AttentionPanel";
 import ChatPanel from "./components/ChatPanel";
 import CalendarView from "./components/calendar/CalendarView";
 import Dashboard from "./components/Dashboard";
@@ -19,12 +21,16 @@ import { useTabShortcuts } from "./components/shell/useTabShortcuts";
 import TasksPanel from "./components/TasksPanel";
 import WorkspacesPanel from "./components/WorkspacesPanel";
 import { type Alarm, onAlarmFired } from "./lib/alarms";
+import type { AttentionItem } from "./lib/attention";
+import { markAttention } from "./lib/attentionStore";
+import type { IssueSummary } from "./lib/issues/types";
 import { type OpenWorkspaceRequest, useOpenPrListener, useOpenWorkspaceListener } from "./lib/nav";
 import { notify } from "./lib/notify";
 import { onOmniChatSummon } from "./lib/omniChat";
 import { useOmniChatContext } from "./lib/omniChatContext";
 import type { PrSummary } from "./lib/pr/types";
 import { useTelegramSecurityAlerts } from "./lib/useTelegramSecurityAlerts";
+import { getWip, type WipItem } from "./lib/wip";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>(() => {
@@ -38,6 +44,9 @@ export default function App() {
   }, [tab]);
   const [omniChatOpen, setOmniChatOpen] = useState(false);
   const [attention, setAttention] = useState<string | null>(null);
+  const [attentionPanelOpen, setAttentionPanelOpen] = useState(false);
+  const [wip, setWip] = useState<WipItem[]>([]);
+  const [wipLoading, setWipLoading] = useState(false);
   // A PR another view (workspaces, omni) has asked us to open. PrsPanel reads
   // this on mount/change, selects the PR, and we clear it. One-shot, not
   // persisted — refreshing the app drops it.
@@ -45,6 +54,8 @@ export default function App() {
   // A workspace another view (Issues "Start work") has asked us to open, with an
   // optional Claude prompt to launch. WorkspacesPanel consumes and clears it.
   const [requestedWorkspace, setRequestedWorkspace] = useState<OpenWorkspaceRequest | null>(null);
+  // An issue the attention/WIP panel asked us to open. IssuesPanel consumes it.
+  const [requestedIssue, setRequestedIssue] = useState<IssueSummary | null>(null);
 
   useTabShortcuts(tab, setTab);
 
@@ -82,6 +93,102 @@ export default function App() {
     setOmniChatOpen(true);
   }, []);
 
+  // Opening the panel refreshes the work-in-progress roll-up (the attention
+  // items are already live via the store's SSE subscription).
+  const openAttentionPanel = useCallback(() => {
+    setAttentionPanelOpen(true);
+    setWipLoading(true);
+    getWip()
+      .then(setWip)
+      .catch((e) => {
+        console.error("[wip] failed to load the work-in-progress list:", e);
+        setWip([]);
+      })
+      .finally(() => setWipLoading(false));
+  }, []);
+
+  // Routes a nav target to the right tab/overlay, selecting the exact item where
+  // the destination supports it. `title` (when known) seeds the detail view's
+  // header until it re-fetches. Shared by both panel streams.
+  const navigateTo = useCallback(
+    (target: WipItem["navTarget"], title?: string) => {
+      if (!target) return;
+      void invoke("focus_main_window").catch((e) => {
+        console.error("[app] focus_main_window failed:", e);
+      });
+      setAttentionPanelOpen(false);
+      switch (target.type) {
+        case "workspace-claude":
+        case "workspace":
+          setRequestedWorkspace({ id: target.workspaceId });
+          setTab("workspaces");
+          break;
+        case "chat":
+          openOmniChat();
+          break;
+        case "pr":
+          // The detail view fetches from `ref`; the rest is a minimal seed.
+          setRequestedPr({
+            ref: {
+              provider: "github",
+              owner: target.owner,
+              repo: target.repo,
+              number: target.number,
+            },
+            title: title ?? "",
+            url: "",
+            author: "",
+            draft: false,
+            state: "open",
+            createdAt: "",
+            updatedAt: "",
+          });
+          setTab("prs");
+          break;
+        case "issue":
+          // The detail view re-fetches from (provider, sourceKey, externalId).
+          setRequestedIssue({
+            provider: target.provider === "jira" ? "jira" : "github",
+            sourceKey: target.sourceKey,
+            sourceLabel: target.sourceKey,
+            externalId: target.externalId,
+            displayId: `#${target.externalId}`,
+            title: title ?? "",
+            url:
+              target.provider === "github"
+                ? `https://github.com/${target.sourceKey}/issues/${target.externalId}`
+                : "",
+            state: "open",
+            author: "",
+            assignees: [],
+            labels: [],
+            createdAt: "",
+            updatedAt: "",
+            commentCount: 0,
+          });
+          setTab("issues");
+          break;
+        case "task":
+          setTab("tasks");
+          break;
+      }
+    },
+    [openOmniChat],
+  );
+
+  const openAttentionItem = useCallback(
+    (item: AttentionItem) => {
+      void markAttention(item.id, "read");
+      navigateTo(item.navTarget, item.title);
+    },
+    [navigateTo],
+  );
+
+  const openWipItem = useCallback(
+    (item: WipItem) => navigateTo(item.navTarget, item.title),
+    [navigateTo],
+  );
+
   // The agent flagged it needs the user. If they aren't already looking at the
   // overlay, raise a badge + an OS notification.
   const handleAttention = useCallback((reason: string) => {
@@ -112,6 +219,7 @@ export default function App() {
         tab={tab}
         onTabChange={setTab}
         onOpenOmniChat={openOmniChat}
+        onOpenAttention={openAttentionPanel}
         attentionPending={attention !== null}
       >
         {/* Chat and Omni fill the region and manage their own layout; page-like
@@ -136,7 +244,10 @@ export default function App() {
         ) : tab === "issues" ? (
           // Issues owns its scroll so the issue detail view can pin a header and
           // scroll only its body, matching the PRs tab.
-          <IssuesPanel />
+          <IssuesPanel
+            requested={requestedIssue}
+            onRequestConsumed={() => setRequestedIssue(null)}
+          />
         ) : (
           <div className="h-full overflow-y-auto p-6">
             {tab === "tasks" && <TasksPanel />}
@@ -154,6 +265,15 @@ export default function App() {
         open={omniChatOpen}
         onClose={() => setOmniChatOpen(false)}
         onAttention={handleAttention}
+      />
+
+      <AttentionPanel
+        open={attentionPanelOpen}
+        onClose={() => setAttentionPanelOpen(false)}
+        onOpenAttention={openAttentionItem}
+        wip={wip}
+        wipLoading={wipLoading}
+        onOpenWip={openWipItem}
       />
 
       {activeAlarm && <AlarmOverlay alarm={activeAlarm} onDone={() => setActiveAlarm(null)} />}

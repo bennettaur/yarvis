@@ -35,6 +35,15 @@ export interface IssueSummary {
   createdAt: string;
   updatedAt: string;
   commentCount: number;
+  /**
+   * Workflow status. JIRA carries the status name ("In Progress") and its
+   * category ("todo" | "in_progress" | "done") used to group and colour rows;
+   * GitHub leaves these unset and relies on `state`. `issueType` is the JIRA
+   * type ("Bug", "Story"…) and is likewise absent for GitHub.
+   */
+  statusName?: string;
+  statusCategory?: string;
+  issueType?: string;
 }
 
 export interface IssueComment {

@@ -561,7 +561,7 @@ export class GitHubClient {
   async listRepoIssues(
     owner: string,
     repo: string,
-    opts: { assignee?: string; state?: string } = {},
+    opts: { assignee?: string; state?: string; labels?: string[] } = {},
   ): Promise<IssueSummary[]> {
     const params = new URLSearchParams({
       state: opts.state ?? "open",
@@ -570,6 +570,9 @@ export class GitHubClient {
       direction: "desc",
     });
     if (opts.assignee) params.set("assignee", opts.assignee);
+    // GitHub's REST issues endpoint filters by a comma-separated label list
+    // (AND semantics — an issue must carry every listed label).
+    if (opts.labels?.length) params.set("labels", opts.labels.join(","));
     const items = await this.api<any[]>(`/repos/${owner}/${repo}/issues?${params.toString()}`);
     return items.filter((i) => !i.pull_request).map((i) => toIssueSummary(i, { owner, repo }));
   }
