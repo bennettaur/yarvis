@@ -4,6 +4,7 @@ mod custom_providers;
 mod embeddings_secrets;
 mod keychain;
 mod pty;
+mod settings;
 mod sidecar;
 
 /// Global hotkey that summons the Omni Chat overlay from anywhere.
@@ -90,6 +91,13 @@ pub fn run() {
         .setup(|app| {
             use tauri::Manager;
             app.manage(pty::PtyState::default());
+            if let Err(e) = settings::init(app.handle()) {
+                eprintln!("[settings] init failed: {e}");
+            }
+            #[cfg(unix)]
+            if let Err(e) = pty::raise_fd_limit() {
+                eprintln!("[pty] raising the file descriptor limit failed: {e}");
+            }
             // Bind the control channel before spawning the sidecar so its socket
             // path is available to inject into the sidecar's environment.
             if let Err(e) = control::init(app.handle()) {
@@ -138,6 +146,8 @@ pub fn run() {
             pty::pty_is_busy,
             pty::get_claude_command,
             focus_main_window,
+            settings::get_settings,
+            settings::set_max_pty_sessions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -4,6 +4,7 @@ import EmbeddingsSection from "./EmbeddingsSection";
 import KeychainSection from "./KeychainSection";
 import ReposSection from "./ReposSection";
 import TelegramSection from "./TelegramSection";
+import TerminalSection from "./TerminalSection";
 import WipSection from "./WipSection";
 
 type TabKey = "credentials" | "providers" | "repos" | "embeddings" | "telegram" | "wip";
@@ -56,7 +57,12 @@ export default function SettingsPanel() {
 
       {active === "credentials" && <KeychainSection />}
       {active === "providers" && <CustomProviderSection />}
-      {active === "repos" && <ReposSection />}
+      {active === "repos" && (
+        <div className="space-y-5">
+          <ReposSection />
+          <TerminalSection />
+        </div>
+      )}
       {active === "embeddings" && <EmbeddingsSection />}
       {active === "telegram" && <TelegramSection />}
       {active === "wip" && <WipSection />}

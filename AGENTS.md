@@ -76,6 +76,8 @@ has no safe autofix.
 - Secrets (provider API keys, tokens, DB URL) are entered in the app's
   Settings screen and stored in a single macOS Keychain item — never in env
   files or committed anywhere. Non-secret config (e.g.
-  `YARVIS_WORKSPACES_ROOT`) uses env vars instead.
+  `YARVIS_WORKSPACES_ROOT`) uses env vars instead. Preferences the user is
+  expected to change from the UI go in `src-tauri/src/settings.rs` when the
+  Rust core enforces them, and in Postgres via the sidecar otherwise.
 - Follow the repo's existing comment style: comments explain *why*, not
   *what* — no restating what a well-named function already says.
