@@ -95,7 +95,9 @@ Status of the build against the original vision. The full V1 plan lives at
   (`portable-pty`), rendered with xterm.js. Sessions are keyed by a stable id
   and live in the core independent of the webview, so the shell survives tab
   switches and Omni re-renders (scrollback is captured and replayed on
-  reattach). Available as a standalone Terminal tab and as an Omni widget.
+  reattach). Available as a standalone Terminal tab and as an Omni widget. In
+  every terminal-tab strip (standalone Terminal tab and each workspace's
+  terminal), tabs can be dragged to reorder them; the new order persists.
 - **Workspaces** — one or many repo worktrees pulled into a folder for a
   contextual task. A repo registry + git-worktree engine in the sidecar (clone,
   refresh default branch, cut worktrees off `origin/<default>`, run per-repo

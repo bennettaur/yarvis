@@ -16,6 +16,7 @@ import {
   setRatioAtPath,
   splitPane,
 } from "./paneTree";
+import { reorderTabs } from "./reorderTabs";
 
 /**
  * A single terminal surface with iTerm-style tabs and splittable panes.
@@ -344,6 +345,13 @@ export default function TerminalTabs({
     setState((prev) => ({ ...prev, activeTabId: pinnedTabId(key) }));
   }, []);
 
+  const reorder = useCallback((dragId: string, targetId: string, position: "before" | "after") => {
+    setState((prev) => {
+      const next = reorderTabs(prev.tabs, dragId, targetId, position);
+      return next === prev.tabs ? prev : { ...prev, tabs: next };
+    });
+  }, []);
+
   // Closing a pinned tab ends its underlying session; the caller stops listing it
   // on its next poll, which removes the header.
   const closePinned = useCallback(async (pinned: PinnedTab) => {
@@ -507,6 +515,7 @@ export default function TerminalTabs({
         onClose={(id) => void closeTab(id)}
         onClosePinned={(p) => void closePinned(p)}
         onNew={openTab}
+        onReorder={reorder}
       />
       <div className="min-h-0 min-w-0 flex-1">
         {activePinned ? (
@@ -539,6 +548,10 @@ export default function TerminalTabs({
   );
 }
 
+/** MIME type carrying a dragged tab's id in dataTransfer, namespaced so it
+ * won't be picked up as a drop by unrelated drop targets on the page. */
+const TAB_DRAG_MIME = "application/x-yarvis-tab";
+
 function TabStrip({
   tabs,
   pinnedTabs,
@@ -548,6 +561,7 @@ function TabStrip({
   onClose,
   onClosePinned,
   onNew,
+  onReorder,
 }: {
   tabs: Tab[];
   pinnedTabs: PinnedTab[];
@@ -557,10 +571,69 @@ function TabStrip({
   onClose: (id: string) => void;
   onClosePinned: (pinned: PinnedTab) => void;
   onNew: () => void;
+  onReorder: (dragId: string, targetId: string, position: "before" | "after") => void;
 }) {
+  // The active drag: which tab is being dragged, which tab the cursor is over,
+  // and which side of that tab the drop would land on. Bundled so the three
+  // fields always clear together on drop / drag end / drag leave.
+  const [drag, setDrag] = useState<{
+    dragId: string;
+    overId: string | null;
+    side: "before" | "after";
+  } | null>(null);
+
+  const onTabDragStart = (e: React.DragEvent<HTMLDivElement>, id: string) => {
+    e.dataTransfer.setData(TAB_DRAG_MIME, id);
+    e.dataTransfer.effectAllowed = "move";
+    setDrag({ dragId: id, overId: null, side: "before" });
+  };
+
+  const onTabDragOver = (e: React.DragEvent<HTMLDivElement>, id: string) => {
+    // Only accept drops carrying our namespaced MIME; ignore drags from other apps.
+    if (!e.dataTransfer.types.includes(TAB_DRAG_MIME)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    // Dragging over the source tab itself never renders an indicator; skip the
+    // rect math and the state churn dragover would otherwise cause every fire.
+    if (drag && drag.dragId === id) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const midpoint = rect.left + rect.width / 2;
+    // Drop lands before the target when the cursor is on its left half, after otherwise.
+    const side: "before" | "after" = e.clientX < midpoint ? "before" : "after";
+    // dragover fires continuously; bail when neither the hovered tab nor the
+    // insertion side has changed so we don't re-render on every pointer sample.
+    if (drag && drag.overId === id && drag.side === side) return;
+    setDrag((prev) => (prev ? { ...prev, overId: id, side } : prev));
+  };
+
+  const onTabDrop = (e: React.DragEvent<HTMLDivElement>, id: string) => {
+    const from = e.dataTransfer.getData(TAB_DRAG_MIME);
+    if (!from) return;
+    e.preventDefault();
+    // Read side from the drop state, not the previous render's closure — the
+    // last dragover before drop set it to the current cursor position.
+    const side = drag?.side ?? "before";
+    onReorder(from, id, side);
+    setDrag(null);
+  };
+
+  const onTabDragEnd = () => setDrag(null);
+  // Clearing on strip leave prevents a stale indicator from lingering when the
+  // cursor exits without dropping (the drag may still be alive over another view).
+  const onStripDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+    setDrag((prev) => (prev ? { ...prev, overId: null } : prev));
+  };
+
   return (
-    <div className="flex shrink-0 items-center gap-0.5 border-b border-zinc-800 bg-zinc-950 px-1">
+    // biome-ignore lint/a11y/noStaticElementInteractions: dragleave clears the drop indicator; keyboard interaction is on inner buttons.
+    <div
+      onDragLeave={onStripDragLeave}
+      className="flex shrink-0 items-center gap-0.5 border-b border-zinc-800 bg-zinc-950 px-1"
+    >
       <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+        {/* Pinned tabs are externally owned and always lead the strip, so they
+            are intentionally not draggable and not drop targets. */}
         {pinnedTabs.map((p) => {
           const active = activeId === `${PINNED_PREFIX}${p.key}`;
           return (
@@ -595,15 +668,37 @@ function TabStrip({
         })}
         {tabs.map((t) => {
           const active = t.id === activeId;
+          const dragging = drag?.dragId === t.id;
+          const isOver = drag?.overId === t.id && drag.dragId !== t.id;
+          const showBefore = isOver && drag?.side === "before";
+          const showAfter = isOver && drag?.side === "after";
           return (
+            // biome-ignore lint/a11y/noStaticElementInteractions: drag handlers on wrapper; the inner buttons still own click/keyboard activation.
             <div
               key={t.id}
-              className={`group flex shrink-0 items-center gap-1 border-b-2 px-2 py-1 text-xs ${
+              draggable
+              onDragStart={(e) => onTabDragStart(e, t.id)}
+              onDragOver={(e) => onTabDragOver(e, t.id)}
+              onDrop={(e) => onTabDrop(e, t.id)}
+              onDragEnd={onTabDragEnd}
+              className={`group relative flex shrink-0 items-center gap-1 border-b-2 px-2 py-1 text-xs ${
                 active
                   ? "border-indigo-400 text-zinc-100"
                   : "border-transparent text-zinc-400 hover:text-zinc-200"
-              }`}
+              } ${dragging ? "opacity-50" : ""}`}
             >
+              {showBefore && (
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute inset-y-0 -left-0.5 w-0.5 bg-indigo-400"
+                />
+              )}
+              {showAfter && (
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute inset-y-0 -right-0.5 w-0.5 bg-indigo-400"
+                />
+              )}
               <button
                 type="button"
                 onClick={() => onSelect(t.id)}
