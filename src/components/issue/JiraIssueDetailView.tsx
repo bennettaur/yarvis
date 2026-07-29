@@ -526,7 +526,7 @@ export default function JiraIssueDetailView({
                 </div>
               </div>
             ) : detail.body.trim() ? (
-              <Markdown>{detail.body}</Markdown>
+              <Markdown allowImages>{detail.body}</Markdown>
             ) : (
               <p className="text-sm text-zinc-600">No description.</p>
             )}
@@ -571,7 +571,7 @@ export default function JiraIssueDetailView({
                   <div className="mb-1 text-xs text-zinc-400">
                     {c.author} · {formatRelativeTime(c.createdAt)}
                   </div>
-                  <Markdown>{c.body}</Markdown>
+                  <Markdown allowImages>{c.body}</Markdown>
                 </div>
               ))}
             </div>

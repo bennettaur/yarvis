@@ -9,13 +9,15 @@ import {
   type ProviderId,
   type ProviderInfo,
   streamChat,
+  type ThreadMessage,
 } from "../lib/chat";
-import type { ThreadMessage } from "../lib/useChatThread";
 import ChatComposer from "./ChatComposer";
 import ChatMessages from "./ChatMessages";
 
 const PROVIDER_KEY = "yarvis.chat.provider";
 const MODEL_KEY = "yarvis.chat.model";
+const EMPTY_HINT =
+  'Start a conversation. Set a provider key in Settings if the picker shows "(no key)".';
 
 export default function ChatPanel() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
@@ -186,9 +188,7 @@ export default function ChatPanel() {
           messages={messages}
           streaming={streaming}
           busy={busy}
-          emptyHint={
-            'Start a conversation. Set a provider key in Settings if the picker shows "(no key)".'
-          }
+          emptyHint={EMPTY_HINT}
         />
       </div>
 

@@ -16,8 +16,11 @@ const components: Components = {
   ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
   li: ({ children }) => <li className="leading-relaxed">{children}</li>,
   a: ({ href, children }) => (
+    // The webview has no status bar, so the destination is only visible on
+    // hover — link text is free to claim it points somewhere else.
     <a
       href={href}
+      title={href}
       onClick={(e) => {
         e.preventDefault();
         openExternal(href);
@@ -58,18 +61,57 @@ const components: Components = {
   td: ({ children }) => <td className="border border-zinc-800 px-2 py-1">{children}</td>,
 };
 
+/**
+ * Stands in for an image rather than fetching it. An inline `<img>` reaches its
+ * host the moment it renders, so any text we display — model replies above all,
+ * since a prompt injection can put a URL of its choosing in one — could smuggle
+ * what it saw out in the query string. The host is shown so the destination is
+ * known before the click that opens it in the browser.
+ */
+const deferredImage: Components["img"] = ({ src, alt }) => {
+  const href = typeof src === "string" ? src : "";
+  let host = href;
+  try {
+    host = new URL(href).host || href;
+  } catch {
+    // Relative or malformed src: show it as-is.
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => openExternal(href)}
+      title={href}
+      className="my-1 inline-flex max-w-full items-baseline gap-1 truncate rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
+    >
+      <span className="text-zinc-500">Image</span>
+      <span className="truncate">{alt || host}</span>
+    </button>
+  );
+};
+
+const componentsWithDeferredImages: Components = { ...components, img: deferredImage };
+
 /** Renders GitHub-flavored markdown with the app's dark styling. */
 export default function Markdown({
   children,
   className = "text-sm text-zinc-300",
+  allowImages = false,
 }: {
   children: string;
-  /** Overrides the wrapper's base text styling (chat uses a brighter body). */
+  /** Replaces — rather than extends — the wrapper's base text size and color. */
   className?: string;
+  /**
+   * Load images inline. Opt in only where the source is a document the user
+   * asked to see (a PR or issue body); leave it off for generated text.
+   */
+  allowImages?: boolean;
 }): ReactNode {
   return (
     <div className={className}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={allowImages ? components : componentsWithDeferredImages}
+      >
         {children}
       </ReactMarkdown>
     </div>
