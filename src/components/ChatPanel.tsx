@@ -1,25 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type ChatMessage,
-  type ChatMessageMetadata,
   type ChatSession,
   createSession,
   getMessages,
   listProviders,
   listSessions,
-  messageLabel,
   type ProviderId,
   type ProviderInfo,
   streamChat,
 } from "../lib/chat";
+import type { ThreadMessage } from "../lib/useChatThread";
 import ChatComposer from "./ChatComposer";
-import ThinkingIndicator from "./ThinkingIndicator";
-
-interface Display {
-  role: string;
-  content: string;
-  metadata?: ChatMessageMetadata | null;
-}
+import ChatMessages from "./ChatMessages";
 
 const PROVIDER_KEY = "yarvis.chat.provider";
 const MODEL_KEY = "yarvis.chat.model";
@@ -30,7 +23,7 @@ export default function ChatPanel() {
   const [model, setModel] = useState("");
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<Display[]>([]);
+  const [messages, setMessages] = useState<ThreadMessage[]>([]);
   const [streaming, setStreaming] = useState("");
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -189,26 +182,14 @@ export default function ChatPanel() {
         ref={threadRef}
         className="flex-1 space-y-4 overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-900/50 p-5"
       >
-        {messages.length === 0 && !streaming && (
-          <p className="text-sm text-zinc-600">
-            Start a conversation. Set a provider key in Settings if the picker shows "(no key)".
-          </p>
-        )}
-        {messages.map((m, i) => (
-          <div key={i} className="text-sm">
-            <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
-              {messageLabel(m.role, m.metadata)}
-            </div>
-            <div className="whitespace-pre-wrap text-zinc-100">{m.content}</div>
-          </div>
-        ))}
-        {streaming && (
-          <div className="text-sm">
-            <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">assistant</div>
-            <div className="whitespace-pre-wrap text-zinc-100">{streaming}</div>
-          </div>
-        )}
-        {busy && !streaming && <ThinkingIndicator />}
+        <ChatMessages
+          messages={messages}
+          streaming={streaming}
+          busy={busy}
+          emptyHint={
+            'Start a conversation. Set a provider key in Settings if the picker shows "(no key)".'
+          }
+        />
       </div>
 
       {error && <p className="text-sm text-red-400">{error}</p>}

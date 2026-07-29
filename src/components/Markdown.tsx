@@ -59,9 +59,16 @@ const components: Components = {
 };
 
 /** Renders GitHub-flavored markdown with the app's dark styling. */
-export default function Markdown({ children }: { children: string }): ReactNode {
+export default function Markdown({
+  children,
+  className = "text-sm text-zinc-300",
+}: {
+  children: string;
+  /** Overrides the wrapper's base text styling (chat uses a brighter body). */
+  className?: string;
+}): ReactNode {
   return (
-    <div className="text-sm text-zinc-300">
+    <div className={className}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {children}
       </ReactMarkdown>
