@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
+import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { openExternal } from "../lib/url";
 
@@ -65,27 +66,26 @@ const components: Components = {
  * Stands in for an image rather than fetching it. An inline `<img>` reaches its
  * host the moment it renders, so any text we display — model replies above all,
  * since a prompt injection can put a URL of its choosing in one — could smuggle
- * what it saw out in the query string. The host is shown so the destination is
- * known before the click that opens it in the browser.
+ * what it saw out in the query string. Inert on purpose: markdown images are
+ * often wrapped in a link, and a control here would compete with that link's
+ * click. The full source sits in the title for anyone who wants to look.
  */
 const deferredImage: Components["img"] = ({ src, alt }) => {
-  const href = typeof src === "string" ? src : "";
-  let host = href;
+  const source = typeof src === "string" ? src : "";
+  let host = source;
   try {
-    host = new URL(href).host || href;
+    host = new URL(source).host || source;
   } catch {
     // Relative or malformed src: show it as-is.
   }
   return (
-    <button
-      type="button"
-      onClick={() => openExternal(href)}
-      title={href}
-      className="my-1 inline-flex max-w-full items-baseline gap-1 truncate rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
+    <span
+      title={source}
+      className="my-1 inline-flex max-w-full items-baseline gap-1 rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400"
     >
       <span className="text-zinc-500">Image</span>
       <span className="truncate">{alt || host}</span>
-    </button>
+    </span>
   );
 };
 
@@ -108,8 +108,10 @@ export default function Markdown({
 }): ReactNode {
   return (
     <div className={className}>
+      {/* remark-breaks keeps a single newline a line break, the way GitHub
+          renders one — chat replies and issue bodies both rely on it. */}
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkBreaks]}
         components={allowImages ? components : componentsWithDeferredImages}
       >
         {children}
