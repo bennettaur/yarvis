@@ -652,6 +652,32 @@ export class GitHubClient {
     return toIssueDetail(issue, comments, { owner, repo });
   }
 
+  /** Opens a new issue and returns it in the provider-neutral summary shape. */
+  async createIssue(
+    owner: string,
+    repo: string,
+    input: { title: string; body?: string },
+  ): Promise<IssueSummary> {
+    const created = await this.mutateJson<unknown>(`/repos/${owner}/${repo}/issues`, "POST", {
+      title: input.title,
+      body: input.body ?? "",
+    });
+    return toIssueSummary(created, { owner, repo });
+  }
+
+  /**
+   * Edits an issue's title, body, or open/closed state. GitHub ignores fields
+   * the caller omits, so a partial update leaves the rest untouched.
+   */
+  async updateIssue(
+    owner: string,
+    repo: string,
+    number: number,
+    input: { title?: string; body?: string; state?: "open" | "closed" },
+  ): Promise<void> {
+    await this.mutate(`/repos/${owner}/${repo}/issues/${number}`, "PATCH", input);
+  }
+
   /** Adds assignees to an issue (GitHub merges, it does not replace). */
   async assignIssue(
     owner: string,
@@ -698,12 +724,23 @@ export class GitHubClient {
     };
   }
 
-  private async mutate(path: string, method: string, body: unknown): Promise<void> {
+  private async sendRest(path: string, method: string, body: unknown): Promise<Response> {
     const res = await this.fetchImpl(`https://api.github.com${path}`, {
       method,
       headers: this.restHeaders(),
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`github ${method} ${path} -> ${res.status}`);
+    return res;
+  }
+
+  private async mutate(path: string, method: string, body: unknown): Promise<void> {
+    await this.sendRest(path, method, body);
+  }
+
+  /** `mutate` for endpoints whose response body the caller needs. */
+  private async mutateJson<T>(path: string, method: string, body: unknown): Promise<T> {
+    const res = await this.sendRest(path, method, body);
+    return (await res.json()) as T;
   }
 }

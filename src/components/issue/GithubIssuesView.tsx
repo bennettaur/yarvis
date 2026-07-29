@@ -15,12 +15,14 @@ import {
 import {
   type IssueFilter,
   type IssueLink,
+  type IssueRepo,
   type IssueSummary,
   issueKey,
 } from "../../lib/issues/types";
 import { useOmniChatContext } from "../../lib/omniChatContext";
 import { formatRelativeTime } from "../../lib/time";
 import { openExternal } from "../../lib/url";
+import GithubCreateIssueModal from "./GithubCreateIssueModal";
 import IssueDetailView from "./IssueDetailView";
 
 type TabKey = "assigned" | "all" | "filters";
@@ -190,7 +192,9 @@ export default function GithubIssuesView({
   const [filterResults, setFilterResults] = useState<IssueSummary[] | null>(null);
   const [newFilter, setNewFilter] = useState({ name: "", query: "" });
   const [selected, setSelected] = useState<IssueSummary | null>(null);
-  const [configuredCount, setConfiguredCount] = useState<number | null>(null);
+  const [configuredRepos, setConfiguredRepos] = useState<IssueRepo[] | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Open an issue another view asked for directly (attention/WIP panel). The
@@ -226,9 +230,10 @@ export default function GithubIssuesView({
 
   const refresh = useCallback(async () => {
     setError(null);
+    setRefreshing(true);
     try {
       const repos = await issuesRepos();
-      setConfiguredCount(repos.length);
+      setConfiguredRepos(repos);
       if (repos.length === 0) return;
       const [assignedList, allList] = await Promise.all([issuesAssigned(), issuesAll()]);
       setAssigned(assignedList);
@@ -238,6 +243,8 @@ export default function GithubIssuesView({
       await loadLinks();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRefreshing(false);
     }
   }, [loadStars, loadLinks]);
 
@@ -281,17 +288,27 @@ export default function GithubIssuesView({
         summary={selected}
         onBack={() => setSelected(null)}
         onStarted={() => void loadLinks()}
+        onChanged={() => void refresh()}
       />
     );
   }
 
-  if (configuredCount === 0) {
+  if (configuredRepos?.length === 0) {
     return (
       <div className="h-full overflow-y-auto p-6">
         <p className="text-sm text-zinc-400">
           No repositories are set to pull issues. Enable “Pull issues” on a repo in Settings →
           Repositories to see its issues here.
         </p>
+        {/* Reachable refresh: flipping the toggle in Settings doesn't remount this view. */}
+        <button
+          type="button"
+          onClick={() => void refresh()}
+          disabled={refreshing}
+          className="mt-3 rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+        >
+          {refreshing ? "Refreshing…" : "↻ Refresh"}
+        </button>
       </div>
     );
   }
@@ -301,26 +318,47 @@ export default function GithubIssuesView({
   return (
     <div className="h-full overflow-y-auto p-6">
       <div className="space-y-5">
-        <nav className="flex gap-1 border-b border-zinc-800">
-          {TABS.map((t) => {
-            const count =
-              t.key === "assigned" ? assigned.length : t.key === "all" ? all.length : null;
-            return (
-              <button
-                key={t.key}
-                onClick={() => setActiveTab(t.key)}
-                className={`-mb-px border-b-2 px-3 py-2 text-sm ${
-                  activeTab === t.key
-                    ? "border-sky-500 text-zinc-100"
-                    : "border-transparent text-zinc-500 hover:text-zinc-300"
-                }`}
-              >
-                {t.label}
-                {count !== null && <span className="ml-1.5 text-xs text-zinc-600">{count}</span>}
-              </button>
-            );
-          })}
-        </nav>
+        <div className="flex items-center justify-between gap-3 border-b border-zinc-800">
+          <nav className="flex gap-1">
+            {TABS.map((t) => {
+              const count =
+                t.key === "assigned" ? assigned.length : t.key === "all" ? all.length : null;
+              return (
+                <button
+                  key={t.key}
+                  onClick={() => setActiveTab(t.key)}
+                  className={`-mb-px border-b-2 px-3 py-2 text-sm ${
+                    activeTab === t.key
+                      ? "border-sky-500 text-zinc-100"
+                      : "border-transparent text-zinc-500 hover:text-zinc-300"
+                  }`}
+                >
+                  {t.label}
+                  {count !== null && <span className="ml-1.5 text-xs text-zinc-600">{count}</span>}
+                </button>
+              );
+            })}
+          </nav>
+          <div className="flex items-center gap-2 pb-2">
+            <button
+              type="button"
+              onClick={() => void refresh()}
+              disabled={refreshing}
+              className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+              title="Refresh issues"
+            >
+              {refreshing ? "Refreshing…" : "↻ Refresh"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setCreating(true)}
+              disabled={!configuredRepos?.length}
+              className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+            >
+              + New issue
+            </button>
+          </div>
+        </div>
 
         {activeTab === "assigned" && (
           <IssueGroupedList
@@ -390,6 +428,17 @@ export default function GithubIssuesView({
 
         {error && <p className="text-sm text-red-400">{error}</p>}
       </div>
+
+      {creating && (
+        <GithubCreateIssueModal
+          repos={configuredRepos ?? []}
+          onClose={() => setCreating(false)}
+          onCreated={(issue) => {
+            setSelected(issue);
+            void refresh();
+          }}
+        />
+      )}
     </div>
   );
 }

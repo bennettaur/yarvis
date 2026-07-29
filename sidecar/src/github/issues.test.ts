@@ -155,6 +155,63 @@ describe("github issue client", () => {
     await expect(gh.issueDetail("o", "r", 6)).rejects.toThrow("pull request");
   });
 
+  it("creates an issue and returns it as a summary", async () => {
+    const calls: { method: string; path: string; body: unknown }[] = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      calls.push({
+        method: init?.method ?? "GET",
+        path: String(url).replace("https://api.github.com", ""),
+        body: JSON.parse(String(init?.body ?? "null")),
+      });
+      return new Response(
+        JSON.stringify({
+          number: 9,
+          title: "New thing",
+          html_url: "https://github.com/o/r/issues/9",
+        }),
+        { status: 201 },
+      );
+    }) as unknown as typeof fetch;
+
+    const gh = new GitHubClient("t", fetchImpl);
+    const issue = await gh.createIssue("o", "r", { title: "New thing", body: "details" });
+    expect(calls[0]).toEqual({
+      method: "POST",
+      path: "/repos/o/r/issues",
+      body: { title: "New thing", body: "details" },
+    });
+    expect(issue).toMatchObject({ externalId: "9", title: "New thing", sourceKey: "o/r" });
+  });
+
+  it("patches only the fields it is given when updating an issue", async () => {
+    const calls: { method: string; path: string; body: unknown }[] = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      calls.push({
+        method: init?.method ?? "GET",
+        path: String(url).replace("https://api.github.com", ""),
+        body: JSON.parse(String(init?.body ?? "null")),
+      });
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const gh = new GitHubClient("t", fetchImpl);
+    await gh.updateIssue("o", "r", 5, { state: "closed" });
+    expect(calls[0]).toEqual({
+      method: "PATCH",
+      path: "/repos/o/r/issues/5",
+      body: { state: "closed" },
+    });
+  });
+
+  it("throws when an issue update is rejected", async () => {
+    const fetchImpl = (async () =>
+      new Response("forbidden", { status: 403 })) as unknown as typeof fetch;
+    const gh = new GitHubClient("t", fetchImpl);
+    await expect(gh.updateIssue("o", "r", 5, { title: "x" })).rejects.toThrow(
+      "github PATCH /repos/o/r/issues/5 -> 403",
+    );
+  });
+
   it("creates a missing label before applying it", async () => {
     const calls: { method: string; path: string }[] = [];
     const fetchImpl = (async (url: string, init?: RequestInit) => {

@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
-import { issueDetail, startWork } from "../../lib/issues/api";
-import type { IssueDetail, IssueSummary } from "../../lib/issues/types";
+import { issueDetail, startWork, updateIssue } from "../../lib/issues/api";
+import type { IssueDetail, IssueSummary, IssueUpdateInput } from "../../lib/issues/types";
 import { requestOpenWorkspace } from "../../lib/nav";
 import { formatRelativeTime } from "../../lib/time";
 import { openExternal } from "../../lib/url";
 import Markdown from "../Markdown";
+
+const fieldInput =
+  "w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100";
 
 function LabelPill({ name, color }: { name: string; color: string | null }) {
   // `22` is the alpha byte (~13%) for a faint tinted background behind the text.
@@ -20,25 +23,34 @@ function LabelPill({ name, color }: { name: string; color: string | null }) {
 }
 
 /**
- * The issue detail view: title, labels, assignees, body, and comments, plus the
- * "Start work" action that opens a workspace and launches a Claude session
- * seeded with the issue. Fetches full detail (body + comments) on mount; the
- * `summary` prop renders the header immediately while that loads.
+ * The issue detail view: title, labels, assignees, body, and comments, plus
+ * editing (title, description, open/closed state) and the "Start work" action
+ * that opens a workspace and launches a Claude session seeded with the issue.
+ * Fetches full detail (body + comments) on mount; the `summary` prop renders
+ * the header immediately while that loads.
  */
 export default function IssueDetailView({
   summary,
   onBack,
   onStarted,
+  onChanged,
 }: {
   summary: IssueSummary;
   onBack: () => void;
   /** Called after work is started, so the list can refresh its link badges. */
   onStarted?: () => void;
+  /** Called after the issue itself is edited, so the list can re-fetch. */
+  onChanged?: () => void;
 }) {
   const [detail, setDetail] = useState<IssueDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [warnings, setWarnings] = useState<string[]>([]);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [editingBody, setEditingBody] = useState(false);
+  const [bodyDraft, setBodyDraft] = useState("");
+  const [busyField, setBusyField] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -52,6 +64,33 @@ export default function IssueDetailView({
     };
   }, [summary.sourceKey, summary.externalId, summary.provider]);
 
+  const title = detail?.title ?? summary.title;
+  const state = detail?.state ?? summary.state;
+
+  /** Applies a partial edit and adopts the fresh detail the route returns. */
+  const applyEdit = async (input: IssueUpdateInput, after?: () => void) => {
+    setBusyField(true);
+    setError(null);
+    try {
+      setDetail(await updateIssue(summary.sourceKey, summary.externalId, input, summary.provider));
+      after?.();
+      onChanged?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyField(false);
+    }
+  };
+
+  const saveTitle = () => {
+    if (!titleDraft.trim()) return;
+    return applyEdit({ title: titleDraft.trim() }, () => setEditingTitle(false));
+  };
+
+  const saveBody = () => applyEdit({ body: bodyDraft }, () => setEditingBody(false));
+
+  const toggleState = () => applyEdit({ state: state === "open" ? "closed" : "open" });
+
   const onStartWork = async () => {
     setStarting(true);
     setError(null);
@@ -61,7 +100,7 @@ export default function IssueDetailView({
         {
           sourceKey: summary.sourceKey,
           externalId: summary.externalId,
-          title: summary.title,
+          title,
           body: detail?.body ?? "",
           url: summary.url,
         },
@@ -98,12 +137,10 @@ export default function IssueDetailView({
           </span>
           <span
             className={`rounded px-1.5 py-0.5 text-xs ${
-              summary.state === "open"
-                ? "bg-emerald-900 text-emerald-200"
-                : "bg-zinc-700 text-zinc-300"
+              state === "open" ? "bg-emerald-900 text-emerald-200" : "bg-zinc-700 text-zinc-300"
             }`}
           >
-            {summary.state}
+            {state}
           </span>
           <div className="ml-auto flex items-center gap-2">
             <button
@@ -112,6 +149,16 @@ export default function IssueDetailView({
               className="rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
             >
               Open on GitHub ↗
+            </button>
+            <button
+              type="button"
+              onClick={() => void toggleState()}
+              // Gated on `detail` so the label can't act on a state the list
+              // fetched before someone else closed the issue.
+              disabled={busyField || !detail}
+              className="rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+            >
+              {state === "open" ? "Close issue" : "Reopen issue"}
             </button>
             <button
               type="button"
@@ -128,7 +175,45 @@ export default function IssueDetailView({
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
         <div className="mx-auto max-w-3xl space-y-5">
           <div>
-            <h1 className="text-lg font-medium text-zinc-100">{summary.title}</h1>
+            {editingTitle ? (
+              <div className="flex items-start gap-2">
+                <input
+                  value={titleDraft}
+                  onChange={(e) => setTitleDraft(e.target.value)}
+                  className={fieldInput}
+                />
+                <button
+                  type="button"
+                  onClick={() => void saveTitle()}
+                  disabled={busyField || !titleDraft.trim()}
+                  className="rounded-md bg-indigo-600 px-2 py-1.5 text-xs font-medium hover:bg-indigo-500 disabled:opacity-50"
+                >
+                  {busyField ? "Saving…" : "Save"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingTitle(false)}
+                  className="rounded-md border border-zinc-700 px-2 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <div className="group flex items-start gap-2">
+                <h1 className="text-lg font-medium text-zinc-100">{title}</h1>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTitleDraft(title);
+                    setEditingTitle(true);
+                  }}
+                  className="mt-1 text-xs text-zinc-600 opacity-0 group-hover:opacity-100 hover:text-zinc-300"
+                  title="Edit title"
+                >
+                  ✎
+                </button>
+              </div>
+            )}
             <p className="mt-1 text-xs text-zinc-500">
               {summary.author} opened this {formatRelativeTime(summary.createdAt)}
             </p>
@@ -155,11 +240,52 @@ export default function IssueDetailView({
           {error && <p className="text-sm text-red-400">{error}</p>}
 
           <section>
-            <h3 className="mb-2 text-sm font-medium uppercase tracking-wide text-zinc-500">
-              Description
-            </h3>
+            <div className="mb-2 flex items-center gap-2">
+              <h3 className="text-sm font-medium uppercase tracking-wide text-zinc-500">
+                Description
+              </h3>
+              {detail && !editingBody && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBodyDraft(detail.body);
+                    setEditingBody(true);
+                  }}
+                  className="text-xs text-zinc-600 hover:text-zinc-300"
+                  title="Edit description"
+                >
+                  ✎
+                </button>
+              )}
+            </div>
             {!detail ? (
               <p className="text-sm text-zinc-500">Loading…</p>
+            ) : editingBody ? (
+              <div className="space-y-2">
+                <textarea
+                  value={bodyDraft}
+                  onChange={(e) => setBodyDraft(e.target.value)}
+                  rows={10}
+                  className={fieldInput}
+                />
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void saveBody()}
+                    disabled={busyField}
+                    className="rounded-md bg-indigo-600 px-2 py-1.5 text-xs font-medium hover:bg-indigo-500 disabled:opacity-50"
+                  >
+                    {busyField ? "Saving…" : "Save"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingBody(false)}
+                    className="rounded-md border border-zinc-700 px-2 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
             ) : detail.body.trim() ? (
               <Markdown>{detail.body}</Markdown>
             ) : (

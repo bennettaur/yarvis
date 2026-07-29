@@ -230,7 +230,7 @@ sidecar/        Bun + TS service (Hono)
   src/github/   GitHub PR dashboard + embedded review (REST + GraphQL)
   src/azure/    Azure DevOps PR dashboard + embedded review (REST; diffs built with jsdiff)
   src/pr/       provider-neutral PR types shared by the github/ and azure/ clients
-  src/issues/   provider-neutral issue routes/service (stars, filters, workspace links, start-work)
+  src/issues/   provider-neutral issue routes/service (stars, filters, workspace links, start-work, issue writes)
   src/jira/     JIRA Cloud REST client + routes + agent tools + ADF↔Markdown conversion
   src/google/   Google Calendar OAuth + events
   src/omni/     Omni UI generation (streaming) + saved layouts
