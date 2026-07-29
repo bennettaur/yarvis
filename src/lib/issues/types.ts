@@ -43,6 +43,18 @@ export interface IssueDetail extends IssueSummary {
   comments: IssueComment[];
 }
 
+export interface IssueCreateInput {
+  title: string;
+  body?: string;
+}
+
+/** A partial issue edit; at least one field must be set. */
+export interface IssueUpdateInput {
+  title?: string;
+  body?: string;
+  state?: "open" | "closed";
+}
+
 /** A repo configured to pull issues, as the /repos route returns it. */
 export interface IssueRepo {
   id: string;

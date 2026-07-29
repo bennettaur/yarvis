@@ -85,6 +85,51 @@ describe("issue routes: input validation", () => {
     expect(res.status).toBe(400);
   });
 
+  it("400s creating an issue without a title", async () => {
+    const res = await configured.request("/api/issues/github/create/octo/repo", {
+      method: "POST",
+      headers: json,
+      body: JSON.stringify({ body: "no title" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("400s creating an issue in a repo whose owner is invalid", async () => {
+    const res = await configured.request("/api/issues/github/create/bad..owner/repo", {
+      method: "POST",
+      headers: json,
+      body: JSON.stringify({ title: "x" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("404s creating an issue for a non-GitHub provider", async () => {
+    const res = await configured.request("/api/issues/jira/create/octo/repo", {
+      method: "POST",
+      headers: json,
+      body: JSON.stringify({ title: "x" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("400s an update that carries no fields", async () => {
+    const res = await configured.request("/api/issues/github/detail/octo/repo/1", {
+      method: "PATCH",
+      headers: json,
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("400s an update with an unknown state", async () => {
+    const res = await configured.request("/api/issues/github/detail/octo/repo/1", {
+      method: "PATCH",
+      headers: json,
+      body: JSON.stringify({ state: "merged" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
   it("400s start-work on a schema failure (missing title)", async () => {
     const res = await configured.request("/api/issues/github/start-work", {
       method: "POST",

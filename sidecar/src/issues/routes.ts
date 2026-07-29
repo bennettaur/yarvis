@@ -66,6 +66,26 @@ const startWorkSchema = z.object({
   label: z.string().min(1).max(50).default(IN_PROGRESS_LABEL),
 });
 
+// GitHub caps issue titles at 256 characters and bodies at 65536.
+const createIssueSchema = z.object({
+  title: z.string().trim().min(1).max(256),
+  body: z.string().max(65536).default(""),
+});
+
+/**
+ * A partial issue edit: title, body, and open/closed state are each optional,
+ * but at least one must be present so an empty PATCH doesn't hit GitHub.
+ */
+const updateIssueSchema = z
+  .object({
+    title: z.string().trim().min(1).max(256).optional(),
+    body: z.string().max(65536).optional(),
+    state: z.enum(["open", "closed"]).optional(),
+  })
+  .refine((v) => v.title !== undefined || v.body !== undefined || v.state !== undefined, {
+    message: "no fields to update",
+  });
+
 const promptFileSchema = z.object({
   workspaceId: z.string().uuid(),
   prompt: z.string().min(1),
@@ -115,6 +135,7 @@ export function createIssueRoutes(config: Config): Hono {
     router.use(`/:provider${path}`, githubOnly);
   }
   router.use("/:provider/detail/*", githubOnly);
+  router.use("/:provider/create/*", githubOnly);
 
   const db = () => getDb(config.databaseUrl as string).db;
   const github = () =>
@@ -198,6 +219,51 @@ export function createIssueRoutes(config: Config): Hono {
     );
     if ("error" in params) return c.json({ error: params.error }, 400);
     try {
+      return c.json(await gh.issueDetail(params.owner, params.repo, params.number));
+    } catch (e) {
+      return c.json({ error: String(e) }, 502);
+    }
+  });
+
+  // --- Issue writes (create / edit / close) ---
+
+  // Opens a new issue in a repo and returns it, so the caller can jump to it.
+  router.post("/:provider/create/:owner/:repo", async (c) => {
+    const gh = github();
+    if (!gh) return c.json({ error: "github token not configured" }, 400);
+    const target = ownerRepoParams.safeParse({
+      owner: c.req.param("owner"),
+      repo: c.req.param("repo"),
+    });
+    if (!target.success) return c.json({ error: target.error.flatten() }, 400);
+    const parsed = createIssueSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    try {
+      const issue = await gh.createIssue(target.data.owner, target.data.repo, parsed.data);
+      return c.json(issue, 201);
+    } catch (e) {
+      return c.json({ error: String(e) }, 502);
+    }
+  });
+
+  /**
+   * Edits an issue's title, body, or open/closed state (closing and reopening
+   * both go through `state`). Responds with freshly fetched detail so the caller
+   * renders what GitHub actually stored rather than its own optimistic guess.
+   */
+  router.patch("/:provider/detail/:owner/:repo/:number", async (c) => {
+    const gh = github();
+    if (!gh) return c.json({ error: "github token not configured" }, 400);
+    const params = parseIssueParams(
+      c.req.param("owner"),
+      c.req.param("repo"),
+      c.req.param("number"),
+    );
+    if ("error" in params) return c.json({ error: params.error }, 400);
+    const parsed = updateIssueSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    try {
+      await gh.updateIssue(params.owner, params.repo, params.number, parsed.data);
       return c.json(await gh.issueDetail(params.owner, params.repo, params.number));
     } catch (e) {
       return c.json({ error: String(e) }, 502);
