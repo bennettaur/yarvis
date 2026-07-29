@@ -131,6 +131,51 @@ describe("workspace tools", () => {
     expect(startedCwd).not.toContain("widget");
   });
 
+  it("starts sessions without Remote Control by default", async () => {
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
+    let startedRemoteControl: boolean | undefined;
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => {
+        startedRemoteControl = input.remoteControl;
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+
+    const result = (await tools.create_workspace_session.execute!(
+      { name: "Local work", repoIds: [repo.id] },
+      opts,
+    )) as { message?: string; error?: string };
+
+    expect(result.error).toBeUndefined();
+    // A turn driven from the app opens the session in a tab the user is looking
+    // at, so it doesn't need to be reachable from claude.ai/code.
+    expect(startedRemoteControl).toBe(false);
+    expect(result.message).not.toContain("remote-controllable");
+  });
+
+  it("starts sessions with Remote Control when the turn came from away", async () => {
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
+    let startedRemoteControl: boolean | undefined;
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      remoteControl: true,
+      startClaudeSession: async (input) => {
+        startedRemoteControl = input.remoteControl;
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+
+    const result = (await tools.create_workspace_session.execute!(
+      { name: "Remote work", repoIds: [repo.id] },
+      opts,
+    )) as { message?: string; error?: string };
+
+    expect(result.error).toBeUndefined();
+    expect(startedRemoteControl).toBe(true);
+    expect(result.message).toContain("remote-controllable");
+  });
+
   it("create_scratch_workspace_session provisions a repo-less workspace at its root", async () => {
     let startedCwd = "";
     let startedWorkspaceId = "";

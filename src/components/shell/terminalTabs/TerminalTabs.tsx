@@ -17,6 +17,24 @@ import {
   splitPane,
 } from "./paneTree";
 import { reorderTabs } from "./reorderTabs";
+import {
+  type DiffTab,
+  type InitialTab,
+  isPinnedTabId,
+  loadState,
+  type PinnedTab,
+  pinnedKeyOf,
+  pinnedTabId,
+  type SetupLogTab,
+  type SurfaceState,
+  stateAfterCloseTab,
+  storageKeyFor,
+  type Tab,
+  type TerminalTab,
+  uid,
+} from "./surfaceState";
+
+export type { InitialTab, PinnedTab } from "./surfaceState";
 
 /**
  * A single terminal surface with iTerm-style tabs and splittable panes.
@@ -33,105 +51,8 @@ import { reorderTabs } from "./reorderTabs";
  *  - Cmd+Shift+D:  split focused pane horizontally (new pane below)
  */
 
-/** A normal tab: a splittable tree of terminal panes. */
-interface TerminalTab {
-  id: string;
-  title: string;
-  kind: "terminal";
-  root: Pane;
-}
-
-/**
- * A tab viewing the diff of a changed file. The tab only tracks which file it
- * shows (repo + path); the surface's owner supplies the actual renderer via
- * `renderFileDiff`. Tracking the file here is what lets us avoid opening the
- * same file twice — a repeat request just re-selects this tab.
- */
-interface DiffTab {
-  id: string;
-  title: string;
-  kind: "diff";
-  repoId: string;
-  path: string;
-}
-
-/**
- * A tab showing a workspace repo's setup-script output (and any provisioning
- * error) after a failed provision. Like a diff tab it owns no PTY and only
- * tracks which repo it shows; the surface's owner renders the body via
- * `renderSetupLog`. Tracking the repo here lets a repeat request re-select the
- * existing tab instead of opening a second one.
- */
-interface SetupLogTab {
-  id: string;
-  title: string;
-  kind: "setup";
-  workspaceRepoId: string;
-}
-
-type Tab = TerminalTab | DiffTab | SetupLogTab;
-
 /** Tab title for a diff tab: the file's basename, which is short and unique enough. */
 const fileTitle = (path: string) => path.split("/").pop() || path;
-
-/**
- * A tab bound to an externally-managed PTY session (e.g. a Claude session the
- * core spawned over the control channel). Unlike a normal tab it uses a fixed
- * session id rather than a derived one, is single-pane (not splittable), and is
- * shown only while the caller includes it.
- */
-export interface PinnedTab {
-  key: string;
-  title: string;
-  sessionId: string;
-  cwd?: string;
-  initialCommand?: string;
-}
-
-/** activeTabId value marking a pinned tab as selected. */
-const PINNED_PREFIX = "pinned:";
-const pinnedTabId = (key: string) => `${PINNED_PREFIX}${key}`;
-
-interface SurfaceState {
-  tabs: Tab[];
-  activeTabId: string;
-  /** Last focused pane per tab — lets a tab switch restore the pane the user was in. */
-  focused: Record<string, PaneId>;
-}
-
-let uidCounter = 0;
-const uid = (kind: "t" | "p") => `${kind}${Date.now().toString(36)}${(uidCounter++).toString(36)}`;
-
-function freshState(): SurfaceState {
-  const paneId = uid("p");
-  const tabId = uid("t");
-  return {
-    tabs: [{ id: tabId, title: "Terminal", kind: "terminal", root: leaf(paneId) }],
-    activeTabId: tabId,
-    focused: { [tabId]: paneId },
-  };
-}
-
-function storageKeyFor(key: string) {
-  return `yarvis.terminalTabs.${key}`;
-}
-
-function loadState(key: string): SurfaceState {
-  try {
-    const raw = localStorage.getItem(storageKeyFor(key));
-    if (!raw) return freshState();
-    const parsed = JSON.parse(raw) as SurfaceState;
-    if (!parsed.tabs?.length) return freshState();
-    // Backfill `kind` for states persisted before diff tabs existed: a tab with a
-    // pane tree is a terminal tab.
-    parsed.tabs = parsed.tabs.map((t) =>
-      (t as Tab).kind ? t : ({ ...t, kind: "terminal" } as TerminalTab),
-    );
-    return parsed;
-  } catch {
-    return freshState();
-  }
-}
 
 function sessionId(storageKey: string, tabId: string, paneId: PaneId): string {
   return `${storageKey}/${tabId}/${paneId}`;
@@ -154,6 +75,8 @@ export default function TerminalTabs({
   storageKey,
   cwd,
   pinnedTabs = [],
+  onClosePinned,
+  initialTab = "terminal",
   openFileDiff = null,
   onFileDiffOpened,
   renderFileDiff,
@@ -167,6 +90,15 @@ export default function TerminalTabs({
   cwd?: string;
   /** Tabs bound to externally-managed sessions, shown whenever present. */
   pinnedTabs?: PinnedTab[];
+  /**
+   * Called after the user closes a pinned tab and its session has been killed.
+   * The owner decides what a pinned tab's presence means, so only it can drop
+   * the tab — without this the header would linger (and, for a tab carrying an
+   * `initialCommand`, relaunch its session on the next reattach).
+   */
+  onClosePinned?: (pinned: PinnedTab) => void;
+  /** What this surface shows with no tabs of its own; see `InitialTab`. */
+  initialTab?: InitialTab;
   /**
    * A changed file to open in a diff tab. Setting this opens a new tab, or
    * re-focuses the existing tab already viewing that file. Cleared by the caller
@@ -189,12 +121,16 @@ export default function TerminalTabs({
   /** Supplies a setup-log tab's body. When omitted, setup-log tabs are not used. */
   renderSetupLog?: (req: Pick<OpenSetupLog, "workspaceRepoId">) => ReactNode;
 }) {
-  const [state, setState] = useState<SurfaceState>(() => loadState(storageKey));
+  const [state, setState] = useState<SurfaceState>(() => loadState(storageKey, initialTab));
   // Refs to xterm handles so a tab/pane switch can move focus into the right shell.
   const handlesRef = useRef<Map<string, TerminalPanelHandle | null>>(new Map());
   const rootRef = useRef<HTMLDivElement | null>(null);
   // Pinned tab keys seen on the previous render, to detect newly-appeared ones.
   const prevPinnedKeysRef = useRef<string[]>([]);
+  // Where selection lands if the last regular tab is closed. A primitive, so the
+  // close callbacks that depend on it stay stable across renders — `pinnedTabs`
+  // is a fresh array each time.
+  const firstPinnedKey = pinnedTabs[0]?.key ?? null;
 
   // Persist on every change. State changes are coarse (tab/split/focus) so this
   // is plenty cheap to do unconditionally.
@@ -228,8 +164,8 @@ export default function TerminalTabs({
     const appeared = keys.filter((k) => !prevPinnedKeysRef.current.includes(k));
     prevPinnedKeysRef.current = keys;
     setState((prev) => {
-      if (prev.activeTabId.startsWith(PINNED_PREFIX)) {
-        const activeKey = prev.activeTabId.slice(PINNED_PREFIX.length);
+      if (isPinnedTabId(prev.activeTabId)) {
+        const activeKey = pinnedKeyOf(prev.activeTabId);
         if (!keys.includes(activeKey)) {
           return { ...prev, activeTabId: prev.tabs[0]?.id ?? "" };
         }
@@ -352,16 +288,21 @@ export default function TerminalTabs({
     });
   }, []);
 
-  // Closing a pinned tab ends its underlying session; the caller stops listing it
-  // on its next poll, which removes the header.
-  const closePinned = useCallback(async (pinned: PinnedTab) => {
-    await killPty(pinned.sessionId).catch(() => undefined);
-    setState((prev) =>
-      prev.activeTabId === pinnedTabId(pinned.key)
-        ? { ...prev, activeTabId: prev.tabs[0]?.id ?? "" }
-        : prev,
-    );
-  }, []);
+  // Closing a pinned tab ends its underlying session and tells the owner, which
+  // is what actually removes the header — this surface doesn't decide whether a
+  // pinned tab exists.
+  const closePinned = useCallback(
+    async (pinned: PinnedTab) => {
+      await killPty(pinned.sessionId).catch(() => undefined);
+      setState((prev) =>
+        prev.activeTabId === pinnedTabId(pinned.key)
+          ? { ...prev, activeTabId: prev.tabs[0]?.id ?? "" }
+          : prev,
+      );
+      onClosePinned?.(pinned);
+    },
+    [onClosePinned],
+  );
 
   const closeTab = useCallback(
     async (tabId: string) => {
@@ -384,19 +325,9 @@ export default function TerminalTabs({
       await Promise.all(
         leafIds.map((p) => killPty(sessionId(storageKey, tabId, p)).catch(() => undefined)),
       );
-      setState((prev) => {
-        const remaining = prev.tabs.filter((t) => t.id !== tabId);
-        const { [tabId]: _omit, ...focused } = prev.focused;
-        if (remaining.length === 0) {
-          const fresh = freshState();
-          return fresh;
-        }
-        const activeTabId =
-          prev.activeTabId === tabId ? (remaining[0]?.id ?? "") : prev.activeTabId;
-        return { tabs: remaining, activeTabId, focused };
-      });
+      setState((prev) => stateAfterCloseTab(prev, tabId, initialTab, firstPinnedKey));
     },
-    [state.tabs, storageKey],
+    [state.tabs, storageKey, initialTab, firstPinnedKey],
   );
 
   const splitFocused = useCallback(
@@ -502,8 +433,9 @@ export default function TerminalTabs({
     }
   }, [activeTab, state.focused, setFocusedPane]);
 
-  if (!activeTab && !activePinned) return null;
-
+  // No early return when nothing is active: a surface whose only tab was a pinned
+  // one the user just closed still has to render its strip, or there is no "+" to
+  // open a terminal with.
   return (
     <div ref={rootRef} className="flex h-full min-h-0 w-full min-w-0 flex-col bg-[#09090b]">
       <TabStrip
@@ -635,7 +567,7 @@ function TabStrip({
         {/* Pinned tabs are externally owned and always lead the strip, so they
             are intentionally not draggable and not drop targets. */}
         {pinnedTabs.map((p) => {
-          const active = activeId === `${PINNED_PREFIX}${p.key}`;
+          const active = activeId === pinnedTabId(p.key);
           return (
             <div
               key={`pinned:${p.key}`}

@@ -86,24 +86,35 @@ export interface WorkspaceGitHubClient extends StartWorkSideEffectClient {
   issueDetail(owner: string, repo: string, number: number): Promise<IssueDetail>;
 }
 
-/** Injectable collaborators, overridden in tests to avoid real git/claude/github. */
+/**
+ * Injectable collaborators, overridden in tests to avoid real git/claude/github,
+ * plus the one piece of per-turn context the tools need.
+ */
 export interface WorkspaceToolDeps {
   startClaudeSession?: ClaudeSessionStarter;
   gitRunner?: GitRunner;
   /** Overrides the GitHub client the issue tools use; defaults to a client built
    *  from the configured token (null when no token is set). */
   githubClient?: WorkspaceGitHubClient | null;
+  /**
+   * Whether sessions these tools start get Remote Control. True only for turns
+   * the user drove from away (Telegram), where the session has to be reachable
+   * from claude.ai/code or the mobile app to be usable at all. Defaults to off:
+   * a turn driven from the app opens the session in a tab the user is looking at.
+   */
+  remoteControl?: boolean;
 }
 
 /**
  * Workspace tools for the chat agent. Read-only lookups (repos, a repo's open
  * issues, workspace list, workspace PR/check status) plus fixed-purpose actions:
  * create a workspace (from repos, from an issue like the issue-view "Start
- * work", or scratch) and start a remote-controllable Claude Code session in it,
- * and archive a workspace. Deliberately no general shell access.
+ * work", or scratch) and start a Claude Code session in it, and archive a
+ * workspace. Deliberately no general shell access.
  */
 export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolDeps = {}) {
   const startClaude = deps.startClaudeSession ?? defaultStartClaudeSession;
+  const remoteControl = deps.remoteControl ?? false;
   const gitRunner = deps.gitRunner ?? defaultGitRunner;
   // `undefined` means "not overridden" → fall back to a token-backed client;
   // an explicit `null` (or a missing token) means "no GitHub access".
@@ -124,7 +135,12 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
   const launchClaude = async (detail: WorkspaceDetail) => {
     const cwd = detail.rootPath;
     try {
-      const session = await startClaude({ workspaceId: detail.id, cwd, name: detail.name });
+      const session = await startClaude({
+        workspaceId: detail.id,
+        cwd,
+        name: detail.name,
+        remoteControl,
+      });
       return {
         workspaceId: detail.id,
         name: detail.name,
@@ -132,7 +148,9 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         repos: detail.repos.map((r) => r.repo.name),
         sessionName: detail.name,
         sessionKey: session.sessionKey,
-        message: `Started a remote-controllable Claude Code session in workspace "${detail.name}". Open it from claude.ai/code or the Claude mobile app by the name "${detail.name}", or view it live in the Workspaces tab.`,
+        message: remoteControl
+          ? `Started a remote-controllable Claude Code session in workspace "${detail.name}". Open it from claude.ai/code or the Claude mobile app by the name "${detail.name}", or view it live in the Workspaces tab.`
+          : `Started a Claude Code session in workspace "${detail.name}". View it live in the Workspaces tab.`,
       };
     } catch (e) {
       // The workspace is ready; only the Claude launch failed (commonly: not

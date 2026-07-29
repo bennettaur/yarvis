@@ -60,6 +60,10 @@ mod unix_impl {
         workspace_id: String,
         cwd: String,
         name: String,
+        /// Whether to launch with Remote Control. Absent means off, so a caller
+        /// that hasn't been taught about it can't silently opt in.
+        #[serde(rename = "remoteControl", default)]
+        remote_control: bool,
     }
 
     #[derive(Deserialize)]
@@ -189,7 +193,14 @@ mod unix_impl {
             "claude.spawn" => {
                 let p: SpawnParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
                 validate_workspace_id(&p.workspace_id)?;
-                spawn_claude_session(app, state.inner(), &p.workspace_id, p.cwd, &p.name)
+                spawn_claude_session(
+                    app,
+                    state.inner(),
+                    &p.workspace_id,
+                    p.cwd,
+                    &p.name,
+                    p.remote_control,
+                )
             }
             "claude.kill" => {
                 let p: KillParams = serde_json::from_value(params).map_err(|e| e.to_string())?;

@@ -114,13 +114,26 @@ directory, `~/dev/yarvis-workspaces` by default and overridable with the
 secrets above). Add repos and edit their per-repo setup/run scripts in the
 Settings tab's Repositories section.
 
-Creating a workspace provisions its worktrees, opens a terminal, and — once the
-setup scripts finish — starts a Claude Code session in it and focuses that tab.
-The command used to start Claude is `claude --permission-mode auto` by default
-and overridable with the `YARVIS_CLAUDE_COMMAND` env var (also non-secret
-config), so you can bake in default options such as a model or permission mode.
-Remote-control sessions (started by the agent or from the Workspaces tab) use
-the same base command with `--remote-control <session name>` appended.
+Every provisioned workspace opens with an agent tab and nothing else — opening
+one starts a Claude Code session in it (or attaches to the one already running)
+and focuses that tab. No extra shell tab is opened alongside it; use `+` or
+Cmd+T when you want one. Closing the agent tab ends its session and leaves it
+closed; "Start Claude session" in the workspace header brings it back.
+
+The agent's tab title and launch command are set under Settings → Repositories →
+Agent, defaulting to `Claude` and `claude --permission-mode auto`, so you can
+bake in default options such as a model or permission mode. The
+`YARVIS_CLAUDE_COMMAND` env var still overrides the stored command (non-secret
+config) for the cases where it has to be injected without the settings file.
+
+Remote Control is opt-in per launch. A session started from Telegram gets
+`--remote-control <session name>` appended, since you're away from the machine
+and can only reach it from claude.ai/code or the Claude mobile app. Sessions
+started at the laptop — opening a workspace, an issue's "Start work", or asking
+the in-app agent — don't, because they open in a tab you're already looking at;
+enable Remote Control from inside the session if you later need to pick the work
+up remotely. Keeping it off by default also means a non-Claude agent command
+isn't handed a flag it doesn't understand.
 
 Provisioning also writes a few context files into the workspace root, since
 Claude starts there rather than inside a single repo: `AGENTS.md` (plus a

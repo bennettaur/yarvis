@@ -20,6 +20,11 @@ function defaultSettings(): Settings {
     maxPtySessions: null,
     defaultMaxPtySessions: 60,
     maxConfigurablePtySessions: 1000,
+    agentName: null,
+    agentCommand: null,
+    defaultAgentName: "Claude",
+    defaultAgentCommand: "claude --permission-mode auto",
+    agentCommandOverriddenByEnv: false,
   };
 }
 

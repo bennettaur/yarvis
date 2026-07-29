@@ -333,21 +333,64 @@ pub fn kill_session(state: &PtyState, id: &str) {
     }
 }
 
-/// Base command used to launch Claude Code. Overridable via the
-/// `YARVIS_CLAUDE_COMMAND` env var so a user can bake in default options (e.g. a
-/// different permission mode or model). Remote-control sessions append
-/// `--remote-control <name>` to whatever this resolves to.
-const DEFAULT_CLAUDE_COMMAND: &str = "claude --permission-mode auto";
+/// Base command a workspace's agent session is launched from. Configurable in
+/// Settings as `agentCommand`, and overridable per-launch via the
+/// `YARVIS_CLAUDE_COMMAND` env var. Remote-control sessions append
+/// `--remote-control <name>` to whatever this resolves to, which is a Claude
+/// Code flag — an agent that doesn't take it can still be launched, but won't
+/// be remote-controllable.
+pub const DEFAULT_AGENT_COMMAND: &str = "claude --permission-mode auto";
 
-/// The configured (or default) base command used to start Claude Code. Read from
-/// the environment on each use so a restart-injected change is picked up without
-/// a rebuild; an empty override falls back to the default.
-fn claude_base_command() -> String {
-    std::env::var("YARVIS_CLAUDE_COMMAND")
-        .ok()
+/// Display name for a workspace's agent, used as its tab title. Configurable in
+/// Settings as `agentName`.
+pub const DEFAULT_AGENT_NAME: &str = "Claude";
+
+/// Env override for the agent command, kept for the case where a command has to
+/// be injected without the app's settings file — it outranks the stored value.
+const AGENT_COMMAND_ENV: &str = "YARVIS_CLAUDE_COMMAND";
+
+/// The agent command override in the environment, if a non-blank one is set.
+/// Read on each use so a restart-injected change is picked up without a rebuild.
+pub fn agent_command_env() -> Option<String> {
+    non_blank(std::env::var(AGENT_COMMAND_ENV).ok())
+}
+
+/// The configured (or default) base command a workspace's agent is launched
+/// from. Read on each use so a change made in Settings applies to the next
+/// session started rather than waiting for a restart.
+fn agent_command(app: &AppHandle) -> String {
+    resolve_agent_command(
+        agent_command_env(),
+        app.try_state::<SettingsState>()
+            .and_then(|state| state.snapshot().agent_command),
+    )
+}
+
+/// Resolves the agent command from the env override and the stored setting.
+/// Extracted from `agent_command` so the precedence is unit-testable without app
+/// state. The env override wins, then the stored setting; a blank value at
+/// either level is treated as unset rather than as an empty command.
+fn resolve_agent_command(env: Option<String>, configured: Option<String>) -> String {
+    non_blank(env)
+        .or_else(|| non_blank(configured))
+        .unwrap_or_else(|| DEFAULT_AGENT_COMMAND.to_string())
+}
+
+/// The configured (or default) display name for a workspace's agent.
+fn agent_name(app: &AppHandle) -> String {
+    non_blank(
+        app.try_state::<SettingsState>()
+            .and_then(|state| state.snapshot().agent_name),
+    )
+    .unwrap_or_else(|| DEFAULT_AGENT_NAME.to_string())
+}
+
+/// The trimmed value, or `None` when it is absent or blank. Applied on read as
+/// well as on write so a hand-edited settings file can't yield an empty command.
+fn non_blank(value: Option<String>) -> Option<String> {
+    value
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| DEFAULT_CLAUDE_COMMAND.to_string())
 }
 
 /// Composes the remote-control launch line from a base command and a session
@@ -359,6 +402,17 @@ fn remote_control_command(base: &str, name: &str) -> String {
         base.trim(),
         shell_single_quote(name)
     )
+}
+
+/// The launch line for an agent session: the base command, with Remote Control
+/// added only when asked for. Extracted from `spawn_claude_session` alongside
+/// `remote_control_command` so the choice is unit-testable without app state.
+fn agent_launch_command(base: &str, name: &str, remote_control: bool) -> String {
+    if remote_control {
+        remote_control_command(base, name)
+    } else {
+        base.trim().to_string()
+    }
 }
 
 /// Builds the shell-safe single-quoted form of `s` for injection into a shell
@@ -377,20 +431,26 @@ fn shell_single_quote(s: &str) -> String {
     out
 }
 
-/// Starts a remote-controllable Claude Code session in `cwd` under the stable id
-/// `ws-claude:<workspace_id>`, which the frontend later attaches to. The argv is
-/// constructed here (not supplied by the caller) so the control channel can only
-/// ever launch Claude, never an arbitrary command. Returns once the session is
+/// Starts an agent session in `cwd` under the stable id `ws-claude:<workspace_id>`,
+/// which the frontend later attaches to. The argv is constructed here (not
+/// supplied by the caller) so the control channel can only ever launch the
+/// configured agent, never an arbitrary command. Returns once the session is
 /// registered; the session keeps running until killed or the app exits.
+///
+/// `remote_control` adds Claude Code's `--remote-control`, which is only wanted
+/// when the launch came from somewhere the user isn't at the machine — a
+/// Telegram turn. A session started at the laptop is driven in its own tab, and
+/// can be made remotely controllable later from inside the session itself.
 pub fn spawn_claude_session(
     app: &AppHandle,
     state: &PtyState,
     workspace_id: &str,
     cwd: String,
     name: &str,
+    remote_control: bool,
 ) -> Result<(), String> {
     let id = format!("ws-claude:{workspace_id}");
-    let command = remote_control_command(&claude_base_command(), name);
+    let command = agent_launch_command(&agent_command(app), name, remote_control);
     spawn_into_state(
         app,
         state,
@@ -463,9 +523,9 @@ pub fn pty_exists(state: tauri::State<'_, PtyState>, id: String) -> Result<bool,
     Ok(false)
 }
 
-/// Starts a remote-controllable Claude session for an existing workspace, so the
-/// frontend can offer a "Start Claude session" action. Mirrors what the control
-/// channel does for the sidecar/agent; both go through `spawn_claude_session`.
+/// Starts an agent session for an existing workspace, so the frontend can open
+/// one on entering a workspace. Mirrors what the control channel does for the
+/// sidecar/agent; both go through `spawn_claude_session`.
 #[tauri::command]
 pub fn pty_start_claude(
     app: AppHandle,
@@ -473,16 +533,36 @@ pub fn pty_start_claude(
     workspace_id: String,
     cwd: String,
     name: String,
+    remote_control: bool,
 ) -> Result<(), String> {
-    spawn_claude_session(&app, state.inner(), &workspace_id, cwd, &name)
+    spawn_claude_session(
+        &app,
+        state.inner(),
+        &workspace_id,
+        cwd,
+        &name,
+        remote_control,
+    )
 }
 
-/// Returns the configured base command used to start Claude Code, so the
-/// frontend's own Claude launches (e.g. the issue "Start work" terminal) match
-/// the command remote-control sessions are built from.
+/// The agent a workspace surfaces: its tab title and the base command its
+/// launches are built from.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConfig {
+    name: String,
+    command: String,
+}
+
+/// Returns the configured agent, so the frontend's own launches (e.g. the issue
+/// "Start work" terminal) use the same command remote-control sessions are built
+/// from and label the tab the same way.
 #[tauri::command]
-pub fn get_claude_command() -> String {
-    claude_base_command()
+pub fn get_agent_config(app: AppHandle) -> AgentConfig {
+    AgentConfig {
+        name: agent_name(&app),
+        command: agent_command(&app),
+    }
 }
 
 #[tauri::command]
@@ -557,9 +637,55 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        append_capped, attention_env, remote_control_command, resolve_max_sessions,
-        DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS, MAX_SCROLLBACK,
+        agent_launch_command, append_capped, attention_env, remote_control_command,
+        resolve_agent_command, resolve_max_sessions, DEFAULT_AGENT_COMMAND, DEFAULT_MAX_SESSIONS,
+        MAX_CONFIGURABLE_SESSIONS, MAX_SCROLLBACK,
     };
+
+    #[test]
+    fn resolve_agent_command_uses_the_default_when_nothing_is_set() {
+        assert_eq!(resolve_agent_command(None, None), DEFAULT_AGENT_COMMAND);
+    }
+
+    #[test]
+    fn resolve_agent_command_uses_the_stored_setting() {
+        assert_eq!(
+            resolve_agent_command(None, Some("codex --yolo".to_string())),
+            "codex --yolo"
+        );
+    }
+
+    #[test]
+    fn resolve_agent_command_lets_the_env_override_outrank_the_setting() {
+        assert_eq!(
+            resolve_agent_command(
+                Some("claude --model opus".to_string()),
+                Some("codex --yolo".to_string())
+            ),
+            "claude --model opus"
+        );
+    }
+
+    #[test]
+    fn resolve_agent_command_treats_a_blank_value_as_unset() {
+        // A blank setting must fall through rather than launch an empty command.
+        assert_eq!(
+            resolve_agent_command(Some("  ".to_string()), Some("codex --yolo".to_string())),
+            "codex --yolo"
+        );
+        assert_eq!(
+            resolve_agent_command(None, Some("  ".to_string())),
+            DEFAULT_AGENT_COMMAND
+        );
+    }
+
+    #[test]
+    fn resolve_agent_command_trims_surrounding_whitespace() {
+        assert_eq!(
+            resolve_agent_command(None, Some("  codex --yolo  ".to_string())),
+            "codex --yolo"
+        );
+    }
 
     #[cfg(unix)]
     mod fd_limit {
@@ -643,6 +769,20 @@ mod tests {
         assert_eq!(
             cmd,
             "claude --permission-mode auto --remote-control 'Rename the API'"
+        );
+    }
+
+    #[test]
+    fn agent_launch_command_adds_remote_control_only_when_asked() {
+        assert_eq!(
+            agent_launch_command("claude --permission-mode auto", "Fix bug", true),
+            "claude --permission-mode auto --remote-control 'Fix bug'"
+        );
+        // A session started at the machine is driven in its own tab; Remote
+        // Control is enabled from inside it if the user later steps away.
+        assert_eq!(
+            agent_launch_command("claude --permission-mode auto", "Fix bug", false),
+            "claude --permission-mode auto"
         );
     }
 

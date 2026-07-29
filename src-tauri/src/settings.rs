@@ -22,6 +22,11 @@ use tauri::{AppHandle, Manager};
 pub struct Settings {
     /// Cap on live PTY sessions; see `pty::max_sessions`.
     pub max_pty_sessions: Option<usize>,
+    /// Display name for a workspace's agent tab; see `pty::agent_name`.
+    pub agent_name: Option<String>,
+    /// Base command a workspace's agent session is launched from; see
+    /// `pty::agent_command`.
+    pub agent_command: Option<String>,
 }
 
 pub struct SettingsState {
@@ -88,6 +93,38 @@ impl SettingsState {
         }
         self.save()
     }
+
+    /// Stores the agent's display name and launch command, clearing either back
+    /// to its built-in default when given `None` or a blank string. Both are
+    /// rejected if they span lines: the command is written into a shell as a
+    /// single launch line, so an embedded newline would submit whatever follows
+    /// it as a second command.
+    fn set_agent(&self, name: Option<String>, command: Option<String>) -> Result<(), String> {
+        let name = non_blank(name);
+        let command = non_blank(command);
+        if name
+            .iter()
+            .chain(command.iter())
+            .any(|s| s.contains(['\n', '\r']))
+        {
+            return Err("the agent name and command must each be a single line".to_string());
+        }
+        {
+            let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
+            settings.agent_name = name;
+            settings.agent_command = command;
+        }
+        self.save()
+    }
+}
+
+/// The trimmed value, or `None` when it is absent or blank — an emptied field in
+/// the UI means "use the default", which is stored the same way as never having
+/// set one.
+fn non_blank(value: Option<String>) -> Option<String> {
+    value
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Loads persisted settings into managed state. Call from `setup`.
@@ -108,6 +145,12 @@ pub struct SettingsView {
     settings: Settings,
     default_max_pty_sessions: usize,
     max_configurable_pty_sessions: usize,
+    default_agent_name: &'static str,
+    default_agent_command: &'static str,
+    /// True while the agent-command env override is set. That override outranks
+    /// the stored command, so the UI says which one is in force rather than
+    /// showing a saved value that nothing reads.
+    agent_command_overridden_by_env: bool,
 }
 
 impl From<Settings> for SettingsView {
@@ -116,6 +159,9 @@ impl From<Settings> for SettingsView {
             settings,
             default_max_pty_sessions: crate::pty::DEFAULT_MAX_SESSIONS,
             max_configurable_pty_sessions: crate::pty::MAX_CONFIGURABLE_SESSIONS,
+            default_agent_name: crate::pty::DEFAULT_AGENT_NAME,
+            default_agent_command: crate::pty::DEFAULT_AGENT_COMMAND,
+            agent_command_overridden_by_env: crate::pty::agent_command_env().is_some(),
         }
     }
 }
@@ -133,6 +179,19 @@ pub fn set_max_pty_sessions(
     value: Option<usize>,
 ) -> Result<SettingsView, String> {
     state.set_max_pty_sessions(value)?;
+    Ok(state.snapshot().into())
+}
+
+/// Sets the workspace agent's display name and launch command, clearing either
+/// back to its default when given `None` or a blank string. See
+/// `SettingsState::set_agent` for what is rejected.
+#[tauri::command]
+pub fn set_agent(
+    state: tauri::State<'_, SettingsState>,
+    name: Option<String>,
+    command: Option<String>,
+) -> Result<SettingsView, String> {
+    state.set_agent(name, command)?;
     Ok(state.snapshot().into())
 }
 
@@ -223,5 +282,50 @@ mod tests {
             json["maxConfigurablePtySessions"],
             crate::pty::MAX_CONFIGURABLE_SESSIONS
         );
+        assert!(json["agentName"].is_null());
+        assert!(json["agentCommand"].is_null());
+        assert_eq!(json["defaultAgentName"], crate::pty::DEFAULT_AGENT_NAME);
+        assert_eq!(
+            json["defaultAgentCommand"],
+            crate::pty::DEFAULT_AGENT_COMMAND
+        );
+        assert!(json["agentCommandOverriddenByEnv"].is_boolean());
+    }
+
+    #[test]
+    fn a_stored_agent_survives_a_reload() {
+        let store = temp_store("agent-round-trip");
+        store
+            .set_agent(Some("Codex".to_string()), Some("codex --yolo".to_string()))
+            .unwrap();
+
+        let reloaded = SettingsState::load(store.path.clone());
+        assert_eq!(reloaded.snapshot().agent_name.as_deref(), Some("Codex"));
+        assert_eq!(
+            reloaded.snapshot().agent_command.as_deref(),
+            Some("codex --yolo")
+        );
+    }
+
+    #[test]
+    fn a_blank_agent_field_clears_back_to_the_default() {
+        let store = temp_store("agent-blank");
+        store
+            .set_agent(Some("Codex".to_string()), Some("codex --yolo".to_string()))
+            .unwrap();
+        store.set_agent(Some("   ".to_string()), None).unwrap();
+
+        let reloaded = SettingsState::load(store.path.clone());
+        assert_eq!(reloaded.snapshot().agent_name, None);
+        assert_eq!(reloaded.snapshot().agent_command, None);
+    }
+
+    #[test]
+    fn a_multi_line_agent_command_is_rejected_and_nothing_is_stored() {
+        let store = temp_store("agent-multiline");
+        assert!(store
+            .set_agent(None, Some("claude\nrm -rf /".to_string()))
+            .is_err());
+        assert_eq!(store.snapshot().agent_command, None);
     }
 }
