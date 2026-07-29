@@ -43,6 +43,13 @@ export interface ChatMessage {
   createdAt: string;
 }
 
+/** A message as rendered in a thread: its persisted role, text and provenance. */
+export interface ThreadMessage {
+  role: string;
+  content: string;
+  metadata?: ChatMessageMetadata | null;
+}
+
 /**
  * The label shown above a message. Telegram-originated messages are marked as
  * such and identified by the sender's @username, name, or id, so they're
