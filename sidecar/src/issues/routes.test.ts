@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 
@@ -94,6 +94,15 @@ describe("issue routes: input validation", () => {
     expect(res.status).toBe(400);
   });
 
+  it("400s creating an issue whose title is only whitespace", async () => {
+    const res = await configured.request("/api/issues/github/create/octo/repo", {
+      method: "POST",
+      headers: json,
+      body: JSON.stringify({ title: "   " }),
+    });
+    expect(res.status).toBe(400);
+  });
+
   it("400s creating an issue in a repo whose owner is invalid", async () => {
     const res = await configured.request("/api/issues/github/create/bad..owner/repo", {
       method: "POST",
@@ -147,5 +156,57 @@ describe("issue routes: input validation", () => {
     });
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toContain("bad issue id");
+  });
+});
+
+/**
+ * The update route reaches GitHub but never the database, so stubbing the global
+ * fetch (which `GitHubClient` picks up when the route constructs it) is enough
+ * to cover the success and failure-mapping paths without a test DB.
+ */
+describe("issue routes: updating an issue", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  const patchIssue = (body: unknown) =>
+    configured.request("/api/issues/github/detail/octo/repo/1", {
+      method: "PATCH",
+      headers: json,
+      body: JSON.stringify(body),
+    });
+
+  it("responds with detail fetched after the edit, not the caller's input", async () => {
+    const calls: string[] = [];
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const path = String(url).replace("https://api.github.com", "");
+      calls.push(`${init?.method ?? "GET"} ${path}`);
+      // The comments fetch carries a `?per_page=` query, hence includes().
+      if (path.includes("/comments")) return new Response("[]", { status: 200 });
+      // GitHub's stored title differs from the request body on purpose.
+      return new Response(
+        JSON.stringify({ number: 1, title: "As stored by GitHub", body: "b", state: "closed" }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+
+    const res = await patchIssue({ title: "As sent", state: "closed" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      externalId: "1",
+      title: "As stored by GitHub",
+      state: "closed",
+      sourceKey: "octo/repo",
+    });
+    expect(calls[0]).toBe("PATCH /repos/octo/repo/issues/1");
+  });
+
+  it("502s when GitHub rejects the edit", async () => {
+    globalThis.fetch = (async () =>
+      new Response("no write access", { status: 403 })) as unknown as typeof fetch;
+    const res = await patchIssue({ state: "closed" });
+    expect(res.status).toBe(502);
+    expect(((await res.json()) as { error: string }).error).toContain("403");
   });
 });

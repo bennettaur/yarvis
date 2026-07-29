@@ -68,7 +68,6 @@ export default function GithubCreateIssueModal({
               onChange={(e) => setRepoId(e.target.value)}
               className={`mt-1 ${inputClass}`}
             >
-              {repos.length === 0 && <option value="">No repos pull issues</option>}
               {repos.map((r) => (
                 <option key={r.id} value={r.id}>
                   {r.owner}/{r.repo}

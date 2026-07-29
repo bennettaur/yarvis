@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { issueDetail, startWork, updateIssue } from "../../lib/issues/api";
-import type { IssueDetail, IssueSummary } from "../../lib/issues/types";
+import type { IssueDetail, IssueSummary, IssueUpdateInput } from "../../lib/issues/types";
 import { requestOpenWorkspace } from "../../lib/nav";
 import { formatRelativeTime } from "../../lib/time";
 import { openExternal } from "../../lib/url";
@@ -68,7 +68,7 @@ export default function IssueDetailView({
   const state = detail?.state ?? summary.state;
 
   /** Applies a partial edit and adopts the fresh detail the route returns. */
-  const applyEdit = async (input: Parameters<typeof updateIssue>[2], after?: () => void) => {
+  const applyEdit = async (input: IssueUpdateInput, after?: () => void) => {
     setBusyField(true);
     setError(null);
     try {
@@ -153,7 +153,9 @@ export default function IssueDetailView({
             <button
               type="button"
               onClick={() => void toggleState()}
-              disabled={busyField}
+              // Gated on `detail` so the label can't act on a state the list
+              // fetched before someone else closed the issue.
+              disabled={busyField || !detail}
               className="rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
             >
               {state === "open" ? "Close issue" : "Reopen issue"}

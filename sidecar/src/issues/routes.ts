@@ -227,7 +227,12 @@ export function createIssueRoutes(config: Config): Hono {
 
   // --- Issue writes (create / edit / close) ---
 
-  // Opens a new issue in a repo and returns it, so the caller can jump to it.
+  /**
+   * Opens a new issue in a repo and returns it, so the caller can jump to it.
+   * The target must be a repo configured to pull issues — the same set the
+   * create dialog offers — so this route can't open issues in arbitrary repos
+   * the configured token happens to be able to write to.
+   */
   router.post("/:provider/create/:owner/:repo", async (c) => {
     const gh = github();
     if (!gh) return c.json({ error: "github token not configured" }, 400);
@@ -238,9 +243,13 @@ export function createIssueRoutes(config: Config): Hono {
     if (!target.success) return c.json({ error: target.error.flatten() }, 400);
     const parsed = createIssueSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const { owner, repo } = target.data;
+    const configured = await listIssueRepos(db());
+    if (!configured.some((r) => r.owner === owner && r.repo === repo)) {
+      return c.json({ error: `repo ${owner}/${repo} is not set to pull issues` }, 400);
+    }
     try {
-      const issue = await gh.createIssue(target.data.owner, target.data.repo, parsed.data);
-      return c.json(issue, 201);
+      return c.json(await gh.createIssue(owner, repo, parsed.data), 201);
     } catch (e) {
       return c.json({ error: String(e) }, 502);
     }

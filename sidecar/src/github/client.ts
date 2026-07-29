@@ -724,23 +724,23 @@ export class GitHubClient {
     };
   }
 
-  private async mutate(path: string, method: string, body: unknown): Promise<void> {
+  private async sendRest(path: string, method: string, body: unknown): Promise<Response> {
     const res = await this.fetchImpl(`https://api.github.com${path}`, {
       method,
       headers: this.restHeaders(),
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`github ${method} ${path} -> ${res.status}`);
+    return res;
+  }
+
+  private async mutate(path: string, method: string, body: unknown): Promise<void> {
+    await this.sendRest(path, method, body);
   }
 
   /** `mutate` for endpoints whose response body the caller needs. */
   private async mutateJson<T>(path: string, method: string, body: unknown): Promise<T> {
-    const res = await this.fetchImpl(`https://api.github.com${path}`, {
-      method,
-      headers: this.restHeaders(),
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error(`github ${method} ${path} -> ${res.status}`);
+    const res = await this.sendRest(path, method, body);
     return (await res.json()) as T;
   }
 }

@@ -300,6 +300,15 @@ export default function GithubIssuesView({
           No repositories are set to pull issues. Enable “Pull issues” on a repo in Settings →
           Repositories to see its issues here.
         </p>
+        {/* Reachable refresh: flipping the toggle in Settings doesn't remount this view. */}
+        <button
+          type="button"
+          onClick={() => void refresh()}
+          disabled={refreshing}
+          className="mt-3 rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+        >
+          {refreshing ? "Refreshing…" : "↻ Refresh"}
+        </button>
       </div>
     );
   }
