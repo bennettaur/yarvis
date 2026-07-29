@@ -658,7 +658,7 @@ export class GitHubClient {
     repo: string,
     input: { title: string; body?: string },
   ): Promise<IssueSummary> {
-    const created = await this.mutateJson<any>(`/repos/${owner}/${repo}/issues`, "POST", {
+    const created = await this.mutateJson<unknown>(`/repos/${owner}/${repo}/issues`, "POST", {
       title: input.title,
       body: input.body ?? "",
     });

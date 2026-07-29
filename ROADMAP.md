@@ -59,9 +59,11 @@ Status of the build against the original vision. The full V1 plan lives at
   flashes.
 - **Issues dashboard (GitHub)** — a global Issues tab mirroring the PR
   dashboard: "Assigned to me" / "All open" / saved-filter views, grouped by
-  repo, with stars, search, and "in progress" badges. Issues are pulled from
-  repos flagged with a per-repo "Pull issues" toggle. The issue detail view
-  (title, labels, assignees, markdown body, comments) has a "Start work"
+  repo, with stars, search, "in progress" badges, and a manual refresh. Issues
+  are pulled from repos flagged with a per-repo "Pull issues" toggle, and new
+  issues can be opened in any of those repos. The issue detail view (title,
+  labels, assignees, markdown body, comments) grooms a ticket in place — editing
+  its title and description, closing and reopening it — and has a "Start work"
   action that creates a workspace for the issue, links it, best-effort assigns
   the issue to the viewer and labels it in-progress on GitHub, then provisions
   the worktree and launches a Claude session seeded with the issue title +

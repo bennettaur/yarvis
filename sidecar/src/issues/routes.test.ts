@@ -1,11 +1,14 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
+import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 
 /**
- * Every case below is rejected by the provider guard, the db/token guards, or
- * Zod validation *before* any GitHub or database access, so no real services
- * are needed — the same approach as the PR routes test.
+ * The guard and validation cases are rejected by the provider guard, the
+ * db/token guards, or Zod *before* any GitHub or database access, so they need
+ * no real services — the same approach as the PR routes test. The last two
+ * blocks do need services: they stub the global fetch the GitHub client picks
+ * up, and the create block also needs the test database (see `dbApp`).
  */
 function appWith(overrides: {
   databaseUrl?: string;
@@ -208,5 +211,63 @@ describe("issue routes: updating an issue", () => {
     const res = await patchIssue({ state: "closed" });
     expect(res.status).toBe(502);
     expect(((await res.json()) as { error: string }).error).toContain("403");
+  });
+});
+
+/**
+ * Creating an issue is scoped to the repos flagged "pull issues", so these
+ * cases need the real repos table — hence the test database.
+ */
+describe("issue routes: creating an issue", () => {
+  const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
+  const sql = postgres(url, { max: 1 });
+  const dbApp = appWith({ databaseUrl: url, secrets: { githubToken: "ghp_test" } });
+  const realFetch = globalThis.fetch;
+
+  beforeEach(async () => {
+    await sql`TRUNCATE repos RESTART IDENTITY CASCADE`;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ number: 12, title: "Fix the thing", state: "open" }), {
+        status: 201,
+      })) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  afterAll(async () => {
+    await sql.end();
+  });
+
+  const addRepo = (owner: string, repo: string, pullIssues: boolean) =>
+    sql`INSERT INTO repos (name, owner, repo, clone_url, primary_clone_path, pull_issues)
+        VALUES (${repo}, ${owner}, ${repo}, ${`git@github.com:${owner}/${repo}.git`},
+                ${`/tmp/${repo}`}, ${pullIssues})`;
+
+  const createIn = (owner: string, repo: string) =>
+    dbApp.request(`/api/issues/github/create/${owner}/${repo}`, {
+      method: "POST",
+      headers: json,
+      body: JSON.stringify({ title: "Fix the thing" }),
+    });
+
+  it("opens the issue in a repo configured to pull issues", async () => {
+    await addRepo("octo", "web", true);
+    const res = await createIn("octo", "web");
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({ externalId: "12", sourceKey: "octo/web" });
+  });
+
+  it("refuses a repo that is registered but not set to pull issues", async () => {
+    await addRepo("octo", "web", false);
+    const res = await createIn("octo", "web");
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toContain("not set to pull issues");
+  });
+
+  it("refuses a repo the user never registered", async () => {
+    const res = await createIn("someone", "else");
+    expect(res.status).toBe(400);
   });
 });

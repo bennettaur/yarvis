@@ -259,6 +259,10 @@ export function createIssueRoutes(config: Config): Hono {
    * Edits an issue's title, body, or open/closed state (closing and reopening
    * both go through `state`). Responds with freshly fetched detail so the caller
    * renders what GitHub actually stored rather than its own optimistic guess.
+   *
+   * Unlike create, this is deliberately not scoped to the repos configured to
+   * pull issues: saved filters run GitHub search, which surfaces issues from any
+   * repo, and those are exactly the tickets a user opens here to groom.
    */
   router.patch("/:provider/detail/:owner/:repo/:number", async (c) => {
     const gh = github();
