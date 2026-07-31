@@ -95,19 +95,23 @@ impl SettingsState {
     }
 
     /// Stores the agent's display name and launch command, clearing either back
-    /// to its built-in default when given `None` or a blank string. Both are
-    /// rejected if they span lines: the command is written into a shell as a
-    /// single launch line, so an embedded newline would submit whatever follows
-    /// it as a second command.
+    /// to its built-in default when given `None` or a blank string.
+    ///
+    /// Control characters are rejected. The command is typed into an interactive
+    /// shell as a single launch line, so a newline would submit whatever follows
+    /// it as a second command — and 0x03/0x15 would do the same by way of the
+    /// line editor, for the reasons `pty::is_unsafe_name_char` documents.
     fn set_agent(&self, name: Option<String>, command: Option<String>) -> Result<(), String> {
         let name = non_blank(name);
         let command = non_blank(command);
         if name
             .iter()
             .chain(command.iter())
-            .any(|s| s.contains(['\n', '\r']))
+            .any(|s| s.chars().any(char::is_control))
         {
-            return Err("the agent name and command must each be a single line".to_string());
+            return Err(
+                "the agent name and command must not contain control characters".to_string(),
+            );
         }
         {
             let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
@@ -321,11 +325,20 @@ mod tests {
     }
 
     #[test]
-    fn a_multi_line_agent_command_is_rejected_and_nothing_is_stored() {
-        let store = temp_store("agent-multiline");
-        assert!(store
-            .set_agent(None, Some("claude\nrm -rf /".to_string()))
-            .is_err());
-        assert_eq!(store.snapshot().agent_command, None);
+    fn a_control_character_in_the_agent_command_is_rejected_and_nothing_is_stored() {
+        let store = temp_store("agent-controls");
+        // A newline submits a second command; 0x03 and 0x15 reach the same shell
+        // line through the line editor. See `pty::is_unsafe_name_char`.
+        for payload in [
+            "claude\nrm -rf /",
+            "claude\u{3}rm -rf /",
+            "claude\u{15}rm -rf /",
+        ] {
+            assert!(
+                store.set_agent(None, Some(payload.to_string())).is_err(),
+                "accepted: {payload:?}"
+            );
+            assert_eq!(store.snapshot().agent_command, None);
+        }
     }
 }

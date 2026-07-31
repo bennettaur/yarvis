@@ -393,6 +393,47 @@ fn non_blank(value: Option<String>) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Longest session name accepted into a launch line. Names come from issue
+/// titles, so this bounds what a single line can carry rather than reflecting
+/// anything the shell enforces.
+const MAX_SESSION_NAME_CHARS: usize = 200;
+
+/// Characters a session name may not carry into a launch line.
+///
+/// `is_control` (Unicode Cc) is the part that matters for injection: the launch
+/// line is not handed to a shell parser — it is typed into an interactive shell
+/// (see `spawn_session`), whose line editor treats bytes like 0x03 (interrupt)
+/// and 0x15 (kill-line) as editing commands. Those act before quoting is ever
+/// parsed, so they discard the opening quote and let whatever follows run as a
+/// new command line.
+///
+/// The rest are not an injection risk — they are multi-byte UTF-8, so a shell
+/// sees them as ordinary text — but the same name is the session title shown in
+/// claude.ai/code and the Claude mobile app, where a bidi override renders a
+/// title that reads as something other than what it is. Both come from
+/// third-party text (a GitHub or JIRA issue title reaches here via
+/// `create_workspace`), so both are stripped.
+fn is_unsafe_name_char(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
+            '\u{2028}' | '\u{2029}'
+            | '\u{200e}' | '\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}'
+        )
+}
+
+/// Strips unsafe characters from a session name and bounds its length. See
+/// `is_unsafe_name_char` for why quoting alone is not sufficient here.
+fn sanitize_session_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| !is_unsafe_name_char(*c))
+        .take(MAX_SESSION_NAME_CHARS)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 /// Composes the remote-control launch line from a base command and a session
 /// name. Extracted from `spawn_claude_session` so the composition is unit-testable
 /// without reading the environment or spawning a PTY.
@@ -400,7 +441,7 @@ fn remote_control_command(base: &str, name: &str) -> String {
     format!(
         "{} --remote-control {}",
         base.trim(),
-        shell_single_quote(name)
+        shell_single_quote(&sanitize_session_name(name))
     )
 }
 
@@ -432,10 +473,15 @@ fn shell_single_quote(s: &str) -> String {
 }
 
 /// Starts an agent session in `cwd` under the stable id `ws-claude:<workspace_id>`,
-/// which the frontend later attaches to. The argv is constructed here (not
-/// supplied by the caller) so the control channel can only ever launch the
-/// configured agent, never an arbitrary command. Returns once the session is
-/// registered; the session keeps running until killed or the app exits.
+/// which the frontend later attaches to. Returns once the session is registered;
+/// the session keeps running until killed or the app exits.
+///
+/// The launch line is built here rather than taken from the caller, so a caller
+/// (including the control channel) chooses only *whether* to start the configured
+/// agent, not what runs. The command itself comes from settings, which only the
+/// webview can write; the one caller-supplied value that reaches the line is
+/// `name`, which `sanitize_session_name` strips before it is quoted. This is not
+/// argv safety — the line is typed into an interactive shell — so both matter.
 ///
 /// `remote_control` adds Claude Code's `--remote-control`, which is only wanted
 /// when the launch came from somewhere the user isn't at the machine — a
@@ -637,9 +683,9 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_launch_command, append_capped, attention_env, remote_control_command,
-        resolve_agent_command, resolve_max_sessions, DEFAULT_AGENT_COMMAND, DEFAULT_MAX_SESSIONS,
-        MAX_CONFIGURABLE_SESSIONS, MAX_SCROLLBACK,
+        agent_launch_command, append_capped, attention_env, is_unsafe_name_char,
+        remote_control_command, resolve_agent_command, resolve_max_sessions, DEFAULT_AGENT_COMMAND,
+        DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS, MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
     };
 
     #[test]
@@ -783,6 +829,48 @@ mod tests {
         assert_eq!(
             agent_launch_command("claude --permission-mode auto", "Fix bug", false),
             "claude --permission-mode auto"
+        );
+    }
+
+    #[test]
+    fn remote_control_command_strips_control_characters_from_the_name() {
+        // The launch line is typed into an interactive shell, whose line editor
+        // acts on 0x03 (interrupt) and 0x15 (kill-line) before any quoting is
+        // parsed — so a quoted name carrying one ends the quote and runs the rest
+        // as its own command. Names come from issue titles, which are attacker
+        // authorable, so these must never survive into the line.
+        for injected in ["\u{3}", "\u{15}", "\r", "\n", "\u{1b}"] {
+            let name = format!("Fix bug{injected}id > /tmp/pwned");
+            let cmd = remote_control_command("claude", &name);
+            assert!(
+                !cmd.chars().any(is_unsafe_name_char),
+                "unsafe character survived in: {cmd:?}"
+            );
+            assert_eq!(cmd, "claude --remote-control 'Fix bugid > /tmp/pwned'");
+        }
+    }
+
+    #[test]
+    fn remote_control_command_strips_bidi_and_separator_characters() {
+        // Not a shell risk — these are multi-byte UTF-8 — but the name is also the
+        // session title shown in claude.ai/code, where an override renders a title
+        // that reads as something other than what it is.
+        for injected in ["\u{202e}", "\u{2066}", "\u{200f}", "\u{2028}"] {
+            let name = format!("Fix{injected}bug");
+            let cmd = remote_control_command("claude", &name);
+            assert_eq!(cmd, "claude --remote-control 'Fixbug'");
+        }
+    }
+
+    #[test]
+    fn remote_control_command_bounds_the_name_length() {
+        let cmd = remote_control_command("claude", &"a".repeat(MAX_SESSION_NAME_CHARS + 50));
+        assert_eq!(
+            cmd,
+            format!(
+                "claude --remote-control '{}'",
+                "a".repeat(MAX_SESSION_NAME_CHARS)
+            )
         );
     }
 
