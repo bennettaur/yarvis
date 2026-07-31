@@ -14,6 +14,8 @@ export type AttentionStatus = "pending" | "read" | "resolved" | "dismissed";
 export type AttentionNavTarget =
   | { type: "workspace-claude"; workspaceId: string }
   | { type: "workspace"; workspaceId: string }
+  /** A specific terminal tab/pane, addressed by its PTY session id. */
+  | { type: "terminal"; sessionKey: string; workspaceId?: string }
   | { type: "chat" }
   | { type: "pr"; owner: string; repo: string; number: number }
   | { type: "issue"; provider: string; sourceKey: string; externalId: string }
@@ -56,6 +58,29 @@ export async function patchAttention(
     body: JSON.stringify({ status }),
   });
   await ensureOk(res, "update attention");
+  return res.json();
+}
+
+/** Everything a scoped clear covers: one terminal session, or a whole workspace. */
+export interface AttentionScope {
+  sessionKey?: string;
+  workspaceId?: string;
+}
+
+/**
+ * Moves every pending item in a scope at once — one request for "I'm looking at
+ * this workspace now" instead of one per item. Returns the updated items.
+ */
+export async function clearAttention(
+  scope: AttentionScope,
+  status: Exclude<AttentionStatus, "pending">,
+): Promise<AttentionItem[]> {
+  const res = await sidecarFetch("/api/attention/clear", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...scope, status }),
+  });
+  await ensureOk(res, "clear attention");
   return res.json();
 }
 

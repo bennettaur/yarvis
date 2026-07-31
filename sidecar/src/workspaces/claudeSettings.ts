@@ -13,26 +13,54 @@ const INGEST_MARKER = "/ingest/attention";
 export type AttentionHookKind = "permission" | "idle" | "completed";
 
 /**
+ * Characters allowed in the values baked into the hook command. Both land in a
+ * shell string — the workspace id inside single quotes, the fallback key inside
+ * the *default word* of a `${VAR:-word}` expansion, which the shell still scans
+ * for command substitution even within double quotes. Callers pass ids the app
+ * generated, so this is an assertion of that invariant rather than a filter.
+ */
+const SHELL_SAFE = /^[A-Za-z0-9:_./-]+$/;
+
+/**
  * The shell command a Claude Code hook runs to raise an attention item. It
- * consumes the hook's stdin (so the hook never blocks), then posts a minimal,
- * fully-literal body to the sidecar's attention-ingest endpoint. The sidecar
- * port + scoped token come from the session's environment (injected by the Rust
- * core when it launches Claude in this workspace), so no secret is written to
- * disk; only a uuid, the "ws-claude:<uuid>" key, and a fixed kind are embedded,
- * none of which can contain a shell metacharacter.
+ * consumes the hook's stdin (so the hook never blocks), then posts a minimal
+ * body to the sidecar's attention-ingest endpoint. The sidecar port + scoped
+ * token come from the session's environment (injected by the Rust core when it
+ * spawns the PTY), so no secret is written to disk.
+ *
+ * The session key is read from `YARVIS_SESSION_KEY` — the id of the PTY the
+ * session is actually running in — so a Claude run started by hand in one of the
+ * workspace's terminal tabs flags *that* tab rather than the workspace's pinned
+ * Claude session. `fallbackSessionKey` covers a session launched outside a
+ * Yarvis PTY, where the variable is unset.
+ *
+ * Throws on a value that isn't `SHELL_SAFE`. The expanded env value is not
+ * rescanned by the shell, so it cannot inject a command — but it is spliced into
+ * the JSON body unescaped, so a session key containing a quote would produce a
+ * body the ingest route rejects. Core-generated PTY ids never contain one.
  */
 export function attentionHookCommand(
   workspaceId: string,
-  sessionKey: string,
+  fallbackSessionKey: string,
   kind: AttentionHookKind,
 ): string {
-  const body = JSON.stringify({ workspaceId, sessionKey, kind });
+  for (const value of [workspaceId, fallbackSessionKey]) {
+    if (!SHELL_SAFE.test(value)) {
+      throw new Error(`attention hook: refusing to embed unsafe value ${JSON.stringify(value)}`);
+    }
+  }
+  // Single-quoted JSON either side of a double-quoted env expansion: the shell
+  // concatenates the three segments into one argument.
+  const body =
+    `'{"workspaceId":${JSON.stringify(workspaceId)},"sessionKey":"'` +
+    `"\${YARVIS_SESSION_KEY:-${fallbackSessionKey}}"` +
+    `'","kind":${JSON.stringify(kind)}}'`;
   return (
     `cat >/dev/null 2>&1; ` +
     `curl -sf -m 5 -X POST "http://127.0.0.1:\${YARVIS_SIDECAR_PORT}/ingest/attention" ` +
     `-H "Authorization: Bearer \${YARVIS_ATTENTION_TOKEN}" ` +
     `-H "Content-Type: application/json" ` +
-    `-d '${body}' >/dev/null 2>&1 || true`
+    `-d ${body} >/dev/null 2>&1 || true`
   );
 }
 
@@ -72,10 +100,10 @@ export function buildClaudeSettings(
   skillPaths: string[] = [],
   agentPaths: string[] = [],
 ): Record<string, unknown> {
-  const sessionKey = `ws-claude:${workspaceId}`;
+  const fallbackSessionKey = `ws-claude:${workspaceId}`;
   const command = (kind: AttentionHookKind) => ({
     type: "command" as const,
-    command: attentionHookCommand(workspaceId, sessionKey, kind),
+    command: attentionHookCommand(workspaceId, fallbackSessionKey, kind),
   });
 
   const existingHooks =

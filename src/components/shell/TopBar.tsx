@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { getHealth } from "../../lib/api";
-import { useAttentionItems } from "../../lib/attentionStore";
+import { useAttentionGroups } from "../../lib/attentionStore";
 import { Icon } from "./icons";
 
 type Health = "checking" | "ok" | "down";
@@ -18,7 +18,8 @@ export default function TopBar({
   onOpenAttention: () => void;
 }) {
   const [health, setHealth] = useState<Health>("checking");
-  const pending = useAttentionItems();
+  // Counts origins, not items, so the badge matches the grouped rows in the panel.
+  const count = useAttentionGroups().length;
 
   useEffect(() => {
     let cancelled = false;
@@ -40,8 +41,6 @@ export default function TopBar({
 
   const dotColor =
     health === "checking" ? "bg-zinc-500" : health === "ok" ? "bg-emerald-500" : "bg-red-500";
-
-  const count = pending.length;
 
   return (
     <header className="flex h-12 shrink-0 items-center justify-between border-b border-zinc-800 px-5">

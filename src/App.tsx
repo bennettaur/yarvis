@@ -3,6 +3,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import AlarmOverlay from "./components/AlarmOverlay";
 import AlarmsPanel from "./components/AlarmsPanel";
+import AttentionAutoClear from "./components/attention/AttentionAutoClear";
 import AttentionPanel from "./components/attention/AttentionPanel";
 import ChatPanel from "./components/ChatPanel";
 import CalendarView from "./components/calendar/CalendarView";
@@ -16,6 +17,10 @@ import SessionsPanel from "./components/SessionsPanel";
 import SettingsPanel from "./components/SettingsPanel";
 import AppShell from "./components/shell/AppShell";
 import { type Tab, tabLabel } from "./components/shell/nav";
+import {
+  attentionSurfaceOf,
+  TERMINAL_SURFACE_KEY,
+} from "./components/shell/terminalTabs/sessionIds";
 import TerminalTabs from "./components/shell/terminalTabs/TerminalTabs";
 import { useTabShortcuts } from "./components/shell/useTabShortcuts";
 import TasksPanel from "./components/TasksPanel";
@@ -67,6 +72,9 @@ export default function App() {
   );
   // An issue the attention/WIP panel asked us to open. IssuesPanel consumes it.
   const [requestedIssue, setRequestedIssue] = useState<IssueSummary | null>(null);
+  // A PTY session on the standalone Terminal tab that an attention item asked us
+  // to bring into view. The terminal surface consumes and clears it.
+  const [requestedTerminalSession, setRequestedTerminalSession] = useState<string | null>(null);
 
   useTabShortcuts(tab, setTab);
 
@@ -140,6 +148,23 @@ export default function App() {
           setRequestedWorkspace({ id: target.workspaceId });
           setTab("workspaces");
           break;
+        case "terminal": {
+          // Route by the surface that owns the session, not by the workspace:
+          // a Claude run started in the standalone Terminal tab picks up a
+          // workspace's hook config and so carries a workspaceId it doesn't
+          // live in. Only these two surfaces are reachable — the workspaces
+          // view and the Terminal tab — so anything else falls back to the
+          // workspace, which at least lands the user nearby.
+          const surface = attentionSurfaceOf(target.sessionKey);
+          if (surface === "terminal") {
+            setRequestedTerminalSession(target.sessionKey);
+            setTab("terminal");
+          } else if (target.workspaceId) {
+            setRequestedWorkspace({ id: target.workspaceId, focusSessionKey: target.sessionKey });
+            setTab("workspaces");
+          }
+          break;
+        }
         case "chat":
           openOmniChat();
           break;
@@ -246,7 +271,11 @@ export default function App() {
         ) : tab === "omni" ? (
           <OmniView />
         ) : tab === "terminal" ? (
-          <TerminalTabs storageKey="tab:terminal" />
+          <TerminalTabs
+            storageKey={TERMINAL_SURFACE_KEY}
+            focusSessionKey={requestedTerminalSession}
+            onFocusSessionHandled={() => setRequestedTerminalSession(null)}
+          />
         ) : tab === "workspaces" ? (
           <WorkspacesPanel
             requested={requestedWorkspace}
@@ -294,6 +323,8 @@ export default function App() {
         wipLoading={wipLoading}
         onOpenWip={openWipItem}
       />
+
+      <AttentionAutoClear />
 
       {activeAlarm && <AlarmOverlay alarm={activeAlarm} onDone={() => setActiveAlarm(null)} />}
     </>

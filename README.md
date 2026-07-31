@@ -260,9 +260,34 @@ sidecar/        Bun + TS service (Hono)
   src/google/   Google Calendar OAuth + events
   src/omni/     Omni UI generation (streaming) + saved layouts
   src/workspaces/ repo registry + git-worktree provisioning (/api/repos, /api/workspaces)
+  src/attention/  attention stream: hook ingest, SSE stream, scoped clearing
   src/chat/attentionTools.ts  request_attention tool (badge + OS notification)
   drizzle/      generated SQL migrations
 ```
+
+## Attention stream
+
+The bell in the top bar collects everything waiting on you — chiefly a Claude
+Code session blocked on a permission prompt or idle waiting for input, raised by
+the hooks Yarvis writes into each workspace's `.claude/settings.json`.
+
+Items are keyed by the PTY session that raised them. A terminal the app can
+navigate back to — a workspace's tabs and the standalone Terminal tab — carries
+`YARVIS_SESSION_KEY` (plus `YARVIS_WORKSPACE_ID` when it belongs to a workspace)
+and a create-only ingest token, so a Claude run started by hand in one of a
+workspace's terminal tabs flags *that* tab rather than the workspace as a whole.
+
+How the stream behaves:
+
+- **Grouped by origin.** Repeat asks from one workspace collapse into a single
+  row with a count, naming the tabs involved; dismissing it clears them all.
+- **Cleared by looking.** Opening the workspace — or the terminal tab — that
+  raised an item marks it read, and an item raised by something already on screen
+  never fires an OS notification. Nothing auto-clears while the window is in the
+  background.
+- **Highlighted where it happened.** A workspace with something pending is marked
+  in the workspace list, and the tab behind it is marked in the terminal tab strip,
+  so a flag is findable while you're looking elsewhere.
 
 ## Keyboard shortcuts
 
