@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
+import { fakeExpansion } from "../../test/expansion";
 import { renderToHtml } from "../../test/render";
 import { DiffBody } from "./PrFileDiffs";
 
@@ -15,7 +16,14 @@ const file: PrFile = {
 };
 
 const render = (patch: string, threads: ReviewThread[] = []) =>
-  renderToHtml(createElement(DiffBody, { prRef, file: { ...file, patch }, patch, threads }));
+  renderToHtml(
+    createElement(DiffBody, {
+      prRef,
+      file: { ...file, patch },
+      threads,
+      expansion: fakeExpansion(patch),
+    }),
+  );
 
 describe("DiffBody comment-container rendering", () => {
   // The comment container is the only element with the font-sans class, so its
@@ -37,6 +45,18 @@ describe("DiffBody comment-container rendering", () => {
   it("renders no comment container under added lines or hunk headers absent threads", async () => {
     const html = await render(["@@ -1,0 +1,2 @@", "+a", "+b"].join("\n"));
     expect(html).not.toContain(CONTAINER_MARKER);
+  });
+
+  // The gap markers size themselves from the hunk header, so the offer to see
+  // more context is there before any file content has been fetched.
+  it("offers to reveal the code above a hunk that does not start at line 1", async () => {
+    const html = await render(["@@ -40,1 +40,1 @@", "+x"].join("\n"));
+    expect(html).toContain("⋯ 39 lines");
+  });
+
+  it("offers nothing to reveal when the hunk covers the file from line 1", async () => {
+    const html = await render(["@@ -1,1 +1,1 @@", "+x"].join("\n"));
+    expect(html).not.toContain("⋯");
   });
 
   // The other half of the guard: a real thread on a commentable line must still

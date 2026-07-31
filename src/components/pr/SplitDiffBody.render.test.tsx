@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
+import { fakeExpansion } from "../../test/expansion";
 import { renderToHtml } from "../../test/render";
 import SplitDiffBody from "./SplitDiffBody";
 
@@ -15,7 +16,14 @@ const file: PrFile = {
 };
 
 const render = (patch: string, threads: ReviewThread[] = []) =>
-  renderToHtml(createElement(SplitDiffBody, { prRef, file: { ...file, patch }, patch, threads }));
+  renderToHtml(
+    createElement(SplitDiffBody, {
+      prRef,
+      file: { ...file, patch },
+      threads,
+      expansion: fakeExpansion(patch),
+    }),
+  );
 
 describe("SplitDiffBody", () => {
   // The whole point of the split view: the old file's numbering on the left and
@@ -69,6 +77,24 @@ describe("SplitDiffBody", () => {
     const html = await render(["@@ -1,2 +1,2 @@", " a", "+b"].join("\n"), [thread]);
     expect(html).toContain(CONTAINER_MARKER);
     expect(html).toContain("needs a guard");
+  });
+
+  // A gap belongs to neither file, so like a hunk header it runs the full width
+  // rather than being pushed into one of the two columns.
+  it("spans a gap marker across both columns", async () => {
+    const html = await render(["@@ -40,1 +40,1 @@", "+x"].join("\n"));
+    expect(html).toContain("⋯ 39 lines");
+    expect(html).toContain("col-span-4");
+  });
+
+  // Pairing runs per stretch of rows, so a deletion above a gap can never be
+  // matched up with an addition below it — they are not related changes.
+  it("does not pair changes across a gap", async () => {
+    const patch = ["@@ -1,1 +1,1 @@", "-a", "@@ -40,1 +40,1 @@", "+b"].join("\n");
+    const html = await render(patch);
+    // "a" and "b" sit in different rows; if they had been paired the filler
+    // background would be absent from both of their halves.
+    expect(html).toContain("bg-zinc-900/40");
   });
 
   // Deleted lines only exist on the left, and neither provider accepts a

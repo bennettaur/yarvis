@@ -417,4 +417,70 @@ describe("github client", () => {
     expect(bodies[1]!.query).toContain("disablePullRequestAutoMerge");
     expect(bodies[1]!.variables).toEqual({ id: "PR_node3" });
   });
+
+  describe("fileContent", () => {
+    /** Captures the request the client makes and replies with fixed content. */
+    function capturingFetch(response: Response) {
+      const calls: Array<{ url: string; accept: string }> = [];
+      const impl = (async (url: string, init?: RequestInit) => {
+        const headers = new Headers(init?.headers);
+        calls.push({ url: String(url), accept: headers.get("Accept") ?? "" });
+        return response.clone();
+      }) as unknown as typeof fetch;
+      return { calls, impl };
+    }
+
+    // The raw media type is what keeps this usable: the JSON form base64-encodes
+    // the body and refuses outright above 1 MB.
+    it("requests the raw media type at the given commit", async () => {
+      const { calls, impl } = capturingFetch(new Response("line one\nline two", { status: 200 }));
+      const gh = new GitHubClient("t", impl);
+      const content = await gh.fileContent("o", "r", "src/lib/pr/diff.ts", "a".repeat(40));
+
+      expect(content).toBe("line one\nline two");
+      expect(calls[0]!.accept).toBe("application/vnd.github.raw");
+      expect(calls[0]!.url).toBe(
+        `https://api.github.com/repos/o/r/contents/src/lib/pr/diff.ts?ref=${"a".repeat(40)}`,
+      );
+    });
+
+    // Encoding runs per path segment, so directory separators survive as
+    // separators while anything else in a name is escaped.
+    it("escapes within segments but keeps the path structure", async () => {
+      const { calls, impl } = capturingFetch(new Response("", { status: 200 }));
+      const gh = new GitHubClient("t", impl);
+      await gh.fileContent("o", "r", "src/my dir/a?b.ts", "a".repeat(40));
+      expect(calls[0]!.url).toContain("/contents/src/my%20dir/a%3Fb.ts?ref=");
+    });
+
+    // A file the PR adds has no content on the base side. That is an ordinary
+    // state, so it resolves to empty instead of failing the whole expansion.
+    it("resolves a missing path to empty content", async () => {
+      const { impl } = capturingFetch(new Response("Not Found", { status: 404 }));
+      const gh = new GitHubClient("t", impl);
+      expect(await gh.fileContent("o", "r", "gone.ts", "b".repeat(40))).toBe("");
+    });
+
+    it("throws on other upstream failures", async () => {
+      const { impl } = capturingFetch(new Response("boom", { status: 500 }));
+      const gh = new GitHubClient("t", impl);
+      expect(gh.fileContent("o", "r", "a.ts", "c".repeat(40))).rejects.toThrow("500");
+    });
+  });
+
+  it("carries the head and base commits onto the PR detail", () => {
+    const detail = toPrDetail({
+      number: 7,
+      headRefOid: "d".repeat(40),
+      baseRefOid: "e".repeat(40),
+    });
+    expect(detail.headSha).toBe("d".repeat(40));
+    expect(detail.baseSha).toBe("e".repeat(40));
+  });
+
+  it("reports empty commits when the provider omits them", () => {
+    const detail = toPrDetail({ number: 7 });
+    expect(detail.headSha).toBe("");
+    expect(detail.baseSha).toBe("");
+  });
 });

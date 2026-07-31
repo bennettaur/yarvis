@@ -34,6 +34,14 @@ const filePath = z
   .max(1024)
   .refine((s) => !s.split("/").includes(".."), "invalid path");
 
+/**
+ * The commit a file's content is read at. Pinned to a full sha rather than any
+ * version descriptor: the caller always has one to hand (it comes off the PR
+ * detail it already loaded), and refusing everything else keeps the value from
+ * smuggling extra query parameters into the upstream URL.
+ */
+const commitSha = z.string().regex(/^[0-9a-f]{40}$/, "expected a commit sha");
+
 const filterSchema = z.object({
   name: z.string().min(1),
   scope: z.enum(["mine", "review"]),
@@ -217,6 +225,24 @@ export function createAzureRoutes(config: Config): Hono {
     if (!path.success) return c.json({ error: path.error.flatten() }, 400);
     try {
       return c.json(await az.prFileDiff(ref, path.data));
+    } catch (e) {
+      return upstreamError(c, e);
+    }
+  });
+
+  // A changed file's full text at a commit, so the review view can reveal the
+  // unchanged code a patch leaves out.
+  router.get("/pr/:project/:repo/:prId/content", async (c) => {
+    const az = requireClient(c);
+    if (az instanceof Response) return az;
+    const ref = parsePrParams(c.req.param("project"), c.req.param("repo"), c.req.param("prId"));
+    if ("error" in ref) return c.json({ error: ref.error }, 400);
+    const path = filePath.safeParse(c.req.query("path"));
+    if (!path.success) return c.json({ error: path.error.flatten() }, 400);
+    const commit = commitSha.safeParse(c.req.query("ref"));
+    if (!commit.success) return c.json({ error: commit.error.flatten() }, 400);
+    try {
+      return c.json({ content: await az.fileContent(ref, path.data, commit.data) });
     } catch (e) {
       return upstreamError(c, e);
     }

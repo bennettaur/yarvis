@@ -57,6 +57,19 @@ Status of the build against the original vision. The full V1 plan lives at
   Azure via reviewer vote codes on the PR payload. The provider toggle only
   shows providers whose viewer probe lands, so an unconfigured option never
   flashes.
+- **Diff reading** — files open on their own as the reader scrolls toward them
+  (an IntersectionObserver rooted on the review pane, which is what lets the
+  margin reach past its bottom edge), with "Collapse all" / "Expand all" for
+  the whole set. A Unified/Split toggle, persisted across PRs, puts the old
+  file beside the new one with the nth deletion of a run across from the nth
+  addition. Each gap between hunks carries a marker that reveals the code the
+  patch left out — twenty lines at either end or the whole stretch — and a
+  per-file "Whole file" toggle opens every gap at once, with a strip down the
+  edge marking where in the file the changes fall. Gap markers size themselves
+  from the hunk headers, so a file's full text is only fetched once context is
+  actually asked for; those fetches share a concurrency gate with the per-file
+  diffs so expanding a large Azure review can't fan out into hundreds of
+  simultaneous requests.
 - **Issues dashboard (GitHub)** — a global Issues tab mirroring the PR
   dashboard: "Assigned to me" / "All open" / saved-filter views, grouped by
   repo, with stars, search, "in progress" badges, and a manual refresh. Issues

@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePrDetail, usePrFileDiff, usePrFiles } from "../../lib/pr/cache";
-import { parsePatch } from "../../lib/pr/diff";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { rowClass } from "../diff/DiffView";
 import { usePersistedBoolean } from "../SplitPane";
+import ChangeMinimap from "./ChangeMinimap";
+import GapMarker from "./GapMarker";
 import { AddCommentButton, LineCommentBlock, useLineComments } from "./LineComments";
 import SplitDiffBody from "./SplitDiffBody";
 import { prFileAnchorId } from "./shared";
 import { useExpandOnApproach } from "./useExpandOnApproach";
+import { type FileExpansion, useFileExpansion } from "./useFileExpansion";
 
 /**
  * Files whose diffs are open on mount. Scrolling opens the rest as they come
@@ -34,34 +36,52 @@ interface FoldAll {
 export function DiffBody({
   prRef,
   file,
-  patch,
   threads,
+  expansion,
 }: {
   prRef: PrRef;
   file: PrFile;
-  patch: string;
   threads: ReviewThread[];
+  expansion: FileExpansion;
 }) {
-  const rows = useMemo(() => parsePatch(patch), [patch]);
   const comments = useLineComments(prRef, file, threads);
 
   return (
-    <div className="overflow-x-auto rounded-b-lg bg-zinc-950 font-mono text-xs leading-relaxed">
-      {rows.map((row, i) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: rows are a stable render of an immutable patch
-        <div key={i}>
-          <div className={`group flex ${rowClass(row.kind)}`}>
-            <span className="flex w-12 shrink-0 select-none items-center justify-end gap-1 pr-2 text-zinc-600">
-              {row.rightLine != null && (
-                <AddCommentButton onClick={() => comments.openComposer(row.rightLine as number)} />
-              )}
-              <span>{row.rightLine ?? ""}</span>
-            </span>
-            <span className="whitespace-pre">{row.text || " "}</span>
+    <div className="relative overflow-x-auto rounded-b-lg bg-zinc-950 font-mono text-xs leading-relaxed">
+      {expansion.rows.map((item, i) => {
+        if (item.kind === "gap") {
+          return (
+            <GapMarker
+              key={`gap-${item.gap.index}`}
+              gap={item.gap}
+              hidden={item.hidden}
+              onExpand={expansion.expand}
+              onExpandFully={expansion.expandFully}
+            />
+          );
+        }
+        const row = item.row;
+        return (
+          // biome-ignore lint/suspicious/noArrayIndexKey: rows are a stable render of an immutable patch
+          <div key={i}>
+            <div className={`group flex ${rowClass(row.kind)}`}>
+              <span className="flex w-12 shrink-0 select-none items-center justify-end gap-1 pr-2 text-zinc-600">
+                {row.rightLine != null && (
+                  <AddCommentButton
+                    onClick={() => comments.openComposer(row.rightLine as number)}
+                  />
+                )}
+                <span>{row.rightLine ?? ""}</span>
+              </span>
+              <span className="whitespace-pre">{row.text || " "}</span>
+            </div>
+            <LineCommentBlock line={row.rightLine} comments={comments} />
           </div>
-          <LineCommentBlock line={row.rightLine} comments={comments} />
-        </div>
-      ))}
+        );
+      })}
+      {expansion.wholeFile && (
+        <ChangeMinimap rows={expansion.rows} totalLines={expansion.totalLines} />
+      )}
     </div>
   );
 }
@@ -111,6 +131,44 @@ function ViewedToggle({ isViewed, onClick }: { isViewed: boolean; onClick: () =>
   );
 }
 
+/**
+ * Switches a file between its patch and its full text with the changes still
+ * highlighted. Sits in the file's own header rather than the review toolbar:
+ * wanting the whole file is a per-file question, and applying it to every file
+ * at once would pull down the full text of the entire PR.
+ */
+function WholeFileToggle({
+  on,
+  loading,
+  onClick,
+}: {
+  on: boolean;
+  loading: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        // The header is a `<summary>`, so without this the click would also
+        // fold the file the reader just asked to see more of.
+        e.stopPropagation();
+        e.preventDefault();
+        onClick();
+      }}
+      aria-pressed={on}
+      title={on ? "Show only the changed parts" : "Show the whole file"}
+      className={`shrink-0 rounded border px-2 py-0.5 text-xs ${
+        on
+          ? "border-sky-700 bg-sky-900/40 text-sky-200"
+          : "border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
+      }`}
+    >
+      {loading ? "Loading…" : "Whole file"}
+    </button>
+  );
+}
+
 function FileDiff({
   prRef,
   file,
@@ -120,6 +178,7 @@ function FileDiff({
   onToggleViewed,
   foldAll,
   split,
+  headSha,
 }: {
   prRef: PrRef;
   file: PrFile;
@@ -129,6 +188,8 @@ function FileDiff({
   onToggleViewed: (path: string) => void;
   foldAll: FoldAll | null;
   split: boolean;
+  /** Commit the file's full text is read at; empty disables expansion. */
+  headSha: string;
 }) {
   // The first few unviewed files are open on mount; viewed files start
   // collapsed regardless so the user's prior progress stays out of the way.
@@ -158,6 +219,7 @@ function FileDiff({
     () => threads.filter((t) => t.path === file.filename),
     [threads, file.filename],
   );
+  const expansion = useFileExpansion(prRef, file.filename, patch ?? "", headSha);
 
   // Single handler so the visual collapse and the underlying viewed mutation
   // happen together — the diff folds away exactly when the user marks it done
@@ -229,22 +291,41 @@ function FileDiff({
           </>
         )}
         {file.status !== "modified" && <span className="text-xs text-zinc-500">{file.status}</span>}
+        {open && patch && expansion.canExpand && (
+          <WholeFileToggle
+            on={expansion.wholeFile}
+            loading={expansion.loading}
+            onClick={() => expansion.setWholeFile(!expansion.wholeFile)}
+          />
+        )}
         <ViewedToggle isViewed={isViewed} onClick={toggleViewed} />
       </summary>
       {open &&
         (loading && !patch ? (
           <p className="px-3 py-2 text-xs text-zinc-600">Loading diff…</p>
         ) : patch ? (
-          split ? (
-            <SplitDiffBody
-              prRef={prRef}
-              file={loaded ?? file}
-              patch={patch}
-              threads={fileThreads}
-            />
-          ) : (
-            <DiffBody prRef={prRef} file={loaded ?? file} patch={patch} threads={fileThreads} />
-          )
+          <>
+            {expansion.error && (
+              <p className="px-3 py-1 text-xs text-red-400">
+                Could not load the rest of this file: {expansion.error}
+              </p>
+            )}
+            {split ? (
+              <SplitDiffBody
+                prRef={prRef}
+                file={loaded ?? file}
+                threads={fileThreads}
+                expansion={expansion}
+              />
+            ) : (
+              <DiffBody
+                prRef={prRef}
+                file={loaded ?? file}
+                threads={fileThreads}
+                expansion={expansion}
+              />
+            )}
+          </>
         ) : (
           <p className="px-3 py-2 text-xs text-zinc-600">No textual diff (binary or too large).</p>
         ))}
@@ -328,6 +409,7 @@ export default function PrFileDiffs({
           onToggleViewed={onToggleViewed}
           foldAll={foldAll}
           split={split}
+          headSha={detail.data?.headSha ?? ""}
         />
       ))}
     </div>

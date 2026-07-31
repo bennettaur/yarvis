@@ -432,6 +432,8 @@ export class AzureDevOpsClient {
       author: pr.createdBy?.displayName ?? "",
       baseRef: (pr.targetRefName ?? "").replace("refs/heads/", ""),
       headRef: (pr.sourceRefName ?? "").replace("refs/heads/", ""),
+      headSha: pr.lastMergeSourceCommit?.commitId ?? "",
+      baseSha: pr.lastMergeTargetCommit?.commitId ?? "",
       additions: 0,
       deletions: 0,
       mergeable: mapMergeStatus(pr.mergeStatus).enum,
@@ -510,6 +512,15 @@ export class AzureDevOpsClient {
         deletions: 0,
         patch: null,
       }));
+  }
+
+  /**
+   * A file's full text at a commit, for showing the unchanged code around a
+   * hunk. A missing path resolves to empty, matching how the diff builder
+   * already treats a file that exists on only one side of the change.
+   */
+  fileContent(ref: AzureRef, path: string, commit: string): Promise<string> {
+    return this.itemContent(this.repoBase(ref), `/${path.replace(/^\//, "")}`, commit);
   }
 
   /** Builds one file's unified diff between the PR's base and head commits. */

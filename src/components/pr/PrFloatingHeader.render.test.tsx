@@ -33,6 +33,8 @@ const detail = (overrides: Partial<PrDetail> = {}): PrDetail => ({
   author: "me",
   baseRef: "main",
   headRef: "feat",
+  headSha: "",
+  baseSha: "",
   additions: 0,
   deletions: 0,
   mergeable: "MERGEABLE",

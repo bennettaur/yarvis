@@ -1,13 +1,17 @@
 import { Fragment, useMemo } from "react";
-import { pairRows, parsePatch, type SplitCell } from "../../lib/pr/diff";
+import { type DiffRow, pairRows, type SplitCell, type SplitRow } from "../../lib/pr/diff";
+import type { Gap } from "../../lib/pr/expand";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { rowClass } from "../diff/DiffView";
+import ChangeMinimap from "./ChangeMinimap";
+import GapMarker from "./GapMarker";
 import {
   AddCommentButton,
   hasLineComments,
   LineCommentBlock,
   useLineComments,
 } from "./LineComments";
+import type { FileExpansion } from "./useFileExpansion";
 
 /**
  * Background for the blank half of an uneven change — three deletions across
@@ -57,24 +61,63 @@ function Code({ cell }: { cell: SplitCell | null }) {
  * Comments anchor to the right (new file) line, matching what both providers
  * accept — so the composer is only offered on the right gutter.
  */
+/** A gap marker carried through pairing, to be drawn across both columns. */
+type SplitOrGap = SplitRow | { kind: "gap"; gap: Gap; hidden: number };
+
+/**
+ * Pairs each stretch of rows on its own, so a run of changes is never matched
+ * up across a stretch of code that isn't being shown.
+ */
+function pairAroundGaps(rows: FileExpansion["rows"]): SplitOrGap[] {
+  const out: SplitOrGap[] = [];
+  let buffer: DiffRow[] = [];
+  const flush = () => {
+    if (buffer.length === 0) return;
+    out.push(...pairRows(buffer));
+    buffer = [];
+  };
+  for (const item of rows) {
+    if (item.kind === "gap") {
+      flush();
+      out.push(item);
+    } else {
+      buffer.push(item.row);
+    }
+  }
+  flush();
+  return out;
+}
+
 export default function SplitDiffBody({
   prRef,
   file,
-  patch,
   threads,
+  expansion,
 }: {
   prRef: PrRef;
   file: PrFile;
-  patch: string;
   threads: ReviewThread[];
+  expansion: FileExpansion;
 }) {
-  const rows = useMemo(() => pairRows(parsePatch(patch)), [patch]);
+  const rows = useMemo(() => pairAroundGaps(expansion.rows), [expansion.rows]);
   const comments = useLineComments(prRef, file, threads);
 
   return (
-    <div className="overflow-x-auto rounded-b-lg bg-zinc-950 font-mono text-xs leading-relaxed">
+    <div className="relative overflow-x-auto rounded-b-lg bg-zinc-950 font-mono text-xs leading-relaxed">
       <div className="grid w-max min-w-full grid-cols-[3rem_1fr_3rem_1fr]">
         {rows.map((row, i) => {
+          if (row.kind === "gap") {
+            return (
+              <GapMarker
+                key={`gap-${row.gap.index}`}
+                gap={row.gap}
+                hidden={row.hidden}
+                onExpand={expansion.expand}
+                onExpandFully={expansion.expandFully}
+                className="col-span-4"
+              />
+            );
+          }
           if (row.kind === "hunk" || row.kind === "meta") {
             return (
               <span
@@ -112,6 +155,9 @@ export default function SplitDiffBody({
           );
         })}
       </div>
+      {expansion.wholeFile && (
+        <ChangeMinimap rows={expansion.rows} totalLines={expansion.totalLines} />
+      )}
     </div>
   );
 }

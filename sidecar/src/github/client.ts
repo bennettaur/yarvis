@@ -247,6 +247,8 @@ export function toPrDetail(pr: any, repo?: any): PrDetail {
     author: pr.author?.login ?? "",
     baseRef: pr.baseRefName ?? "",
     headRef: pr.headRefName ?? "",
+    headSha: pr.headRefOid ?? "",
+    baseSha: pr.baseRefOid ?? "",
     additions: pr.additions ?? 0,
     deletions: pr.deletions ?? 0,
     mergeable: pr.mergeable ?? "UNKNOWN",
@@ -353,7 +355,7 @@ query($owner:String!,$repo:String!,$number:Int!){
       autoMergeRequest{ enabledAt }
       viewerCanEnableAutoMerge viewerCanDisableAutoMerge
       author{login}
-      baseRefName headRefName
+      baseRefName headRefName headRefOid baseRefOid
       reviewRequests(first:50){
         nodes{
           requestedReviewer{
@@ -530,6 +532,33 @@ export class GitHubClient {
     const pr = data.repository?.pullRequest;
     if (!pr) throw new Error(`pull request ${owner}/${repo}#${number} not found`);
     return toPrDetail(pr, data.repository);
+  }
+
+  /**
+   * A file's full text at a commit, for showing the unchanged code around a
+   * hunk. Requested as raw rather than JSON: the JSON form base64-encodes the
+   * body and refuses outright above 1 MB, while the raw media type streams the
+   * bytes and only gives up at 100 MB.
+   *
+   * A missing path resolves to empty rather than throwing — a file added by the
+   * PR has no content on the base side, and that is an ordinary state to be in,
+   * not an error the review view should surface.
+   */
+  async fileContent(owner: string, repo: string, path: string, ref: string): Promise<string> {
+    const encoded = path.split("/").map(encodeURIComponent).join("/");
+    const res = await this.fetchImpl(
+      `https://api.github.com/repos/${owner}/${repo}/contents/${encoded}?ref=${encodeURIComponent(ref)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          Accept: "application/vnd.github.raw",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      },
+    );
+    if (res.status === 404) return "";
+    if (!res.ok) throw new Error(`github contents ${path} -> ${res.status}`);
+    return res.text();
   }
 
   async prFiles(owner: string, repo: string, number: number): Promise<PrFile[]> {

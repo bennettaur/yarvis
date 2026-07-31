@@ -61,6 +61,17 @@ const reviewSchema = z.object({
   body: z.string().max(65_536).optional(),
 });
 
+/**
+ * Query for the file-content route. The commit is pinned to a full sha rather
+ * than accepting any git ref: the caller always has one to hand (it comes off
+ * the PR detail it already loaded), and refusing everything else keeps a branch
+ * name from smuggling extra path segments into the upstream URL.
+ */
+const contentQuery = z.object({
+  path: z.string().min(1).max(1024),
+  ref: z.string().regex(/^[0-9a-f]{40}$/, "expected a commit sha"),
+});
+
 const viewedSchema = z.object({
   path: z.string().min(1).max(1024),
   viewed: z.boolean(),
@@ -193,6 +204,29 @@ export function createGithubRoutes(config: Config): Hono {
     if ("error" in params) return c.json({ error: params.error }, 400);
     try {
       return c.json(await gh.prFiles(params.owner, params.repo, params.number));
+    } catch (e) {
+      return c.json({ error: String(e) }, 502);
+    }
+  });
+
+  // A changed file's full text at a commit, so the review view can reveal the
+  // unchanged code a patch leaves out. Mounted under the PR (whose number the
+  // lookup itself doesn't need) to keep one path shape across both providers.
+  router.get("/pr/:owner/:repo/:number/content", async (c) => {
+    const gh = client();
+    if (!gh) return c.json({ error: "github token not configured" }, 400);
+    const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
+    if ("error" in params) return c.json({ error: params.error }, 400);
+    const query = contentQuery.safeParse({ path: c.req.query("path"), ref: c.req.query("ref") });
+    if (!query.success) return c.json({ error: "invalid path or ref" }, 400);
+    try {
+      const content = await gh.fileContent(
+        params.owner,
+        params.repo,
+        query.data.path,
+        query.data.ref,
+      );
+      return c.json({ content });
     } catch (e) {
       return c.json({ error: String(e) }, 502);
     }

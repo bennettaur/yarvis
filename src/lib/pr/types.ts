@@ -104,6 +104,15 @@ export interface PrDetail {
   author: string;
   baseRef: string;
   headRef: string;
+  /**
+   * Commit the PR currently points at. Anchors anything derived from the code
+   * as it stands right now — expanded file context, generated review material —
+   * so a later push can be detected as having moved the ground underneath it.
+   * Empty when the provider hasn't reported one yet.
+   */
+  headSha: string;
+  /** Commit the PR is diffed against; the counterpart to `headSha`. */
+  baseSha: string;
   additions: number;
   deletions: number;
   mergeable: string;
