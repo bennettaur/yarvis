@@ -1,4 +1,4 @@
-import { and, desc, eq, ne, sql } from "drizzle-orm";
+import { and, desc, eq, ne, or, type SQL, sql } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { type AttentionItemRow, type AttentionNavTarget, attentionItems } from "../db/schema.ts";
 
@@ -15,7 +15,7 @@ export type AttentionStatus = "pending" | "read" | "resolved" | "dismissed";
 
 export interface CreateAttentionInput {
   source: AttentionSource;
-  /** "ws-claude:<workspaceId>" for a Claude session; null for sourceless nudges. */
+  /** The raising PTY session's id; null for sourceless nudges. */
   sessionKey?: string | null;
   workspaceId?: string | null;
   kind: AttentionKind;
@@ -106,6 +106,48 @@ export async function listAttention(
     .where(options.status ? eq(attentionItems.status, options.status) : undefined)
     .orderBy(desc(attentionItems.seq))
     .limit(limit);
+}
+
+/**
+ * Which pending items a scoped clear covers. A `sessionKey` clears just that
+ * terminal session/tab; a `workspaceId` clears everything the workspace raised,
+ * including its individual sessions.
+ */
+export interface AttentionScope {
+  sessionKey?: string | null;
+  workspaceId?: string | null;
+}
+
+/**
+ * Clears every *pending* item in a scope in one statement — what viewing a
+ * workspace (or the tab that raised the flag) triggers, and what the panel's
+ * group-level dismiss uses. Returns the updated rows so the caller can publish
+ * them; an empty scope matches nothing rather than clearing the whole stream.
+ *
+ * Both fields set matches their *union*, not their intersection — the route
+ * rejects that combination rather than leaving the reading ambiguous.
+ */
+export async function clearAttentionScope(
+  db: Db,
+  scope: AttentionScope,
+  status: Exclude<AttentionStatus, "pending">,
+): Promise<AttentionItemRow[]> {
+  const filters: SQL[] = [];
+  if (scope.sessionKey) filters.push(eq(attentionItems.sessionKey, scope.sessionKey));
+  if (scope.workspaceId) filters.push(eq(attentionItems.workspaceId, scope.workspaceId));
+  if (filters.length === 0) return [];
+
+  const now = new Date();
+  return db
+    .update(attentionItems)
+    .set({
+      status,
+      updatedAt: now,
+      ...(status === "read" ? { readAt: now } : {}),
+      ...(status === "resolved" || status === "dismissed" ? { resolvedAt: now } : {}),
+    })
+    .where(and(eq(attentionItems.status, "pending"), or(...filters)))
+    .returning();
 }
 
 /** Terminal + read statuses stamp the matching timestamp column. */

@@ -86,6 +86,104 @@ describe("attention ingest route", () => {
     expect(res.status).toBe(401);
   });
 
+  it("never lets the ingest token reach the read/mutate routes", async () => {
+    // The token now rides in every navigable PTY, so "create-only" is the whole
+    // reason that is safe — pin it from the other direction too.
+    const attentionOnly = { Authorization: "Bearer test-attention-token" };
+    expect((await app.request("/api/attention", { headers: attentionOnly })).status).toBe(401);
+
+    const cleared = await app.request("/api/attention/clear", {
+      method: "POST",
+      headers: { ...attentionOnly, "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId, status: "read" }),
+    });
+    expect(cleared.status).toBe(401);
+
+    const patched = await app.request(`/api/attention/${workspaceId}`, {
+      method: "PATCH",
+      headers: { ...attentionOnly, "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "read" }),
+    });
+    expect(patched.status).toBe(401);
+  });
+
+  it("rejects a workspace id that isn't a uuid rather than failing at the database", async () => {
+    const res = await app.request("/ingest/attention", {
+      method: "POST",
+      headers: ingestAuth,
+      body: JSON.stringify({ workspaceId: "not-a-uuid", sessionKey: "ws:x/t1/p1", kind: "idle" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("points an item at the terminal session that raised it", async () => {
+    await seedWorkspace(workspaceId, "Fix the API");
+    const sessionKey = `ws:${workspaceId}/t2/p1`;
+    await app.request("/ingest/attention", {
+      method: "POST",
+      headers: ingestAuth,
+      body: JSON.stringify({ workspaceId, sessionKey, kind: "permission" }),
+    });
+
+    const list = await app.request("/api/attention?status=pending", { headers: bearer });
+    const rows = (await list.json()) as { sessionKey: string; navTarget: unknown }[];
+    expect(rows[0]!.sessionKey).toBe(sessionKey);
+    expect(rows[0]!.navTarget).toEqual({ type: "terminal", sessionKey, workspaceId });
+  });
+
+  it("accepts a session outside any workspace", async () => {
+    const res = await app.request("/ingest/attention", {
+      method: "POST",
+      headers: ingestAuth,
+      body: JSON.stringify({ sessionKey: "tab:terminal/t1/p1", kind: "idle" }),
+    });
+    expect(res.status).toBe(201);
+
+    const list = await app.request("/api/attention?status=pending", { headers: bearer });
+    const rows = (await list.json()) as { workspaceId: string | null; navTarget: unknown }[];
+    expect(rows[0]!.workspaceId).toBeNull();
+    expect(rows[0]!.navTarget).toEqual({ type: "terminal", sessionKey: "tab:terminal/t1/p1" });
+  });
+
+  it("clears a whole workspace's pending items in one request", async () => {
+    await seedWorkspace(workspaceId, "WS");
+    for (const sessionKey of [`ws-claude:${workspaceId}`, `ws:${workspaceId}/t2/p1`]) {
+      await app.request("/ingest/attention", {
+        method: "POST",
+        headers: ingestAuth,
+        body: JSON.stringify({ workspaceId, sessionKey, kind: "idle" }),
+      });
+    }
+
+    const cleared = await app.request("/api/attention/clear", {
+      method: "POST",
+      headers: bearer,
+      body: JSON.stringify({ workspaceId, status: "read" }),
+    });
+    expect(cleared.status).toBe(200);
+    expect((await cleared.json()) as unknown[]).toHaveLength(2);
+
+    const after = await app.request("/api/attention?status=pending", { headers: bearer });
+    expect((await after.json()) as unknown[]).toHaveLength(0);
+  });
+
+  it("rejects a clear that names no scope, or both at once", async () => {
+    const none = await app.request("/api/attention/clear", {
+      method: "POST",
+      headers: bearer,
+      body: JSON.stringify({ status: "read" }),
+    });
+    expect(none.status).toBe(400);
+
+    // Both would clear the union, not the intersection the body appears to name.
+    const both = await app.request("/api/attention/clear", {
+      method: "POST",
+      headers: bearer,
+      body: JSON.stringify({ workspaceId, sessionKey: "ws-claude:x", status: "read" }),
+    });
+    expect(both.status).toBe(400);
+  });
+
   it("patches an item's status", async () => {
     await seedWorkspace(workspaceId, "WS");
     await app.request("/ingest/attention", {

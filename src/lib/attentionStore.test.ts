@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { AttentionItem } from "./attention";
-import { applyAttentionItem } from "./attentionStore";
+import type { ViewedScope } from "./attentionScope";
+import { applyAttentionItem, clearTargetsFor } from "./attentionStore";
 
 function item(overrides: Partial<AttentionItem> & { id: string; seq: number }): AttentionItem {
   return {
@@ -53,5 +54,69 @@ describe("applyAttentionItem", () => {
   it("reports no change when removing an item that isn't present", () => {
     const result = applyAttentionItem([], item({ id: "x", seq: 9, status: "read" }));
     expect(result.changed).toBe(false);
+  });
+});
+
+function scope(overrides: Partial<ViewedScope> = {}): ViewedScope {
+  return { workspaceId: null, sessionKeys: new Set(), focused: true, ...overrides };
+}
+
+describe("clearTargetsFor", () => {
+  it("clears a session once, however many of its items are pending", () => {
+    const viewing = scope({ sessionKeys: new Set(["ws:w1/t1/p1"]) });
+    const items = [
+      item({ id: "a", seq: 1, sessionKey: "ws:w1/t1/p1" }),
+      item({ id: "b", seq: 2, sessionKey: "ws:w1/t1/p1", kind: "idle" }),
+    ];
+    expect(clearTargetsFor(items, viewing)).toEqual({
+      sessionKeys: ["ws:w1/t1/p1"],
+      itemIds: [],
+    });
+  });
+
+  it("leaves items whose tab is not on screen", () => {
+    const viewing = scope({ workspaceId: "w1", sessionKeys: new Set(["ws:w1/t1/p1"]) });
+    const items = [item({ id: "a", seq: 1, sessionKey: "ws:w1/t9/p1" })];
+    expect(clearTargetsFor(items, viewing)).toEqual({ sessionKeys: [], itemIds: [] });
+  });
+
+  it("clears a sessionless item by id, never by its workspace", () => {
+    // A workspace scope would take the background tabs' items with it.
+    const viewing = scope({ workspaceId: "w1", sessionKeys: new Set(["ws:w1/t1/p1"]) });
+    const items = [
+      item({ id: "a", seq: 1, sessionKey: null }),
+      item({ id: "b", seq: 2, sessionKey: "ws:w1/t9/p1" }),
+    ];
+    expect(clearTargetsFor(items, viewing)).toEqual({ sessionKeys: [], itemIds: ["a"] });
+  });
+
+  it("clears nothing while the window is in the background", () => {
+    const viewing = scope({ sessionKeys: new Set(["ws-claude:w1"]), focused: false });
+    expect(clearTargetsFor([item({ id: "a", seq: 1 })], viewing)).toEqual({
+      sessionKeys: [],
+      itemIds: [],
+    });
+  });
+
+  it("skips a backlog item so a restored view doesn't silently wipe it", () => {
+    const viewing = scope({ sessionKeys: new Set(["ws-claude:w1"]) });
+    const items = [item({ id: "a", seq: 1 })];
+    expect(clearTargetsFor(items, viewing, (id) => id === "a").sessionKeys).toEqual([]);
+    expect(clearTargetsFor(items, viewing).sessionKeys).toEqual(["ws-claude:w1"]);
+  });
+
+  it("only names targets that cover a seen item, so the pass converges", () => {
+    const viewing = scope({ workspaceId: "w1", sessionKeys: new Set(["ws:w1/t1/p1"]) });
+    const items = [
+      item({ id: "a", seq: 1, sessionKey: "ws:w1/t1/p1" }),
+      item({ id: "b", seq: 2, sessionKey: "ws:w1/t9/p1" }),
+      item({ id: "c", seq: 3, sessionKey: null }),
+    ];
+    // The visible tab and the sessionless item, but nothing that would reach the
+    // background tab — a target covering an unseen item would re-fire forever.
+    expect(clearTargetsFor(items, viewing)).toEqual({
+      sessionKeys: ["ws:w1/t1/p1"],
+      itemIds: ["c"],
+    });
   });
 });

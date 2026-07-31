@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { setViewedWorkspace } from "../lib/attentionScope";
+import { useAttentionWorkspaceIds } from "../lib/attentionStore";
 import { writeIssuePromptFile } from "../lib/issues/api";
 import type { NewWorkspaceRequest, OpenWorkspaceRequest } from "../lib/nav";
 import { getClaudeCommand, ptyExists, startClaudeSession } from "../lib/pty";
@@ -122,6 +124,9 @@ export default function WorkspacesPanel({
   // A pending "Start work" Claude launch, scoped to one workspace id. Cleared
   // when the user navigates to a different workspace so the prompt never leaks.
   const [claudeRequest, setClaudeRequest] = useState<{ id: string; prompt: string } | null>(null);
+  // A terminal session an attention item asked us to bring into view, scoped to
+  // one workspace id for the same reason. Consumed by the terminal surface.
+  const [focusSession, setFocusSession] = useState<{ id: string; sessionKey: string } | null>(null);
   // The workspace just created in this session. The detail view auto-starts a
   // Claude session for it once provisioned; cleared when the user navigates
   // elsewhere so selecting an existing workspace never auto-launches Claude.
@@ -157,6 +162,13 @@ export default function WorkspacesPanel({
     else localStorage.removeItem(SELECTED_WORKSPACE_KEY);
   }, [selectedId]);
 
+  // Publish which workspace is on screen so anything it raised clears itself
+  // once the user is actually looking at it.
+  useEffect(() => {
+    setViewedWorkspace(selectedId);
+    return () => setViewedWorkspace(null);
+  }, [selectedId]);
+
   // Honor a cross-tab open request (Issues "Start work"): select the workspace
   // and, if a Claude prompt came with it, stash it for the detail view to
   // launch once provisioning finishes. Cleared via the consumed callback.
@@ -167,6 +179,11 @@ export default function WorkspacesPanel({
     setJustCreatedId(null);
     setClaudeRequest(
       requested.claudePrompt ? { id: requested.id, prompt: requested.claudePrompt } : null,
+    );
+    setFocusSession(
+      requested.focusSessionKey
+        ? { id: requested.id, sessionKey: requested.focusSessionKey }
+        : null,
     );
     onRequestConsumed?.();
   }, [requested, onRequestConsumed]);
@@ -203,6 +220,7 @@ export default function WorkspacesPanel({
   const archivedCount = useMemo(() => items.filter((w) => w.status === "archived").length, [items]);
 
   const groups = useMemo(() => groupWorkspaces(visibleItems), [visibleItems]);
+  const workspacesNeedingAttention = useAttentionWorkspaceIds();
 
   const beginNew = () => {
     setCreating(true);
@@ -210,6 +228,7 @@ export default function WorkspacesPanel({
     setSelectedId(null);
     setJustCreatedId(null);
     setClaudeRequest(null);
+    setFocusSession(null);
   };
 
   const onCreated = (id: string, claudePrompt?: string) => {
@@ -258,25 +277,41 @@ export default function WorkspacesPanel({
                 {group.label}
               </div>
               <ul>
-                {group.items.map((ws) => (
-                  <li key={ws.id}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCreating(false);
-                        setSelectedId(ws.id);
-                        setJustCreatedId(null);
-                        setClaudeRequest(null);
-                      }}
-                      className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-zinc-800/60 ${
-                        selectedId === ws.id ? "bg-zinc-800 text-zinc-100" : "text-zinc-300"
-                      }`}
-                    >
-                      <span className="truncate">{ws.name}</span>
-                      <StatusBadge status={ws.status} />
-                    </button>
-                  </li>
-                ))}
+                {group.items.map((ws) => {
+                  const needsAttention = workspacesNeedingAttention.has(ws.id);
+                  return (
+                    <li key={ws.id}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCreating(false);
+                          setSelectedId(ws.id);
+                          setJustCreatedId(null);
+                          setClaudeRequest(null);
+                          setFocusSession(null);
+                        }}
+                        title={needsAttention ? `${ws.name} — needs you` : ws.name}
+                        className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-zinc-800/60 ${
+                          selectedId === ws.id
+                            ? "bg-zinc-800 text-zinc-100"
+                            : needsAttention
+                              ? "text-amber-300"
+                              : "text-zinc-300"
+                        }`}
+                      >
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          {/* Marks a workspace asking for the user while they're
+                              looking at a different one. */}
+                          {needsAttention && (
+                            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" />
+                          )}
+                          <span className="truncate">{ws.name}</span>
+                        </span>
+                        <StatusBadge status={ws.status} />
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           ))}
@@ -314,6 +349,8 @@ export default function WorkspacesPanel({
             onChanged={refresh}
             claudePrompt={claudeRequest?.id === selectedId ? claudeRequest.prompt : undefined}
             autoStartClaude={justCreatedId === selectedId}
+            focusSession={focusSession?.id === selectedId ? focusSession.sessionKey : undefined}
+            onFocusSessionHandled={() => setFocusSession(null)}
           />
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-zinc-500">
@@ -656,6 +693,8 @@ function WorkspaceDetailView({
   onChanged,
   claudePrompt,
   autoStartClaude = false,
+  focusSession,
+  onFocusSessionHandled,
 }: {
   id: string;
   onChanged: () => void;
@@ -665,6 +704,11 @@ function WorkspaceDetailView({
   /** When true (a workspace just created here, no issue prompt), start a
    * remote-control Claude session once provisioning finishes and focus it. */
   autoStartClaude?: boolean;
+  /** A PTY session (from an attention item) to bring into view in this
+   * workspace's terminal surface. */
+  focusSession?: string;
+  /** Called once the terminal surface has consumed `focusSession`. */
+  onFocusSessionHandled?: () => void;
 }) {
   const [detail, setDetail] = useState<WorkspaceDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1112,6 +1156,8 @@ function WorkspaceDetailView({
                     );
                   }}
                   pinnedTabs={claudeTab ? [claudeTab] : []}
+                  focusSessionKey={focusSession ?? null}
+                  onFocusSessionHandled={onFocusSessionHandled}
                 />
               </div>
             );

@@ -41,10 +41,13 @@ const OPEN_WORKSPACE_EVENT = "yarvis:open-workspace";
  * A request to open a workspace on the Workspaces tab. `claudePrompt`, when
  * set (the "Start work on issue" flow), tells the workspace detail view to
  * provision and launch a Claude session seeded with that prompt.
+ * `focusSessionKey` (an attention item naming the tab that raised it) asks the
+ * workspace's terminal surface to bring that session into view.
  */
 export interface OpenWorkspaceRequest {
   id: string;
   claudePrompt?: string;
+  focusSessionKey?: string;
 }
 
 interface OpenWorkspaceEvent extends Event {

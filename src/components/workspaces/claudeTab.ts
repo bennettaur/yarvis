@@ -1,3 +1,4 @@
+import { CLAUDE_TAB_TITLE } from "../shell/terminalTabs/sessionIds";
 import type { PinnedTab } from "../shell/terminalTabs/TerminalTabs";
 
 /**
@@ -68,7 +69,7 @@ export function resolveClaudeTab({
     if (!claudePromptReady) return null;
     return {
       key: "claude",
-      title: "Claude",
+      title: CLAUDE_TAB_TITLE,
       sessionId,
       cwd: rootPath,
       initialCommand: buildClaudeIssueCommand(claudeCommand),

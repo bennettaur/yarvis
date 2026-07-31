@@ -502,6 +502,12 @@ export const attentionStatus = pgEnum("attention_status", [
 export type AttentionNavTarget =
   | { type: "workspace-claude"; workspaceId: string }
   | { type: "workspace"; workspaceId: string }
+  /**
+   * A specific terminal session (tab/pane), addressed by its PTY id. Carries the
+   * workspace when the session belongs to one, so the frontend can open that
+   * workspace before focusing the tab.
+   */
+  | { type: "terminal"; sessionKey: string; workspaceId?: string }
   | { type: "chat" }
   | { type: "pr"; owner: string; repo: string; number: number }
   | { type: "issue"; provider: string; sourceKey: string; externalId: string }
@@ -525,7 +531,9 @@ export const attentionItems = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     seq: bigserial("seq", { mode: "number" }).notNull(),
     source: attentionSource("source").notNull(),
-    // "ws-claude:<workspaceId>" for a Claude session; null for sourceless nudges.
+    // The PTY id of the session that raised it ("ws-claude:<workspaceId>" for a
+    // workspace's pinned Claude session, "<surface>/<tab>/<pane>" for a terminal
+    // pane); null for sourceless nudges.
     sessionKey: text("session_key"),
     workspaceId: uuid("workspace_id").references(() => workspaces.id, { onDelete: "set null" }),
     kind: attentionKind("kind").notNull(),

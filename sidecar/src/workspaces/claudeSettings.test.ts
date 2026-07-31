@@ -4,11 +4,18 @@ import { attentionHookCommand, buildClaudeSettings } from "./claudeSettings.ts";
 
 const WORKSPACE_ID = "11111111-1111-1111-1111-111111111111";
 
-/** Pulls the JSON body out of the command's `-d '...'` argument. */
-function payloadOf(command: string): unknown {
-  const match = command.match(/-d '([^']*)'/);
+/**
+ * Pulls the JSON body out of the command's `-d` argument, resolved by a real
+ * shell — the body spans several quoted segments around an env expansion, so
+ * only a shell can tell us what curl would actually receive.
+ */
+function payloadOf(command: string, env: Record<string, string> = {}): unknown {
+  const match = command.match(/-d (.*) >\/dev\/null/);
   if (!match) throw new Error("no -d payload in command");
-  return JSON.parse(match[1]!);
+  const run = Bun.spawnSync(["sh", "-c", `printf %s ${match[1]}`], {
+    env: { PATH: process.env.PATH ?? "", ...env },
+  });
+  return JSON.parse(run.stdout.toString());
 }
 
 describe("attentionHookCommand", () => {
@@ -21,6 +28,44 @@ describe("attentionHookCommand", () => {
       workspaceId: WORKSPACE_ID,
       sessionKey: `ws-claude:${WORKSPACE_ID}`,
       kind: "permission",
+    });
+  });
+
+  it("reports the PTY session it runs in, so the item names the exact tab", () => {
+    const command = attentionHookCommand(WORKSPACE_ID, `ws-claude:${WORKSPACE_ID}`, "permission");
+    const payload = payloadOf(command, { YARVIS_SESSION_KEY: `ws:${WORKSPACE_ID}/t1/p2` });
+    expect(payload).toEqual({
+      workspaceId: WORKSPACE_ID,
+      sessionKey: `ws:${WORKSPACE_ID}/t1/p2`,
+      kind: "permission",
+    });
+  });
+
+  it("treats a hostile session key as data, not as shell to run", () => {
+    const command = attentionHookCommand(WORKSPACE_ID, `ws-claude:${WORKSPACE_ID}`, "permission");
+    const payload = payloadOf(command, { YARVIS_SESSION_KEY: "$(echo pwned);id" }) as {
+      sessionKey: string;
+    };
+    expect(payload.sessionKey).toBe("$(echo pwned);id");
+  });
+
+  it("refuses to embed a value that would be scanned by the shell", () => {
+    // The fallback key is spliced into a ${VAR:-word} default, which the shell
+    // expands even inside double quotes — so it must be rejected, not escaped.
+    expect(() => attentionHookCommand(WORKSPACE_ID, "ws-claude:$(id)", "idle")).toThrow(
+      /unsafe value/,
+    );
+    expect(() => attentionHookCommand("w'1", `ws-claude:${WORKSPACE_ID}`, "idle")).toThrow(
+      /unsafe value/,
+    );
+  });
+
+  it("falls back to the workspace Claude key outside a Yarvis PTY", () => {
+    const command = attentionHookCommand(WORKSPACE_ID, `ws-claude:${WORKSPACE_ID}`, "idle");
+    expect(payloadOf(command)).toEqual({
+      workspaceId: WORKSPACE_ID,
+      sessionKey: `ws-claude:${WORKSPACE_ID}`,
+      kind: "idle",
     });
   });
 
