@@ -12,9 +12,25 @@ import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { rowClass } from "../diff/DiffView";
 import { ThreadCard } from "./PrDescription";
 import { prFileAnchorId } from "./shared";
+import { useExpandOnApproach } from "./useExpandOnApproach";
 
-/** Files whose diffs are fetched eagerly so the top of the view is populated. */
+/**
+ * Files whose diffs are open on mount. Scrolling opens the rest as they come
+ * into reach (see {@link useExpandOnApproach}); this only covers the files
+ * already on screen at first paint, so the top of the review doesn't flash
+ * collapsed before the observer's first callback.
+ */
 const PREFETCH_COUNT = 4;
+
+/**
+ * A fold/unfold request broadcast to every file at once. It carries an `epoch`
+ * rather than being a plain boolean so pressing "Collapse all" a second time
+ * still reaches files the reader has expanded by hand since the first press.
+ */
+interface FoldAll {
+  open: boolean;
+  epoch: number;
+}
 
 /** Inline composer for a new line comment. */
 function CommentComposer({
@@ -226,6 +242,7 @@ function FileDiff({
   threads,
   isViewed,
   onToggleViewed,
+  foldAll,
 }: {
   prRef: PrRef;
   file: PrFile;
@@ -233,13 +250,30 @@ function FileDiff({
   threads: ReviewThread[];
   isViewed: boolean;
   onToggleViewed: (path: string) => void;
+  foldAll: FoldAll | null;
 }) {
   // The first few unviewed files are open on mount; viewed files start
   // collapsed regardless so the user's prior progress stays out of the way.
-  // The rest load when expanded, so a large Azure PR doesn't fetch every
-  // file's content up front. Marking viewed later also collapses the diff and
-  // unmarking re-expands it (see `toggleViewed` below).
+  // The rest open as the reader scrolls toward them, so a large Azure PR
+  // doesn't fetch every file's content up front. Marking viewed later also
+  // collapses the diff and unmarking re-expands it (see `toggleViewed` below).
   const [open, setOpen] = useState(!isViewed && index < PREFETCH_COUNT);
+  // A file that was closed by a deliberate act — the reader folding it, marking
+  // it viewed, or a "Collapse all" — stays folded. Auto-expand exists to save
+  // clicks, not to overrule a decision already made.
+  const [closedDeliberately, setClosedDeliberately] = useState(false);
+  const detailsRef = useRef<HTMLDetailsElement>(null);
+  useExpandOnApproach(detailsRef, !open && !isViewed && !closedDeliberately, () => setOpen(true));
+
+  // Apply a fold/unfold broadcast from the toolbar. Keyed on the epoch alone so
+  // a repeat press re-applies to files toggled by hand in between.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-applies per press, not per value change
+  useEffect(() => {
+    if (!foldAll) return;
+    setOpen(foldAll.open);
+    setClosedDeliberately(!foldAll.open);
+  }, [foldAll?.epoch]);
+
   const { data: loaded, loading } = usePrFileDiff(prRef, file, open);
   const patch = loaded?.patch ?? file.patch;
   const fileThreads = useMemo(
@@ -280,9 +314,14 @@ function FileDiff({
 
   return (
     <details
+      ref={detailsRef}
       id={prFileAnchorId(prRef, index)}
       open={open}
-      onToggle={(e) => setOpen(e.currentTarget.open)}
+      onToggle={(e) => {
+        const nowOpen = e.currentTarget.open;
+        setOpen(nowOpen);
+        setClosedDeliberately(!nowOpen);
+      }}
       className={`scroll-mt-4 rounded-lg border border-zinc-800 ${isViewed ? "opacity-70" : ""}`}
     >
       {/* The header sticks to the top of the scrolling review body while its
@@ -339,13 +378,35 @@ export default function PrFileDiffs({
   const { data, error, loading } = usePrFiles(prRef);
   const detail = usePrDetail(prRef);
   const threads = detail.data?.reviewThreads ?? [];
+  const [foldAll, setFoldAll] = useState<FoldAll | null>(null);
 
   if (error) return <p className="text-sm text-red-400">{error}</p>;
   if (loading || !data) return <p className="text-sm text-zinc-500">Loading diff…</p>;
   if (data.length === 0) return <p className="text-sm text-zinc-600">No file changes.</p>;
 
+  const fold = (open: boolean) => setFoldAll((f) => ({ open, epoch: (f?.epoch ?? 0) + 1 }));
+
   return (
     <div className="space-y-2">
+      <div className="flex items-center gap-2 text-xs text-zinc-500">
+        <span>
+          {data.length} {data.length === 1 ? "file" : "files"}
+        </span>
+        <button
+          type="button"
+          onClick={() => fold(false)}
+          className="ml-auto rounded border border-zinc-700 px-2 py-0.5 hover:bg-zinc-800 hover:text-zinc-200"
+        >
+          Collapse all
+        </button>
+        <button
+          type="button"
+          onClick={() => fold(true)}
+          className="rounded border border-zinc-700 px-2 py-0.5 hover:bg-zinc-800 hover:text-zinc-200"
+        >
+          Expand all
+        </button>
+      </div>
       {data.map((f, i) => (
         <FileDiff
           key={f.filename}
@@ -355,6 +416,7 @@ export default function PrFileDiffs({
           threads={threads}
           isViewed={viewed.has(f.filename)}
           onToggleViewed={onToggleViewed}
+          foldAll={foldAll}
         />
       ))}
     </div>
