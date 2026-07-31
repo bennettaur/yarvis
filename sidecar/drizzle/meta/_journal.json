@@ -127,6 +127,13 @@
       "when": 1785439349241,
       "tag": "0017_secret_tattoo",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1785542165297,
+      "tag": "0018_shocking_morph",
+      "breakpoints": true
     }
   ]
 }

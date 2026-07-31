@@ -21,6 +21,8 @@ export const EVENT_TYPES = [
   "task.created",
   "task.completed",
   "pr.viewed",
+  "pr.guide.generated",
+  "pr.guide.viewed",
   "alarm.created",
 ] as const;
 

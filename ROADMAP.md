@@ -70,6 +70,18 @@ Status of the build against the original vision. The full V1 plan lives at
   actually asked for; those fetches share a concurrency gate with the per-file
   diffs so expanding a large Azure review can't fan out into hundreds of
   simultaneous requests.
+- **PR guided tour** — an agent explores a pull request with provider-backed
+  read/search tools, records what connects to what in a scratch graph, and lays
+  out a reading order from the outside in: the request that arrives, then what
+  handles it, down to what it finally writes. Each step names a file and line
+  range with a sentence or two on why it comes there, plus optional background.
+  The guide is stored per PR against the commit it was generated at, so a push
+  marks it stale rather than silently shifting its line numbers, and an
+  in-progress guide holds one coalescing item in the attention stream showing
+  which step the review is on. Cleanup is event-driven — approving, requesting
+  changes, or merging retires the guide, a detail load that reports a closed PR
+  retires it lazily, and a startup sweep drops anything untouched for 30 days —
+  so no poller watches pull requests that have a guide.
 - **Issues dashboard (GitHub)** — a global Issues tab mirroring the PR
   dashboard: "Assigned to me" / "All open" / saved-filter views, grouped by
   repo, with stars, search, "in progress" badges, and a manual refresh. Issues

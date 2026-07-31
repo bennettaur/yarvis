@@ -206,7 +206,7 @@ export interface AzureBranchPr {
  * `parseRepoRemote` derives a clone URL's org is what lets the poller's
  * cross-org comparison line up for both forms.
  */
-function orgFromOrgUrl(orgUrl: string): string {
+export function orgFromOrgUrl(orgUrl: string): string {
   try {
     const url = new URL(orgUrl);
     if (url.hostname.endsWith(".visualstudio.com")) return url.hostname.split(".")[0] ?? "";

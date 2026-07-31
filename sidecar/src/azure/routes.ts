@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { describeError } from "../llm/errors.ts";
+import { retireGuide } from "../pr/guides.ts";
 import { AzureDevOpsClient, type AzureRef, isAllowedAzureOrgUrl } from "./client.ts";
 import {
   addStar,
@@ -196,7 +197,14 @@ export function createAzureRoutes(config: Config): Hono {
     const ref = parsePrParams(c.req.param("project"), c.req.param("repo"), c.req.param("prId"));
     if ("error" in ref) return c.json({ error: ref.error }, 400);
     try {
-      return c.json(await az.prDetail(ref));
+      const detail = await az.prDetail(ref);
+      // A pull request completed or abandoned on Azure's own site is the one
+      // ending the app never sees directly. Catching it here — on a load the
+      // review view makes anyway — retires the guide without a poller.
+      if (detail.state !== "active") {
+        await retireGuide(db(), { provider: "azure", org: az.org, ...ref });
+      }
+      return c.json(detail);
     } catch (e) {
       return upstreamError(c, e);
     }
@@ -276,6 +284,10 @@ export function createAzureRoutes(config: Config): Hono {
     }
     try {
       await az.submitVote(ref, parsed.data.vote, parsed.data.body);
+      // A vote either way ends the reviewer's pass over this PR, so its guide
+      // has done its job. Azure has no "comment without voting" here, so unlike
+      // GitHub there is no case to exclude.
+      await retireGuide(db(), { provider: "azure", org: az.org, ...ref });
       return c.json({ ok: true }, 201);
     } catch (e) {
       return upstreamError(c, e);

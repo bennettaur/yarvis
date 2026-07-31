@@ -183,6 +183,52 @@ export const omniLayouts = pgTable("omni_layouts", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/** One stop on a guided review: what to look at, and why it comes here. */
+export interface PrGuideStep {
+  path: string;
+  /** Right-side line range the step is about; null for a whole-file step. */
+  startLine: number | null;
+  endLine: number | null;
+  /** A sentence or two on what this code does and why it is read at this point. */
+  explanation: string;
+  /** Longer background, shown only when the reader asks to expand the step. */
+  context?: string;
+}
+
+/**
+ * A generated reading order for a pull request, taking the reviewer from the
+ * outside of the change inward — the request that arrives, then what handles
+ * it, down to what it finally writes.
+ *
+ * Rows are stamped with the commit they were generated against. A guide
+ * describes code at a point in time, so once the PR moves the guide is stale
+ * rather than wrong, and the reviewer is shown that rather than being quietly
+ * walked through line numbers that have shifted.
+ *
+ * At most one guide per pull request: regenerating replaces what is there, so
+ * the unique index is on `refKey` alone and not on the commit as well.
+ */
+export const prGuides = pgTable(
+  "pr_guides",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** Provider-neutral PR identity; matches the frontend's `refKey`. */
+    refKey: text("ref_key").notNull(),
+    provider: text("provider").notNull(),
+    /** Where the guide points, for opening the PR from the attention stream. */
+    title: text("title"),
+    url: text("url"),
+    headSha: text("head_sha").notNull(),
+    steps: jsonb("steps").$type<PrGuideStep[]>().notNull(),
+    /** How far the reviewer has read; an index into `steps`. */
+    currentStep: integer("current_step").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    /** Bumped on every progress update, so an abandoned guide can be swept. */
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("pr_guides_ref_idx").on(t.refKey)],
+);
+
 /**
  * Google OAuth tokens for the calendar integration. Single-account model: the
  * service keeps at most one row (the most recent). The refresh token is only
@@ -510,6 +556,10 @@ export type AttentionNavTarget =
   | { type: "terminal"; sessionKey: string; workspaceId?: string }
   | { type: "chat" }
   | { type: "pr"; owner: string; repo: string; number: number }
+  // Azure PRs are addressed by project/repo/id rather than owner/repo/number,
+  // so they get their own variant instead of being squeezed into the GitHub
+  // shape — the organization comes from configuration on both sides.
+  | { type: "azure-pr"; org: string; project: string; repo: string; prId: number }
   | { type: "issue"; provider: string; sourceKey: string; externalId: string }
   | { type: "task"; taskId: string };
 
@@ -642,3 +692,5 @@ export type IssueFilter = typeof issueFilters.$inferSelect;
 export type NewIssueFilter = typeof issueFilters.$inferInsert;
 export type IssueStar = typeof issueStars.$inferSelect;
 export type NewIssueStar = typeof issueStars.$inferInsert;
+export type PrGuideRow = typeof prGuides.$inferSelect;
+export type NewPrGuideRow = typeof prGuides.$inferInsert;

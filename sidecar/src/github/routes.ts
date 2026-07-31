@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { retireGuide } from "../pr/guides.ts";
 import { GitHubClient } from "./client.ts";
 import { getGithubPrConfig, saveGithubPrConfig } from "./config.ts";
 import { getReviewingList } from "./reviewing.ts";
@@ -190,7 +191,14 @@ export function createGithubRoutes(config: Config): Hono {
     const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
     if ("error" in params) return c.json({ error: params.error }, 400);
     try {
-      return c.json(await gh.prDetail(params.owner, params.repo, params.number));
+      const detail = await gh.prDetail(params.owner, params.repo, params.number);
+      // A pull request closed or merged on github.com is the one ending the app
+      // never sees directly. Catching it here — on a load the review view makes
+      // anyway — retires the guide without a poller watching for it.
+      if (detail.state.toUpperCase() !== "OPEN") {
+        await retireGuide(db(), { provider: "github", ...params });
+      }
+      return c.json(detail);
     } catch (e) {
       return c.json({ error: String(e) }, 502);
     }
@@ -265,6 +273,12 @@ export function createGithubRoutes(config: Config): Hono {
         parsed.data.event,
         parsed.data.body,
       );
+      // Approving or requesting changes ends the reviewer's pass over this PR,
+      // so its guide has done its job. A plain comment does not — the review is
+      // still open.
+      if (parsed.data.event !== "COMMENT") {
+        await retireGuide(db(), { provider: "github", ...params });
+      }
       return c.json({ ok: true }, 201);
     } catch (e) {
       return c.json({ error: String(e) }, 502);
@@ -286,6 +300,7 @@ export function createGithubRoutes(config: Config): Hono {
         params.number,
         parsed.data.method ?? "MERGE",
       );
+      await retireGuide(db(), { provider: "github", ...params });
       return c.json({ ok: true });
     } catch (e) {
       return c.json({ error: String(e) }, 502);
