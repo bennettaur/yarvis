@@ -1,24 +1,24 @@
 import { describe, expect, it } from "bun:test";
-import { buildAgentIssueCommand, resolveAgentTab } from "./agentTab";
+import {
+  agentSessionId,
+  buildAgentIssueCommand,
+  resolveAgentTab,
+  shouldAutoStartAgent,
+} from "./agentTab";
 
 const base = {
-  claudePromptReady: false,
+  issuePromptReady: false,
   agentActive: false,
   dismissed: false,
   workspaceId: "ws1",
-  rootPath: "/work/ws1",
-  agentCwd: "/work/ws1/repo",
+  cwd: "/work/ws1",
   agentName: "Claude",
   agentCommand: "claude --permission-mode auto",
 };
 
 describe("resolveAgentTab", () => {
   it("issue flow, prompt ready: launches at the workspace root with the issue command", () => {
-    const tab = resolveAgentTab({
-      ...base,
-      claudePrompt: "do the thing",
-      claudePromptReady: true,
-    });
+    const tab = resolveAgentTab({ ...base, issuePrompt: "do the thing", issuePromptReady: true });
     expect(tab).not.toBeNull();
     // The issue prompt file lives at the workspace root, so the agent must launch there.
     expect(tab?.cwd).toBe("/work/ws1");
@@ -26,11 +26,14 @@ describe("resolveAgentTab", () => {
     expect(tab?.initialCommand).toBe(buildAgentIssueCommand(base.agentCommand));
   });
 
-  it("issue flow, prompt not ready: no tab", () => {
+  it("issue flow, prompt not ready: no tab, even when a session happens to be active", () => {
+    // Must wait on the prompt file, never fall through to the attach branch —
+    // that would show a tab whose shell has nothing to run yet.
     const tab = resolveAgentTab({
       ...base,
-      claudePrompt: "do the thing",
-      claudePromptReady: false,
+      issuePrompt: "do the thing",
+      issuePromptReady: false,
+      agentActive: true,
     });
     expect(tab).toBeNull();
   });
@@ -38,18 +41,19 @@ describe("resolveAgentTab", () => {
   it("issue flow, session now live: attaches with no initial command", () => {
     const tab = resolveAgentTab({
       ...base,
-      claudePrompt: "do the thing",
-      claudePromptReady: true,
+      issuePrompt: "do the thing",
+      issuePromptReady: true,
       agentActive: true,
     });
-    // Once the launch has happened, a reattach must not replay the prompt.
+    // Once the launch has happened, a reattach must not re-run the whole ticket.
+    expect(tab).not.toBeNull();
     expect(tab?.initialCommand).toBeUndefined();
   });
 
-  it("remote-control flow, session active: attaches at agentCwd with no initial command", () => {
+  it("remote-control flow, session active: attaches with no initial command", () => {
     const tab = resolveAgentTab({ ...base, agentActive: true });
     expect(tab).not.toBeNull();
-    expect(tab?.cwd).toBe("/work/ws1/repo");
+    expect(tab?.cwd).toBe("/work/ws1");
     // Reattaching must never re-run a launch line on a live session.
     expect(tab?.initialCommand).toBeUndefined();
   });
@@ -66,8 +70,8 @@ describe("resolveAgentTab", () => {
       resolveAgentTab({
         ...base,
         dismissed: true,
-        claudePrompt: "do the thing",
-        claudePromptReady: true,
+        issuePrompt: "do the thing",
+        issuePromptReady: true,
       }),
     ).toBeNull();
   });
@@ -75,6 +79,52 @@ describe("resolveAgentTab", () => {
   it("titles the tab with the configured agent name", () => {
     const tab = resolveAgentTab({ ...base, agentActive: true, agentName: "Codex" });
     expect(tab?.title).toBe("Codex");
+  });
+});
+
+describe("agentSessionId", () => {
+  it("keeps the ws-claude prefix so live sessions aren't orphaned", () => {
+    expect(agentSessionId("ws1")).toBe("ws-claude:ws1");
+  });
+});
+
+describe("shouldAutoStartAgent", () => {
+  const ready = {
+    dismissed: false,
+    workspaceStatus: "active",
+    probed: true,
+    agentActive: false,
+    alreadyStarted: false,
+  };
+
+  it("starts for a provisioned workspace with no session yet", () => {
+    expect(shouldAutoStartAgent(ready)).toBe(true);
+  });
+
+  it("does not start for the issue flow, which launches its own", () => {
+    expect(shouldAutoStartAgent({ ...ready, issuePrompt: "do the thing" })).toBe(false);
+  });
+
+  it("does not start once the user has closed the tab", () => {
+    expect(shouldAutoStartAgent({ ...ready, dismissed: true })).toBe(false);
+  });
+
+  it("does not start for a workspace that isn't provisioned", () => {
+    for (const workspaceStatus of ["creating", "archiving", "archived", "error"]) {
+      expect(shouldAutoStartAgent({ ...ready, workspaceStatus })).toBe(false);
+    }
+  });
+
+  it("waits for the liveness probe, so an existing session isn't spawned twice", () => {
+    expect(shouldAutoStartAgent({ ...ready, probed: false })).toBe(false);
+  });
+
+  it("does not start when a session is already live", () => {
+    expect(shouldAutoStartAgent({ ...ready, agentActive: true })).toBe(false);
+  });
+
+  it("fires only once per view", () => {
+    expect(shouldAutoStartAgent({ ...ready, alreadyStarted: true })).toBe(false);
   });
 });
 

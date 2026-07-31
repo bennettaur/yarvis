@@ -18,7 +18,7 @@ function withTabs(count: number): SurfaceState {
   }));
   return {
     tabs,
-    activeTabId: "t0",
+    activeTabId: tabs[0]?.id ?? "",
     focused: Object.fromEntries(tabs.map((t, i) => [t.id, `p${i}`])),
   };
 }

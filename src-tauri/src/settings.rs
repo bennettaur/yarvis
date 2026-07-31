@@ -94,13 +94,16 @@ impl SettingsState {
         self.save()
     }
 
-    /// Stores the agent's display name and launch command, clearing either back
-    /// to its built-in default when given `None` or a blank string.
+    /// Stores the agent's display name and launch command. Both fields are
+    /// written on every call, so a `None` or blank value clears that field back
+    /// to its built-in default rather than leaving the stored one in place.
     ///
     /// Control characters are rejected. The command is typed into an interactive
     /// shell as a single launch line, so a newline would submit whatever follows
     /// it as a second command — and 0x03/0x15 would do the same by way of the
-    /// line editor, for the reasons `pty::is_unsafe_name_char` documents.
+    /// line editor, for the reasons `pty::is_unsafe_name_char` documents. This
+    /// file is also hand-editable, so `pty` re-checks on read; rejecting here is
+    /// what gives the user an error instead of silent mangling.
     fn set_agent(&self, name: Option<String>, command: Option<String>) -> Result<(), String> {
         let name = non_blank(name);
         let command = non_blank(command);
@@ -124,8 +127,9 @@ impl SettingsState {
 
 /// The trimmed value, or `None` when it is absent or blank — an emptied field in
 /// the UI means "use the default", which is stored the same way as never having
-/// set one.
-fn non_blank(value: Option<String>) -> Option<String> {
+/// set one. Applied on read as well as on write (see `pty::agent_command`) so a
+/// hand-edited settings file can't yield an empty command either.
+pub(crate) fn non_blank(value: Option<String>) -> Option<String> {
     value
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())

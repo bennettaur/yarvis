@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::settings::SettingsState;
+use crate::settings::{non_blank, SettingsState};
 
 /// Upper bound on per-session captured output, in bytes. Older output is
 /// dropped from the front once exceeded so memory stays bounded.
@@ -385,14 +385,6 @@ fn agent_name(app: &AppHandle) -> String {
     .unwrap_or_else(|| DEFAULT_AGENT_NAME.to_string())
 }
 
-/// The trimmed value, or `None` when it is absent or blank. Applied on read as
-/// well as on write so a hand-edited settings file can't yield an empty command.
-fn non_blank(value: Option<String>) -> Option<String> {
-    value
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
 /// Longest session name accepted into a launch line. Names come from issue
 /// titles, so this bounds what a single line can carry rather than reflecting
 /// anything the shell enforces.
@@ -416,10 +408,10 @@ const MAX_SESSION_NAME_CHARS: usize = 200;
 fn is_unsafe_name_char(c: char) -> bool {
     c.is_control()
         || matches!(c,
-            '\u{2028}' | '\u{2029}'
-            | '\u{200e}' | '\u{200f}'
-            | '\u{202a}'..='\u{202e}'
-            | '\u{2066}'..='\u{2069}'
+            '\u{2028}' | '\u{2029}'                 // line / paragraph separators
+            | '\u{200e}' | '\u{200f}'               // LTR / RTL marks
+            | '\u{202a}'..='\u{202e}'               // embedding / override
+            | '\u{2066}'..='\u{2069}'               // isolates
         )
 }
 
@@ -481,7 +473,8 @@ fn shell_single_quote(s: &str) -> String {
 /// agent, not what runs. The command itself comes from settings, which only the
 /// webview can write; the one caller-supplied value that reaches the line is
 /// `name`, which `sanitize_session_name` strips before it is quoted. This is not
-/// argv safety — the line is typed into an interactive shell — so both matter.
+/// argv safety — the line is typed into an interactive shell — so both of those
+/// matter.
 ///
 /// `remote_control` adds Claude Code's `--remote-control`, which is only wanted
 /// when the launch came from somewhere the user isn't at the machine — a
@@ -819,20 +812,6 @@ mod tests {
     }
 
     #[test]
-    fn agent_launch_command_adds_remote_control_only_when_asked() {
-        assert_eq!(
-            agent_launch_command("claude --permission-mode auto", "Fix bug", true),
-            "claude --permission-mode auto --remote-control 'Fix bug'"
-        );
-        // A session started at the machine is driven in its own tab; Remote
-        // Control is enabled from inside it if the user later steps away.
-        assert_eq!(
-            agent_launch_command("claude --permission-mode auto", "Fix bug", false),
-            "claude --permission-mode auto"
-        );
-    }
-
-    #[test]
     fn remote_control_command_strips_control_characters_from_the_name() {
         // The launch line is typed into an interactive shell, whose line editor
         // acts on 0x03 (interrupt) and 0x15 (kill-line) before any quoting is
@@ -871,6 +850,20 @@ mod tests {
                 "claude --remote-control '{}'",
                 "a".repeat(MAX_SESSION_NAME_CHARS)
             )
+        );
+    }
+
+    #[test]
+    fn agent_launch_command_adds_remote_control_only_when_asked() {
+        assert_eq!(
+            agent_launch_command("claude --permission-mode auto", "Fix bug", true),
+            "claude --permission-mode auto --remote-control 'Fix bug'"
+        );
+        // A session started at the machine is driven in its own tab; Remote
+        // Control is enabled from inside it if the user later steps away.
+        assert_eq!(
+            agent_launch_command("claude --permission-mode auto", "Fix bug", false),
+            "claude --permission-mode auto"
         );
     }
 

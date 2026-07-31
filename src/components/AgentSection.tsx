@@ -26,13 +26,27 @@ export default function AgentSection() {
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, [adopt]);
 
-  const edit = useCallback((apply: () => void) => {
-    apply();
-    // A stale "Saved." next to an edited field would claim the new value is
-    // stored.
+  // A stale "Saved." next to an edited field would claim the new value is stored.
+  const clearNotices = useCallback(() => {
     setNotice(null);
     setError(null);
   }, []);
+
+  const editName = useCallback(
+    (value: string) => {
+      setNameDraft(value);
+      clearNotices();
+    },
+    [clearNotices],
+  );
+
+  const editCommand = useCallback(
+    (value: string) => {
+      setCommandDraft(value);
+      clearNotices();
+    },
+    [clearNotices],
+  );
 
   const save = useCallback(async () => {
     setError(null);
@@ -75,7 +89,7 @@ export default function AgentSection() {
             type="text"
             value={nameDraft}
             placeholder={settings?.defaultAgentName ?? ""}
-            onChange={(e) => edit(() => setNameDraft(e.target.value))}
+            onChange={(e) => editName(e.target.value)}
             className="w-36 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-zinc-500"
           />
         </label>
@@ -85,7 +99,7 @@ export default function AgentSection() {
             type="text"
             value={commandDraft}
             placeholder={settings?.defaultAgentCommand ?? ""}
-            onChange={(e) => edit(() => setCommandDraft(e.target.value))}
+            onChange={(e) => editCommand(e.target.value)}
             className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-sm outline-none focus:border-zinc-500"
           />
         </label>

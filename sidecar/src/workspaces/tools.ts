@@ -16,6 +16,8 @@ import type { IssueDetail, IssueSummary } from "../issues/types.ts";
 import {
   type ClaudeSessionStarter,
   startClaudeSession as defaultStartClaudeSession,
+  sessionDescription,
+  sessionStartedMessage,
 } from "./claudeSession.ts";
 import { defaultGitRunner, type GitRunner } from "./git.ts";
 import {
@@ -148,9 +150,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         repos: detail.repos.map((r) => r.repo.name),
         sessionName: detail.name,
         sessionKey: session.sessionKey,
-        message: remoteControl
-          ? `Started a remote-controllable Claude Code session in workspace "${detail.name}". Open it from claude.ai/code or the Claude mobile app by the name "${detail.name}", or view it live in the Workspaces tab.`
-          : `Started a Claude Code session in workspace "${detail.name}". View it live in the Workspaces tab.`,
+        message: sessionStartedMessage(detail.name, remoteControl),
       };
     } catch (e) {
       // The workspace is ready; only the Claude launch failed (commonly: not
@@ -211,8 +211,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
     }),
 
     start_work_on_issue: tool({
-      description:
-        "Start work on a repo issue exactly like the 'Start work' button on the issue view: create a workspace with a worktree cut from the repo's default branch, provision it, seed the issue details into .yarvis/issue-prompt.md, assign the issue to the user and label it in-progress on GitHub (best-effort), and start a remote-controllable Claude Code session in it. Resolve the repo id with list_repos and pick an issue number with list_repo_issues first. Requires a configured GitHub token.",
+      description: `Start work on a repo issue exactly like the 'Start work' button on the issue view: create a workspace with a worktree cut from the repo's default branch, provision it, seed the issue details into .yarvis/issue-prompt.md, assign the issue to the user and label it in-progress on GitHub (best-effort), and start ${sessionDescription(remoteControl)} in it. Resolve the repo id with list_repos and pick an issue number with list_repo_issues first. Requires a configured GitHub token.`,
       inputSchema: z.object({
         repoId: z.string().uuid().describe("Id of the registered repo the issue belongs to"),
         issueNumber: z.number().int().positive().describe("The issue number, e.g. 99"),
@@ -306,8 +305,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
     }),
 
     create_workspace_session: tool({
-      description:
-        "Create a new workspace from one or more registered repos (a git worktree per repo, cut from the default branch), provision it, and start a remote-controllable Claude Code session in it. The session can be driven from claude.ai/code or the Claude mobile app by its name, and shows up as a live terminal in the workspace's Workspaces tab to continue locally. Resolve repo ids with list_repos first.",
+      description: `Create a new workspace from one or more registered repos (a git worktree per repo, cut from the default branch), provision it, and start ${sessionDescription(remoteControl)} in it. Resolve repo ids with list_repos first.`,
       inputSchema: z.object({
         name: z.string().describe("Human-readable workspace name, e.g. 'Rename the API'"),
         repoIds: z
@@ -345,8 +343,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
     }),
 
     create_scratch_workspace_session: tool({
-      description:
-        "Create a scratch workspace — just a folder, no repo or git worktree — provision it, and start a remote-controllable Claude Code session in it. Use this for experimentation and exploration when the user doesn't need a specific repo checked out. The session is drivable from claude.ai/code or the Claude mobile app by its name and appears as a live terminal in the Workspaces tab.",
+      description: `Create a scratch workspace — just a folder, no repo or git worktree — provision it, and start ${sessionDescription(remoteControl)} in it. Use this for experimentation and exploration when the user doesn't need a specific repo checked out.`,
       inputSchema: z.object({
         name: z.string().describe("Human-readable workspace name, e.g. 'Scratchpad'"),
         taskId: z
@@ -389,8 +386,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
     }),
 
     start_workspace_session: tool({
-      description:
-        "Start a remote-controllable Claude Code session in an existing, already-provisioned workspace. Resolve the workspace id with list_workspaces first. The session is drivable from claude.ai/code or the Claude mobile app and appears as a live terminal tab in the Workspaces tab.",
+      description: `Start ${sessionDescription(remoteControl)} in an existing, already-provisioned workspace. Resolve the workspace id with list_workspaces first.`,
       inputSchema: z.object({
         workspaceId: z
           .string()

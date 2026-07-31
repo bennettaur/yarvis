@@ -26,7 +26,13 @@ import TerminalPanel from "./TerminalPanel";
 import WorkspaceSidePanel from "./WorkspaceSidePanel";
 import ArchiveDialog from "./workspaces/ArchiveDialog";
 import ArchivedView from "./workspaces/ArchivedView";
-import { DEFAULT_AGENT_COMMAND, DEFAULT_AGENT_NAME, resolveAgentTab } from "./workspaces/agentTab";
+import {
+  agentSessionId,
+  DEFAULT_AGENT_COMMAND,
+  DEFAULT_AGENT_NAME,
+  resolveAgentTab,
+  shouldAutoStartAgent,
+} from "./workspaces/agentTab";
 import BranchCombobox from "./workspaces/BranchCombobox";
 import LinkWorkModal from "./workspaces/LinkWorkModal";
 import { consumeProvision } from "./workspaces/provisionStream";
@@ -119,9 +125,9 @@ export default function WorkspacesPanel({
   const [selectedId, setSelectedId] = useState<string | null>(() =>
     localStorage.getItem(SELECTED_WORKSPACE_KEY),
   );
-  // A pending "Start work" Claude launch, scoped to one workspace id. Cleared
+  // A pending "Start work" issue launch, scoped to one workspace id. Cleared
   // when the user navigates to a different workspace so the prompt never leaks.
-  const [claudeRequest, setClaudeRequest] = useState<{ id: string; prompt: string } | null>(null);
+  const [issueRequest, setIssueRequest] = useState<{ id: string; prompt: string } | null>(null);
   const [creating, setCreating] = useState(false);
   // Pre-fill (name/taskId) plus a pending Claude prompt for the New Workspace
   // form, applied when another tab (Tasks) hands off a "create workspace" or
@@ -160,7 +166,7 @@ export default function WorkspacesPanel({
     if (!requested) return;
     setCreating(false);
     setSelectedId(requested.id);
-    setClaudeRequest(
+    setIssueRequest(
       requested.claudePrompt ? { id: requested.id, prompt: requested.claudePrompt } : null,
     );
     onRequestConsumed?.();
@@ -172,7 +178,7 @@ export default function WorkspacesPanel({
   useEffect(() => {
     if (!requestedNew) return;
     setSelectedId(null);
-    setClaudeRequest(null);
+    setIssueRequest(null);
     setNewWorkspacePrefill(requestedNew);
     setCreating(true);
     onNewRequestConsumed?.();
@@ -202,7 +208,7 @@ export default function WorkspacesPanel({
     setCreating(true);
     setNewWorkspacePrefill(null);
     setSelectedId(null);
-    setClaudeRequest(null);
+    setIssueRequest(null);
   };
 
   const onCreated = (id: string, claudePrompt?: string) => {
@@ -212,7 +218,7 @@ export default function WorkspacesPanel({
     setSelectedId(id);
     // A "Start work" handoff seeds the detail view's own launch path, which
     // skips the remote-control auto-start so the two don't fight.
-    setClaudeRequest(claudePrompt ? { id, prompt: claudePrompt } : null);
+    setIssueRequest(claudePrompt ? { id, prompt: claudePrompt } : null);
   };
 
   const onRepoAdded = useCallback((repo: Repo) => {
@@ -252,7 +258,7 @@ export default function WorkspacesPanel({
                       onClick={() => {
                         setCreating(false);
                         setSelectedId(ws.id);
-                        setClaudeRequest(null);
+                        setIssueRequest(null);
                       }}
                       className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-zinc-800/60 ${
                         selectedId === ws.id ? "bg-zinc-800 text-zinc-100" : "text-zinc-300"
@@ -298,7 +304,7 @@ export default function WorkspacesPanel({
             key={selectedId}
             id={selectedId}
             onChanged={refresh}
-            claudePrompt={claudeRequest?.id === selectedId ? claudeRequest.prompt : undefined}
+            issuePrompt={issueRequest?.id === selectedId ? issueRequest.prompt : undefined}
           />
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-zinc-500">
@@ -639,13 +645,14 @@ const DETAIL_REFRESH_INTERVAL_MS = 20_000;
 function WorkspaceDetailView({
   id,
   onChanged,
-  claudePrompt,
+  issuePrompt,
 }: {
   id: string;
   onChanged: () => void;
   /** When set (Issues "Start work"), auto-provision then launch an agent session
-   * seeded with this prompt. */
-  claudePrompt?: string;
+   * seeded with this prompt. Named for the issue flow it belongs to; the nav
+   * contract that carries it here still calls it `claudePrompt`. */
+  issuePrompt?: string;
 }) {
   const [detail, setDetail] = useState<WorkspaceDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -654,8 +661,8 @@ function WorkspaceDetailView({
   const [showArchive, setShowArchive] = useState(false);
   const [showLinkModal, setShowLinkModal] = useState(false);
   // Flips once the issue prompt file has been written (post-provision), gating
-  // the Claude terminal launch.
-  const [claudePromptReady, setClaudePromptReady] = useState(false);
+  // the issue flow's agent launch.
+  const [issuePromptReady, setIssuePromptReady] = useState(false);
   // The configured agent, loaded from the core: its tab title and the base
   // command the issue "Start work" launch line is built from. Falls back to the
   // defaults until loaded.
@@ -674,13 +681,17 @@ function WorkspaceDetailView({
   const setupAutoOpenedRef = useRef(false);
   const autoProvisionRef = useRef(false);
   const promptWriteRef = useRef(false);
+  // Guards the one-shot auto-start. Per-mount, and the view is keyed by workspace
+  // id, so it re-arms when you switch workspaces — the auto-start effect re-runs
+  // on every detail poll, so this ref is what stops it firing more than once.
   const autoStartAgentRef = useRef(false);
   const [agentActive, setAgentActive] = useState(false);
   // Flips once the liveness poll below has answered for this workspace. Auto-start
   // waits on it so an already-running session isn't spawned a second time.
   const [agentProbed, setAgentProbed] = useState(false);
-  // Set when the user closes the agent tab, so nothing puts it back until they
-  // ask for it — neither the pinned-tab resolver nor auto-start.
+  // Set when the user closes the agent tab, so neither the pinned-tab resolver
+  // nor auto-start puts it back. Scoped to this view, which is keyed by workspace
+  // id: opening the workspace again is treated as asking for an agent again.
   const [agentDismissed, setAgentDismissed] = useState(false);
   // Why the last agent launch failed, shown in the header. Non-fatal; see
   // `startAgent`.
@@ -745,7 +756,7 @@ function WorkspaceDetailView({
   // agent, or remotely.
   useEffect(() => {
     if (detail?.status !== "active") return;
-    const sessionId = `ws-claude:${id}`;
+    const sessionId = agentSessionId(id);
     let cancelled = false;
     const check = async () => {
       try {
@@ -754,7 +765,8 @@ function WorkspaceDetailView({
         setAgentActive(alive);
         setAgentProbed(true);
       } catch {
-        // Core unreachable; leave the last known state in place.
+        // Core unreachable; leave the last known state in place. `agentProbed`
+        // stays false, so auto-start holds off rather than spawning blind.
       }
     };
     void check();
@@ -801,35 +813,31 @@ function WorkspaceDetailView({
   // workspace (the user didn't come here to click "Provision"); the ref guards
   // against re-firing on each poll.
   useEffect(() => {
-    if (!claudePrompt || !detail) return;
+    if (!issuePrompt || !detail) return;
     if (detail.status === "creating" && provisionLog === null && !autoProvisionRef.current) {
       autoProvisionRef.current = true;
       void provision();
     }
-  }, [claudePrompt, detail, provisionLog, provision]);
+  }, [issuePrompt, detail, provisionLog, provision]);
 
   // Once provisioned, write the prompt file so the Claude terminal can launch
   // against it. Runs once (ref-guarded).
   useEffect(() => {
-    if (!claudePrompt || !detail) return;
+    if (!issuePrompt || !detail) return;
     if (detail.status === "active" && !promptWriteRef.current) {
       promptWriteRef.current = true;
-      writeIssuePromptFile(detail.id, claudePrompt)
-        .then(() => setClaudePromptReady(true))
+      writeIssuePromptFile(detail.id, issuePrompt)
+        .then(() => setIssuePromptReady(true))
         .catch((e) => setError(e instanceof Error ? e.message : String(e)));
     }
-  }, [claudePrompt, detail]);
+  }, [issuePrompt, detail]);
 
   // Load the configured agent up front so the tab is titled correctly and the
   // issue terminal launches with the right command.
   useEffect(() => {
+    // The core resolves both fields to non-empty defaults, so take them as given.
     getAgentConfig()
-      .then((cfg) =>
-        setAgent({
-          name: cfg.name || DEFAULT_AGENT_NAME,
-          command: cfg.command || DEFAULT_AGENT_COMMAND,
-        }),
-      )
+      .then(setAgent)
       .catch(() => undefined);
   }, []);
 
@@ -853,17 +861,21 @@ function WorkspaceDetailView({
 
   // Every provisioned workspace surfaces an agent session, so opening one is
   // enough to get a tab you can drive. The pinned tab that appears is
-  // auto-focused by TerminalTabs, navigating to it. Ref-guarded to fire once per
-  // workspace; skipped for the issue flow (which has its own launch path,
-  // seeded with the prompt), once the user has closed the tab, and until the
-  // liveness poll has answered so an existing session isn't spawned twice.
+  // auto-focused by TerminalTabs, navigating to it. See `shouldAutoStartAgent`
+  // for what has to hold first.
   useEffect(() => {
-    if (claudePrompt || agentDismissed) return;
-    if (detail?.status !== "active") return;
-    if (!agentProbed || agentActive || autoStartAgentRef.current) return;
+    const start = shouldAutoStartAgent({
+      issuePrompt,
+      dismissed: agentDismissed,
+      workspaceStatus: detail?.status ?? "",
+      probed: agentProbed,
+      agentActive,
+      alreadyStarted: autoStartAgentRef.current,
+    });
+    if (!start) return;
     autoStartAgentRef.current = true;
     void startAgent();
-  }, [claudePrompt, agentDismissed, detail?.status, agentProbed, agentActive, startAgent]);
+  }, [issuePrompt, agentDismissed, detail?.status, agentProbed, agentActive, startAgent]);
 
   // Closing the agent tab means closing it: TerminalTabs kills the session, and
   // dropping it from `pinnedTabs` here is what removes the header. Until this
@@ -874,13 +886,14 @@ function WorkspaceDetailView({
     setAgentActive(false);
   }, []);
 
-  // Undismiss only once the session is up. Showing the tab first would let it
-  // attach to a shell of its own — and, in the issue flow, re-run the prompt —
-  // in the window before the core's session exists.
-  const restartAgent = useCallback(async () => {
-    await startAgent();
+  // Bring the agent tab back. When a session is already live — a kill that didn't
+  // take, or something else started one — this only un-hides the tab. Otherwise
+  // start first: showing the tab before the session exists would let it attach to
+  // a bare shell of its own, and re-run the prompt in the issue flow.
+  const showAgent = useCallback(async () => {
+    if (!agentActive) await startAgent();
     setAgentDismissed(false);
-  }, [startAgent]);
+  }, [agentActive, startAgent]);
 
   if (error) return <p className="p-6 text-sm text-red-400">{error}</p>;
   if (!detail) return <p className="p-6 text-sm text-zinc-500">Loading…</p>;
@@ -898,10 +911,10 @@ function WorkspaceDetailView({
             {detail.rootPath}
           </span>
           {agentError && <span className="shrink-0 text-xs text-red-400">{agentError}</span>}
-          {provisioned && !agentActive && (
+          {provisioned && (!agentActive || agentDismissed) && (
             <button
               type="button"
-              onClick={() => void restartAgent()}
+              onClick={() => void showAgent()}
               className="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
             >
               Start {agent.name} session
@@ -1108,13 +1121,12 @@ function WorkspaceDetailView({
             // iTerm-style tabs and Cmd+D pane splits for its own shells. See
             // `resolveAgentTab` for how the issue and remote-control flows differ.
             const agentTab = resolveAgentTab({
-              claudePrompt,
-              claudePromptReady,
+              issuePrompt,
+              issuePromptReady,
               agentActive,
               dismissed: agentDismissed,
               workspaceId: detail.id,
-              rootPath: detail.rootPath,
-              agentCwd,
+              cwd: agentCwd,
               agentName: agent.name,
               agentCommand: agent.command,
             });

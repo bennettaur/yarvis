@@ -71,32 +71,30 @@ export interface OpenSetupLog {
   title: string;
 }
 
-export default function TerminalTabs({
-  storageKey,
-  cwd,
-  pinnedTabs = [],
-  onClosePinned,
-  initialTab = "terminal",
-  openFileDiff = null,
-  onFileDiffOpened,
-  renderFileDiff,
-  openSetupLog = null,
-  onSetupLogOpened,
-  renderSetupLog,
-}: {
+/**
+ * Pinned tabs and the close handler that makes them closable, paired so neither
+ * can be supplied alone.
+ *
+ * This surface kills a pinned tab's session but cannot remove the tab — only the
+ * owner decides whether a pinned tab exists, and it learns that from
+ * `onClosePinned`. An optional handler would mean a caller could pass
+ * `pinnedTabs` and silently get a tab the user cannot close (and, for one
+ * carrying an `initialCommand`, one that relaunches its session on the next
+ * reattach). That was the bug in issue #155, so the pairing is enforced here
+ * rather than left to a test.
+ */
+type PinnedTabProps =
+  | {
+      pinnedTabs: PinnedTab[];
+      onClosePinned: (pinned: PinnedTab) => void;
+    }
+  | { pinnedTabs?: never; onClosePinned?: never };
+
+interface TerminalTabsProps {
   /** Stable namespace for this surface — both for localStorage and PTY ids. */
   storageKey: string;
   /** Working directory for freshly spawned shells in this surface. */
   cwd?: string;
-  /** Tabs bound to externally-managed sessions, shown whenever present. */
-  pinnedTabs?: PinnedTab[];
-  /**
-   * Called after the user closes a pinned tab and its session has been killed.
-   * The owner decides what a pinned tab's presence means, so only it can drop
-   * the tab — without this the header would linger (and, for a tab carrying an
-   * `initialCommand`, relaunch its session on the next reattach).
-   */
-  onClosePinned?: (pinned: PinnedTab) => void;
   /** What this surface shows with no tabs of its own; see `InitialTab`. */
   initialTab?: InitialTab;
   /**
@@ -120,16 +118,30 @@ export default function TerminalTabs({
   onSetupLogOpened?: () => void;
   /** Supplies a setup-log tab's body. When omitted, setup-log tabs are not used. */
   renderSetupLog?: (req: Pick<OpenSetupLog, "workspaceRepoId">) => ReactNode;
-}) {
+}
+
+export default function TerminalTabs({
+  storageKey,
+  cwd,
+  pinnedTabs = [],
+  onClosePinned,
+  initialTab = "terminal",
+  openFileDiff = null,
+  onFileDiffOpened,
+  renderFileDiff,
+  openSetupLog = null,
+  onSetupLogOpened,
+  renderSetupLog,
+}: TerminalTabsProps & PinnedTabProps) {
   const [state, setState] = useState<SurfaceState>(() => loadState(storageKey, initialTab));
   // Refs to xterm handles so a tab/pane switch can move focus into the right shell.
   const handlesRef = useRef<Map<string, TerminalPanelHandle | null>>(new Map());
   const rootRef = useRef<HTMLDivElement | null>(null);
   // Pinned tab keys seen on the previous render, to detect newly-appeared ones.
   const prevPinnedKeysRef = useRef<string[]>([]);
-  // Where selection lands if the last regular tab is closed. A primitive, so the
-  // close callbacks that depend on it stay stable across renders — `pinnedTabs`
-  // is a fresh array each time.
+  // Where selection lands if the last regular tab is closed. Read as a primitive
+  // because `pinnedTabs` is a fresh array every render, so depending on the array
+  // itself would rebuild `closeTab` even when the pinned set hasn't changed.
   const firstPinnedKey = pinnedTabs[0]?.key ?? null;
 
   // Persist on every change. State changes are coarse (tab/split/focus) so this

@@ -11,6 +11,8 @@ import {
 import {
   type ClaudeSessionStarter,
   startClaudeSession as defaultStartClaudeSession,
+  sessionDescription,
+  sessionStartedMessage,
 } from "../workspaces/claudeSession.ts";
 import { defaultGitRunner, type GitRunner } from "../workspaces/git.ts";
 import { createWorkspace, getWorkspace, provisionWorkspace } from "../workspaces/service.ts";
@@ -80,9 +82,7 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
         repos: detail.repos.map((r) => r.repo.name),
         sessionName: detail.name,
         sessionKey: session.sessionKey,
-        message: remoteControl
-          ? `Started a remote-controllable Claude Code session in workspace "${detail.name}". Open it from claude.ai/code or the Claude mobile app by the name "${detail.name}", or view it live in the Workspaces tab.`
-          : `Started a Claude Code session in workspace "${detail.name}". View it live in the Workspaces tab.`,
+        message: sessionStartedMessage(detail.name, remoteControl),
       };
     } catch (e) {
       return {
@@ -197,8 +197,7 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
     }),
 
     jira_start_work_on_issue: tool({
-      description:
-        "Start work on a JIRA issue like the 'Start work' button on the issue view: create a workspace, provision it, seed the issue details into .yarvis/issue-prompt.md, assign the issue to the user and transition it to in-progress (best-effort), and start a remote-controllable Claude Code session in it. Because a JIRA ticket isn't tied to a repo, pass the repo ids to include (resolve them with list_repos); pass an empty list for a scratch workspace with no repo. Requires JIRA to be configured.",
+      description: `Start work on a JIRA issue like the 'Start work' button on the issue view: create a workspace, provision it, seed the issue details into .yarvis/issue-prompt.md, assign the issue to the user and transition it to in-progress (best-effort), and start ${sessionDescription(remoteControl)} in it. Because a JIRA ticket isn't tied to a repo, pass the repo ids to include (resolve them with list_repos); pass an empty list for a scratch workspace with no repo. Requires JIRA to be configured.`,
       inputSchema: z.object({
         key: issueKeyArg.describe("Issue key, e.g. PROJ-45"),
         repoIds: z

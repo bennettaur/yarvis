@@ -117,8 +117,11 @@ Settings tab's Repositories section.
 Every provisioned workspace opens with an agent tab and nothing else — opening
 one starts a Claude Code session in it (or attaches to the one already running)
 and focuses that tab. No extra shell tab is opened alongside it; use `+` or
-Cmd+T when you want one. Closing the agent tab ends its session and leaves it
-closed; "Start Claude session" in the workspace header brings it back.
+Cmd+T when you want one. Closing the agent tab kills its session, and nothing
+reopens it while you stay on that workspace — but the dismissal is per-visit, so
+switching workspaces (or leaving the Workspaces tab) and coming back counts as
+opening the workspace again and starts a fresh session. The header's start-session
+button brings one back on the spot.
 
 The agent's tab title and launch command are set under Settings → Repositories →
 Agent, defaulting to `Claude` and `claude --permission-mode auto`, so you can

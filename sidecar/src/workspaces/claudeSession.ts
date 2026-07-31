@@ -35,6 +35,25 @@ export interface ClaudeSessionResult {
 /** Injectable starter type so the workspace tool is testable without the core. */
 export type ClaudeSessionStarter = (input: StartClaudeSessionInput) => Promise<ClaudeSessionResult>;
 
+/**
+ * How a tool's description refers to the session it starts. The model relays
+ * this to the user as fact, so a turn that won't enable Remote Control must not
+ * advertise a session the user can drive from their phone.
+ */
+export function sessionDescription(remoteControl: boolean): string {
+  return remoteControl
+    ? "a remote-controllable Claude Code session (drivable from claude.ai/code or the Claude mobile app by its name, and visible as a live terminal in the Workspaces tab)"
+    : "a Claude Code session (visible as a live terminal in the Workspaces tab)";
+}
+
+/** What a tool reports back after starting a session. Shares its wording with
+ *  `sessionDescription` so the two can't drift apart. */
+export function sessionStartedMessage(name: string, remoteControl: boolean): string {
+  return remoteControl
+    ? `Started a remote-controllable Claude Code session in workspace "${name}". Open it from claude.ai/code or the Claude mobile app by the name "${name}", or view it live in the Workspaces tab.`
+    : `Started a Claude Code session in workspace "${name}". View it live in the Workspaces tab. It is not remotely controllable — say so if the user asks to drive it from elsewhere.`;
+}
+
 /** Asks the core to start the session; returns the key the frontend attaches to. */
 export async function startClaudeSession(
   input: StartClaudeSessionInput,

@@ -84,7 +84,7 @@ let uidCounter = 0;
 export const uid = (kind: "t" | "p") =>
   `${kind}${Date.now().toString(36)}${(uidCounter++).toString(36)}`;
 
-export function freshState(): SurfaceState {
+function freshState(): SurfaceState {
   const paneId = uid("p");
   const tabId = uid("t");
   return {
@@ -96,7 +96,7 @@ export function freshState(): SurfaceState {
 
 /** A surface with no tabs of its own, so opening one doesn't spawn a shell the
  *  user never asked for and then has to close. */
-export function emptyState(): SurfaceState {
+function emptyState(): SurfaceState {
   return { tabs: [], activeTabId: "", focused: {} };
 }
 
