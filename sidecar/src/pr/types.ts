@@ -17,6 +17,19 @@ export interface PrSummary {
   updatedAt: string;
 }
 
+/**
+ * A PR plus the viewer's own footprint on it, used to build the "Reviewing"
+ * list. `state` on the summary distinguishes open from closed; `merged`
+ * separates a merged PR from one closed unmerged, and `myReviewStates` carries
+ * the viewer's submitted verdicts so an approval can retire the PR from the
+ * in-progress half of the list.
+ */
+export interface PrInvolvement {
+  summary: PrSummary;
+  merged: boolean;
+  myReviewStates: ReviewerState[];
+}
+
 export interface ChecksSummary {
   total: number;
   success: number;

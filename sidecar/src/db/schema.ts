@@ -579,6 +579,26 @@ export const wipConfig = pgTable("wip_config", {
 
 export type WipConfigRow = typeof wipConfig.$inferSelect;
 
+/**
+ * User configuration for the GitHub PR dashboard. Singleton (like `wip_config`):
+ * the service keeps at most one row.
+ *
+ * `reviewQuery` replaces the built-in "Needs review" search so the user can
+ * decide what counts as needing their attention (team review requests, drafts
+ * excluded, a specific org, …). `reviewingLookbackDays` bounds how far back the
+ * "Reviewing" tab looks for PRs the user has touched — both in the local
+ * `pr.viewed` event log and in GitHub's own record of their comments/reviews.
+ */
+export const githubPrConfig = pgTable("github_pr_config", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  reviewQuery: text("review_query").notNull(),
+  reviewingLookbackDays: integer("reviewing_lookback_days").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type GithubPrConfigRow = typeof githubPrConfig.$inferSelect;
+
 export type CustomProviderRow = typeof customProviders.$inferSelect;
 export type NewCustomProviderRow = typeof customProviders.$inferInsert;
 
