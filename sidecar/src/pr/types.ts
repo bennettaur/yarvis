@@ -4,6 +4,28 @@
  * the frontend renders a single PR review view regardless of source.
  */
 
+/**
+ * Discriminated PR identity, deliberately identical to the frontend's `PrRef`
+ * so both sides derive the same {@link refKey} for the same pull request.
+ *
+ * The Azure routes don't receive an organization — the sidecar binds it from
+ * configuration — so a route builds the ref by pairing the path parameters with
+ * the configured org.
+ */
+export type PrRef =
+  | { provider: "github"; owner: string; repo: string; number: number }
+  | { provider: "azure"; org: string; project: string; repo: string; prId: number };
+
+/**
+ * Stable identity string. Must stay byte-for-byte in step with the frontend's
+ * `refKey`: rows keyed by it are written by one side and read by the other.
+ */
+export function refKey(ref: PrRef): string {
+  return ref.provider === "github"
+    ? `gh:${ref.owner}/${ref.repo}/${ref.number}`
+    : `az:${ref.org}/${ref.project}/${ref.repo}/${ref.prId}`;
+}
+
 export interface PrSummary {
   number: number;
   title: string;

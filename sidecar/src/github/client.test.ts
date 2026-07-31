@@ -468,6 +468,78 @@ describe("github client", () => {
     });
   });
 
+  describe("listDir", () => {
+    // The contents endpoint answers with an object for a file and an array for
+    // a directory, and only the array is a listing.
+    it("returns the entries of a directory", async () => {
+      const gh = new GitHubClient(
+        "t",
+        fakeFetch({
+          "/repos/o/r/contents/src": [
+            { path: "src/a.ts", type: "file" },
+            { path: "src/lib", type: "dir" },
+          ],
+        }),
+      );
+      expect(await gh.listDir("o", "r", "src", "a".repeat(40))).toEqual([
+        { path: "src/a.ts", type: "file" },
+        { path: "src/lib", type: "dir" },
+      ]);
+    });
+
+    it("treats a path that is a file as having no entries", async () => {
+      const gh = new GitHubClient(
+        "t",
+        fakeFetch({ "/repos/o/r/contents/a.ts": { path: "a.ts", type: "file" } }),
+      );
+      expect(await gh.listDir("o", "r", "a.ts", "a".repeat(40))).toEqual([]);
+    });
+
+    it("treats a missing directory as having no entries", async () => {
+      const gh = new GitHubClient("t", fakeFetch({}));
+      expect(await gh.listDir("o", "r", "nope", "a".repeat(40))).toEqual([]);
+    });
+
+    // The repository root is the empty path, which must not leave a double
+    // slash in the URL.
+    it("addresses the repository root without an empty path segment", async () => {
+      const urls: string[] = [];
+      const gh = new GitHubClient("t", (async (url: string) => {
+        urls.push(String(url));
+        return new Response("[]", { status: 200 });
+      }) as unknown as typeof fetch);
+      await gh.listDir("o", "r", "", "a".repeat(40));
+      expect(urls[0]).toContain("/repos/o/r/contents?ref=");
+    });
+  });
+
+  describe("searchCode", () => {
+    it("scopes the query to the repository and returns matching fragments", async () => {
+      const urls: string[] = [];
+      const gh = new GitHubClient("t", (async (url: string) => {
+        urls.push(String(url));
+        return new Response(
+          JSON.stringify({
+            items: [{ path: "src/a.ts", text_matches: [{ fragment: "callSite()" }] }],
+          }),
+          { status: 200 },
+        );
+      }) as unknown as typeof fetch);
+
+      const hits = await gh.searchCode("o", "r", "callSite");
+      expect(hits).toEqual([{ path: "src/a.ts", fragments: ["callSite()"] }]);
+      expect(urls[0]).toContain(encodeURIComponent("callSite repo:o/r"));
+    });
+
+    it("copes with a hit that carries no fragments", async () => {
+      const gh = new GitHubClient(
+        "t",
+        fakeFetch({ "/search/code": { items: [{ path: "a.ts" }] } }),
+      );
+      expect(await gh.searchCode("o", "r", "q")).toEqual([{ path: "a.ts", fragments: [] }]);
+    });
+  });
+
   it("carries the head and base commits onto the PR detail", () => {
     const detail = toPrDetail({
       number: 7,

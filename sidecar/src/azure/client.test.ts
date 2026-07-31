@@ -432,6 +432,72 @@ describe("azure client", () => {
     ).toBe("");
   });
 
+  // Azure includes the directory being listed as the first entry of its own
+  // listing, which is not something the caller asked for.
+  it("lists a directory without echoing the directory itself", async () => {
+    const az = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([
+        {
+          match: (u) => u.includes("/items") && u.includes("recursionLevel=OneLevel"),
+          body: {
+            value: [
+              { path: "/src", isFolder: true },
+              { path: "/src/app.ts", isFolder: false },
+              { path: "/src/lib", isFolder: true },
+            ],
+          },
+        },
+      ]),
+    );
+    expect(
+      await az.listDir({ project: "Shop", repo: "web", prId: 7 }, "src", "a".repeat(40)),
+    ).toEqual([
+      { path: "src/app.ts", type: "file" },
+      { path: "src/lib", type: "dir" },
+    ]);
+  });
+
+  it("treats a missing directory as having no entries", async () => {
+    const az = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([{ match: () => true, body: {}, status: 404 }]),
+    );
+    expect(
+      await az.listDir({ project: "Shop", repo: "web", prId: 7 }, "gone", "a".repeat(40)),
+    ).toEqual([]);
+  });
+
+  describe("searchCode", () => {
+    it("posts to the search host with the repository as a filter", async () => {
+      const calls: { url: string; body: any }[] = [];
+      const az = new AzureDevOpsClient("pat", ORG, (async (url: string, init?: RequestInit) => {
+        calls.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+        return new Response(JSON.stringify({ results: [{ path: "/src/app.ts" }] }), {
+          status: 200,
+        });
+      }) as unknown as typeof fetch);
+
+      const hits = await az.searchCode({ project: "Shop", repo: "web", prId: 7 }, "callSite");
+      expect(hits).toEqual([{ path: "src/app.ts" }]);
+      expect(calls[0]!.url).toContain("almsearch.dev.azure.com/acme/Shop");
+      expect(calls[0]!.body.filters).toEqual({ Repository: ["web"] });
+    });
+
+    // Code search is an extension an organization may simply not have, so a
+    // failure resolves to null rather than ending the agent run.
+    it("resolves to null when the search service is unavailable", async () => {
+      const az = new AzureDevOpsClient(
+        "pat",
+        ORG,
+        fakeFetch([{ match: () => true, body: {}, status: 404 }]),
+      );
+      expect(await az.searchCode({ project: "Shop", repo: "web", prId: 7 }, "q")).toBeNull();
+    });
+  });
+
   it("carries the head and base commits onto the PR detail", async () => {
     const az = new AzureDevOpsClient(
       "pat",

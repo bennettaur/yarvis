@@ -561,6 +561,74 @@ export class GitHubClient {
     return res.text();
   }
 
+  /**
+   * Entries directly under a directory at a commit, so a caller can find its
+   * way around a tree it has never seen. A path that is a file, or absent,
+   * comes back empty rather than throwing.
+   */
+  async listDir(
+    owner: string,
+    repo: string,
+    path: string,
+    ref: string,
+  ): Promise<{ path: string; type: string }[]> {
+    // The repository root is the empty path, and the trailing slash it would
+    // otherwise leave behind has to go with it.
+    const encoded = path.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+    const suffix = encoded ? `/${encoded}` : "";
+    const res = await this.fetchImpl(
+      `https://api.github.com/repos/${owner}/${repo}/contents${suffix}?ref=${encodeURIComponent(ref)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      },
+    );
+    if (res.status === 404) return [];
+    if (!res.ok) throw new Error(`github contents ${path} -> ${res.status}`);
+    const body = (await res.json()) as unknown;
+    // The contents endpoint returns an object for a file and an array for a
+    // directory; only the latter is a listing.
+    if (!Array.isArray(body)) return [];
+    return body.map((entry: any) => ({ path: entry.path, type: entry.type }));
+  }
+
+  /**
+   * Repo-scoped code search, with the matching fragments so a caller can judge
+   * a hit without fetching the whole file.
+   *
+   * GitHub only indexes a repository's default branch, so results describe the
+   * base of a pull request rather than its head. That is usually what a caller
+   * wants when asking "who else calls this" — the callers are existing code —
+   * but it does mean a symbol introduced by the PR itself will not be found.
+   */
+  async searchCode(
+    owner: string,
+    repo: string,
+    query: string,
+    limit = 10,
+  ): Promise<{ path: string; fragments: string[] }[]> {
+    const q = encodeURIComponent(`${query} repo:${owner}/${repo}`);
+    const res = await this.fetchImpl(
+      `https://api.github.com/search/code?q=${q}&per_page=${limit}`,
+      {
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          Accept: "application/vnd.github.text-match+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      },
+    );
+    if (!res.ok) throw new Error(`github code search -> ${res.status}`);
+    const body = (await res.json()) as { items?: any[] };
+    return (body.items ?? []).map((item: any) => ({
+      path: item.path,
+      fragments: (item.text_matches ?? []).map((m: any) => m.fragment).filter(Boolean),
+    }));
+  }
+
   async prFiles(owner: string, repo: string, number: number): Promise<PrFile[]> {
     const files = await this.api<any[]>(
       `/repos/${owner}/${repo}/pulls/${number}/files?per_page=100`,
