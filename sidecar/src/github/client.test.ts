@@ -289,6 +289,120 @@ describe("github client", () => {
     expect(bodies[1]!.variables).toEqual({ id: "PR_node2", method: "MERGE" });
   });
 
+  it("fetches a single PR's list summary", async () => {
+    const gh = new GitHubClient(
+      "t",
+      fakeFetch({
+        "/repos/o/r/pulls/7": {
+          number: 7,
+          title: "Named directly",
+          html_url: "https://github.com/o/r/pull/7",
+          user: { login: "them" },
+          draft: false,
+          state: "open",
+          created_at: "2026-07-01",
+          updated_at: "2026-07-02",
+        },
+      }),
+    );
+    expect(await gh.prSummary("o", "r", 7)).toMatchObject({
+      number: 7,
+      owner: "o",
+      repo: "r",
+      author: "them",
+      title: "Named directly",
+    });
+  });
+
+  it("shapes involvement search hits, splitting merged out of the closed state", async () => {
+    const gh = new GitHubClient(
+      "t",
+      fakeFetch({
+        "/graphql": {
+          data: {
+            search: {
+              nodes: [
+                {
+                  number: 3,
+                  title: "Merged one",
+                  url: "https://github.com/o/r/pull/3",
+                  isDraft: false,
+                  state: "MERGED",
+                  createdAt: "2026-07-01",
+                  updatedAt: "2026-07-02",
+                  author: { login: "them" },
+                  repository: { name: "r", owner: { login: "o" } },
+                  reviews: { nodes: [{ state: "COMMENTED" }, { state: "APPROVED" }] },
+                },
+                // An issue hit: matches no inline fragment, so it arrives empty.
+                {},
+              ],
+            },
+          },
+        },
+      }),
+    );
+    const items = await gh.searchInvolvement("is:pr commenter:@me", "me");
+    expect(items.length).toBe(1);
+    expect(items[0]!.merged).toBe(true);
+    expect(items[0]!.summary).toMatchObject({ number: 3, owner: "o", repo: "r", state: "closed" });
+    expect(items[0]!.myReviewStates).toEqual(["commented", "approved"]);
+  });
+
+  it("looks up several PRs in one aliased request, dropping ones that error", async () => {
+    const bodies: Array<Record<string, any>> = [];
+    const partial = (async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(
+        JSON.stringify({
+          data: {
+            pr0: {
+              pullRequest: {
+                number: 1,
+                title: "Found",
+                url: "https://github.com/o/r/pull/1",
+                state: "OPEN",
+                createdAt: "2026-07-01",
+                updatedAt: "2026-07-01",
+                author: { login: "them" },
+                repository: { name: "r", owner: { login: "o" } },
+                reviews: { nodes: [] },
+              },
+            },
+            pr1: null,
+          },
+          errors: [{ message: "Could not resolve to a Repository" }],
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const gh = new GitHubClient("t", partial);
+    const items = await gh.lookupInvolvement(
+      [
+        { owner: "o", repo: "r", number: 1 },
+        { owner: "gone", repo: "r", number: 2 },
+      ],
+      "me",
+    );
+    expect(items.map((i) => i.summary.number)).toEqual([1]);
+    expect(bodies[0]!.variables).toEqual({
+      viewer: "me",
+      o0: "o",
+      r0: "r",
+      n0: 1,
+      o1: "gone",
+      r1: "r",
+      n1: 2,
+    });
+  });
+
+  it("makes no request when there is nothing to look up", async () => {
+    const failing = (async () => {
+      throw new Error("should not be called");
+    }) as unknown as typeof fetch;
+    expect(await new GitHubClient("t", failing).lookupInvolvement([], "me")).toEqual([]);
+  });
+
   it("disables auto-merge by node id", async () => {
     const bodies: Array<Record<string, any>> = [];
     const capturing = (async (_url: string, init?: RequestInit) => {

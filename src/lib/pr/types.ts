@@ -28,6 +28,32 @@ export interface PrStatus {
   checks: { total: number; success: number; failure: number; pending: number };
 }
 
+/**
+ * A PR the user has engaged with, plus their own footprint on it. Backs the
+ * "Reviewing" list, where a merged PR or the user's own approval means the
+ * review is done.
+ */
+export interface PrInvolvement {
+  summary: PrSummary;
+  merged: boolean;
+  /** The user's submitted review verdicts, oldest first. */
+  myReviewStates: ReviewerState[];
+}
+
+/** The "Reviewing" list, split into work still owed and work that has landed. */
+export interface ReviewingList {
+  inProgress: PrInvolvement[];
+  complete: PrInvolvement[];
+}
+
+/** User configuration for the GitHub PR dashboard (mirrors the sidecar shape). */
+export interface GhPrConfig {
+  /** GitHub search driving the "Needs review" list. */
+  reviewQuery: string;
+  /** How far back the "Reviewing" list looks for PRs the user has touched. */
+  reviewingLookbackDays: number;
+}
+
 export interface ReviewComment {
   author: string;
   body: string;

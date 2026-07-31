@@ -120,6 +120,13 @@
       "when": 1784036790743,
       "tag": "0016_aspiring_gateway",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1785439349241,
+      "tag": "0017_secret_tattoo",
+      "breakpoints": true
     }
   ]
 }

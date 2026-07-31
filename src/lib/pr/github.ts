@@ -2,6 +2,7 @@ import { ensureOk, sidecarFetch } from "../api";
 import { refApiPath } from "./ref";
 import type {
   GhFilter,
+  GhPrConfig,
   MergeMethod,
   NewComment,
   PrDetail,
@@ -9,6 +10,7 @@ import type {
   PrRef,
   PrStatus,
   PrSummary,
+  ReviewingList,
   StarredPr,
 } from "./types";
 
@@ -67,6 +69,21 @@ export async function ghSearch(query: string): Promise<PrSummary[]> {
   const raw = await get<GhRawSummary[]>(`/api/github/search?q=${encodeURIComponent(query)}`);
   return raw.map(toSummary);
 }
+
+/**
+ * The list-row summary for one PR, used to open a PR the user named by link or
+ * by repo + number instead of picking it out of a list.
+ */
+export async function ghPrSummary(ref: PrRef): Promise<PrSummary> {
+  return toSummary(await get<GhRawSummary>(`${refApiPath(ref)}/summary`));
+}
+
+/** PRs the user is part-way through reviewing, split into outstanding and done. */
+export const ghReviewing = () => get<ReviewingList>("/api/github/reviewing");
+
+export const ghPrConfig = () => get<GhPrConfig>("/api/github/config");
+export const ghSavePrConfig = (config: GhPrConfig) =>
+  send<GhPrConfig>("/api/github/config", "PUT", config);
 
 export const ghPrStatus = (ref: PrRef) => get<PrStatus>(refApiPath(ref));
 export const ghPrDetail = (ref: PrRef) => get<PrDetail>(`${refApiPath(ref)}/detail`);
