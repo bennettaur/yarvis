@@ -1,16 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { postPrComment } from "../../lib/pr/api";
-import {
-  invalidate,
-  prDetailKey,
-  usePrDetail,
-  usePrFileDiff,
-  usePrFiles,
-} from "../../lib/pr/cache";
+import { usePrDetail, usePrFileDiff, usePrFiles } from "../../lib/pr/cache";
 import { parsePatch } from "../../lib/pr/diff";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { rowClass } from "../diff/DiffView";
-import { ThreadCard } from "./PrDescription";
+import { usePersistedBoolean } from "../SplitPane";
+import { AddCommentButton, LineCommentBlock, useLineComments } from "./LineComments";
+import SplitDiffBody from "./SplitDiffBody";
 import { prFileAnchorId } from "./shared";
 import { useExpandOnApproach } from "./useExpandOnApproach";
 
@@ -22,6 +17,9 @@ import { useExpandOnApproach } from "./useExpandOnApproach";
  */
 const PREFETCH_COUNT = 4;
 
+/** Remembers the unified/side-by-side choice across PRs and app restarts. */
+const SPLIT_VIEW_KEY = "yarvis.pr.splitDiff";
+
 /**
  * A fold/unfold request broadcast to every file at once. It carries an `epoch`
  * rather than being a plain boolean so pressing "Collapse all" a second time
@@ -32,82 +30,7 @@ interface FoldAll {
   epoch: number;
 }
 
-/** Inline composer for a new line comment. */
-function CommentComposer({
-  onSubmit,
-  onCancel,
-}: {
-  onSubmit: (body: string) => Promise<void>;
-  onCancel: () => void;
-}) {
-  const [body, setBody] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  // The composer only mounts when the user clicks a line's "+", so focusing it
-  // is expected. Done via a ref rather than the autoFocus attribute (which
-  // fires on initial page render and is an accessibility anti-pattern there).
-  useEffect(() => {
-    textareaRef.current?.focus();
-  }, []);
-
-  const submit = async () => {
-    if (!body.trim()) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await onSubmit(body.trim());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="border-l-2 border-sky-700 bg-zinc-900 p-2">
-      <textarea
-        ref={textareaRef}
-        value={body}
-        placeholder="Leave a comment…"
-        onChange={(e) => setBody(e.target.value)}
-        className="h-20 w-full rounded-md border border-zinc-700 bg-zinc-800 p-2 text-sm text-zinc-100"
-      />
-      {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
-      <div className="mt-1 flex gap-2">
-        <button
-          type="button"
-          onClick={() => void submit()}
-          disabled={busy || !body.trim()}
-          className="rounded-md bg-sky-700 px-3 py-1 text-xs text-white hover:bg-sky-600 disabled:opacity-50"
-        >
-          {busy ? "Posting…" : "Comment"}
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={busy}
-          className="rounded-md border border-zinc-700 px-3 py-1 text-xs hover:bg-zinc-800"
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/** Groups a file's review threads by their right-side line number. */
-function threadsByLine(threads: ReviewThread[]): Map<number, ReviewThread[]> {
-  const map = new Map<number, ReviewThread[]>();
-  for (const thread of threads) {
-    if (thread.line == null) continue;
-    const list = map.get(thread.line);
-    if (list) list.push(thread);
-    else map.set(thread.line, [thread]);
-  }
-  return map;
-}
-
+/** A file's diff as a single column of unified-diff rows. */
 export function DiffBody({
   prRef,
   file,
@@ -120,72 +43,25 @@ export function DiffBody({
   threads: ReviewThread[];
 }) {
   const rows = useMemo(() => parsePatch(patch), [patch]);
-  const byLine = useMemo(() => threadsByLine(threads), [threads]);
-  const [activeLine, setActiveLine] = useState<number | null>(null);
-  // Comments posted this session, shown immediately while the server catches up.
-  const [pending, setPending] = useState<{ line: number; body: string }[]>([]);
-
-  const submit = async (line: number, body: string) => {
-    await postPrComment(prRef, { path: file.filename, line, body });
-    setPending((p) => [...p, { line, body }]);
-    setActiveLine(null);
-    // Drop the cached detail so the real thread replaces the optimistic one on
-    // the next load of this PR.
-    invalidate(prDetailKey(prRef));
-  };
+  const comments = useLineComments(prRef, file, threads);
 
   return (
     <div className="overflow-x-auto rounded-b-lg bg-zinc-950 font-mono text-xs leading-relaxed">
-      {rows.map((row, i) => {
-        const commentable = row.rightLine != null;
-        const lineThreads = row.rightLine != null ? byLine.get(row.rightLine) : undefined;
-        const linePending =
-          row.rightLine != null ? pending.filter((p) => p.line === row.rightLine) : [];
-        return (
-          <div key={i}>
-            <div className={`group flex ${rowClass(row.kind)}`}>
-              <span className="flex w-12 shrink-0 select-none items-center justify-end gap-1 pr-2 text-zinc-600">
-                {commentable && (
-                  <button
-                    type="button"
-                    onClick={() => setActiveLine(row.rightLine)}
-                    title="Comment on this line"
-                    className="opacity-0 group-hover:opacity-100 text-sky-400 hover:text-sky-300"
-                  >
-                    +
-                  </button>
-                )}
-                <span>{row.rightLine ?? ""}</span>
-              </span>
-              <span className="whitespace-pre">{row.text || " "}</span>
-            </div>
-            {(lineThreads ||
-              linePending.length > 0 ||
-              (commentable && activeLine === row.rightLine)) && (
-              <div className="space-y-2 px-3 py-2 font-sans">
-                {lineThreads?.map((t, j) => (
-                  <ThreadCard key={`t-${j}`} thread={t} />
-                ))}
-                {linePending.map((p, j) => (
-                  <div
-                    key={`p-${j}`}
-                    className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-3 text-sm text-zinc-300"
-                  >
-                    <div className="mb-1 text-xs font-medium text-zinc-500">you · just now</div>
-                    {p.body}
-                  </div>
-                ))}
-                {commentable && activeLine === row.rightLine && (
-                  <CommentComposer
-                    onSubmit={(body) => submit(row.rightLine as number, body)}
-                    onCancel={() => setActiveLine(null)}
-                  />
-                )}
-              </div>
-            )}
+      {rows.map((row, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: rows are a stable render of an immutable patch
+        <div key={i}>
+          <div className={`group flex ${rowClass(row.kind)}`}>
+            <span className="flex w-12 shrink-0 select-none items-center justify-end gap-1 pr-2 text-zinc-600">
+              {row.rightLine != null && (
+                <AddCommentButton onClick={() => comments.openComposer(row.rightLine as number)} />
+              )}
+              <span>{row.rightLine ?? ""}</span>
+            </span>
+            <span className="whitespace-pre">{row.text || " "}</span>
           </div>
-        );
-      })}
+          <LineCommentBlock line={row.rightLine} comments={comments} />
+        </div>
+      ))}
     </div>
   );
 }
@@ -243,6 +119,7 @@ function FileDiff({
   isViewed,
   onToggleViewed,
   foldAll,
+  split,
 }: {
   prRef: PrRef;
   file: PrFile;
@@ -251,6 +128,7 @@ function FileDiff({
   isViewed: boolean;
   onToggleViewed: (path: string) => void;
   foldAll: FoldAll | null;
+  split: boolean;
 }) {
   // The first few unviewed files are open on mount; viewed files start
   // collapsed regardless so the user's prior progress stays out of the way.
@@ -357,7 +235,16 @@ function FileDiff({
         (loading && !patch ? (
           <p className="px-3 py-2 text-xs text-zinc-600">Loading diff…</p>
         ) : patch ? (
-          <DiffBody prRef={prRef} file={loaded ?? file} patch={patch} threads={fileThreads} />
+          split ? (
+            <SplitDiffBody
+              prRef={prRef}
+              file={loaded ?? file}
+              patch={patch}
+              threads={fileThreads}
+            />
+          ) : (
+            <DiffBody prRef={prRef} file={loaded ?? file} patch={patch} threads={fileThreads} />
+          )
         ) : (
           <p className="px-3 py-2 text-xs text-zinc-600">No textual diff (binary or too large).</p>
         ))}
@@ -365,7 +252,7 @@ function FileDiff({
   );
 }
 
-/** The changed files of a PR rendered as expandable, comment-able unified diffs. */
+/** The changed files of a PR rendered as expandable, comment-able diffs. */
 export default function PrFileDiffs({
   prRef,
   viewed,
@@ -379,6 +266,7 @@ export default function PrFileDiffs({
   const detail = usePrDetail(prRef);
   const threads = detail.data?.reviewThreads ?? [];
   const [foldAll, setFoldAll] = useState<FoldAll | null>(null);
+  const [split, setSplit] = usePersistedBoolean(SPLIT_VIEW_KEY, false);
 
   if (error) return <p className="text-sm text-red-400">{error}</p>;
   if (loading || !data) return <p className="text-sm text-zinc-500">Loading diff…</p>;
@@ -392,10 +280,32 @@ export default function PrFileDiffs({
         <span>
           {data.length} {data.length === 1 ? "file" : "files"}
         </span>
+        <div className="ml-auto flex overflow-hidden rounded border border-zinc-700">
+          <button
+            type="button"
+            onClick={() => setSplit(false)}
+            aria-pressed={!split}
+            className={`px-2 py-0.5 ${
+              split ? "hover:bg-zinc-800 hover:text-zinc-200" : "bg-zinc-800 text-zinc-200"
+            }`}
+          >
+            Unified
+          </button>
+          <button
+            type="button"
+            onClick={() => setSplit(true)}
+            aria-pressed={split}
+            className={`border-l border-zinc-700 px-2 py-0.5 ${
+              split ? "bg-zinc-800 text-zinc-200" : "hover:bg-zinc-800 hover:text-zinc-200"
+            }`}
+          >
+            Split
+          </button>
+        </div>
         <button
           type="button"
           onClick={() => fold(false)}
-          className="ml-auto rounded border border-zinc-700 px-2 py-0.5 hover:bg-zinc-800 hover:text-zinc-200"
+          className="rounded border border-zinc-700 px-2 py-0.5 hover:bg-zinc-800 hover:text-zinc-200"
         >
           Collapse all
         </button>
@@ -417,6 +327,7 @@ export default function PrFileDiffs({
           isViewed={viewed.has(f.filename)}
           onToggleViewed={onToggleViewed}
           foldAll={foldAll}
+          split={split}
         />
       ))}
     </div>
