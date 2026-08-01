@@ -61,9 +61,16 @@ optional Telegram bot token + allowed chat-id list (and, when the optional secon
 factor is enabled, a TOTP secret + re-auth window) for the remote-control bot,
 see below. AWS Bedrock uses the standard AWS credential chain.
 
+The GitHub token needs `repo` on a classic PAT; on a fine-grained one, **Contents:
+Read** (the review reads file bodies and directories to show context around a
+change) alongside pull-request and issue access.
+
 The Azure DevOps token is a Personal Access Token with **Code (read)** and
 **Pull Request Threads (read & write)** scopes; the organization URL is the
-`https://dev.azure.com/your-org` base (project is chosen per search).
+`https://dev.azure.com/your-org` base (project is chosen per search). Azure code
+search runs against the separate `almsearch.dev.azure.com` service, provided by
+the **Code Search** extension — without it installed, guided review and line
+insights still work, the agent just can't search the repo and says so.
 
 The JIRA credentials are for Atlassian Cloud: the base URL is your
 `https://your-org.atlassian.net` site, and the API token (created at
@@ -162,6 +169,39 @@ and **Complete** — merged, closed, or approved by you — with the latter
 collapsed. An approval superseded by a later change request counts as in
 progress again. GitHub only: Azure DevOps exposes neither half of that signal.
 
+#### Reading a diff
+
+Files open as you scroll toward them, and **Collapse all** / **Expand all**
+folds the set when you want the file list at a glance. **Unified** / **Split**
+switches between one column and the old file beside the new one; the choice
+sticks across PRs. Each `⋯ N lines` marker between hunks reveals the code the
+patch left out — twenty lines from either end, or the whole stretch by clicking
+the count — and a per-file **Whole file** shows the complete file with its
+changes still highlighted, plus a strip down the edge marking where in the file
+they fall. A file's full text is only fetched once you ask for context.
+
+#### Guided review and line insights
+
+**Guided review** (beside the Files heading) has an agent read the change and
+lay out an order to review it in, working from the outside in — the request
+that arrives, then what handles it, down to what it finally writes. Each step
+names a file and lines with a sentence on why it comes there, and the box docks
+to the bottom of the review with back/next. A guide is generated once per PR and
+kept until you approve, request changes, or merge; pushing new commits marks it
+out of date rather than deleting it, and anything untouched for 30 days is swept.
+
+The **?** beside any line asks about that code — shift-click to extend from the
+last line you asked about. Answers are stored against those lines and shown
+inline. They are your own notes, not review feedback: nothing reaches the author
+until you press **Post**, which turns one into a real line comment. Unlike
+guides they are kept indefinitely, and the assistant can search them ("what did
+I work out about that file?", "where did I leave off?").
+
+Both are agent runs against your configured LLM provider, so they need a
+provider key in Settings on top of the GitHub/Azure token, and neither is cheap:
+a tour gives the agent up to 40 tool-calling steps to explore the change and a
+line question up to 16, each carrying diffs and file contents.
+
 ### Telegram remote control
 
 Chat with Yarvis — and issue control commands — from Telegram. The sidecar runs
@@ -231,10 +271,12 @@ render real components with the `renderToHtml` helper in `src/test/render.tsx`.
 ```
 src/            React frontend (Vite + TS + Tailwind)
   lib/          sidecar API client, Keychain wrappers, Omni Chat context registry, notifications, cross-tab nav (nav.ts)
-    pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs, per-file viewed state, link/shorthand locator, diff parsing + context expansion)
+    pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs, per-file viewed state, link/shorthand locator, diff parsing + context expansion, guide + insight clients)
     issues/     provider-neutral issue data layer (GitHub + JIRA) — types + api client
     jira/       JIRA-specific data layer (issue detail, transitions, comments, create) — types + api client
   components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, Terminal, Workspaces, …)
+    pr/         PR dashboard + embedded review: lists, file diffs (unified + split),
+                gap/context expansion, change minimap, guide panel, insight cards
     issue/      Issues tab views: GitHub + JIRA issue lists, detail, create/repo-picker modals
     workspaces/  workspace detail subviews + Omni widgets
     shell/      desktop shell: nav rail, top bar, boot loading screen, tab shortcuts
@@ -254,7 +296,9 @@ sidecar/        Bun + TS service (Hono)
   src/memory/   pgvector memory, notes, ingestion, recaps
   src/github/   GitHub PR dashboard + embedded review (REST + GraphQL), dashboard config, in-progress review roll-up
   src/azure/    Azure DevOps PR dashboard + embedded review (REST; diffs built with jsdiff)
-  src/pr/       provider-neutral PR types shared by the github/ and azure/ clients
+  src/pr/       provider-neutral PR review subsystem (/api/pr): guide + insight storage,
+                the tour/ask agent runs, provider-agnostic code tools (read file, list dir,
+                search) over a GitHub/Azure source seam, and the chat agent's review tools
   src/issues/   provider-neutral issue routes/service (stars, filters, workspace links, start-work, issue writes)
   src/jira/     JIRA Cloud REST client + routes + agent tools + ADF↔Markdown conversion
   src/google/   Google Calendar OAuth + events

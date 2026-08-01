@@ -81,11 +81,24 @@ describe("PrGuidePanel", () => {
     expect(withContext).toContain("the same pool as everything else");
   });
 
-  // Walking off either end of the tour must not be offered.
-  it("disables Back on the first step", async () => {
-    const html = await render();
-    expect(html).toMatch(/Back<\/button>/);
-    expect(html).toContain("disabled");
+  /**
+   * Walking off either end of the tour must not be offered.
+   *
+   * Matching a bare "disabled" would pass on the `disabled:opacity-40` class
+   * every button carries, so this matches the rendered attribute — `disabled=""`
+   * — which only appears when the prop is actually set.
+   */
+  const disabledButton = (label: string) =>
+    new RegExp(`<button[^>]*\\bdisabled=""[^>]*>${label}</button>`);
+
+  it("disables Back on the first step and Next on the last", async () => {
+    const first = await render();
+    expect(first).toMatch(disabledButton("Back"));
+    expect(first).not.toMatch(disabledButton("Next"));
+
+    const last = await render({ guide: guide({ currentStep: 1 }) });
+    expect(last).toMatch(disabledButton("Next"));
+    expect(last).not.toMatch(disabledButton("Back"));
   });
 
   it("marks the end of the tour on the last step", async () => {

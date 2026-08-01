@@ -189,8 +189,9 @@ Status of the build against the original vision. The full V1 plan lives at
   gates the bot behind a time-boxed window with rate-limited lockout and desktop
   alerts, to defend against Telegram-account takeover.
 - **Event log (Phase 2)** — a local, on-device trail of meaningful actions
-  (chat started, task created/completed via backend hooks; PR viewed and alarm
-  created from the UI), persisted to an `events` table and served over
+  (chat started, task created/completed via backend hooks; PR viewed, review
+  guide generated and stepped through, line insight recorded and revisited, and
+  alarm created from the UI), persisted to an `events` table and served over
   `POST`/`GET /api/events`. Event types are a fixed allowlist; recording is
   best-effort so a logging failure never breaks the triggering action. UI
   navigation and Omni layouts are deliberately not events. Reconciling events

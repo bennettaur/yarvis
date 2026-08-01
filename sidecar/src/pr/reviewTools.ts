@@ -33,8 +33,12 @@ function summarizeGuide(guide: PrGuideRow) {
     provider: guide.provider,
     // Reported so the assistant can name the PR concretely rather than
     // paraphrasing a title that may not be unique.
-    repo: ref ? ("owner" in ref ? `${ref.owner}/${ref.repo}` : `${ref.project}/${ref.repo}`) : null,
-    number: ref ? ("number" in ref ? ref.number : ref.prId) : null,
+    repo: ref
+      ? ref.provider === "github"
+        ? `${ref.owner}/${ref.repo}`
+        : `${ref.project}/${ref.repo}`
+      : null,
+    number: ref ? (ref.provider === "github" ? ref.number : ref.prId) : null,
     progress: `step ${guide.currentStep + 1} of ${guide.steps.length}`,
     /** True once the reviewer has reached the last step. */
     finished: guide.currentStep >= guide.steps.length - 1,
@@ -51,7 +55,7 @@ function summarizeInsight(insight: PrInsightRow) {
   return {
     id: insight.id,
     pullRequest: ref
-      ? "number" in ref
+      ? ref.provider === "github"
         ? `${ref.owner}/${ref.repo}#${ref.number}`
         : `${ref.project}/${ref.repo}!${ref.prId}`
       : insight.refKey,

@@ -68,6 +68,10 @@ export function usePrInsights(prRef: PrRef): InsightsController {
   useEffect(() => {
     let active = true;
     setLoading(true);
+    // Cleared with the load: `error` is one shared slot rendered inside the ask
+    // composer, so a failure on one PR would otherwise read as a composer
+    // failure on the next.
+    setError(null);
     fetchPrInsights(refValue.current)
       .then((loaded) => {
         if (!active) return;
@@ -88,6 +92,11 @@ export function usePrInsights(prRef: PrRef): InsightsController {
     async (question: string) => {
       const target = asking;
       if (!target || !question.trim()) return;
+      // The answer is an agent run, and the detail view is reused across PRs
+      // rather than remounted — without pinning the identity one PR's answer
+      // would be filed against whichever PR is on screen when it returns.
+      const started = refKey(refValue.current);
+      const current = () => refKey(refValue.current) === started;
       setPending(true);
       setError(null);
       try {
@@ -95,12 +104,13 @@ export function usePrInsights(prRef: PrRef): InsightsController {
           ...target,
           question: question.trim(),
         });
-        setInsights((current) => [created, ...current]);
+        if (!current()) return;
+        setInsights((existing) => [created, ...existing]);
         setAsking(null);
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        if (current()) setError(e instanceof Error ? e.message : String(e));
       } finally {
-        setPending(false);
+        if (current()) setPending(false);
       }
     },
     [asking],
@@ -115,6 +125,8 @@ export function usePrInsights(prRef: PrRef): InsightsController {
     }
   }, []);
 
+  const closeAsk = useCallback(() => setAsking(null), []);
+
   const remove = useCallback(async (id: string) => {
     // Dropped locally first: the row is the reviewer's own note, and a failed
     // delete leaving it on screen would read as the button not working.
@@ -126,16 +138,25 @@ export function usePrInsights(prRef: PrRef): InsightsController {
     }
   }, []);
 
-  return {
-    byPath: useMemo(() => bucket(insights), [insights]),
-    loading,
-    error,
-    asking,
-    openAsk: setAsking,
-    closeAsk: () => setAsking(null),
-    pending,
-    submit,
-    post,
-    remove,
-  };
+  const byPath = useMemo(() => bucket(insights), [insights]);
+
+  // Memoized as a whole, and every callback with it. This object is threaded
+  // down to every rendered diff line, so a fresh identity on each render — which
+  // a bare object literal and an inline `closeAsk` arrow both produce — re-renders
+  // every row of every open file for any state change anywhere in the review.
+  return useMemo(
+    () => ({
+      byPath,
+      loading,
+      error,
+      asking,
+      openAsk: setAsking,
+      closeAsk,
+      pending,
+      submit,
+      post,
+      remove,
+    }),
+    [byPath, loading, error, asking, closeAsk, pending, submit, post, remove],
+  );
 }

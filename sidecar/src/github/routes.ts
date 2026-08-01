@@ -69,7 +69,14 @@ const reviewSchema = z.object({
  * name from smuggling extra path segments into the upstream URL.
  */
 const contentQuery = z.object({
-  path: z.string().min(1).max(1024),
+  // Rejecting `..` matters here for the same reason it does in the Azure
+  // schema: `encodeURIComponent` leaves `.` alone, so a traversal survives
+  // encoding and `fetch` resolves it against the upstream URL before sending.
+  path: z
+    .string()
+    .min(1)
+    .max(1024)
+    .refine((s) => !s.split("/").some((part) => part === "." || part === ".."), "invalid path"),
   ref: z.string().regex(/^[0-9a-f]{40}$/, "expected a commit sha"),
 });
 

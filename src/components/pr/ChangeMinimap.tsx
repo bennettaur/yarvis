@@ -1,4 +1,4 @@
-import type { ExpandedRow } from "../../lib/pr/expand";
+import { type ExpandedRow, hunkRightStart } from "../../lib/pr/expand";
 
 /** A run of consecutive changed lines, as a fraction of the file's height. */
 interface Band {
@@ -26,6 +26,12 @@ export function changeBands(rows: ExpandedRow[], totalLines: number): Band[] {
   let start: number | null = null;
   let end = 0;
   let added = false;
+  // The last right-side line seen anywhere, which is what a deletion attaches
+  // to. Tracked separately from `end` (the open band's extent) because `end`
+  // belongs to a band and is meaningless once that band closes — reusing it
+  // placed a deletion-only hunk at the previous band's position instead of its
+  // own, putting the marker in the wrong part of the file entirely.
+  let lastLine = 0;
 
   const close = () => {
     if (start === null) return;
@@ -36,15 +42,27 @@ export function changeBands(rows: ExpandedRow[], totalLines: number): Band[] {
   };
 
   for (const item of rows) {
-    if (item.kind !== "row" || (item.row.kind !== "add" && item.row.kind !== "del")) {
+    if (item.kind !== "row") continue;
+    // A hunk that only deletes has no row carrying a right-side line at all —
+    // its position in the new file exists solely in the `@@` header. Without
+    // reading it, such a hunk inherits whatever line the previous hunk left
+    // behind and its marker lands in the wrong part of the file.
+    if (item.row.kind === "hunk") {
+      const start = hunkRightStart(item.row.text);
+      if (start !== null) lastLine = start - 1;
       close();
       continue;
     }
-    // Deletions carry no right-side line, so they attach to the line the next
-    // addition or context row occupies — which is where the reader sees them.
-    const line = item.row.rightLine ?? end + 1;
+    if (item.row.rightLine != null) lastLine = item.row.rightLine;
+    if (item.row.kind !== "add" && item.row.kind !== "del") {
+      close();
+      continue;
+    }
+    // Deletions carry no right-side line of their own, so they sit where the
+    // reader sees them: just after the last line that had one.
+    const line = item.row.rightLine ?? lastLine + 1;
     if (start === null) start = line;
-    end = Math.max(end, line);
+    end = Math.max(start, line);
     if (item.row.kind === "add") added = true;
   }
   close();

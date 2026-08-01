@@ -65,6 +65,28 @@ describe("githubPrSource", () => {
     expect(await githubPrSource(client, ghRef).fileDiff("a.ts")).toMatchObject({ patch: "@@" });
   });
 
+  // The listing carries every changed file's full patch, so re-fetching it per
+  // diff read would pull the whole PR diff over the wire once per tool call.
+  it("fetches the file listing once however many diffs are read", async () => {
+    let listings = 0;
+    const client = {
+      prFiles: async () => {
+        listings++;
+        return [
+          { filename: "a.ts", status: "modified", additions: 1, deletions: 0, patch: "@@ a" },
+          { filename: "b.ts", status: "modified", additions: 1, deletions: 0, patch: "@@ b" },
+        ];
+      },
+    } as unknown as GitHubClient;
+
+    const source = githubPrSource(client, ghRef);
+    await source.files();
+    await source.fileDiff("a.ts");
+    await source.fileDiff("b.ts");
+    await source.fileDiff("a.ts");
+    expect(listings).toBe(1);
+  });
+
   it("says so when asked for a file the pull request does not change", async () => {
     const client = { prFiles: async () => [] } as unknown as GitHubClient;
     expect(githubPrSource(client, ghRef).fileDiff("a.ts")).rejects.toThrow("is not changed");

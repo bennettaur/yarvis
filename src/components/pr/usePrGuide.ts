@@ -73,16 +73,22 @@ export function usePrGuide(prRef: PrRef, title?: string, url?: string): GuideCon
   }, [key]);
 
   const generate = useCallback(async () => {
+    // A generation is an agent run of tens of seconds, and the detail view is
+    // reused across PRs rather than remounted. Without pinning the identity the
+    // result of one PR's run lands in whichever PR is on screen when it returns.
+    const started = refKey(refValue.current);
+    const current = () => refKey(refValue.current) === started;
     setGenerating(true);
     setError(null);
     try {
       const created = await generatePrGuide(refValue.current, title, url);
+      if (!current()) return;
       setGuide(created);
       setFocusNonce((n) => n + 1);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (current()) setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setGenerating(false);
+      if (current()) setGenerating(false);
     }
   }, [title, url]);
 

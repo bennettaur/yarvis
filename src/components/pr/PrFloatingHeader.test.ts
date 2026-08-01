@@ -24,7 +24,6 @@ const detail = (overrides: Partial<PrDetail> = {}): PrDetail => ({
   baseRef: "main",
   headRef: "feat",
   headSha: "",
-  baseSha: "",
   additions: 0,
   deletions: 0,
   mergeable: "UNKNOWN",

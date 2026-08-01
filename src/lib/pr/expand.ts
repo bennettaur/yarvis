@@ -35,6 +35,17 @@ export interface HunkSpan {
 const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 
 /**
+ * The first new-file line a hunk header names, or null if it isn't one. Lets a
+ * consumer holding only rendered rows recover a hunk's position — which is the
+ * only place a deletion-only hunk's location is recorded, since none of its
+ * rows carry a right-side line.
+ */
+export function hunkRightStart(text: string): number | null {
+  const match = text.match(HUNK_HEADER);
+  return match ? Number(match[3]) : null;
+}
+
+/**
  * Locates each hunk and the range of each file it covers.
  *
  * A hunk with a zero line count on one side (a pure insertion or a pure

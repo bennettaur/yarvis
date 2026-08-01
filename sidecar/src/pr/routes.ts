@@ -7,6 +7,7 @@ import { getDb } from "../db/client.ts";
 import type { AttentionNavTarget, PrGuideRow } from "../db/schema.ts";
 import { emitEvent } from "../events/service.ts";
 import { GitHubClient } from "../github/client.ts";
+import { clientError, describeError } from "../llm/errors.ts";
 import { availableProviders, pickDefaultModel, resolveModel } from "../llm/providers.ts";
 import { askAboutCode } from "./ask.ts";
 import { deleteGuide, getGuide, isStale, saveGuide, setGuideProgress } from "./guides.ts";
@@ -74,6 +75,9 @@ const generateSchema = z.object({
 });
 
 const progressSchema = z.object({ ref: prRef, step: z.number().int().min(0) });
+
+/** Insight ids are uuid columns; a non-uuid would surface as a Postgres 500. */
+const insightId = z.string().uuid();
 
 const askSchema = z
   .object({
@@ -190,7 +194,7 @@ export function createPrRoutes(config: Config): Hono {
     try {
       // Wrapped rather than returned bare: a resolved model can itself be a
       // string, so an `"error" in x` check would not tell the two apart.
-      return { model: await resolveModel(config, dbh, provider as never, model) };
+      return { model: await resolveModel(config, dbh, provider, model) };
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) };
     }
@@ -220,8 +224,11 @@ export function createPrRoutes(config: Config): Hono {
       });
       return c.json(toGuideResponse(guide, headSha));
     } catch (e) {
-      console.error("[pr] guide generation failed:", e);
-      return c.json({ error: e instanceof Error ? e.message : String(e) }, 502);
+      // `describeError` redacts before logging and `clientError` before
+      // answering; a provider error object carries the request URL and response
+      // body, which routinely echo credentials back.
+      console.error("[pr] guide generation failed:", describeError(e));
+      return c.json({ error: clientError(e) }, 502);
     }
   });
 
@@ -243,7 +250,7 @@ export function createPrRoutes(config: Config): Hono {
       try {
         headSha = (await source.detail()).headSha;
       } catch (e) {
-        console.error("[pr] could not check guide staleness:", e);
+        console.error("[pr] could not check guide staleness:", describeError(e));
       }
     }
 
@@ -308,8 +315,8 @@ export function createPrRoutes(config: Config): Hono {
       });
       return c.json(insight);
     } catch (e) {
-      console.error("[pr] insight failed:", e);
-      return c.json({ error: e instanceof Error ? e.message : String(e) }, 502);
+      console.error("[pr] insight failed:", describeError(e));
+      return c.json({ error: clientError(e) }, 502);
     }
   });
 
@@ -336,8 +343,10 @@ export function createPrRoutes(config: Config): Hono {
    * author had seen something they never did.
    */
   router.post("/insight/:id/post", async (c) => {
+    const id = insightId.safeParse(c.req.param("id"));
+    if (!id.success) return c.json({ error: "invalid insight id" }, 400);
     const dbh = db();
-    const insight = await getInsight(dbh, c.req.param("id"));
+    const insight = await getInsight(dbh, id.data);
     if (!insight) return c.json({ error: "no such insight" }, 404);
     if (insight.postedAt) return c.json({ error: "already posted" }, 409);
 
@@ -351,15 +360,21 @@ export function createPrRoutes(config: Config): Hono {
         body: insight.answer,
       });
     } catch (e) {
-      console.error("[pr] posting an insight failed:", e);
-      return c.json({ error: e instanceof Error ? e.message : String(e) }, 502);
+      console.error("[pr] posting an insight failed:", describeError(e));
+      return c.json({ error: clientError(e) }, 502);
     }
-    return c.json(await markInsightPosted(dbh, insight.id));
+    const stamped = await markInsightPosted(dbh, insight.id);
+    // The comment is already on the provider at this point. If the row went
+    // away underneath us the stamp has nowhere to land, and answering with a
+    // null body would have the client splice it into its list.
+    if (!stamped) return c.json({ error: "the insight was deleted while posting" }, 409);
+    return c.json(stamped);
   });
 
   router.delete("/insight/:id", async (c) => {
-    const deleted = await deleteInsight(db(), c.req.param("id"));
-    return c.json({ deleted });
+    const id = insightId.safeParse(c.req.param("id"));
+    if (!id.success) return c.json({ error: "invalid insight id" }, 400);
+    return c.json({ deleted: await deleteInsight(db(), id.data) });
   });
 
   /** Posts a line comment through whichever provider owns the pull request. */
@@ -376,6 +391,13 @@ export function createPrRoutes(config: Config): Hono {
     const { azureDevopsToken, azureDevopsOrgUrl } = config.secrets;
     if (!azureDevopsToken || !azureDevopsOrgUrl) throw new Error("azure devops not configured");
     if (!isAllowedAzureOrgUrl(azureDevopsOrgUrl)) throw new Error("invalid azure org url");
+    // The ref here is rebuilt from a stored row, which may have been written
+    // under a different configuration. Without this the same check `sourceFor`
+    // makes on the way in is skipped on the way out, and an insight quoting one
+    // organization's private code could be posted into another's.
+    if (orgFromOrgUrl(azureDevopsOrgUrl) !== ref.org) {
+      throw new Error("insight belongs to a different azure organization");
+    }
     await new AzureDevOpsClient(azureDevopsToken, azureDevopsOrgUrl).postComment(
       { project: ref.project, repo: ref.repo, prId: ref.prId },
       comment,

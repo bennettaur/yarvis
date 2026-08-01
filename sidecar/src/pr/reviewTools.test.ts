@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import postgres from "postgres";
 import { getDb } from "../db/client.ts";
 import { saveGuide, setGuideProgress } from "./guides.ts";
@@ -25,8 +25,8 @@ const step = (path: string) => ({
 });
 
 beforeEach(async () => {
-  await sql`TRUNCATE pr_guides`;
-  await sql`TRUNCATE pr_insights`;
+  await sql`TRUNCATE pr_guides RESTART IDENTITY`;
+  await sql`TRUNCATE pr_insights RESTART IDENTITY`;
 });
 
 describe("list_pr_reviews", () => {
@@ -145,4 +145,8 @@ describe("search_pr_insights", () => {
     ).toHaveLength(2);
     expect((await run("search_pr_insights", { query: "question" })).insights).toHaveLength(5);
   });
+});
+
+afterAll(async () => {
+  await sql.end();
 });

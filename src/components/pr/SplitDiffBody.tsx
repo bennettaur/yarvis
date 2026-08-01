@@ -89,12 +89,15 @@ type SplitOrGap = SplitRow | { kind: "gap"; gap: Gap; hidden: number };
  * Pairs each stretch of rows on its own, so a run of changes is never matched
  * up across a stretch of code that isn't being shown.
  */
-function pairAroundGaps(rows: FileExpansion["rows"]): SplitOrGap[] {
+export function pairAroundGaps(rows: FileExpansion["rows"]): SplitOrGap[] {
   const out: SplitOrGap[] = [];
   let buffer: DiffRow[] = [];
   const flush = () => {
     if (buffer.length === 0) return;
-    out.push(...pairRows(buffer));
+    // Pushed one at a time rather than spread: in whole-file mode the buffer is
+    // the entire file, and a spread passes one argument per row — past roughly
+    // 65k arguments the engine throws instead of rendering.
+    for (const row of pairRows(buffer)) out.push(row);
     buffer = [];
   };
   for (const item of rows) {

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
 import { listAttention } from "../attention/service.ts";
@@ -37,10 +37,14 @@ const steps = [
   { path: "src/db.ts", startLine: 5, endLine: 9, explanation: "and is finally written here" },
 ];
 
+// `RESTART IDENTITY` without `CASCADE`, unlike most suites here: cascading from
+// these tables reaches ones other suites are mid-way through using, and the
+// only identity that needs resetting is `attention_items.seq`, which the
+// attention suites also reset.
 beforeEach(async () => {
-  await sql`TRUNCATE pr_guides`;
-  await sql`TRUNCATE attention_items`;
-  await sql`TRUNCATE events`;
+  await sql`TRUNCATE pr_guides RESTART IDENTITY`;
+  await sql`TRUNCATE attention_items RESTART IDENTITY`;
+  await sql`TRUNCATE events RESTART IDENTITY`;
 });
 
 describe("GET /api/pr/guide", () => {
@@ -211,4 +215,8 @@ describe("POST /api/pr/guide", () => {
     expect(res.status).toBe(400);
     expect(((await res.json()) as any).error).toContain("github token");
   });
+});
+
+afterAll(async () => {
+  await sql.end();
 });

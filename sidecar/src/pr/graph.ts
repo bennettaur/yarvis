@@ -88,11 +88,11 @@ export function newCodeGraph(): CodeGraph {
     edges: () => [...edges],
 
     entryPoints() {
-      const pointedAt = new Set(edges.map((e) => e.to));
       // A graph with no edges has nothing to order yet, and calling every
       // isolated node an entry point would say the change is entirely
       // disconnected — which is a claim about the code, not about the graph.
       if (edges.length === 0) return [];
+      const pointedAt = new Set(edges.map((e) => e.to));
       return [...nodes.values()].filter((n) => !pointedAt.has(n.id));
     },
   };

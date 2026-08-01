@@ -1,4 +1,4 @@
-import { generateText, type LanguageModel, stepCountIs, tool } from "ai";
+import { generateText, hasToolCall, type LanguageModel, stepCountIs, tool } from "ai";
 import { z } from "zod";
 import type { PrGuideStep } from "../db/schema.ts";
 import { clientError, describeError } from "../llm/errors.ts";
@@ -75,6 +75,10 @@ function buildSubmitTool(sink: TourSink) {
         "Submit the finished reading order. Call this exactly once, after you have explored the change. Steps run from the outermost entry point inward.",
       inputSchema: z.object({ steps: z.array(tourStep).min(1).max(MAX_STEPS) }),
       execute: async ({ steps }) => {
+        // First submission wins. The loop stops on this tool, but a model can
+        // emit two calls in one step, and a later one overwriting the first
+        // would silently replace a considered ordering with an afterthought.
+        if (sink.steps) return { rejected: "a tour has already been submitted" };
         sink.steps = steps.map((s) => ({
           path: s.path,
           startLine: s.startLine,
@@ -128,7 +132,9 @@ export async function generateTour(
       system: systemPrompt(),
       messages: [{ role: "user", content: brief }],
       tools: { ...buildPrCodeTools(source, graph), ...buildSubmitTool(sink) },
-      stopWhen: stepCountIs(STEP_BUDGET),
+      // Without the tool condition the run keeps going after the tour is in
+      // hand, spending the rest of the budget on exploration nobody reads.
+      stopWhen: [stepCountIs(STEP_BUDGET), hasToolCall("submit_tour")],
       abortSignal: signal,
     });
   } catch (e) {

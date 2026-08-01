@@ -40,12 +40,13 @@ export interface CodeHit {
 }
 
 /**
- * Caches the PR detail for the life of a source. Every tool that reads a file
- * needs the head commit, and re-fetching the PR on each of a dozen tool calls
- * would spend most of an agent run on the same request.
+ * Caches a fetch for the life of a source. Every tool that reads a file needs
+ * the head commit, and every diff read needs the file listing; re-fetching
+ * either on each of a dozen tool calls would spend most of an agent run
+ * repeating the same request.
  */
-function memoizeDetail(load: () => Promise<PrDetail>): () => Promise<PrDetail> {
-  let pending: Promise<PrDetail> | null = null;
+function memoize<T>(load: () => Promise<T>): () => Promise<T> {
+  let pending: Promise<T> | null = null;
   return () => {
     pending ??= load();
     return pending;
@@ -55,18 +56,21 @@ function memoizeDetail(load: () => Promise<PrDetail>): () => Promise<PrDetail> {
 export function githubPrSource(client: GitHubClient, ref: PrRef): PrCodeSource {
   if (ref.provider !== "github") throw new Error("expected a github ref");
   const { owner, repo, number } = ref;
-  const detail = memoizeDetail(() => client.prDetail(owner, repo, number));
+  const detail = memoize(() => client.prDetail(owner, repo, number));
+  // The file listing carries every changed file's full patch, so re-fetching it
+  // per `read_diff` would pull the whole PR diff over the wire once per tool
+  // call — tens of times across a single agent run.
+  const files = memoize(() => client.prFiles(owner, repo, number));
   const head = async () => (await detail()).headSha;
 
   return {
     ref,
     detail,
-    files: () => client.prFiles(owner, repo, number),
-    // GitHub returns every patch in the file listing, so there is no per-file
-    // fetch to make — the diff is already in hand.
+    files,
+    // GitHub returns every patch in that listing, so there is no per-file fetch
+    // to make — the diff is already in hand.
     fileDiff: async (path) => {
-      const files = await client.prFiles(owner, repo, number);
-      const file = files.find((f) => f.filename === path);
+      const file = (await files()).find((f) => f.filename === path);
       if (!file) throw new Error(`${path} is not changed by this pull request`);
       return file;
     },
@@ -80,7 +84,7 @@ export function githubPrSource(client: GitHubClient, ref: PrRef): PrCodeSource {
 export function azurePrSource(client: AzureDevOpsClient, ref: PrRef): PrCodeSource {
   if (ref.provider !== "azure") throw new Error("expected an azure ref");
   const azRef = { project: ref.project, repo: ref.repo, prId: ref.prId };
-  const detail = memoizeDetail(() => client.prDetail(azRef));
+  const detail = memoize(() => client.prDetail(azRef));
   const head = async () => (await detail()).headSha;
 
   return {

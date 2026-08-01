@@ -498,7 +498,7 @@ describe("azure client", () => {
     });
   });
 
-  it("carries the head and base commits onto the PR detail", async () => {
+  it("carries the head commit onto the PR detail", async () => {
     const az = new AzureDevOpsClient(
       "pat",
       ORG,
@@ -517,7 +517,6 @@ describe("azure client", () => {
     );
     const detail = await az.prDetail({ project: "Shop", repo: "web", prId: 7 });
     expect(detail.headSha).toBe("abc");
-    expect(detail.baseSha).toBe("def");
   });
 
   it("posts a right-side line comment thread", async () => {

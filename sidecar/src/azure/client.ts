@@ -435,7 +435,6 @@ export class AzureDevOpsClient {
       baseRef: (pr.targetRefName ?? "").replace("refs/heads/", ""),
       headRef: (pr.sourceRefName ?? "").replace("refs/heads/", ""),
       headSha: pr.lastMergeSourceCommit?.commitId ?? "",
-      baseSha: pr.lastMergeTargetCommit?.commitId ?? "",
       additions: 0,
       deletions: 0,
       mergeable: mapMergeStatus(pr.mergeStatus).enum,

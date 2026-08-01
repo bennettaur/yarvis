@@ -3,7 +3,7 @@ import { createElement } from "react";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { fakeExpansion } from "../../test/expansion";
 import { renderToHtml } from "../../test/render";
-import SplitDiffBody from "./SplitDiffBody";
+import SplitDiffBody, { pairAroundGaps } from "./SplitDiffBody";
 
 const prRef: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 1 };
 
@@ -93,13 +93,16 @@ describe("SplitDiffBody", () => {
   });
 
   // Pairing runs per stretch of rows, so a deletion above a gap can never be
-  // matched up with an addition below it — they are not related changes.
+  // matched up with an addition below it — they are not related changes. If
+  // they had been paired there would be one row carrying both, and neither
+  // line number would sit alone.
   it("does not pair changes across a gap", async () => {
     const patch = ["@@ -1,1 +1,1 @@", "-a", "@@ -40,1 +40,1 @@", "+b"].join("\n");
-    const html = await render(patch);
-    // "a" and "b" sit in different rows; if they had been paired the filler
-    // background would be absent from both of their halves.
-    expect(html).toContain("bg-zinc-900/40");
+    const rows = pairAroundGaps(fakeExpansion(patch).rows).filter((r) => r.kind === "pair");
+    expect(rows).toEqual([
+      { kind: "pair", left: { kind: "del", text: "a", line: 1 }, right: null },
+      { kind: "pair", left: null, right: { kind: "add", text: "b", line: 40 } },
+    ]);
   });
 
   // Deleted lines only exist on the left, and neither provider accepts a

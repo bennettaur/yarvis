@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import postgres from "postgres";
 import { getDb } from "../db/client.ts";
 import {
@@ -30,7 +30,7 @@ const insight = (over: Partial<Parameters<typeof saveInsight>[1]> = {}) => ({
 });
 
 beforeEach(async () => {
-  await sql`TRUNCATE pr_insights`;
+  await sql`TRUNCATE pr_insights RESTART IDENTITY`;
 });
 
 describe("saveInsight", () => {
@@ -132,4 +132,8 @@ describe("parseRefKey", () => {
     expect(parseRefKey("gh://r/1")).toBeNull();
     expect(parseRefKey("az:acme//web/3")).toBeNull();
   });
+});
+
+afterAll(async () => {
+  await sql.end();
 });

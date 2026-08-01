@@ -1,4 +1,4 @@
-import { describe, expect, it, mock } from "bun:test";
+import { afterAll, describe, expect, it, mock } from "bun:test";
 import type { PrRef } from "./types";
 
 /**
@@ -16,6 +16,13 @@ mock.module("../api", () => ({
 }));
 
 const { deletePrGuide, fetchPrGuide, setPrGuideProgress } = await import("./guide");
+
+// `mock.module` replaces the whole namespace for the rest of the process, so
+// without this every file loaded after this one sees a `../api` reduced to two
+// stubbed exports — and a `sidecarFetch` that answers every path with a guide.
+afterAll(() => {
+  mock.restore();
+});
 
 const ghRef: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 7 };
 const azRef: PrRef = { provider: "azure", org: "acme", project: "Shop", repo: "web", prId: 7 };

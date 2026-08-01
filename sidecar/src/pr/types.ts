@@ -162,8 +162,6 @@ export interface PrDetail {
    * Empty when the provider hasn't reported one yet.
    */
   headSha: string;
-  /** Commit the PR is diffed against; the counterpart to `headSha`. */
-  baseSha: string;
   additions: number;
   deletions: number;
   /** GraphQL/Azure mergeable enum: "MERGEABLE" | "CONFLICTING" | "UNKNOWN". */

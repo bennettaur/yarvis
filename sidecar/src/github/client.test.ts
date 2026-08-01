@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { GitHubClient, summarizeChecks, toPrDetail } from "./client.ts";
+import { encodeRepoPath, GitHubClient, summarizeChecks, toPrDetail } from "./client.ts";
 
 function fakeFetch(routes: Record<string, unknown>): typeof fetch {
   return (async (url: string) => {
@@ -468,6 +468,41 @@ describe("github client", () => {
     });
   });
 
+  describe("encodeRepoPath", () => {
+    /**
+     * The escape this refuses: `encodeURIComponent` leaves `.` alone, so `..`
+     * survives encoding, and `fetch` resolves dot-segments against the URL
+     * before sending. `contents/../../../../user/repos` becomes
+     * `api.github.com/user/repos` — an arbitrary authenticated read.
+     */
+    it("refuses traversal segments", () => {
+      for (const path of ["../../../../user/repos", "src/../../x", "..", "a/./b"]) {
+        expect(() => encodeRepoPath(path)).toThrow("inside the repository");
+      }
+    });
+
+    it("encodes within segments and keeps the structure", () => {
+      expect(encodeRepoPath("src/my dir/a?b.ts")).toBe("src/my%20dir/a%3Fb.ts");
+    });
+
+    it("treats the empty path as the repository root", () => {
+      expect(encodeRepoPath("")).toBe("");
+    });
+
+    // Leading and doubled slashes would otherwise produce empty segments and a
+    // URL that no longer addresses the contents endpoint.
+    it("drops empty segments", () => {
+      expect(encodeRepoPath("/src//a.ts")).toBe("src/a.ts");
+    });
+
+    // Proof the guard is what stands between the client and the escape.
+    it("blocks the URL that would otherwise resolve off the contents endpoint", () => {
+      const traversed = "https://api.github.com/repos/o/r/contents/../../../../user/repos";
+      expect(new URL(traversed).href).toBe("https://api.github.com/user/repos");
+      expect(() => encodeRepoPath("../../../../user/repos")).toThrow();
+    });
+  });
+
   describe("listDir", () => {
     // The contents endpoint answers with an object for a file and an array for
     // a directory, and only the array is a listing.
@@ -540,19 +575,12 @@ describe("github client", () => {
     });
   });
 
-  it("carries the head and base commits onto the PR detail", () => {
-    const detail = toPrDetail({
-      number: 7,
-      headRefOid: "d".repeat(40),
-      baseRefOid: "e".repeat(40),
-    });
+  it("carries the head commit onto the PR detail", () => {
+    const detail = toPrDetail({ number: 7, headRefOid: "d".repeat(40) });
     expect(detail.headSha).toBe("d".repeat(40));
-    expect(detail.baseSha).toBe("e".repeat(40));
   });
 
-  it("reports empty commits when the provider omits them", () => {
-    const detail = toPrDetail({ number: 7 });
-    expect(detail.headSha).toBe("");
-    expect(detail.baseSha).toBe("");
+  it("reports an empty commit when the provider omits it", () => {
+    expect(toPrDetail({ number: 7 }).headSha).toBe("");
   });
 });

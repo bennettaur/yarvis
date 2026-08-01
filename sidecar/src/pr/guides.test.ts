@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import postgres from "postgres";
 import { getDb } from "../db/client.ts";
 import type { PrGuideStep } from "../db/schema.ts";
@@ -29,7 +29,7 @@ const step = (path: string): PrGuideStep => ({
 });
 
 beforeEach(async () => {
-  await sql`TRUNCATE pr_guides`;
+  await sql`TRUNCATE pr_guides RESTART IDENTITY`;
 });
 
 describe("saveGuide", () => {
@@ -148,4 +148,8 @@ describe("isStale", () => {
   it("does not call a guide stale when the head is unknown", () => {
     expect(isStale(guide, "")).toBe(false);
   });
+});
+
+afterAll(async () => {
+  await sql.end();
 });

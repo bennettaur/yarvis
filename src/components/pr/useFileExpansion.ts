@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { usePrFileContent } from "../../lib/pr/cache";
 import { parsePatch } from "../../lib/pr/diff";
 import {
@@ -69,8 +69,15 @@ export function useFileExpansion(
     totalLines: lines.length,
     loading: wanted && content.loading,
     error: content.error,
-    expand: (gap, edge) => setExpansions((current) => expandGap(current, gap, edge)),
-    expandFully: (gap) => setExpansions((current) => expandGapFully(current, gap)),
+    expand: useCallback(
+      (gap: Gap, edge: "top" | "bottom") =>
+        setExpansions((current) => expandGap(current, gap, edge)),
+      [],
+    ),
+    expandFully: useCallback(
+      (gap: Gap) => setExpansions((current) => expandGapFully(current, gap)),
+      [],
+    ),
     wholeFile,
     setWholeFile,
     canExpand: Boolean(headSha),

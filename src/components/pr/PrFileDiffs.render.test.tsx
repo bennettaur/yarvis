@@ -31,9 +31,10 @@ const render = (
   );
 
 describe("DiffBody comment-container rendering", () => {
-  // The comment container is the only element with the font-sans class, so its
-  // presence in the rendered HTML is a reliable proxy for "a container rendered".
-  const CONTAINER_MARKER = "font-sans";
+  // The thread card's own border, not `font-sans` — that class is also on the
+  // gap marker and the insight block, so a fixture containing either would make
+  // the negative assertions below pass for the wrong reason.
+  const CONTAINER_MARKER = "space-y-2 px-3 py-2 font-sans";
 
   // Deleted rows carry no right-side line number, so the empty comment
   // container must not render under them — otherwise its vertical padding

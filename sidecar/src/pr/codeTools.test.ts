@@ -21,6 +21,12 @@ function fakeSource(over: Partial<PrCodeSource> = {}): PrCodeSource {
   };
 }
 
+/** The zod schema a tool validates its input with, for guard assertions. */
+const schemaOf = (tools: ReturnType<typeof buildPrCodeTools>, name: string) =>
+  (tools as Record<string, any>)[name].inputSchema as {
+    safeParse: (v: unknown) => { success: boolean };
+  };
+
 /** Runs a tool's execute with the argument shape the model would send. */
 function run(tools: ReturnType<typeof buildPrCodeTools>, name: string, input: unknown) {
   const t = (tools as Record<string, any>)[name];
@@ -70,11 +76,25 @@ describe("read_file", () => {
     expect(result.returned).toEqual({ from: 1, to: 2 });
   });
 
-  it("reports a missing file rather than returning nothing", async () => {
+  // Both providers answer an absent path with empty content, which is also what
+  // a genuinely empty file looks like. Calling it missing would send the caller
+  // hunting for a file that is right where it expected.
+  it("reports empty content as empty rather than as missing", async () => {
     const { tools } = build({ readFile: async () => "" });
-    expect(await run(tools, "read_file", { path: "gone.ts" })).toMatchObject({
-      error: "file not found at this commit",
+    expect(await run(tools, "read_file", { path: "empty.ts" })).toMatchObject({
+      totalLines: 0,
+      content: "",
+      note: "file is empty",
     });
+  });
+
+  // A line cap is not a byte cap: a minified bundle is one line, and whatever
+  // comes back is re-sent on every later step of the run.
+  it("caps a single enormous line by bytes", async () => {
+    const { tools } = build({ readFile: async () => "x".repeat(200_000) });
+    const result = await run(tools, "read_file", { path: "bundle.js" });
+    expect(result.truncated).toBe(true);
+    expect(result.content.length).toBeLessThanOrEqual(60_010);
   });
 
   it("marks repository text as data, not instructions", async () => {
@@ -84,7 +104,57 @@ describe("read_file", () => {
   });
 });
 
+describe("path traversal", () => {
+  /**
+   * `encodeURIComponent` leaves `.` alone, so a `..` segment survives encoding
+   * and `fetch` resolves it against the upstream URL before sending — turning
+   * `contents/../../../../user/repos` into `api.github.com/user/repos` with the
+   * user's token attached. The path here is chosen by a model that has been
+   * reading an untrusted pull request, so the schema has to refuse it.
+   */
+  const traversals = ["../../../../user/repos", "src/../../../secrets", "..", "./../x"];
+
+  it.each(traversals)("refuses %p as a file path", async (path) => {
+    const { tools } = build();
+    expect(schemaOf(tools, "read_file").safeParse({ path }).success).toBe(false);
+  });
+
+  it.each(traversals)("refuses %p as a directory", async (path) => {
+    const { tools } = build();
+    expect(schemaOf(tools, "list_directory").safeParse({ path }).success).toBe(false);
+  });
+
+  it("still accepts ordinary paths, including dotfiles and the root", () => {
+    const { tools } = build();
+    for (const path of ["src/lib/pr/diff.ts", ".github/workflows/ci.yml", "a.b.c.ts"]) {
+      expect(schemaOf(tools, "read_file").safeParse({ path }).success).toBe(true);
+    }
+    expect(schemaOf(tools, "list_directory").safeParse({ path: "" }).success).toBe(true);
+  });
+});
+
 describe("search_code", () => {
+  // GitHub ORs multiple `repo:` qualifiers, so a query carrying its own would
+  // widen a repo-scoped search to anything the token can read — and the results
+  // are source lines landing in the context of an agent reading an untrusted PR.
+  it.each([
+    "AWS_SECRET repo:victim/private",
+    "token org:someone-else",
+    "key user:bob",
+    "x path:/etc",
+    "y filename:.env",
+  ])("refuses the search qualifier in %p", (query) => {
+    const { tools } = build();
+    expect(schemaOf(tools, "search_code").safeParse({ query }).success).toBe(false);
+  });
+
+  it("still accepts plain text and symbol names", () => {
+    const { tools } = build();
+    for (const query of ["parsePatch", "rightLine != null", "a:b", "http://x"]) {
+      expect(schemaOf(tools, "search_code").safeParse({ query }).success).toBe(true);
+    }
+  });
+
   it("passes hits through with their snippets", async () => {
     const { tools } = build({
       searchCode: async () => [{ path: "src/a.ts", fragments: ["callSite()"] }],
