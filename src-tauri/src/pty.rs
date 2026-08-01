@@ -370,9 +370,18 @@ fn agent_command(app: &AppHandle) -> String {
 /// Extracted from `agent_command` so the precedence is unit-testable without app
 /// state. The env override wins, then the stored setting; a blank value at
 /// either level is treated as unset rather than as an empty command.
+///
+/// Control characters are stripped rather than trusted. `set_agent` rejects them
+/// on write, but neither source has to have gone through it: `settings.json` is
+/// hand-editable and the env override never touches it. Both end up typed into
+/// an interactive shell, where 0x03/0x15 break out of the line — see
+/// `is_unsafe_name_char`.
 fn resolve_agent_command(env: Option<String>, configured: Option<String>) -> String {
     non_blank(env)
         .or_else(|| non_blank(configured))
+        .map(|s| s.chars().filter(|c| !c.is_control()).collect::<String>())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
         .unwrap_or_else(|| DEFAULT_AGENT_COMMAND.to_string())
 }
 
@@ -715,6 +724,20 @@ mod tests {
         assert_eq!(
             resolve_agent_command(None, Some("  ".to_string())),
             DEFAULT_AGENT_COMMAND
+        );
+    }
+
+    #[test]
+    fn resolve_agent_command_strips_control_characters_from_either_source() {
+        // `set_agent` rejects these on write, but a hand-edited settings.json or
+        // the env override never went through it, and both land in a shell line.
+        assert_eq!(
+            resolve_agent_command(None, Some("claude\u{3}rm -rf /".to_string())),
+            "clauderm -rf /"
+        );
+        assert_eq!(
+            resolve_agent_command(Some("claude\u{15}whoami".to_string()), None),
+            "claudewhoami"
         );
     }
 

@@ -456,7 +456,7 @@ function NewWorkspaceForm({
             </button>
           </div>
           <p className="mb-1 text-xs text-zinc-500">
-            Leave empty for a scratch workspace — just a folder to run Claude in, for
+            Leave empty for a scratch workspace — just a folder to run an agent in, for
             experimentation and exploration.
           </p>
           {repos.length === 0 && !showAddRepo && (
@@ -836,9 +836,15 @@ function WorkspaceDetailView({
   // issue terminal launches with the right command.
   useEffect(() => {
     // The core resolves both fields to non-empty defaults, so take them as given.
+    // A failure is worth surfacing: falling back silently would launch the
+    // built-in Claude command for someone who configured a different agent.
     getAgentConfig()
       .then(setAgent)
-      .catch(() => undefined);
+      .catch((e) =>
+        setAgentError(
+          `Could not load the configured agent (${e instanceof Error ? e.message : String(e)}); using the default.`,
+        ),
+      );
   }, []);
 
   // A launch failure (e.g. the session cap) is reported beside the header button
@@ -886,8 +892,8 @@ function WorkspaceDetailView({
     setAgentActive(false);
   }, []);
 
-  // Bring the agent tab back. When a session is already live — a kill that didn't
-  // take, or something else started one — this only un-hides the tab. Otherwise
+  // Bring the agent tab back. When a session is already live — something else
+  // started one in this workspace — this only un-hides the tab. Otherwise
   // start first: showing the tab before the session exists would let it attach to
   // a bare shell of its own, and re-run the prompt in the issue flow.
   const showAgent = useCallback(async () => {

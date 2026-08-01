@@ -34,8 +34,6 @@ import {
   uid,
 } from "./surfaceState";
 
-export type { InitialTab, PinnedTab } from "./surfaceState";
-
 /**
  * A single terminal surface with iTerm-style tabs and splittable panes.
  *
