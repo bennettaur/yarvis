@@ -5,11 +5,19 @@ import { rowClass } from "../diff/DiffView";
 import { usePersistedBoolean } from "../SplitPane";
 import ChangeMinimap from "./ChangeMinimap";
 import GapMarker from "./GapMarker";
-import { AddCommentButton, LineCommentBlock, useLineComments } from "./LineComments";
+import InsightBlock from "./InsightCards";
+import {
+  AddCommentButton,
+  AskAboutLineButton,
+  LineCommentBlock,
+  useLineComments,
+} from "./LineComments";
 import SplitDiffBody from "./SplitDiffBody";
 import { type DiffFocus, FOCUS_ATTR, FOCUS_STYLE, focusRange, prFileAnchorId } from "./shared";
+import { useAskSelection } from "./useAskSelection";
 import { useExpandOnApproach } from "./useExpandOnApproach";
 import { type FileExpansion, useFileExpansion } from "./useFileExpansion";
+import { type InsightsController, usePrInsights } from "./usePrInsights";
 
 /**
  * Files whose diffs are open on mount. Scrolling opens the rest as they come
@@ -39,6 +47,8 @@ export function DiffBody({
   threads,
   expansion,
   highlight,
+  insights,
+  headSha = "",
 }: {
   prRef: PrRef;
   file: PrFile;
@@ -46,8 +56,12 @@ export function DiffBody({
   expansion: FileExpansion;
   /** Lines a guided review is pointing at, marked down the left edge. */
   highlight?: { start: number; end: number } | null;
+  /** Omitted where there is no review to ask questions in (Omni widgets). */
+  insights?: InsightsController;
+  headSha?: string;
 }) {
   const comments = useLineComments(prRef, file, threads);
+  const ask = useAskSelection(file.filename, expansion.rows, insights);
 
   return (
     <div className="relative overflow-x-auto rounded-b-lg bg-zinc-950 font-mono text-xs leading-relaxed">
@@ -78,6 +92,9 @@ export function DiffBody({
               {...(marked && row.rightLine === highlight.start ? { [FOCUS_ATTR]: "true" } : {})}
             >
               <span className="flex w-12 shrink-0 select-none items-center justify-end gap-1 pr-2 text-zinc-600">
+                {insights && row.rightLine != null && (
+                  <AskAboutLineButton onClick={(extend) => ask(row.rightLine as number, extend)} />
+                )}
                 {row.rightLine != null && (
                   <AddCommentButton
                     onClick={() => comments.openComposer(row.rightLine as number)}
@@ -88,6 +105,14 @@ export function DiffBody({
               <span className="whitespace-pre">{row.text || " "}</span>
             </div>
             <LineCommentBlock line={row.rightLine} comments={comments} />
+            {insights && (
+              <InsightBlock
+                path={file.filename}
+                line={row.rightLine}
+                controller={insights}
+                currentSha={headSha}
+              />
+            )}
           </div>
         );
       })}
@@ -192,6 +217,7 @@ function FileDiff({
   split,
   headSha,
   focus,
+  insights,
 }: {
   prRef: PrRef;
   file: PrFile;
@@ -205,6 +231,7 @@ function FileDiff({
   headSha: string;
   /** Set only on the file a guided review is currently pointing at. */
   focus: DiffFocus | null;
+  insights: InsightsController;
 }) {
   // The first few unviewed files are open on mount; viewed files start
   // collapsed regardless so the user's prior progress stays out of the way.
@@ -353,6 +380,8 @@ function FileDiff({
                 threads={fileThreads}
                 expansion={expansion}
                 highlight={highlight}
+                insights={insights}
+                headSha={headSha}
               />
             ) : (
               <DiffBody
@@ -361,6 +390,8 @@ function FileDiff({
                 threads={fileThreads}
                 expansion={expansion}
                 highlight={highlight}
+                insights={insights}
+                headSha={headSha}
               />
             )}
           </>
@@ -384,6 +415,7 @@ export default function PrFileDiffs({
   /** Where a guided review wants the reader looking, if one is running. */
   focus?: DiffFocus | null;
 }) {
+  const insights = usePrInsights(prRef);
   const { data, error, loading } = usePrFiles(prRef);
   const detail = usePrDetail(prRef);
   const threads = detail.data?.reviewThreads ?? [];
@@ -452,6 +484,7 @@ export default function PrFileDiffs({
           split={split}
           headSha={detail.data?.headSha ?? ""}
           focus={focus?.path === f.filename ? focus : null}
+          insights={insights}
         />
       ))}
     </div>

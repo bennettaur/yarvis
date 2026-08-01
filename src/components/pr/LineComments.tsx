@@ -195,3 +195,22 @@ export function AddCommentButton({ onClick }: { onClick: () => void }) {
     </button>
   );
 }
+
+/**
+ * The hover-revealed "?" that asks about a line. Shift-clicking extends the
+ * question to cover everything from the last line asked about in this file, so
+ * a reviewer can ask about a block without a drag gesture that would fight the
+ * browser's own text selection.
+ */
+export function AskAboutLineButton({ onClick }: { onClick: (extend: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => onClick(e.shiftKey)}
+      title="Ask about this line — shift-click to extend from the last one"
+      className="text-violet-400 opacity-0 hover:text-violet-300 focus-visible:opacity-100 group-hover:opacity-100"
+    >
+      ?
+    </button>
+  );
+}

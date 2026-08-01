@@ -88,6 +88,16 @@ Status of the build against the original vision. The full V1 plan lives at
   on a step opens its file — overriding a deliberate collapse — scrolls to its
   lines, and marks them down the left edge, in both the unified and side-by-side
   views.
+- **Line insights** — a "?" beside any line asks the same tool-equipped agent
+  about that code (shift-click extends from the last line asked about, so a
+  block can be picked out without a drag that would fight the browser's own text
+  selection). The answer is stored against those lines and renders inline,
+  styled apart from review threads because it is the reviewer's own note rather
+  than something the author sees — with a Post action that turns one into a real
+  line comment when it is worth sharing. Insights carry the commit they were
+  written against and are marked out of date once the PR moves past it. Unlike
+  guides they are not swept: an answer about why code is the way it is outlives
+  the pull request that prompted it.
 - **Issues dashboard (GitHub)** — a global Issues tab mirroring the PR
   dashboard: "Assigned to me" / "All open" / saved-filter views, grouped by
   repo, with stars, search, "in progress" badges, and a manual refresh. Issues

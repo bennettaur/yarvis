@@ -32,7 +32,11 @@ export interface PrGuide {
  * DELETE handlers reassemble. Those two can't carry a body, so the ref travels
  * in the URL for them and in the body everywhere else.
  */
-function refQuery(ref: PrRef): string {
+/**
+ * Shared with the insights client, which addresses the same pull requests
+ * through the same query shape.
+ */
+export function prRefQuery(ref: PrRef): string {
   const params: Record<string, string> =
     ref.provider === "github"
       ? {
@@ -62,7 +66,7 @@ async function request<T>(path: string, method: string, body?: unknown): Promise
 }
 
 export async function fetchPrGuide(ref: PrRef): Promise<PrGuide | null> {
-  const res = await request<{ guide: PrGuide | null }>(`/api/pr/guide?${refQuery(ref)}`, "GET");
+  const res = await request<{ guide: PrGuide | null }>(`/api/pr/guide?${prRefQuery(ref)}`, "GET");
   return res.guide;
 }
 
@@ -84,5 +88,5 @@ export function setPrGuideProgress(ref: PrRef, step: number): Promise<{ currentS
 }
 
 export function deletePrGuide(ref: PrRef): Promise<{ deleted: boolean }> {
-  return request<{ deleted: boolean }>(`/api/pr/guide?${refQuery(ref)}`, "DELETE");
+  return request<{ deleted: boolean }>(`/api/pr/guide?${prRefQuery(ref)}`, "DELETE");
 }

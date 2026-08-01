@@ -230,6 +230,42 @@ export const prGuides = pgTable(
 );
 
 /**
+ * An answer to a question the reviewer asked about specific lines, kept beside
+ * the code it is about.
+ *
+ * These are the reviewer's own working notes rather than review feedback: most
+ * questions during a review are the reader orienting themselves, not something
+ * the author needs to see. So an insight stays local until explicitly posted to
+ * the provider as a comment, and `postedAt` records when that happened.
+ *
+ * Like guides they carry the commit they were written against, so an insight
+ * about code that has since moved is marked rather than silently re-pinned to
+ * whatever now occupies those line numbers.
+ */
+export const prInsights = pgTable(
+  "pr_insights",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** Provider-neutral PR identity; matches the frontend's `refKey`. */
+    refKey: text("ref_key").notNull(),
+    provider: text("provider").notNull(),
+    path: text("path").notNull(),
+    /** Right-side line range the question was asked about, inclusive. */
+    startLine: integer("start_line").notNull(),
+    endLine: integer("end_line").notNull(),
+    headSha: text("head_sha").notNull(),
+    question: text("question").notNull(),
+    answer: text("answer").notNull(),
+    /** Set once the insight has been posted to the provider as a comment. */
+    postedAt: timestamp("posted_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  // The review view loads every insight for a PR at once and buckets them by
+  // file, so the index leads with the PR and narrows by path.
+  (t) => [index("pr_insights_ref_idx").on(t.refKey, t.path)],
+);
+
+/**
  * Google OAuth tokens for the calendar integration. Single-account model: the
  * service keeps at most one row (the most recent). The refresh token is only
  * returned by Google on first consent, so it is preserved across refreshes.
@@ -694,3 +730,5 @@ export type IssueStar = typeof issueStars.$inferSelect;
 export type NewIssueStar = typeof issueStars.$inferInsert;
 export type PrGuideRow = typeof prGuides.$inferSelect;
 export type NewPrGuideRow = typeof prGuides.$inferInsert;
+export type PrInsightRow = typeof prInsights.$inferSelect;
+export type NewPrInsightRow = typeof prInsights.$inferInsert;

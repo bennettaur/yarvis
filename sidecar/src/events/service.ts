@@ -23,6 +23,8 @@ export const EVENT_TYPES = [
   "pr.viewed",
   "pr.guide.generated",
   "pr.guide.viewed",
+  "pr.insight.created",
+  "pr.insight.viewed",
   "alarm.created",
 ] as const;
 

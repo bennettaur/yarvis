@@ -5,14 +5,18 @@ import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { rowClass } from "../diff/DiffView";
 import ChangeMinimap from "./ChangeMinimap";
 import GapMarker from "./GapMarker";
+import InsightBlock, { hasInsightsAt } from "./InsightCards";
 import {
   AddCommentButton,
+  AskAboutLineButton,
   hasLineComments,
   LineCommentBlock,
   useLineComments,
 } from "./LineComments";
 import { FOCUS_ATTR, FOCUS_STYLE } from "./shared";
+import { useAskSelection } from "./useAskSelection";
 import type { FileExpansion } from "./useFileExpansion";
+import type { InsightsController } from "./usePrInsights";
 
 /**
  * Background for the blank half of an uneven change — three deletions across
@@ -31,11 +35,13 @@ const FILLER_CLASS = "bg-zinc-900/40";
 function Gutter({
   cell,
   onComment,
+  onAsk,
   style,
   focusAnchor,
 }: {
   cell: SplitCell | null;
   onComment?: () => void;
+  onAsk?: (extend: boolean) => void;
   style?: React.CSSProperties;
   /** Marks the first row of a focused range so a scroll can find it. */
   focusAnchor?: boolean;
@@ -48,6 +54,7 @@ function Gutter({
         cell ? rowClass(cell.kind) : FILLER_CLASS
       }`}
     >
+      {onAsk && <AskAboutLineButton onClick={onAsk} />}
       {onComment && <AddCommentButton onClick={onComment} />}
       <span>{cell?.line ?? ""}</span>
     </span>
@@ -108,6 +115,8 @@ export default function SplitDiffBody({
   threads,
   expansion,
   highlight,
+  insights,
+  headSha = "",
 }: {
   prRef: PrRef;
   file: PrFile;
@@ -115,9 +124,13 @@ export default function SplitDiffBody({
   expansion: FileExpansion;
   /** Lines a guided review is pointing at, marked down the left edge. */
   highlight?: { start: number; end: number } | null;
+  /** Omitted where there is no review to ask questions in (Omni widgets). */
+  insights?: InsightsController;
+  headSha?: string;
 }) {
   const rows = useMemo(() => pairAroundGaps(expansion.rows), [expansion.rows]);
   const comments = useLineComments(prRef, file, threads);
+  const ask = useAskSelection(file.filename, expansion.rows, insights);
 
   return (
     <div className="relative overflow-x-auto rounded-b-lg bg-zinc-950 font-mono text-xs leading-relaxed">
@@ -167,6 +180,9 @@ export default function SplitDiffBody({
               <Gutter
                 cell={row.right}
                 onComment={rightLine != null ? () => comments.openComposer(rightLine) : undefined}
+                onAsk={
+                  insights && rightLine != null ? (extend) => ask(rightLine, extend) : undefined
+                }
               />
               <Code cell={row.right} />
               {/* Only emitted for lines that actually have something below
@@ -178,6 +194,16 @@ export default function SplitDiffBody({
               {hasLineComments(rightLine, comments) && (
                 <div className="col-span-4 min-w-0 max-w-2xl">
                   <LineCommentBlock line={rightLine} comments={comments} />
+                </div>
+              )}
+              {insights && hasInsightsAt(insights, file.filename, rightLine) && (
+                <div className="col-span-4 min-w-0 max-w-2xl">
+                  <InsightBlock
+                    path={file.filename}
+                    line={rightLine}
+                    controller={insights}
+                    currentSha={headSha}
+                  />
                 </div>
               )}
             </Fragment>

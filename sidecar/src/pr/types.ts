@@ -26,6 +26,32 @@ export function refKey(ref: PrRef): string {
     : `az:${ref.org}/${ref.project}/${ref.repo}/${ref.prId}`;
 }
 
+/**
+ * Rebuilds a ref from a stored {@link refKey}, for rows that carry the key
+ * rather than the parts — an insight, say, that needs to be posted back to the
+ * pull request it came from.
+ *
+ * Splitting on `/` is safe because every component is validated to exclude it
+ * before a key is ever written. Returns null on anything that doesn't parse
+ * rather than a half-built ref, so a malformed row fails where it is read
+ * instead of somewhere downstream.
+ */
+export function parseRefKey(key: string): PrRef | null {
+  const [prefix, ...rest] = key.split(":");
+  const parts = rest.join(":").split("/");
+  if (prefix === "gh" && parts.length === 3) {
+    const number = Number(parts[2]);
+    if (!parts[0] || !parts[1] || !Number.isInteger(number)) return null;
+    return { provider: "github", owner: parts[0], repo: parts[1], number };
+  }
+  if (prefix === "az" && parts.length === 4) {
+    const prId = Number(parts[3]);
+    if (!parts[0] || !parts[1] || !parts[2] || !Number.isInteger(prId)) return null;
+    return { provider: "azure", org: parts[0], project: parts[1], repo: parts[2], prId };
+  }
+  return null;
+}
+
 export interface PrSummary {
   number: number;
   title: string;
