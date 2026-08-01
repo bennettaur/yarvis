@@ -97,7 +97,10 @@ Status of the build against the original vision. The full V1 plan lives at
   line comment when it is worth sharing. Insights carry the commit they were
   written against and are marked out of date once the PR moves past it. Unlike
   guides they are not swept: an answer about why code is the way it is outlives
-  the pull request that prompted it.
+  the pull request that prompted it. The chat agent can read both —
+  `list_pr_reviews` answers "where did I leave off" from the guides and their
+  progress, `search_pr_insights` looks through the recorded notes — read-only,
+  since reporting on a review is useful and inventing one is not.
 - **Issues dashboard (GitHub)** — a global Issues tab mirroring the PR
   dashboard: "Assigned to me" / "All open" / saved-filter views, grouped by
   repo, with stars, search, "in progress" badges, and a manual refresh. Issues

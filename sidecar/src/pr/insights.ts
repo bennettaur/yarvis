@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, ilike, or } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { type NewPrInsightRow, type PrInsightRow, prInsights } from "../db/schema.ts";
 import { type PrRef, refKey } from "./types.ts";
@@ -44,6 +44,32 @@ export function listInsights(db: Db, ref: PrRef): Promise<PrInsightRow[]> {
     .from(prInsights)
     .where(eq(prInsights.refKey, refKey(ref)))
     .orderBy(desc(prInsights.createdAt));
+}
+
+/**
+ * Finds insights whose question, answer, or path mentions `query`.
+ *
+ * A plain case-insensitive substring match rather than the pgvector search the
+ * memory store uses: these are looked up by the thing the user remembers about
+ * them — a file name, a function name, a phrase from their own question — and
+ * an exact match on that is both cheaper and more predictable than the nearest
+ * embedding. Escapes the LIKE wildcards so a path containing `_` matches
+ * literally instead of as "any character".
+ */
+export function searchInsights(db: Db, query: string, limit = 10): Promise<PrInsightRow[]> {
+  const term = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
+  return db
+    .select()
+    .from(prInsights)
+    .where(
+      or(
+        ilike(prInsights.question, term),
+        ilike(prInsights.answer, term),
+        ilike(prInsights.path, term),
+      ),
+    )
+    .orderBy(desc(prInsights.createdAt))
+    .limit(limit);
 }
 
 export async function getInsight(db: Db, id: string): Promise<PrInsightRow | null> {
