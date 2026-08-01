@@ -1,3 +1,4 @@
+import { DEFAULT_AGENT_TAB_TITLE } from "../shell/terminalTabs/sessionIds";
 import type { PinnedTab } from "../shell/terminalTabs/surfaceState";
 
 /**
@@ -11,7 +12,7 @@ const AGENT_ISSUE_INSTRUCTION =
 
 /** Fallbacks while the configured agent is still loading. Match the Rust core's
  *  defaults in `pty.rs`. */
-export const DEFAULT_AGENT_NAME = "Claude";
+export const DEFAULT_AGENT_NAME = DEFAULT_AGENT_TAB_TITLE;
 export const DEFAULT_AGENT_COMMAND = "claude --permission-mode auto";
 
 /**

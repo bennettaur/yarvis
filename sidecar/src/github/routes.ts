@@ -3,6 +3,8 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { GitHubClient } from "./client.ts";
+import { getGithubPrConfig, saveGithubPrConfig } from "./config.ts";
+import { getReviewingList } from "./reviewing.ts";
 import {
   addStar,
   createFilter,
@@ -70,6 +72,17 @@ const mergeSchema = z.object({
   method: z.enum(["MERGE", "SQUASH", "REBASE"]).optional(),
 });
 
+/**
+ * The dashboard config. `reviewQuery` is passed to GitHub's search verbatim, so
+ * it is only length-capped here — GitHub rejects malformed qualifiers itself,
+ * and second-guessing its grammar would block queries that actually work. The
+ * lookback is bounded because it widens both a search and a batched PR fetch.
+ */
+const prConfigSchema = z.object({
+  reviewQuery: z.string().trim().min(1).max(512),
+  reviewingLookbackDays: z.number().int().min(1).max(365),
+});
+
 /** GitHub PR dashboard routes, mounted under /api/github. */
 export function createGithubRoutes(config: Config): Hono {
   const router = new Hono();
@@ -109,6 +122,18 @@ export function createGithubRoutes(config: Config): Hono {
     }
   });
 
+  // PRs the user is part-way through reviewing, split into outstanding and done.
+  router.get("/reviewing", async (c) => {
+    const gh = client();
+    if (!gh) return c.json({ error: "github token not configured" }, 400);
+    try {
+      const [{ login }, prConfig] = await Promise.all([gh.viewer(), getGithubPrConfig(db())]);
+      return c.json(await getReviewingList(db(), gh, login, prConfig.reviewingLookbackDays));
+    } catch (e) {
+      return c.json({ error: String(e) }, 502);
+    }
+  });
+
   function parsePrParams(
     owner: string,
     repo: string,
@@ -128,6 +153,20 @@ export function createGithubRoutes(config: Config): Hono {
     if ("error" in params) return c.json({ error: params.error }, 400);
     try {
       return c.json(await gh.prStatus(params.owner, params.repo, params.number));
+    } catch (e) {
+      return c.json({ error: String(e) }, 502);
+    }
+  });
+
+  // List-row summary for a single PR, so a PR named by link or by repo + number
+  // can be opened without first appearing in a search result.
+  router.get("/pr/:owner/:repo/:number/summary", async (c) => {
+    const gh = client();
+    if (!gh) return c.json({ error: "github token not configured" }, 400);
+    const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
+    if ("error" in params) return c.json({ error: params.error }, 400);
+    try {
+      return c.json(await gh.prSummary(params.owner, params.repo, params.number));
     } catch (e) {
       return c.json({ error: String(e) }, 502);
     }
@@ -303,6 +342,16 @@ export function createGithubRoutes(config: Config): Hono {
     } catch (e) {
       return c.json({ error: String(e) }, 502);
     }
+  });
+
+  // --- Dashboard config (database only) ---
+
+  router.get("/config", async (c) => c.json(await getGithubPrConfig(db())));
+
+  router.put("/config", async (c) => {
+    const parsed = prConfigSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    return c.json(await saveGithubPrConfig(db(), parsed.data));
   });
 
   // --- Saved filters (database only) ---

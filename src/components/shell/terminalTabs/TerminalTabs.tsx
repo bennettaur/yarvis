@@ -1,4 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { setViewedSessions } from "../../../lib/attentionScope";
+import { useAttentionSessionKeys } from "../../../lib/attentionStore";
 import { isPtyBusy, killPty } from "../../../lib/pty";
 import SplitPane from "../../SplitPane";
 import TerminalPanel, { type TerminalPanelHandle } from "../../TerminalPanel";
@@ -17,6 +19,7 @@ import {
   splitPane,
 } from "./paneTree";
 import { reorderTabs } from "./reorderTabs";
+import { parseSessionId, sessionId, storageKeyFor } from "./sessionIds";
 import {
   type DiffTab,
   type InitialTab,
@@ -28,7 +31,6 @@ import {
   type SetupLogTab,
   type SurfaceState,
   stateAfterCloseTab,
-  storageKeyFor,
   type Tab,
   type TerminalTab,
   uid,
@@ -51,10 +53,6 @@ import {
 
 /** Tab title for a diff tab: the file's basename, which is short and unique enough. */
 const fileTitle = (path: string) => path.split("/").pop() || path;
-
-function sessionId(storageKey: string, tabId: string, paneId: PaneId): string {
-  return `${storageKey}/${tabId}/${paneId}`;
-}
 
 /** A request to open (or re-focus) a diff tab for a changed file. */
 export interface OpenFileDiff {
@@ -88,7 +86,21 @@ type PinnedTabProps =
     }
   | { pinnedTabs?: never; onClosePinned?: never };
 
-interface TerminalTabsProps {
+export default function TerminalTabs({
+  storageKey,
+  cwd,
+  pinnedTabs = [],
+  onClosePinned,
+  initialTab = "terminal",
+  openFileDiff = null,
+  onFileDiffOpened,
+  renderFileDiff,
+  openSetupLog = null,
+  onSetupLogOpened,
+  renderSetupLog,
+  focusSessionKey = null,
+  onFocusSessionHandled,
+}: {
   /** Stable namespace for this surface — both for localStorage and PTY ids. */
   storageKey: string;
   /** Working directory for freshly spawned shells in this surface. */
@@ -116,31 +128,21 @@ interface TerminalTabsProps {
   onSetupLogOpened?: () => void;
   /** Supplies a setup-log tab's body. When omitted, setup-log tabs are not used. */
   renderSetupLog?: (req: Pick<OpenSetupLog, "workspaceRepoId">) => ReactNode;
-}
-
-export default function TerminalTabs({
-  storageKey,
-  cwd,
-  pinnedTabs = [],
-  onClosePinned,
-  initialTab = "terminal",
-  openFileDiff = null,
-  onFileDiffOpened,
-  renderFileDiff,
-  openSetupLog = null,
-  onSetupLogOpened,
-  renderSetupLog,
-}: TerminalTabsProps & PinnedTabProps) {
+  /**
+   * A PTY session to bring into view — how opening an attention item lands on
+   * the exact tab that raised it. Same request/consume shape as `openFileDiff`;
+   * a session belonging to another surface is ignored.
+   */
+  focusSessionKey?: string | null;
+  /** Called once a `focusSessionKey` request has been handled (or found nothing). */
+  onFocusSessionHandled?: () => void;
+} & PinnedTabProps) {
   const [state, setState] = useState<SurfaceState>(() => loadState(storageKey, initialTab));
   // Refs to xterm handles so a tab/pane switch can move focus into the right shell.
   const handlesRef = useRef<Map<string, TerminalPanelHandle | null>>(new Map());
   const rootRef = useRef<HTMLDivElement | null>(null);
   // Pinned tab keys seen on the previous render, to detect newly-appeared ones.
   const prevPinnedKeysRef = useRef<string[]>([]);
-  // Where selection lands if the last regular tab is closed. Read as a primitive
-  // because `pinnedTabs` is a fresh array every render, so depending on the array
-  // itself would rebuild `closeTab` even when the pinned set hasn't changed.
-  const firstPinnedKey = pinnedTabs[0]?.key ?? null;
 
   // Persist on every change. State changes are coarse (tab/split/focus) so this
   // is plenty cheap to do unconditionally.
@@ -163,6 +165,48 @@ export default function TerminalTabs({
     activeTab?.kind === "terminal"
       ? (state.focused[activeTab.id] ?? firstLeafId(activeTab.root))
       : "";
+
+  // Where selection lands if the last regular tab is closed. Read as a primitive
+  // because `pinnedTabs` is a fresh array every render, so depending on the array
+  // itself would rebuild `closeTab` even when the pinned set hasn't changed.
+  const firstPinnedKey = pinnedTabs[0]?.key ?? null;
+
+  const attentionSessions = useAttentionSessionKeys();
+
+  // Tab ids with a pending attention item behind one of their panes, so the
+  // strip can point at the tab that wants the user even from another tab.
+  const flaggedTabIds = useMemo(() => {
+    const flagged = new Set<string>();
+    if (attentionSessions.size === 0) return flagged;
+    for (const tab of state.tabs) {
+      if (tab.kind !== "terminal") continue;
+      const wants = allLeafIds(tab.root).some((pane) =>
+        attentionSessions.has(sessionId(storageKey, tab.id, pane)),
+      );
+      if (wants) flagged.add(tab.id);
+    }
+    for (const pinned of pinnedTabs) {
+      if (attentionSessions.has(pinned.sessionId)) flagged.add(pinnedTabId(pinned.key));
+    }
+    return flagged;
+  }, [attentionSessions, state.tabs, pinnedTabs, storageKey]);
+
+  // The sessions actually on screen — only the active tab's, since the others
+  // are unmounted. Publishing them is what lets attention items raised by a tab
+  // the user is already watching clear themselves.
+  const visibleSessions = useMemo(() => {
+    if (activePinned) return [activePinned.sessionId];
+    if (activeTab?.kind !== "terminal") return [];
+    return allLeafIds(activeTab.root).map((pane) => sessionId(storageKey, activeTab.id, pane));
+  }, [activePinned, activeTab, storageKey]);
+
+  useEffect(() => {
+    setViewedSessions(storageKey, visibleSessions);
+  }, [storageKey, visibleSessions]);
+
+  // Withdrawal is its own effect so a tab switch republishes once instead of
+  // clearing and re-adding this surface's entry.
+  useEffect(() => () => setViewedSessions(storageKey, []), [storageKey]);
 
   // Reconcile pinned tabs: focus one that just appeared (e.g. a Claude session
   // that started), and fall back to a normal tab when the active pinned tab goes
@@ -291,6 +335,32 @@ export default function TerminalTabs({
     setState((prev) => ({ ...prev, activeTabId: pinnedTabId(key) }));
   }, []);
 
+  // Bring a requested session into view, then consume the request — including
+  // when nothing matches, so a session whose tab has since been closed (or that
+  // belongs to a surface this one doesn't own) can't strand the caller's state.
+  // Keyed on the request alone, like the pinned-tab effect above: the callbacks
+  // and `pinnedTabs` change identity every render and would re-fire it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on focusSessionKey; the rest change identity each render
+  useEffect(() => {
+    if (!focusSessionKey) return;
+    const pinned = pinnedTabs.find((p) => p.sessionId === focusSessionKey);
+    if (pinned) {
+      selectPinned(pinned.key);
+      onFocusSessionHandled?.();
+      return;
+    }
+    const ref = parseSessionId(focusSessionKey);
+    const tab = ref?.surfaceKey === storageKey ? state.tabs.find((t) => t.id === ref.tabId) : null;
+    if (tab && ref) {
+      selectTab(tab.id);
+      if (tab.kind === "terminal" && hasPane(tab.root, ref.paneId)) {
+        setFocusedPane(tab.id, ref.paneId);
+        focusPane(ref.paneId);
+      }
+    }
+    onFocusSessionHandled?.();
+  }, [focusSessionKey]);
+
   const reorder = useCallback((dragId: string, targetId: string, position: "before" | "after") => {
     setState((prev) => {
       const next = reorderTabs(prev.tabs, dragId, targetId, position);
@@ -298,6 +368,8 @@ export default function TerminalTabs({
     });
   }, []);
 
+  // Closing a pinned tab ends its underlying session; the caller stops listing it
+  // on its next poll, which removes the header.
   // Closing a pinned tab ends its underlying session and tells the owner, which
   // is what actually removes the header — this surface doesn't decide whether a
   // pinned tab exists.
@@ -452,6 +524,7 @@ export default function TerminalTabs({
         tabs={state.tabs}
         pinnedTabs={pinnedTabs}
         activeId={state.activeTabId}
+        flaggedTabIds={flaggedTabIds}
         onSelect={selectTab}
         onSelectPinned={selectPinned}
         onClose={(id) => void closeTab(id)}
@@ -498,6 +571,7 @@ function TabStrip({
   tabs,
   pinnedTabs,
   activeId,
+  flaggedTabIds,
   onSelect,
   onSelectPinned,
   onClose,
@@ -508,6 +582,8 @@ function TabStrip({
   tabs: Tab[];
   pinnedTabs: PinnedTab[];
   activeId: string;
+  /** Tabs with a pending attention item, marked with a dot in the strip. */
+  flaggedTabIds: ReadonlySet<string>;
   onSelect: (id: string) => void;
   onSelectPinned: (key: string) => void;
   onClose: (id: string) => void;
@@ -578,22 +654,25 @@ function TabStrip({
             are intentionally not draggable and not drop targets. */}
         {pinnedTabs.map((p) => {
           const active = activeId === pinnedTabId(p.key);
+          const flagged = flaggedTabIds.has(pinnedTabId(p.key));
           return (
             <div
               key={`pinned:${p.key}`}
               className={`group flex shrink-0 items-center gap-1 border-b-2 px-2 py-1 text-xs ${
                 active
                   ? "border-indigo-400 text-zinc-100"
-                  : "border-transparent text-zinc-400 hover:text-zinc-200"
+                  : flagged
+                    ? "border-transparent text-amber-300 hover:text-amber-200"
+                    : "border-transparent text-zinc-400 hover:text-zinc-200"
               }`}
             >
               <button
                 type="button"
                 onClick={() => onSelectPinned(p.key)}
                 className="flex max-w-40 items-center gap-1 truncate"
-                title={p.title}
+                title={flagged ? `${p.title} — needs you` : p.title}
               >
-                <span className="text-emerald-400">●</span>
+                <span className={flagged ? "text-amber-400" : "text-emerald-400"}>●</span>
                 {p.title}
               </button>
               <button
@@ -610,6 +689,7 @@ function TabStrip({
         })}
         {tabs.map((t) => {
           const active = t.id === activeId;
+          const flagged = flaggedTabIds.has(t.id);
           const dragging = drag?.dragId === t.id;
           const isOver = drag?.overId === t.id && drag.dragId !== t.id;
           const showBefore = isOver && drag?.side === "before";
@@ -626,7 +706,9 @@ function TabStrip({
               className={`group relative flex shrink-0 items-center gap-1 border-b-2 px-2 py-1 text-xs ${
                 active
                   ? "border-indigo-400 text-zinc-100"
-                  : "border-transparent text-zinc-400 hover:text-zinc-200"
+                  : flagged
+                    ? "border-transparent text-amber-300 hover:text-amber-200"
+                    : "border-transparent text-zinc-400 hover:text-zinc-200"
               } ${dragging ? "opacity-50" : ""}`}
             >
               {showBefore && (
@@ -645,8 +727,9 @@ function TabStrip({
                 type="button"
                 onClick={() => onSelect(t.id)}
                 className="flex max-w-40 items-center gap-1 truncate"
-                title={t.kind === "diff" ? t.path : t.title}
+                title={t.kind === "diff" ? t.path : flagged ? `${t.title} — needs you` : t.title}
               >
+                {flagged && <span className="text-amber-400">●</span>}
                 {t.kind === "diff" && <span className="text-sky-400">±</span>}
                 {t.kind === "setup" && <span className="text-red-400">⚠</span>}
                 {t.title}

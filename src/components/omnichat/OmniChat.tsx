@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { messageLabel, type ProviderId } from "../../lib/chat";
+import type { ProviderId } from "../../lib/chat";
 import { OMNI_CHAT_SESSION_KEY } from "../../lib/omniChat";
 import { collectContext, formatContext } from "../../lib/omniChatContext";
 import { useChatThread } from "../../lib/useChatThread";
 import ChatComposer from "../ChatComposer";
-import ThinkingIndicator from "../ThinkingIndicator";
+import ChatMessages from "../ChatMessages";
 
 /**
  * A centered, summon-from-anywhere chat overlay. It stays mounted while hidden
@@ -142,26 +142,12 @@ export default function OmniChat({
           ref={threadRef}
           className="min-h-[280px] flex-1 space-y-3 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950/50 p-3"
         >
-          {messages.length === 0 && !streaming && (
-            <p className="text-sm text-zinc-600">
-              Ask about whatever you're looking at — it's sent along as context.
-            </p>
-          )}
-          {messages.map((m, i) => (
-            <div key={i} className="text-sm">
-              <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
-                {messageLabel(m.role, m.metadata)}
-              </div>
-              <div className="whitespace-pre-wrap text-zinc-100">{m.content}</div>
-            </div>
-          ))}
-          {streaming && (
-            <div className="text-sm">
-              <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">assistant</div>
-              <div className="whitespace-pre-wrap text-zinc-100">{streaming}</div>
-            </div>
-          )}
-          {busy && !streaming && <ThinkingIndicator />}
+          <ChatMessages
+            messages={messages}
+            streaming={streaming}
+            busy={busy}
+            emptyHint="Ask about whatever you're looking at — it's sent along as context."
+          />
         </div>
 
         {error && <p className="text-sm text-red-400">{error}</p>}

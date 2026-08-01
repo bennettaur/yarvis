@@ -174,20 +174,65 @@ struct SpawnSpec {
     strip_provider_secrets: bool,
 }
 
-/// Environment a Yarvis-launched Claude session needs so its attention hooks can
-/// reach the sidecar's ingest endpoint. Only workspace Claude sessions (keyed
-/// `ws-claude:<workspaceId>`) get the token; every other PTY (plain terminals)
-/// gets nothing. Pure so the gating is unit-testable without a live PTY.
-fn attention_env(id: &str, port: u16, token: &str) -> Vec<(String, String)> {
-    let Some(workspace_id) = id.strip_prefix("ws-claude:") else {
-        return Vec::new();
+/// The workspace a PTY id belongs to, when its id encodes one: the pinned Claude
+/// session (`ws-claude:<workspaceId>`) and the workspace's own terminal panes
+/// (`ws:<workspaceId>/<tab>/<pane>`). Other surfaces (the standalone Terminal
+/// tab, Omni, a repo run script) belong to no workspace.
+fn attention_workspace_id(id: &str) -> Option<&str> {
+    if let Some(rest) = id.strip_prefix("ws-claude:") {
+        return (!rest.is_empty()).then_some(rest);
+    }
+    let rest = id.strip_prefix("ws:")?;
+    let workspace_id = rest.split_once('/').map_or(rest, |(head, _)| head);
+    (!workspace_id.is_empty()).then_some(workspace_id)
+}
+
+/// Whether an item raised by this session could be shown to the user. Only the
+/// workspaces view and the standalone Terminal tab can bring a session into
+/// view, so a session hosted anywhere else (an Omni layout, a repo run script)
+/// would produce an item that navigates nowhere. Kept in step with
+/// `attentionSurfaceOf` in `src/components/shell/terminalTabs/sessionIds.ts`.
+fn is_attention_addressable(id: &str) -> bool {
+    // A workspace's pinned Claude session, or a pane in one of the two surfaces
+    // that render tabs. Pane ids are "<surface>/<tab>/<pane>", so a surface key
+    // on its own is not addressable.
+    if id
+        .strip_prefix("ws-claude:")
+        .is_some_and(|id| !id.is_empty())
+    {
+        return true;
+    }
+    let mut parts = id.split('/');
+    let Some(surface) = parts.next() else {
+        return false;
     };
-    vec![
+    if parts.count() != 2 {
+        return false;
+    }
+    surface == "tab:terminal" || surface.strip_prefix("ws:").is_some_and(|id| !id.is_empty())
+}
+
+/// Environment a PTY needs so a tool running in it (a Claude Code session and its
+/// hooks, a script) can raise an attention item for *that* session. The session
+/// key is the PTY id, which the frontend maps back to the exact terminal tab and
+/// pane, so an item can point at the tab that raised it rather than at the
+/// workspace as a whole; `YARVIS_WORKSPACE_ID` is set only when the id encodes
+/// one. Sessions the UI cannot navigate to get nothing, which keeps the token
+/// out of shells that could only ever raise an item leading nowhere. Pure so the
+/// derivation is unit-testable without a live PTY.
+fn attention_env(id: &str, port: u16, token: &str) -> Vec<(String, String)> {
+    if !is_attention_addressable(id) {
+        return Vec::new();
+    }
+    let mut env = vec![
         ("YARVIS_SIDECAR_PORT".to_string(), port.to_string()),
         ("YARVIS_ATTENTION_TOKEN".to_string(), token.to_string()),
-        ("YARVIS_WORKSPACE_ID".to_string(), workspace_id.to_string()),
         ("YARVIS_SESSION_KEY".to_string(), id.to_string()),
-    ]
+    ];
+    if let Some(workspace_id) = attention_workspace_id(id) {
+        env.push(("YARVIS_WORKSPACE_ID".to_string(), workspace_id.to_string()));
+    }
+    env
 }
 
 /// Spawns a shell in a new PTY and starts the reader thread that streams its
@@ -205,9 +250,8 @@ fn spawn_session(app: &AppHandle, id: &str, spec: &SpawnSpec) -> Result<PtySessi
     if spec.strip_provider_secrets {
         cmd.env_remove("ANTHROPIC_API_KEY");
     }
-    // Workspace Claude sessions carry the sidecar port + scoped attention token so
-    // their Claude Code hooks can post to the ingest endpoint. Both launch flows
-    // (core-spawned and the issue "Start work" shell) route through here.
+    // Every session carries the sidecar port + scoped attention token so whatever
+    // runs in it can post to the ingest endpoint, keyed by this exact PTY id.
     if let (Some(info), Some(attn)) = (
         app.try_state::<crate::sidecar::SidecarInfo>(),
         app.try_state::<crate::sidecar::AttentionIngestToken>(),
@@ -685,9 +729,10 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_launch_command, append_capped, attention_env, is_unsafe_name_char,
-        remote_control_command, resolve_agent_command, resolve_max_sessions, DEFAULT_AGENT_COMMAND,
-        DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS, MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
+        agent_launch_command, append_capped, attention_env, attention_workspace_id,
+        is_unsafe_name_char, remote_control_command, resolve_agent_command, resolve_max_sessions,
+        DEFAULT_AGENT_COMMAND, DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS, MAX_SCROLLBACK,
+        MAX_SESSION_NAME_CHARS,
     };
 
     #[test]
@@ -913,19 +958,68 @@ mod tests {
             vec![
                 ("YARVIS_SIDECAR_PORT".to_string(), "8765".to_string()),
                 ("YARVIS_ATTENTION_TOKEN".to_string(), "tok".to_string()),
-                ("YARVIS_WORKSPACE_ID".to_string(), "abc-123".to_string()),
                 (
                     "YARVIS_SESSION_KEY".to_string(),
                     "ws-claude:abc-123".to_string()
+                ),
+                ("YARVIS_WORKSPACE_ID".to_string(), "abc-123".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn attention_env_keys_a_workspace_terminal_pane_by_its_pty_id() {
+        let env = attention_env("ws:abc-123/t1/p1", 8765, "tok");
+        assert_eq!(
+            env,
+            vec![
+                ("YARVIS_SIDECAR_PORT".to_string(), "8765".to_string()),
+                ("YARVIS_ATTENTION_TOKEN".to_string(), "tok".to_string()),
+                (
+                    "YARVIS_SESSION_KEY".to_string(),
+                    "ws:abc-123/t1/p1".to_string()
+                ),
+                ("YARVIS_WORKSPACE_ID".to_string(), "abc-123".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn attention_env_is_empty_for_sessions_the_ui_cannot_navigate_to() {
+        // An Omni-hosted terminal or a repo run script has nowhere to be shown,
+        // so it must not receive the ingest token.
+        assert!(attention_env("omni:s1/t1/p1", 8765, "tok").is_empty());
+        assert!(attention_env("ws-run:repo-1", 8765, "tok").is_empty());
+        // A surface key with no tab/pane names no session the UI can focus.
+        assert!(attention_env("ws:w1", 8765, "tok").is_empty());
+        assert!(attention_env("tab:terminal", 8765, "tok").is_empty());
+    }
+
+    #[test]
+    fn attention_env_omits_the_workspace_for_a_standalone_terminal() {
+        let env = attention_env("tab:terminal/abc/def", 8765, "tok");
+        assert_eq!(
+            env,
+            vec![
+                ("YARVIS_SIDECAR_PORT".to_string(), "8765".to_string()),
+                ("YARVIS_ATTENTION_TOKEN".to_string(), "tok".to_string()),
+                (
+                    "YARVIS_SESSION_KEY".to_string(),
+                    "tab:terminal/abc/def".to_string()
                 ),
             ]
         );
     }
 
     #[test]
-    fn attention_env_is_empty_for_non_claude_sessions() {
-        // A plain terminal PTY must not receive the ingest token.
-        assert!(attention_env("tab:terminal/abc/def", 8765, "tok").is_empty());
+    fn attention_workspace_id_reads_both_workspace_session_shapes() {
+        assert_eq!(attention_workspace_id("ws-claude:w1"), Some("w1"));
+        assert_eq!(attention_workspace_id("ws:w1/t1/p1"), Some("w1"));
+        assert_eq!(attention_workspace_id("ws:w1"), Some("w1"));
+        assert_eq!(attention_workspace_id("ws-run:repo-1"), None);
+        assert_eq!(attention_workspace_id("omni:r1/t1/p1"), None);
+        assert_eq!(attention_workspace_id("ws:"), None);
+        assert_eq!(attention_workspace_id("ws-claude:"), None);
     }
 
     #[test]

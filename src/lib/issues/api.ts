@@ -1,5 +1,6 @@
 import { ensureOk, sidecarFetch } from "../api";
 import type {
+  IssueCreateInput,
   IssueDetail,
   IssueFilter,
   IssueLink,
@@ -7,6 +8,7 @@ import type {
   IssueRepo,
   IssueStar,
   IssueSummary,
+  IssueUpdateInput,
   StartWorkInput,
   StartWorkResult,
 } from "./types";
@@ -58,6 +60,32 @@ export function issueDetail(
 ): Promise<IssueDetail> {
   const { owner, repo } = splitSourceKey(sourceKey);
   return get<IssueDetail>(`/api/issues/${provider}/detail/${owner}/${repo}/${externalId}`);
+}
+
+// --- Issue writes (create / edit / close) ---
+
+export function createIssue(
+  owner: string,
+  repo: string,
+  input: IssueCreateInput,
+  provider: IssueProvider = "github",
+): Promise<IssueSummary> {
+  return send<IssueSummary>(`/api/issues/${provider}/create/${owner}/${repo}`, "POST", input);
+}
+
+/** Edits title, body, and/or open/closed state; resolves with fresh detail. */
+export function updateIssue(
+  sourceKey: string,
+  externalId: string,
+  input: IssueUpdateInput,
+  provider: IssueProvider = "github",
+): Promise<IssueDetail> {
+  const { owner, repo } = splitSourceKey(sourceKey);
+  return send<IssueDetail>(
+    `/api/issues/${provider}/detail/${owner}/${repo}/${externalId}`,
+    "PATCH",
+    input,
+  );
 }
 
 // --- Saved filters ---

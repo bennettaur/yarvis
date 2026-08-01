@@ -1,21 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type ChatMessage,
-  type ChatMessageMetadata,
   createSession,
   getMessages,
   listProviders,
   type ProviderId,
   type ProviderInfo,
   streamChat,
+  type ThreadMessage,
 } from "./chat";
-
-/** A rendered message: the persisted role, its text, and optional provenance. */
-export interface ThreadMessage {
-  role: string;
-  content: string;
-  metadata?: ChatMessageMetadata | null;
-}
 
 // Shared with ChatPanel so Omni Chat defaults to the same provider/model the
 // user last picked in the main Chat tab.

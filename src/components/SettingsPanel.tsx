@@ -3,17 +3,19 @@ import AgentSection from "./AgentSection";
 import CustomProviderSection from "./CustomProviderSection";
 import EmbeddingsSection from "./EmbeddingsSection";
 import KeychainSection from "./KeychainSection";
+import PrReviewSection from "./PrReviewSection";
 import ReposSection from "./ReposSection";
 import TelegramSection from "./TelegramSection";
 import TerminalSection from "./TerminalSection";
 import WipSection from "./WipSection";
 
-type TabKey = "credentials" | "providers" | "repos" | "embeddings" | "telegram" | "wip";
+type TabKey = "credentials" | "providers" | "repos" | "prs" | "embeddings" | "telegram" | "wip";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "credentials", label: "Credentials" },
   { key: "providers", label: "LLM Providers" },
   { key: "repos", label: "Repositories" },
+  { key: "prs", label: "PR review" },
   { key: "embeddings", label: "Embeddings" },
   { key: "telegram", label: "Telegram" },
   { key: "wip", label: "Work in progress" },
@@ -65,6 +67,7 @@ export default function SettingsPanel() {
           <TerminalSection />
         </div>
       )}
+      {active === "prs" && <PrReviewSection />}
       {active === "embeddings" && <EmbeddingsSection />}
       {active === "telegram" && <TelegramSection />}
       {active === "wip" && <WipSection />}

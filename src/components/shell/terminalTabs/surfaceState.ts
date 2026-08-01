@@ -1,4 +1,5 @@
 import { leaf, type Pane, type PaneId } from "./paneTree";
+import { storageKeyFor } from "./sessionIds";
 
 /**
  * The persisted shape of one terminal surface, and the rules for what it holds
@@ -102,10 +103,6 @@ function emptyState(): SurfaceState {
 
 export function defaultState(initialTab: InitialTab): SurfaceState {
   return initialTab === "none" ? emptyState() : freshState();
-}
-
-export function storageKeyFor(key: string) {
-  return `yarvis.terminalTabs.${key}`;
 }
 
 export function loadState(key: string, initialTab: InitialTab): SurfaceState {

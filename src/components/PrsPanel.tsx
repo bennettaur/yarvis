@@ -9,180 +9,45 @@ import {
   azStars,
   azViewer,
 } from "../lib/pr/azure";
-import { usePrStatus } from "../lib/pr/cache";
 import {
   ghCreateFilter,
   ghDeleteFilter,
   ghFilters,
+  ghPrConfig,
+  ghReviewing,
   ghSearch,
   ghStars,
   ghViewer,
 } from "../lib/pr/github";
 import { refDisplayRepo, refKey, refNumber } from "../lib/pr/ref";
-import type { AzFilter, GhFilter, Provider, PrStatus, PrSummary } from "../lib/pr/types";
-import { formatRelativeTime } from "../lib/time";
-import { openExternal } from "../lib/url";
+import type { AzFilter, GhFilter, Provider, PrSummary, ReviewingList } from "../lib/pr/types";
 import PrDetailView from "./PrDetailView";
+import PrGroupedList from "./pr/PrGroupedList";
+import PrLocator from "./pr/PrLocator";
+import PrReviewingList from "./pr/PrReviewingList";
 
 const GH_MY = "is:open is:pr author:@me";
-const GH_REVIEW = "is:open is:pr review-requested:@me";
 
-type TabKey = "mine" | "review" | "filters";
+type TabKey = "mine" | "review" | "reviewing" | "filters";
 
-const TABS: { key: TabKey; label: string }[] = [
-  { key: "mine", label: "My PRs" },
-  { key: "review", label: "Needs review" },
-  { key: "filters", label: "Filters" },
-];
+/**
+ * The "Reviewing" tab is GitHub-only: it needs both the user's GitHub
+ * comment/review history and a per-PR view of their own reviews, neither of
+ * which the Azure DevOps integration exposes.
+ */
+function tabsFor(provider: Provider): { key: TabKey; label: string }[] {
+  return [
+    { key: "mine", label: "My PRs" },
+    { key: "review", label: "Needs review" },
+    ...(provider === "github" ? [{ key: "reviewing" as TabKey, label: "Reviewing" }] : []),
+    { key: "filters", label: "Filters" },
+  ];
+}
 
 const PROVIDERS: { key: Provider; label: string }[] = [
   { key: "github", label: "GitHub" },
   { key: "azure", label: "Azure DevOps" },
 ];
-
-function createdMs(pr: PrSummary): number {
-  return new Date(pr.createdAt).getTime() || 0;
-}
-
-/** Groups PRs by their display repo, newest-first within each group and across groups. */
-function groupByRepo(prs: PrSummary[]): { repo: string; prs: PrSummary[] }[] {
-  const map = new Map<string, PrSummary[]>();
-  for (const pr of prs) {
-    const key = refDisplayRepo(pr.ref);
-    const list = map.get(key);
-    if (list) list.push(pr);
-    else map.set(key, [pr]);
-  }
-  const groups = [...map.entries()].map(([repo, items]) => ({
-    repo,
-    // `items` is a fresh array owned by this function, so sorting in place is safe.
-    prs: items.sort((a, b) => createdMs(b) - createdMs(a)),
-  }));
-  groups.sort((a, b) => createdMs(b.prs[0]!) - createdMs(a.prs[0]!));
-  return groups;
-}
-
-function DraftBadge() {
-  return <span className="rounded bg-zinc-700 px-1.5 py-0.5 text-xs text-zinc-300">draft</span>;
-}
-
-/** CI/merge state for a row. Renders nothing while loading or when no signal. */
-function StatusBadge({ status }: { status: PrStatus | null }) {
-  if (!status) return null;
-  let text: string | null = null;
-  let color = "";
-  if (status.checks.failure > 0) {
-    text = "CI failing";
-    color = "bg-red-900 text-red-200";
-  } else if (status.checks.pending > 0) {
-    text = "CI running";
-    color = "bg-amber-900 text-amber-200";
-  } else if (status.mergeable === false) {
-    text = "conflicts";
-    color = "bg-red-900 text-red-200";
-  } else if (status.checks.total > 0) {
-    text = "CI passing";
-    color = "bg-emerald-900 text-emerald-200";
-  }
-  if (!text) return null;
-  return <span className={`rounded px-1.5 py-0.5 text-xs ${color}`}>{text}</span>;
-}
-
-function PrRow({
-  pr,
-  starred,
-  onToggleStar,
-  onReview,
-}: {
-  pr: PrSummary;
-  starred: boolean;
-  onToggleStar: (pr: PrSummary, starred: boolean) => void;
-  onReview: (pr: PrSummary) => void;
-}) {
-  // GitHub's status is one cheap call per row. Azure's only yields `mergeable`
-  // at the cost of a full PR-detail fetch per row, so for a list of N PRs that's
-  // N heavy calls for little signal — skip it and let the detail view show merge
-  // state instead.
-  const { data: status } = usePrStatus(pr.ref.provider === "github" ? pr.ref : null);
-
-  return (
-    <li
-      onClick={() => onReview(pr)}
-      className="flex cursor-pointer items-center gap-3 px-4 py-3 hover:bg-zinc-800/50"
-    >
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          onToggleStar(pr, starred);
-        }}
-        className={starred ? "text-amber-400" : "text-zinc-600 hover:text-zinc-400"}
-        title={starred ? "Unstar" : "Star"}
-      >
-        ★
-      </button>
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-sm text-zinc-100">{pr.title}</div>
-        <div className="text-xs text-zinc-500">
-          #{refNumber(pr.ref)} · {pr.author} · opened {formatRelativeTime(pr.createdAt)}
-        </div>
-      </div>
-      {pr.draft && <DraftBadge />}
-      <StatusBadge status={status} />
-      <span className="shrink-0 text-xs text-zinc-600" title={`Updated ${pr.updatedAt}`}>
-        {formatRelativeTime(pr.updatedAt)}
-      </span>
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          openExternal(pr.url);
-        }}
-        className="shrink-0 text-zinc-600 hover:text-sky-400"
-        title="Open externally"
-      >
-        ↗
-      </button>
-    </li>
-  );
-}
-
-/** Renders PRs grouped under repo headers, newest-first. */
-function PrGroupedList({
-  prs,
-  isStarred,
-  onToggleStar,
-  onReview,
-}: {
-  prs: PrSummary[];
-  isStarred: (pr: PrSummary) => boolean;
-  onToggleStar: (pr: PrSummary, starred: boolean) => void;
-  onReview: (pr: PrSummary) => void;
-}) {
-  const groups = useMemo(() => groupByRepo(prs), [prs]);
-  if (prs.length === 0) return <p className="text-sm text-zinc-600">None.</p>;
-  return (
-    <div className="space-y-5">
-      {groups.map((group) => (
-        <section key={group.repo}>
-          <h3 className="mb-2 text-sm font-medium text-zinc-300">
-            {group.repo}
-            <span className="ml-2 text-xs text-zinc-600">({group.prs.length})</span>
-          </h3>
-          <ul className="divide-y divide-zinc-800 rounded-xl border border-zinc-800 bg-zinc-900/50">
-            {group.prs.map((pr) => (
-              <PrRow
-                key={pr.url}
-                pr={pr}
-                starred={isStarred(pr)}
-                onToggleStar={onToggleStar}
-                onReview={onReview}
-              />
-            ))}
-          </ul>
-        </section>
-      ))}
-    </div>
-  );
-}
 
 export default function PrsPanel({
   requestedPr = null,
@@ -219,6 +84,12 @@ export default function PrsPanel({
   }>({ name: "", scope: "mine", project: "" });
   const [selected, setSelected] = useState<PrSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Null until the Reviewing tab has been opened at least once, or on failure. */
+  const [reviewing, setReviewing] = useState<ReviewingList | null>(null);
+  /** One fetch per provider selection: "settled" covers both success and failure. */
+  const [reviewingLoad, setReviewingLoad] = useState<"idle" | "loading" | "settled">("idle");
+
+  const tabs = useMemo(() => tabsFor(provider), [provider]);
 
   // Tell Omni Chat which PR the user is looking at (or which list), so it can
   // act on "this PR" without the user spelling out the details.
@@ -230,12 +101,19 @@ export default function PrsPanel({
         details: { url: selected.url, author: selected.author, draft: selected.draft },
       };
     }
-    const count = activeTab === "mine" ? mine.length : activeTab === "review" ? review.length : 0;
+    const count =
+      activeTab === "mine"
+        ? mine.length
+        : activeTab === "review"
+          ? review.length
+          : activeTab === "reviewing"
+            ? (reviewing?.inProgress.length ?? 0)
+            : 0;
     return {
       source: "prs",
       summary: `On the PRs tab (${provider}, ${activeTab} list, ${count} shown)`,
     };
-  }, [selected, activeTab, provider, mine.length, review.length]);
+  }, [selected, activeTab, provider, mine.length, review.length, reviewing]);
 
   const loadStars = useCallback(async (p: Provider) => {
     const stars = p === "github" ? await ghStars() : await azStars();
@@ -319,6 +197,8 @@ export default function PrsPanel({
     setError(null);
     setMine([]);
     setReview([]);
+    setReviewing(null);
+    setReviewingLoad("idle");
     setStarredKeys(new Set());
     if (!probeComplete) return;
     if (!availableProviders.has(provider)) return;
@@ -330,7 +210,10 @@ export default function PrsPanel({
       try {
         if (provider === "github") {
           setMine(await ghSearch(GH_MY));
-          setReview(await ghSearch(GH_REVIEW));
+          // The needs-review query is user-configurable (Settings → PR review),
+          // since what counts as needing your attention varies by team.
+          const config = await ghPrConfig();
+          setReview(await ghSearch(config.reviewQuery));
           setGhFilterList(await ghFilters());
         } else {
           setMine(await azSearch("mine"));
@@ -343,6 +226,36 @@ export default function PrsPanel({
       }
     })();
   }, [provider, loadStars, availableProviders, probeComplete]);
+
+  // The Reviewing list costs several GitHub round-trips (two searches plus a
+  // batched lookup for PRs only the local event log knows about), so it loads
+  // when the tab is first opened rather than alongside the cheap searches.
+  // Keyed on `reviewingLoad` rather than on the list itself: a failed attempt
+  // leaves no list, and re-running off that emptiness would retry forever.
+  useEffect(() => {
+    if (activeTab !== "reviewing" || provider !== "github") return;
+    if (reviewingLoad !== "idle") return;
+    let live = true;
+    setReviewingLoad("loading");
+    ghReviewing()
+      .then((list) => {
+        if (live) setReviewing(list);
+      })
+      .catch((e) => {
+        if (live) setError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (live) setReviewingLoad("settled");
+      });
+    return () => {
+      live = false;
+    };
+  }, [activeTab, provider, reviewingLoad]);
+
+  // A provider switch can retire the active tab (Azure has no Reviewing list).
+  useEffect(() => {
+    if (!tabs.some((t) => t.key === activeTab)) setActiveTab("mine");
+  }, [tabs, activeTab]);
 
   const onToggleStar = useCallback(
     async (pr: PrSummary, starred: boolean) => {
@@ -426,8 +339,10 @@ export default function PrsPanel({
       <div className="space-y-5">
         <div className="flex items-center justify-between">{providerToggle}</div>
 
+        {availableProviders.has("github") && <PrLocator onOpen={setSelected} />}
+
         <nav className="flex gap-1 border-b border-zinc-800">
-          {TABS.map((tab) => {
+          {tabs.map((tab) => {
             const count =
               tab.key === "mine" ? mine.length : tab.key === "review" ? review.length : null;
             return (
@@ -449,6 +364,15 @@ export default function PrsPanel({
 
         {activeTab === "mine" && <PrGroupedList prs={mine} {...listProps} />}
         {activeTab === "review" && <PrGroupedList prs={review} {...listProps} />}
+
+        {activeTab === "reviewing" &&
+          (reviewing ? (
+            <PrReviewingList list={reviewing} listProps={listProps} />
+          ) : (
+            <p className="text-sm text-zinc-600">
+              {reviewingLoad === "settled" ? "Nothing to show." : "Loading…"}
+            </p>
+          ))}
 
         {activeTab === "filters" && provider === "github" && (
           <div className="space-y-5">

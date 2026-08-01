@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it } from "bun:test";
+import { storageKeyFor } from "./sessionIds";
 import {
   defaultState,
   loadState,
   pinnedTabId,
   type SurfaceState,
   stateAfterCloseTab,
-  storageKeyFor,
 } from "./surfaceState";
 
 /** A surface holding `count` terminal tabs, with the first one active. */

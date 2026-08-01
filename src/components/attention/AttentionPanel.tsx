@@ -1,8 +1,10 @@
 import { useEffect } from "react";
 import type { AttentionItem, AttentionKind } from "../../lib/attention";
-import { markAttention, useAttentionItems } from "../../lib/attentionStore";
+import type { AttentionGroup } from "../../lib/attentionGroups";
+import { markAttention, markAttentionScope, useAttentionGroups } from "../../lib/attentionStore";
 import { formatRelativeTime } from "../../lib/time";
 import type { WipItem, WipSource } from "../../lib/wip";
+import { sessionTabTitle } from "../shell/terminalTabs/sessionIds";
 
 /**
  * A right slide-out panel with two streams: "Needs you now" (pending attention
@@ -29,25 +31,62 @@ const WIP_LABEL: Record<WipSource, string> = {
   workspace: "Workspace",
 };
 
-function AttentionRow({
-  item,
+/**
+ * Names the tabs a group's items came from, so a workspace row says *which*
+ * session is blocked. Falls back to nothing when no session resolves to a tab
+ * (the label is a bonus on top of the lead item's own body).
+ */
+function tabSummary(sessionKeys: string[]): string | null {
+  const titles = sessionKeys
+    .map(sessionTabTitle)
+    .filter((title): title is string => Boolean(title));
+  const unique = [...new Set(titles)];
+  return unique.length > 0 ? unique.join(", ") : null;
+}
+
+/**
+ * One row per origin rather than per item: repeat asks from the same workspace
+ * or tab collapse into a single entry with a count, and dismissing it clears the
+ * whole group in one request.
+ */
+function AttentionGroupRow({
+  group,
   onOpen,
 }: {
-  item: AttentionItem;
+  group: AttentionGroup;
   onOpen: (item: AttentionItem) => void;
 }) {
+  const { lead, items } = group;
+  const tabs = tabSummary(group.sessionKeys);
+  const dismiss = () => {
+    // A sourceless nudge has no scope to clear, so it goes item by item.
+    if (group.scope.workspaceId || group.scope.sessionKey) {
+      void markAttentionScope(group.scope, "dismissed");
+    } else {
+      void markAttention(lead.id, "dismissed");
+    }
+  };
+
   return (
     <li className="group flex items-start gap-3 px-4 py-3 hover:bg-zinc-800/60">
-      <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${KIND_DOT[item.kind]}`} />
-      <button type="button" onClick={() => onOpen(item)} className="min-w-0 flex-1 text-left">
-        <div className="truncate text-sm text-zinc-100">{item.title}</div>
-        {item.body && <div className="truncate text-xs text-zinc-400">{item.body}</div>}
-        <div className="mt-0.5 text-[11px] text-zinc-500">{formatRelativeTime(item.createdAt)}</div>
+      <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${KIND_DOT[lead.kind]}`} />
+      <button type="button" onClick={() => onOpen(lead)} className="min-w-0 flex-1 text-left">
+        <div className="flex items-center gap-2">
+          <span className="truncate text-sm text-zinc-100">{lead.title}</span>
+          {items.length > 1 && (
+            <span className="shrink-0 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400">
+              {items.length}
+            </span>
+          )}
+        </div>
+        {tabs && <div className="truncate text-xs text-zinc-500">{tabs}</div>}
+        {lead.body && <div className="truncate text-xs text-zinc-400">{lead.body}</div>}
+        <div className="mt-0.5 text-[11px] text-zinc-500">{formatRelativeTime(lead.createdAt)}</div>
       </button>
       <button
         type="button"
-        aria-label="Dismiss"
-        onClick={() => void markAttention(item.id, "dismissed")}
+        aria-label={items.length > 1 ? `Dismiss ${items.length} items` : "Dismiss"}
+        onClick={dismiss}
         className="shrink-0 rounded px-1 text-zinc-600 opacity-0 transition-opacity hover:text-zinc-300 group-hover:opacity-100"
       >
         ✕
@@ -102,7 +141,7 @@ export default function AttentionPanel({
   wipLoading: boolean;
   onOpenWip: (item: WipItem) => void;
 }) {
-  const attention = useAttentionItems();
+  const groups = useAttentionGroups();
 
   useEffect(() => {
     if (!open) return;
@@ -138,13 +177,13 @@ export default function AttentionPanel({
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <SectionHeader label="Needs you now" count={attention.length} />
-          {attention.length === 0 ? (
+          <SectionHeader label="Needs you now" count={groups.length} />
+          {groups.length === 0 ? (
             <p className="px-4 py-4 text-xs text-zinc-500">Nothing needs you right now.</p>
           ) : (
             <ul className="divide-y divide-zinc-800">
-              {attention.map((item) => (
-                <AttentionRow key={item.id} item={item} onOpen={onOpenAttention} />
+              {groups.map((group) => (
+                <AttentionGroupRow key={group.key} group={group} onOpen={onOpenAttention} />
               ))}
             </ul>
           )}

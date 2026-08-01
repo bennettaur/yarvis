@@ -11,6 +11,7 @@ import type {
   NewComment,
   PrDetail,
   PrFile,
+  PrInvolvement,
   PrStatus,
   PrSummary,
   Reviewer,
@@ -26,6 +27,7 @@ export type {
   NewComment,
   PrDetail,
   PrFile,
+  PrInvolvement,
   PrStatus,
   PrSummary,
   ReviewComment,
@@ -267,6 +269,81 @@ export function toPrDetail(pr: any, repo?: any): PrDetail {
   };
 }
 
+/**
+ * The fields the "Reviewing" list needs off a PullRequest node. `reviews` is
+ * filtered to the viewer, so it answers "what have *I* said on this PR" in the
+ * same round trip as the listing itself — the alternative is one prDetail call
+ * per row. Requires the enclosing operation to declare `$viewer:String!`.
+ */
+const PR_INVOLVEMENT_FIELDS = `
+  number title url isDraft state createdAt updatedAt
+  author{login}
+  repository{ name owner{login} }
+  reviews(first:20, author:$viewer){ nodes{ state } }
+`;
+
+const PR_INVOLVEMENT_SEARCH_QUERY = `
+query($q:String!,$viewer:String!,$limit:Int!){
+  search(type:ISSUE, query:$q, first:$limit){
+    nodes{ ... on PullRequest { ${PR_INVOLVEMENT_FIELDS} } }
+  }
+}`;
+
+/**
+ * Shapes a GraphQL PullRequest node into a PrInvolvement. GraphQL's
+ * `PullRequestState` splits closed into CLOSED/MERGED where the REST search only
+ * reports open/closed, so the extra bit moves into `merged` and `state` stays on
+ * the REST vocabulary the rest of the app already renders.
+ */
+function toPrInvolvement(node: any): PrInvolvement {
+  const state = String(node.state ?? "OPEN").toUpperCase();
+  return {
+    summary: {
+      number: node.number,
+      title: node.title ?? "",
+      url: node.url ?? "",
+      owner: node.repository?.owner?.login ?? "",
+      repo: node.repository?.name ?? "",
+      author: node.author?.login ?? "",
+      draft: Boolean(node.isDraft),
+      state: state === "OPEN" ? "open" : "closed",
+      createdAt: node.createdAt ?? "",
+      updatedAt: node.updatedAt ?? "",
+    },
+    merged: state === "MERGED",
+    myReviewStates: (node.reviews?.nodes ?? [])
+      .map((r: any) => mapReviewState(r?.state))
+      // A PENDING review is an unsubmitted draft only the viewer can see; it
+      // says nothing about their verdict, so it would only add noise.
+      .filter((s: ReviewerState) => s !== "pending"),
+  };
+}
+
+/** Identifies one PR for the batched involvement lookup. */
+export interface PrNumberRef {
+  owner: string;
+  repo: string;
+  number: number;
+}
+
+/**
+ * Builds a single GraphQL operation that fetches every ref by alias, so N PRs
+ * cost one request rather than N. Aliases and variable names are index-derived
+ * (never caller-supplied), so nothing from a ref reaches the query text.
+ */
+function buildPrLookupQuery(count: number): string {
+  const varDecls = Array.from(
+    { length: count },
+    (_, i) => `$o${i}:String!,$r${i}:String!,$n${i}:Int!`,
+  ).join(",");
+  const fields = Array.from(
+    { length: count },
+    (_, i) =>
+      `pr${i}: repository(owner:$o${i},name:$r${i}){ pullRequest(number:$n${i}){ ${PR_INVOLVEMENT_FIELDS} } }`,
+  ).join("\n");
+  return `query($viewer:String!,${varDecls}){\n${fields}\n}`;
+}
+
 const PR_DETAIL_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!){
   repository(owner:$owner,name:$repo){
@@ -326,7 +403,17 @@ export class GitHubClient {
     return (await res.json()) as T;
   }
 
-  private async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+  /**
+   * `allowPartial` keeps a response whose `data` is populated even though some
+   * fields errored. Only for multi-target operations (the batched PR lookup),
+   * where one unresolvable repo would otherwise sink every other result;
+   * single-target queries stay strict so a failure surfaces as a failure.
+   */
+  private async graphql<T>(
+    query: string,
+    variables: Record<string, unknown>,
+    { allowPartial = false }: { allowPartial?: boolean } = {},
+  ): Promise<T> {
     const res = await this.fetchImpl("https://api.github.com/graphql", {
       method: "POST",
       headers: {
@@ -337,7 +424,7 @@ export class GitHubClient {
     });
     if (!res.ok) throw new Error(`github graphql -> ${res.status}`);
     const payload = (await res.json()) as { data?: T; errors?: unknown };
-    if (payload.errors) {
+    if (payload.errors && !(allowPartial && payload.data)) {
       throw new Error(`github graphql: ${JSON.stringify(payload.errors)}`);
     }
     return payload.data as T;
@@ -352,6 +439,60 @@ export class GitHubClient {
       `/search/issues?q=${encodeURIComponent(query)}&per_page=50&sort=created&order=desc`,
     );
     return (data.items ?? []).filter((i) => i.pull_request).map(toPrSummary);
+  }
+
+  /**
+   * Search that also reports the viewer's own reviews on each hit. Runs against
+   * GraphQL rather than the REST search used by {@link search} because REST has
+   * no way to return per-PR review state without a follow-up call per row.
+   */
+  async searchInvolvement(
+    query: string,
+    viewerLogin: string,
+    limit = 50,
+  ): Promise<PrInvolvement[]> {
+    const data = await this.graphql<{ search?: { nodes?: any[] } }>(PR_INVOLVEMENT_SEARCH_QUERY, {
+      q: query,
+      viewer: viewerLogin,
+      limit,
+    });
+    // The ISSUE search type returns issues too; those match no inline fragment
+    // and come back as empty objects.
+    return (data.search?.nodes ?? []).filter((n) => n?.number).map(toPrInvolvement);
+  }
+
+  /**
+   * Fetches the named PRs (with the viewer's reviews) in one request. Refs that
+   * no longer resolve — repo renamed, PR deleted, access lost — are dropped
+   * rather than failing the batch.
+   */
+  async lookupInvolvement(refs: PrNumberRef[], viewerLogin: string): Promise<PrInvolvement[]> {
+    if (refs.length === 0) return [];
+    const variables: Record<string, unknown> = { viewer: viewerLogin };
+    refs.forEach((ref, i) => {
+      variables[`o${i}`] = ref.owner;
+      variables[`r${i}`] = ref.repo;
+      variables[`n${i}`] = ref.number;
+    });
+    const data = await this.graphql<Record<string, { pullRequest?: any } | null>>(
+      buildPrLookupQuery(refs.length),
+      variables,
+      { allowPartial: true },
+    );
+    const found: PrInvolvement[] = [];
+    refs.forEach((_ref, i) => {
+      const node = data[`pr${i}`]?.pullRequest;
+      if (node?.number) found.push(toPrInvolvement(node));
+    });
+    return found;
+  }
+
+  /**
+   * One PR's list-row summary. Backs opening a PR the user named directly (by
+   * link, or repo + number) rather than picked out of a search result.
+   */
+  async prSummary(owner: string, repo: string, number: number): Promise<PrSummary> {
+    return toPrSummary(await this.api<any>(`/repos/${owner}/${repo}/pulls/${number}`));
   }
 
   async prStatus(owner: string, repo: string, number: number): Promise<PrStatus> {
@@ -652,6 +793,32 @@ export class GitHubClient {
     return toIssueDetail(issue, comments, { owner, repo });
   }
 
+  /** Opens a new issue and returns it in the provider-neutral summary shape. */
+  async createIssue(
+    owner: string,
+    repo: string,
+    input: { title: string; body?: string },
+  ): Promise<IssueSummary> {
+    const created = await this.mutateJson<unknown>(`/repos/${owner}/${repo}/issues`, "POST", {
+      title: input.title,
+      body: input.body ?? "",
+    });
+    return toIssueSummary(created, { owner, repo });
+  }
+
+  /**
+   * Edits an issue's title, body, or open/closed state. GitHub ignores fields
+   * the caller omits, so a partial update leaves the rest untouched.
+   */
+  async updateIssue(
+    owner: string,
+    repo: string,
+    number: number,
+    input: { title?: string; body?: string; state?: "open" | "closed" },
+  ): Promise<void> {
+    await this.mutate(`/repos/${owner}/${repo}/issues/${number}`, "PATCH", input);
+  }
+
   /** Adds assignees to an issue (GitHub merges, it does not replace). */
   async assignIssue(
     owner: string,
@@ -698,12 +865,23 @@ export class GitHubClient {
     };
   }
 
-  private async mutate(path: string, method: string, body: unknown): Promise<void> {
+  private async sendRest(path: string, method: string, body: unknown): Promise<Response> {
     const res = await this.fetchImpl(`https://api.github.com${path}`, {
       method,
       headers: this.restHeaders(),
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`github ${method} ${path} -> ${res.status}`);
+    return res;
+  }
+
+  private async mutate(path: string, method: string, body: unknown): Promise<void> {
+    await this.sendRest(path, method, body);
+  }
+
+  /** `mutate` for endpoints whose response body the caller needs. */
+  private async mutateJson<T>(path: string, method: string, body: unknown): Promise<T> {
+    const res = await this.sendRest(path, method, body);
+    return (await res.json()) as T;
   }
 }

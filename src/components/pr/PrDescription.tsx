@@ -19,7 +19,7 @@ export function ThreadCard({ thread }: { thread: ReviewThread }) {
         {thread.comments.map((cm, j) => (
           <div key={j}>
             <div className="text-xs font-medium text-zinc-400">{cm.author}</div>
-            <Markdown>{cm.body}</Markdown>
+            <Markdown allowImages>{cm.body}</Markdown>
           </div>
         ))}
       </div>
@@ -60,7 +60,7 @@ export default function PrDescription({ prRef }: { prRef: PrRef }) {
           Description
         </h3>
         {data.body.trim() ? (
-          <Markdown>{data.body}</Markdown>
+          <Markdown allowImages>{data.body}</Markdown>
         ) : (
           <p className="text-sm text-zinc-600">No description.</p>
         )}

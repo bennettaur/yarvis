@@ -153,6 +153,31 @@ for how many workspaces you can keep open. Leaving the field blank restores the
 default. The value applies to the next terminal opened, without a restart, and
 is stored in `settings.json` in the app data directory.
 
+### PR review
+
+The PRs tab lists **My PRs**, **Needs review**, **Reviewing**, and saved
+**Filters**, grouped under collapsible per-repo headers (a collapsed repo stays
+collapsed across tabs and restarts). The box above the tabs jumps straight to a
+PR you can already name — paste a `https://github.com/owner/repo/pull/123` link,
+or type `owner/repo#123`; a bare `repo#123` resolves against your registered
+repos, and if the name matches several owners you're asked which one.
+
+Two things are configurable under **Settings → PR review**:
+
+- **"Needs review" search** — the GitHub issue search behind that tab, run
+  as-is, so you decide what counts as needing your attention (drop drafts,
+  narrow to an org, exclude PRs you've already reviewed). Defaults to
+  `is:open is:pr review-requested:@me`; a few presets are one click away.
+- **"Reviewing" history** — how far back that tab looks, in days (30 by
+  default).
+
+**Reviewing** shows PRs you've actually engaged with, from two signals: PRs
+opened in yarvis (recorded as `pr.viewed` in the local event log) and GitHub's
+record of your comments and submitted reviews. It splits into **In progress**
+and **Complete** — merged, closed, or approved by you — with the latter
+collapsed. An approval superseded by a later change request counts as in
+progress again. GitHub only: Azure DevOps exposes neither half of that signal.
+
 ### Telegram remote control
 
 Chat with Yarvis — and issue control commands — from Telegram. The sidecar runs
@@ -222,7 +247,7 @@ render real components with the `renderToHtml` helper in `src/test/render.tsx`.
 ```
 src/            React frontend (Vite + TS + Tailwind)
   lib/          sidecar API client, Keychain wrappers, Omni Chat context registry, notifications, cross-tab nav (nav.ts)
-    pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs, per-file viewed state)
+    pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs, per-file viewed state, link/shorthand locator)
     issues/     provider-neutral issue data layer (GitHub + JIRA) — types + api client
     jira/       JIRA-specific data layer (issue detail, transitions, comments, create) — types + api client
   components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, Terminal, Workspaces, …)
@@ -243,17 +268,42 @@ sidecar/        Bun + TS service (Hono)
   src/tasks/    daily/weekly work tracking
   src/events/   local on-device event log (action trail; reconciled to memory later)
   src/memory/   pgvector memory, notes, ingestion, recaps
-  src/github/   GitHub PR dashboard + embedded review (REST + GraphQL)
+  src/github/   GitHub PR dashboard + embedded review (REST + GraphQL), dashboard config, in-progress review roll-up
   src/azure/    Azure DevOps PR dashboard + embedded review (REST; diffs built with jsdiff)
   src/pr/       provider-neutral PR types shared by the github/ and azure/ clients
-  src/issues/   provider-neutral issue routes/service (stars, filters, workspace links, start-work)
+  src/issues/   provider-neutral issue routes/service (stars, filters, workspace links, start-work, issue writes)
   src/jira/     JIRA Cloud REST client + routes + agent tools + ADF↔Markdown conversion
   src/google/   Google Calendar OAuth + events
   src/omni/     Omni UI generation (streaming) + saved layouts
   src/workspaces/ repo registry + git-worktree provisioning (/api/repos, /api/workspaces)
+  src/attention/  attention stream: hook ingest, SSE stream, scoped clearing
   src/chat/attentionTools.ts  request_attention tool (badge + OS notification)
   drizzle/      generated SQL migrations
 ```
+
+## Attention stream
+
+The bell in the top bar collects everything waiting on you — chiefly a Claude
+Code session blocked on a permission prompt or idle waiting for input, raised by
+the hooks Yarvis writes into each workspace's `.claude/settings.json`.
+
+Items are keyed by the PTY session that raised them. A terminal the app can
+navigate back to — a workspace's tabs and the standalone Terminal tab — carries
+`YARVIS_SESSION_KEY` (plus `YARVIS_WORKSPACE_ID` when it belongs to a workspace)
+and a create-only ingest token, so a Claude run started by hand in one of a
+workspace's terminal tabs flags *that* tab rather than the workspace as a whole.
+
+How the stream behaves:
+
+- **Grouped by origin.** Repeat asks from one workspace collapse into a single
+  row with a count, naming the tabs involved; dismissing it clears them all.
+- **Cleared by looking.** Opening the workspace — or the terminal tab — that
+  raised an item marks it read, and an item raised by something already on screen
+  never fires an OS notification. Nothing auto-clears while the window is in the
+  background.
+- **Highlighted where it happened.** A workspace with something pending is marked
+  in the workspace list, and the tab behind it is marked in the terminal tab strip,
+  so a flag is findable while you're looking elsewhere.
 
 ## Keyboard shortcuts
 

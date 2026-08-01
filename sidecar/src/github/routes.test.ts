@@ -113,6 +113,29 @@ describe("github merge validation", () => {
   });
 });
 
+describe("github pr config validation", () => {
+  const put = (body: unknown) =>
+    configured.request("/api/github/config", {
+      method: "PUT",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  it("rejects an empty review query with 400", async () => {
+    expect((await put({ reviewQuery: "   ", reviewingLookbackDays: 30 })).status).toBe(400);
+  });
+
+  it("rejects a lookback outside the supported range with 400", async () => {
+    expect((await put({ reviewQuery: "is:pr", reviewingLookbackDays: 0 })).status).toBe(400);
+    expect((await put({ reviewQuery: "is:pr", reviewingLookbackDays: 400 })).status).toBe(400);
+    expect((await put({ reviewQuery: "is:pr", reviewingLookbackDays: 1.5 })).status).toBe(400);
+  });
+
+  it("rejects a body missing the lookback with 400", async () => {
+    expect((await put({ reviewQuery: "is:pr" })).status).toBe(400);
+  });
+});
+
 describe("github not-configured handling", () => {
   it("requires the bearer token", async () => {
     const res = await configured.request("/api/github/viewer");

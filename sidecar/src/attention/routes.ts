@@ -10,6 +10,7 @@ import { type AttentionStreamEvent, publish, subscribe } from "./hub.ts";
 import {
   type AttentionKind,
   type AttentionStatus,
+  clearAttentionScope,
   createAttention,
   listAttention,
   updateAttentionStatus,
@@ -17,21 +18,35 @@ import {
 
 const KIND = z.enum(["permission", "idle", "completed", "error", "info"]);
 
+/**
+ * A workspace id lands in a `uuid` column, so a non-uuid would surface as an
+ * unhandled 500 from Postgres rather than a 400. Matched by shape rather than
+ * with zod's `.uuid()`, which additionally enforces RFC version/variant bits
+ * that Postgres itself does not.
+ */
+const UUID = z
+  .string()
+  .regex(/^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/, "must be a uuid");
+
+/** Bounds what a token holder can persist per item (stored twice: column + payload). */
+const MAX_SESSION_KEY = 256;
+
 /** Cap on a single stream's pending-write queue, so a stalled reader is bounded. */
 const MAX_STREAM_QUEUE = 256;
 
 /**
- * Body a Claude Code hook posts. Only safe, literal values (a uuid, the
- * "ws-claude:<uuid>" key, a fixed kind) are baked into the per-workspace
- * `.claude/settings.json` command — no user-controlled strings — so there is no
- * shell/JSON escaping to get wrong. The display title is looked up from the
- * workspace here instead.
+ * Body a Claude Code hook posts. The values baked into the per-workspace
+ * `.claude/settings.json` command are safe literals (a uuid, a fixed kind); the
+ * session key comes from the PTY's `YARVIS_SESSION_KEY`, which the core sets to
+ * the session's own id — so an item points at the exact terminal tab that raised
+ * it. `workspaceId` is absent for a session outside any workspace (the
+ * standalone Terminal tab). The display title is looked up from the workspace.
  */
 export const ingestSchema = z.object({
-  workspaceId: z.string().min(1),
-  sessionKey: z.string().min(1),
+  workspaceId: UUID.optional(),
+  sessionKey: z.string().min(1).max(MAX_SESSION_KEY),
   kind: KIND,
-  hookEvent: z.string().optional(),
+  hookEvent: z.string().max(64).optional(),
 });
 
 /** A human summary for each kind, used when the hook carries no message. */
@@ -48,6 +63,19 @@ function defaultBody(kind: AttentionKind): string {
     case "info":
       return "Wants your attention";
   }
+}
+
+/**
+ * Where clicking the item lands. A workspace's pinned Claude session keeps the
+ * `workspace-claude` target (the frontend already knows how to focus that tab);
+ * anything else is a specific terminal session, so we address the tab directly
+ * and carry the workspace along when there is one.
+ */
+function navTargetFor(sessionKey: string, workspaceId?: string): AttentionNavTarget {
+  if (workspaceId && sessionKey === `ws-claude:${workspaceId}`) {
+    return { type: "workspace-claude", workspaceId };
+  }
+  return { type: "terminal", sessionKey, ...(workspaceId ? { workspaceId } : {}) };
 }
 
 /**
@@ -73,20 +101,21 @@ export function createAttentionIngestRoutes(config: Config): Hono {
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     const { workspaceId, sessionKey, kind } = parsed.data;
 
-    const [ws] = await db()
-      .select({ name: workspaces.name })
-      .from(workspaces)
-      .where(eq(workspaces.id, workspaceId));
+    const [ws] = workspaceId
+      ? await db()
+          .select({ name: workspaces.name })
+          .from(workspaces)
+          .where(eq(workspaces.id, workspaceId))
+      : [];
 
-    const navTarget: AttentionNavTarget = { type: "workspace-claude", workspaceId };
     const item = await createAttention(db(), {
       source: "claude-hook",
       sessionKey,
-      workspaceId,
+      workspaceId: workspaceId ?? null,
       kind,
       title: ws?.name ?? "Claude session",
       body: defaultBody(kind),
-      navTarget,
+      navTarget: navTargetFor(sessionKey, workspaceId),
       payload: parsed.data,
     });
     publish(item);
@@ -100,13 +129,29 @@ const patchSchema = z.object({
   status: z.enum(["read", "resolved", "dismissed"]),
 });
 
+/**
+ * Exactly one scope field. An empty scope would clear the whole stream, and
+ * accepting both would leave "clear session S *and* workspace W" reading as an
+ * intersection while the query does a union — so neither is allowed in.
+ */
+const clearSchema = z
+  .object({
+    sessionKey: z.string().min(1).max(MAX_SESSION_KEY).optional(),
+    workspaceId: UUID.optional(),
+    status: z.enum(["read", "resolved", "dismissed"]),
+  })
+  .refine((v) => Boolean(v.sessionKey) !== Boolean(v.workspaceId), {
+    message: "exactly one of sessionKey or workspaceId is required",
+  });
+
 /** Heartbeat interval so proxies/keep-alive don't drop an idle stream. */
 const HEARTBEAT_MS = 25_000;
 
 /**
  * Read + mutate routes for the webview, mounted under `/api/attention` behind the
  * main bearer. `GET /` hydrates the current list, `GET /stream` delivers live
- * deltas over SSE, `PATCH /:id` moves an item through its lifecycle.
+ * deltas over SSE, `PATCH /:id` moves an item through its lifecycle, and
+ * `POST /clear` does the same for every pending item in a scope.
  */
 export function createAttentionRoutes(config: Config): Hono {
   const router = new Hono();
@@ -182,6 +227,17 @@ export function createAttentionRoutes(config: Config): Hono {
         unsubscribe();
       }
     });
+  });
+
+  // Clears a whole scope at once — viewing a workspace (or the tab that raised
+  // the flag) shouldn't cost one request per item.
+  router.post("/clear", async (c) => {
+    const parsed = clearSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const { status, ...scope } = parsed.data;
+    const rows = await clearAttentionScope(db(), scope, status);
+    for (const row of rows) publish(row);
+    return c.json(rows);
   });
 
   router.patch("/:id", async (c) => {
