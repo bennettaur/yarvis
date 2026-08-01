@@ -15,13 +15,18 @@ const file: PrFile = {
   patch: "",
 };
 
-const render = (patch: string, threads: ReviewThread[] = []) =>
+const render = (
+  patch: string,
+  threads: ReviewThread[] = [],
+  highlight?: { start: number; end: number } | null,
+) =>
   renderToHtml(
     createElement(SplitDiffBody, {
       prRef,
       file: { ...file, patch },
       threads,
       expansion: fakeExpansion(patch),
+      highlight,
     }),
   );
 
@@ -102,5 +107,25 @@ describe("SplitDiffBody", () => {
   it("offers the composer only where there is a right-side line", async () => {
     const html = await render(["@@ -1,2 +1,1 @@", "-a", "-b"].join("\n"));
     expect(html).not.toContain("Comment on this line");
+  });
+});
+
+describe("SplitDiffBody guided-review highlighting", () => {
+  const patch = ["@@ -1,4 +1,4 @@", " a", "+b", "+c", " d"].join("\n");
+
+  // One marker per row, on its leftmost cell: grid cells are siblings with no
+  // row element between them, so there is nothing spanning the row to mark.
+  it("marks one edge per row in the range", async () => {
+    const html = await render(patch, [], { start: 2, end: 3 });
+    expect(html.split("inset 3px").length - 1).toBe(2);
+  });
+
+  it("anchors the first line of the range for scrolling", async () => {
+    const html = await render(patch, [], { start: 2, end: 3 });
+    expect(html.split("data-pr-focus").length - 1).toBe(1);
+  });
+
+  it("marks nothing without a range", async () => {
+    expect(await render(patch)).not.toContain("inset 3px");
   });
 });

@@ -15,13 +15,18 @@ const file: PrFile = {
   patch: "",
 };
 
-const render = (patch: string, threads: ReviewThread[] = []) =>
+const render = (
+  patch: string,
+  threads: ReviewThread[] = [],
+  highlight?: { start: number; end: number } | null,
+) =>
   renderToHtml(
     createElement(DiffBody, {
       prRef,
       file: { ...file, patch },
       threads,
       expansion: fakeExpansion(patch),
+      highlight,
     }),
   );
 
@@ -71,5 +76,36 @@ describe("DiffBody comment-container rendering", () => {
     const html = await render(["@@ -1,2 +1,2 @@", " a", "+b"].join("\n"), [thread]);
     expect(html).toContain(CONTAINER_MARKER);
     expect(html).toContain("needs a guard");
+  });
+});
+
+describe("DiffBody guided-review highlighting", () => {
+  const patch = ["@@ -1,4 +1,4 @@", " a", "+b", "+c", " d"].join("\n");
+
+  it("marks only the lines in the range", async () => {
+    const html = await render(patch, [], { start: 2, end: 3 });
+    // Three marked edges would mean the unmarked context lines got one too.
+    expect(html.split("inset 3px").length - 1).toBe(2);
+  });
+
+  // The scroll target: without an anchor the jump lands on the file header and
+  // the reader has to find the lines themselves.
+  it("anchors the first line of the range for scrolling", async () => {
+    const html = await render(patch, [], { start: 2, end: 3 });
+    expect(html.split("data-pr-focus").length - 1).toBe(1);
+  });
+
+  it("marks nothing without a range", async () => {
+    expect(await render(patch)).not.toContain("inset 3px");
+    expect(await render(patch, [], null)).not.toContain("data-pr-focus");
+  });
+
+  // Deleted lines carry no right-side number, which is what the range is in.
+  it("does not mark a deleted line", async () => {
+    const deletions = ["@@ -1,2 +1,1 @@", " a", "-gone"].join("\n");
+    expect(await render(deletions, [], { start: 1, end: 5 })).toContain("inset 3px");
+    expect((await render(deletions, [], { start: 1, end: 5 })).split("inset 3px").length - 1).toBe(
+      1,
+    );
   });
 });

@@ -7,7 +7,7 @@ import ChangeMinimap from "./ChangeMinimap";
 import GapMarker from "./GapMarker";
 import { AddCommentButton, LineCommentBlock, useLineComments } from "./LineComments";
 import SplitDiffBody from "./SplitDiffBody";
-import { prFileAnchorId } from "./shared";
+import { type DiffFocus, FOCUS_ATTR, FOCUS_STYLE, focusRange, prFileAnchorId } from "./shared";
 import { useExpandOnApproach } from "./useExpandOnApproach";
 import { type FileExpansion, useFileExpansion } from "./useFileExpansion";
 
@@ -38,11 +38,14 @@ export function DiffBody({
   file,
   threads,
   expansion,
+  highlight,
 }: {
   prRef: PrRef;
   file: PrFile;
   threads: ReviewThread[];
   expansion: FileExpansion;
+  /** Lines a guided review is pointing at, marked down the left edge. */
+  highlight?: { start: number; end: number } | null;
 }) {
   const comments = useLineComments(prRef, file, threads);
 
@@ -61,10 +64,19 @@ export function DiffBody({
           );
         }
         const row = item.row;
+        const marked =
+          highlight != null &&
+          row.rightLine != null &&
+          row.rightLine >= highlight.start &&
+          row.rightLine <= highlight.end;
         return (
           // biome-ignore lint/suspicious/noArrayIndexKey: rows are a stable render of an immutable patch
           <div key={i}>
-            <div className={`group flex ${rowClass(row.kind)}`}>
+            <div
+              className={`group flex ${rowClass(row.kind)}`}
+              style={marked ? FOCUS_STYLE : undefined}
+              {...(marked && row.rightLine === highlight.start ? { [FOCUS_ATTR]: "true" } : {})}
+            >
               <span className="flex w-12 shrink-0 select-none items-center justify-end gap-1 pr-2 text-zinc-600">
                 {row.rightLine != null && (
                   <AddCommentButton
@@ -179,6 +191,7 @@ function FileDiff({
   foldAll,
   split,
   headSha,
+  focus,
 }: {
   prRef: PrRef;
   file: PrFile;
@@ -190,6 +203,8 @@ function FileDiff({
   split: boolean;
   /** Commit the file's full text is read at; empty disables expansion. */
   headSha: string;
+  /** Set only on the file a guided review is currently pointing at. */
+  focus: DiffFocus | null;
 }) {
   // The first few unviewed files are open on mount; viewed files start
   // collapsed regardless so the user's prior progress stays out of the way.
@@ -213,8 +228,29 @@ function FileDiff({
     setClosedDeliberately(!foldAll.open);
   }, [foldAll?.epoch]);
 
+  // A guided review pointing here opens the file and scrolls to its lines,
+  // overriding a deliberate collapse — the reader asked to be taken to this
+  // code, which outranks having folded it away earlier.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-runs per landing, not per value change
+  useEffect(() => {
+    if (!focus) return;
+    setOpen(true);
+    setClosedDeliberately(false);
+    // Two frames: the first commits the expansion, the second lets the diff
+    // rows lay out, so the marked line exists to scroll to. Without the diff
+    // rendered the scroll would land on the file header instead.
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const fileEl = detailsRef.current;
+        const line = fileEl?.querySelector(`[${FOCUS_ATTR}]`);
+        (line ?? fileEl)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }),
+    );
+  }, [focus?.nonce]);
+
   const { data: loaded, loading } = usePrFileDiff(prRef, file, open);
   const patch = loaded?.patch ?? file.patch;
+  const highlight = focusRange(focus);
   const fileThreads = useMemo(
     () => threads.filter((t) => t.path === file.filename),
     [threads, file.filename],
@@ -316,6 +352,7 @@ function FileDiff({
                 file={loaded ?? file}
                 threads={fileThreads}
                 expansion={expansion}
+                highlight={highlight}
               />
             ) : (
               <DiffBody
@@ -323,6 +360,7 @@ function FileDiff({
                 file={loaded ?? file}
                 threads={fileThreads}
                 expansion={expansion}
+                highlight={highlight}
               />
             )}
           </>
@@ -338,10 +376,13 @@ export default function PrFileDiffs({
   prRef,
   viewed,
   onToggleViewed,
+  focus = null,
 }: {
   prRef: PrRef;
   viewed: Set<string>;
   onToggleViewed: (path: string) => void;
+  /** Where a guided review wants the reader looking, if one is running. */
+  focus?: DiffFocus | null;
 }) {
   const { data, error, loading } = usePrFiles(prRef);
   const detail = usePrDetail(prRef);
@@ -410,6 +451,7 @@ export default function PrFileDiffs({
           foldAll={foldAll}
           split={split}
           headSha={detail.data?.headSha ?? ""}
+          focus={focus?.path === f.filename ? focus : null}
         />
       ))}
     </div>

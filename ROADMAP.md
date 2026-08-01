@@ -81,7 +81,13 @@ Status of the build against the original vision. The full V1 plan lives at
   which step the review is on. Cleanup is event-driven — approving, requesting
   changes, or merging retires the guide, a detail load that reports a closed PR
   retires it lazily, and a startup sweep drops anything untouched for 30 days —
-  so no poller watches pull requests that have a guide.
+  so no poller watches pull requests that have a guide. In the review the tour
+  renders as a box docked to the bottom of the scroll pane (the diff moves under
+  it as steps advance, so it can't scroll away from the reader) with the step
+  count, the explanation, an expandable context section, and back/next. Landing
+  on a step opens its file — overriding a deliberate collapse — scrolls to its
+  lines, and marks them down the left edge, in both the unified and side-by-side
+  views.
 - **Issues dashboard (GitHub)** — a global Issues tab mirroring the PR
   dashboard: "Assigned to me" / "All open" / saved-filter views, grouped by
   repo, with stars, search, "in progress" badges, and a manual refresh. Issues

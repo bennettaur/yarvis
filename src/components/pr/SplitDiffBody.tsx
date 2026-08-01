@@ -11,6 +11,7 @@ import {
   LineCommentBlock,
   useLineComments,
 } from "./LineComments";
+import { FOCUS_ATTR, FOCUS_STYLE } from "./shared";
 import type { FileExpansion } from "./useFileExpansion";
 
 /**
@@ -27,9 +28,22 @@ const FILLER_CLASS = "bg-zinc-900/40";
  * hang a hover state on — so the "+" reveals when the reader moves onto the
  * gutter beside the line they want to comment on.
  */
-function Gutter({ cell, onComment }: { cell: SplitCell | null; onComment?: () => void }) {
+function Gutter({
+  cell,
+  onComment,
+  style,
+  focusAnchor,
+}: {
+  cell: SplitCell | null;
+  onComment?: () => void;
+  style?: React.CSSProperties;
+  /** Marks the first row of a focused range so a scroll can find it. */
+  focusAnchor?: boolean;
+}) {
   return (
     <span
+      style={style}
+      {...(focusAnchor ? { [FOCUS_ATTR]: "true" } : {})}
       className={`group flex w-12 shrink-0 select-none items-center justify-end gap-1 pr-2 text-zinc-600 ${
         cell ? rowClass(cell.kind) : FILLER_CLASS
       }`}
@@ -93,11 +107,14 @@ export default function SplitDiffBody({
   file,
   threads,
   expansion,
+  highlight,
 }: {
   prRef: PrRef;
   file: PrFile;
   threads: ReviewThread[];
   expansion: FileExpansion;
+  /** Lines a guided review is pointing at, marked down the left edge. */
+  highlight?: { start: number; end: number } | null;
 }) {
   const rows = useMemo(() => pairAroundGaps(expansion.rows), [expansion.rows]);
   const comments = useLineComments(prRef, file, threads);
@@ -130,10 +147,22 @@ export default function SplitDiffBody({
             );
           }
           const rightLine = row.right?.line ?? null;
+          const marked =
+            highlight != null &&
+            rightLine != null &&
+            rightLine >= highlight.start &&
+            rightLine <= highlight.end;
           return (
             // biome-ignore lint/suspicious/noArrayIndexKey: rows are a stable render of an immutable patch
             <Fragment key={i}>
-              <Gutter cell={row.left} />
+              {/* The marker rides the leftmost cell of the row. Grid cells are
+                  siblings with no row element between them, so there is nothing
+                  spanning the row to hang it on. */}
+              <Gutter
+                cell={row.left}
+                style={marked ? FOCUS_STYLE : undefined}
+                focusAnchor={marked && rightLine === highlight.start}
+              />
               <Code cell={row.left} />
               <Gutter
                 cell={row.right}
