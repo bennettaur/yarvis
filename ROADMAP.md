@@ -174,8 +174,9 @@ Status of the build against the original vision. The full V1 plan lives at
   tool lets the agent raise a nav-rail badge + an OS notification when it finishes
   background work or needs a decision. The agent also holds workspace tools: it
   can list repos and their open issues, spin up workspaces (from repos, from an
-  issue like the "Start work" button, or scratch) and start remote-controllable
-  Claude sessions, report a workspace's PR / CI-check / mergeable status, and
+  issue like the "Start work" button, or scratch) and start agent sessions
+  (remote-controllable only when the request came in over Telegram, where there
+  is no local tab to drive), report a workspace's PR / CI-check / mergeable status, and
   archive workspaces — all from natural language, and reachable from Chat, Omni,
   and the Telegram bot alike. Tab shortcuts too: Cmd/Ctrl+1–9 jump to a
   tab, Cmd/Ctrl+Shift+[ / ] cycle through them.

@@ -8,8 +8,15 @@
 /** Surface key of the standalone Terminal tab. */
 export const TERMINAL_SURFACE_KEY = "tab:terminal";
 
-/** Tab title of a workspace's pinned Claude session. */
-export const CLAUDE_TAB_TITLE = "Claude";
+/**
+ * Default tab title of a workspace's pinned agent session, and the label used
+ * for one whose real title isn't reachable from here. The title is configurable
+ * (Settings → Repositories → Agent) but lives in the Rust core, which this
+ * module can't read synchronously — so a renamed agent is labelled by its
+ * default in attention items. Kept in step with `DEFAULT_AGENT_NAME` in
+ * `workspaces/agentTab.ts`, which is the value actually rendered on the tab.
+ */
+export const DEFAULT_AGENT_TAB_TITLE = "Claude";
 
 /** Where a surface's tab state is persisted. */
 export function storageKeyFor(surfaceKey: string): string {
@@ -67,7 +74,7 @@ export function attentionSurfaceOf(id: string): AttentionSurface | null {
  * own title.
  */
 export function sessionTabTitle(id: string): string | null {
-  if (id.startsWith("ws-claude:")) return CLAUDE_TAB_TITLE;
+  if (id.startsWith("ws-claude:")) return DEFAULT_AGENT_TAB_TITLE;
   const ref = parseSessionId(id);
   if (!ref) return null;
   try {
