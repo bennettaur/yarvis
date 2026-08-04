@@ -1,8 +1,10 @@
 import { createApp } from "./app.ts";
 import { loadConfig } from "./config.ts";
+import { getDb } from "./db/client.ts";
 import { runMigrations } from "./db/migrate.ts";
 import { watchParentProcess } from "./lib/parentWatch.ts";
 import { redactSecrets } from "./llm/errors.ts";
+import { sweepStaleGuides } from "./pr/guides.ts";
 import { createReadiness } from "./readiness.ts";
 import { startTelegramBot } from "./telegram/index.ts";
 import { startWorkspacePoller } from "./workspaces/poller.ts";
@@ -57,6 +59,15 @@ if (config.databaseUrl) {
       // Background PR/checks poller. No-op without a GitHub token; reconciles
       // interrupted runs on its first tick.
       startWorkspacePoller(config);
+      // Backstop for review guides whose pull requests were closed on the
+      // provider's own site, which the app never observes. Once at startup is
+      // enough for a month-long TTL; a timer would only make it prompter about
+      // deleting rows nobody is looking at.
+      sweepStaleGuides(getDb(config.databaseUrl as string).db)
+        .then((removed) => {
+          if (removed > 0) console.log(`[sidecar] swept ${removed} stale PR review guides`);
+        })
+        .catch((e) => console.error("[sidecar] guide sweep failed:", e));
     })
     .catch((e) => {
       // Redact before storing the message because `/health` (unauthenticated)

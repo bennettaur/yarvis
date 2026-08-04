@@ -144,10 +144,11 @@ pub fn run() {
             pty::pty_exists,
             pty::pty_start_claude,
             pty::pty_is_busy,
-            pty::get_claude_command,
+            pty::get_agent_config,
             focus_main_window,
             settings::get_settings,
             settings::set_max_pty_sessions,
+            settings::set_agent,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

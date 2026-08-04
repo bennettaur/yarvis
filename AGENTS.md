@@ -70,7 +70,7 @@ has no safe autofix.
   `src/test/setup.ts` registers the DOM, pins the timezone, and stubs Tauri
   runtime APIs. Component tests stub the sidecar API client
   (`src/lib/api`) and render with `src/test/render.tsx`'s `renderToHtml`.
-- Sidecar tests hit a real Postgres — see `sidecar/src/workspaces/routes.test.ts`
+- Sidecar tests that touch storage hit a real Postgres — see `sidecar/src/workspaces/routes.test.ts`
   for the pattern (temp workspaces root via `mkdtempSync`, `TRUNCATE` between
   tests, injected fake git runners to avoid real network/filesystem git ops).
 - Secrets (provider API keys, tokens, DB URL) are entered in the app's
@@ -79,5 +79,16 @@ has no safe autofix.
   `YARVIS_WORKSPACES_ROOT`) uses env vars instead. Preferences the user is
   expected to change from the UI go in `src-tauri/src/settings.rs` when the
   Rust core enforces them, and in Postgres via the sidecar otherwise.
+- Agent tools that read a pull request's code go through the `PrCodeSource`
+  interface in `sidecar/src/pr/source.ts`, never a provider client directly —
+  the tools in `codeTools.ts` are written once and GitHub/Azure each supply an
+  implementation. A capability one provider lacks resolves to `null` so the
+  caller can say so, rather than throwing.
+- Anything an outside party can influence — file contents, diffs, PR titles,
+  recalled memories — enters a prompt as data, not instruction: fenced in
+  per-request nonce tags (see `sidecar/src/pr/ask.ts`) with the system prompt
+  telling the model to treat it as reference material. A path or query a *model*
+  chooses is untrusted input too: `sidecar/src/pr/codeTools.ts` refuses `..`
+  segments and search qualifiers before they reach a provider client.
 - Follow the repo's existing comment style: comments explain *why*, not
   *what* — no restating what a well-named function already says.

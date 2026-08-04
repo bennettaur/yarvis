@@ -28,16 +28,29 @@ export const killPty = (id: string) => invoke("pty_kill", { id });
 /** True if a live session exists for `id` (without spawning one). */
 export const ptyExists = (id: string) => invoke<boolean>("pty_exists", { id });
 
-/** Starts a remote-controllable Claude session for a workspace, keyed
- * `ws-claude:<workspaceId>`. Resolves once the session is registered. */
-export const startClaudeSession = (workspaceId: string, cwd: string, name: string) =>
-  invoke("pty_start_claude", { workspaceId, cwd, name });
+/** Starts an agent session for a workspace, keyed `ws-claude:<workspaceId>`.
+ * Resolves once the session is registered. `remoteControl` adds Claude Code's
+ * `--remote-control`; the app doesn't set it, since a session started here opens
+ * in a tab the user is looking at and can enable it from inside the session. */
+export const startClaudeSession = (
+  workspaceId: string,
+  cwd: string,
+  name: string,
+  remoteControl: boolean,
+) => invoke("pty_start_claude", { workspaceId, cwd, name, remoteControl });
 
-/** The configured base command used to start Claude Code (default
- * `claude --permission-mode auto`, overridable via YARVIS_CLAUDE_COMMAND). The
- * frontend builds its own Claude launches (e.g. the issue terminal) on top of
- * this so they match remote-control sessions. */
-export const getClaudeCommand = () => invoke<string>("get_claude_command");
+/** The agent a workspace surfaces: its tab title and the base command its
+ *  launches are built from. */
+export interface AgentConfig {
+  name: string;
+  command: string;
+}
+
+/** The configured agent (default `Claude` / `claude --permission-mode auto`, set
+ * in Settings and overridable via YARVIS_CLAUDE_COMMAND). The frontend builds its
+ * own launches (e.g. the issue terminal) on top of this so they match
+ * remote-control sessions. */
+export const getAgentConfig = () => invoke<AgentConfig>("get_agent_config");
 
 /** True when a non-shell foreground process is running in the session — used to
  * decide whether closing should require confirmation. False for unknown

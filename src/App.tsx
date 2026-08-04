@@ -169,14 +169,24 @@ export default function App() {
           openOmniChat();
           break;
         case "pr":
+        case "azure-pr":
           // The detail view fetches from `ref`; the rest is a minimal seed.
           setRequestedPr({
-            ref: {
-              provider: "github",
-              owner: target.owner,
-              repo: target.repo,
-              number: target.number,
-            },
+            ref:
+              target.type === "pr"
+                ? {
+                    provider: "github",
+                    owner: target.owner,
+                    repo: target.repo,
+                    number: target.number,
+                  }
+                : {
+                    provider: "azure",
+                    org: target.org,
+                    project: target.project,
+                    repo: target.repo,
+                    prId: target.prId,
+                  },
             title: title ?? "",
             url: "",
             author: "",

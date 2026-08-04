@@ -1,19 +1,26 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import * as api from "../api";
+import type { PrRef } from "./types";
+import { listViewed, setViewed } from "./viewed";
 
 let lastCall: { path: string; init?: RequestInit } | null = null;
 let nextResponse: () => Response = () => new Response("{}", { status: 200 });
 
 // Stub the sidecar transport so we don't hit Tauri's `invoke` for the bearer
-// token / port; tests assert against the path the lib chose to call.
-mock.module("../api", () => ({
-  sidecarFetch: async (path: string, init?: RequestInit) => {
+// token / port; tests assert against the path the lib chose to call. A spy
+// rather than `mock.module`, which would replace the `../api` namespace for
+// every file loaded after this one with no way to put it back — and these
+// tests need the real `ensureOk`, so they must not hand a stubbed one on.
+const sidecarFetch = spyOn(api, "sidecarFetch").mockImplementation(
+  async (path: string, init?: RequestInit) => {
     lastCall = { path, init };
     return nextResponse();
   },
-}));
+);
 
-import type { PrRef } from "./types";
-import { listViewed, setViewed } from "./viewed";
+afterAll(() => {
+  sidecarFetch.mockRestore();
+});
 
 const azureRef: PrRef = {
   provider: "azure",

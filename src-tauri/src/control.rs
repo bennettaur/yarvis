@@ -5,9 +5,12 @@
 //! Security model: the socket lives in the app's private data dir (mode 0700) as
 //! a mode-0600 file, so only the same user can connect, and a UDS is never
 //! reachable over the network. The protocol is deliberately narrow — the sidecar
-//! can only start or stop a Claude session for a workspace; it can never ask the
-//! core to run an arbitrary command (the argv is built core-side in `pty.rs`).
-//! Requests and responses are newline-delimited JSON.
+//! can only start or stop a Claude session for a workspace, and chooses only
+//! whether to launch the configured agent, not what runs: the command comes from
+//! settings, which only the webview can write. The sidecar's `name` does reach
+//! the launch line, and that line is typed into an interactive shell rather than
+//! exec'd, so `pty::sanitize_session_name` strips it — see that function for why
+//! quoting alone is not enough. Requests and responses are newline-delimited JSON.
 
 /// Absolute path to the control socket, kept in managed state so `sidecar.rs`
 /// can pass it to the child process via env.
@@ -60,6 +63,10 @@ mod unix_impl {
         workspace_id: String,
         cwd: String,
         name: String,
+        /// Whether to launch with Remote Control. Absent means off, so a caller
+        /// that hasn't been taught about it can't silently opt in.
+        #[serde(rename = "remoteControl", default)]
+        remote_control: bool,
     }
 
     #[derive(Deserialize)]
@@ -189,7 +196,14 @@ mod unix_impl {
             "claude.spawn" => {
                 let p: SpawnParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
                 validate_workspace_id(&p.workspace_id)?;
-                spawn_claude_session(app, state.inner(), &p.workspace_id, p.cwd, &p.name)
+                spawn_claude_session(
+                    app,
+                    state.inner(),
+                    &p.workspace_id,
+                    p.cwd,
+                    &p.name,
+                    p.remote_control,
+                )
             }
             "claude.kill" => {
                 let p: KillParams = serde_json::from_value(params).map_err(|e| e.to_string())?;

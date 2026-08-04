@@ -57,6 +57,50 @@ Status of the build against the original vision. The full V1 plan lives at
   Azure via reviewer vote codes on the PR payload. The provider toggle only
   shows providers whose viewer probe lands, so an unconfigured option never
   flashes.
+- **Diff reading** — files open on their own as the reader scrolls toward them
+  (an IntersectionObserver rooted on the review pane, which is what lets the
+  margin reach past its bottom edge), with "Collapse all" / "Expand all" for
+  the whole set. A Unified/Split toggle, persisted across PRs, puts the old
+  file beside the new one with the nth deletion of a run across from the nth
+  addition. Each gap between hunks carries a marker that reveals the code the
+  patch left out — twenty lines at either end or the whole stretch — and a
+  per-file "Whole file" toggle opens every gap at once, with a strip down the
+  edge marking where in the file the changes fall. Gap markers size themselves
+  from the hunk headers, so a file's full text is only fetched once context is
+  actually asked for; those fetches share a concurrency gate with the per-file
+  diffs so expanding a large Azure review can't fan out into hundreds of
+  simultaneous requests.
+- **PR guided tour** — an agent explores a pull request with provider-backed
+  read/search tools, records what connects to what in a scratch graph, and lays
+  out a reading order from the outside in: the request that arrives, then what
+  handles it, down to what it finally writes. Each step names a file and line
+  range with a sentence or two on why it comes there, plus optional background.
+  The guide is stored per PR against the commit it was generated at, so a push
+  marks it stale rather than silently shifting its line numbers, and an
+  in-progress guide holds one coalescing item in the attention stream showing
+  which step the review is on. Cleanup is event-driven — approving, requesting
+  changes, or merging retires the guide, a detail load that reports a closed PR
+  retires it lazily, and a startup sweep drops anything untouched for 30 days —
+  so no poller watches pull requests that have a guide. In the review the tour
+  renders as a box docked to the bottom of the scroll pane (the diff moves under
+  it as steps advance, so it can't scroll away from the reader) with the step
+  count, the explanation, an expandable context section, and back/next. Landing
+  on a step opens its file — overriding a deliberate collapse — scrolls to its
+  lines, and marks them down the left edge, in both the unified and side-by-side
+  views.
+- **Line insights** — a "?" beside any line asks the same tool-equipped agent
+  about that code (shift-click extends from the last line asked about, so a
+  block can be picked out without a drag that would fight the browser's own text
+  selection). The answer is stored against those lines and renders inline,
+  styled apart from review threads because it is the reviewer's own note rather
+  than something the author sees — with a Post action that turns one into a real
+  line comment when it is worth sharing. Insights carry the commit they were
+  written against and are marked out of date once the PR moves past it. Unlike
+  guides they are not swept: an answer about why code is the way it is outlives
+  the pull request that prompted it. The chat agent can read both —
+  `list_pr_reviews` answers "where did I leave off" from the guides and their
+  progress, `search_pr_insights` looks through the recorded notes — read-only,
+  since reporting on a review is useful and inventing one is not.
 - **Issues dashboard (GitHub)** — a global Issues tab mirroring the PR
   dashboard: "Assigned to me" / "All open" / saved-filter views, grouped by
   repo, with stars, search, "in progress" badges, and a manual refresh. Issues
@@ -130,8 +174,9 @@ Status of the build against the original vision. The full V1 plan lives at
   tool lets the agent raise a nav-rail badge + an OS notification when it finishes
   background work or needs a decision. The agent also holds workspace tools: it
   can list repos and their open issues, spin up workspaces (from repos, from an
-  issue like the "Start work" button, or scratch) and start remote-controllable
-  Claude sessions, report a workspace's PR / CI-check / mergeable status, and
+  issue like the "Start work" button, or scratch) and start agent sessions
+  (remote-controllable only when the request came in over Telegram, where there
+  is no local tab to drive), report a workspace's PR / CI-check / mergeable status, and
   archive workspaces — all from natural language, and reachable from Chat, Omni,
   and the Telegram bot alike. Tab shortcuts too: Cmd/Ctrl+1–9 jump to a
   tab, Cmd/Ctrl+Shift+[ / ] cycle through them.
@@ -145,8 +190,9 @@ Status of the build against the original vision. The full V1 plan lives at
   gates the bot behind a time-boxed window with rate-limited lockout and desktop
   alerts, to defend against Telegram-account takeover.
 - **Event log (Phase 2)** — a local, on-device trail of meaningful actions
-  (chat started, task created/completed via backend hooks; PR viewed and alarm
-  created from the UI), persisted to an `events` table and served over
+  (chat started, task created/completed via backend hooks; PR viewed, review
+  guide generated and stepped through, line insight recorded and revisited, and
+  alarm created from the UI), persisted to an `events` table and served over
   `POST`/`GET /api/events`. Event types are a fixed allowlist; recording is
   best-effort so a logging failure never breaks the triggering action. UI
   navigation and Omni layouts are deliberately not events. Reconciling events
