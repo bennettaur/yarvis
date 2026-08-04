@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { describeError } from "../llm/errors.ts";
+import { retireGuide } from "../pr/guides.ts";
 import { AzureDevOpsClient, type AzureRef, isAllowedAzureOrgUrl } from "./client.ts";
 import {
   addStar,
@@ -33,6 +34,14 @@ const filePath = z
   .min(1)
   .max(1024)
   .refine((s) => !s.split("/").includes(".."), "invalid path");
+
+/**
+ * The commit a file's content is read at. Pinned to a full sha rather than any
+ * version descriptor: the caller always has one to hand (it comes off the PR
+ * detail it already loaded), and refusing everything else keeps the value from
+ * smuggling extra query parameters into the upstream URL.
+ */
+const commitSha = z.string().regex(/^[0-9a-f]{40}$/, "expected a commit sha");
 
 const filterSchema = z.object({
   name: z.string().min(1),
@@ -188,7 +197,14 @@ export function createAzureRoutes(config: Config): Hono {
     const ref = parsePrParams(c.req.param("project"), c.req.param("repo"), c.req.param("prId"));
     if ("error" in ref) return c.json({ error: ref.error }, 400);
     try {
-      return c.json(await az.prDetail(ref));
+      const detail = await az.prDetail(ref);
+      // A pull request completed or abandoned on Azure's own site is the one
+      // ending the app never sees directly. Catching it here — on a load the
+      // review view makes anyway — retires the guide without a poller.
+      if (detail.state !== "active") {
+        await retireGuide(db(), { provider: "azure", org: az.org, ...ref });
+      }
+      return c.json(detail);
     } catch (e) {
       return upstreamError(c, e);
     }
@@ -222,6 +238,24 @@ export function createAzureRoutes(config: Config): Hono {
     }
   });
 
+  // A changed file's full text at a commit, so the review view can reveal the
+  // unchanged code a patch leaves out.
+  router.get("/pr/:project/:repo/:prId/content", async (c) => {
+    const az = requireClient(c);
+    if (az instanceof Response) return az;
+    const ref = parsePrParams(c.req.param("project"), c.req.param("repo"), c.req.param("prId"));
+    if ("error" in ref) return c.json({ error: ref.error }, 400);
+    const path = filePath.safeParse(c.req.query("path"));
+    if (!path.success) return c.json({ error: path.error.flatten() }, 400);
+    const commit = commitSha.safeParse(c.req.query("ref"));
+    if (!commit.success) return c.json({ error: commit.error.flatten() }, 400);
+    try {
+      return c.json({ content: await az.fileContent(ref, path.data, commit.data) });
+    } catch (e) {
+      return upstreamError(c, e);
+    }
+  });
+
   // Publish a draft PR (Azure clears the isDraft flag).
   router.post("/pr/:project/:repo/:prId/ready", async (c) => {
     const az = requireClient(c);
@@ -250,6 +284,10 @@ export function createAzureRoutes(config: Config): Hono {
     }
     try {
       await az.submitVote(ref, parsed.data.vote, parsed.data.body);
+      // A vote either way ends the reviewer's pass over this PR, so its guide
+      // has done its job. Azure has no "comment without voting" here, so unlike
+      // GitHub there is no case to exclude.
+      await retireGuide(db(), { provider: "azure", org: az.org, ...ref });
       return c.json({ ok: true }, 201);
     } catch (e) {
       return upstreamError(c, e);

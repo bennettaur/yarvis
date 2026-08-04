@@ -247,6 +247,7 @@ export function toPrDetail(pr: any, repo?: any): PrDetail {
     author: pr.author?.login ?? "",
     baseRef: pr.baseRefName ?? "",
     headRef: pr.headRefName ?? "",
+    headSha: pr.headRefOid ?? "",
     additions: pr.additions ?? 0,
     deletions: pr.deletions ?? 0,
     mergeable: pr.mergeable ?? "UNKNOWN",
@@ -353,7 +354,7 @@ query($owner:String!,$repo:String!,$number:Int!){
       autoMergeRequest{ enabledAt }
       viewerCanEnableAutoMerge viewerCanDisableAutoMerge
       author{login}
-      baseRefName headRefName
+      baseRefName headRefName headRefOid
       reviewRequests(first:50){
         nodes{
           requestedReviewer{
@@ -384,6 +385,27 @@ query($owner:String!,$repo:String!,$number:Int!){
     }
   }
 }`;
+
+/**
+ * Encodes a repo-relative path for the contents API, refusing anything that
+ * would address something other than a file inside the repository.
+ *
+ * The traversal check is the load-bearing part. `encodeURIComponent` leaves `.`
+ * alone, so `..` survives encoding intact, and `fetch` resolves dot-segments
+ * against the URL before the request goes out — which turns
+ * `contents/../../../../user/repos` into `api.github.com/user/repos`, sent with
+ * the user's token. The path reaching here can be chosen by a model reading an
+ * untrusted pull request, so this is checked in the client as well as at the
+ * route and tool boundaries: the escape is silent, and one missed caller is
+ * enough.
+ */
+export function encodeRepoPath(path: string): string {
+  const segments = path.split("/").filter(Boolean);
+  if (segments.some((s) => s === "." || s === "..")) {
+    throw new Error("path must stay inside the repository");
+  }
+  return segments.map(encodeURIComponent).join("/");
+}
 
 export class GitHubClient {
   constructor(
@@ -530,6 +552,101 @@ export class GitHubClient {
     const pr = data.repository?.pullRequest;
     if (!pr) throw new Error(`pull request ${owner}/${repo}#${number} not found`);
     return toPrDetail(pr, data.repository);
+  }
+
+  /**
+   * A file's full text at a commit, for showing the unchanged code around a
+   * hunk. Requested as raw rather than JSON: the JSON form base64-encodes the
+   * body and refuses outright above 1 MB, while the raw media type streams the
+   * bytes and only gives up at 100 MB.
+   *
+   * A missing path resolves to empty rather than throwing — a file added by the
+   * PR has no content on the base side, and that is an ordinary state to be in,
+   * not an error the review view should surface.
+   */
+  async fileContent(owner: string, repo: string, path: string, ref: string): Promise<string> {
+    const encoded = encodeRepoPath(path);
+    const res = await this.fetchImpl(
+      `https://api.github.com/repos/${owner}/${repo}/contents/${encoded}?ref=${encodeURIComponent(ref)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          Accept: "application/vnd.github.raw",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      },
+    );
+    if (res.status === 404) return "";
+    if (!res.ok) throw new Error(`github contents ${path} -> ${res.status}`);
+    return res.text();
+  }
+
+  /**
+   * Entries directly under a directory at a commit, so a caller can find its
+   * way around a tree it has never seen. A path that is a file, or absent,
+   * comes back empty rather than throwing.
+   */
+  async listDir(
+    owner: string,
+    repo: string,
+    path: string,
+    ref: string,
+  ): Promise<{ path: string; type: string }[]> {
+    // The repository root is the empty path, and the trailing slash it would
+    // otherwise leave behind has to go with it.
+    const encoded = encodeRepoPath(path);
+    const suffix = encoded ? `/${encoded}` : "";
+    const res = await this.fetchImpl(
+      `https://api.github.com/repos/${owner}/${repo}/contents${suffix}?ref=${encodeURIComponent(ref)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      },
+    );
+    if (res.status === 404) return [];
+    if (!res.ok) throw new Error(`github contents ${path} -> ${res.status}`);
+    const body = (await res.json()) as unknown;
+    // The contents endpoint returns an object for a file and an array for a
+    // directory; only the latter is a listing.
+    if (!Array.isArray(body)) return [];
+    return body.map((entry: any) => ({ path: entry.path, type: entry.type }));
+  }
+
+  /**
+   * Repo-scoped code search, with the matching fragments so a caller can judge
+   * a hit without fetching the whole file.
+   *
+   * GitHub only indexes a repository's default branch, so results describe the
+   * base of a pull request rather than its head. That is usually what a caller
+   * wants when asking "who else calls this" — the callers are existing code —
+   * but it does mean a symbol introduced by the PR itself will not be found.
+   */
+  async searchCode(
+    owner: string,
+    repo: string,
+    query: string,
+    limit = 10,
+  ): Promise<{ path: string; fragments: string[] }[]> {
+    const q = encodeURIComponent(`${query} repo:${owner}/${repo}`);
+    const res = await this.fetchImpl(
+      `https://api.github.com/search/code?q=${q}&per_page=${limit}`,
+      {
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          Accept: "application/vnd.github.text-match+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      },
+    );
+    if (!res.ok) throw new Error(`github code search -> ${res.status}`);
+    const body = (await res.json()) as { items?: any[] };
+    return (body.items ?? []).map((item: any) => ({
+      path: item.path,
+      fragments: (item.text_matches ?? []).map((m: any) => m.fragment).filter(Boolean),
+    }));
   }
 
   async prFiles(owner: string, repo: string, number: number): Promise<PrFile[]> {

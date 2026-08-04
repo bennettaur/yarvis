@@ -88,6 +88,10 @@ export const ghSavePrConfig = (config: GhPrConfig) =>
 export const ghPrStatus = (ref: PrRef) => get<PrStatus>(refApiPath(ref));
 export const ghPrDetail = (ref: PrRef) => get<PrDetail>(`${refApiPath(ref)}/detail`);
 export const ghPrFiles = (ref: PrRef) => get<PrFile[]>(`${refApiPath(ref)}/files`);
+export const ghFileContent = (ref: PrRef, path: string, sha: string) =>
+  get<{ content: string }>(
+    `${refApiPath(ref)}/content?path=${encodeURIComponent(path)}&ref=${encodeURIComponent(sha)}`,
+  );
 export const ghPostComment = (ref: PrRef, comment: NewComment) =>
   send<{ ok: boolean }>(`${refApiPath(ref)}/comments`, "POST", comment);
 

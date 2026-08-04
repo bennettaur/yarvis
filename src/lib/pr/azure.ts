@@ -106,6 +106,10 @@ export const azPrDetail = (ref: PrRef) => get<PrDetail>(`${refApiPath(ref)}/deta
 export const azPrFiles = (ref: PrRef) => get<PrFile[]>(`${refApiPath(ref)}/files`);
 export const azPrFileDiff = (ref: PrRef, path: string) =>
   get<PrFile>(`${refApiPath(ref)}/file?path=${encodeURIComponent(path)}`);
+export const azFileContent = (ref: PrRef, path: string, sha: string) =>
+  get<{ content: string }>(
+    `${refApiPath(ref)}/content?path=${encodeURIComponent(path)}&ref=${encodeURIComponent(sha)}`,
+  );
 export const azPostComment = (ref: PrRef, comment: NewComment) =>
   send<{ ok: boolean }>(`${refApiPath(ref)}/comments`, "POST", comment);
 

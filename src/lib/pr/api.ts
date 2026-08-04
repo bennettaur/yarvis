@@ -6,6 +6,7 @@
 
 import {
   azAddStar,
+  azFileContent,
   azMarkReady,
   azPostComment,
   azPrDetail,
@@ -19,6 +20,7 @@ import {
   ghAddStar,
   ghDisableAutoMerge,
   ghEnableAutoMerge,
+  ghFileContent,
   ghMarkReady,
   ghMergePr,
   ghPostComment,
@@ -45,6 +47,15 @@ export const fetchPrFiles = (ref: PrRef): Promise<PrFile[]> =>
  */
 export const fetchPrFileDiff = (ref: PrRef, file: PrFile): Promise<PrFile> =>
   ref.provider === "github" ? Promise.resolve(file) : azPrFileDiff(ref, file.filename);
+
+/**
+ * A file's full text at a commit, used to reveal the unchanged code a patch
+ * leaves out. The commit comes from the PR detail the caller already loaded.
+ */
+export const fetchPrFileContent = (ref: PrRef, path: string, sha: string): Promise<string> =>
+  (ref.provider === "github" ? ghFileContent(ref, path, sha) : azFileContent(ref, path, sha)).then(
+    (r) => r.content,
+  );
 
 export const postPrComment = (ref: PrRef, comment: NewComment): Promise<{ ok: boolean }> =>
   ref.provider === "github" ? ghPostComment(ref, comment) : azPostComment(ref, comment);

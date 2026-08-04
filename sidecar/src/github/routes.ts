@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { retireGuide } from "../pr/guides.ts";
 import { GitHubClient } from "./client.ts";
 import { getGithubPrConfig, saveGithubPrConfig } from "./config.ts";
 import { getReviewingList } from "./reviewing.ts";
@@ -59,6 +60,24 @@ const commentSchema = z.object({
 const reviewSchema = z.object({
   event: z.enum(["APPROVE", "REQUEST_CHANGES", "COMMENT"]),
   body: z.string().max(65_536).optional(),
+});
+
+/**
+ * Query for the file-content route. The commit is pinned to a full sha rather
+ * than accepting any git ref: the caller always has one to hand (it comes off
+ * the PR detail it already loaded), and refusing everything else keeps a branch
+ * name from smuggling extra path segments into the upstream URL.
+ */
+const contentQuery = z.object({
+  // Rejecting `..` matters here for the same reason it does in the Azure
+  // schema: `encodeURIComponent` leaves `.` alone, so a traversal survives
+  // encoding and `fetch` resolves it against the upstream URL before sending.
+  path: z
+    .string()
+    .min(1)
+    .max(1024)
+    .refine((s) => !s.split("/").some((part) => part === "." || part === ".."), "invalid path"),
+  ref: z.string().regex(/^[0-9a-f]{40}$/, "expected a commit sha"),
 });
 
 const viewedSchema = z.object({
@@ -179,7 +198,14 @@ export function createGithubRoutes(config: Config): Hono {
     const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
     if ("error" in params) return c.json({ error: params.error }, 400);
     try {
-      return c.json(await gh.prDetail(params.owner, params.repo, params.number));
+      const detail = await gh.prDetail(params.owner, params.repo, params.number);
+      // A pull request closed or merged on github.com is the one ending the app
+      // never sees directly. Catching it here — on a load the review view makes
+      // anyway — retires the guide without a poller watching for it.
+      if (detail.state.toUpperCase() !== "OPEN") {
+        await retireGuide(db(), { provider: "github", ...params });
+      }
+      return c.json(detail);
     } catch (e) {
       return c.json({ error: String(e) }, 502);
     }
@@ -193,6 +219,29 @@ export function createGithubRoutes(config: Config): Hono {
     if ("error" in params) return c.json({ error: params.error }, 400);
     try {
       return c.json(await gh.prFiles(params.owner, params.repo, params.number));
+    } catch (e) {
+      return c.json({ error: String(e) }, 502);
+    }
+  });
+
+  // A changed file's full text at a commit, so the review view can reveal the
+  // unchanged code a patch leaves out. Mounted under the PR (whose number the
+  // lookup itself doesn't need) to keep one path shape across both providers.
+  router.get("/pr/:owner/:repo/:number/content", async (c) => {
+    const gh = client();
+    if (!gh) return c.json({ error: "github token not configured" }, 400);
+    const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
+    if ("error" in params) return c.json({ error: params.error }, 400);
+    const query = contentQuery.safeParse({ path: c.req.query("path"), ref: c.req.query("ref") });
+    if (!query.success) return c.json({ error: "invalid path or ref" }, 400);
+    try {
+      const content = await gh.fileContent(
+        params.owner,
+        params.repo,
+        query.data.path,
+        query.data.ref,
+      );
+      return c.json({ content });
     } catch (e) {
       return c.json({ error: String(e) }, 502);
     }
@@ -231,6 +280,12 @@ export function createGithubRoutes(config: Config): Hono {
         parsed.data.event,
         parsed.data.body,
       );
+      // Approving or requesting changes ends the reviewer's pass over this PR,
+      // so its guide has done its job. A plain comment does not — the review is
+      // still open.
+      if (parsed.data.event !== "COMMENT") {
+        await retireGuide(db(), { provider: "github", ...params });
+      }
       return c.json({ ok: true }, 201);
     } catch (e) {
       return c.json({ error: String(e) }, 502);
@@ -252,6 +307,7 @@ export function createGithubRoutes(config: Config): Hono {
         params.number,
         parsed.data.method ?? "MERGE",
       );
+      await retireGuide(db(), { provider: "github", ...params });
       return c.json({ ok: true });
     } catch (e) {
       return c.json({ error: String(e) }, 502);

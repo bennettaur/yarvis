@@ -1,175 +1,124 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { postPrComment } from "../../lib/pr/api";
-import {
-  invalidate,
-  prDetailKey,
-  usePrDetail,
-  usePrFileDiff,
-  usePrFiles,
-} from "../../lib/pr/cache";
-import { parsePatch } from "../../lib/pr/diff";
+import { usePrDetail, usePrFileDiff, usePrFiles } from "../../lib/pr/cache";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { rowClass } from "../diff/DiffView";
-import { ThreadCard } from "./PrDescription";
-import { prFileAnchorId } from "./shared";
+import { usePersistedBoolean } from "../SplitPane";
+import ChangeMinimap from "./ChangeMinimap";
+import GapMarker from "./GapMarker";
+import InsightBlock from "./InsightCards";
+import {
+  AddCommentButton,
+  AskAboutLineButton,
+  LineCommentBlock,
+  useLineComments,
+} from "./LineComments";
+import SplitDiffBody from "./SplitDiffBody";
+import { type DiffFocus, FOCUS_ATTR, FOCUS_STYLE, focusRange, prFileAnchorId } from "./shared";
+import { useAskSelection } from "./useAskSelection";
+import { useExpandOnApproach } from "./useExpandOnApproach";
+import { type FileExpansion, useFileExpansion } from "./useFileExpansion";
+import { type InsightsController, usePrInsights } from "./usePrInsights";
 
-/** Files whose diffs are fetched eagerly so the top of the view is populated. */
+/**
+ * Files whose diffs are open on mount. Scrolling opens the rest as they come
+ * into reach (see {@link useExpandOnApproach}); this only covers the files
+ * already on screen at first paint, so the top of the review doesn't flash
+ * collapsed before the observer's first callback.
+ */
 const PREFETCH_COUNT = 4;
 
-/** Inline composer for a new line comment. */
-function CommentComposer({
-  onSubmit,
-  onCancel,
-}: {
-  onSubmit: (body: string) => Promise<void>;
-  onCancel: () => void;
-}) {
-  const [body, setBody] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+/** Remembers the unified/side-by-side choice across PRs and app restarts. */
+const SPLIT_VIEW_KEY = "yarvis.pr.splitDiff";
 
-  // The composer only mounts when the user clicks a line's "+", so focusing it
-  // is expected. Done via a ref rather than the autoFocus attribute (which
-  // fires on initial page render and is an accessibility anti-pattern there).
-  useEffect(() => {
-    textareaRef.current?.focus();
-  }, []);
-
-  const submit = async () => {
-    if (!body.trim()) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await onSubmit(body.trim());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="border-l-2 border-sky-700 bg-zinc-900 p-2">
-      <textarea
-        ref={textareaRef}
-        value={body}
-        placeholder="Leave a comment…"
-        onChange={(e) => setBody(e.target.value)}
-        className="h-20 w-full rounded-md border border-zinc-700 bg-zinc-800 p-2 text-sm text-zinc-100"
-      />
-      {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
-      <div className="mt-1 flex gap-2">
-        <button
-          type="button"
-          onClick={() => void submit()}
-          disabled={busy || !body.trim()}
-          className="rounded-md bg-sky-700 px-3 py-1 text-xs text-white hover:bg-sky-600 disabled:opacity-50"
-        >
-          {busy ? "Posting…" : "Comment"}
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={busy}
-          className="rounded-md border border-zinc-700 px-3 py-1 text-xs hover:bg-zinc-800"
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  );
+/**
+ * A fold/unfold request broadcast to every file at once. It carries an `epoch`
+ * rather than being a plain boolean so pressing "Collapse all" a second time
+ * still reaches files the reader has expanded by hand since the first press.
+ */
+interface FoldAll {
+  open: boolean;
+  epoch: number;
 }
 
-/** Groups a file's review threads by their right-side line number. */
-function threadsByLine(threads: ReviewThread[]): Map<number, ReviewThread[]> {
-  const map = new Map<number, ReviewThread[]>();
-  for (const thread of threads) {
-    if (thread.line == null) continue;
-    const list = map.get(thread.line);
-    if (list) list.push(thread);
-    else map.set(thread.line, [thread]);
-  }
-  return map;
-}
-
+/** A file's diff as a single column of unified-diff rows. */
 export function DiffBody({
   prRef,
   file,
-  patch,
   threads,
+  expansion,
+  highlight,
+  insights,
+  headSha = "",
 }: {
   prRef: PrRef;
   file: PrFile;
-  patch: string;
   threads: ReviewThread[];
+  expansion: FileExpansion;
+  /** Lines a guided review is pointing at, marked down the left edge. */
+  highlight?: { start: number; end: number } | null;
+  /** Omitted where there is no review to ask questions in (Omni widgets). */
+  insights?: InsightsController;
+  headSha?: string;
 }) {
-  const rows = useMemo(() => parsePatch(patch), [patch]);
-  const byLine = useMemo(() => threadsByLine(threads), [threads]);
-  const [activeLine, setActiveLine] = useState<number | null>(null);
-  // Comments posted this session, shown immediately while the server catches up.
-  const [pending, setPending] = useState<{ line: number; body: string }[]>([]);
-
-  const submit = async (line: number, body: string) => {
-    await postPrComment(prRef, { path: file.filename, line, body });
-    setPending((p) => [...p, { line, body }]);
-    setActiveLine(null);
-    // Drop the cached detail so the real thread replaces the optimistic one on
-    // the next load of this PR.
-    invalidate(prDetailKey(prRef));
-  };
+  const comments = useLineComments(prRef, file, threads);
+  const ask = useAskSelection(file.filename, expansion.rows, insights);
 
   return (
-    <div className="overflow-x-auto rounded-b-lg bg-zinc-950 font-mono text-xs leading-relaxed">
-      {rows.map((row, i) => {
-        const commentable = row.rightLine != null;
-        const lineThreads = row.rightLine != null ? byLine.get(row.rightLine) : undefined;
-        const linePending =
-          row.rightLine != null ? pending.filter((p) => p.line === row.rightLine) : [];
+    <div className="relative overflow-x-auto rounded-b-lg bg-zinc-950 font-mono text-xs leading-relaxed">
+      {expansion.rows.map((item, i) => {
+        if (item.kind === "gap") {
+          return (
+            <GapMarker
+              key={`gap-${item.gap.index}`}
+              gap={item.gap}
+              hidden={item.hidden}
+              onExpand={expansion.expand}
+              onExpandFully={expansion.expandFully}
+            />
+          );
+        }
+        const row = item.row;
+        const marked =
+          highlight != null &&
+          row.rightLine != null &&
+          row.rightLine >= highlight.start &&
+          row.rightLine <= highlight.end;
         return (
+          // biome-ignore lint/suspicious/noArrayIndexKey: rows are a stable render of an immutable patch
           <div key={i}>
-            <div className={`group flex ${rowClass(row.kind)}`}>
+            <div
+              className={`group flex ${rowClass(row.kind)}`}
+              style={marked ? FOCUS_STYLE : undefined}
+              {...(marked && row.rightLine === highlight.start ? { [FOCUS_ATTR]: "true" } : {})}
+            >
               <span className="flex w-12 shrink-0 select-none items-center justify-end gap-1 pr-2 text-zinc-600">
-                {commentable && (
-                  <button
-                    type="button"
-                    onClick={() => setActiveLine(row.rightLine)}
-                    title="Comment on this line"
-                    className="opacity-0 group-hover:opacity-100 text-sky-400 hover:text-sky-300"
-                  >
-                    +
-                  </button>
+                {insights && row.rightLine != null && (
+                  <AskAboutLineButton onClick={(extend) => ask(row.rightLine as number, extend)} />
+                )}
+                {row.rightLine != null && (
+                  <AddCommentButton
+                    onClick={() => comments.openComposer(row.rightLine as number)}
+                  />
                 )}
                 <span>{row.rightLine ?? ""}</span>
               </span>
               <span className="whitespace-pre">{row.text || " "}</span>
             </div>
-            {(lineThreads ||
-              linePending.length > 0 ||
-              (commentable && activeLine === row.rightLine)) && (
-              <div className="space-y-2 px-3 py-2 font-sans">
-                {lineThreads?.map((t, j) => (
-                  <ThreadCard key={`t-${j}`} thread={t} />
-                ))}
-                {linePending.map((p, j) => (
-                  <div
-                    key={`p-${j}`}
-                    className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-3 text-sm text-zinc-300"
-                  >
-                    <div className="mb-1 text-xs font-medium text-zinc-500">you · just now</div>
-                    {p.body}
-                  </div>
-                ))}
-                {commentable && activeLine === row.rightLine && (
-                  <CommentComposer
-                    onSubmit={(body) => submit(row.rightLine as number, body)}
-                    onCancel={() => setActiveLine(null)}
-                  />
-                )}
-              </div>
+            <LineCommentBlock line={row.rightLine} comments={comments} />
+            {insights && (
+              <InsightBlock
+                path={file.filename}
+                line={row.rightLine}
+                controller={insights}
+                currentSha={headSha}
+              />
             )}
           </div>
         );
       })}
+      {expansion.wholeFile && (
+        <ChangeMinimap rows={expansion.rows} totalLines={expansion.totalLines} />
+      )}
     </div>
   );
 }
@@ -219,6 +168,44 @@ function ViewedToggle({ isViewed, onClick }: { isViewed: boolean; onClick: () =>
   );
 }
 
+/**
+ * Switches a file between its patch and its full text with the changes still
+ * highlighted. Sits in the file's own header rather than the review toolbar:
+ * wanting the whole file is a per-file question, and applying it to every file
+ * at once would pull down the full text of the entire PR.
+ */
+function WholeFileToggle({
+  on,
+  loading,
+  onClick,
+}: {
+  on: boolean;
+  loading: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        // The header is a `<summary>`, so without this the click would also
+        // fold the file the reader just asked to see more of.
+        e.stopPropagation();
+        e.preventDefault();
+        onClick();
+      }}
+      aria-pressed={on}
+      title={on ? "Show only the changed parts" : "Show the whole file"}
+      className={`shrink-0 rounded border px-2 py-0.5 text-xs ${
+        on
+          ? "border-sky-700 bg-sky-900/40 text-sky-200"
+          : "border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
+      }`}
+    >
+      {loading ? "Loading…" : "Whole file"}
+    </button>
+  );
+}
+
 function FileDiff({
   prRef,
   file,
@@ -226,6 +213,11 @@ function FileDiff({
   threads,
   isViewed,
   onToggleViewed,
+  foldAll,
+  split,
+  headSha,
+  focus,
+  insights,
 }: {
   prRef: PrRef;
   file: PrFile;
@@ -233,19 +225,64 @@ function FileDiff({
   threads: ReviewThread[];
   isViewed: boolean;
   onToggleViewed: (path: string) => void;
+  foldAll: FoldAll | null;
+  split: boolean;
+  /** Commit the file's full text is read at; empty disables expansion. */
+  headSha: string;
+  /** Set only on the file a guided review is currently pointing at. */
+  focus: DiffFocus | null;
+  insights: InsightsController;
 }) {
   // The first few unviewed files are open on mount; viewed files start
   // collapsed regardless so the user's prior progress stays out of the way.
-  // The rest load when expanded, so a large Azure PR doesn't fetch every
-  // file's content up front. Marking viewed later also collapses the diff and
-  // unmarking re-expands it (see `toggleViewed` below).
+  // The rest open as the reader scrolls toward them, so a large Azure PR
+  // doesn't fetch every file's content up front. Marking viewed later also
+  // collapses the diff and unmarking re-expands it (see `toggleViewed` below).
   const [open, setOpen] = useState(!isViewed && index < PREFETCH_COUNT);
+  // A file that was closed by a deliberate act — the reader folding it, marking
+  // it viewed, or a "Collapse all" — stays folded. Auto-expand exists to save
+  // clicks, not to overrule a decision already made.
+  const [closedDeliberately, setClosedDeliberately] = useState(false);
+  const detailsRef = useRef<HTMLDetailsElement>(null);
+  useExpandOnApproach(detailsRef, !open && !isViewed && !closedDeliberately, () => setOpen(true));
+
+  // Apply a fold/unfold broadcast from the toolbar. Keyed on the epoch alone so
+  // a repeat press re-applies to files toggled by hand in between.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-applies per press, not per value change
+  useEffect(() => {
+    if (!foldAll) return;
+    setOpen(foldAll.open);
+    setClosedDeliberately(!foldAll.open);
+  }, [foldAll?.epoch]);
+
+  // A guided review pointing here opens the file and scrolls to its lines,
+  // overriding a deliberate collapse — the reader asked to be taken to this
+  // code, which outranks having folded it away earlier.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-runs per landing, not per value change
+  useEffect(() => {
+    if (!focus) return;
+    setOpen(true);
+    setClosedDeliberately(false);
+    // Two frames: the first commits the expansion, the second lets the diff
+    // rows lay out, so the marked line exists to scroll to. Without the diff
+    // rendered the scroll would land on the file header instead.
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const fileEl = detailsRef.current;
+        const line = fileEl?.querySelector(`[${FOCUS_ATTR}]`);
+        (line ?? fileEl)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }),
+    );
+  }, [focus?.nonce]);
+
   const { data: loaded, loading } = usePrFileDiff(prRef, file, open);
   const patch = loaded?.patch ?? file.patch;
+  const highlight = focusRange(focus);
   const fileThreads = useMemo(
     () => threads.filter((t) => t.path === file.filename),
     [threads, file.filename],
   );
+  const expansion = useFileExpansion(prRef, file.filename, patch ?? "", headSha);
 
   // Single handler so the visual collapse and the underlying viewed mutation
   // happen together — the diff folds away exactly when the user marks it done
@@ -280,9 +317,14 @@ function FileDiff({
 
   return (
     <details
+      ref={detailsRef}
       id={prFileAnchorId(prRef, index)}
       open={open}
-      onToggle={(e) => setOpen(e.currentTarget.open)}
+      onToggle={(e) => {
+        const nowOpen = e.currentTarget.open;
+        setOpen(nowOpen);
+        setClosedDeliberately(!nowOpen);
+      }}
       className={`scroll-mt-4 rounded-lg border border-zinc-800 ${isViewed ? "opacity-70" : ""}`}
     >
       {/* The header sticks to the top of the scrolling review body while its
@@ -312,13 +354,47 @@ function FileDiff({
           </>
         )}
         {file.status !== "modified" && <span className="text-xs text-zinc-500">{file.status}</span>}
+        {open && patch && expansion.canExpand && (
+          <WholeFileToggle
+            on={expansion.wholeFile}
+            loading={expansion.loading}
+            onClick={() => expansion.setWholeFile(!expansion.wholeFile)}
+          />
+        )}
         <ViewedToggle isViewed={isViewed} onClick={toggleViewed} />
       </summary>
       {open &&
         (loading && !patch ? (
           <p className="px-3 py-2 text-xs text-zinc-600">Loading diff…</p>
         ) : patch ? (
-          <DiffBody prRef={prRef} file={loaded ?? file} patch={patch} threads={fileThreads} />
+          <>
+            {expansion.error && (
+              <p className="px-3 py-1 text-xs text-red-400">
+                Could not load the rest of this file: {expansion.error}
+              </p>
+            )}
+            {split ? (
+              <SplitDiffBody
+                prRef={prRef}
+                file={loaded ?? file}
+                threads={fileThreads}
+                expansion={expansion}
+                highlight={highlight}
+                insights={insights}
+                headSha={headSha}
+              />
+            ) : (
+              <DiffBody
+                prRef={prRef}
+                file={loaded ?? file}
+                threads={fileThreads}
+                expansion={expansion}
+                highlight={highlight}
+                insights={insights}
+                headSha={headSha}
+              />
+            )}
+          </>
         ) : (
           <p className="px-3 py-2 text-xs text-zinc-600">No textual diff (binary or too large).</p>
         ))}
@@ -326,26 +402,75 @@ function FileDiff({
   );
 }
 
-/** The changed files of a PR rendered as expandable, comment-able unified diffs. */
+/** The changed files of a PR rendered as expandable, comment-able diffs. */
 export default function PrFileDiffs({
   prRef,
   viewed,
   onToggleViewed,
+  focus = null,
 }: {
   prRef: PrRef;
   viewed: Set<string>;
   onToggleViewed: (path: string) => void;
+  /** Where a guided review wants the reader looking, if one is running. */
+  focus?: DiffFocus | null;
 }) {
+  const insights = usePrInsights(prRef);
   const { data, error, loading } = usePrFiles(prRef);
   const detail = usePrDetail(prRef);
   const threads = detail.data?.reviewThreads ?? [];
+  const [foldAll, setFoldAll] = useState<FoldAll | null>(null);
+  const [split, setSplit] = usePersistedBoolean(SPLIT_VIEW_KEY, false);
 
   if (error) return <p className="text-sm text-red-400">{error}</p>;
   if (loading || !data) return <p className="text-sm text-zinc-500">Loading diff…</p>;
   if (data.length === 0) return <p className="text-sm text-zinc-600">No file changes.</p>;
 
+  const fold = (open: boolean) => setFoldAll((f) => ({ open, epoch: (f?.epoch ?? 0) + 1 }));
+
   return (
     <div className="space-y-2">
+      <div className="flex items-center gap-2 text-xs text-zinc-500">
+        <span>
+          {data.length} {data.length === 1 ? "file" : "files"}
+        </span>
+        <div className="ml-auto flex overflow-hidden rounded border border-zinc-700">
+          <button
+            type="button"
+            onClick={() => setSplit(false)}
+            aria-pressed={!split}
+            className={`px-2 py-0.5 ${
+              split ? "hover:bg-zinc-800 hover:text-zinc-200" : "bg-zinc-800 text-zinc-200"
+            }`}
+          >
+            Unified
+          </button>
+          <button
+            type="button"
+            onClick={() => setSplit(true)}
+            aria-pressed={split}
+            className={`border-l border-zinc-700 px-2 py-0.5 ${
+              split ? "bg-zinc-800 text-zinc-200" : "hover:bg-zinc-800 hover:text-zinc-200"
+            }`}
+          >
+            Split
+          </button>
+        </div>
+        <button
+          type="button"
+          onClick={() => fold(false)}
+          className="rounded border border-zinc-700 px-2 py-0.5 hover:bg-zinc-800 hover:text-zinc-200"
+        >
+          Collapse all
+        </button>
+        <button
+          type="button"
+          onClick={() => fold(true)}
+          className="rounded border border-zinc-700 px-2 py-0.5 hover:bg-zinc-800 hover:text-zinc-200"
+        >
+          Expand all
+        </button>
+      </div>
       {data.map((f, i) => (
         <FileDiff
           key={f.filename}
@@ -355,6 +480,11 @@ export default function PrFileDiffs({
           threads={threads}
           isViewed={viewed.has(f.filename)}
           onToggleViewed={onToggleViewed}
+          foldAll={foldAll}
+          split={split}
+          headSha={detail.data?.headSha ?? ""}
+          focus={focus?.path === f.filename ? focus : null}
+          insights={insights}
         />
       ))}
     </div>

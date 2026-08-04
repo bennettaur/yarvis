@@ -18,6 +18,7 @@ export type AttentionNavTarget =
   | { type: "terminal"; sessionKey: string; workspaceId?: string }
   | { type: "chat" }
   | { type: "pr"; owner: string; repo: string; number: number }
+  | { type: "azure-pr"; org: string; project: string; repo: string; prId: number }
   | { type: "issue"; provider: string; sourceKey: string; externalId: string }
   | { type: "task"; taskId: string };
 
