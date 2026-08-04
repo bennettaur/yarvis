@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import type { Settings } from "../lib/settings";
+import { nativeInvoke } from "../test/nativeInvoke";
 import { renderToHtml } from "../test/render";
 
 /**
@@ -36,7 +37,7 @@ mock.module("@tauri-apps/api/core", () => ({
       stored = { ...stored, agentName: name, agentCommand: cmd };
     }
     if (command === "get_settings" || command === "set_agent") return stored;
-    return command === "list_alarms" ? [] : undefined;
+    return nativeInvoke(command);
   },
 }));
 

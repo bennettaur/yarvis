@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import type { Settings } from "../lib/settings";
+import { nativeInvoke } from "../test/nativeInvoke";
 import { renderToHtml } from "../test/render";
 
 /**
@@ -28,9 +29,9 @@ function defaultSettings(): Settings {
   };
 }
 
-// mock.module replaces the module for the whole run, so commands this file
-// doesn't care about keep the inert defaults from `src/test/setup.ts` — other
-// suites share this stub.
+// mock.module replaces the module for the whole run — including for suites that
+// run after this one — so anything this file doesn't handle goes to the shared
+// defaults rather than answering `undefined`.
 mock.module("@tauri-apps/api/core", () => ({
   invoke: async (command: string, args: unknown) => {
     invoked.push({ command, args });
@@ -39,7 +40,7 @@ mock.module("@tauri-apps/api/core", () => ({
       stored = { ...stored, maxPtySessions: (args as { value: number | null }).value };
     }
     if (command === "get_settings" || command === "set_max_pty_sessions") return stored;
-    return command === "list_alarms" ? [] : undefined;
+    return nativeInvoke(command);
   },
 }));
 

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import type { Alarm } from "../lib/alarms";
+import { nativeInvoke } from "../test/nativeInvoke";
 import { renderToHtml } from "../test/render";
 
 /**
@@ -21,7 +22,7 @@ mock.module("@tauri-apps/plugin-opener", () => ({
 mock.module("@tauri-apps/api/core", () => ({
   invoke: async (command: string, args: unknown) => {
     invoked.push({ command, args });
-    return command === "list_alarms" ? [] : undefined;
+    return nativeInvoke(command);
   },
 }));
 

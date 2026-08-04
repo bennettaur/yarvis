@@ -5,6 +5,7 @@ process.env.TZ = "America/Toronto";
 
 import { mock } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { nativeInvoke } from "./nativeInvoke";
 
 /**
  * Frontend test setup, preloaded for every `bun test` run under src/ (see
@@ -18,19 +19,7 @@ if (!("happyDOM" in globalThis)) {
   GlobalRegistrator.register();
 }
 
-// Native commands whose callers read fields off the result, so `undefined`
-// would throw during render rather than degrade. The rest answer `undefined`.
-const NATIVE_DEFAULTS: Record<string, unknown> = {
-  // An empty list so alarm-aware components render without any alarms set.
-  list_alarms: [],
-  // The core always resolves an agent to non-empty defaults, and the workspace
-  // view renders its name unguarded.
-  get_agent_config: { name: "Claude", command: "claude --permission-mode auto" },
-};
-
-mock.module("@tauri-apps/api/core", () => ({
-  invoke: async (command: string) => NATIVE_DEFAULTS[command],
-}));
+mock.module("@tauri-apps/api/core", () => ({ invoke: nativeInvoke }));
 
 mock.module("@tauri-apps/api/event", () => ({
   // No events fire in tests; return a no-op unlisten.
