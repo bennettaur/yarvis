@@ -926,6 +926,39 @@ function linkedPrUrl(detail: WorkspaceDetail): string | null {
   return (merged ?? withPr[0])?.pr?.prUrl ?? null;
 }
 
+/** Teardowns in flight, keyed by workspace id, so a second request joins the
+ *  running archive instead of racing it over the same worktrees. */
+const archivals = new Map<string, Promise<ArchiveResult>>();
+
+/**
+ * Marks the workspace `archiving` and records the summary/PR URL up front, so a
+ * caller that doesn't wait for the teardown still sees the new state. Returns
+ * the detail read before the flip, which the teardown works from.
+ */
+async function beginArchive(
+  db: Db,
+  id: string,
+  input: ArchiveWorkspaceInput,
+): Promise<WorkspaceDetail> {
+  const detail = await getWorkspace(db, id);
+  if (!detail) throw new Error("workspace not found");
+
+  await db
+    .update(workspaces)
+    .set({
+      status: "archiving",
+      summary: input.summary ?? detail.summary,
+      mergedPrUrl: input.mergedPrUrl ?? detail.mergedPrUrl ?? linkedPrUrl(detail),
+      // Cleared so `archiving` with no error means "teardown still running" —
+      // a retry after a dirty-worktree refusal must not read as still failed.
+      error: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(workspaces.id, id));
+
+  return detail;
+}
+
 /**
  * Tears down a workspace's worktrees and marks it archived. Idempotent and
  * partial-failure safe: a repo whose worktree won't remove (e.g. uncommitted
@@ -938,8 +971,58 @@ export async function archiveWorkspace(
   input: ArchiveWorkspaceInput = {},
   runner: GitRunner = defaultGitRunner,
 ): Promise<ArchiveResult> {
-  const detail = await getWorkspace(db, id);
-  if (!detail) throw new Error("workspace not found");
+  const inFlight = archivals.get(id);
+  if (inFlight) return inFlight;
+  return trackArchive(db, await beginArchive(db, id, input), input, runner);
+}
+
+/**
+ * Kicks off the teardown and returns as soon as the workspace reads
+ * `archiving`, so the caller isn't held for the length of a worktree removal.
+ * The outcome lands on the workspace row (status `archived`, or `archiving`
+ * with the per-repo error on a dirty worktree), which callers poll for.
+ */
+export async function startArchiveWorkspace(
+  db: Db,
+  id: string,
+  input: ArchiveWorkspaceInput = {},
+  runner: GitRunner = defaultGitRunner,
+): Promise<ArchiveResult> {
+  if (!archivals.has(id)) {
+    const detail = await beginArchive(db, id, input);
+    void trackArchive(db, detail, input, runner).catch(async (e) => {
+      const message = e instanceof Error ? e.message : String(e);
+      console.error("[workspaces] background archive failed:", e);
+      await db
+        .update(workspaces)
+        .set({ error: message, updatedAt: new Date() })
+        .where(eq(workspaces.id, id))
+        .catch(() => {});
+    });
+  }
+  return { status: "archiving", errors: [], completedTasks: 0 };
+}
+
+function trackArchive(
+  db: Db,
+  detail: WorkspaceDetail,
+  input: ArchiveWorkspaceInput,
+  runner: GitRunner,
+): Promise<ArchiveResult> {
+  const run = removeWorktreesAndFinish(db, detail, input, runner).finally(() =>
+    archivals.delete(detail.id),
+  );
+  archivals.set(detail.id, run);
+  return run;
+}
+
+async function removeWorktreesAndFinish(
+  db: Db,
+  detail: WorkspaceDetail,
+  input: ArchiveWorkspaceInput,
+  runner: GitRunner,
+): Promise<ArchiveResult> {
+  const id = detail.id;
 
   // Stop any remote-control Claude session first so it isn't holding the
   // worktree while we remove it. Best-effort: the core may be unreachable.
@@ -948,11 +1031,6 @@ export async function archiveWorkspace(
   } catch (e) {
     console.warn("[workspaces] failed to stop Claude session on archive:", e);
   }
-
-  await db
-    .update(workspaces)
-    .set({ status: "archiving", updatedAt: new Date() })
-    .where(eq(workspaces.id, id));
 
   const errors: { repo: string; message: string }[] = [];
 
