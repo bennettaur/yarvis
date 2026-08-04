@@ -206,12 +206,30 @@ export default function WorkspacesPanel({
     else localStorage.removeItem(SHOW_ARCHIVED_KEY);
   }, [showArchived]);
 
-  // If the remembered workspace has since been removed (or doesn't exist for
-  // this user yet), drop the selection so the empty state shows.
+  // A selected workspace missing from the list is usually one created since the
+  // last fetch — the create and "Start work" flows select it immediately, while
+  // `items` still holds the pre-create list — so confirm it's really gone before
+  // dropping the selection. If it exists, pull it into the list instead.
+  const verifiedSelectionRef = useRef<string | null>(null);
   useEffect(() => {
     if (!selectedId || items.length === 0) return;
-    if (!items.some((w) => w.id === selectedId)) setSelectedId(null);
-  }, [items, selectedId]);
+    if (items.some((w) => w.id === selectedId)) return;
+    // One verification per selection: a workspace that survives the check but
+    // still doesn't reach the list must not re-trigger this on every refresh.
+    if (verifiedSelectionRef.current === selectedId) return;
+    verifiedSelectionRef.current = selectedId;
+    let active = true;
+    getWorkspace(selectedId)
+      .then(() => {
+        if (active) void refresh();
+      })
+      .catch(() => {
+        if (active) setSelectedId(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [items, selectedId, refresh]);
 
   const visibleItems = useMemo(
     () => (showArchived ? items : items.filter((w) => w.status !== "archived")),
@@ -231,10 +249,12 @@ export default function WorkspacesPanel({
     setFocusSession(null);
   };
 
-  const onCreated = (id: string, claudePrompt?: string) => {
+  const onCreated = async (id: string, claudePrompt?: string) => {
+    // Fetch the list containing the new workspace before switching to it, so the
+    // sidebar highlights it as we open its detail view.
+    await refresh();
     setCreating(false);
     setNewWorkspacePrefill(null);
-    void refresh();
     setSelectedId(id);
     if (claudePrompt) {
       // A "Start work" handoff seeds the detail view's Claude launch path;
