@@ -160,6 +160,33 @@ for how many workspaces you can keep open. Leaving the field blank restores the
 default. The value applies to the next terminal opened, without a restart, and
 is stored in `settings.json` in the app data directory.
 
+### Clipboard
+
+**Control + Shift + V** (or the clipboard icon in the nav rail) opens the
+clipboard palette: a search box over the things you copy again and again — an
+identity id, a CLI incantation, a link — plus the clipboard history from this run
+of the app. Arrows move the selection, Enter copies the highlighted row and
+closes the palette, Esc dismisses it. Entries can be labelled, tagged, and
+pinned; pinned entries sort first, then whatever you have copied most recently,
+so an empty search already offers what you usually want.
+
+A clip out of history can be promoted to a permanent entry with **Save**, and
+**Clear history** forgets everything recorded so far. History is never written to
+disk: it lives in memory in the Rust core, capped at the last 100 clips, and goes
+away when the app quits.
+
+**This is not a secret store.** Saving an entry is refused when the text looks
+like a credential — provider token prefixes (GitHub, AWS, Slack, Google, Stripe,
+npm, `sk-…` API keys), PEM private-key blocks, JWTs, URLs with an embedded
+password, inline `password=`/`api_key=` assignments, and long high-entropy tokens
+— and clipboard history is screened with the same patterns, so a password that
+passed through your clipboard is withheld from the palette rather than listed
+(the footer says how many were hidden). Detection is a heuristic, so it errs
+toward loud: identifiers the feature exists to hold (UUIDs, hex digests, plain
+URLs, commands whose secret is a `$VAR` reference) are deliberately left alone,
+but a base64 blob may well be refused. Secrets belong in the Keychain, entered
+under Settings.
+
 ### PR review
 
 The PRs tab lists **My PRs**, **Needs review**, **Reviewing**, and saved
@@ -298,14 +325,17 @@ src/            React frontend (Vite + TS + Tailwind)
     shell/      desktop shell: nav rail, top bar, boot loading screen, tab shortcuts
     omni/       Omni view — chat-driven dynamic-UI canvas
     omnichat/   Omni Chat — global summon-from-anywhere chat overlay
+    clipboard/  clipboard palette — saved snippets + screened clipboard history
   omni/         json-render component catalog, registry, layout primitives
 src-tauri/      Rust core (Tauri v2)
   src/keychain.rs   Keychain-backed secret commands (single consolidated item)
   src/sidecar.rs    sidecar supervisor
   src/alarms.rs     full-screen alarm scheduler
+  src/clipboard.rs  clipboard read/write + in-memory (never persisted) clip history
 sidecar/        Bun + TS service (Hono)
   src/db/       Drizzle schema, client, migrations (applied on startup)
   src/chat/     multi-provider streaming chat + tool-calls (agent.ts: shared agent turn)
+  src/clipboard/ saved clipboard entries + the credential screen (screening.ts)
   src/telegram/ Telegram remote-control bot (long-poll loop, slash commands, chat→session map)
   src/tasks/    daily/weekly work tracking
   src/events/   local on-device event log (action trail; reconciled to memory later)
@@ -359,3 +389,6 @@ How the stream behaves:
   background; re-summoning resumes the same session. The agent can call
   `request_attention` to raise a nav-rail badge and an OS notification when it needs
   you. Any view contributes context by calling the `useOmniChatContext` hook.
+- **Control + Shift + V** — summon the **clipboard palette** from anywhere: search
+  your saved snippets and this run's clipboard history, Enter to copy, Esc to
+  close. See "Clipboard" above for what it refuses to store.

@@ -7,6 +7,7 @@ import AttentionAutoClear from "./components/attention/AttentionAutoClear";
 import AttentionPanel from "./components/attention/AttentionPanel";
 import ChatPanel from "./components/ChatPanel";
 import CalendarView from "./components/calendar/CalendarView";
+import ClipboardPalette from "./components/clipboard/ClipboardPalette";
 import Dashboard from "./components/Dashboard";
 import IssuesPanel from "./components/IssuesPanel";
 import MemoryPanel from "./components/MemoryPanel";
@@ -28,6 +29,7 @@ import WorkspacesPanel from "./components/WorkspacesPanel";
 import { type Alarm, onAlarmFired } from "./lib/alarms";
 import type { AttentionItem } from "./lib/attention";
 import { markAttention } from "./lib/attentionStore";
+import { onClipboardSummon } from "./lib/clipboard";
 import type { IssueSummary } from "./lib/issues/types";
 import {
   type NewWorkspaceRequest,
@@ -54,6 +56,7 @@ export default function App() {
     localStorage.setItem("yarvis.activeTab", tab);
   }, [tab]);
   const [omniChatOpen, setOmniChatOpen] = useState(false);
+  const [clipboardOpen, setClipboardOpen] = useState(false);
   const [attention, setAttention] = useState<string | null>(null);
   const [attentionPanelOpen, setAttentionPanelOpen] = useState(false);
   const [wip, setWip] = useState<WipItem[]>([]);
@@ -265,12 +268,21 @@ export default function App() {
     return () => unlisten?.();
   }, [openOmniChat]);
 
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    onClipboardSummon(() => setClipboardOpen(true)).then((u) => {
+      unlisten = u;
+    });
+    return () => unlisten?.();
+  }, []);
+
   return (
     <>
       <AppShell
         tab={tab}
         onTabChange={setTab}
         onOpenOmniChat={openOmniChat}
+        onOpenClipboard={() => setClipboardOpen(true)}
         onOpenAttention={openAttentionPanel}
         attentionPending={attention !== null}
       >
@@ -324,6 +336,8 @@ export default function App() {
         onClose={() => setOmniChatOpen(false)}
         onAttention={handleAttention}
       />
+
+      <ClipboardPalette open={clipboardOpen} onClose={() => setClipboardOpen(false)} />
 
       <AttentionPanel
         open={attentionPanelOpen}
