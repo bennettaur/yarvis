@@ -41,6 +41,8 @@ const API_VERSION = "7.1";
 // policy/evaluations is exposed only under a preview version and 400s on the GA
 // version, so that one call overrides the default.
 const POLICY_API_VERSION = "7.1-preview.1";
+// Code search is a separate service on its own host, still preview-only.
+const SEARCH_API_VERSION = "7.1-preview.1";
 
 // Azure comment/thread enum values used when posting a thread.
 const COMMENT_TYPE_TEXT = 1;
@@ -204,7 +206,7 @@ export interface AzureBranchPr {
  * `parseRepoRemote` derives a clone URL's org is what lets the poller's
  * cross-org comparison line up for both forms.
  */
-function orgFromOrgUrl(orgUrl: string): string {
+export function orgFromOrgUrl(orgUrl: string): string {
   try {
     const url = new URL(orgUrl);
     if (url.hostname.endsWith(".visualstudio.com")) return url.hostname.split(".")[0] ?? "";
@@ -432,6 +434,7 @@ export class AzureDevOpsClient {
       author: pr.createdBy?.displayName ?? "",
       baseRef: (pr.targetRefName ?? "").replace("refs/heads/", ""),
       headRef: (pr.sourceRefName ?? "").replace("refs/heads/", ""),
+      headSha: pr.lastMergeSourceCommit?.commitId ?? "",
       additions: 0,
       deletions: 0,
       mergeable: mapMergeStatus(pr.mergeStatus).enum,
@@ -510,6 +513,81 @@ export class AzureDevOpsClient {
         deletions: 0,
         patch: null,
       }));
+  }
+
+  /**
+   * A file's full text at a commit, for showing the unchanged code around a
+   * hunk. A missing path resolves to empty, matching how the diff builder
+   * already treats a file that exists on only one side of the change.
+   */
+  fileContent(ref: AzureRef, path: string, commit: string): Promise<string> {
+    return this.itemContent(this.repoBase(ref), `/${path.replace(/^\//, "")}`, commit);
+  }
+
+  /**
+   * Entries directly under a directory at a commit. Azure returns the directory
+   * itself as the first entry of the listing, so it is filtered back out.
+   */
+  async listDir(
+    ref: AzureRef,
+    path: string,
+    commit: string,
+  ): Promise<{ path: string; type: string }[]> {
+    const scope = `/${path.replace(/^\/+|\/+$/g, "")}`;
+    const url =
+      `${this.repoBase(ref)}/items?scopePath=${encodeURIComponent(scope)}` +
+      `&recursionLevel=OneLevel&versionDescriptor.version=${encodeURIComponent(commit)}` +
+      `&versionDescriptor.versionType=commit`;
+    const res = await this.fetchImpl(this.withVersion(url, API_VERSION), {
+      headers: { Authorization: this.authHeader(), Accept: "application/json" },
+    });
+    if (res.status === 404) return [];
+    if (!res.ok) throw new Error(`azure GET items ${scope} -> ${res.status}`);
+    const body = (await res.json()) as { value?: { path?: string; isFolder?: boolean }[] };
+    return (body.value ?? [])
+      .filter((item) => item.path && item.path !== scope)
+      .map((item) => ({
+        path: (item.path ?? "").replace(/^\//, ""),
+        type: item.isFolder ? "dir" : "file",
+      }));
+  }
+
+  /**
+   * Repo-scoped code search.
+   *
+   * This is the only call that leaves `dev.azure.com` — code search lives on a
+   * separate `almsearch` host and is provided by an extension that an
+   * organization may simply not have installed. Rather than failing the whole
+   * agent run over a capability that is optional by design, an unavailable
+   * search resolves to null and the caller reports it as such.
+   */
+  async searchCode(ref: AzureRef, query: string, limit = 10): Promise<{ path: string }[] | null> {
+    const host = this.orgUrl.replace("https://dev.azure.com", "https://almsearch.dev.azure.com");
+    const url = this.withVersion(
+      `${host}/${encodeURIComponent(ref.project)}/_apis/search/codesearchresults`,
+      SEARCH_API_VERSION,
+    );
+    const res = await this.fetchImpl(url, {
+      method: "POST",
+      headers: {
+        Authorization: this.authHeader(),
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        searchText: query,
+        $top: limit,
+        filters: { Repository: [ref.repo] },
+      }),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { results?: { path?: string }[] };
+    // Azure reports matches as character offsets into the file rather than as
+    // text, so there is no snippet to hand back without fetching each hit —
+    // paths only, and the caller reads the ones it cares about.
+    return (body.results ?? []).map((hit) => ({
+      path: (hit.path ?? "").replace(/^\//, ""),
+    }));
   }
 
   /** Builds one file's unified diff between the PR's base and head commits. */

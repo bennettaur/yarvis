@@ -4,6 +4,54 @@
  * the frontend renders a single PR review view regardless of source.
  */
 
+/**
+ * Discriminated PR identity, deliberately identical to the frontend's `PrRef`
+ * so both sides derive the same {@link refKey} for the same pull request.
+ *
+ * The Azure routes don't receive an organization — the sidecar binds it from
+ * configuration — so a route builds the ref by pairing the path parameters with
+ * the configured org.
+ */
+export type PrRef =
+  | { provider: "github"; owner: string; repo: string; number: number }
+  | { provider: "azure"; org: string; project: string; repo: string; prId: number };
+
+/**
+ * Stable identity string. Must stay byte-for-byte in step with the frontend's
+ * `refKey`: rows keyed by it are written by one side and read by the other.
+ */
+export function refKey(ref: PrRef): string {
+  return ref.provider === "github"
+    ? `gh:${ref.owner}/${ref.repo}/${ref.number}`
+    : `az:${ref.org}/${ref.project}/${ref.repo}/${ref.prId}`;
+}
+
+/**
+ * Rebuilds a ref from a stored {@link refKey}, for rows that carry the key
+ * rather than the parts — an insight, say, that needs to be posted back to the
+ * pull request it came from.
+ *
+ * Splitting on `/` is safe because every component is validated to exclude it
+ * before a key is ever written. Returns null on anything that doesn't parse
+ * rather than a half-built ref, so a malformed row fails where it is read
+ * instead of somewhere downstream.
+ */
+export function parseRefKey(key: string): PrRef | null {
+  const [prefix, ...rest] = key.split(":");
+  const parts = rest.join(":").split("/");
+  if (prefix === "gh" && parts.length === 3) {
+    const number = Number(parts[2]);
+    if (!parts[0] || !parts[1] || !Number.isInteger(number)) return null;
+    return { provider: "github", owner: parts[0], repo: parts[1], number };
+  }
+  if (prefix === "az" && parts.length === 4) {
+    const prId = Number(parts[3]);
+    if (!parts[0] || !parts[1] || !parts[2] || !Number.isInteger(prId)) return null;
+    return { provider: "azure", org: parts[0], project: parts[1], repo: parts[2], prId };
+  }
+  return null;
+}
+
 export interface PrSummary {
   number: number;
   title: string;
@@ -107,6 +155,13 @@ export interface PrDetail {
   author: string;
   baseRef: string;
   headRef: string;
+  /**
+   * Commit the PR currently points at. Anchors anything derived from the code
+   * as it stands right now — expanded file context, generated review material —
+   * so a later push can be detected as having moved the ground underneath it.
+   * Empty when the provider hasn't reported one yet.
+   */
+  headSha: string;
   additions: number;
   deletions: number;
   /** GraphQL/Azure mergeable enum: "MERGEABLE" | "CONFLICTING" | "UNKNOWN". */
