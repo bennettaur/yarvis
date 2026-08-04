@@ -1,4 +1,6 @@
-import { afterAll, describe, expect, it, mock } from "bun:test";
+import { afterAll, describe, expect, it, spyOn } from "bun:test";
+import * as api from "../api";
+import { deletePrGuide, fetchPrGuide, setPrGuideProgress } from "./guide";
 import type { PrRef } from "./types";
 
 /**
@@ -7,21 +9,20 @@ import type { PrRef } from "./types";
  * the two have to agree field for field or a read silently 400s.
  */
 const calls: { path: string; init?: RequestInit }[] = [];
-mock.module("../api", () => ({
-  sidecarFetch: async (path: string, init?: RequestInit) => {
+
+// A spy, not `mock.module`: that patches the `../api` namespace for the rest of
+// the process — and `mock.restore()` does not undo it — so a stub registered
+// here would go on answering for every file loaded afterwards. Only the
+// transport is replaced, which leaves the real `ensureOk` guarding these calls.
+const sidecarFetch = spyOn(api, "sidecarFetch").mockImplementation(
+  async (path: string, init?: RequestInit) => {
     calls.push({ path, init });
     return new Response(JSON.stringify({ guide: null, deleted: true }), { status: 200 });
   },
-  ensureOk: async () => {},
-}));
+);
 
-const { deletePrGuide, fetchPrGuide, setPrGuideProgress } = await import("./guide");
-
-// `mock.module` replaces the whole namespace for the rest of the process, so
-// without this every file loaded after this one sees a `../api` reduced to two
-// stubbed exports — and a `sidecarFetch` that answers every path with a guide.
 afterAll(() => {
-  mock.restore();
+  sidecarFetch.mockRestore();
 });
 
 const ghRef: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 7 };
