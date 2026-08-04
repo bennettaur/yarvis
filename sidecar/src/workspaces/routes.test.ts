@@ -7,7 +7,13 @@ import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import { issueLinks, tasks, workspaceRepoPr, workspaceRepos } from "../db/schema.ts";
+import {
+  attentionItems,
+  issueLinks,
+  tasks,
+  workspaceRepoPr,
+  workspaceRepos,
+} from "../db/schema.ts";
 import type { GitRunner } from "./git.ts";
 import {
   archiveWorkspace,
@@ -87,6 +93,14 @@ async function addRepo(cloneUrl = "git@github.com:acme/widget.git"): Promise<{ i
   });
   return (await res.json()) as { id: string };
 }
+
+/** Refuses a worktree removal until it's forced, as a dirty worktree does. */
+const dirtyGit: GitRunner = async (args, opts) => {
+  if (args[0] === "worktree" && args[1] === "remove" && !args.includes("--force")) {
+    return { stdout: "", stderr: "worktree contains modified files", exitCode: 1 };
+  }
+  return fakeGit(args, opts);
+};
 
 /** Polls a workspace the way a client does, for work finishing in the
  *  background (an archive's worktree teardown). */
@@ -875,14 +889,6 @@ describe("provision + archive (injected git runner)", () => {
     const ws = await createWorkspace(db, config, { name: "dirty", repoIds: [repo.id] });
     await provisionWorkspace(db, ws.id, () => {}, fakeGit);
 
-    // Refuses the removal until it's forced, as a dirty worktree does.
-    const dirtyGit: GitRunner = async (args, opts) => {
-      if (args[0] === "worktree" && args[1] === "remove" && !args.includes("--force")) {
-        return { stdout: "", stderr: "worktree contains modified files", exitCode: 1 };
-      }
-      return fakeGit(args, opts);
-    };
-
     await startArchiveWorkspace(db, ws.id, {}, dirtyGit);
     const blocked = await waitForError(ws.id);
     expect(blocked.status).toBe("archiving");
@@ -893,6 +899,49 @@ describe("provision + archive (injected git runner)", () => {
     // Cleared, so a poller can read `archiving` + no error as "still running".
     expect(after.error).toBeNull();
     expect(after.repos[0]?.status).toBe("removed");
+  });
+
+  it("flags a blocked archive on the attention stream", async () => {
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "needs-me", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+
+    await startArchiveWorkspace(db, ws.id, {}, dirtyGit);
+    await waitForError(ws.id);
+
+    const [item] = await db
+      .select()
+      .from(attentionItems)
+      .where(eq(attentionItems.workspaceId, ws.id));
+    expect(item?.kind).toBe("error");
+    expect(item?.status).toBe("pending");
+    expect(item?.title).toBe("needs-me");
+    expect(item?.body).toContain("worktree contains modified files");
+    // Session-less, so opening the workspace clears it; the target lands there.
+    expect(item?.sessionKey).toBeNull();
+    expect(item?.navTarget).toEqual({ type: "workspace", workspaceId: ws.id });
+  });
+
+  it("resolves the workspace's pending attention once the archive lands", async () => {
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "quiet", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await db.insert(attentionItems).values({
+      source: "claude-hook",
+      sessionKey: `ws-claude:${ws.id}`,
+      workspaceId: ws.id,
+      kind: "idle",
+      title: "quiet",
+    });
+
+    await startArchiveWorkspace(db, ws.id, {}, fakeGit);
+    await waitForStatus(ws.id, "archived");
+
+    const [item] = await db
+      .select()
+      .from(attentionItems)
+      .where(eq(attentionItems.workspaceId, ws.id));
+    expect(item?.status).toBe("resolved");
   });
 
   it("completes a linked task when the workspace is fully archived", async () => {
