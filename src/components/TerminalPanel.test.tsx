@@ -17,7 +17,14 @@ const writes: string[] = [];
 let resizeCalls = 0;
 let ptyOutput: ((bytes: Uint8Array) => void) | null = null;
 
+// A module mock replaces `lib/pty` for the whole test run, including files that
+// only reach it transitively (e.g. the terminal tabs under WorkspacesPanel), so
+// the real exports are spread back in — a partial stub makes those files fail to
+// link on an export this file doesn't need.
+const realPty = await import("../lib/pty");
+
 mock.module("../lib/pty", () => ({
+  ...realPty,
   attachPty: async () => scrollbackToReturn,
   writePty: async (_id: string, data: string) => {
     writes.push(data);
