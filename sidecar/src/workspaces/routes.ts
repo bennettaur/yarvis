@@ -4,7 +4,6 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import {
-  archiveWorkspace,
   createRepo,
   createWorkspace,
   deleteRepo,
@@ -18,6 +17,7 @@ import {
   listWorkspaces,
   type ProvisionEvent,
   provisionWorkspace,
+  startArchiveWorkspace,
   unlinkIssue,
   unlinkTask,
   updateRepo,
@@ -322,12 +322,15 @@ export function createWorkspaceRoutes(config: Config): Hono {
     }
   });
 
+  // Starts the archive and returns once the workspace reads `archiving`; the
+  // worktree teardown continues in the background so the UI isn't blocked on
+  // it. Clients poll GET /:id for the outcome.
   router.post("/:id/archive", async (c) => {
     const body = await c.req.json().catch(() => ({}));
     const parsed = archiveSchema.safeParse(body ?? {});
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
-      return c.json(await archiveWorkspace(db(), c.req.param("id"), parsed.data));
+      return c.json(await startArchiveWorkspace(db(), c.req.param("id"), parsed.data), 202);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
     }

@@ -5,6 +5,7 @@ process.env.TZ = "America/Toronto";
 
 import { mock } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { nativeInvoke } from "./nativeInvoke";
 
 /**
  * Frontend test setup, preloaded for every `bun test` run under src/ (see
@@ -18,11 +19,7 @@ if (!("happyDOM" in globalThis)) {
   GlobalRegistrator.register();
 }
 
-mock.module("@tauri-apps/api/core", () => ({
-  // Default native command responses; list_alarms returns an empty list so
-  // alarm-aware components render without any alarms set.
-  invoke: async (command: string) => (command === "list_alarms" ? [] : undefined),
-}));
+mock.module("@tauri-apps/api/core", () => ({ invoke: nativeInvoke }));
 
 mock.module("@tauri-apps/api/event", () => ({
   // No events fire in tests; return a no-op unlisten.

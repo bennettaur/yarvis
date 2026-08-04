@@ -100,6 +100,11 @@ function groupWorkspaces(items: WorkspaceSummary[]): Group[] {
 const SELECTED_WORKSPACE_KEY = "yarvis.workspaces.selectedId";
 const SHOW_ARCHIVED_KEY = "yarvis.workspaces.showArchived";
 
+/** Cadence used while a workspace is mid-archive: the teardown runs in the
+ *  sidecar's background, so both the list and the open workspace lean on
+ *  polling to notice it landed. */
+const ARCHIVING_REFRESH_INTERVAL_MS = 2_000;
+
 /** Where a workspace's agent session runs: always the workspace root, so the
  *  agent sees each repo's worktree as a subfolder and can read the
  *  `.yarvis/issue-prompt.md` seeded there for an issue "Start work" session. */
@@ -205,6 +210,21 @@ export default function WorkspacesPanel({
     if (showArchived) localStorage.setItem(SHOW_ARCHIVED_KEY, "1");
     else localStorage.removeItem(SHOW_ARCHIVED_KEY);
   }, [showArchived]);
+
+  // An archive finishes in the sidecar's background, so keep the list in step
+  // while one is in flight — including when the user has moved on to another
+  // workspace, which leaves nothing else polling for it. `archiving` with no
+  // error is a teardown still running; one that stopped on a dirty worktree
+  // carries the error and waits on the user, so it stops the polling.
+  const archivingCount = useMemo(
+    () => items.filter((w) => w.status === "archiving" && w.error === null).length,
+    [items],
+  );
+  useEffect(() => {
+    if (archivingCount === 0) return;
+    const timer = setInterval(() => void refresh(), ARCHIVING_REFRESH_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [archivingCount, refresh]);
 
   // A selected workspace missing from the list is usually one created since the
   // last fetch — the create and "Start work" flows select it immediately, while
@@ -764,6 +784,13 @@ function WorkspaceDetailView({
   // load() from a previous selection won't overwrite the new one's detail.
   // Capture the current value at call time; compare on resolve.
   const generationRef = useRef(0);
+  // The last status this view saw, so a change the poll discovers can be pushed
+  // to the parent list. Null until the first load resolves.
+  const statusRef = useRef<WorkspaceStatus | null>(null);
+  // Whether a teardown is still running (as opposed to parked on a dirty
+  // worktree). Drives the poll's cadence, so it's state rather than a ref: the
+  // loop has to restart at the faster tempo the moment an archive starts.
+  const [archiveRunning, setArchiveRunning] = useState(false);
   // Draggable split sizes, shared across all workspaces (one preference, not
   // per-id) so a size you like sticks as you move between workspaces.
   const [sideRatio, setSideRatio] = usePersistedRatio("yarvis.workspaces.sideRatio", 0.72);
@@ -776,18 +803,26 @@ function WorkspaceDetailView({
       if (gen !== generationRef.current) return;
       setDetail(next);
       setError(null);
+      // A status the poll picked up on its own — a background archive landing,
+      // say — also has to reach the sidebar's list row.
+      if (next && statusRef.current !== null && next.status !== statusRef.current) {
+        onChanged();
+      }
+      statusRef.current = next?.status ?? null;
+      setArchiveRunning(next?.status === "archiving" && next.error === null);
     } catch (e) {
       if (gen !== generationRef.current) return;
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [id]);
+  }, [id, onChanged]);
 
   // Initial fetch + polling combined: chained setTimeout in `finally` ensures a
   // slow load doesn't overlap the next tick (the setInterval shape did). Each
   // mount/id change increments the generation so any still-resolving call from
   // the previous run is dropped at write time (see `load` above). Skipped while
   // the tab is hidden so a backgrounded app isn't hitting the sidecar; on
-  // return we fire one immediate load and resume.
+  // return we fire one immediate load and resume. A running background archive
+  // restarts the loop at a faster cadence so it lands without a manual reload.
   useEffect(() => {
     generationRef.current += 1;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -796,7 +831,10 @@ function WorkspaceDetailView({
     const tick = async () => {
       await load();
       if (live && !document.hidden) {
-        timer = setTimeout(tick, DETAIL_REFRESH_INTERVAL_MS);
+        timer = setTimeout(
+          tick,
+          archiveRunning ? ARCHIVING_REFRESH_INTERVAL_MS : DETAIL_REFRESH_INTERVAL_MS,
+        );
       }
     };
     const onVisibility = () => {
@@ -813,7 +851,7 @@ function WorkspaceDetailView({
       if (timer !== null) clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [load]);
+  }, [load, archiveRunning]);
 
   // Poll whether an agent session is live in the core, so the workspace can
   // surface it as a pinned terminal tab — whether it was started here, by the
@@ -970,6 +1008,14 @@ function WorkspaceDetailView({
 
   const provisioned = detail.status === "active";
   const agentCwd = agentCwdForWorkspace(detail);
+  // A background teardown that couldn't remove a worktree parks the workspace
+  // in `archiving` with the failure recorded, so the button becomes the retry.
+  const archiveBlocked = detail.status === "archiving" && detail.error !== null;
+  const archiveLabel = archiveBlocked
+    ? "Retry archive"
+    : detail.status === "archiving"
+      ? "Archiving…"
+      : "Archive";
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
@@ -996,7 +1042,7 @@ function WorkspaceDetailView({
               onClick={() => setShowArchive(true)}
               className="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
             >
-              Archive
+              {archiveLabel}
             </button>
           )}
         </div>
@@ -1150,6 +1196,8 @@ function WorkspaceDetailView({
           onClose={() => setShowArchive(false)}
           onArchived={async () => {
             setShowArchive(false);
+            // Only the teardown's start is awaited; load() picks up `archiving`
+            // and the poll notices when the background removal lands.
             await load();
             onChanged();
           }}
