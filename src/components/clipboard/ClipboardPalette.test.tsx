@@ -1,6 +1,7 @@
 import { describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import type { ClipboardEntry } from "../../lib/clipboard";
+import { nativeInvoke } from "../../test/nativeInvoke";
 import { renderToHtml } from "../../test/render";
 import ClipboardPalette from "./ClipboardPalette";
 
@@ -24,8 +25,12 @@ const HISTORY = [
   { id: "clip-1", text: "AKIAIOSFODNN7EXAMPLE", capturedAtMs: 1_780_000_000_000 },
 ];
 
+// A module mock replaces `@tauri-apps/api/core` for the whole run, so anything
+// this file doesn't answer delegates to the shared defaults rather than
+// returning undefined to a suite that runs after it.
 mock.module("@tauri-apps/api/core", () => ({
-  invoke: async (command: string) => (command === "clipboard_history" ? HISTORY : undefined),
+  invoke: async (command: string) =>
+    command === "clipboard_history" ? HISTORY : nativeInvoke(command),
 }));
 
 mock.module("../../lib/api", () => ({
