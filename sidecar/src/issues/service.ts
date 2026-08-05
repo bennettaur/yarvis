@@ -100,8 +100,10 @@ export function sanitizeIssueText(text: string): string {
       .replace(/<!--|--!?>/g, "");
   } while (withoutComments !== previous);
 
+  const fullySanitized = withoutComments.replace(/<!--/g, "").replace(/--!?>/g, "");
+
   return (
-    withoutComments
+    fullySanitized
       // Trailing whitespace (not newlines) and runs of blank lines.
       .replace(/[^\S\n]+$/gm, "")
       .replace(/\n{3,}/g, "\n\n")
