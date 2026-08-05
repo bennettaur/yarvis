@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { issueDetail, updateIssue } from "../../lib/issues/api";
 import type { IssueDetail, IssueSummary, IssueUpdateInput } from "../../lib/issues/types";
-import { useGithubStartWork } from "../../lib/issues/useStartWork";
+import { useGithubStartWork } from "../../lib/issues/useGithubStartWork";
 import { formatRelativeTime } from "../../lib/time";
 import { openExternal } from "../../lib/url";
 import Markdown from "../Markdown";
@@ -136,7 +136,9 @@ export default function IssueDetailView({
             <button
               type="button"
               onClick={() => void startFlow.start(summary, { title, body: detail?.body })}
-              disabled={starting}
+              // Gated on `detail` so the prompt is built from the body the user
+              // has in front of them, not one fetched behind their back.
+              disabled={starting || !detail}
               className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium hover:bg-indigo-500 disabled:opacity-50"
             >
               {starting ? "Starting…" : "Start work"}
@@ -210,9 +212,10 @@ export default function IssueDetailView({
               ))}
             </div>
           )}
-          {(error ?? startFlow.error) && (
-            <p className="text-sm text-red-400">{error ?? startFlow.error}</p>
-          )}
+          {error && <p className="text-sm text-red-400">{error}</p>}
+          {/* Separate from the edit error: a stale failed edit must not hide the
+              failure of the start the user just clicked. */}
+          {startFlow.error && <p className="text-sm text-red-400">{startFlow.error}</p>}
 
           <section>
             <div className="mb-2 flex items-center gap-2">

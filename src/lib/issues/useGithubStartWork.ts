@@ -26,7 +26,8 @@ export function useGithubStartWork(onStarted?: () => void): GithubStartWorkFlow 
 
   const start = useCallback(
     async (issue: IssueSummary, known?: { title?: string; body?: string }) => {
-      setStartingKey(issueKey(issue.provider, issue.sourceKey, issue.externalId));
+      const key = issueKey(issue.provider, issue.sourceKey, issue.externalId);
+      setStartingKey(key);
       setError(null);
       setWarnings([]);
       try {
@@ -51,7 +52,9 @@ export function useGithubStartWork(onStarted?: () => void): GithubStartWorkFlow 
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
-        setStartingKey(null);
+        // Other rows stay clickable while one starts, so only clear the busy
+        // marker if a later start hasn't already claimed it.
+        setStartingKey((current) => (current === key ? null : current));
       }
     },
     [onStarted],

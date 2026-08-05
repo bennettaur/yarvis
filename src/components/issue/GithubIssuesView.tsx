@@ -19,7 +19,7 @@ import {
   type IssueSummary,
   issueKey,
 } from "../../lib/issues/types";
-import { useGithubStartWork } from "../../lib/issues/useStartWork";
+import { useGithubStartWork } from "../../lib/issues/useGithubStartWork";
 import { useOmniChatContext } from "../../lib/omniChatContext";
 import { formatRelativeTime } from "../../lib/time";
 import { openExternal } from "../../lib/url";
@@ -73,7 +73,7 @@ function IssueRow({
   issue,
   starred,
   link,
-  starting,
+  busy,
   onToggleStar,
   onOpen,
   onStartWork,
@@ -81,7 +81,7 @@ function IssueRow({
   issue: IssueSummary;
   starred: boolean;
   link: IssueLink | undefined;
-  starting: boolean;
+  busy: boolean;
   onToggleStar: (issue: IssueSummary, starred: boolean) => void;
   onOpen: (issue: IssueSummary) => void;
   onStartWork: (issue: IssueSummary) => void;
@@ -119,7 +119,7 @@ function IssueRow({
         </span>
       )}
       <StartWorkButton
-        starting={starting}
+        busy={busy}
         label="Start work on this issue"
         onStart={(e) => {
           e.stopPropagation();
@@ -177,7 +177,7 @@ function IssueGroupedList({
                 issue={issue}
                 starred={isStarred(issue)}
                 link={linkFor(issue)}
-                starting={isStarting(issue)}
+                busy={isStarting(issue)}
                 onToggleStar={onToggleStar}
                 onOpen={onOpen}
                 onStartWork={onStartWork}
@@ -464,16 +464,10 @@ export default function GithubIssuesView({
           </div>
         )}
 
-        {startFlow.warnings.length > 0 && (
-          <div className="rounded-lg border border-amber-900/60 bg-amber-950/30 p-3 text-xs text-amber-300">
-            {startFlow.warnings.map((w) => (
-              <p key={w}>{w}</p>
-            ))}
-          </div>
-        )}
-        {(error ?? startFlow.error) && (
-          <p className="text-sm text-red-400">{error ?? startFlow.error}</p>
-        )}
+        {error && <p className="text-sm text-red-400">{error}</p>}
+        {/* Separate from the list error: a stale failed refresh must not hide
+            the failure of the start the user just clicked. */}
+        {startFlow.error && <p className="text-sm text-red-400">{startFlow.error}</p>}
       </div>
 
       {creating && (

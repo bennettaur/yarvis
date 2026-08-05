@@ -6,11 +6,12 @@ import type { MouseEvent } from "react";
  * control so the two read as the same action.
  */
 export default function StartWorkButton({
-  starting,
+  busy,
   label,
   onStart,
 }: {
-  starting: boolean;
+  /** True from the click until the flow hands off (JIRA: until its picker closes). */
+  busy: boolean;
   /** Accessible name; the surrounding row is a click target of its own. */
   label: string;
   onStart: (e: MouseEvent<HTMLButtonElement>) => void;
@@ -19,11 +20,11 @@ export default function StartWorkButton({
     <button
       type="button"
       onClick={onStart}
-      disabled={starting}
+      disabled={busy}
       aria-label={label}
       title="Start work"
       className={`flex h-5 w-5 shrink-0 items-center justify-center rounded hover:text-indigo-300 disabled:opacity-50 ${
-        starting ? "animate-pulse text-indigo-300" : "text-zinc-600"
+        busy ? "animate-pulse text-indigo-300" : "text-zinc-600"
       }`}
     >
       <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" aria-hidden="true">

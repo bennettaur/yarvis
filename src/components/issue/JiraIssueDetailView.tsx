@@ -9,7 +9,7 @@ import {
   jiraUpdateFields,
 } from "../../lib/jira/api";
 import type { JiraIssueDetail, JiraUser } from "../../lib/jira/types";
-import { useJiraStartWork } from "../../lib/jira/useStartWork";
+import { useJiraStartWork } from "../../lib/jira/useJiraStartWork";
 import { formatRelativeTime } from "../../lib/time";
 import { openExternal } from "../../lib/url";
 import Markdown from "../Markdown";
@@ -278,7 +278,7 @@ export default function JiraIssueDetailView({
             </button>
             <button
               type="button"
-              onClick={() => detail && void startFlow.open(key, detail)}
+              onClick={() => detail && startFlow.startWithDetail(detail)}
               disabled={startFlow.starting || !detail}
               className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium hover:bg-indigo-500 disabled:opacity-50"
             >
@@ -444,8 +444,11 @@ export default function JiraIssueDetailView({
               ))}
             </div>
           )}
-          {(error ?? startFlow.error) && (
-            <p className="text-sm text-red-400">{error ?? startFlow.error}</p>
+          {error && <p className="text-sm text-red-400">{error}</p>}
+          {/* Separate from the field-edit error, and only while no picker is
+              open: the dialog renders its own start failures on top of this. */}
+          {!startFlow.pending && startFlow.error && (
+            <p className="text-sm text-red-400">{startFlow.error}</p>
           )}
 
           {/* Description */}
@@ -573,6 +576,7 @@ export default function JiraIssueDetailView({
           issueKey={startFlow.pending.displayId}
           transitions={startFlow.pending.transitions}
           busy={startFlow.starting}
+          startError={startFlow.error}
           onConfirm={(choice) => void startFlow.confirm(choice)}
           onClose={startFlow.cancel}
         />

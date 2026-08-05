@@ -16,7 +16,7 @@ import {
   issueKey,
 } from "../../lib/issues/types";
 import { jiraAssigned, jiraCreated, jiraSearch, jiraViewer } from "../../lib/jira/api";
-import { useJiraStartWork } from "../../lib/jira/useStartWork";
+import { useJiraStartWork } from "../../lib/jira/useJiraStartWork";
 import { useOmniChatContext } from "../../lib/omniChatContext";
 import { openExternal } from "../../lib/url";
 import JiraCreateIssueModal from "./JiraCreateIssueModal";
@@ -85,7 +85,7 @@ function JiraIssueRow({
   issue,
   starred,
   link,
-  starting,
+  busy,
   onToggleStar,
   onOpen,
   onStartWork,
@@ -93,7 +93,7 @@ function JiraIssueRow({
   issue: IssueSummary;
   starred: boolean;
   link: IssueLink | undefined;
-  starting: boolean;
+  busy: boolean;
   onToggleStar: (issue: IssueSummary, starred: boolean) => void;
   onOpen: (issue: IssueSummary) => void;
   onStartWork: (issue: IssueSummary) => void;
@@ -139,7 +139,7 @@ function JiraIssueRow({
         </span>
       )}
       <StartWorkButton
-        starting={starting}
+        busy={busy}
         label="Start work on this ticket"
         onStart={(e) => {
           e.stopPropagation();
@@ -203,7 +203,7 @@ function GroupedList({
                       issue={issue}
                       starred={isStarred(issue)}
                       link={linkFor(issue)}
-                      starting={isStarting(issue)}
+                      busy={isStarting(issue)}
                       onToggleStar={onToggleStar}
                       onOpen={onOpen}
                       onStartWork={onStartWork}
@@ -343,8 +343,8 @@ export default function JiraIssuesView() {
   );
 
   const startFlow = useJiraStartWork(loadLinks);
-  // The picker stays open while its ticket's detail loads, so a row counts as
-  // busy from the click until the dialog can show that ticket's transitions.
+  // A row counts as busy from the click until the picker closes: first while
+  // its detail loads, then while the dialog shows that ticket's transitions.
   const isStarting = useCallback(
     (issue: IssueSummary) =>
       startFlow.preparingKey === issue.externalId ||
@@ -352,8 +352,17 @@ export default function JiraIssuesView() {
     [startFlow.preparingKey, startFlow.pending],
   );
   const onStartWork = useCallback(
-    (issue: IssueSummary) => void startFlow.open(issue.externalId),
-    [startFlow.open],
+    (issue: IssueSummary) => void startFlow.start(issue.externalId),
+    [startFlow.start],
+  );
+  // Opening a ticket abandons a start begun on another row — otherwise its
+  // detail lands unseen and the picker springs open on the way back.
+  const onOpen = useCallback(
+    (issue: IssueSummary) => {
+      startFlow.cancel();
+      setSelected(issue);
+    },
+    [startFlow.cancel],
   );
 
   const runSearch = useCallback(async (jql: string) => {
@@ -418,14 +427,7 @@ export default function JiraIssuesView() {
     );
   }
 
-  const listProps = {
-    isStarred,
-    linkFor,
-    isStarting,
-    onToggleStar,
-    onOpen: setSelected,
-    onStartWork,
-  };
+  const listProps = { isStarred, linkFor, isStarting, onToggleStar, onOpen, onStartWork };
 
   return (
     <div className="h-full overflow-y-auto p-6">
@@ -559,15 +561,11 @@ export default function JiraIssuesView() {
           </div>
         )}
 
-        {startFlow.warnings.length > 0 && (
-          <div className="rounded-lg border border-amber-900/60 bg-amber-950/30 p-3 text-xs text-amber-300">
-            {startFlow.warnings.map((w) => (
-              <p key={w}>{w}</p>
-            ))}
-          </div>
-        )}
-        {(error ?? startFlow.error) && (
-          <p className="text-sm text-red-400">{error ?? startFlow.error}</p>
+        {error && <p className="text-sm text-red-400">{error}</p>}
+        {/* Separate from the list error, and only while no picker is open: the
+            dialog renders its own start failures on top of this view. */}
+        {!startFlow.pending && startFlow.error && (
+          <p className="text-sm text-red-400">{startFlow.error}</p>
         )}
       </div>
 
@@ -577,6 +575,7 @@ export default function JiraIssuesView() {
           issueKey={startFlow.pending.displayId}
           transitions={startFlow.pending.transitions}
           busy={startFlow.starting}
+          startError={startFlow.error}
           onConfirm={(choice) => void startFlow.confirm(choice)}
           onClose={startFlow.cancel}
         />

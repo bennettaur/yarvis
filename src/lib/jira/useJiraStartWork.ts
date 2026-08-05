@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { requestOpenWorkspace } from "../nav";
 import { jiraIssueDetail, jiraStartWork } from "./api";
 import type { JiraIssueDetail, StartWorkChoice } from "./types";
@@ -12,16 +12,19 @@ export interface JiraStartWorkFlow {
   starting: boolean;
   error: string | null;
   warnings: string[];
-  open: (key: string, known?: JiraIssueDetail) => Promise<void>;
+  /** Starts from a list row, which carries only a summary. */
+  start: (key: string) => Promise<void>;
+  /** Starts from the detail view, which already holds the ticket. */
+  startWithDetail: (detail: JiraIssueDetail) => void;
   confirm: (choice: StartWorkChoice) => Promise<void>;
   cancel: () => void;
 }
 
 /**
  * The JIRA "Start work" flow, shared by the issue list rows and the detail
- * view. A JIRA ticket isn't tied to a repo, so `open` gathers the detail the
- * repo/status picker needs (transitions, body) and `confirm` runs the start
- * with what the user chose, handing off to the Workspaces tab. `onStarted`
+ * view. A JIRA ticket isn't tied to a repo, so starting first gathers what the
+ * repo/status picker needs (transitions, body); `confirm` then runs the start
+ * with what the user chose and hands off to the Workspaces tab. `onStarted`
  * fires after the link exists so the caller can refresh its in-progress badges.
  */
 export function useJiraStartWork(onStarted?: () => void): JiraStartWorkFlow {
@@ -30,23 +33,31 @@ export function useJiraStartWork(onStarted?: () => void): JiraStartWorkFlow {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
+  // The ticket the in-flight detail fetch belongs to. A fetch the user has
+  // moved on from (cancelled, or superseded by another row) must not pop the
+  // picker open when it finally lands.
+  const awaitedKey = useRef<string | null>(null);
 
-  const open = useCallback(async (key: string, known?: JiraIssueDetail) => {
+  const startWithDetail = useCallback((detail: JiraIssueDetail) => {
     setError(null);
     setWarnings([]);
-    if (known) {
-      setPending(known);
-      return;
-    }
+    setPending(detail);
+  }, []);
+
+  const start = useCallback(async (key: string) => {
+    setError(null);
+    setWarnings([]);
     // A list row carries only a summary, but the picker offers the ticket's
     // transitions and the prompt wants its description — both need detail.
     setPreparingKey(key);
+    awaitedKey.current = key;
     try {
-      setPending(await jiraIssueDetail(key));
+      const detail = await jiraIssueDetail(key);
+      if (awaitedKey.current === key) setPending(detail);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (awaitedKey.current === key) setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setPreparingKey(null);
+      setPreparingKey((current) => (current === key ? null : current));
     }
   }, []);
 
@@ -72,6 +83,8 @@ export function useJiraStartWork(onStarted?: () => void): JiraStartWorkFlow {
         onStarted?.();
         requestOpenWorkspace({ id: result.workspaceId, claudePrompt: result.prompt });
       } catch (e) {
+        // The picker stays open on failure so the repo/status choice survives a
+        // retry; it renders this error itself, since it covers the view behind.
         setError(e instanceof Error ? e.message : String(e));
       } finally {
         setStarting(false);
@@ -80,7 +93,21 @@ export function useJiraStartWork(onStarted?: () => void): JiraStartWorkFlow {
     [pending, onStarted],
   );
 
-  const cancel = useCallback(() => setPending(null), []);
+  const cancel = useCallback(() => {
+    awaitedKey.current = null;
+    setPending(null);
+    setPreparingKey(null);
+  }, []);
 
-  return { preparingKey, pending, starting, error, warnings, open, confirm, cancel };
+  return {
+    preparingKey,
+    pending,
+    starting,
+    error,
+    warnings,
+    start,
+    startWithDetail,
+    confirm,
+    cancel,
+  };
 }

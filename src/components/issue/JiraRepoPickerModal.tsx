@@ -23,6 +23,7 @@ export default function JiraRepoPickerModal({
   issueKey,
   transitions,
   busy,
+  startError,
   onConfirm,
   onClose,
 }: {
@@ -30,6 +31,8 @@ export default function JiraRepoPickerModal({
   issueKey: string;
   transitions: JiraTransition[];
   busy: boolean;
+  /** A failed start, shown here because this dialog covers the view behind it. */
+  startError: string | null;
   onConfirm: (choice: StartWorkChoice) => void;
   onClose: () => void;
 }) {
@@ -165,10 +168,14 @@ export default function JiraRepoPickerModal({
         </div>
 
         <div className="flex items-center justify-end gap-2 border-t border-zinc-800 px-5 py-3">
+          {startError && <p className="mr-auto text-xs text-red-400">{startError}</p>}
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
+            // Closing mid-start would drop the dialog while the workspace is
+            // still being created, then jump to it anyway when it lands.
+            disabled={busy}
+            className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
           >
             Cancel
           </button>
