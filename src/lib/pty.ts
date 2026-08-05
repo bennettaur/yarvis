@@ -7,13 +7,32 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
  * reattach later without losing its shell. Output and teardown arrive on
  * per-session events (`pty-output:<id>` / `pty-exit:<id>`) so a terminal only
  * receives its own bytes. Mirrors the event pattern in `lib/alarms.ts`.
+ *
+ * The snapshot and the event stream are two views of one byte stream and both
+ * carry stream offsets, so a reattaching terminal can splice them exactly — see
+ * {@link PtySnapshot}.
  */
 
+/** A session's captured output plus where that capture ends in its byte stream. */
+export interface PtySnapshot {
+  /** Raw bytes as a number array, to replay into the terminal. */
+  scrollback: number[];
+  /** Stream offset one past the last byte the capture accounts for. Exceeds
+   * `scrollback.length` once the core has trimmed the capture to its cap. */
+  endOffset: number;
+}
+
+/** A chunk of session output, tagged with where it starts in the byte stream. */
+export interface PtyOutput {
+  offset: number;
+  bytes: Uint8Array;
+}
+
 /** Attaches to session `id`, spawning a shell if it does not yet exist. Returns
- * the captured scrollback (raw bytes as a number array) to replay. `cwd` sets
- * the working directory for a freshly spawned shell (ignored on reattach). */
+ * the scrollback to replay and the offset it ends at. `cwd` sets the working
+ * directory for a freshly spawned shell (ignored on reattach). */
 export const attachPty = (id: string, cols: number, rows: number, cwd?: string) =>
-  invoke<number[]>("pty_attach", { id, cols, rows, cwd });
+  invoke<PtySnapshot>("pty_attach", { id, cols, rows, cwd });
 
 /** Sends user input to the session's shell. */
 export const writePty = (id: string, data: string) => invoke("pty_write", { id, data });
@@ -57,9 +76,11 @@ export const getAgentConfig = () => invoke<AgentConfig>("get_agent_config");
  * sessions and for platforms that can't report a foreground process group. */
 export const isPtyBusy = (id: string) => invoke<boolean>("pty_is_busy", { id });
 
-/** Subscribe to output bytes for a single session. */
-export const onPtyOutput = (id: string, cb: (bytes: Uint8Array) => void): Promise<UnlistenFn> =>
-  listen<number[]>(`pty-output:${id}`, (e) => cb(new Uint8Array(e.payload)));
+/** Subscribe to output chunks for a single session. */
+export const onPtyOutput = (id: string, cb: (chunk: PtyOutput) => void): Promise<UnlistenFn> =>
+  listen<{ offset: number; bytes: number[] }>(`pty-output:${id}`, (e) =>
+    cb({ offset: e.payload.offset, bytes: new Uint8Array(e.payload.bytes) }),
+  );
 
 /** Subscribe to the exit signal for a single session. */
 export const onPtyExit = (id: string, cb: () => void): Promise<UnlistenFn> =>

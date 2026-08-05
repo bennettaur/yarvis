@@ -18,6 +18,9 @@ const DEFAULTS: Record<string, unknown> = {
   // The core always resolves an agent with non-empty fields, and the workspace
   // view renders its name unguarded.
   get_agent_config: { name: "Claude", command: "claude --permission-mode auto" },
+  // A session with nothing captured yet. TerminalPanel destructures this to
+  // splice the replay against live output, so an `undefined` answer throws.
+  pty_attach: { scrollback: [], endOffset: 0 },
 };
 
 export const nativeInvoke = async (command: string): Promise<unknown> => DEFAULTS[command];

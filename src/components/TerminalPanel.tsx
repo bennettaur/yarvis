@@ -2,7 +2,15 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { useEffect, useId, useImperativeHandle, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
-import { attachPty, killPty, onPtyExit, onPtyOutput, resizePty, writePty } from "../lib/pty";
+import {
+  attachPty,
+  killPty,
+  onPtyExit,
+  onPtyOutput,
+  type PtyOutput,
+  resizePty,
+  writePty,
+} from "../lib/pty";
 
 /** Handle exposed via `panelRef` so a parent (e.g. TerminalTabs) can move keyboard focus into the xterm. */
 export interface TerminalPanelHandle {
@@ -127,13 +135,30 @@ export default function TerminalPanel({
     void (async () => {
       try {
         // Subscribe before attaching so output emitted between shell spawn and
-        // listener registration is buffered rather than lost. Once the
-        // scrollback replay completes we flush and switch to writing live.
+        // listener registration is buffered rather than lost. Buffering is what
+        // makes the splice below possible: the offset to write from is only known
+        // once the snapshot arrives, and writing a chunk before then would advance
+        // the cursor past bytes the replay is about to cover.
         let ready = false;
-        const pending: Uint8Array[] = [];
-        const unOutput = await onPtyOutput(id, (bytes) => {
-          if (ready) term.write(bytes);
-          else pending.push(bytes);
+        const pending: PtyOutput[] = [];
+        // Stream offset this terminal has been fed up to, exclusive. Chunks are
+        // written from here on, so bytes the snapshot accounts for are never
+        // written twice and bytes captured after it was taken are never dropped.
+        // Dropping one loses it for good: for an idle Claude Code session the
+        // chunk in that window is the repaint of its input box and status line,
+        // which then stay blank until something else redraws them.
+        let writtenEndOffset = 0;
+        const writeNewBytes = ({ offset, bytes }: PtyOutput) => {
+          const end = offset + bytes.length;
+          if (end <= writtenEndOffset) return;
+          // Negative when the chunk starts past what we have (a dropped event),
+          // where writing the whole chunk beats writing nothing.
+          term.write(bytes.subarray(Math.max(writtenEndOffset - offset, 0)));
+          writtenEndOffset = end;
+        };
+        const unOutput = await onPtyOutput(id, (chunk) => {
+          if (ready) writeNewBytes(chunk);
+          else pending.push(chunk);
         });
         const unExit = await onPtyExit(id, () => {
           setExited(true);
@@ -146,12 +171,12 @@ export default function TerminalPanel({
         }
         cleanups.push(unOutput, unExit);
 
-        const scrollback = await attachPty(id, term.cols, term.rows, cwdRef.current);
+        const { scrollback, endOffset } = await attachPty(id, term.cols, term.rows, cwdRef.current);
         if (disposed) return;
-        // Synchronous from here, so no buffered event can interleave. A fresh
-        // shell has no scrollback, so flush the buffer; on a reattach the
-        // scrollback is authoritative, so drop the buffer to avoid duplicating
-        // bytes already in the snapshot.
+        // Synchronous from here, so no buffered event can interleave. A shell
+        // that has produced nothing is one this attach just spawned. `endOffset`
+        // does not answer that — a session replacing a dead one under the same id
+        // carries the dead one's offsets forward, so it starts above zero.
         const fresh = scrollback.length === 0;
         if (!fresh) {
           // Replaying the snapshot re-feeds the app's original terminal queries
@@ -164,9 +189,9 @@ export default function TerminalPanel({
           term.write(new Uint8Array(scrollback), () => {
             replayingScrollback = false;
           });
-        } else {
-          for (const chunk of pending) term.write(chunk);
         }
+        writtenEndOffset = endOffset;
+        for (const chunk of pending) writeNewBytes(chunk);
         pending.length = 0;
         ready = true;
         void resizePty(id, term.cols, term.rows);
