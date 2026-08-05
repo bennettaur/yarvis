@@ -940,8 +940,13 @@ function WorkspaceDetailView({
     // The core resolves both fields to non-empty defaults, so take them as given.
     // A failure is worth surfacing: falling back silently would launch the
     // built-in Claude command for someone who configured a different agent.
+    // A result that is somehow empty keeps the defaults rather than replacing
+    // them: `agent.name` is read unguarded during render, so storing a nullish
+    // config would take the whole workspace view down with it.
     getAgentConfig()
-      .then(setAgent)
+      .then((config) => {
+        if (config) setAgent(config);
+      })
       .catch((e) =>
         setAgentError(
           `Could not load the configured agent (${e instanceof Error ? e.message : String(e)}); using the default.`,

@@ -5,6 +5,7 @@ import { createAttentionIngestRoutes, createAttentionRoutes } from "./attention/
 import { createAzureRoutes } from "./azure/routes.ts";
 import { createCcRoutes } from "./cc/routes.ts";
 import { createChatRoutes } from "./chat/routes.ts";
+import { createClipboardRoutes } from "./clipboard/routes.ts";
 import type { Config } from "./config.ts";
 import { createCustomProviderRoutes } from "./customProviders/routes.ts";
 import { pingDb } from "./db/client.ts";
@@ -107,6 +108,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
 
   app.route("/api/tasks", createTaskRoutes(config));
   app.route("/api/chat", createChatRoutes(config));
+  app.route("/api/clipboard", createClipboardRoutes(config));
   app.route("/api/custom-providers", createCustomProviderRoutes(config));
   app.route("/api/cc", createCcRoutes());
   app.route("/api/github", createGithubRoutes(config));

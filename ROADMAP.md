@@ -189,6 +189,16 @@ Status of the build against the original vision. The full V1 plan lives at
   in the Keychain like other secrets. An optional TOTP second factor (`/unlock`)
   gates the bot behind a time-boxed window with rate-limited lockout and desktop
   alerts, to defend against Telegram-account takeover.
+- **Clipboard book** — a permanent home for the snippets worth copying twice
+  (identity ids, CLI commands, links), reachable from anywhere with
+  Control+Shift+V. Entries live in `clipboard_entries` and are searched by label,
+  content, and tag; pinned-then-most-recently-used ordering means an empty search
+  already offers the usual suspects. The Rust core samples the clipboard on a
+  timer to build a history of the last 100 clips, in memory and never persisted,
+  which the palette also searches and can promote into permanent entries. A
+  credential screen in the sidecar (`clipboard/screening.ts`) refuses to store
+  anything credential-shaped and withholds flagged clips from history, so the
+  feature can't become an accidental secret store — those stay in the Keychain.
 - **Event log (Phase 2)** — a local, on-device trail of meaningful actions
   (chat started, task created/completed via backend hooks; PR viewed, review
   guide generated and stepped through, line insight recorded and revisited, and
