@@ -14,6 +14,7 @@ import {
   workspaceRepoPr,
   workspaceRepos,
 } from "../db/schema.ts";
+import type { StartClaudeSessionInput } from "./claudeSession.ts";
 import type { GitRunner } from "./git.ts";
 import {
   archiveWorkspace,
@@ -23,6 +24,7 @@ import {
   listRepoBranches,
   type ProvisionEvent,
   provisionWorkspace,
+  resumeKickOffs,
   startArchiveWorkspace,
   unlinkTask,
 } from "./service.ts";
@@ -1275,22 +1277,86 @@ describe("resumable start-work kick-off", () => {
     expect((await getWorkspace(db, ws.id))?.status).toBe("active");
   });
 
-  it("clears the pending prompt once its session has it", async () => {
+  it("launches the session on the ticket and drops the prompt it was owed", async () => {
     const db = getDb(url).db;
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, {
-      name: "cleared",
+      name: "launched",
       repoIds: [repo.id],
       issuePrompt: "implement the ticket",
     });
-    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
-    const res = await app.request(`/api/workspaces/${ws.id}/issue-prompt`, {
-      method: "DELETE",
-      headers: auth,
+    const started: StartClaudeSessionInput[] = [];
+    await provisionWorkspace(db, ws.id, () => {}, {
+      runner: fakeGit,
+      startSession: async (input) => {
+        started.push(input);
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
     });
-    expect(res.status).toBe(200);
+
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.status).toBe("active");
+    // The session runs at the workspace root, where the prompt file was seeded,
+    // and starts on the ticket rather than waiting to be told.
+    expect(started).toHaveLength(1);
+    expect(started[0]?.cwd).toBe(detail?.rootPath ?? "");
+    expect(started[0]?.instruction ?? "").toContain(".yarvis/issue-prompt.md");
+    // Started at the machine, so not remotely controllable.
+    expect(started[0]?.remoteControl).toBe(false);
+    // Nothing owed any more.
+    expect(detail?.pendingIssuePrompt).toBeNull();
+  });
+
+  it("keeps the prompt when the session fails to start, so a restart retries", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, {
+      name: "launch failed",
+      repoIds: [repo.id],
+      issuePrompt: "implement the ticket",
+    });
+
+    await provisionWorkspace(db, ws.id, () => {}, {
+      runner: fakeGit,
+      startSession: async () => {
+        throw new Error("agent not logged in");
+      },
+    });
+
+    const detail = await getWorkspace(db, ws.id);
+    // The workspace provisioned fine and stays usable; only the launch failed.
+    expect(detail?.status).toBe("active");
+    expect(detail?.pendingIssuePrompt).toBe("implement the ticket");
+
+    // Which is exactly what the startup sweep picks up.
+    const started: string[] = [];
+    await resumeKickOffs(db, {
+      startSession: async (input: StartClaudeSessionInput) => {
+        started.push(input.workspaceId);
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+      runner: fakeGit,
+    });
+    expect(started).toEqual([ws.id]);
     expect((await getWorkspace(db, ws.id))?.pendingIssuePrompt).toBeNull();
+  });
+
+  it("does not launch a session for a workspace with no ticket", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "no ticket here", repoIds: [repo.id] });
+
+    const started: StartClaudeSessionInput[] = [];
+    await provisionWorkspace(db, ws.id, () => {}, {
+      runner: fakeGit,
+      startSession: async (input) => {
+        started.push(input);
+        return { sessionKey: "unused" };
+      },
+    });
+
+    expect(started).toEqual([]);
   });
 });
 
@@ -1312,6 +1378,11 @@ describe("pending kick-off prompt retention", () => {
     const rows = (await res.json()) as Record<string, unknown>[];
     expect(rows).toHaveLength(1);
     expect(rows[0]).not.toHaveProperty("pendingIssuePrompt");
+    // Nor does the detail route — it is the sidecar's own bookkeeping.
+    const one = await app.request(`/api/workspaces/${(rows[0] as { id: string }).id}`, {
+      headers: auth,
+    });
+    expect(await one.json()).not.toHaveProperty("pendingIssuePrompt");
     // The projection is explicit, so assert the sidebar's fields survive it.
     expect(rows[0]).toMatchObject({ name: "listed", status: "creating", repoNames: ["widget"] });
     expect(rows[0]).toHaveProperty("archivedAt");
@@ -1348,14 +1419,6 @@ describe("pending kick-off prompt retention", () => {
         repoIds: [repo.id],
         issuePrompt: "x".repeat(70000),
       }),
-    });
-    expect(res.status).toBe(400);
-  });
-
-  it("rejects a malformed workspace id on the clear route", async () => {
-    const res = await app.request("/api/workspaces/not-a-uuid/issue-prompt", {
-      method: "DELETE",
-      headers: auth,
     });
     expect(res.status).toBe(400);
   });

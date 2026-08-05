@@ -4,7 +4,6 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import {
-  clearPendingIssuePrompt,
   createRepo,
   createWorkspace,
   deleteRepo,
@@ -205,16 +204,11 @@ export function createWorkspaceRoutes(config: Config): Hono {
   router.get("/:id", async (c) => {
     const workspace = await getWorkspace(db(), c.req.param("id"));
     if (!workspace) return c.json({ error: "not found" }, 404);
-    return c.json(workspace);
-  });
-
-  // Clears the pending "Start work" prompt, called once the workspace's agent
-  // session is live and has been handed the ticket.
-  router.delete("/:id/issue-prompt", async (c) => {
-    const id = z.string().uuid().safeParse(c.req.param("id"));
-    if (!id.success) return c.json({ error: "bad workspace id" }, 400);
-    await clearPendingIssuePrompt(db(), id.data);
-    return c.json({ ok: true });
+    // `pendingIssuePrompt` stays server-side: it is how provisioning remembers a
+    // kick-off it still owes a session, and nothing outside the sidecar acts on
+    // it. Clients open the workspace and attach to whatever session is there.
+    const { pendingIssuePrompt: _internal, ...body } = workspace;
+    return c.json(body);
   });
 
   // Drives provisioning and streams progress as SSE. The setup script's output

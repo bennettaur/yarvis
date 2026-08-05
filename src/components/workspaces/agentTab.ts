@@ -1,15 +1,6 @@
 import { DEFAULT_AGENT_TAB_TITLE } from "../shell/terminalTabs/sessionIds";
 import type { PinnedTab } from "../shell/terminalTabs/surfaceState";
 
-/**
- * Instruction handed to the agent for a "Start work on issue" session. The issue
- * details are written to a known file under the workspace root by provisioning,
- * so a static instruction to read that file is enough — no need to inline the
- * (potentially large) body into the command.
- */
-const AGENT_ISSUE_INSTRUCTION =
-  "Read the ticket details in .yarvis/issue-prompt.md and implement a first pass at the ticket, following the repository's conventions.";
-
 /** Fallbacks while the configured agent is still loading. Match the Rust core's
  *  defaults in `pty.rs`. */
 export const DEFAULT_AGENT_NAME = DEFAULT_AGENT_TAB_TITLE;
@@ -24,81 +15,42 @@ export function agentSessionId(workspaceId: string): string {
   return `ws-claude:${workspaceId}`;
 }
 
-/**
- * Builds the issue "Start work" launch line from the configured base command
- * (e.g. `claude --permission-mode auto`), appending the instruction as a
- * double-quoted argument. The instruction contains an apostrophe but no double
- * quotes, so double-quote wrapping is safe.
- */
-export function buildAgentIssueCommand(base: string): string {
-  return `${base} "${AGENT_ISSUE_INSTRUCTION}"`;
-}
-
 /** Inputs describing which (if any) agent session a workspace should surface. */
 export interface AgentTabInputs {
-  /** Whether this visit is driving an issue "Start work" launch. */
-  issueLaunch: boolean;
-  /** Whether the workspace is provisioned. Provisioning writes the issue prompt
-   *  file before it reports the workspace active, so this is also what says the
-   *  file the launch line points at is on disk. */
-  provisioned: boolean;
   /** True when a session is live under this workspace's agent session id. */
   agentActive: boolean;
   /** True once the user has closed the agent tab, until they ask for it back. */
   dismissed: boolean;
   workspaceId: string;
   /** Where the session runs: always the workspace root (see
-   *  `agentCwdForWorkspace`), which is also where `.yarvis/issue-prompt.md` is
-   *  seeded, so the issue flow can launch there too. */
+   *  `agentCwdForWorkspace`). */
   cwd: string;
   /** Configured agent name, used as the tab title. */
   agentName: string;
-  /** Configured base command, used to build the issue launch line. */
-  agentCommand: string;
 }
 
 /**
  * Resolves the workspace's agent session into a pinned terminal tab, or `null`
- * when none should show. The agent session always rides along as a pinned tab so
- * every workspace — including ones started from an issue — keeps its own
- * splittable terminal tabs alongside it.
+ * when none should show. This surface only ever *attaches* — nothing here starts
+ * a session on a ticket. A workspace opened from an issue's "Start work" already
+ * has one, launched by the sidecar as the last step of provisioning, so by the
+ * time the workspace can be looked at there is a live session to pick up.
  */
 export function resolveAgentTab({
-  issueLaunch,
-  provisioned,
   agentActive,
   dismissed,
   workspaceId,
   cwd,
   agentName,
-  agentCommand,
 }: AgentTabInputs): PinnedTab | null {
-  // Closing the tab has to actually close it: while the user has dismissed it,
-  // no branch below may put it back.
+  // Closing the tab has to actually close it.
   if (dismissed) return null;
-  const tab: PinnedTab = {
-    key: "agent",
-    title: agentName,
-    sessionId: agentSessionId(workspaceId),
-    cwd,
-  };
-  if (issueLaunch) {
-    // This surface launches the agent itself for the issue flow, so it waits on
-    // the prompt file being written and never falls through to the attach branch
-    // below — showing a tab first would spawn a bare shell with nothing to run.
-    if (!provisioned) return null;
-    // Once the session is live this is an ordinary attach. Handing back the
-    // launch line again would re-run the whole ticket on the next fresh spawn.
-    return agentActive ? tab : { ...tab, initialCommand: buildAgentIssueCommand(agentCommand) };
-  }
   if (!agentActive) return null;
-  return tab;
+  return { key: "agent", title: agentName, sessionId: agentSessionId(workspaceId), cwd };
 }
 
 /** Inputs deciding whether opening a workspace should start an agent session. */
 export interface AutoStartInputs {
-  /** Set for the issue flow, which launches its own session via the tab. */
-  issueLaunch: boolean;
   /** True once the user has closed the agent tab. */
   dismissed: boolean;
   workspaceStatus: string;
@@ -115,18 +67,18 @@ export interface AutoStartInputs {
  * drive — but four things have to hold first, and each guards a distinct way of
  * getting it wrong. Extracted from the effect in `WorkspacesPanel` so those are
  * testable without mounting a workspace full of live shells.
+ *
+ * A workspace kicked off from an issue needs nothing special here: its session
+ * already exists before the workspace reports itself provisioned, so `probed`
+ * resolves to `agentActive` and this declines to start a second one.
  */
 export function shouldAutoStartAgent({
-  issueLaunch,
   dismissed,
   workspaceStatus,
   probed,
   agentActive,
   alreadyStarted,
 }: AutoStartInputs): boolean {
-  // The issue flow launches its own session, seeded with the prompt file; the
-  // two must not both fire at the same session id.
-  if (issueLaunch) return false;
   // Closing the tab must not be undone by the effect that opened it.
   if (dismissed) return false;
   // Only a provisioned workspace has worktrees to run in.
@@ -135,44 +87,4 @@ export function shouldAutoStartAgent({
   // a workspace that already has one.
   if (!probed) return false;
   return !agentActive && !alreadyStarted;
-}
-
-/** Inputs deciding whether this visit should claim a workspace's kick-off. */
-export interface ClaimKickOffInputs {
-  /** The kick-off prompt the sidecar is still holding, if any. */
-  pendingIssuePrompt: string | null;
-  /** Whether the workspace is provisioned, and so has the prompt file on disk. */
-  provisioned: boolean;
-  /** True once the user has closed the agent tab. */
-  dismissed: boolean;
-  /** True once this view has already claimed it. */
-  alreadyClaimed: boolean;
-}
-
-/**
- * Whether to claim the workspace's pending kick-off — hand its launch line to
- * the agent tab and drop the sidecar's copy. The prompt is the sole record of an
- * *unfinished* kick-off, so a copy that outlives the launch it belongs to re-runs
- * the whole ticket in a fresh auto-approved session the next time the workspace
- * is opened. Claiming is therefore tied to the launch line going out, not to the
- * session later answering a liveness probe. Extracted from the effect in
- * `WorkspacesPanel` so the once-per-kick-off property is testable without
- * mounting a workspace full of live shells.
- */
-export function shouldClaimKickOff({
-  pendingIssuePrompt,
-  provisioned,
-  dismissed,
-  alreadyClaimed,
-}: ClaimKickOffInputs): boolean {
-  // Nothing pending: either this workspace never had a kick-off, or a previous
-  // visit already saw it through.
-  if (!pendingIssuePrompt) return false;
-  // Until the workspace is provisioned there is no prompt file to launch
-  // against, and `resolveAgentTab` withholds the tab for the same reason.
-  if (!provisioned) return false;
-  // A dismissed tab issues no launch line, so the kick-off is still unclaimed
-  // and has to survive for the next visit.
-  if (dismissed) return false;
-  return !alreadyClaimed;
 }

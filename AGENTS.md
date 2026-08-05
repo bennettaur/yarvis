@@ -79,6 +79,12 @@ has no safe autofix.
   `YARVIS_WORKSPACES_ROOT`) uses env vars instead. Preferences the user is
   expected to change from the UI go in `src-tauri/src/settings.rs` when the
   Rust core enforces them, and in Postgres via the sidecar otherwise.
+- Work that must finish regardless of what the UI is doing belongs in the
+  sidecar, not in a React effect. An issue's "Start work" is the worked example:
+  the route answers as soon as the workspace exists and the rest — provisioning,
+  seeding `.yarvis/issue-prompt.md`, launching the agent session on the ticket —
+  runs in the background there. The frontend starts nothing and resumes nothing;
+  it opens a workspace and attaches to whatever session is present.
 - Agent tools that read a pull request's code go through the `PrCodeSource`
   interface in `sidecar/src/pr/source.ts`, never a provider client directly —
   the tools in `codeTools.ts` are written once and GitHub/Azure each supply an

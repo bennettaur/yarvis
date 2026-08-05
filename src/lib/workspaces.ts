@@ -17,14 +17,6 @@ export interface Workspace {
   summary: string | null;
   mergedPrUrl: string | null;
   error: string | null;
-  /**
-   * The "Start work" prompt this workspace was kicked off with, held by the
-   * sidecar until the agent session has been handed it. Non-null means the
-   * kick-off is unfinished: provisioning writes the prompt to
-   * `.yarvis/issue-prompt.md`, and the workspace view launches the agent against
-   * it. Surviving in the database is what lets an interrupted kick-off resume.
-   */
-  pendingIssuePrompt: string | null;
   createdAt: string;
   updatedAt: string;
   archivedAt: string | null;
@@ -68,10 +60,8 @@ export interface WorkspaceDetail extends Workspace {
   issues: IssueLink[];
 }
 
-/** A workspace list row, with its repo names for sidebar grouping. The pending
- *  kick-off prompt is not part of it — only the open workspace needs that, and
- *  this list is polled for every workspace at once. */
-export interface WorkspaceSummary extends Omit<Workspace, "pendingIssuePrompt"> {
+/** A workspace list row, with its repo names for sidebar grouping. */
+export interface WorkspaceSummary extends Workspace {
   repoNames: string[];
 }
 
@@ -116,8 +106,9 @@ export interface CreateWorkspaceInput {
   taskId?: string | null;
   /**
    * A "Start work" prompt to seed the workspace's agent session with. The
-   * sidecar holds it on the workspace row, so the launch survives this view
-   * being unmounted mid-provision.
+   * sidecar seeds `.yarvis/issue-prompt.md` and launches the session on it as
+   * the last steps of provisioning, so the kick-off completes whether or not
+   * this view is still around.
    */
   issuePrompt?: string;
 }
@@ -171,15 +162,6 @@ export async function createWorkspace(input: CreateWorkspaceInput): Promise<Work
   });
   if (!res.ok) return readError(res, "create workspace");
   return res.json();
-}
-
-/**
- * Drops the workspace's pending "Start work" prompt, once its agent session is
- * live and has been handed the ticket.
- */
-export async function clearPendingIssuePrompt(id: string): Promise<void> {
-  const res = await sidecarFetch(`/api/workspaces/${id}/issue-prompt`, { method: "DELETE" });
-  if (!res.ok) return readError(res, "clear pending issue prompt");
 }
 
 /**

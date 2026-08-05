@@ -7,7 +7,6 @@ import { createRepo, listRepoBranches, listRepos, type Repo } from "../lib/repos
 import { listTasks, type Task } from "../lib/tasks";
 import { openExternal } from "../lib/url";
 import {
-  clearPendingIssuePrompt,
   createWorkspace,
   getWorkspace,
   listWorkspaces,
@@ -34,7 +33,6 @@ import {
   DEFAULT_AGENT_NAME,
   resolveAgentTab,
   shouldAutoStartAgent,
-  shouldClaimKickOff,
 } from "./workspaces/agentTab";
 import BranchCombobox from "./workspaces/BranchCombobox";
 import LinkWorkModal from "./workspaces/LinkWorkModal";
@@ -745,10 +743,6 @@ function WorkspaceDetailView({
   // the view is keyed by workspace id, so it re-arms when you switch workspaces.
   const setupAutoOpenedRef = useRef(false);
   const autoProvisionRef = useRef(false);
-  // Guards the one-shot claim of the kick-off. Not redundant with `issueLaunch`
-  // below: StrictMode re-runs the mount effect before any re-render, so the
-  // state would still read false and a second claim would fire.
-  const kickOffClaimedRef = useRef(false);
   // Guards the one-shot auto-start. Per-mount, and the view is keyed by workspace
   // id, so it re-arms when you switch workspaces — the auto-start effect re-runs
   // on every detail poll, so this ref is what stops it firing more than once.
@@ -895,60 +889,16 @@ function WorkspaceDetailView({
     }
   }, [id, load, onChanged]);
 
-  // Whether this visit is driving an issue "Start work" launch. It latches: the
-  // sidecar's prompt is what raises it, but it stays up after that prompt is
-  // dropped, because the drop happens the moment the launch line goes out rather
-  // than once the session answers. Splitting the two is what stops a workspace
-  // that already ran its ticket from running it again — the prompt is the sole
-  // record of an *unfinished* kick-off, so anything that outlives the launch it
-  // belongs to would re-run the whole ticket in a fresh auto-approved session on
-  // the next open.
-  const [issueLaunched, setIssueLaunched] = useState(false);
-  const issueLaunch = issueLaunched || Boolean(detail?.pendingIssuePrompt);
-
-  // Auto-provision a freshly kicked-off workspace (the user didn't come here to
-  // click "Provision"); the ref guards against re-firing on each poll. Re-driving
-  // a provision already running attaches to it, so returning mid-run picks the
-  // log back up instead of failing.
+  // Auto-provision a workspace whose kick-off is still running. The sidecar
+  // drives it whether or not anyone is here, so this only joins the run already
+  // going — which is what puts its log on screen. The ref stops it re-firing on
+  // every poll.
   useEffect(() => {
-    if (!issueLaunch) return;
-    if (detail?.status === "creating" && provisionLog === null && !autoProvisionRef.current) {
-      autoProvisionRef.current = true;
-      void provision();
-    }
-  }, [issueLaunch, detail?.status, provisionLog, provision]);
-
-  // Hand the kick-off over: once the workspace is provisioned, the pinned tab
-  // below carries the launch line, so the sidecar's copy has done its job and is
-  // dropped now rather than when the 4s liveness probe confirms the session.
-  // Waiting for that confirmation would leave a window in which closing the tab
-  // and reopening the workspace re-runs the ticket. A dismissed tab issues no
-  // launch line, so the kick-off stays pending for the next visit.
-  //
-  // The trade this makes deliberately: the claim tracks this view deciding to
-  // issue a launch line, not a session actually spawning, so a spawn that fails
-  // has already dropped the sidecar's copy. Within the visit that costs nothing
-  // — `issueLaunch` stays latched, so the tab keeps offering the launch line —
-  // but reopening afterwards gets a plain agent and the ticket only in
-  // `.yarvis/issue-prompt.md`. Losing the launch line once beats re-running a
-  // finished ticket unprompted in an auto-approved session.
-  useEffect(() => {
-    const claim = shouldClaimKickOff({
-      pendingIssuePrompt: detail?.pendingIssuePrompt ?? null,
-      provisioned: detail?.status === "active",
-      dismissed: agentDismissed,
-      alreadyClaimed: kickOffClaimedRef.current,
-    });
-    if (!claim) return;
-    kickOffClaimedRef.current = true;
-    setIssueLaunched(true);
-    clearPendingIssuePrompt(id)
-      .then(() => setDetail((prev) => (prev ? { ...prev, pendingIssuePrompt: null } : prev)))
-      // Non-fatal and deliberately not retried: the prompt file is on disk and
-      // the tab is launching against it. A copy left behind only costs a
-      // redundant launch offer on the next open.
-      .catch(() => undefined);
-  }, [detail?.pendingIssuePrompt, detail?.status, agentDismissed, id]);
+    if (detail?.status !== "creating" || provisionLog !== null) return;
+    if (autoProvisionRef.current) return;
+    autoProvisionRef.current = true;
+    void provision();
+  }, [detail?.status, provisionLog, provision]);
 
   // Load the configured agent up front so the tab is titled correctly and the
   // issue terminal launches with the right command.
@@ -994,7 +944,6 @@ function WorkspaceDetailView({
   // for what has to hold first.
   useEffect(() => {
     const start = shouldAutoStartAgent({
-      issueLaunch,
       dismissed: agentDismissed,
       workspaceStatus: detail?.status ?? "",
       probed: agentProbed,
@@ -1004,7 +953,7 @@ function WorkspaceDetailView({
     if (!start) return;
     autoStartAgentRef.current = true;
     void startAgent();
-  }, [issueLaunch, agentDismissed, detail?.status, agentProbed, agentActive, startAgent]);
+  }, [agentDismissed, detail?.status, agentProbed, agentActive, startAgent]);
 
   // Closing the agent tab means closing it: TerminalTabs kills the session, and
   // dropping it from `pinnedTabs` here is what removes the header. Until this
@@ -1260,14 +1209,11 @@ function WorkspaceDetailView({
             // iTerm-style tabs and Cmd+D pane splits for its own shells. See
             // `resolveAgentTab` for how the issue and remote-control flows differ.
             const agentTab = resolveAgentTab({
-              issueLaunch,
-              provisioned,
               agentActive,
               dismissed: agentDismissed,
               workspaceId: detail.id,
               cwd: agentCwd,
               agentName: agent.name,
-              agentCommand: agent.command,
             });
             const terminalArea = (
               <div className="h-full min-h-0 min-w-0">

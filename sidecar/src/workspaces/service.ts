@@ -6,7 +6,7 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { relative } from "node:path";
-import { and, eq, getTableColumns, inArray, ne } from "drizzle-orm";
+import { and, eq, getTableColumns, inArray, isNotNull, ne } from "drizzle-orm";
 import { publish } from "../attention/hub.ts";
 import { clearAttentionScope, createAttention } from "../attention/service.ts";
 import type { Config } from "../config.ts";
@@ -32,7 +32,11 @@ import {
   writeIssuePrompt,
 } from "../issues/service.ts";
 import { completeTasksByWorkspace, tasksForWorkspace } from "../tasks/service.ts";
-import { stopClaudeSession } from "./claudeSession.ts";
+import {
+  type ClaudeSessionStarter,
+  startClaudeSession,
+  stopClaudeSession,
+} from "./claudeSession.ts";
 import { writeClaudeSettings } from "./claudeSettings.ts";
 import { runStreaming } from "./exec.ts";
 import {
@@ -728,6 +732,15 @@ const PROVISION_HISTORY_CAP = 500;
 
 export interface ProvisionOptions {
   runner?: GitRunner;
+  /** How the kick-off session is started. Injectable so provisioning is testable
+   *  without the Rust core on the other end of the control channel. */
+  startSession?: ClaudeSessionStarter;
+  /**
+   * Launch the kick-off session with Remote Control. Off by default: a kick-off
+   * started at the machine opens in a tab the user is on their way to. The chat
+   * agent turns it on when the request came from somewhere the user isn't.
+   */
+  remoteControl?: boolean;
   /** Stops *following* an in-flight run when the caller's stream goes away. It
    *  never cancels the run itself — finishing without an audience is the point. */
   signal?: AbortSignal;
@@ -863,7 +876,12 @@ export async function provisionWorkspace(
   db: Db,
   id: string,
   emit: ProvisionEmit,
-  { runner = defaultGitRunner, signal }: ProvisionOptions = {},
+  {
+    runner = defaultGitRunner,
+    signal,
+    startSession = startClaudeSession,
+    remoteControl = false,
+  }: ProvisionOptions = {},
 ): Promise<void> {
   const inFlight = provisioning.get(id);
   if (inFlight) return followProvision(inFlight, emit, signal);
@@ -1023,10 +1041,11 @@ export async function provisionWorkspace(
     let status: Workspace["status"] = allReady ? "active" : "error";
     let error = allReady ? null : "one or more repos failed";
 
-    // The "Start work" prompt file is written here rather than by whoever drove
-    // provisioning: a UI that navigated away mid-run would never write it, and
-    // the agent would then launch against a missing file. Leaving the prompt on
-    // the row means a retry rewrites it.
+    // Finish the "Start work" kick-off before reporting the workspace active,
+    // so by the time anything can see it there is already a session to attach
+    // to. Doing it here rather than in the caller is what frees the flow from
+    // whoever started it: seeding the prompt file and launching the agent are
+    // the last two steps of provisioning, not a UI's follow-up.
     const pendingPrompt = after?.pendingIssuePrompt;
     if (status === "active" && after && pendingPrompt) {
       try {
@@ -1035,6 +1054,12 @@ export async function provisionWorkspace(
         status = "error";
         error = `could not write the issue prompt file: ${e instanceof Error ? e.message : String(e)}`;
       }
+    }
+
+    // Launch before the status flips, so a workspace is never reported ready
+    // with its kick-off still owed a session — whoever looks next just attaches.
+    if (status === "active" && after && pendingPrompt) {
+      await launchKickOffSession(db, after, startSession, remoteControl);
     }
 
     await db
@@ -1067,15 +1092,88 @@ export async function provisionWorkspace(
 }
 
 /**
- * Drops a workspace's pending "Start work" prompt, called once its agent session
- * is live and has been handed the ticket. Until then the prompt stays put, which
- * is what lets an interrupted kick-off resume.
+ * What a "Start work" session is told to do. The ticket itself is written to a
+ * known file under the workspace root, so a fixed instruction to read that file
+ * is enough and a body of any size stays off the command line.
+ */
+export const AGENT_ISSUE_INSTRUCTION =
+  "Read the ticket details in .yarvis/issue-prompt.md and implement a first pass at the ticket, following the repository's conventions.";
+
+/**
+ * Launches the session a kick-off has been waiting for and drops the prompt that
+ * recorded it was owed. Best-effort by design: the workspace is provisioned and
+ * usable either way, so a launch failure (commonly: the agent isn't logged in)
+ * leaves the prompt in place for `resumeKickOffs` to retry rather than failing
+ * the workspace. Retrying is safe — the core keys sessions by workspace and
+ * discards a spawn for an id that already has one.
+ */
+async function launchKickOffSession(
+  db: Db,
+  detail: WorkspaceDetail,
+  startSession: ClaudeSessionStarter,
+  remoteControl: boolean,
+): Promise<void> {
+  try {
+    await startSession({
+      workspaceId: detail.id,
+      cwd: detail.rootPath,
+      name: detail.name,
+      remoteControl,
+      instruction: AGENT_ISSUE_INSTRUCTION,
+    });
+  } catch (e) {
+    console.error("[workspaces] could not start the kick-off session:", e);
+    return;
+  }
+  await clearPendingIssuePrompt(db, detail.id).catch(() => undefined);
+}
+
+/**
+ * Drops a workspace's pending "Start work" prompt, once its session has been
+ * launched on the ticket. Until then the prompt stays put, which is what lets an
+ * interrupted kick-off resume.
  */
 export async function clearPendingIssuePrompt(db: Db, id: string): Promise<void> {
   await db
     .update(workspaces)
     .set({ pendingIssuePrompt: null, updatedAt: new Date() })
     .where(eq(workspaces.id, id));
+}
+
+/**
+ * Starts a workspace's kick-off running in the background and returns at once.
+ * "Start work" answers as soon as the workspace and its issue link exist, because
+ * cloning and a setup script take minutes and nothing downstream should wait on
+ * them: provisioning, seeding the prompt file, and launching the session all
+ * finish here whether or not anyone is still looking at the screen that asked.
+ * Progress is watchable meanwhile via the provision stream, which joins the run
+ * already going.
+ */
+export function startKickOff(db: Db, id: string): void {
+  void provisionWorkspace(db, id, () => undefined).catch((e) =>
+    console.error(`[workspaces] kick-off failed for ${id}:`, e),
+  );
+}
+
+/**
+ * Resumes kick-offs stranded by a sidecar restart: any workspace still holding a
+ * prompt is one whose session was never launched. Provisioning is idempotent, so
+ * this re-drives it whatever state the workspace stopped in. Called once at
+ * startup — nothing else can strand one, since the sequence otherwise runs to
+ * completion in the background regardless of what the UI is doing.
+ */
+export async function resumeKickOffs(db: Db, options: ProvisionOptions = {}): Promise<void> {
+  const stranded = await db
+    .select({ id: workspaces.id })
+    .from(workspaces)
+    .where(and(isNotNull(workspaces.pendingIssuePrompt), ne(workspaces.status, "archived")));
+  if (!stranded.length) return;
+  console.warn(`[workspaces] resuming ${stranded.length} interrupted kick-off(s)`);
+  for (const { id } of stranded) {
+    await provisionWorkspace(db, id, () => undefined, options).catch((e) =>
+      console.error(`[workspaces] could not resume kick-off for ${id}:`, e),
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -159,7 +159,8 @@ branch, and a `.claude/settings.json` that registers each repo's
 even though Claude runs one directory above the repos. The settings file is
 merged, not overwritten, so any other keys already present are left intact. A
 workspace opened from an issue's "Start work" also gets the ticket itself, in
-`.yarvis/issue-prompt.md` — the file its agent session is launched to read.
+`.yarvis/issue-prompt.md` — the file its agent session is launched to read, as
+the last step of provisioning.
 
 At most 60 terminal sessions can be live at once; opening more fails until one
 is closed. Raise or lower that under Settings → Repositories → Terminals (up to

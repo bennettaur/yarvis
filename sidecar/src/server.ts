@@ -8,6 +8,7 @@ import { sweepStaleGuides } from "./pr/guides.ts";
 import { createReadiness } from "./readiness.ts";
 import { startTelegramBot } from "./telegram/index.ts";
 import { startWorkspacePoller } from "./workspaces/poller.ts";
+import { resumeKickOffs } from "./workspaces/service.ts";
 
 const config = loadConfig();
 
@@ -59,6 +60,13 @@ if (config.databaseUrl) {
       // Background PR/checks poller. No-op without a GitHub token; reconciles
       // interrupted runs on its first tick.
       startWorkspacePoller(config);
+      // A workspace still holding a "Start work" prompt is one whose session was
+      // never launched, which only a restart mid-kick-off can leave behind — the
+      // sequence otherwise runs to completion here regardless of the UI. Pick
+      // those back up, provisioning included.
+      resumeKickOffs(getDb(config.databaseUrl as string).db).catch((e) =>
+        console.error("[sidecar] could not resume interrupted kick-offs:", e),
+      );
       // Backstop for review guides whose pull requests were closed on the
       // provider's own site, which the app never observes. Once at startup is
       // enough for a month-long TTL; a timer would only make it prompter about

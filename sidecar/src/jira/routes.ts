@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { buildIssuePrompt, upsertLink } from "../issues/service.ts";
-import { createWorkspace } from "../workspaces/service.ts";
+import { createWorkspace, startKickOff } from "../workspaces/service.ts";
 import { isAllowedJiraBaseUrl, JiraClient } from "./client.ts";
 import { applyJiraStartWorkSideEffects } from "./service.ts";
 
@@ -293,9 +293,10 @@ export function createJiraRoutes(config: Config): Hono {
    * in_progress). Because a JIRA ticket isn't tied to a repo, the caller chooses
    * the repos (an empty list yields a scratch workspace). Best-effort JIRA side
    * effects (assign to viewer + transition to in-progress) become warnings on
-   * failure — the workspace + link are the source of truth. The composed agent
-   * prompt is stored on the workspace row, and provisioning writes it to
-   * `.yarvis/issue-prompt.md` once the worktrees exist.
+   * failure — the workspace + link are the source of truth. The rest of the
+   * kick-off — provisioning, seeding `.yarvis/issue-prompt.md`, launching the
+   * agent on the ticket — runs in the background here, so nothing about it
+   * depends on the caller sticking around.
    */
   router.post("/start-work", async (c) => {
     const client = requireClient(c);
@@ -339,6 +340,8 @@ export function createJiraRoutes(config: Config): Hono {
       transitionToInProgress: input.transitionToInProgress,
       transitionId: input.transitionId,
     });
+
+    startKickOff(db(), workspaceId);
 
     return c.json({ workspaceId, warnings }, 201);
   });

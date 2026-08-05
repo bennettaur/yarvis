@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { GitHubClient } from "../github/client.ts";
-import { createWorkspace } from "../workspaces/service.ts";
+import { createWorkspace, startKickOff } from "../workspaces/service.ts";
 import {
   addStar,
   applyStartWorkSideEffects,
@@ -329,10 +329,11 @@ export function createIssueRoutes(config: Config): Hono {
    * — best-effort — assigns the issue to the viewer and labels it in-progress on
    * GitHub. The workspace + link are the source of truth: a failed GitHub write
    * (e.g. a read-only token) is reported as a warning, not an error, so work
-   * still starts. The composed agent prompt is stored on the workspace row
-   * rather than returned for the caller to carry: provisioning writes it to
-   * `.yarvis/issue-prompt.md` once the worktree exists (it doesn't yet here), so
-   * a UI that navigates away mid-kick-off doesn't take the ticket with it.
+   * still starts. The response is only the receipt: the rest of the kick-off —
+   * provisioning, seeding `.yarvis/issue-prompt.md`, launching the agent on the
+   * ticket — runs in the background here, so nothing about it depends on the
+   * caller sticking around. Clients just open the workspace and attach to the
+   * session that is or will be there.
    */
   router.post("/:provider/start-work", async (c) => {
     const provider = c.req.param("provider");
@@ -388,6 +389,8 @@ export function createIssueRoutes(config: Config): Hono {
           label: input.label,
         })
       : [];
+
+    startKickOff(db(), workspaceId);
 
     return c.json({ workspaceId, warnings }, 201);
   });
