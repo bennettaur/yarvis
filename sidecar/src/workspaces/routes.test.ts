@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
@@ -1138,6 +1138,140 @@ describe("resumable start-work kick-off", () => {
     expect(secondEvents.map((e) => e.type)).toContain("repo-start");
     expect(secondEvents.map((e) => e.type)).toContain("done");
     expect(secondEvents.some((e) => e.type === "error")).toBe(false);
+    // Byte-for-byte the same sequence: nothing lost or doubled across the
+    // snapshot/subscribe seam, and the replay stayed ahead of the live events.
+    expect(secondEvents).toEqual(firstEvents);
+    expect((await getWorkspace(db, ws.id))?.status).toBe("active");
+  });
+
+  it("finishes the kick-off even when the caller's stream throws on every write", async () => {
+    // The reported bug is the user navigating away, which makes the stream write
+    // *fail* — not merely go unread. Every other test passes an inert emit, so
+    // without this one the swallow in `safeEmit` could be deleted unnoticed and
+    // a cleanly provisioned workspace would land on `error`.
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, {
+      name: "stream closed",
+      repoIds: [repo.id],
+      issuePrompt: "implement the ticket",
+    });
+
+    await provisionWorkspace(
+      db,
+      ws.id,
+      () => {
+        throw new Error("stream closed");
+      },
+      fakeGit,
+    );
+
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.status).toBe("active");
+    expect(existsSync(join(detail?.rootPath ?? "", ".yarvis", "issue-prompt.md"))).toBe(true);
+  });
+
+  it("keeps the prompt and offers a retry when the prompt file can't be written", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, {
+      name: "unwritable prompt",
+      repoIds: [repo.id],
+      issuePrompt: "implement the ticket",
+    });
+    const created = await getWorkspace(db, ws.id);
+    // A file where the `.yarvis` directory needs to go, so the mkdir fails.
+    mkdirSync(created?.rootPath ?? "", { recursive: true });
+    writeFileSync(join(created?.rootPath ?? "", ".yarvis"), "");
+
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+
+    const detail = await getWorkspace(db, ws.id);
+    // Never `active` without the file the agent is launched to read.
+    expect(detail?.status).toBe("error");
+    expect(detail?.error).toContain("issue prompt file");
+    expect(detail?.pendingIssuePrompt).toBe("implement the ticket");
+  });
+
+  it("rewrites the prompt file when a failed provision is retried", async () => {
+    // The resume path: a kick-off that failed still carries its ticket, and the
+    // retry is what gets it onto disk — including when every repo is already
+    // provisioned and there is no git work left to redo.
+    const db = getDb(url).db;
+    const created = await app.request("/api/repos", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ cloneUrl: "git@github.com:acme/retry.git", setupScript: "exit 1" }),
+    });
+    const repo = (await created.json()) as { id: string };
+    const ws = await createWorkspace(db, config, {
+      name: "retried kickoff",
+      repoIds: [repo.id],
+      issuePrompt: "implement the ticket",
+    });
+
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    const failed = await getWorkspace(db, ws.id);
+    expect(failed?.status).toBe("error");
+    expect(existsSync(join(failed?.rootPath ?? "", ".yarvis", "issue-prompt.md"))).toBe(false);
+    expect(failed?.pendingIssuePrompt).toBe("implement the ticket");
+
+    // Fix what failed, then retry the way the workspace's button does.
+    await app.request(`/api/repos/${repo.id}`, {
+      method: "PATCH",
+      headers: jsonAuth,
+      body: JSON.stringify({ setupScript: "true" }),
+    });
+    await db
+      .update(workspaceRepos)
+      .set({ status: "pending", error: null })
+      .where(eq(workspaceRepos.workspaceId, ws.id));
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.status).toBe("active");
+    expect(readFileSync(join(detail?.rootPath ?? "", ".yarvis", "issue-prompt.md"), "utf-8")).toBe(
+      "implement the ticket",
+    );
+  });
+
+  it("stops following when the follower goes away, without stopping the run", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "follower left", repoIds: [repo.id] });
+
+    let releaseFirst = () => {};
+    const held = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const slowGit: GitRunner = async (args, opts) => {
+      const res = await fakeGit(args, opts);
+      if (args[0] === "worktree" && args[1] === "add") await held;
+      return res;
+    };
+
+    const first = provisionWorkspace(db, ws.id, () => {}, slowGit);
+    await waitFor(ws.id, (d) => d.repos[0]?.status === "provisioning", "started provisioning");
+
+    const gone = new AbortController();
+    const followerEvents: ProvisionEvent[] = [];
+    const follower = provisionWorkspace(
+      db,
+      ws.id,
+      (e) => void followerEvents.push(e),
+      fakeGit,
+      gone.signal,
+    );
+    gone.abort();
+    await follower;
+    const seenBeforeLeaving = followerEvents.length;
+
+    releaseFirst();
+    await first;
+
+    // The run finished for everyone else; the follower stopped where it left off.
+    expect(followerEvents).toHaveLength(seenBeforeLeaving);
+    expect(followerEvents.some((e) => e.type === "done")).toBe(false);
     expect((await getWorkspace(db, ws.id))?.status).toBe("active");
   });
 
@@ -1157,5 +1291,72 @@ describe("resumable start-work kick-off", () => {
     });
     expect(res.status).toBe(200);
     expect((await getWorkspace(db, ws.id))?.pendingIssuePrompt).toBeNull();
+  });
+});
+
+/**
+ * The pending prompt is the sole record of an *unfinished* kick-off, so what it
+ * must never do is outlive one. These pin the two places a copy could linger.
+ */
+describe("pending kick-off prompt retention", () => {
+  it("keeps it out of the workspace list, which is polled for every workspace", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    await createWorkspace(db, config, {
+      name: "listed",
+      repoIds: [repo.id],
+      issuePrompt: "implement the ticket",
+    });
+
+    const res = await app.request("/api/workspaces", { headers: auth });
+    const rows = (await res.json()) as Record<string, unknown>[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).not.toHaveProperty("pendingIssuePrompt");
+    // The projection is explicit, so assert the sidebar's fields survive it.
+    expect(rows[0]).toMatchObject({ name: "listed", status: "creating", repoNames: ["widget"] });
+    expect(rows[0]).toHaveProperty("archivedAt");
+    // The open workspace is where it's wanted, and it's still there.
+    expect((await getWorkspace(db, rows[0]!.id as string))?.pendingIssuePrompt).toBe(
+      "implement the ticket",
+    );
+  });
+
+  it("drops it when the workspace is archived, since no session can claim it", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, {
+      name: "archived with prompt",
+      repoIds: [repo.id],
+      issuePrompt: "implement the ticket",
+    });
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+
+    const result = await archiveWorkspace(db, ws.id, {}, fakeGit);
+    expect(result.status).toBe("archived");
+    expect((await getWorkspace(db, ws.id))?.pendingIssuePrompt).toBeNull();
+  });
+
+  it("rejects a kick-off prompt too large to be a ticket", async () => {
+    // The bound is on the client-supplied field, not on start-work, which
+    // composes its prompt from an issue GitHub has already capped.
+    const repo = await addRepo();
+    const res = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        name: "oversized",
+        repoIds: [repo.id],
+        issuePrompt: "x".repeat(70000),
+      }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a malformed workspace id on the clear route", async () => {
+    const res = await app.request("/api/workspaces/not-a-uuid/issue-prompt", {
+      method: "DELETE",
+      headers: auth,
+    });
+    expect(res.status).toBe(400);
   });
 });

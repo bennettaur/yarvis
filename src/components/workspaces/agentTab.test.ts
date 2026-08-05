@@ -4,11 +4,12 @@ import {
   buildAgentIssueCommand,
   resolveAgentTab,
   shouldAutoStartAgent,
+  shouldClaimKickOff,
 } from "./agentTab";
 
 const base = {
-  pendingIssuePrompt: null as string | null,
-  issuePromptReady: false,
+  issueLaunch: false,
+  provisioned: false,
   agentActive: false,
   dismissed: false,
   workspaceId: "ws1",
@@ -21,8 +22,8 @@ describe("resolveAgentTab", () => {
   it("issue flow, prompt ready: launches at the workspace root with the issue command", () => {
     const tab = resolveAgentTab({
       ...base,
-      pendingIssuePrompt: "do the thing",
-      issuePromptReady: true,
+      issueLaunch: true,
+      provisioned: true,
     });
     expect(tab).not.toBeNull();
     // The issue prompt file lives at the workspace root, so the agent must launch there.
@@ -36,8 +37,8 @@ describe("resolveAgentTab", () => {
     // that would show a tab whose shell has nothing to run yet.
     const tab = resolveAgentTab({
       ...base,
-      pendingIssuePrompt: "do the thing",
-      issuePromptReady: false,
+      issueLaunch: true,
+      provisioned: false,
       agentActive: true,
     });
     expect(tab).toBeNull();
@@ -46,8 +47,8 @@ describe("resolveAgentTab", () => {
   it("issue flow, session now live: attaches with no initial command", () => {
     const tab = resolveAgentTab({
       ...base,
-      pendingIssuePrompt: "do the thing",
-      issuePromptReady: true,
+      issueLaunch: true,
+      provisioned: true,
       agentActive: true,
     });
     // Once the launch has happened, a reattach must not re-run the whole ticket.
@@ -75,8 +76,8 @@ describe("resolveAgentTab", () => {
       resolveAgentTab({
         ...base,
         dismissed: true,
-        pendingIssuePrompt: "do the thing",
-        issuePromptReady: true,
+        issueLaunch: true,
+        provisioned: true,
       }),
     ).toBeNull();
   });
@@ -95,7 +96,7 @@ describe("agentSessionId", () => {
 
 describe("shouldAutoStartAgent", () => {
   const ready = {
-    pendingIssuePrompt: null as string | null,
+    issueLaunch: false,
     dismissed: false,
     workspaceStatus: "active",
     probed: true,
@@ -108,7 +109,7 @@ describe("shouldAutoStartAgent", () => {
   });
 
   it("does not start for the issue flow, which launches its own", () => {
-    expect(shouldAutoStartAgent({ ...ready, pendingIssuePrompt: "do the thing" })).toBe(false);
+    expect(shouldAutoStartAgent({ ...ready, issueLaunch: true })).toBe(false);
   });
 
   it("does not start once the user has closed the tab", () => {
@@ -140,5 +141,38 @@ describe("buildAgentIssueCommand", () => {
     expect(cmd.startsWith("claude --permission-mode auto ")).toBe(true);
     expect(cmd).toContain('"Read the ticket details in .yarvis/issue-prompt.md');
     expect(cmd.endsWith('"')).toBe(true);
+  });
+});
+
+describe("shouldClaimKickOff", () => {
+  const ready = {
+    pendingIssuePrompt: "implement the ticket",
+    provisioned: true,
+    dismissed: false,
+    alreadyClaimed: false,
+  };
+
+  it("claims a provisioned workspace whose kick-off is still pending", () => {
+    expect(shouldClaimKickOff(ready)).toBe(true);
+  });
+
+  it("does not claim a workspace with nothing pending", () => {
+    // The prompt is the record of an *unfinished* kick-off. Claiming again would
+    // hand the launch line back out and re-run a ticket that already ran.
+    expect(shouldClaimKickOff({ ...ready, pendingIssuePrompt: null })).toBe(false);
+  });
+
+  it("waits for provisioning, which is what puts the prompt file on disk", () => {
+    expect(shouldClaimKickOff({ ...ready, provisioned: false })).toBe(false);
+  });
+
+  it("leaves the kick-off pending when the tab is dismissed", () => {
+    // No tab means no launch line, so the ticket has not been handed over and
+    // must still be there on the next visit.
+    expect(shouldClaimKickOff({ ...ready, dismissed: true })).toBe(false);
+  });
+
+  it("claims once per visit", () => {
+    expect(shouldClaimKickOff({ ...ready, alreadyClaimed: true })).toBe(false);
   });
 });

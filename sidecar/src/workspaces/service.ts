@@ -6,7 +6,7 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { relative } from "node:path";
-import { and, eq, inArray, ne } from "drizzle-orm";
+import { and, eq, getTableColumns, inArray, ne } from "drizzle-orm";
 import { publish } from "../attention/hub.ts";
 import { clearAttentionScope, createAttention } from "../attention/service.ts";
 import type { Config } from "../config.ts";
@@ -420,13 +420,19 @@ export async function createWorkspace(
   });
 }
 
-export interface WorkspaceSummary extends Workspace {
+/**
+ * A workspace list row. Everything on the workspace except the pending kick-off
+ * prompt, which holds a whole ticket body and is wanted only by the one
+ * workspace being opened — this list is polled, and for every workspace at once.
+ */
+export interface WorkspaceSummary extends Omit<Workspace, "pendingIssuePrompt"> {
   /** Names of the repos in this workspace, for grouping in the sidebar. */
   repoNames: string[];
 }
 
 export async function listWorkspaces(db: Db): Promise<WorkspaceSummary[]> {
-  const wsRows = await db.select().from(workspaces).orderBy(workspaces.createdAt);
+  const { pendingIssuePrompt: _omitted, ...listColumns } = getTableColumns(workspaces);
+  const wsRows = await db.select(listColumns).from(workspaces).orderBy(workspaces.createdAt);
   if (!wsRows.length) return [];
 
   const memberships = await db
@@ -740,25 +746,46 @@ const provisioning = new Map<string, ProvisionRun>();
  * endpoint, and turning that second drive into an error (as rejecting it would)
  * collapses the view the user just came back to.
  */
-async function followProvision(run: ProvisionRun, emit: ProvisionEmit): Promise<void> {
-  // One chain per subscriber so replayed events stay ahead of live ones and no
-  // two writes interleave within a single SSE frame.
+async function followProvision(
+  run: ProvisionRun,
+  emit: ProvisionEmit,
+  signal?: AbortSignal,
+): Promise<void> {
+  // Deliveries queue on a chain, which is what keeps the replay ahead of the
+  // live events that arrive while it is still flushing. The chain never rejects
+  // and the run never waits on it: whoever started the run is the consumer whose
+  // backpressure matters, and a follower whose stream has closed must neither
+  // poison its own queue nor hold up the run for everyone else.
   let chain: Promise<void> = Promise.resolve();
   const ordered: ProvisionEmit = (event) => {
-    chain = chain.then(() => emit(event));
-    return chain;
+    chain = chain.then(() => emit(event)).catch(() => undefined);
   };
-  // Snapshot and subscribe without awaiting in between, so an event emitted
-  // meanwhile is neither missed nor delivered twice.
+  // Snapshot and subscribe in one synchronous step, so an event emitted
+  // meanwhile is neither missed nor delivered twice. `safeEmit` holds up its end
+  // by recording and fanning out in one step of its own.
   const replay = [...run.history];
   run.subscribers.add(ordered);
-  for (const event of replay) void ordered(event);
+  for (const event of replay) ordered(event);
   try {
-    await run.finished;
+    // Detaching on abort matters because a run can outlive many followers: the
+    // workspace view re-drives provisioning every time it is reopened, and Hono
+    // swallows writes to a closed stream, so a departed follower is otherwise
+    // indistinguishable from a live one and would be served every remaining
+    // event for the rest of the run.
+    await Promise.race([run.finished, aborted(signal)]);
     await chain;
   } finally {
     run.subscribers.delete(ordered);
   }
+}
+
+/** Resolves when `signal` aborts, or never when there is nothing to wait on. */
+function aborted(signal?: AbortSignal): Promise<void> {
+  if (!signal) return new Promise<void>(() => {});
+  if (signal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    signal.addEventListener("abort", () => resolve(), { once: true });
+  });
 }
 
 /**
@@ -816,31 +843,31 @@ export async function provisionWorkspace(
   id: string,
   emit: ProvisionEmit,
   runner: GitRunner = defaultGitRunner,
+  signal?: AbortSignal,
 ): Promise<void> {
   const inFlight = provisioning.get(id);
-  if (inFlight) return followProvision(inFlight, emit);
+  if (inFlight) return followProvision(inFlight, emit, signal);
 
-  let settle: () => void = () => {};
-  const run: ProvisionRun = {
-    history: [],
-    subscribers: new Set([emit]),
-    finished: new Promise<void>((resolve) => {
-      settle = resolve;
-    }),
-  };
+  const { promise: finished, resolve: settle } = Promise.withResolvers<void>();
+  const run: ProvisionRun = { history: [], subscribers: new Set([emit]), finished };
   provisioning.set(id, run);
 
   // Repos provision in parallel, so serialize emits: concurrent stream writes
-  // would otherwise interleave bytes within a single SSE frame. A subscriber
-  // that has gone away (its stream closed when the user navigated off) must not
-  // take the run down with it, so its failures are swallowed.
+  // would otherwise interleave bytes within a single SSE frame. A subscriber's
+  // failure is swallowed rather than propagated — a stream that closed when its
+  // reader went away is not the run's problem to fail over.
   let emitChain: Promise<void> = Promise.resolve();
   const safeEmit: ProvisionEmit = (event) => {
     emitChain = emitChain.then(async () => {
+      // Recording for replay and snapshotting the subscribers must stay a single
+      // synchronous step: an await between them is a window in which a joining
+      // subscriber (see `followProvision`) either misses this event or gets it
+      // twice.
       run.history.push(event);
       if (run.history.length > PROVISION_HISTORY_CAP) run.history.shift();
+      const subscribers = [...run.subscribers];
       await Promise.all(
-        [...run.subscribers].map((subscriber) =>
+        subscribers.map((subscriber) =>
           Promise.resolve()
             .then(() => subscriber(event))
             .catch(() => undefined),
@@ -997,15 +1024,22 @@ export async function provisionWorkspace(
     await safeEmit({ type: "done", status });
   } catch (e) {
     // Reported rather than rethrown, so every subscriber gets the same terminal
-    // event — a follower that joined mid-run would otherwise see its stream end
-    // with no outcome. Recording the failure on the row is what turns the
-    // workspace's button into a retry instead of leaving it stuck in `creating`.
+    // event — only the caller that threw would otherwise learn the outcome, and
+    // a follower's stream would just end. Recording the failure on the row is
+    // what turns the workspace's button into a retry instead of leaving it stuck
+    // in `creating`.
     const message = e instanceof Error ? e.message : String(e);
+    // Emit before recording. A failed database write is the likeliest way to
+    // land here, so writing first would throw again and cost every subscriber
+    // the terminal event this block exists to deliver.
+    await safeEmit({ type: "error", message });
     await db
       .update(workspaces)
       .set({ status: "error", updatedAt: new Date(), error: message })
-      .where(eq(workspaces.id, id));
-    await safeEmit({ type: "error", message });
+      .where(eq(workspaces.id, id))
+      // The status is a convenience — it turns the workspace's button into a
+      // retry. The event above is what callers actually wait on.
+      .catch(() => undefined);
   } finally {
     provisioning.delete(id);
     settle();
@@ -1229,6 +1263,10 @@ async function removeWorktreesAndFinish(
       summary: input.summary ?? detail.summary,
       mergedPrUrl: input.mergedPrUrl ?? detail.mergedPrUrl ?? linkedPrUrl(detail),
       error: fullyRemoved ? null : "one or more worktrees could not be removed",
+      // A torn-down workspace has no session left to hand a kick-off to, so a
+      // prompt still pending on it is only a copy of the ticket body kept alive
+      // for nobody.
+      pendingIssuePrompt: fullyRemoved ? null : detail.pendingIssuePrompt,
       archivedAt: fullyRemoved ? new Date() : null,
       updatedAt: new Date(),
     })

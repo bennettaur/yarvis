@@ -277,8 +277,11 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           },
         );
 
-        // Seed the same prompt file the issue view writes, so the session (driven
-        // from claude.ai/code or the Claude app) can read and implement the ticket.
+        // Seed the prompt file directly rather than handing the prompt to
+        // `createWorkspace` as the "Start work" button does. That route exists so
+        // a kick-off spread across several requests can be resumed; this one
+        // provisions and launches the session in a single call, so there is
+        // nothing to resume and nothing to leave pending on the row.
         const prompt = buildIssuePrompt({
           displayId: `#${issueNumber}`,
           title: issue.title,

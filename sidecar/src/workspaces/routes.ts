@@ -52,8 +52,10 @@ const createWorkspaceSchema = z.object({
   existingBranches: z.record(z.string().uuid(), z.string()).optional(),
   taskId: z.string().uuid().nullish(),
   // A "Start work" prompt to seed the workspace's agent session with, held on
-  // the row until that session is live.
-  issuePrompt: z.string().nullish(),
+  // the row until the launch line goes out. Capped like the issue bodies it is
+  // composed from (see `createIssueSchema`), now that it is persisted rather
+  // than passed straight through.
+  issuePrompt: z.string().max(65536).nullish(),
 });
 
 const archiveSchema = z.object({
@@ -209,7 +211,9 @@ export function createWorkspaceRoutes(config: Config): Hono {
   // Clears the pending "Start work" prompt, called once the workspace's agent
   // session is live and has been handed the ticket.
   router.delete("/:id/issue-prompt", async (c) => {
-    await clearPendingIssuePrompt(db(), c.req.param("id"));
+    const id = z.string().uuid().safeParse(c.req.param("id"));
+    if (!id.success) return c.json({ error: "bad workspace id" }, 400);
+    await clearPendingIssuePrompt(db(), id.data);
     return c.json({ ok: true });
   });
 
@@ -221,8 +225,13 @@ export function createWorkspaceRoutes(config: Config): Hono {
     const id = c.req.param("id");
     return streamSSE(c, async (stream) => {
       const emit = (event: ProvisionEvent) => stream.writeSSE({ data: JSON.stringify(event) });
+      // Lets a caller that is only following someone else's run stop following
+      // when its stream closes. The run itself is deliberately not cancelled:
+      // finishing it without an audience is the whole point.
+      const gone = new AbortController();
+      stream.onAbort(() => gone.abort());
       try {
-        await provisionWorkspace(db(), id, emit);
+        await provisionWorkspace(db(), id, emit, undefined, gone.signal);
       } catch (e) {
         await emit({ type: "error", message: e instanceof Error ? e.message : String(e) });
       }

@@ -11,7 +11,6 @@ import {
   issueStars,
   type Repo,
   repos,
-  workspaces,
 } from "../db/schema.ts";
 import type { IssueSummary } from "./types.ts";
 
@@ -44,15 +43,6 @@ export function findRepoBySourceKey(db: Db, sourceKey: string): Promise<Repo | u
     .from(repos)
     .where(and(eq(repos.owner, owner), eq(repos.repo, repo)))
     .then((rows) => rows[0]);
-}
-
-/** Absolute root path of a workspace (the folder holding its worktrees). */
-export function getWorkspaceRoot(db: Db, workspaceId: string): Promise<string | undefined> {
-  return db
-    .select({ rootPath: workspaces.rootPath })
-    .from(workspaces)
-    .where(eq(workspaces.id, workspaceId))
-    .then((rows) => rows[0]?.rootPath);
 }
 
 /**
@@ -96,6 +86,12 @@ export function sanitizeIssueText(text: string): string {
 
   return (
     withoutComments
+      // Whatever marker is still standing is unpaired. Dropping it is what makes
+      // sanitizing a composition of sanitized parts safe: an issue's title and
+      // body are sanitized separately and then joined, so a lone `<!--` left in
+      // the title would pair with a `-->` from the body on the next pass and
+      // swallow the description between them.
+      .replace(/<!--|-->/g, "")
       // Trailing whitespace (not newlines) and runs of blank lines.
       .replace(/[^\S\n]+$/gm, "")
       .replace(/\n{3,}/g, "\n\n")

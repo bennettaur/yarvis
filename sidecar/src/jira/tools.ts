@@ -254,6 +254,10 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
           transitionToInProgress,
         });
 
+        // Written here rather than handed to `createWorkspace` as the "Start
+        // work" button does: that route holds the prompt on the row so a
+        // kick-off spread across several requests can be resumed, and this one
+        // provisions and launches in a single call, leaving nothing to resume.
         const prompt = buildIssuePrompt({
           displayId: issue.displayId,
           title: issue.title,

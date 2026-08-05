@@ -34,6 +34,7 @@ import {
   DEFAULT_AGENT_NAME,
   resolveAgentTab,
   shouldAutoStartAgent,
+  shouldClaimKickOff,
 } from "./workspaces/agentTab";
 import BranchCombobox from "./workspaces/BranchCombobox";
 import LinkWorkModal from "./workspaces/LinkWorkModal";
@@ -892,39 +893,52 @@ function WorkspaceDetailView({
     }
   }, [id, load, onChanged]);
 
-  // A "Start work" kick-off the sidecar is still holding a prompt for. Read from
-  // the workspace rather than a hand-off prop, so opening this workspace resumes
-  // an unfinished kick-off whether or not this view was here when it started.
-  const pendingIssuePrompt = detail?.pendingIssuePrompt ?? null;
+  // Whether this visit is driving an issue "Start work" launch. It latches: the
+  // sidecar's prompt is what raises it, but it stays up after that prompt is
+  // dropped, because the drop happens the moment the launch line goes out rather
+  // than once the session answers. Splitting the two is what stops a workspace
+  // that already ran its ticket from running it again — the prompt is the sole
+  // record of an *unfinished* kick-off, so anything that outlives the launch it
+  // belongs to would re-run the whole ticket in a fresh auto-approved session on
+  // the next open.
+  const [issueLaunched, setIssueLaunched] = useState(false);
+  const issueLaunch = issueLaunched || Boolean(detail?.pendingIssuePrompt);
 
   // Auto-provision a freshly kicked-off workspace (the user didn't come here to
   // click "Provision"); the ref guards against re-firing on each poll. Re-driving
   // a provision already running attaches to it, so returning mid-run picks the
   // log back up instead of failing.
   useEffect(() => {
-    if (!pendingIssuePrompt || !detail) return;
+    if (!issueLaunch || !detail) return;
     if (detail.status === "creating" && provisionLog === null && !autoProvisionRef.current) {
       autoProvisionRef.current = true;
       void provision();
     }
-  }, [pendingIssuePrompt, detail, provisionLog, provision]);
+  }, [issueLaunch, detail, provisionLog, provision]);
 
-  // The kick-off is done once its session is live, so drop the prompt the
-  // sidecar was holding for the resume. Waiting for the session (rather than
-  // clearing as soon as the workspace goes active) keeps the pinned tab that
-  // carries the launch line on screen until it has actually spawned.
+  // Hand the kick-off over: once the workspace is provisioned, the pinned tab
+  // below carries the launch line, so the sidecar's copy has done its job and is
+  // dropped now rather than when the 4s liveness probe confirms the session.
+  // Waiting for that confirmation would leave a window in which closing the tab
+  // and reopening the workspace re-runs the ticket. A dismissed tab issues no
+  // launch line, so the kick-off stays pending for the next visit.
   useEffect(() => {
-    if (!pendingIssuePrompt || !agentActive || promptClearedRef.current) return;
+    const claim = shouldClaimKickOff({
+      pendingIssuePrompt: detail?.pendingIssuePrompt ?? null,
+      provisioned: detail?.status === "active",
+      dismissed: agentDismissed,
+      alreadyClaimed: promptClearedRef.current,
+    });
+    if (!claim) return;
     promptClearedRef.current = true;
+    setIssueLaunched(true);
     clearPendingIssuePrompt(id)
       .then(() => setDetail((prev) => (prev ? { ...prev, pendingIssuePrompt: null } : prev)))
-      // Non-fatal: the prompt file is already written and the session is running.
-      // A stale prompt only means the next open re-offers a launch that the
-      // liveness probe then resolves to a plain attach.
-      .catch(() => {
-        promptClearedRef.current = false;
-      });
-  }, [pendingIssuePrompt, agentActive, id]);
+      // Non-fatal and deliberately not retried: the prompt file is on disk and
+      // the tab is launching against it. A copy left behind only costs a
+      // redundant launch offer on the next open.
+      .catch(() => undefined);
+  }, [detail?.pendingIssuePrompt, detail?.status, agentDismissed, id]);
 
   // Load the configured agent up front so the tab is titled correctly and the
   // issue terminal launches with the right command.
@@ -970,7 +984,7 @@ function WorkspaceDetailView({
   // for what has to hold first.
   useEffect(() => {
     const start = shouldAutoStartAgent({
-      pendingIssuePrompt,
+      issueLaunch,
       dismissed: agentDismissed,
       workspaceStatus: detail?.status ?? "",
       probed: agentProbed,
@@ -980,7 +994,7 @@ function WorkspaceDetailView({
     if (!start) return;
     autoStartAgentRef.current = true;
     void startAgent();
-  }, [pendingIssuePrompt, agentDismissed, detail?.status, agentProbed, agentActive, startAgent]);
+  }, [issueLaunch, agentDismissed, detail?.status, agentProbed, agentActive, startAgent]);
 
   // Closing the agent tab means closing it: TerminalTabs kills the session, and
   // dropping it from `pinnedTabs` here is what removes the header. Until this
@@ -1236,10 +1250,8 @@ function WorkspaceDetailView({
             // iTerm-style tabs and Cmd+D pane splits for its own shells. See
             // `resolveAgentTab` for how the issue and remote-control flows differ.
             const agentTab = resolveAgentTab({
-              pendingIssuePrompt,
-              // Provisioning writes `.yarvis/issue-prompt.md` before it reports
-              // the workspace active, so an active workspace has it on disk.
-              issuePromptReady: provisioned,
+              issueLaunch,
+              provisioned,
               agentActive,
               dismissed: agentDismissed,
               workspaceId: detail.id,

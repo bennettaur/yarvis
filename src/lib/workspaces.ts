@@ -68,8 +68,10 @@ export interface WorkspaceDetail extends Workspace {
   issues: IssueLink[];
 }
 
-/** A workspace list row, with its repo names for sidebar grouping. */
-export interface WorkspaceSummary extends Workspace {
+/** A workspace list row, with its repo names for sidebar grouping. The pending
+ *  kick-off prompt is not part of it — only the open workspace needs that, and
+ *  this list is polled for every workspace at once. */
+export interface WorkspaceSummary extends Omit<Workspace, "pendingIssuePrompt"> {
   repoNames: string[];
 }
 
