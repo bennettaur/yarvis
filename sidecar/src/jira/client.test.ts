@@ -249,7 +249,8 @@ describe("JiraClient mutations", () => {
       calls,
     );
     const comment = await jira.addComment("PROJ-1", "hi");
-    expect((calls[0]?.body as { body: unknown }).body).toEqual({
+    const body = calls[0]?.body as { body: unknown };
+    expect(body.body).toEqual({
       version: 1,
       type: "doc",
       content: [{ type: "paragraph", content: [{ type: "text", text: "hi" }] }],
