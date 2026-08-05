@@ -11,6 +11,7 @@ export default function AppShell({
   tab,
   onTabChange,
   onOpenOmniChat,
+  onOpenClipboard,
   onOpenAttention,
   attentionPending,
   children,
@@ -18,6 +19,7 @@ export default function AppShell({
   tab: Tab;
   onTabChange: (tab: Tab) => void;
   onOpenOmniChat: () => void;
+  onOpenClipboard: () => void;
   onOpenAttention: () => void;
   attentionPending: boolean;
   children: React.ReactNode;
@@ -28,6 +30,7 @@ export default function AppShell({
         tab={tab}
         onTabChange={onTabChange}
         onOpenOmniChat={onOpenOmniChat}
+        onOpenClipboard={onOpenClipboard}
         attentionPending={attentionPending}
       />
       <div className="flex min-w-0 flex-1 flex-col">

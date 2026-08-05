@@ -8,15 +8,20 @@
 //! signals teardown with `pty-exit:<id>`, mirroring the event pattern in
 //! `alarms.rs`. Events are namespaced per session so each terminal only
 //! receives its own output.
+//!
+//! Captured output and streamed output are two views of one byte stream, so both
+//! carry stream offsets: a snapshot reports where it ends, and each output event
+//! reports where its chunk begins. That lets a reattaching frontend splice the
+//! two without a gap or an overlap — see `PtySnapshot`.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::settings::SettingsState;
+use crate::settings::{non_blank, SettingsState};
 
 /// Upper bound on per-session captured output, in bytes. Older output is
 /// dropped from the front once exceeded so memory stays bounded.
@@ -120,19 +125,51 @@ fn target_fd_limit(soft: libc::rlim_t, hard: libc::rlim_t) -> Option<libc::rlim_
     (soft < ceiling).then_some(ceiling)
 }
 
+/// Output captured so a reattaching component can replay it, plus where that
+/// capture sits in the session's byte stream.
+#[derive(Default)]
+struct Scrollback {
+    buf: Vec<u8>,
+    /// Stream offset one past the last captured byte. Counts every byte the
+    /// session has ever produced, including those trimmed off the front, so it
+    /// keeps meaning the same thing as `buf` is capped.
+    end_offset: u64,
+}
+
 struct PtySession {
     /// Writes user input into the PTY (taken once from the master).
     writer: Box<dyn Write + Send>,
     /// Retained for resize; the reader is cloned off it at spawn time.
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
-    /// Output captured so a reattaching component can replay it.
-    scrollback: Arc<Mutex<Vec<u8>>>,
+    scrollback: Arc<Mutex<Scrollback>>,
 }
 
 #[derive(Default)]
 pub struct PtyState {
     sessions: Mutex<HashMap<String, PtySession>>,
+}
+
+/// What `pty_attach` hands back: the captured output to replay, and the stream
+/// offset just past it. A chunk on `pty-output` that ends at or before
+/// `end_offset` is already accounted for — either present in `scrollback` or
+/// older than what the cap kept — and must not be written twice. Anything past
+/// `end_offset` was captured after the snapshot was taken, exists nowhere else,
+/// and must not be dropped. A chunk straddling the boundary is both, so the
+/// frontend writes only its tail.
+#[derive(Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtySnapshot {
+    scrollback: Vec<u8>,
+    end_offset: u64,
+}
+
+/// A chunk of session output, tagged with where it starts in the byte stream.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PtyOutput {
+    offset: u64,
+    bytes: Vec<u8>,
 }
 
 fn pty_size(cols: u16, rows: u16) -> PtySize {
@@ -144,21 +181,36 @@ fn pty_size(cols: u16, rows: u16) -> PtySize {
     }
 }
 
-/// Appends `chunk` to `buf`, dropping the oldest bytes so `buf` never exceeds
-/// `max`. Extracted as a free function so the cap logic is unit-testable
-/// without a live PTY.
-fn append_capped(buf: &mut Vec<u8>, chunk: &[u8], max: usize) {
-    buf.extend_from_slice(chunk);
-    if buf.len() > max {
-        let excess = buf.len() - max;
-        buf.drain(0..excess);
+impl Scrollback {
+    /// Appends `chunk`, dropping the oldest bytes so the capture never exceeds
+    /// `max`, and returns the stream offset the chunk starts at.
+    fn append(&mut self, chunk: &[u8], max: usize) -> u64 {
+        let start = self.end_offset;
+        self.buf.extend_from_slice(chunk);
+        self.end_offset += chunk.len() as u64;
+        if self.buf.len() > max {
+            let excess = self.buf.len() - max;
+            self.buf.drain(0..excess);
+        }
+        start
     }
 }
 
-/// Clones a session's scrollback, treating a poisoned lock as empty rather than
-/// propagating — a reader-thread panic must not permanently brick reattach.
-fn snapshot(scrollback: &Arc<Mutex<Vec<u8>>>) -> Vec<u8> {
-    scrollback.lock().map(|sb| sb.clone()).unwrap_or_default()
+/// Takes a session's scrollback lock, recovering from poisoning rather than
+/// propagating — a reader-thread panic must not permanently brick reattach, and
+/// the offsets both sides splice on only line up if every capture is counted.
+fn lock_scrollback(scrollback: &Mutex<Scrollback>) -> MutexGuard<'_, Scrollback> {
+    scrollback.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Clones a session's captured output together with the stream offset it ends
+/// at, so the frontend knows which streamed chunks the snapshot already covers.
+fn snapshot(scrollback: &Mutex<Scrollback>) -> PtySnapshot {
+    let sb = lock_scrollback(scrollback);
+    PtySnapshot {
+        scrollback: sb.buf.clone(),
+        end_offset: sb.end_offset,
+    }
 }
 
 /// Parameters for spawning a session, grouped so the spawn helpers stay within
@@ -172,6 +224,14 @@ struct SpawnSpec {
     /// Drop `ANTHROPIC_API_KEY` from the child env so a Claude Code session uses
     /// the user's subscription login (Remote Control does not support API-key auth).
     strip_provider_secrets: bool,
+    /// Stream offset the new session's capture starts counting from. Non-zero
+    /// only when this spawn replaces a dead session under the same id: the
+    /// `pty-output:<id>` event name outlives the shell, so a final chunk from the
+    /// outgoing one can still reach a frontend that has already attached to this
+    /// one. Continuing the outgoing session's offsets rather than restarting at
+    /// zero leaves that chunk below where the new stream begins, which is what
+    /// makes the frontend's own dedup discard it.
+    start_offset: u64,
 }
 
 /// The workspace a PTY id belongs to, when its id encodes one: the pinned Claude
@@ -284,7 +344,10 @@ fn spawn_session(app: &AppHandle, id: &str, spec: &SpawnSpec) -> Result<PtySessi
         let _ = writer.flush();
     }
 
-    let scrollback = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let scrollback = Arc::new(Mutex::new(Scrollback {
+        buf: Vec::new(),
+        end_offset: spec.start_offset,
+    }));
     {
         let app = app.clone();
         let id = id.to_string();
@@ -306,7 +369,7 @@ fn read_loop(
     app: AppHandle,
     id: String,
     mut reader: Box<dyn Read + Send>,
-    scrollback: Arc<Mutex<Vec<u8>>>,
+    scrollback: Arc<Mutex<Scrollback>>,
 ) {
     let output_event = format!("pty-output:{id}");
     let mut buf = [0u8; READ_BUF_SIZE];
@@ -315,10 +378,17 @@ fn read_loop(
             Ok(0) | Err(_) => break,
             Ok(n) => {
                 let chunk = &buf[..n];
-                if let Ok(mut sb) = scrollback.lock() {
-                    append_capped(&mut sb, chunk, MAX_SCROLLBACK);
-                }
-                let _ = app.emit(&output_event, chunk.to_vec());
+                // Capture before emitting, so a snapshot taken concurrently either
+                // already contains this chunk or reports an `end_offset` below it —
+                // never an offset that claims bytes it doesn't hold.
+                let offset = lock_scrollback(&scrollback).append(chunk, MAX_SCROLLBACK);
+                let _ = app.emit(
+                    &output_event,
+                    PtyOutput {
+                        offset,
+                        bytes: chunk.to_vec(),
+                    },
+                );
             }
         }
     }
@@ -377,21 +447,106 @@ pub fn kill_session(state: &PtyState, id: &str) {
     }
 }
 
-/// Base command used to launch Claude Code. Overridable via the
-/// `YARVIS_CLAUDE_COMMAND` env var so a user can bake in default options (e.g. a
-/// different permission mode or model). Remote-control sessions append
-/// `--remote-control <name>` to whatever this resolves to.
-const DEFAULT_CLAUDE_COMMAND: &str = "claude --permission-mode auto";
+/// Base command a workspace's agent session is launched from. Configurable in
+/// Settings as `agentCommand`, and overridable per-launch via the
+/// `YARVIS_CLAUDE_COMMAND` env var. Remote-control sessions append
+/// `--remote-control <name>` to whatever this resolves to, which is a Claude
+/// Code flag — an agent that doesn't take it can still be launched, but won't
+/// be remote-controllable.
+pub const DEFAULT_AGENT_COMMAND: &str = "claude --permission-mode auto";
 
-/// The configured (or default) base command used to start Claude Code. Read from
-/// the environment on each use so a restart-injected change is picked up without
-/// a rebuild; an empty override falls back to the default.
-fn claude_base_command() -> String {
-    std::env::var("YARVIS_CLAUDE_COMMAND")
-        .ok()
+/// Display name for a workspace's agent, used as its tab title. Configurable in
+/// Settings as `agentName`.
+pub const DEFAULT_AGENT_NAME: &str = "Claude";
+
+/// Env override for the agent command, kept for the case where a command has to
+/// be injected without the app's settings file — it outranks the stored value.
+const AGENT_COMMAND_ENV: &str = "YARVIS_CLAUDE_COMMAND";
+
+/// The agent command override in the environment, if a non-blank one is set.
+/// Read on each use so a restart-injected change is picked up without a rebuild.
+pub fn agent_command_env() -> Option<String> {
+    non_blank(std::env::var(AGENT_COMMAND_ENV).ok())
+}
+
+/// The configured (or default) base command a workspace's agent is launched
+/// from. Read on each use so a change made in Settings applies to the next
+/// session started rather than waiting for a restart.
+fn agent_command(app: &AppHandle) -> String {
+    resolve_agent_command(
+        agent_command_env(),
+        app.try_state::<SettingsState>()
+            .and_then(|state| state.snapshot().agent_command),
+    )
+}
+
+/// Resolves the agent command from the env override and the stored setting.
+/// Extracted from `agent_command` so the precedence is unit-testable without app
+/// state. The env override wins, then the stored setting; a blank value at
+/// either level is treated as unset rather than as an empty command.
+///
+/// Control characters are stripped rather than trusted. `set_agent` rejects them
+/// on write, but neither source has to have gone through it: `settings.json` is
+/// hand-editable and the env override never touches it. Both end up typed into
+/// an interactive shell, where 0x03/0x15 break out of the line — see
+/// `is_unsafe_name_char`.
+fn resolve_agent_command(env: Option<String>, configured: Option<String>) -> String {
+    non_blank(env)
+        .or_else(|| non_blank(configured))
+        .map(|s| s.chars().filter(|c| !c.is_control()).collect::<String>())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| DEFAULT_CLAUDE_COMMAND.to_string())
+        .unwrap_or_else(|| DEFAULT_AGENT_COMMAND.to_string())
+}
+
+/// The configured (or default) display name for a workspace's agent.
+fn agent_name(app: &AppHandle) -> String {
+    non_blank(
+        app.try_state::<SettingsState>()
+            .and_then(|state| state.snapshot().agent_name),
+    )
+    .unwrap_or_else(|| DEFAULT_AGENT_NAME.to_string())
+}
+
+/// Longest session name accepted into a launch line. Names come from issue
+/// titles, so this bounds what a single line can carry rather than reflecting
+/// anything the shell enforces.
+const MAX_SESSION_NAME_CHARS: usize = 200;
+
+/// Characters a session name may not carry into a launch line.
+///
+/// `is_control` (Unicode Cc) is the part that matters for injection: the launch
+/// line is not handed to a shell parser — it is typed into an interactive shell
+/// (see `spawn_session`), whose line editor treats bytes like 0x03 (interrupt)
+/// and 0x15 (kill-line) as editing commands. Those act before quoting is ever
+/// parsed, so they discard the opening quote and let whatever follows run as a
+/// new command line.
+///
+/// The rest are not an injection risk — they are multi-byte UTF-8, so a shell
+/// sees them as ordinary text — but the same name is the session title shown in
+/// claude.ai/code and the Claude mobile app, where a bidi override renders a
+/// title that reads as something other than what it is. Both come from
+/// third-party text (a GitHub or JIRA issue title reaches here via
+/// `create_workspace`), so both are stripped.
+fn is_unsafe_name_char(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
+            '\u{2028}' | '\u{2029}'                 // line / paragraph separators
+            | '\u{200e}' | '\u{200f}'               // LTR / RTL marks
+            | '\u{202a}'..='\u{202e}'               // embedding / override
+            | '\u{2066}'..='\u{2069}'               // isolates
+        )
+}
+
+/// Strips unsafe characters from a session name and bounds its length. See
+/// `is_unsafe_name_char` for why quoting alone is not sufficient here.
+fn sanitize_session_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| !is_unsafe_name_char(*c))
+        .take(MAX_SESSION_NAME_CHARS)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// Composes the remote-control launch line from a base command and a session
@@ -401,8 +556,19 @@ fn remote_control_command(base: &str, name: &str) -> String {
     format!(
         "{} --remote-control {}",
         base.trim(),
-        shell_single_quote(name)
+        shell_single_quote(&sanitize_session_name(name))
     )
+}
+
+/// The launch line for an agent session: the base command, with Remote Control
+/// added only when asked for. Extracted from `spawn_claude_session` alongside
+/// `remote_control_command` so the choice is unit-testable without app state.
+fn agent_launch_command(base: &str, name: &str, remote_control: bool) -> String {
+    if remote_control {
+        remote_control_command(base, name)
+    } else {
+        base.trim().to_string()
+    }
 }
 
 /// Builds the shell-safe single-quoted form of `s` for injection into a shell
@@ -421,20 +587,32 @@ fn shell_single_quote(s: &str) -> String {
     out
 }
 
-/// Starts a remote-controllable Claude Code session in `cwd` under the stable id
-/// `ws-claude:<workspace_id>`, which the frontend later attaches to. The argv is
-/// constructed here (not supplied by the caller) so the control channel can only
-/// ever launch Claude, never an arbitrary command. Returns once the session is
-/// registered; the session keeps running until killed or the app exits.
+/// Starts an agent session in `cwd` under the stable id `ws-claude:<workspace_id>`,
+/// which the frontend later attaches to. Returns once the session is registered;
+/// the session keeps running until killed or the app exits.
+///
+/// The launch line is built here rather than taken from the caller, so a caller
+/// (including the control channel) chooses only *whether* to start the configured
+/// agent, not what runs. The command itself comes from settings, which only the
+/// webview can write; the one caller-supplied value that reaches the line is
+/// `name`, which `sanitize_session_name` strips before it is quoted. This is not
+/// argv safety — the line is typed into an interactive shell — so both of those
+/// matter.
+///
+/// `remote_control` adds Claude Code's `--remote-control`, which is only wanted
+/// when the launch came from somewhere the user isn't at the machine — a
+/// Telegram turn. A session started at the laptop is driven in its own tab, and
+/// can be made remotely controllable later from inside the session itself.
 pub fn spawn_claude_session(
     app: &AppHandle,
     state: &PtyState,
     workspace_id: &str,
     cwd: String,
     name: &str,
+    remote_control: bool,
 ) -> Result<(), String> {
     let id = format!("ws-claude:{workspace_id}");
-    let command = remote_control_command(&claude_base_command(), name);
+    let command = agent_launch_command(&agent_command(app), name, remote_control);
     spawn_into_state(
         app,
         state,
@@ -445,14 +623,19 @@ pub fn spawn_claude_session(
             cwd: Some(cwd),
             initial_command: Some(command),
             strip_provider_secrets: true,
+            // Nothing to carry: `spawn_into_state` discards this spawn when the id
+            // is already taken, so it only reaches a `Scrollback` when no session
+            // holds the id and no predecessor's offsets survive to continue from.
+            start_offset: 0,
         },
     )
 }
 
 // --- Commands ---
 
-/// Attaches to the session `id`, returning its scrollback to replay. Spawns a
-/// fresh shell when the session is absent or its shell has already exited.
+/// Attaches to the session `id`, returning the scrollback to replay and the
+/// stream offset it ends at (see `PtySnapshot`). Spawns a fresh shell when the
+/// session is absent or its shell has already exited.
 #[tauri::command]
 pub fn pty_attach(
     app: AppHandle,
@@ -461,14 +644,17 @@ pub fn pty_attach(
     cols: u16,
     rows: u16,
     cwd: Option<String>,
-) -> Result<Vec<u8>, String> {
-    // Reattach to a live session; reap and respawn a dead one.
+) -> Result<PtySnapshot, String> {
+    // Reattach to a live session; reap and respawn a dead one, carrying its
+    // offsets forward (see `SpawnSpec::start_offset`).
+    let mut start_offset = 0;
     {
         let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
         if let Some(session) = sessions.get_mut(&id) {
             if matches!(session.child.try_wait(), Ok(None)) {
                 return Ok(snapshot(&session.scrollback));
             }
+            start_offset = lock_scrollback(&session.scrollback).end_offset;
             sessions.remove(&id);
         }
     }
@@ -483,6 +669,7 @@ pub fn pty_attach(
             cwd,
             initial_command: None,
             strip_provider_secrets: false,
+            start_offset,
         },
     )?;
 
@@ -491,7 +678,7 @@ pub fn pty_attach(
     let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     match sessions.get(&id) {
         Some(session) => Ok(snapshot(&session.scrollback)),
-        None => Ok(Vec::new()),
+        None => Ok(PtySnapshot::default()),
     }
 }
 
@@ -507,9 +694,9 @@ pub fn pty_exists(state: tauri::State<'_, PtyState>, id: String) -> Result<bool,
     Ok(false)
 }
 
-/// Starts a remote-controllable Claude session for an existing workspace, so the
-/// frontend can offer a "Start Claude session" action. Mirrors what the control
-/// channel does for the sidecar/agent; both go through `spawn_claude_session`.
+/// Starts an agent session for an existing workspace, so the frontend can open
+/// one on entering a workspace. Mirrors what the control channel does for the
+/// sidecar/agent; both go through `spawn_claude_session`.
 #[tauri::command]
 pub fn pty_start_claude(
     app: AppHandle,
@@ -517,16 +704,36 @@ pub fn pty_start_claude(
     workspace_id: String,
     cwd: String,
     name: String,
+    remote_control: bool,
 ) -> Result<(), String> {
-    spawn_claude_session(&app, state.inner(), &workspace_id, cwd, &name)
+    spawn_claude_session(
+        &app,
+        state.inner(),
+        &workspace_id,
+        cwd,
+        &name,
+        remote_control,
+    )
 }
 
-/// Returns the configured base command used to start Claude Code, so the
-/// frontend's own Claude launches (e.g. the issue "Start work" terminal) match
-/// the command remote-control sessions are built from.
+/// The agent a workspace surfaces: its tab title and the base command its
+/// launches are built from.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConfig {
+    name: String,
+    command: String,
+}
+
+/// Returns the configured agent, so the frontend's own launches (e.g. the issue
+/// "Start work" terminal) use the same command remote-control sessions are built
+/// from and label the tab the same way.
 #[tauri::command]
-pub fn get_claude_command() -> String {
-    claude_base_command()
+pub fn get_agent_config(app: AppHandle) -> AgentConfig {
+    AgentConfig {
+        name: agent_name(&app),
+        command: agent_command(&app),
+    }
 }
 
 #[tauri::command]
@@ -601,9 +808,71 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        append_capped, attention_env, attention_workspace_id, remote_control_command,
-        resolve_max_sessions, DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS, MAX_SCROLLBACK,
+        agent_launch_command, attention_env, attention_workspace_id, is_unsafe_name_char,
+        lock_scrollback, remote_control_command, resolve_agent_command, resolve_max_sessions,
+        snapshot, Scrollback, DEFAULT_AGENT_COMMAND, DEFAULT_MAX_SESSIONS,
+        MAX_CONFIGURABLE_SESSIONS, MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
     };
+    use std::sync::Mutex;
+
+    #[test]
+    fn resolve_agent_command_uses_the_default_when_nothing_is_set() {
+        assert_eq!(resolve_agent_command(None, None), DEFAULT_AGENT_COMMAND);
+    }
+
+    #[test]
+    fn resolve_agent_command_uses_the_stored_setting() {
+        assert_eq!(
+            resolve_agent_command(None, Some("codex --yolo".to_string())),
+            "codex --yolo"
+        );
+    }
+
+    #[test]
+    fn resolve_agent_command_lets_the_env_override_outrank_the_setting() {
+        assert_eq!(
+            resolve_agent_command(
+                Some("claude --model opus".to_string()),
+                Some("codex --yolo".to_string())
+            ),
+            "claude --model opus"
+        );
+    }
+
+    #[test]
+    fn resolve_agent_command_treats_a_blank_value_as_unset() {
+        // A blank setting must fall through rather than launch an empty command.
+        assert_eq!(
+            resolve_agent_command(Some("  ".to_string()), Some("codex --yolo".to_string())),
+            "codex --yolo"
+        );
+        assert_eq!(
+            resolve_agent_command(None, Some("  ".to_string())),
+            DEFAULT_AGENT_COMMAND
+        );
+    }
+
+    #[test]
+    fn resolve_agent_command_strips_control_characters_from_either_source() {
+        // `set_agent` rejects these on write, but a hand-edited settings.json or
+        // the env override never went through it, and both land in a shell line.
+        assert_eq!(
+            resolve_agent_command(None, Some("claude\u{3}rm -rf /".to_string())),
+            "clauderm -rf /"
+        );
+        assert_eq!(
+            resolve_agent_command(Some("claude\u{15}whoami".to_string()), None),
+            "claudewhoami"
+        );
+    }
+
+    #[test]
+    fn resolve_agent_command_trims_surrounding_whitespace() {
+        assert_eq!(
+            resolve_agent_command(None, Some("  codex --yolo  ".to_string())),
+            "codex --yolo"
+        );
+    }
 
     #[cfg(unix)]
     mod fd_limit {
@@ -687,6 +956,62 @@ mod tests {
         assert_eq!(
             cmd,
             "claude --permission-mode auto --remote-control 'Rename the API'"
+        );
+    }
+
+    #[test]
+    fn remote_control_command_strips_control_characters_from_the_name() {
+        // The launch line is typed into an interactive shell, whose line editor
+        // acts on 0x03 (interrupt) and 0x15 (kill-line) before any quoting is
+        // parsed — so a quoted name carrying one ends the quote and runs the rest
+        // as its own command. Names come from issue titles, which are attacker
+        // authorable, so these must never survive into the line.
+        for injected in ["\u{3}", "\u{15}", "\r", "\n", "\u{1b}"] {
+            let name = format!("Fix bug{injected}id > /tmp/pwned");
+            let cmd = remote_control_command("claude", &name);
+            assert!(
+                !cmd.chars().any(is_unsafe_name_char),
+                "unsafe character survived in: {cmd:?}"
+            );
+            assert_eq!(cmd, "claude --remote-control 'Fix bugid > /tmp/pwned'");
+        }
+    }
+
+    #[test]
+    fn remote_control_command_strips_bidi_and_separator_characters() {
+        // Not a shell risk — these are multi-byte UTF-8 — but the name is also the
+        // session title shown in claude.ai/code, where an override renders a title
+        // that reads as something other than what it is.
+        for injected in ["\u{202e}", "\u{2066}", "\u{200f}", "\u{2028}"] {
+            let name = format!("Fix{injected}bug");
+            let cmd = remote_control_command("claude", &name);
+            assert_eq!(cmd, "claude --remote-control 'Fixbug'");
+        }
+    }
+
+    #[test]
+    fn remote_control_command_bounds_the_name_length() {
+        let cmd = remote_control_command("claude", &"a".repeat(MAX_SESSION_NAME_CHARS + 50));
+        assert_eq!(
+            cmd,
+            format!(
+                "claude --remote-control '{}'",
+                "a".repeat(MAX_SESSION_NAME_CHARS)
+            )
+        );
+    }
+
+    #[test]
+    fn agent_launch_command_adds_remote_control_only_when_asked() {
+        assert_eq!(
+            agent_launch_command("claude --permission-mode auto", "Fix bug", true),
+            "claude --permission-mode auto --remote-control 'Fix bug'"
+        );
+        // A session started at the machine is driven in its own tab; Remote
+        // Control is enabled from inside it if the user later steps away.
+        assert_eq!(
+            agent_launch_command("claude --permission-mode auto", "Fix bug", false),
+            "claude --permission-mode auto"
         );
     }
 
@@ -778,34 +1103,83 @@ mod tests {
     }
 
     #[test]
-    fn append_capped_leaves_under_cap_untouched() {
-        let mut buf = Vec::new();
-        append_capped(&mut buf, b"hello", 1024);
-        assert_eq!(buf, b"hello");
+    fn append_leaves_under_cap_untouched() {
+        let mut sb = Scrollback::default();
+        sb.append(b"hello", 1024);
+        assert_eq!(sb.buf, b"hello");
     }
 
     #[test]
-    fn append_capped_trims_oldest_down_to_cap() {
-        let mut buf = Vec::new();
-        append_capped(&mut buf, b"0123456789", 10);
-        append_capped(&mut buf, b"abcde", 10);
+    fn append_trims_oldest_down_to_cap() {
+        let mut sb = Scrollback::default();
+        sb.append(b"0123456789", 10);
+        sb.append(b"abcde", 10);
         // The oldest 5 bytes are dropped and the length is held at the cap.
-        assert_eq!(buf, b"56789abcde");
+        assert_eq!(sb.buf, b"56789abcde");
     }
 
     #[test]
-    fn append_capped_handles_chunk_larger_than_cap() {
-        let mut buf = Vec::new();
-        append_capped(&mut buf, b"abcdefghij", 4);
-        assert_eq!(buf, b"ghij");
+    fn append_handles_chunk_larger_than_cap() {
+        let mut sb = Scrollback::default();
+        sb.append(b"abcdefghij", 4);
+        assert_eq!(sb.buf, b"ghij");
     }
 
     #[test]
-    fn append_capped_real_cap_is_bounded() {
-        let mut buf = Vec::new();
+    fn append_real_cap_is_bounded() {
+        let mut sb = Scrollback::default();
         for _ in 0..512 {
-            append_capped(&mut buf, &[b'x'; 4096], MAX_SCROLLBACK);
+            sb.append(&[b'x'; 4096], MAX_SCROLLBACK);
         }
-        assert!(buf.len() <= MAX_SCROLLBACK);
+        assert!(sb.buf.len() <= MAX_SCROLLBACK);
+    }
+
+    #[test]
+    fn append_reports_the_offset_each_chunk_starts_at() {
+        let mut sb = Scrollback::default();
+        assert_eq!(sb.append(b"hello", 1024), 0);
+        assert_eq!(sb.append(b" world", 1024), 5);
+        assert_eq!(sb.end_offset, 11);
+    }
+
+    #[test]
+    fn append_keeps_counting_offsets_past_trimmed_bytes() {
+        // The offsets are what a reattaching frontend splices the snapshot and the
+        // live stream on, so trimming the capture must not rewind them.
+        let mut sb = Scrollback::default();
+        sb.append(b"0123456789", 4);
+        assert_eq!(sb.buf, b"6789");
+        assert_eq!(sb.append(b"ab", 4), 10);
+        assert_eq!(sb.buf, b"89ab");
+        assert_eq!(sb.end_offset, 12);
+    }
+
+    #[test]
+    fn snapshot_reports_the_stream_offset_not_the_capture_length() {
+        // The two diverge as soon as the cap trims anything, and the frontend
+        // splices on the offset — reporting the length instead would put the
+        // boundary inside bytes the replay already carried, so it would rewrite
+        // them.
+        let scrollback = Mutex::new(Scrollback::default());
+        lock_scrollback(&scrollback).append(b"0123456789", 4);
+
+        let snap = snapshot(&scrollback);
+
+        assert_eq!(snap.scrollback, b"6789");
+        assert_eq!(snap.end_offset, 10);
+    }
+
+    #[test]
+    fn append_continues_from_a_carried_start_offset() {
+        // A session replacing a dead one under the same id starts counting where
+        // the dead one stopped, so a last chunk from the outgoing shell lands
+        // below the new stream and the frontend discards it as already seen.
+        let mut sb = Scrollback {
+            buf: Vec::new(),
+            end_offset: 50_000,
+        };
+        assert_eq!(sb.append(b"hi", 1024), 50_000);
+        assert_eq!(sb.buf, b"hi");
+        assert_eq!(sb.end_offset, 50_002);
     }
 }

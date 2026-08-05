@@ -111,8 +111,10 @@ Status of the build against the original vision. The full V1 plan lives at
   action that creates a workspace for the issue, links it, best-effort assigns
   the issue to the viewer and labels it in-progress on GitHub, then provisions
   the worktree and launches a Claude session seeded with the issue title +
-  description (written to `.yarvis/issue-prompt.md`). The chat agent can drive
-  the same start-work flow conversationally via its `list_repo_issues` /
+  description (written to `.yarvis/issue-prompt.md`). Every issue list row —
+  GitHub and JIRA alike — carries that same action, so an issue you already know
+  you want can be started without opening it. The chat agent can drive the same
+  start-work flow conversationally via its `list_repo_issues` /
   `start_work_on_issue` tools. The data model, provider layer, and
   `/api/issues/:provider` routes are source-agnostic (keyed by provider /
   sourceKey / externalId) so JIRA can be added without a rewrite.
@@ -174,8 +176,9 @@ Status of the build against the original vision. The full V1 plan lives at
   tool lets the agent raise a nav-rail badge + an OS notification when it finishes
   background work or needs a decision. The agent also holds workspace tools: it
   can list repos and their open issues, spin up workspaces (from repos, from an
-  issue like the "Start work" button, or scratch) and start remote-controllable
-  Claude sessions, report a workspace's PR / CI-check / mergeable status, and
+  issue like the "Start work" button, or scratch) and start agent sessions
+  (remote-controllable only when the request came in over Telegram, where there
+  is no local tab to drive), report a workspace's PR / CI-check / mergeable status, and
   archive workspaces — all from natural language, and reachable from Chat, Omni,
   and the Telegram bot alike. Tab shortcuts too: Cmd/Ctrl+1–9 jump to a
   tab, Cmd/Ctrl+Shift+[ / ] cycle through them.
@@ -188,6 +191,16 @@ Status of the build against the original vision. The full V1 plan lives at
   in the Keychain like other secrets. An optional TOTP second factor (`/unlock`)
   gates the bot behind a time-boxed window with rate-limited lockout and desktop
   alerts, to defend against Telegram-account takeover.
+- **Clipboard book** — a permanent home for the snippets worth copying twice
+  (identity ids, CLI commands, links), reachable from anywhere with
+  Control+Shift+V. Entries live in `clipboard_entries` and are searched by label,
+  content, and tag; pinned-then-most-recently-used ordering means an empty search
+  already offers the usual suspects. The Rust core samples the clipboard on a
+  timer to build a history of the last 100 clips, in memory and never persisted,
+  which the palette also searches and can promote into permanent entries. A
+  credential screen in the sidecar (`clipboard/screening.ts`) refuses to store
+  anything credential-shaped and withholds flagged clips from history, so the
+  feature can't become an accidental secret store — those stay in the Keychain.
 - **Event log (Phase 2)** — a local, on-device trail of meaningful actions
   (chat started, task created/completed via backend hooks; PR viewed, review
   guide generated and stepped through, line insight recorded and revisited, and

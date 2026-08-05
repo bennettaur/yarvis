@@ -8,6 +8,7 @@ export type IconName =
   | "omni"
   | "chat"
   | "omnichat"
+  | "clipboard"
   | "terminal"
   | "workspaces"
   | "tasks"
@@ -35,6 +36,14 @@ const PATHS: Record<IconName, React.ReactNode> = {
     <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
   ),
   omnichat: <path d="M13 2 3 14h7l-1 8 10-12h-7z" />,
+  clipboard: (
+    <>
+      <rect width="8" height="4" x="8" y="2" rx="1" />
+      <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+      <path d="M9 12h6" />
+      <path d="M9 16h4" />
+    </>
+  ),
   terminal: (
     <>
       <rect width="18" height="16" x="3" y="4" rx="2" />

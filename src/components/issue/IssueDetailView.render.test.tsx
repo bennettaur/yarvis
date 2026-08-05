@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { IssueDetail, IssueSummary } from "../../lib/issues/types";
+import { type OpenWorkspaceRequest, onOpenWorkspace } from "../../lib/nav";
 import IssueDetailView from "./IssueDetailView";
 
 const summary = (state: string): IssueSummary => ({
@@ -39,6 +40,8 @@ const sent: SentRequest[] = [];
 let stored: IssueDetail = detail();
 /** When set, PATCH responds with this status instead of applying the edit. */
 let patchFails = 0;
+/** When set, start-work responds with this status instead of a workspace. */
+let startFails = 0;
 
 // Stubbing the transport rather than lib/issues/api keeps the URL, method, and
 // body that api.ts builds under test — the same layer the PR render tests stub.
@@ -49,6 +52,13 @@ mock.module("../../lib/api", () => ({
     if (method === "PATCH") {
       if (patchFails) return new Response("nope", { status: patchFails });
       stored = { ...stored, ...(sent[sent.length - 1]?.body as Partial<IssueDetail>) };
+    }
+    if (path.endsWith("/start-work")) {
+      if (startFails) return new Response("nope", { status: startFails });
+      return new Response(
+        JSON.stringify({ workspaceId: "w1", prompt: "seeded prompt", warnings: [] }),
+        { status: 201 },
+      );
     }
     return new Response(JSON.stringify(stored), { status: 200 });
   },
@@ -91,6 +101,7 @@ beforeEach(() => {
   sent.length = 0;
   stored = detail();
   patchFails = 0;
+  startFails = 0;
 });
 
 describe("IssueDetailView", () => {
@@ -163,6 +174,45 @@ describe("IssueDetailView", () => {
     expect(host.textContent).toContain("403");
     // Still open, and the button is usable again for a retry.
     expect(button(host, "Close issue")?.disabled).toBe(false);
+    cleanup();
+  });
+
+  it("starts work from the detail it already loaded", async () => {
+    const handoffs: OpenWorkspaceRequest[] = [];
+    const unsubscribe = onOpenWorkspace((r) => handoffs.push(r));
+    const { host, cleanup } = await mount();
+    sent.length = 0;
+    button(host, "Start work")?.click();
+    await settle();
+    // The body is already on screen, so it must not be re-fetched.
+    expect(sent.filter((r) => r.method === "GET")).toEqual([]);
+    expect(sent).toContainEqual({
+      path: "/api/issues/github/start-work",
+      method: "POST",
+      body: {
+        sourceKey: "octo/web",
+        externalId: "7",
+        title: "Broken login",
+        body: "the body",
+        url: "https://github.com/octo/web/issues/7",
+      },
+    });
+    expect(handoffs).toEqual([{ id: "w1", claudePrompt: "seeded prompt" }]);
+    unsubscribe();
+    cleanup();
+  });
+
+  it("shows a failed start even when an earlier edit also failed", async () => {
+    patchFails = 403;
+    startFails = 500;
+    const { host, cleanup } = await mount();
+    button(host, "Close issue")?.click();
+    await settle();
+    button(host, "Start work")?.click();
+    await settle();
+    // The stale edit error must not stand in for the start the user just ran.
+    expect(host.textContent).toContain("/api/issues/github/start-work -> 500");
+    expect(button(host, "Start work")?.disabled).toBe(false);
     cleanup();
   });
 });

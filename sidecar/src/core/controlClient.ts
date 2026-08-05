@@ -115,16 +115,19 @@ async function rpc(method: string, params: Record<string, unknown>): Promise<voi
   });
 }
 
-/** Asks the core to start a remote-controllable Claude session in `cwd`. */
+/** Asks the core to start an agent session in `cwd`, optionally with Remote
+ *  Control enabled. */
 export async function spawnClaudeSession(input: {
   workspaceId: string;
   cwd: string;
   name: string;
+  remoteControl: boolean;
 }): Promise<void> {
   await rpc("claude.spawn", {
     workspaceId: input.workspaceId,
     cwd: input.cwd,
     name: input.name,
+    remoteControl: input.remoteControl,
   });
 }
 
