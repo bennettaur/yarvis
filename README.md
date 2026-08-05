@@ -315,8 +315,8 @@ render real components with the `renderToHtml` helper in `src/test/render.tsx`.
 src/            React frontend (Vite + TS + Tailwind)
   lib/          sidecar API client, Keychain wrappers, Omni Chat context registry, notifications, cross-tab nav (nav.ts)
     pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs, per-file viewed state, link/shorthand locator, diff parsing + context expansion, guide + insight clients)
-    issues/     provider-neutral issue data layer (GitHub + JIRA) — types + api client
-    jira/       JIRA-specific data layer (issue detail, transitions, comments, create) — types + api client
+    issues/     provider-neutral issue data layer (GitHub + JIRA) — types, api client, start-work flow (useGithubStartWork.ts)
+    jira/       JIRA-specific data layer (issue detail, transitions, comments, create) — types, api client, start-work flow (useJiraStartWork.ts)
   components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, Terminal, Workspaces, …)
     pr/         PR dashboard + embedded review: lists, file diffs (unified + split),
                 gap/context expansion, change minimap, guide panel, insight cards

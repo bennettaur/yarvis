@@ -76,3 +76,11 @@ export interface JiraIssueType {
   name: string;
   subtask: boolean;
 }
+
+/** What the user picks in the Start Work dialog: the repos the workspace is
+ *  built from, and the status the ticket moves to (if any). */
+export interface StartWorkChoice {
+  repoIds: string[];
+  transitionToInProgress: boolean;
+  transitionId?: string;
+}
