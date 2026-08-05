@@ -69,7 +69,10 @@ Status of the build against the original vision. The full V1 plan lives at
   from the hunk headers, so a file's full text is only fetched once context is
   actually asked for; those fetches share a concurrency gate with the per-file
   diffs so expanding a large Azure review can't fan out into hundreds of
-  simultaneous requests.
+  simultaneous requests. A copy button beside the filename — in the diff header
+  and on a hovered file-list row — puts the full repo-relative path on the
+  clipboard, stripped of the control and bidi characters a path from a provider
+  is allowed to carry.
 - **PR guided tour** — an agent explores a pull request with provider-backed
   read/search tools, records what connects to what in a scratch graph, and lays
   out a reading order from the outside in: the request that arrives, then what

@@ -78,6 +78,12 @@ describe("PrFileList", () => {
     expect(withoutCollapse).not.toContain("Collapse file list");
   });
 
+  // Rows only show a basename, so the copy button has to carry the full path.
+  it("offers a copy button holding each file's full path", async () => {
+    const html = await render([file("src/deep/a.ts")]);
+    expect(html).toContain("Copy path src/deep/a.ts");
+  });
+
   it("falls back to a bullet for an unknown status", async () => {
     const html = await render([file("a.ts", { status: "copied" })]);
     expect(html).toContain("•");
