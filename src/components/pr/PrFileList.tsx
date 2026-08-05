@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { usePrFiles } from "../../lib/pr/cache";
 import type { PrRef } from "../../lib/pr/types";
+import CopyPathButton from "./CopyPathButton";
 import { buildFileTree, type FileTreeFile, type FileTreeNode } from "./fileTree";
 import { prFileAnchorId } from "./shared";
 
@@ -22,7 +23,8 @@ const ROW_PADDING_LEFT = 8;
  * `PrFileDiffs` entry into view (by shared anchor id, so it works whether the
  * diffs sit beside it or elsewhere on the page) and notifies `onSelect`. A
  * per-row checkbox marks the file as viewed; clicks on the checkbox don't
- * trigger the scroll so toggling never moves focus away.
+ * trigger the scroll so toggling never moves focus away. Rows only show a
+ * basename, so each also carries a copy button for the full path.
  */
 export default function PrFileList({
   prRef,
@@ -178,7 +180,7 @@ function FileRow({
   return (
     <li>
       <div
-        className={`flex w-full items-center gap-2 rounded px-2 py-1 hover:bg-zinc-800 ${
+        className={`group/row flex w-full items-center gap-2 rounded px-2 py-1 hover:bg-zinc-800 ${
           selected === index ? "bg-zinc-800" : ""
         } ${isViewed ? "opacity-60" : ""}`}
         style={{ paddingLeft: depth * INDENT_PER_DEPTH + ROW_PADDING_LEFT }}
@@ -219,6 +221,10 @@ function FileRow({
             </>
           )}
         </button>
+        <CopyPathButton
+          path={file.filename}
+          className="opacity-0 transition-opacity focus:opacity-100 group-hover/row:opacity-100"
+        />
       </div>
     </li>
   );

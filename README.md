@@ -221,7 +221,10 @@ sticks across PRs. Each `⋯ N lines` marker between hunks reveals the code the
 patch left out — twenty lines from either end, or the whole stretch by clicking
 the count — and a per-file **Whole file** shows the complete file with its
 changes still highlighted, plus a strip down the edge marking where in the file
-they fall. A file's full text is only fetched once you ask for context.
+they fall. A file's full text is only fetched once you ask for context. A copy
+button beside each filename — in the file tree and in the diff header — puts the
+file's full repo-relative path on the clipboard, for pasting into an editor or a
+prompt.
 
 #### Guided review and line insights
 
