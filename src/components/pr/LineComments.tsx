@@ -87,28 +87,73 @@ function threadsByLine(threads: ReviewThread[]): Map<number, ReviewThread[]> {
   return map;
 }
 
+/** A comment posted this session, shown optimistically until the server has it. */
+interface PostedComment {
+  /** Survives an entry being dropped from the middle, which an index key can't. */
+  id: number;
+  line: number;
+  body: string;
+}
+
 export interface LineComments {
   byLine: Map<number, ReviewThread[]>;
-  pending: { line: number; body: string }[];
+  pending: PostedComment[];
   activeLine: number | null;
   openComposer: (line: number) => void;
   closeComposer: () => void;
   submit: (line: number, body: string) => Promise<void>;
 }
 
+/**
+ * Comparable form of a comment body. A provider echoes a body back with its own
+ * line endings, and the composer has already trimmed what it sent, so neither
+ * difference should count as a mismatch below.
+ */
+const comparable = (body: string) => body.replace(/\r\n/g, "\n").trim();
+
 /** Owns one file's comment state, shared by whichever renderer is showing it. */
 export function useLineComments(prRef: PrRef, file: PrFile, threads: ReviewThread[]): LineComments {
   const byLine = useMemo(() => threadsByLine(threads), [threads]);
   const [activeLine, setActiveLine] = useState<number | null>(null);
-  // Comments posted this session, shown immediately while the server catches up.
-  const [pending, setPending] = useState<{ line: number; body: string }[]>([]);
+  // Every comment posted this session; `pending` below narrows it to the ones
+  // the server hasn't echoed back yet.
+  const [posted, setPosted] = useState<PostedComment[]>([]);
+  const nextId = useRef(0);
+
+  // A posted comment stops being optimistic the moment the refetched threads
+  // carry it. Matching on the body rather than clearing the whole list on any
+  // thread change keeps the comment on screen when the provider hasn't caught
+  // up yet — a read-after-write that misses it would otherwise blink it away.
+  const pending = useMemo(
+    () =>
+      posted.filter(
+        (p) =>
+          !byLine
+            .get(p.line)
+            ?.some((thread) =>
+              thread.comments.some((c) => comparable(c.body) === comparable(p.body)),
+            ),
+      ),
+    [posted, byLine],
+  );
+
+  // Forget a comment for good once a thread has carried it. Re-deriving the
+  // match every render would otherwise resurrect the optimistic card if that
+  // thread later stopped carrying the body — an outdated thread loses its line,
+  // and `threadsByLine` skips it.
+  useEffect(() => {
+    if (pending.length !== posted.length) setPosted(pending);
+  }, [pending, posted.length]);
 
   const submit = async (line: number, body: string) => {
     await postPrComment(prRef, { path: file.filename, line, body });
-    setPending((p) => [...p, { line, body }]);
+    // Read the counter outside the updater, which React may call more than once.
+    const id = nextId.current++;
+    setPosted((p) => [...p, { id, line, body }]);
     setActiveLine(null);
-    // Drop the cached detail so the real thread replaces the optimistic one on
-    // the next load of this PR.
+    // Drop the cached detail so the real thread arrives and supersedes the
+    // optimistic copy. This wakes every mounted subscriber, so the refetch can
+    // land while this file is still on screen.
     invalidate(prDetailKey(prRef));
   };
 
@@ -162,10 +207,9 @@ export function LineCommentBlock({
         // biome-ignore lint/suspicious/noArrayIndexKey: threads render an immutable server snapshot
         <ThreadCard key={`t-${i}`} thread={t} />
       ))}
-      {pending.map((p, i) => (
+      {pending.map((p) => (
         <div
-          // biome-ignore lint/suspicious/noArrayIndexKey: append-only list, never reordered
-          key={`p-${i}`}
+          key={`p-${p.id}`}
           className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-3 text-sm text-zinc-300"
         >
           <div className="mb-1 text-xs font-medium text-zinc-500">you · just now</div>
