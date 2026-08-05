@@ -90,7 +90,10 @@ export function sanitizeIssueText(text: string): string {
       // sanitizing a composition of sanitized parts safe: an issue's title and
       // body are sanitized separately and then joined, so a lone `<!--` left in
       // the title would pair with a `-->` from the body on the next pass and
-      // swallow the description between them.
+      // swallow the description between them. Like the paired strip above, this
+      // doesn't spare fenced code, so a ticket demonstrating an HTML comment
+      // loses the markers — the right trade for text an auto-approved session
+      // reads as instruction.
       .replace(/<!--|-->/g, "")
       // Trailing whitespace (not newlines) and runs of blank lines.
       .replace(/[^\S\n]+$/gm, "")

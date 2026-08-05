@@ -745,8 +745,10 @@ function WorkspaceDetailView({
   // the view is keyed by workspace id, so it re-arms when you switch workspaces.
   const setupAutoOpenedRef = useRef(false);
   const autoProvisionRef = useRef(false);
-  // Guards the one-shot clear of the pending prompt once its session is live.
-  const promptClearedRef = useRef(false);
+  // Guards the one-shot claim of the kick-off. Not redundant with `issueLaunch`
+  // below: StrictMode re-runs the mount effect before any re-render, so the
+  // state would still read false and a second claim would fire.
+  const kickOffClaimedRef = useRef(false);
   // Guards the one-shot auto-start. Per-mount, and the view is keyed by workspace
   // id, so it re-arms when you switch workspaces — the auto-start effect re-runs
   // on every detail poll, so this ref is what stops it firing more than once.
@@ -909,12 +911,12 @@ function WorkspaceDetailView({
   // a provision already running attaches to it, so returning mid-run picks the
   // log back up instead of failing.
   useEffect(() => {
-    if (!issueLaunch || !detail) return;
-    if (detail.status === "creating" && provisionLog === null && !autoProvisionRef.current) {
+    if (!issueLaunch) return;
+    if (detail?.status === "creating" && provisionLog === null && !autoProvisionRef.current) {
       autoProvisionRef.current = true;
       void provision();
     }
-  }, [issueLaunch, detail, provisionLog, provision]);
+  }, [issueLaunch, detail?.status, provisionLog, provision]);
 
   // Hand the kick-off over: once the workspace is provisioned, the pinned tab
   // below carries the launch line, so the sidecar's copy has done its job and is
@@ -922,15 +924,23 @@ function WorkspaceDetailView({
   // Waiting for that confirmation would leave a window in which closing the tab
   // and reopening the workspace re-runs the ticket. A dismissed tab issues no
   // launch line, so the kick-off stays pending for the next visit.
+  //
+  // The trade this makes deliberately: the claim tracks this view deciding to
+  // issue a launch line, not a session actually spawning, so a spawn that fails
+  // has already dropped the sidecar's copy. Within the visit that costs nothing
+  // — `issueLaunch` stays latched, so the tab keeps offering the launch line —
+  // but reopening afterwards gets a plain agent and the ticket only in
+  // `.yarvis/issue-prompt.md`. Losing the launch line once beats re-running a
+  // finished ticket unprompted in an auto-approved session.
   useEffect(() => {
     const claim = shouldClaimKickOff({
       pendingIssuePrompt: detail?.pendingIssuePrompt ?? null,
       provisioned: detail?.status === "active",
       dismissed: agentDismissed,
-      alreadyClaimed: promptClearedRef.current,
+      alreadyClaimed: kickOffClaimedRef.current,
     });
     if (!claim) return;
-    promptClearedRef.current = true;
+    kickOffClaimedRef.current = true;
     setIssueLaunched(true);
     clearPendingIssuePrompt(id)
       .then(() => setDetail((prev) => (prev ? { ...prev, pendingIssuePrompt: null } : prev)))

@@ -223,7 +223,7 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
         }
 
         const ws = await createWorkspace(db, config, { name: issue.title, repoIds });
-        await provisionWorkspace(db, ws.id, () => undefined, gitRunner);
+        await provisionWorkspace(db, ws.id, () => undefined, { runner: gitRunner });
 
         const detail = await getWorkspace(db, ws.id);
         if (!detail) return { error: "workspace vanished after creation" };

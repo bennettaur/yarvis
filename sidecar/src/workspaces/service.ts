@@ -726,11 +726,24 @@ async function withRepoLock<T>(repoId: string, fn: () => Promise<T>): Promise<T>
  */
 const PROVISION_HISTORY_CAP = 500;
 
+export interface ProvisionOptions {
+  runner?: GitRunner;
+  /** Stops *following* an in-flight run when the caller's stream goes away. It
+   *  never cancels the run itself — finishing without an audience is the point. */
+  signal?: AbortSignal;
+}
+
 /** A provisioning run in flight, with what it takes for a second caller to
  *  follow along rather than be turned away. */
 interface ProvisionRun {
   /** Recent events, replayed to a subscriber that joined mid-run. */
   history: ProvisionEvent[];
+  /**
+   * Everyone being served this run. Mixed on purpose: whoever started it is
+   * subscribed directly, so its writes are awaited and its backpressure reaches
+   * the setup script; followers go through `followProvision`, which queues
+   * instead of returning a promise, so they never gate the run.
+   */
   subscribers: Set<ProvisionEmit>;
   /** Resolves when the run has emitted its terminal event. */
   finished: Promise<void>;
@@ -773,13 +786,21 @@ async function followProvision(
     // indistinguishable from a live one and would be served every remaining
     // event for the rest of the run.
     await Promise.race([run.finished, aborted(signal)]);
-    await chain;
   } finally {
+    // Detach before draining, not after: on the abort path everything still
+    // queued is headed for a closed stream, and staying subscribed while it
+    // drains is the very thing this is here to stop.
     run.subscribers.delete(ordered);
   }
+  await chain;
 }
 
-/** Resolves when `signal` aborts, or never when there is nothing to wait on. */
+/**
+ * Resolves when `signal` aborts, or never when there is nothing to wait on.
+ * The listener outlives the race when the run wins it — harmless because these
+ * signals are per-request and collected with the response, which is the only
+ * caller this has.
+ */
 function aborted(signal?: AbortSignal): Promise<void> {
   if (!signal) return new Promise<void>(() => {});
   if (signal.aborted) return Promise.resolve();
@@ -836,14 +857,13 @@ function writeContextFiles(detail: WorkspaceDetail): void {
  * emitting progress events (setup output streams through `emit`). Idempotent
  * enough to retry: a repo already `ready`/`removed` is skipped. A call made
  * while a run is already in flight follows that run instead of starting a
- * second one.
+ * second one, and `signal` detaches that follower without disturbing the run.
  */
 export async function provisionWorkspace(
   db: Db,
   id: string,
   emit: ProvisionEmit,
-  runner: GitRunner = defaultGitRunner,
-  signal?: AbortSignal,
+  { runner = defaultGitRunner, signal }: ProvisionOptions = {},
 ): Promise<void> {
   const inFlight = provisioning.get(id);
   if (inFlight) return followProvision(inFlight, emit, signal);
@@ -1052,7 +1072,10 @@ export async function provisionWorkspace(
  * is what lets an interrupted kick-off resume.
  */
 export async function clearPendingIssuePrompt(db: Db, id: string): Promise<void> {
-  await db.update(workspaces).set({ pendingIssuePrompt: null }).where(eq(workspaces.id, id));
+  await db
+    .update(workspaces)
+    .set({ pendingIssuePrompt: null, updatedAt: new Date() })
+    .where(eq(workspaces.id, id));
 }
 
 // ---------------------------------------------------------------------------

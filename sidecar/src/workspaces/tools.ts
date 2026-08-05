@@ -237,7 +237,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         }
 
         const ws = await createWorkspace(db, config, { name: issue.title, repoIds: [repo.id] });
-        await provisionWorkspace(db, ws.id, () => undefined, gitRunner);
+        await provisionWorkspace(db, ws.id, () => undefined, { runner: gitRunner });
 
         const detail = await getWorkspace(db, ws.id);
         if (!detail) return { error: "workspace vanished after creation" };
@@ -325,7 +325,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         const ws = await createWorkspace(db, config, { name, repoIds, taskId });
         // Provisioning streams progress over SSE in the route; here we just drive
         // it to completion and inspect the resulting status.
-        await provisionWorkspace(db, ws.id, () => undefined, gitRunner);
+        await provisionWorkspace(db, ws.id, () => undefined, { runner: gitRunner });
 
         const detail = await getWorkspace(db, ws.id);
         if (!detail) return { error: "workspace vanished after creation" };
@@ -357,7 +357,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
       }),
       execute: async ({ name, taskId }) => {
         const ws = await createWorkspace(db, config, { name, repoIds: [], taskId });
-        await provisionWorkspace(db, ws.id, () => undefined, gitRunner);
+        await provisionWorkspace(db, ws.id, () => undefined, { runner: gitRunner });
 
         const detail = await getWorkspace(db, ws.id);
         if (!detail) return { error: "workspace vanished after creation" };

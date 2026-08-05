@@ -231,8 +231,10 @@ export function createWorkspaceRoutes(config: Config): Hono {
       const gone = new AbortController();
       stream.onAbort(() => gone.abort());
       try {
-        await provisionWorkspace(db(), id, emit, undefined, gone.signal);
+        await provisionWorkspace(db(), id, emit, { signal: gone.signal });
       } catch (e) {
+        // Belt and braces: the run reports its own failures as a terminal event
+        // rather than throwing, so nothing is expected to land here.
         await emit({ type: "error", message: e instanceof Error ? e.message : String(e) });
       }
     });

@@ -487,7 +487,7 @@ describe("provision + archive (injected git runner)", () => {
     const ws = await createWorkspace(db, config, { name: "feature", repoIds: [repo.id] });
 
     const events: string[] = [];
-    await provisionWorkspace(db, ws.id, (e) => void events.push(e.type), fakeGit);
+    await provisionWorkspace(db, ws.id, (e) => void events.push(e.type), { runner: fakeGit });
 
     expect(events).toContain("done");
     const detail = await getWorkspace(db, ws.id);
@@ -509,7 +509,7 @@ describe("provision + archive (injected git runner)", () => {
       if (args[0] === "worktree" && args[1] === "add") worktreeAdds.push(args);
       return fakeGit(args, {});
     };
-    await provisionWorkspace(db, ws.id, () => {}, trackingGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: trackingGit });
 
     const detail = await getWorkspace(db, ws.id);
     expect(detail?.status).toBe("active");
@@ -535,7 +535,7 @@ describe("provision + archive (injected git runner)", () => {
       if (args[0] === "worktree" && args[1] === "add") order.push("worktree-add");
       return fakeGit(args, {});
     };
-    await provisionWorkspace(db, ws.id, () => {}, orderingGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: orderingGit });
 
     // DWIM tracking depends on origin/feat/login existing before the add.
     expect(order).toEqual(["fetch", "worktree-add"]);
@@ -553,7 +553,7 @@ describe("provision + archive (injected git runner)", () => {
       // Only the first repo gets an existing branch; the second falls back.
       existingBranches: { [r1.id]: "feat/login", [r2.id]: "" },
     });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const detail = await getWorkspace(db, ws.id);
     const byRepo = new Map(detail?.repos.map((wr) => [wr.repoId, wr]));
@@ -586,7 +586,7 @@ describe("provision + archive (injected git runner)", () => {
     const ws = await createWorkspace(db, config, { name: "scratchpad", repoIds: [] });
 
     const events: string[] = [];
-    await provisionWorkspace(db, ws.id, (e) => void events.push(e.type), fakeGit);
+    await provisionWorkspace(db, ws.id, (e) => void events.push(e.type), { runner: fakeGit });
 
     expect(events).toContain("done");
     const detail = await getWorkspace(db, ws.id);
@@ -599,7 +599,7 @@ describe("provision + archive (injected git runner)", () => {
     const db = getDb(url).db;
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "feature with docs", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const detail = await getWorkspace(db, ws.id);
     const agents = readFileSync(`${detail?.rootPath}/AGENTS.md`, "utf-8");
@@ -616,7 +616,7 @@ describe("provision + archive (injected git runner)", () => {
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "skills ws", repoIds: [repo.id] });
 
-    await provisionWorkspace(db, ws.id, () => {}, skillsGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: skillsGit });
 
     const detail = await getWorkspace(db, ws.id);
     const worktree = detail?.repos[0]?.worktreePath ?? "";
@@ -633,7 +633,7 @@ describe("provision + archive (injected git runner)", () => {
     const db = getDb(url).db;
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "bare ws", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const detail = await getWorkspace(db, ws.id);
     const settings = JSON.parse(
@@ -648,7 +648,7 @@ describe("provision + archive (injected git runner)", () => {
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "merge ws", repoIds: [repo.id] });
 
-    await provisionWorkspace(db, ws.id, () => {}, skillsGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: skillsGit });
 
     const detail = await getWorkspace(db, ws.id);
     const settings = JSON.parse(
@@ -664,7 +664,7 @@ describe("provision + archive (injected git runner)", () => {
     const db = getDb(url).db;
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "to-archive", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const result = await archiveWorkspace(
       db,
@@ -684,7 +684,7 @@ describe("provision + archive (injected git runner)", () => {
     const db = getDb(url).db;
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "open-pr", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     const [wr] = await db
       .select()
       .from(workspaceRepos)
@@ -711,7 +711,7 @@ describe("provision + archive (injected git runner)", () => {
       name: "multi-pr",
       repoIds: [openRepo.id, mergedRepo.id],
     });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     const wrs = await db.select().from(workspaceRepos).where(eq(workspaceRepos.workspaceId, ws.id));
     const openWr = wrs.find((w) => w.repoId === openRepo.id);
     const mergedWr = wrs.find((w) => w.repoId === mergedRepo.id);
@@ -738,7 +738,7 @@ describe("provision + archive (injected git runner)", () => {
     const db = getDb(url).db;
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "explicit-pr", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     const [wr] = await db
       .select()
       .from(workspaceRepos)
@@ -759,7 +759,7 @@ describe("provision + archive (injected git runner)", () => {
     const db = getDb(url).db;
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "closed-pr", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     const [wr] = await db
       .select()
       .from(workspaceRepos)
@@ -780,7 +780,7 @@ describe("provision + archive (injected git runner)", () => {
     const db = getDb(url).db;
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "no-pr", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     await archiveWorkspace(db, ws.id, {}, fakeGit);
     const detail = await getWorkspace(db, ws.id);
@@ -804,7 +804,7 @@ describe("provision + archive (injected git runner)", () => {
       return { stdout: "", stderr: "", exitCode: 0 };
     };
 
-    await provisionWorkspace(db, ws.id, () => {}, collidingGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: collidingGit });
     const expected = `yarvis/collide-${ws.id.slice(0, 8)}`;
     expect(addedBranch).toBe(expected);
     const detail = await getWorkspace(db, ws.id);
@@ -819,7 +819,7 @@ describe("provision + archive (injected git runner)", () => {
     expect(a.slug).toBe("same-name");
     expect(b.slug).toBe("same-name-2"); // active slug is taken, so it suffixes
 
-    await provisionWorkspace(db, a.id, () => {}, fakeGit);
+    await provisionWorkspace(db, a.id, () => {}, { runner: fakeGit });
     await archiveWorkspace(db, a.id, {}, fakeGit);
     const c = await createWorkspace(db, config, { name: "Same Name", repoIds: [repo.id] });
     expect(c.slug).toBe("same-name"); // archived slug is freed for reuse
@@ -835,7 +835,7 @@ describe("provision + archive (injected git runner)", () => {
     });
     const r2 = (await created.json()) as { id: string };
     const ws = await createWorkspace(db, config, { name: "multi", repoIds: [r1.id, r2.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     // Removal fails only for the "other" repo's worktree.
     const failingGit: GitRunner = async (args) => {
@@ -860,7 +860,7 @@ describe("provision + archive (injected git runner)", () => {
   it("returns from a background archive before the worktrees are gone", async () => {
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "bg-archive", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     // Hold the removal open, so the call can only return by not waiting for it.
     let releaseRemoval: () => void = () => {};
@@ -888,7 +888,7 @@ describe("provision + archive (injected git runner)", () => {
   it("clears the recorded failure when a blocked archive is retried with force", async () => {
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "dirty", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     await startArchiveWorkspace(db, ws.id, {}, dirtyGit);
     const blocked = await waitForError(ws.id);
@@ -905,7 +905,7 @@ describe("provision + archive (injected git runner)", () => {
   it("flags a blocked archive on the attention stream", async () => {
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "needs-me", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     await startArchiveWorkspace(db, ws.id, {}, dirtyGit);
     await waitForError(ws.id);
@@ -926,7 +926,7 @@ describe("provision + archive (injected git runner)", () => {
   it("resolves the workspace's pending attention once the archive lands", async () => {
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "quiet", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     await db.insert(attentionItems).values({
       source: "claude-hook",
       sessionKey: `ws-claude:${ws.id}`,
@@ -954,7 +954,7 @@ describe("provision + archive (injected git runner)", () => {
       repoIds: [repo.id],
       taskId: task!.id,
     });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const result = await archiveWorkspace(db, ws.id, {}, fakeGit);
     expect(result.completedTasks).toBe(1);
@@ -977,7 +977,7 @@ describe("provision + archive (injected git runner)", () => {
       repoIds: [r1.id, r2.id],
       taskId: task!.id,
     });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const failingGit: GitRunner = async (args) => {
       if (
@@ -1009,7 +1009,7 @@ describe("provision + archive (injected git runner)", () => {
       repoIds: [repo.id],
       taskId: task!.id,
     });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const result = await archiveWorkspace(db, ws.id, {}, fakeGit);
     expect(result.completedTasks).toBe(0); // only OPEN tasks are completed
@@ -1026,7 +1026,7 @@ describe("provision + archive (injected git runner)", () => {
       repoIds: [repo.id],
       taskId: task!.id,
     });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     expect(await unlinkTask(db, ws.id, task!.id)).toBe(true);
 
     const result = await archiveWorkspace(db, ws.id, {}, fakeGit);
@@ -1046,7 +1046,7 @@ describe("provision + archive (injected git runner)", () => {
     const repo = (await created.json()) as { id: string };
     const ws = await createWorkspace(db, config, { name: "flaky-task", repoIds: [repo.id] });
 
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     const detail = await getWorkspace(db, ws.id);
     expect(detail?.status).toBe("error");
     expect(detail?.repos[0]?.status).toBe("error");
@@ -1087,7 +1087,7 @@ describe("resumable start-work kick-off", () => {
     });
 
     // No emit callback at all: the client that started this has gone away.
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const detail = await getWorkspace(db, ws.id);
     expect(detail?.status).toBe("active");
@@ -1102,7 +1102,7 @@ describe("resumable start-work kick-off", () => {
     const db = getDb(url).db;
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "no ticket", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const detail = await getWorkspace(db, ws.id);
     expect(existsSync(join(detail?.rootPath ?? "", ".yarvis", "issue-prompt.md"))).toBe(false);
@@ -1126,11 +1126,15 @@ describe("resumable start-work kick-off", () => {
     };
 
     const firstEvents: ProvisionEvent[] = [];
-    const first = provisionWorkspace(db, ws.id, (e) => void firstEvents.push(e), slowGit);
+    const first = provisionWorkspace(db, ws.id, (e) => void firstEvents.push(e), {
+      runner: slowGit,
+    });
     await waitFor(ws.id, (d) => d.repos[0]?.status === "provisioning", "started provisioning");
 
     const secondEvents: ProvisionEvent[] = [];
-    const second = provisionWorkspace(db, ws.id, (e) => void secondEvents.push(e), fakeGit);
+    const second = provisionWorkspace(db, ws.id, (e) => void secondEvents.push(e), {
+      runner: fakeGit,
+    });
     releaseFirst();
     await Promise.all([first, second]);
 
@@ -1163,7 +1167,7 @@ describe("resumable start-work kick-off", () => {
       () => {
         throw new Error("stream closed");
       },
-      fakeGit,
+      { runner: fakeGit },
     );
 
     const detail = await getWorkspace(db, ws.id);
@@ -1184,7 +1188,7 @@ describe("resumable start-work kick-off", () => {
     mkdirSync(created?.rootPath ?? "", { recursive: true });
     writeFileSync(join(created?.rootPath ?? "", ".yarvis"), "");
 
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const detail = await getWorkspace(db, ws.id);
     // Never `active` without the file the agent is launched to read.
@@ -1210,7 +1214,7 @@ describe("resumable start-work kick-off", () => {
       issuePrompt: "implement the ticket",
     });
 
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     const failed = await getWorkspace(db, ws.id);
     expect(failed?.status).toBe("error");
     expect(existsSync(join(failed?.rootPath ?? "", ".yarvis", "issue-prompt.md"))).toBe(false);
@@ -1226,7 +1230,7 @@ describe("resumable start-work kick-off", () => {
       .update(workspaceRepos)
       .set({ status: "pending", error: null })
       .where(eq(workspaceRepos.workspaceId, ws.id));
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const detail = await getWorkspace(db, ws.id);
     expect(detail?.status).toBe("active");
@@ -1250,18 +1254,14 @@ describe("resumable start-work kick-off", () => {
       return res;
     };
 
-    const first = provisionWorkspace(db, ws.id, () => {}, slowGit);
+    const first = provisionWorkspace(db, ws.id, () => {}, { runner: slowGit });
     await waitFor(ws.id, (d) => d.repos[0]?.status === "provisioning", "started provisioning");
 
     const gone = new AbortController();
     const followerEvents: ProvisionEvent[] = [];
-    const follower = provisionWorkspace(
-      db,
-      ws.id,
-      (e) => void followerEvents.push(e),
-      fakeGit,
-      gone.signal,
-    );
+    const follower = provisionWorkspace(db, ws.id, (e) => void followerEvents.push(e), {
+      signal: gone.signal,
+    });
     gone.abort();
     await follower;
     const seenBeforeLeaving = followerEvents.length;
@@ -1283,7 +1283,7 @@ describe("resumable start-work kick-off", () => {
       repoIds: [repo.id],
       issuePrompt: "implement the ticket",
     });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const res = await app.request(`/api/workspaces/${ws.id}/issue-prompt`, {
       method: "DELETE",
@@ -1329,7 +1329,7 @@ describe("pending kick-off prompt retention", () => {
       repoIds: [repo.id],
       issuePrompt: "implement the ticket",
     });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const result = await archiveWorkspace(db, ws.id, {}, fakeGit);
     expect(result.status).toBe("archived");
