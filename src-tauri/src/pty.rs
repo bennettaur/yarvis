@@ -8,10 +8,15 @@
 //! signals teardown with `pty-exit:<id>`, mirroring the event pattern in
 //! `alarms.rs`. Events are namespaced per session so each terminal only
 //! receives its own output.
+//!
+//! Captured output and streamed output are two views of one byte stream, so both
+//! carry stream offsets: a snapshot reports where it ends, and each output event
+//! reports where its chunk begins. That lets a reattaching frontend splice the
+//! two without a gap or an overlap — see `PtySnapshot`.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -120,19 +125,51 @@ fn target_fd_limit(soft: libc::rlim_t, hard: libc::rlim_t) -> Option<libc::rlim_
     (soft < ceiling).then_some(ceiling)
 }
 
+/// Output captured so a reattaching component can replay it, plus where that
+/// capture sits in the session's byte stream.
+#[derive(Default)]
+struct Scrollback {
+    buf: Vec<u8>,
+    /// Stream offset one past the last captured byte. Counts every byte the
+    /// session has ever produced, including those trimmed off the front, so it
+    /// keeps meaning the same thing as `buf` is capped.
+    end_offset: u64,
+}
+
 struct PtySession {
     /// Writes user input into the PTY (taken once from the master).
     writer: Box<dyn Write + Send>,
     /// Retained for resize; the reader is cloned off it at spawn time.
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
-    /// Output captured so a reattaching component can replay it.
-    scrollback: Arc<Mutex<Vec<u8>>>,
+    scrollback: Arc<Mutex<Scrollback>>,
 }
 
 #[derive(Default)]
 pub struct PtyState {
     sessions: Mutex<HashMap<String, PtySession>>,
+}
+
+/// What `pty_attach` hands back: the captured output to replay, and the stream
+/// offset just past it. A chunk on `pty-output` that ends at or before
+/// `end_offset` is already accounted for — either present in `scrollback` or
+/// older than what the cap kept — and must not be written twice. Anything past
+/// `end_offset` was captured after the snapshot was taken, exists nowhere else,
+/// and must not be dropped. A chunk straddling the boundary is both, so the
+/// frontend writes only its tail.
+#[derive(Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtySnapshot {
+    scrollback: Vec<u8>,
+    end_offset: u64,
+}
+
+/// A chunk of session output, tagged with where it starts in the byte stream.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PtyOutput {
+    offset: u64,
+    bytes: Vec<u8>,
 }
 
 fn pty_size(cols: u16, rows: u16) -> PtySize {
@@ -144,21 +181,36 @@ fn pty_size(cols: u16, rows: u16) -> PtySize {
     }
 }
 
-/// Appends `chunk` to `buf`, dropping the oldest bytes so `buf` never exceeds
-/// `max`. Extracted as a free function so the cap logic is unit-testable
-/// without a live PTY.
-fn append_capped(buf: &mut Vec<u8>, chunk: &[u8], max: usize) {
-    buf.extend_from_slice(chunk);
-    if buf.len() > max {
-        let excess = buf.len() - max;
-        buf.drain(0..excess);
+impl Scrollback {
+    /// Appends `chunk`, dropping the oldest bytes so the capture never exceeds
+    /// `max`, and returns the stream offset the chunk starts at.
+    fn append(&mut self, chunk: &[u8], max: usize) -> u64 {
+        let start = self.end_offset;
+        self.buf.extend_from_slice(chunk);
+        self.end_offset += chunk.len() as u64;
+        if self.buf.len() > max {
+            let excess = self.buf.len() - max;
+            self.buf.drain(0..excess);
+        }
+        start
     }
 }
 
-/// Clones a session's scrollback, treating a poisoned lock as empty rather than
-/// propagating — a reader-thread panic must not permanently brick reattach.
-fn snapshot(scrollback: &Arc<Mutex<Vec<u8>>>) -> Vec<u8> {
-    scrollback.lock().map(|sb| sb.clone()).unwrap_or_default()
+/// Takes a session's scrollback lock, recovering from poisoning rather than
+/// propagating — a reader-thread panic must not permanently brick reattach, and
+/// the offsets both sides splice on only line up if every capture is counted.
+fn lock_scrollback(scrollback: &Mutex<Scrollback>) -> MutexGuard<'_, Scrollback> {
+    scrollback.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Clones a session's captured output together with the stream offset it ends
+/// at, so the frontend knows which streamed chunks the snapshot already covers.
+fn snapshot(scrollback: &Mutex<Scrollback>) -> PtySnapshot {
+    let sb = lock_scrollback(scrollback);
+    PtySnapshot {
+        scrollback: sb.buf.clone(),
+        end_offset: sb.end_offset,
+    }
 }
 
 /// Parameters for spawning a session, grouped so the spawn helpers stay within
@@ -172,6 +224,14 @@ struct SpawnSpec {
     /// Drop `ANTHROPIC_API_KEY` from the child env so a Claude Code session uses
     /// the user's subscription login (Remote Control does not support API-key auth).
     strip_provider_secrets: bool,
+    /// Stream offset the new session's capture starts counting from. Non-zero
+    /// only when this spawn replaces a dead session under the same id: the
+    /// `pty-output:<id>` event name outlives the shell, so a final chunk from the
+    /// outgoing one can still reach a frontend that has already attached to this
+    /// one. Continuing the outgoing session's offsets rather than restarting at
+    /// zero leaves that chunk below where the new stream begins, which is what
+    /// makes the frontend's own dedup discard it.
+    start_offset: u64,
 }
 
 /// The workspace a PTY id belongs to, when its id encodes one: the pinned Claude
@@ -284,7 +344,10 @@ fn spawn_session(app: &AppHandle, id: &str, spec: &SpawnSpec) -> Result<PtySessi
         let _ = writer.flush();
     }
 
-    let scrollback = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let scrollback = Arc::new(Mutex::new(Scrollback {
+        buf: Vec::new(),
+        end_offset: spec.start_offset,
+    }));
     {
         let app = app.clone();
         let id = id.to_string();
@@ -306,7 +369,7 @@ fn read_loop(
     app: AppHandle,
     id: String,
     mut reader: Box<dyn Read + Send>,
-    scrollback: Arc<Mutex<Vec<u8>>>,
+    scrollback: Arc<Mutex<Scrollback>>,
 ) {
     let output_event = format!("pty-output:{id}");
     let mut buf = [0u8; READ_BUF_SIZE];
@@ -315,10 +378,17 @@ fn read_loop(
             Ok(0) | Err(_) => break,
             Ok(n) => {
                 let chunk = &buf[..n];
-                if let Ok(mut sb) = scrollback.lock() {
-                    append_capped(&mut sb, chunk, MAX_SCROLLBACK);
-                }
-                let _ = app.emit(&output_event, chunk.to_vec());
+                // Capture before emitting, so a snapshot taken concurrently either
+                // already contains this chunk or reports an `end_offset` below it —
+                // never an offset that claims bytes it doesn't hold.
+                let offset = lock_scrollback(&scrollback).append(chunk, MAX_SCROLLBACK);
+                let _ = app.emit(
+                    &output_event,
+                    PtyOutput {
+                        offset,
+                        bytes: chunk.to_vec(),
+                    },
+                );
             }
         }
     }
@@ -553,14 +623,19 @@ pub fn spawn_claude_session(
             cwd: Some(cwd),
             initial_command: Some(command),
             strip_provider_secrets: true,
+            // Nothing to carry: `spawn_into_state` discards this spawn when the id
+            // is already taken, so it only reaches a `Scrollback` when no session
+            // holds the id and no predecessor's offsets survive to continue from.
+            start_offset: 0,
         },
     )
 }
 
 // --- Commands ---
 
-/// Attaches to the session `id`, returning its scrollback to replay. Spawns a
-/// fresh shell when the session is absent or its shell has already exited.
+/// Attaches to the session `id`, returning the scrollback to replay and the
+/// stream offset it ends at (see `PtySnapshot`). Spawns a fresh shell when the
+/// session is absent or its shell has already exited.
 #[tauri::command]
 pub fn pty_attach(
     app: AppHandle,
@@ -569,14 +644,17 @@ pub fn pty_attach(
     cols: u16,
     rows: u16,
     cwd: Option<String>,
-) -> Result<Vec<u8>, String> {
-    // Reattach to a live session; reap and respawn a dead one.
+) -> Result<PtySnapshot, String> {
+    // Reattach to a live session; reap and respawn a dead one, carrying its
+    // offsets forward (see `SpawnSpec::start_offset`).
+    let mut start_offset = 0;
     {
         let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
         if let Some(session) = sessions.get_mut(&id) {
             if matches!(session.child.try_wait(), Ok(None)) {
                 return Ok(snapshot(&session.scrollback));
             }
+            start_offset = lock_scrollback(&session.scrollback).end_offset;
             sessions.remove(&id);
         }
     }
@@ -591,6 +669,7 @@ pub fn pty_attach(
             cwd,
             initial_command: None,
             strip_provider_secrets: false,
+            start_offset,
         },
     )?;
 
@@ -599,7 +678,7 @@ pub fn pty_attach(
     let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     match sessions.get(&id) {
         Some(session) => Ok(snapshot(&session.scrollback)),
-        None => Ok(Vec::new()),
+        None => Ok(PtySnapshot::default()),
     }
 }
 
@@ -729,11 +808,12 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_launch_command, append_capped, attention_env, attention_workspace_id,
-        is_unsafe_name_char, remote_control_command, resolve_agent_command, resolve_max_sessions,
-        DEFAULT_AGENT_COMMAND, DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS, MAX_SCROLLBACK,
-        MAX_SESSION_NAME_CHARS,
+        agent_launch_command, attention_env, attention_workspace_id, is_unsafe_name_char,
+        lock_scrollback, remote_control_command, resolve_agent_command, resolve_max_sessions,
+        snapshot, Scrollback, DEFAULT_AGENT_COMMAND, DEFAULT_MAX_SESSIONS,
+        MAX_CONFIGURABLE_SESSIONS, MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
     };
+    use std::sync::Mutex;
 
     #[test]
     fn resolve_agent_command_uses_the_default_when_nothing_is_set() {
@@ -1023,34 +1103,83 @@ mod tests {
     }
 
     #[test]
-    fn append_capped_leaves_under_cap_untouched() {
-        let mut buf = Vec::new();
-        append_capped(&mut buf, b"hello", 1024);
-        assert_eq!(buf, b"hello");
+    fn append_leaves_under_cap_untouched() {
+        let mut sb = Scrollback::default();
+        sb.append(b"hello", 1024);
+        assert_eq!(sb.buf, b"hello");
     }
 
     #[test]
-    fn append_capped_trims_oldest_down_to_cap() {
-        let mut buf = Vec::new();
-        append_capped(&mut buf, b"0123456789", 10);
-        append_capped(&mut buf, b"abcde", 10);
+    fn append_trims_oldest_down_to_cap() {
+        let mut sb = Scrollback::default();
+        sb.append(b"0123456789", 10);
+        sb.append(b"abcde", 10);
         // The oldest 5 bytes are dropped and the length is held at the cap.
-        assert_eq!(buf, b"56789abcde");
+        assert_eq!(sb.buf, b"56789abcde");
     }
 
     #[test]
-    fn append_capped_handles_chunk_larger_than_cap() {
-        let mut buf = Vec::new();
-        append_capped(&mut buf, b"abcdefghij", 4);
-        assert_eq!(buf, b"ghij");
+    fn append_handles_chunk_larger_than_cap() {
+        let mut sb = Scrollback::default();
+        sb.append(b"abcdefghij", 4);
+        assert_eq!(sb.buf, b"ghij");
     }
 
     #[test]
-    fn append_capped_real_cap_is_bounded() {
-        let mut buf = Vec::new();
+    fn append_real_cap_is_bounded() {
+        let mut sb = Scrollback::default();
         for _ in 0..512 {
-            append_capped(&mut buf, &[b'x'; 4096], MAX_SCROLLBACK);
+            sb.append(&[b'x'; 4096], MAX_SCROLLBACK);
         }
-        assert!(buf.len() <= MAX_SCROLLBACK);
+        assert!(sb.buf.len() <= MAX_SCROLLBACK);
+    }
+
+    #[test]
+    fn append_reports_the_offset_each_chunk_starts_at() {
+        let mut sb = Scrollback::default();
+        assert_eq!(sb.append(b"hello", 1024), 0);
+        assert_eq!(sb.append(b" world", 1024), 5);
+        assert_eq!(sb.end_offset, 11);
+    }
+
+    #[test]
+    fn append_keeps_counting_offsets_past_trimmed_bytes() {
+        // The offsets are what a reattaching frontend splices the snapshot and the
+        // live stream on, so trimming the capture must not rewind them.
+        let mut sb = Scrollback::default();
+        sb.append(b"0123456789", 4);
+        assert_eq!(sb.buf, b"6789");
+        assert_eq!(sb.append(b"ab", 4), 10);
+        assert_eq!(sb.buf, b"89ab");
+        assert_eq!(sb.end_offset, 12);
+    }
+
+    #[test]
+    fn snapshot_reports_the_stream_offset_not_the_capture_length() {
+        // The two diverge as soon as the cap trims anything, and the frontend
+        // splices on the offset — reporting the length instead would put the
+        // boundary inside bytes the replay already carried, so it would rewrite
+        // them.
+        let scrollback = Mutex::new(Scrollback::default());
+        lock_scrollback(&scrollback).append(b"0123456789", 4);
+
+        let snap = snapshot(&scrollback);
+
+        assert_eq!(snap.scrollback, b"6789");
+        assert_eq!(snap.end_offset, 10);
+    }
+
+    #[test]
+    fn append_continues_from_a_carried_start_offset() {
+        // A session replacing a dead one under the same id starts counting where
+        // the dead one stopped, so a last chunk from the outgoing shell lands
+        // below the new stream and the frontend discards it as already seen.
+        let mut sb = Scrollback {
+            buf: Vec::new(),
+            end_offset: 50_000,
+        };
+        assert_eq!(sb.append(b"hi", 1024), 50_000);
+        assert_eq!(sb.buf, b"hi");
+        assert_eq!(sb.end_offset, 50_002);
     }
 }
