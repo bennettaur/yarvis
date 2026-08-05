@@ -11,6 +11,8 @@ import {
 import {
   type ClaudeSessionStarter,
   startClaudeSession as defaultStartClaudeSession,
+  sessionDescription,
+  sessionStartedMessage,
 } from "../workspaces/claudeSession.ts";
 import { defaultGitRunner, type GitRunner } from "../workspaces/git.ts";
 import { createWorkspace, getWorkspace, provisionWorkspace } from "../workspaces/service.ts";
@@ -25,13 +27,19 @@ const issueKeyArg = z
   .string()
   .regex(/^[A-Za-z][A-Za-z0-9_]*-\d+$/, "expected a JIRA issue key like PROJ-45");
 
-/** Injectable collaborators, overridden in tests to avoid real network/claude/git. */
+/**
+ * Injectable collaborators, overridden in tests to avoid real network/claude/git,
+ * plus the one piece of per-turn context the tools need.
+ */
 export interface JiraToolDeps {
   /** Overrides the JIRA client; defaults to one built from the configured
    *  secrets (null when JIRA isn't configured). */
   jiraClient?: JiraClient | null;
   startClaudeSession?: ClaudeSessionStarter;
   gitRunner?: GitRunner;
+  /** Whether sessions these tools start get Remote Control; see
+   *  `WorkspaceToolDeps.remoteControl`. Defaults to off. */
+  remoteControl?: boolean;
 }
 
 /** Builds a JIRA client from configured secrets, or null when unconfigured. */
@@ -45,7 +53,7 @@ function clientFromConfig(config: Config): JiraClient | null {
 /**
  * JIRA tools for the chat agent: search issues by JQL, read one issue, create an
  * issue, and start work on a ticket (create + provision a workspace, seed the
- * issue prompt, assign + transition the issue, and launch a remote Claude Code
+ * issue prompt, assign + transition the issue, and launch a Claude Code
  * session) — the JIRA analogue of the GitHub issue tools. Free-text,
  * third-party-authored fields (summaries, descriptions, comments, display
  * names, labels) are run through `sanitizeIssueText` before reaching the model,
@@ -54,6 +62,7 @@ function clientFromConfig(config: Config): JiraClient | null {
 export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) {
   const startClaude = deps.startClaudeSession ?? defaultStartClaudeSession;
   const gitRunner = deps.gitRunner ?? defaultGitRunner;
+  const remoteControl = deps.remoteControl ?? false;
   const jira: JiraClient | null =
     deps.jiraClient !== undefined ? deps.jiraClient : clientFromConfig(config);
 
@@ -64,6 +73,7 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
         workspaceId: detail.id,
         cwd: detail.rootPath,
         name: detail.name,
+        remoteControl,
       });
       return {
         workspaceId: detail.id,
@@ -72,7 +82,7 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
         repos: detail.repos.map((r) => r.repo.name),
         sessionName: detail.name,
         sessionKey: session.sessionKey,
-        message: `Started a remote-controllable Claude Code session in workspace "${detail.name}". Open it from claude.ai/code or the Claude mobile app by the name "${detail.name}", or view it live in the Workspaces tab.`,
+        message: sessionStartedMessage(detail.name, remoteControl),
       };
     } catch (e) {
       return {
@@ -187,8 +197,7 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
     }),
 
     jira_start_work_on_issue: tool({
-      description:
-        "Start work on a JIRA issue like the 'Start work' button on the issue view: create a workspace, provision it, seed the issue details into .yarvis/issue-prompt.md, assign the issue to the user and transition it to in-progress (best-effort), and start a remote-controllable Claude Code session in it. Because a JIRA ticket isn't tied to a repo, pass the repo ids to include (resolve them with list_repos); pass an empty list for a scratch workspace with no repo. Requires JIRA to be configured.",
+      description: `Start work on a JIRA issue like the 'Start work' button on the issue view: create a workspace, provision it, seed the issue details into .yarvis/issue-prompt.md, assign the issue to the user and transition it to in-progress (best-effort), and start ${sessionDescription(remoteControl)} in it. Because a JIRA ticket isn't tied to a repo, pass the repo ids to include (resolve them with list_repos); pass an empty list for a scratch workspace with no repo. Requires JIRA to be configured.`,
       inputSchema: z.object({
         key: issueKeyArg.describe("Issue key, e.g. PROJ-45"),
         repoIds: z

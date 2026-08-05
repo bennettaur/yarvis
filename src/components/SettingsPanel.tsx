@@ -1,4 +1,5 @@
 import { useState } from "react";
+import AgentSection from "./AgentSection";
 import CustomProviderSection from "./CustomProviderSection";
 import EmbeddingsSection from "./EmbeddingsSection";
 import KeychainSection from "./KeychainSection";
@@ -62,6 +63,7 @@ export default function SettingsPanel() {
       {active === "repos" && (
         <div className="space-y-5">
           <ReposSection />
+          <AgentSection />
           <TerminalSection />
         </div>
       )}

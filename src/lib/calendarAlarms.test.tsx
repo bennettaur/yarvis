@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { createElement, useEffect, useRef } from "react";
+import { nativeInvoke } from "../test/nativeInvoke";
 import { renderToHtml } from "../test/render";
 import type { CalendarEvent } from "./calendar";
 
@@ -19,7 +20,7 @@ mock.module("@tauri-apps/api/core", () => ({
       created.push(args);
       return { id: "generated", status: "scheduled", ...args };
     }
-    return command === "list_alarms" ? [] : undefined;
+    return nativeInvoke(command);
   },
 }));
 

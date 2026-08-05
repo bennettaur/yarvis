@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { issueDetail, startWork, updateIssue } from "../../lib/issues/api";
+import { issueDetail, updateIssue } from "../../lib/issues/api";
 import type { IssueDetail, IssueSummary, IssueUpdateInput } from "../../lib/issues/types";
-import { requestOpenWorkspace } from "../../lib/nav";
+import { useGithubStartWork } from "../../lib/issues/useGithubStartWork";
 import { formatRelativeTime } from "../../lib/time";
 import { openExternal } from "../../lib/url";
 import Markdown from "../Markdown";
@@ -44,13 +44,13 @@ export default function IssueDetailView({
 }) {
   const [detail, setDetail] = useState<IssueDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [starting, setStarting] = useState(false);
-  const [warnings, setWarnings] = useState<string[]>([]);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [editingBody, setEditingBody] = useState(false);
   const [bodyDraft, setBodyDraft] = useState("");
   const [busyField, setBusyField] = useState(false);
+  const startFlow = useGithubStartWork(onStarted);
+  const starting = startFlow.startingKey !== null;
 
   useEffect(() => {
     let live = true;
@@ -90,33 +90,6 @@ export default function IssueDetailView({
   const saveBody = () => applyEdit({ body: bodyDraft }, () => setEditingBody(false));
 
   const toggleState = () => applyEdit({ state: state === "open" ? "closed" : "open" });
-
-  const onStartWork = async () => {
-    setStarting(true);
-    setError(null);
-    setWarnings([]);
-    try {
-      const result = await startWork(
-        {
-          sourceKey: summary.sourceKey,
-          externalId: summary.externalId,
-          title,
-          body: detail?.body ?? "",
-          url: summary.url,
-        },
-        summary.provider,
-      );
-      setWarnings(result.warnings);
-      onStarted?.();
-      // Hand off to the Workspaces tab, which provisions the worktree and
-      // launches a Claude session seeded with the issue prompt.
-      requestOpenWorkspace({ id: result.workspaceId, claudePrompt: result.prompt });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setStarting(false);
-    }
-  };
 
   const labels = detail?.labels ?? summary.labels;
   const assignees = detail?.assignees ?? summary.assignees;
@@ -162,8 +135,10 @@ export default function IssueDetailView({
             </button>
             <button
               type="button"
-              onClick={() => void onStartWork()}
-              disabled={starting}
+              onClick={() => void startFlow.start(summary, { title, body: detail?.body })}
+              // Gated on `detail` so the prompt is built from the body the user
+              // has in front of them, not one fetched behind their back.
+              disabled={starting || !detail}
               className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium hover:bg-indigo-500 disabled:opacity-50"
             >
               {starting ? "Starting…" : "Start work"}
@@ -230,14 +205,17 @@ export default function IssueDetailView({
             </div>
           )}
 
-          {warnings.length > 0 && (
+          {startFlow.warnings.length > 0 && (
             <div className="rounded-lg border border-amber-900/60 bg-amber-950/30 p-3 text-xs text-amber-300">
-              {warnings.map((w) => (
+              {startFlow.warnings.map((w) => (
                 <p key={w}>{w}</p>
               ))}
             </div>
           )}
           {error && <p className="text-sm text-red-400">{error}</p>}
+          {/* Separate from the edit error: a stale failed edit must not hide the
+              failure of the start the user just clicked. */}
+          {startFlow.error && <p className="text-sm text-red-400">{startFlow.error}</p>}
 
           <section>
             <div className="mb-2 flex items-center gap-2">

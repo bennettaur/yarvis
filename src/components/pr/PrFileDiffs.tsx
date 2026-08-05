@@ -4,6 +4,7 @@ import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { rowClass } from "../diff/DiffView";
 import { usePersistedBoolean } from "../SplitPane";
 import ChangeMinimap from "./ChangeMinimap";
+import CopyPathButton from "./CopyPathButton";
 import GapMarker from "./GapMarker";
 import InsightBlock from "./InsightCards";
 import {
@@ -347,6 +348,7 @@ function FileDiff({
         >
           {file.filename}
         </span>
+        <CopyPathButton path={file.filename} />
         {file.additions + file.deletions > 0 && (
           <>
             <span className="text-xs text-emerald-400">+{file.additions}</span>

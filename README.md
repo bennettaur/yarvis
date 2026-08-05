@@ -121,13 +121,29 @@ directory, `~/dev/yarvis-workspaces` by default and overridable with the
 secrets above). Add repos and edit their per-repo setup/run scripts in the
 Settings tab's Repositories section.
 
-Creating a workspace provisions its worktrees, opens a terminal, and — once the
-setup scripts finish — starts a Claude Code session in it and focuses that tab.
-The command used to start Claude is `claude --permission-mode auto` by default
-and overridable with the `YARVIS_CLAUDE_COMMAND` env var (also non-secret
-config), so you can bake in default options such as a model or permission mode.
-Remote-control sessions (started by the agent or from the Workspaces tab) use
-the same base command with `--remote-control <session name>` appended.
+Every provisioned workspace opens with an agent tab and nothing else — opening
+one starts a Claude Code session in it (or attaches to the one already running)
+and focuses that tab. No extra shell tab is opened alongside it; use `+` or
+Cmd+T when you want one. Closing the agent tab kills its session, and nothing
+reopens it while you stay on that workspace — but the dismissal is per-visit, so
+switching workspaces (or leaving the Workspaces tab) and coming back counts as
+opening the workspace again and starts a fresh session. The header's start-session
+button brings one back on the spot.
+
+The agent's tab title and launch command are set under Settings → Repositories →
+Agent, defaulting to `Claude` and `claude --permission-mode auto`, so you can
+bake in default options such as a model or permission mode. The
+`YARVIS_CLAUDE_COMMAND` env var still overrides the stored command (non-secret
+config) for the cases where it has to be injected without the settings file.
+
+Remote Control is opt-in per launch. A session started from Telegram gets
+`--remote-control <session name>` appended, since you're away from the machine
+and can only reach it from claude.ai/code or the Claude mobile app. Sessions
+started at the laptop — opening a workspace, an issue's "Start work", or asking
+the in-app agent — don't, because they open in a tab you're already looking at;
+enable Remote Control from inside the session if you later need to pick the work
+up remotely. Keeping it off by default also means a non-Claude agent command
+isn't handed a flag it doesn't understand.
 
 Provisioning also writes a few context files into the workspace root, since
 Claude starts there rather than inside a single repo: `AGENTS.md` (plus a
@@ -143,6 +159,33 @@ is closed. Raise or lower that under Settings → Repositories → Terminals (up
 for how many workspaces you can keep open. Leaving the field blank restores the
 default. The value applies to the next terminal opened, without a restart, and
 is stored in `settings.json` in the app data directory.
+
+### Clipboard
+
+**Control + Shift + V** (or the clipboard icon in the nav rail) opens the
+clipboard palette: a search box over the things you copy again and again — an
+identity id, a CLI incantation, a link — plus the clipboard history from this run
+of the app. Arrows move the selection, Enter copies the highlighted row and
+closes the palette, Esc dismisses it. Entries can be labelled, tagged, and
+pinned; pinned entries sort first, then whatever you have copied most recently,
+so an empty search already offers what you usually want.
+
+A clip out of history can be promoted to a permanent entry with **Save**, and
+**Clear history** forgets everything recorded so far. History is never written to
+disk: it lives in memory in the Rust core, capped at the last 100 clips, and goes
+away when the app quits.
+
+**This is not a secret store.** Saving an entry is refused when the text looks
+like a credential — provider token prefixes (GitHub, AWS, Slack, Google, Stripe,
+npm, `sk-…` API keys), PEM private-key blocks, JWTs, URLs with an embedded
+password, inline `password=`/`api_key=` assignments, and long high-entropy tokens
+— and clipboard history is screened with the same patterns, so a password that
+passed through your clipboard is withheld from the palette rather than listed
+(the footer says how many were hidden). Detection is a heuristic, so it errs
+toward loud: identifiers the feature exists to hold (UUIDs, hex digests, plain
+URLs, commands whose secret is a `$VAR` reference) are deliberately left alone,
+but a base64 blob may well be refused. Secrets belong in the Keychain, entered
+under Settings.
 
 ### PR review
 
@@ -178,7 +221,10 @@ sticks across PRs. Each `⋯ N lines` marker between hunks reveals the code the
 patch left out — twenty lines from either end, or the whole stretch by clicking
 the count — and a per-file **Whole file** shows the complete file with its
 changes still highlighted, plus a strip down the edge marking where in the file
-they fall. A file's full text is only fetched once you ask for context.
+they fall. A file's full text is only fetched once you ask for context. A copy
+button puts a file's full repo-relative path on the clipboard, for pasting into
+an editor or a prompt — always shown in the diff header, and in the file list on
+hovering a row, where only the basename is visible.
 
 #### Guided review and line insights
 
@@ -272,8 +318,8 @@ render real components with the `renderToHtml` helper in `src/test/render.tsx`.
 src/            React frontend (Vite + TS + Tailwind)
   lib/          sidecar API client, Keychain wrappers, Omni Chat context registry, notifications, cross-tab nav (nav.ts)
     pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs, per-file viewed state, link/shorthand locator, diff parsing + context expansion, guide + insight clients)
-    issues/     provider-neutral issue data layer (GitHub + JIRA) — types + api client
-    jira/       JIRA-specific data layer (issue detail, transitions, comments, create) — types + api client
+    issues/     provider-neutral issue data layer (GitHub + JIRA) — types, api client, start-work flow (useGithubStartWork.ts)
+    jira/       JIRA-specific data layer (issue detail, transitions, comments, create) — types, api client, start-work flow (useJiraStartWork.ts)
   components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, Terminal, Workspaces, …)
     pr/         PR dashboard + embedded review: lists, file diffs (unified + split),
                 gap/context expansion, change minimap, guide panel, insight cards
@@ -282,14 +328,17 @@ src/            React frontend (Vite + TS + Tailwind)
     shell/      desktop shell: nav rail, top bar, boot loading screen, tab shortcuts
     omni/       Omni view — chat-driven dynamic-UI canvas
     omnichat/   Omni Chat — global summon-from-anywhere chat overlay
+    clipboard/  clipboard palette — saved snippets + screened clipboard history
   omni/         json-render component catalog, registry, layout primitives
 src-tauri/      Rust core (Tauri v2)
   src/keychain.rs   Keychain-backed secret commands (single consolidated item)
   src/sidecar.rs    sidecar supervisor
   src/alarms.rs     full-screen alarm scheduler
+  src/clipboard.rs  clipboard read/write + in-memory (never persisted) clip history
 sidecar/        Bun + TS service (Hono)
   src/db/       Drizzle schema, client, migrations (applied on startup)
   src/chat/     multi-provider streaming chat + tool-calls (agent.ts: shared agent turn)
+  src/clipboard/ saved clipboard entries + the credential screen (screening.ts)
   src/telegram/ Telegram remote-control bot (long-poll loop, slash commands, chat→session map)
   src/tasks/    daily/weekly work tracking
   src/events/   local on-device event log (action trail; reconciled to memory later)
@@ -343,3 +392,6 @@ How the stream behaves:
   background; re-summoning resumes the same session. The agent can call
   `request_attention` to raise a nav-rail badge and an OS notification when it needs
   you. Any view contributes context by calling the `useOmniChatContext` hook.
+- **Control + Shift + V** — summon the **clipboard palette** from anywhere: search
+  your saved snippets and this run's clipboard history, Enter to copy, Esc to
+  close. See "Clipboard" above for what it refuses to store.

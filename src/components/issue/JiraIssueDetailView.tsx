@@ -5,16 +5,15 @@ import {
   jiraAssign,
   jiraAssignableUsers,
   jiraIssueDetail,
-  jiraStartWork,
   jiraTransition,
   jiraUpdateFields,
 } from "../../lib/jira/api";
 import type { JiraIssueDetail, JiraUser } from "../../lib/jira/types";
-import { requestOpenWorkspace } from "../../lib/nav";
+import { useJiraStartWork } from "../../lib/jira/useJiraStartWork";
 import { formatRelativeTime } from "../../lib/time";
 import { openExternal } from "../../lib/url";
 import Markdown from "../Markdown";
-import JiraRepoPickerModal, { type StartWorkChoice } from "./JiraRepoPickerModal";
+import JiraRepoPickerModal from "./JiraRepoPickerModal";
 import { StatusBadge } from "./jiraStatus";
 
 const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -162,7 +161,6 @@ export default function JiraIssueDetailView({
 }) {
   const [detail, setDetail] = useState<JiraIssueDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [warnings, setWarnings] = useState<string[]>([]);
 
   // Field editors.
   const [editingSummary, setEditingSummary] = useState(false);
@@ -175,9 +173,7 @@ export default function JiraIssueDetailView({
   const [savingComment, setSavingComment] = useState(false);
   const [busyField, setBusyField] = useState(false);
 
-  // Start-work flow.
-  const [pickingRepos, setPickingRepos] = useState(false);
-  const [starting, setStarting] = useState(false);
+  const startFlow = useJiraStartWork(onStarted);
 
   const key = summary.externalId;
 
@@ -255,33 +251,6 @@ export default function JiraIssueDetailView({
     }
   };
 
-  const startWork = async (choice: StartWorkChoice) => {
-    if (!detail) return;
-    setStarting(true);
-    setError(null);
-    setWarnings([]);
-    try {
-      const result = await jiraStartWork({
-        sourceKey: detail.sourceKey,
-        externalId: detail.externalId,
-        title: detail.title,
-        body: detail.body,
-        url: detail.url,
-        repoIds: choice.repoIds,
-        transitionToInProgress: choice.transitionToInProgress,
-        transitionId: choice.transitionId,
-      });
-      setWarnings(result.warnings);
-      setPickingRepos(false);
-      onStarted?.();
-      requestOpenWorkspace({ id: result.workspaceId, claudePrompt: result.prompt });
-    } catch (e) {
-      setError(errMsg(e));
-    } finally {
-      setStarting(false);
-    }
-  };
-
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="shrink-0 border-b border-zinc-800 px-4 py-2">
@@ -309,11 +278,11 @@ export default function JiraIssueDetailView({
             </button>
             <button
               type="button"
-              onClick={() => setPickingRepos(true)}
-              disabled={starting || !detail}
+              onClick={() => detail && startFlow.startWithDetail(detail)}
+              disabled={startFlow.starting || !detail}
               className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium hover:bg-indigo-500 disabled:opacity-50"
             >
-              {starting ? "Starting…" : "Start work"}
+              {startFlow.starting ? "Starting…" : "Start work"}
             </button>
           </div>
         </div>
@@ -468,14 +437,19 @@ export default function JiraIssueDetailView({
             )}
           </div>
 
-          {warnings.length > 0 && (
+          {startFlow.warnings.length > 0 && (
             <div className="rounded-lg border border-amber-900/60 bg-amber-950/30 p-3 text-xs text-amber-300">
-              {warnings.map((w) => (
+              {startFlow.warnings.map((w) => (
                 <p key={w}>{w}</p>
               ))}
             </div>
           )}
           {error && <p className="text-sm text-red-400">{error}</p>}
+          {/* Separate from the field-edit error, and only while no picker is
+              open: the dialog renders its own start failures on top of this. */}
+          {!startFlow.pending && startFlow.error && (
+            <p className="text-sm text-red-400">{startFlow.error}</p>
+          )}
 
           {/* Description */}
           <section>
@@ -596,14 +570,15 @@ export default function JiraIssueDetailView({
         </div>
       </div>
 
-      {pickingRepos && detail && (
+      {startFlow.pending && (
         <JiraRepoPickerModal
-          projectKey={detail.sourceKey}
-          issueKey={detail.displayId}
-          transitions={detail.transitions}
-          busy={starting}
-          onConfirm={(choice) => void startWork(choice)}
-          onClose={() => setPickingRepos(false)}
+          projectKey={startFlow.pending.sourceKey}
+          issueKey={startFlow.pending.displayId}
+          transitions={startFlow.pending.transitions}
+          busy={startFlow.starting}
+          startError={startFlow.error}
+          onConfirm={(choice) => void startFlow.confirm(choice)}
+          onClose={startFlow.cancel}
         />
       )}
     </div>

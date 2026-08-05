@@ -1,4 +1,5 @@
 mod alarms;
+mod clipboard;
 mod control;
 mod custom_providers;
 mod embeddings_secrets;
@@ -11,24 +12,28 @@ mod sidecar;
 #[cfg(desktop)]
 const OMNI_CHAT_SHORTCUT: &str = "Control+Shift+Space";
 
-/// Brings the main window forward and tells the frontend to open Omni Chat.
-/// Unlike an alarm it does not fullscreen or pin the window — it's a transient
-/// summon the user dismisses with Esc.
+/// Global hotkey that summons the clipboard palette from anywhere.
 #[cfg(desktop)]
-fn summon_omni_chat(app: &tauri::AppHandle) {
+const CLIPBOARD_SHORTCUT: &str = "Control+Shift+V";
+
+/// Brings the main window forward and tells the frontend to open the named
+/// overlay. Unlike an alarm it does not fullscreen or pin the window — it's a
+/// transient summon the user dismisses with Esc.
+#[cfg(desktop)]
+fn summon_overlay(app: &tauri::AppHandle, event: &str) {
     use tauri::{Emitter, Manager};
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
     }
-    let _ = app.emit("omni-chat-summon", ());
+    let _ = app.emit(event, ());
 }
 
 /// Brings the main window to the foreground. Invoked when the user clicks an
 /// attention item so the app surfaces even if it was minimized or behind another
-/// window. Mirrors the window handling in `summon_omni_chat`, without the
-/// Omni-specific emit.
+/// window. Mirrors the window handling in `summon_overlay`, without the
+/// overlay-specific emit.
 #[tauri::command]
 fn focus_main_window(app: tauri::AppHandle) {
     use tauri::Manager;
@@ -61,14 +66,22 @@ pub fn run() {
     #[cfg(desktop)]
     {
         use tauri_plugin_global_shortcut::ShortcutState;
-        let shortcut: tauri_plugin_global_shortcut::Shortcut = OMNI_CHAT_SHORTCUT
+        let omni_chat: tauri_plugin_global_shortcut::Shortcut = OMNI_CHAT_SHORTCUT
             .parse()
             .expect("OMNI_CHAT_SHORTCUT is a valid accelerator");
+        let clipboard: tauri_plugin_global_shortcut::Shortcut = CLIPBOARD_SHORTCUT
+            .parse()
+            .expect("CLIPBOARD_SHORTCUT is a valid accelerator");
         builder = builder.plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, scut, event| {
-                    if scut == &shortcut && event.state() == ShortcutState::Pressed {
-                        summon_omni_chat(app);
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    if scut == &omni_chat {
+                        summon_overlay(app, "omni-chat-summon");
+                    } else if scut == &clipboard {
+                        summon_overlay(app, "clipboard-summon");
                     }
                 })
                 .build(),
@@ -109,11 +122,15 @@ pub fn run() {
             if let Err(e) = alarms::init(app.handle()) {
                 eprintln!("[alarms] init failed: {e}");
             }
+            clipboard::init(app.handle());
             #[cfg(desktop)]
             {
                 use tauri_plugin_global_shortcut::GlobalShortcutExt;
                 if let Err(e) = app.global_shortcut().register(OMNI_CHAT_SHORTCUT) {
                     eprintln!("[omni-chat] global shortcut registration failed: {e}");
+                }
+                if let Err(e) = app.global_shortcut().register(CLIPBOARD_SHORTCUT) {
+                    eprintln!("[clipboard] global shortcut registration failed: {e}");
                 }
             }
             Ok(())
@@ -137,6 +154,9 @@ pub fn run() {
             alarms::cancel_alarm,
             alarms::acknowledge_alarm,
             alarms::snooze_alarm,
+            clipboard::clipboard_history,
+            clipboard::clipboard_clear_history,
+            clipboard::clipboard_write,
             pty::pty_attach,
             pty::pty_write,
             pty::pty_resize,
@@ -144,10 +164,11 @@ pub fn run() {
             pty::pty_exists,
             pty::pty_start_claude,
             pty::pty_is_busy,
-            pty::get_claude_command,
+            pty::get_agent_config,
             focus_main_window,
             settings::get_settings,
             settings::set_max_pty_sessions,
+            settings::set_agent,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

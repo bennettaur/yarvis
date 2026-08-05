@@ -174,6 +174,37 @@ export const azureDevopsStars = pgTable(
   (t) => [uniqueIndex("azure_devops_stars_pr_idx").on(t.org, t.project, t.repo, t.prId)],
 );
 
+/**
+ * The clipboard book: snippets the user copies often enough to want a permanent
+ * home (an identity id, a CLI command, a link). Rows are reachable from the
+ * clipboard palette, which searches label, content, and tags.
+ *
+ * Not a secret store — `clipboard/screening.ts` screens writes and secrets
+ * belong in the Keychain — so content is plain text like any other note.
+ *
+ * `useCount`/`lastUsedAt` back the palette's ordering, so what the user reaches
+ * for most is what an empty search offers first. Clipboard *history* is
+ * deliberately absent: it lives in memory in the Rust core and is never
+ * persisted.
+ */
+export const clipboardEntries = pgTable(
+  "clipboard_entries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    label: text("label").notNull(),
+    content: text("content").notNull(),
+    tags: jsonb("tags").$type<string[]>().notNull().default([]),
+    /** Pinned entries sort above everything else regardless of use. */
+    pinned: boolean("pinned").notNull().default(false),
+    useCount: integer("use_count").notNull().default(0),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  // The palette's default list is "pinned first, then most recently used".
+  (t) => [index("clipboard_entries_ranking_idx").on(t.pinned, t.lastUsedAt)],
+);
+
 /** Saved Omni layouts: a named json-render spec the user can reload later. */
 export const omniLayouts = pgTable("omni_layouts", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -712,6 +743,8 @@ export type AzureDevopsFilter = typeof azureDevopsFilters.$inferSelect;
 export type AzureDevopsStar = typeof azureDevopsStars.$inferSelect;
 export type OmniLayout = typeof omniLayouts.$inferSelect;
 export type NewOmniLayout = typeof omniLayouts.$inferInsert;
+export type ClipboardEntry = typeof clipboardEntries.$inferSelect;
+export type NewClipboardEntry = typeof clipboardEntries.$inferInsert;
 export type GoogleToken = typeof googleTokens.$inferSelect;
 export type NewGoogleToken = typeof googleTokens.$inferInsert;
 export type Repo = typeof repos.$inferSelect;

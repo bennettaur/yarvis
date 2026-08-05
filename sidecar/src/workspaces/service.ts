@@ -7,6 +7,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { relative } from "node:path";
 import { and, eq, inArray, ne } from "drizzle-orm";
+import { publish } from "../attention/hub.ts";
+import { clearAttentionScope, createAttention } from "../attention/service.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import {
@@ -926,6 +928,75 @@ function linkedPrUrl(detail: WorkspaceDetail): string | null {
   return (merged ?? withPr[0])?.pr?.prUrl ?? null;
 }
 
+/** Teardowns in flight, keyed by workspace id, so a second request joins the
+ *  running archive instead of racing it over the same worktrees. */
+const archivals = new Map<string, Promise<ArchiveResult>>();
+
+/** Keeps a long git error from filling the attention row. */
+const ARCHIVE_ERROR_BODY_CAP = 500;
+
+/**
+ * Raises a failed archive on the attention stream. The teardown runs in the
+ * background, so by the time it stops on a worktree it can't remove there may
+ * be nothing on screen to show the error — this is what tells the user their
+ * archive didn't finish. Session-less on purpose: an item with no session
+ * clears itself once the user opens the workspace, which is where the retry
+ * (and the git error) lives. Best-effort; the archive's own outcome stands
+ * whether or not the flag goes up.
+ */
+async function raiseArchiveFailure(
+  db: Db,
+  detail: WorkspaceDetail,
+  errors: { repo: string; message: string }[],
+): Promise<void> {
+  const summary = errors.length
+    ? errors.map((e) => `${e.repo}: ${e.message}`).join("; ")
+    : "the worktrees could not be removed";
+  try {
+    const item = await createAttention(db, {
+      source: "system",
+      workspaceId: detail.id,
+      kind: "error",
+      title: detail.name,
+      body: `Archive stopped — ${summary}`.slice(0, ARCHIVE_ERROR_BODY_CAP),
+      navTarget: { type: "workspace", workspaceId: detail.id },
+      payload: { archiveErrors: errors },
+    });
+    publish(item);
+  } catch (e) {
+    console.error("[workspaces] failed to raise archive attention:", e);
+  }
+}
+
+/**
+ * Marks the workspace `archiving` and records the summary/PR URL up front, so a
+ * caller that doesn't wait for the teardown still sees the new state. Returns
+ * the detail read before the flip, which the teardown works from.
+ */
+async function beginArchive(
+  db: Db,
+  id: string,
+  input: ArchiveWorkspaceInput,
+): Promise<WorkspaceDetail> {
+  const detail = await getWorkspace(db, id);
+  if (!detail) throw new Error("workspace not found");
+
+  await db
+    .update(workspaces)
+    .set({
+      status: "archiving",
+      summary: input.summary ?? detail.summary,
+      mergedPrUrl: input.mergedPrUrl ?? detail.mergedPrUrl ?? linkedPrUrl(detail),
+      // Cleared so `archiving` with no error means "teardown still running" —
+      // a retry after a dirty-worktree refusal must not read as still failed.
+      error: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(workspaces.id, id));
+
+  return detail;
+}
+
 /**
  * Tears down a workspace's worktrees and marks it archived. Idempotent and
  * partial-failure safe: a repo whose worktree won't remove (e.g. uncommitted
@@ -938,8 +1009,61 @@ export async function archiveWorkspace(
   input: ArchiveWorkspaceInput = {},
   runner: GitRunner = defaultGitRunner,
 ): Promise<ArchiveResult> {
-  const detail = await getWorkspace(db, id);
-  if (!detail) throw new Error("workspace not found");
+  const inFlight = archivals.get(id);
+  if (inFlight) return inFlight;
+  return trackArchive(db, await beginArchive(db, id, input), input, runner);
+}
+
+/**
+ * Kicks off the teardown and returns as soon as the workspace reads
+ * `archiving`, so the caller isn't held for the length of a worktree removal.
+ * The outcome lands on the workspace row (status `archived`, or `archiving`
+ * with the per-repo error on a dirty worktree), which callers poll for.
+ */
+export async function startArchiveWorkspace(
+  db: Db,
+  id: string,
+  input: ArchiveWorkspaceInput = {},
+  runner: GitRunner = defaultGitRunner,
+): Promise<ArchiveResult> {
+  if (!archivals.has(id)) {
+    const detail = await beginArchive(db, id, input);
+    void trackArchive(db, detail, input, runner).catch(async (e) => {
+      const message = e instanceof Error ? e.message : String(e);
+      console.error("[workspaces] background archive failed:", e);
+      await db
+        .update(workspaces)
+        .set({ error: message, updatedAt: new Date() })
+        .where(eq(workspaces.id, id))
+        .catch(() => {});
+      // Nothing is waiting on this promise, so the attention flag is the only
+      // way an unexpected failure reaches the user.
+      await raiseArchiveFailure(db, detail, [{ repo: "workspace", message }]);
+    });
+  }
+  return { status: "archiving", errors: [], completedTasks: 0 };
+}
+
+function trackArchive(
+  db: Db,
+  detail: WorkspaceDetail,
+  input: ArchiveWorkspaceInput,
+  runner: GitRunner,
+): Promise<ArchiveResult> {
+  const run = removeWorktreesAndFinish(db, detail, input, runner).finally(() =>
+    archivals.delete(detail.id),
+  );
+  archivals.set(detail.id, run);
+  return run;
+}
+
+async function removeWorktreesAndFinish(
+  db: Db,
+  detail: WorkspaceDetail,
+  input: ArchiveWorkspaceInput,
+  runner: GitRunner,
+): Promise<ArchiveResult> {
+  const id = detail.id;
 
   // Stop any remote-control Claude session first so it isn't holding the
   // worktree while we remove it. Best-effort: the core may be unreachable.
@@ -948,11 +1072,6 @@ export async function archiveWorkspace(
   } catch (e) {
     console.warn("[workspaces] failed to stop Claude session on archive:", e);
   }
-
-  await db
-    .update(workspaces)
-    .set({ status: "archiving", updatedAt: new Date() })
-    .where(eq(workspaces.id, id));
 
   const errors: { repo: string; message: string }[] = [];
 
@@ -995,6 +1114,16 @@ export async function archiveWorkspace(
   // Completing the work means the linked task is done — but only once the
   // workspace is fully torn down, so a partial archive stays reopenable.
   const completedTasks = fullyRemoved ? await completeTasksByWorkspace(db, id) : [];
+
+  if (fullyRemoved) {
+    // An archived workspace can't want anything: drop whatever it was still
+    // flagging, including the failure a previous attempt raised.
+    for (const item of await clearAttentionScope(db, { workspaceId: id }, "resolved")) {
+      publish(item);
+    }
+  } else {
+    await raiseArchiveFailure(db, detail, errors);
+  }
 
   return { status, errors, completedTasks: completedTasks.length };
 }

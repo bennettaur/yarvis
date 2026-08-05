@@ -133,6 +133,12 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
   const memory = new PgVectorMemoryStore(db, await chooseEmbedder(config, db));
   const attention = newAttentionState();
 
+  // A turn driven from Telegram is one the user isn't at their machine for, so a
+  // session it starts is only usable if it's remotely controllable. A turn from
+  // the in-app chat opens the session in a tab the user is already looking at,
+  // and they can enable Remote Control from inside it if they later step away.
+  const startedRemotely = userMetadata?.source === "telegram";
+
   let streamError: unknown = null;
   let full = "";
   const result = streamText({
@@ -143,8 +149,8 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
       ...buildTaskTools(db, sessionId),
       ...buildMemoryTools(memory, sessionId),
       ...buildAttentionTool(attention),
-      ...buildWorkspaceTools(db, config),
-      ...buildJiraTools(db, config),
+      ...buildWorkspaceTools(db, config, { remoteControl: startedRemotely }),
+      ...buildJiraTools(db, config, { remoteControl: startedRemotely }),
       ...buildPrReviewTools(db),
     },
     // Headroom for multi-step workspace flows: "grab a few tickets" chains
