@@ -100,7 +100,12 @@ export function sanitizeIssueText(text: string): string {
       .replace(/<!--|--!?>/g, "");
   } while (withoutComments !== previous);
 
-  const fullySanitized = withoutComments.replace(/<!--/g, "").replace(/--!?>/g, "");
+  let fullySanitized = withoutComments;
+  let previousSanitized: string;
+  do {
+    previousSanitized = fullySanitized;
+    fullySanitized = fullySanitized.replace(/<!--/g, "").replace(/--!?>/g, "");
+  } while (fullySanitized !== previousSanitized);
 
   return (
     fullySanitized
