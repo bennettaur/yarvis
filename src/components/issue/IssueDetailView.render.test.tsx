@@ -197,7 +197,7 @@ describe("IssueDetailView", () => {
         url: "https://github.com/octo/web/issues/7",
       },
     });
-    expect(handoffs).toEqual([{ id: "w1", claudePrompt: "seeded prompt" }]);
+    expect(handoffs).toEqual([{ id: "w1" }]);
     unsubscribe();
     cleanup();
   });

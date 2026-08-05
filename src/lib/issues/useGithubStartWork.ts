@@ -15,9 +15,9 @@ export interface GithubStartWorkFlow {
 /**
  * The GitHub "Start work" flow, shared by the issue list rows and the detail
  * view: create the workspace, link the issue, then hand off to the Workspaces
- * tab, which provisions the worktree and launches a Claude session seeded with
- * the issue prompt. `onStarted` fires after the link exists so the caller can
- * refresh its in-progress badges.
+ * tab, which provisions the worktree and launches a Claude session on the issue
+ * prompt the sidecar stored with the workspace. `onStarted` fires after the link
+ * exists so the caller can refresh its in-progress badges.
  */
 export function useGithubStartWork(onStarted?: () => void): GithubStartWorkFlow {
   const [startingKey, setStartingKey] = useState<string | null>(null);
@@ -48,7 +48,9 @@ export function useGithubStartWork(onStarted?: () => void): GithubStartWorkFlow 
         );
         setWarnings(result.warnings);
         onStarted?.();
-        requestOpenWorkspace({ id: result.workspaceId, claudePrompt: result.prompt });
+        // Only the view follows along — the sidecar holds the kick-off prompt on
+        // the workspace, so it no longer depends on the user staying here.
+        requestOpenWorkspace({ id: result.workspaceId });
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       } finally {

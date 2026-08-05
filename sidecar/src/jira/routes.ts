@@ -293,9 +293,9 @@ export function createJiraRoutes(config: Config): Hono {
    * in_progress). Because a JIRA ticket isn't tied to a repo, the caller chooses
    * the repos (an empty list yields a scratch workspace). Best-effort JIRA side
    * effects (assign to viewer + transition to in-progress) become warnings on
-   * failure — the workspace + link are the source of truth. The composed Claude
-   * prompt rides back in the response; provisioning + prompt-file writing happen
-   * next via the workspace provision route and `/api/issues/jira/prompt-file`.
+   * failure — the workspace + link are the source of truth. The composed agent
+   * prompt is stored on the workspace row, and provisioning writes it to
+   * `.yarvis/issue-prompt.md` once the worktrees exist.
    */
   router.post("/start-work", async (c) => {
     const client = requireClient(c);
@@ -304,9 +304,21 @@ export function createJiraRoutes(config: Config): Hono {
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     const input = parsed.data;
 
+    const prompt = buildIssuePrompt({
+      displayId: input.externalId,
+      title: input.title,
+      url: input.url ?? null,
+      body: input.body,
+      sourceKey: input.sourceKey,
+    });
+
     let workspaceId: string;
     try {
-      const ws = await createWorkspace(db(), config, { name: input.title, repoIds: input.repoIds });
+      const ws = await createWorkspace(db(), config, {
+        name: input.title,
+        repoIds: input.repoIds,
+        issuePrompt: prompt,
+      });
       workspaceId = ws.id;
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
@@ -328,15 +340,7 @@ export function createJiraRoutes(config: Config): Hono {
       transitionId: input.transitionId,
     });
 
-    const prompt = buildIssuePrompt({
-      displayId: input.externalId,
-      title: input.title,
-      url: input.url ?? null,
-      body: input.body,
-      sourceKey: input.sourceKey,
-    });
-
-    return c.json({ workspaceId, prompt, warnings }, 201);
+    return c.json({ workspaceId, warnings }, 201);
   });
 
   return router;

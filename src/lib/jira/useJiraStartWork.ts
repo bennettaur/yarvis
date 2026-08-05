@@ -81,7 +81,7 @@ export function useJiraStartWork(onStarted?: () => void): JiraStartWorkFlow {
         setWarnings(result.warnings);
         setPending(null);
         onStarted?.();
-        requestOpenWorkspace({ id: result.workspaceId, claudePrompt: result.prompt });
+        requestOpenWorkspace({ id: result.workspaceId });
       } catch (e) {
         // The picker stays open on failure so the repo/status choice survives a
         // retry; it renders this error itself, since it covers the view behind.

@@ -38,15 +38,15 @@ export function useOpenPrListener(handler: (pr: PrSummary) => void): void {
 const OPEN_WORKSPACE_EVENT = "yarvis:open-workspace";
 
 /**
- * A request to open a workspace on the Workspaces tab. `claudePrompt`, when
- * set (the "Start work on issue" flow), tells the workspace detail view to
- * provision and launch a Claude session seeded with that prompt.
- * `focusSessionKey` (an attention item naming the tab that raised it) asks the
- * workspace's terminal surface to bring that session into view.
+ * A request to open a workspace on the Workspaces tab. The "Start work on
+ * issue" flow carries no prompt: the sidecar holds it on the workspace row, so
+ * the detail view picks the kick-off up from there and it survives this request
+ * never being honored. `focusSessionKey` (an attention item naming the tab that
+ * raised it) asks the workspace's terminal surface to bring that session into
+ * view.
  */
 export interface OpenWorkspaceRequest {
   id: string;
-  claudePrompt?: string;
   focusSessionKey?: string;
 }
 
@@ -78,8 +78,9 @@ const NEW_WORKSPACE_EVENT = "yarvis:new-workspace";
 /**
  * A request to open the New Workspace form on the Workspaces tab, pre-filled
  * from another view. `taskId` links the new workspace to an existing task on
- * create. `claudePrompt`, when set, launches a Claude session seeded with that
- * prompt once the workspace is provisioned (the task "Start work" flow).
+ * create. `claudePrompt`, when set (the task "Start work" flow), is handed to
+ * the sidecar at create time so it seeds the agent session once the workspace
+ * is provisioned.
  */
 export interface NewWorkspaceRequest {
   name?: string;

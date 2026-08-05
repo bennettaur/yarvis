@@ -3,9 +3,9 @@ import type { PinnedTab } from "../shell/terminalTabs/surfaceState";
 
 /**
  * Instruction handed to the agent for a "Start work on issue" session. The issue
- * details are written to a known file under the workspace root (see the sidecar
- * `/prompt-file` route), so a static instruction to read that file is enough —
- * no need to inline the (potentially large) body into the command.
+ * details are written to a known file under the workspace root by provisioning,
+ * so a static instruction to read that file is enough — no need to inline the
+ * (potentially large) body into the command.
  */
 const AGENT_ISSUE_INSTRUCTION =
   "Read the ticket details in .yarvis/issue-prompt.md and implement a first pass at the ticket, following the repository's conventions.";
@@ -36,9 +36,10 @@ export function buildAgentIssueCommand(base: string): string {
 
 /** Inputs describing which (if any) agent session a workspace should surface. */
 export interface AgentTabInputs {
-  /** The issue "Start work" prompt, when this workspace was launched from an issue. */
-  issuePrompt?: string;
-  /** True once the issue prompt file has been written and the agent may launch. */
+  /** The workspace's pending "Start work" prompt, when its kick-off is still
+   *  unfinished. Held by the sidecar, so it is still here after a reopen. */
+  pendingIssuePrompt: string | null;
+  /** True once provisioning has written the prompt file and the agent may launch. */
   issuePromptReady: boolean;
   /** True when a session is live under this workspace's agent session id. */
   agentActive: boolean;
@@ -62,7 +63,7 @@ export interface AgentTabInputs {
  * splittable terminal tabs alongside it.
  */
 export function resolveAgentTab({
-  issuePrompt,
+  pendingIssuePrompt,
   issuePromptReady,
   agentActive,
   dismissed,
@@ -80,7 +81,7 @@ export function resolveAgentTab({
     sessionId: agentSessionId(workspaceId),
     cwd,
   };
-  if (issuePrompt) {
+  if (pendingIssuePrompt) {
     // This surface launches the agent itself for the issue flow, so it waits on
     // the prompt file being written and never falls through to the attach branch
     // below — showing a tab first would spawn a bare shell with nothing to run.
@@ -96,7 +97,7 @@ export function resolveAgentTab({
 /** Inputs deciding whether opening a workspace should start an agent session. */
 export interface AutoStartInputs {
   /** Set for the issue flow, which launches its own session via the tab. */
-  issuePrompt?: string;
+  pendingIssuePrompt: string | null;
   /** True once the user has closed the agent tab. */
   dismissed: boolean;
   workspaceStatus: string;
@@ -115,7 +116,7 @@ export interface AutoStartInputs {
  * testable without mounting a workspace full of live shells.
  */
 export function shouldAutoStartAgent({
-  issuePrompt,
+  pendingIssuePrompt,
   dismissed,
   workspaceStatus,
   probed,
@@ -124,7 +125,7 @@ export function shouldAutoStartAgent({
 }: AutoStartInputs): boolean {
   // The issue flow launches its own session, seeded with the prompt file; the
   // two must not both fire at the same session id.
-  if (issuePrompt) return false;
+  if (pendingIssuePrompt) return false;
   // Closing the tab must not be undone by the effect that opened it.
   if (dismissed) return false;
   // Only a provisioned workspace has worktrees to run in.

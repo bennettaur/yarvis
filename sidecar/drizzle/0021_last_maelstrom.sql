@@ -1,0 +1,1 @@
+ALTER TABLE "workspaces" ADD COLUMN "pending_issue_prompt" text;

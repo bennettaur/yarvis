@@ -21,6 +21,7 @@ import {
   createWorkspace,
   getWorkspace,
   listRepoBranches,
+  type ProvisionEvent,
   provisionWorkspace,
   startArchiveWorkspace,
   unlinkTask,
@@ -1050,5 +1051,111 @@ describe("provision + archive (injected git runner)", () => {
     expect(detail?.status).toBe("error");
     expect(detail?.repos[0]?.status).toBe("error");
     expect(detail?.repos[0]?.setupExitCode).toBe(3);
+  });
+});
+
+/**
+ * Kicking off work is a multi-step sequence (create → provision → write the
+ * prompt file → launch the agent). The UI used to own the steps after create,
+ * so navigating away mid-provision dropped the ticket with no way back. These
+ * cover the pieces that make it resumable: the prompt lives on the row, and
+ * provisioning — not its caller — puts it on disk.
+ */
+describe("resumable start-work kick-off", () => {
+  it("stores the kick-off prompt on the workspace, sanitized", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, {
+      name: "kickoff",
+      repoIds: [repo.id],
+      // A zero-width joiner is the kind of hidden character sanitizing strips
+      // before the prompt can reach an auto-approved agent session.
+      issuePrompt: "implement‍ the ticket",
+    });
+
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.pendingIssuePrompt).toBe("implement the ticket");
+  });
+
+  it("writes the prompt file itself, so an absent caller can't lose the ticket", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, {
+      name: "writes prompt",
+      repoIds: [repo.id],
+      issuePrompt: "# Ticket\n\nimplement the ticket",
+    });
+
+    // No emit callback at all: the client that started this has gone away.
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.status).toBe("active");
+    expect(readFileSync(join(detail?.rootPath ?? "", ".yarvis", "issue-prompt.md"), "utf-8")).toBe(
+      "# Ticket\n\nimplement the ticket",
+    );
+    // Still pending: the prompt is dropped only once a session has it.
+    expect(detail?.pendingIssuePrompt).toBe("# Ticket\n\nimplement the ticket");
+  });
+
+  it("leaves no prompt file for a workspace that wasn't kicked off from a ticket", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "no ticket", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+
+    const detail = await getWorkspace(db, ws.id);
+    expect(existsSync(join(detail?.rootPath ?? "", ".yarvis", "issue-prompt.md"))).toBe(false);
+  });
+
+  it("a second drive follows the run in flight instead of failing", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "reopened", repoIds: [repo.id] });
+
+    // Hold the first drive open until the second has joined, the way reopening a
+    // workspace mid-provision does.
+    let releaseFirst = () => {};
+    const held = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const slowGit: GitRunner = async (args, opts) => {
+      const res = await fakeGit(args, opts);
+      if (args[0] === "worktree" && args[1] === "add") await held;
+      return res;
+    };
+
+    const firstEvents: ProvisionEvent[] = [];
+    const first = provisionWorkspace(db, ws.id, (e) => void firstEvents.push(e), slowGit);
+    await waitFor(ws.id, (d) => d.repos[0]?.status === "provisioning", "started provisioning");
+
+    const secondEvents: ProvisionEvent[] = [];
+    const second = provisionWorkspace(db, ws.id, (e) => void secondEvents.push(e), fakeGit);
+    releaseFirst();
+    await Promise.all([first, second]);
+
+    // The joiner sees the run through to the end, including the events it missed.
+    expect(secondEvents.map((e) => e.type)).toContain("repo-start");
+    expect(secondEvents.map((e) => e.type)).toContain("done");
+    expect(secondEvents.some((e) => e.type === "error")).toBe(false);
+    expect((await getWorkspace(db, ws.id))?.status).toBe("active");
+  });
+
+  it("clears the pending prompt once its session has it", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, {
+      name: "cleared",
+      repoIds: [repo.id],
+      issuePrompt: "implement the ticket",
+    });
+    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+
+    const res = await app.request(`/api/workspaces/${ws.id}/issue-prompt`, {
+      method: "DELETE",
+      headers: auth,
+    });
+    expect(res.status).toBe(200);
+    expect((await getWorkspace(db, ws.id))?.pendingIssuePrompt).toBeNull();
   });
 });

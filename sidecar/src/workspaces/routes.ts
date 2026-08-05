@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import {
+  clearPendingIssuePrompt,
   createRepo,
   createWorkspace,
   deleteRepo,
@@ -50,6 +51,9 @@ const createWorkspaceSchema = z.object({
   // repo id -> existing branch to check out instead of a fresh branch.
   existingBranches: z.record(z.string().uuid(), z.string()).optional(),
   taskId: z.string().uuid().nullish(),
+  // A "Start work" prompt to seed the workspace's agent session with, held on
+  // the row until that session is live.
+  issuePrompt: z.string().nullish(),
 });
 
 const archiveSchema = z.object({
@@ -202,8 +206,17 @@ export function createWorkspaceRoutes(config: Config): Hono {
     return c.json(workspace);
   });
 
+  // Clears the pending "Start work" prompt, called once the workspace's agent
+  // session is live and has been handed the ticket.
+  router.delete("/:id/issue-prompt", async (c) => {
+    await clearPendingIssuePrompt(db(), c.req.param("id"));
+    return c.json({ ok: true });
+  });
+
   // Drives provisioning and streams progress as SSE. The setup script's output
-  // arrives as `log` events; the stream ends with a `done` event.
+  // arrives as `log` events; the stream ends with a `done` event. Re-driving a
+  // workspace already being provisioned follows the run in flight, so reopening
+  // a workspace mid-provision picks the log back up rather than failing.
   router.post("/:id/provision", async (c) => {
     const id = c.req.param("id");
     return streamSSE(c, async (stream) => {

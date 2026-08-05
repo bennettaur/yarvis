@@ -7,6 +7,7 @@ import {
 } from "./agentTab";
 
 const base = {
+  pendingIssuePrompt: null as string | null,
   issuePromptReady: false,
   agentActive: false,
   dismissed: false,
@@ -18,7 +19,11 @@ const base = {
 
 describe("resolveAgentTab", () => {
   it("issue flow, prompt ready: launches at the workspace root with the issue command", () => {
-    const tab = resolveAgentTab({ ...base, issuePrompt: "do the thing", issuePromptReady: true });
+    const tab = resolveAgentTab({
+      ...base,
+      pendingIssuePrompt: "do the thing",
+      issuePromptReady: true,
+    });
     expect(tab).not.toBeNull();
     // The issue prompt file lives at the workspace root, so the agent must launch there.
     expect(tab?.cwd).toBe("/work/ws1");
@@ -31,7 +36,7 @@ describe("resolveAgentTab", () => {
     // that would show a tab whose shell has nothing to run yet.
     const tab = resolveAgentTab({
       ...base,
-      issuePrompt: "do the thing",
+      pendingIssuePrompt: "do the thing",
       issuePromptReady: false,
       agentActive: true,
     });
@@ -41,7 +46,7 @@ describe("resolveAgentTab", () => {
   it("issue flow, session now live: attaches with no initial command", () => {
     const tab = resolveAgentTab({
       ...base,
-      issuePrompt: "do the thing",
+      pendingIssuePrompt: "do the thing",
       issuePromptReady: true,
       agentActive: true,
     });
@@ -70,7 +75,7 @@ describe("resolveAgentTab", () => {
       resolveAgentTab({
         ...base,
         dismissed: true,
-        issuePrompt: "do the thing",
+        pendingIssuePrompt: "do the thing",
         issuePromptReady: true,
       }),
     ).toBeNull();
@@ -90,6 +95,7 @@ describe("agentSessionId", () => {
 
 describe("shouldAutoStartAgent", () => {
   const ready = {
+    pendingIssuePrompt: null as string | null,
     dismissed: false,
     workspaceStatus: "active",
     probed: true,
@@ -102,7 +108,7 @@ describe("shouldAutoStartAgent", () => {
   });
 
   it("does not start for the issue flow, which launches its own", () => {
-    expect(shouldAutoStartAgent({ ...ready, issuePrompt: "do the thing" })).toBe(false);
+    expect(shouldAutoStartAgent({ ...ready, pendingIssuePrompt: "do the thing" })).toBe(false);
   });
 
   it("does not start once the user has closed the tab", () => {

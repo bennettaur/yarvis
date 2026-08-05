@@ -17,6 +17,14 @@ export interface Workspace {
   summary: string | null;
   mergedPrUrl: string | null;
   error: string | null;
+  /**
+   * The "Start work" prompt this workspace was kicked off with, held by the
+   * sidecar until the agent session has been handed it. Non-null means the
+   * kick-off is unfinished: provisioning writes the prompt to
+   * `.yarvis/issue-prompt.md`, and the workspace view launches the agent against
+   * it. Surviving in the database is what lets an interrupted kick-off resume.
+   */
+  pendingIssuePrompt: string | null;
   createdAt: string;
   updatedAt: string;
   archivedAt: string | null;
@@ -104,6 +112,12 @@ export interface CreateWorkspaceInput {
    */
   existingBranches?: Record<string, string>;
   taskId?: string | null;
+  /**
+   * A "Start work" prompt to seed the workspace's agent session with. The
+   * sidecar holds it on the workspace row, so the launch survives this view
+   * being unmounted mid-provision.
+   */
+  issuePrompt?: string;
 }
 
 export interface ArchiveWorkspaceInput {
@@ -158,8 +172,19 @@ export async function createWorkspace(input: CreateWorkspaceInput): Promise<Work
 }
 
 /**
+ * Drops the workspace's pending "Start work" prompt, once its agent session is
+ * live and has been handed the ticket.
+ */
+export async function clearPendingIssuePrompt(id: string): Promise<void> {
+  const res = await sidecarFetch(`/api/workspaces/${id}/issue-prompt`, { method: "DELETE" });
+  if (!res.ok) return readError(res, "clear pending issue prompt");
+}
+
+/**
  * Drives provisioning of a workspace's worktrees, yielding progress events as
- * they stream in (setup-script output arrives as `log` events).
+ * they stream in (setup-script output arrives as `log` events). A workspace
+ * already being provisioned streams the run in flight rather than failing, so
+ * reopening a workspace mid-provision picks its log back up.
  */
 export async function* provisionWorkspace(id: string): AsyncGenerator<ProvisionEvent> {
   for await (const data of streamSSE(`/api/workspaces/${id}/provision`, { method: "POST" })) {
