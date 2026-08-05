@@ -1,21 +1,52 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
-import type { IssueRepo } from "../../lib/issues/types";
+import type { IssueRepo, IssueSummary } from "../../lib/issues/types";
 
 const repos: IssueRepo[] = [{ id: "r1", owner: "octo", repo: "web", name: "web" }];
 
+const issue: IssueSummary = {
+  provider: "github",
+  sourceKey: "octo/web",
+  sourceLabel: "octo/web",
+  externalId: "7",
+  displayId: "#7",
+  title: "Broken login",
+  url: "https://github.com/octo/web/issues/7",
+  state: "open",
+  author: "alice",
+  assignees: [],
+  labels: [],
+  createdAt: "2026-01-01T00:00:00Z",
+  updatedAt: "2026-01-02T00:00:00Z",
+  commentCount: 0,
+};
+
 /** Repos the fake sidecar reports as configured to pull issues. */
 let configured: IssueRepo[] = repos;
+/** Issues the fake sidecar serves on the "assigned to me" list. */
+let assigned: IssueSummary[] = [];
 const fetched: string[] = [];
+const sent: { path: string; body: Record<string, unknown> | null }[] = [];
+
+/** What the fake sidecar answers each route with. */
+function responseFor(path: string): unknown {
+  if (path.startsWith("/api/issues/github/repos")) return configured;
+  if (path.startsWith("/api/issues/github/assigned")) return assigned;
+  if (path.startsWith("/api/issues/github/detail")) return { ...issue, body: "the body" };
+  if (path.startsWith("/api/issues/github/start-work"))
+    return { workspaceId: "w1", prompt: "prompt", warnings: [] };
+  return [];
+}
 
 // Stubbing the transport (rather than lib/issues/api) keeps the request paths
 // the api client builds under test, matching the PR render tests.
 mock.module("../../lib/api", () => ({
-  sidecarFetch: async (path: string) => {
+  sidecarFetch: async (path: string, init: RequestInit = {}) => {
     fetched.push(path);
-    const body = path.startsWith("/api/issues/github/repos") ? configured : [];
-    return new Response(JSON.stringify(body), { status: 200 });
+    if (init.method && init.method !== "GET")
+      sent.push({ path, body: init.body ? JSON.parse(String(init.body)) : null });
+    return new Response(JSON.stringify(responseFor(path)), { status: 200 });
   },
   ensureOk: async (res: Response, context: string) => {
     if (!res.ok) throw new Error(`${context} -> ${res.status}`);
@@ -47,7 +78,9 @@ const button = (host: HTMLElement, label: string) =>
 
 beforeEach(() => {
   fetched.length = 0;
+  sent.length = 0;
   configured = repos;
+  assigned = [];
 });
 
 describe("GithubIssuesView", () => {
@@ -70,6 +103,29 @@ describe("GithubIssuesView", () => {
     button(host, "↻ Refresh")?.click();
     await settle();
     expect(fetched.filter((p) => p === "/api/issues/github/repos").length).toBe(2);
+    cleanup();
+  });
+
+  it("starts work from a list row without opening the issue", async () => {
+    assigned = [issue];
+    const { host, cleanup } = await mount();
+    const start = host.querySelector<HTMLButtonElement>('[aria-label="Start work on this issue"]');
+    start?.click();
+    await settle();
+    // The row carries no body, so the flow pulls detail before starting.
+    expect(fetched).toContain("/api/issues/github/detail/octo/web/7");
+    expect(sent).toContainEqual({
+      path: "/api/issues/github/start-work",
+      body: {
+        sourceKey: "octo/web",
+        externalId: "7",
+        title: "Broken login",
+        body: "the body",
+        url: issue.url,
+      },
+    });
+    // Starting work must not navigate into the detail view.
+    expect(host.textContent).toContain("Assigned to me");
     cleanup();
   });
 

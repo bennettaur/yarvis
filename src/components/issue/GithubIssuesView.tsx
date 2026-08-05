@@ -19,11 +19,13 @@ import {
   type IssueSummary,
   issueKey,
 } from "../../lib/issues/types";
+import { useGithubStartWork } from "../../lib/issues/useStartWork";
 import { useOmniChatContext } from "../../lib/omniChatContext";
 import { formatRelativeTime } from "../../lib/time";
 import { openExternal } from "../../lib/url";
 import GithubCreateIssueModal from "./GithubCreateIssueModal";
 import IssueDetailView from "./IssueDetailView";
+import StartWorkButton from "./StartWorkButton";
 
 type TabKey = "assigned" | "all" | "filters";
 
@@ -71,14 +73,18 @@ function IssueRow({
   issue,
   starred,
   link,
+  starting,
   onToggleStar,
   onOpen,
+  onStartWork,
 }: {
   issue: IssueSummary;
   starred: boolean;
   link: IssueLink | undefined;
+  starting: boolean;
   onToggleStar: (issue: IssueSummary, starred: boolean) => void;
   onOpen: (issue: IssueSummary) => void;
+  onStartWork: (issue: IssueSummary) => void;
 }) {
   return (
     <li
@@ -112,6 +118,14 @@ function IssueRow({
           in progress
         </span>
       )}
+      <StartWorkButton
+        starting={starting}
+        label="Start work on this issue"
+        onStart={(e) => {
+          e.stopPropagation();
+          onStartWork(issue);
+        }}
+      />
       <button
         onClick={(e) => {
           e.stopPropagation();
@@ -131,15 +145,19 @@ function IssueGroupedList({
   issues,
   isStarred,
   linkFor,
+  isStarting,
   onToggleStar,
   onOpen,
+  onStartWork,
   emptyText,
 }: {
   issues: IssueSummary[];
   isStarred: (issue: IssueSummary) => boolean;
   linkFor: (issue: IssueSummary) => IssueLink | undefined;
+  isStarting: (issue: IssueSummary) => boolean;
   onToggleStar: (issue: IssueSummary, starred: boolean) => void;
   onOpen: (issue: IssueSummary) => void;
+  onStartWork: (issue: IssueSummary) => void;
   emptyText: string;
 }) {
   const groups = useMemo(() => groupBySource(issues), [issues]);
@@ -159,8 +177,10 @@ function IssueGroupedList({
                 issue={issue}
                 starred={isStarred(issue)}
                 link={linkFor(issue)}
+                starting={isStarting(issue)}
                 onToggleStar={onToggleStar}
                 onOpen={onOpen}
+                onStartWork={onStartWork}
               />
             ))}
           </ul>
@@ -271,6 +291,17 @@ export default function GithubIssuesView({
     [links],
   );
 
+  const startFlow = useGithubStartWork(loadLinks);
+  const isStarting = useCallback(
+    (issue: IssueSummary) =>
+      startFlow.startingKey === issueKey(issue.provider, issue.sourceKey, issue.externalId),
+    [startFlow.startingKey],
+  );
+  const onStartWork = useCallback(
+    (issue: IssueSummary) => void startFlow.start(issue),
+    [startFlow.start],
+  );
+
   const runFilter = useCallback(async (query: string) => {
     setFilterResults(await issuesSearch(query));
   }, []);
@@ -313,7 +344,14 @@ export default function GithubIssuesView({
     );
   }
 
-  const listProps = { isStarred, linkFor, onToggleStar, onOpen: setSelected };
+  const listProps = {
+    isStarred,
+    linkFor,
+    isStarting,
+    onToggleStar,
+    onOpen: setSelected,
+    onStartWork,
+  };
 
   return (
     <div className="h-full overflow-y-auto p-6">
@@ -426,7 +464,16 @@ export default function GithubIssuesView({
           </div>
         )}
 
-        {error && <p className="text-sm text-red-400">{error}</p>}
+        {startFlow.warnings.length > 0 && (
+          <div className="rounded-lg border border-amber-900/60 bg-amber-950/30 p-3 text-xs text-amber-300">
+            {startFlow.warnings.map((w) => (
+              <p key={w}>{w}</p>
+            ))}
+          </div>
+        )}
+        {(error ?? startFlow.error) && (
+          <p className="text-sm text-red-400">{error ?? startFlow.error}</p>
+        )}
       </div>
 
       {creating && (

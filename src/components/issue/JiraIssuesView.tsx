@@ -16,11 +16,14 @@ import {
   issueKey,
 } from "../../lib/issues/types";
 import { jiraAssigned, jiraCreated, jiraSearch, jiraViewer } from "../../lib/jira/api";
+import { useJiraStartWork } from "../../lib/jira/useStartWork";
 import { useOmniChatContext } from "../../lib/omniChatContext";
 import { openExternal } from "../../lib/url";
 import JiraCreateIssueModal from "./JiraCreateIssueModal";
 import JiraIssueDetailView from "./JiraIssueDetailView";
+import JiraRepoPickerModal from "./JiraRepoPickerModal";
 import { StatusBadge } from "./jiraStatus";
+import StartWorkButton from "./StartWorkButton";
 
 type TabKey = "assigned" | "created" | "search" | "starred";
 
@@ -82,14 +85,18 @@ function JiraIssueRow({
   issue,
   starred,
   link,
+  starting,
   onToggleStar,
   onOpen,
+  onStartWork,
 }: {
   issue: IssueSummary;
   starred: boolean;
   link: IssueLink | undefined;
+  starting: boolean;
   onToggleStar: (issue: IssueSummary, starred: boolean) => void;
   onOpen: (issue: IssueSummary) => void;
+  onStartWork: (issue: IssueSummary) => void;
 }) {
   const assignee = issue.assignees[0];
   return (
@@ -131,6 +138,14 @@ function JiraIssueRow({
           in progress
         </span>
       )}
+      <StartWorkButton
+        starting={starting}
+        label="Start work on this ticket"
+        onStart={(e) => {
+          e.stopPropagation();
+          onStartWork(issue);
+        }}
+      />
       <button
         onClick={(e) => {
           e.stopPropagation();
@@ -149,15 +164,19 @@ function GroupedList({
   issues,
   isStarred,
   linkFor,
+  isStarting,
   onToggleStar,
   onOpen,
+  onStartWork,
   emptyText,
 }: {
   issues: IssueSummary[];
   isStarred: (issue: IssueSummary) => boolean;
   linkFor: (issue: IssueSummary) => IssueLink | undefined;
+  isStarting: (issue: IssueSummary) => boolean;
   onToggleStar: (issue: IssueSummary, starred: boolean) => void;
   onOpen: (issue: IssueSummary) => void;
+  onStartWork: (issue: IssueSummary) => void;
   emptyText: string;
 }) {
   const groups = useMemo(() => groupByProjectAndStatus(issues), [issues]);
@@ -184,8 +203,10 @@ function GroupedList({
                       issue={issue}
                       starred={isStarred(issue)}
                       link={linkFor(issue)}
+                      starting={isStarting(issue)}
                       onToggleStar={onToggleStar}
                       onOpen={onOpen}
+                      onStartWork={onStartWork}
                     />
                   ))}
                 </ul>
@@ -321,6 +342,20 @@ export default function JiraIssuesView() {
     [links],
   );
 
+  const startFlow = useJiraStartWork(loadLinks);
+  // The picker stays open while its ticket's detail loads, so a row counts as
+  // busy from the click until the dialog can show that ticket's transitions.
+  const isStarting = useCallback(
+    (issue: IssueSummary) =>
+      startFlow.preparingKey === issue.externalId ||
+      startFlow.pending?.externalId === issue.externalId,
+    [startFlow.preparingKey, startFlow.pending],
+  );
+  const onStartWork = useCallback(
+    (issue: IssueSummary) => void startFlow.open(issue.externalId),
+    [startFlow.open],
+  );
+
   const runSearch = useCallback(async (jql: string) => {
     setSearchResults(await jiraSearch(jql));
   }, []);
@@ -383,7 +418,14 @@ export default function JiraIssuesView() {
     );
   }
 
-  const listProps = { isStarred, linkFor, onToggleStar, onOpen: setSelected };
+  const listProps = {
+    isStarred,
+    linkFor,
+    isStarting,
+    onToggleStar,
+    onOpen: setSelected,
+    onStartWork,
+  };
 
   return (
     <div className="h-full overflow-y-auto p-6">
@@ -517,8 +559,28 @@ export default function JiraIssuesView() {
           </div>
         )}
 
-        {error && <p className="text-sm text-red-400">{error}</p>}
+        {startFlow.warnings.length > 0 && (
+          <div className="rounded-lg border border-amber-900/60 bg-amber-950/30 p-3 text-xs text-amber-300">
+            {startFlow.warnings.map((w) => (
+              <p key={w}>{w}</p>
+            ))}
+          </div>
+        )}
+        {(error ?? startFlow.error) && (
+          <p className="text-sm text-red-400">{error ?? startFlow.error}</p>
+        )}
       </div>
+
+      {startFlow.pending && (
+        <JiraRepoPickerModal
+          projectKey={startFlow.pending.sourceKey}
+          issueKey={startFlow.pending.displayId}
+          transitions={startFlow.pending.transitions}
+          busy={startFlow.starting}
+          onConfirm={(choice) => void startFlow.confirm(choice)}
+          onClose={startFlow.cancel}
+        />
+      )}
 
       {creating && (
         <JiraCreateIssueModal onClose={() => setCreating(false)} onCreated={() => void refresh()} />

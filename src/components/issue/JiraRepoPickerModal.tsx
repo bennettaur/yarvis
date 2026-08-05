@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { JiraTransition } from "../../lib/jira/types";
+import type { JiraTransition, StartWorkChoice } from "../../lib/jira/types";
 import { listRepos, type Repo } from "../../lib/repos";
 
 /** The transition to pre-select: prefer a status named "In Progress", then any
@@ -8,12 +8,6 @@ import { listRepos, type Repo } from "../../lib/repos";
 function defaultTransition(transitions: JiraTransition[]): JiraTransition | undefined {
   const inProgress = transitions.filter((t) => t.toStatusCategory === "in_progress");
   return inProgress.find((t) => /in[\s-]?progress/i.test(t.toStatusName)) ?? inProgress[0];
-}
-
-export interface StartWorkChoice {
-  repoIds: string[];
-  transitionToInProgress: boolean;
-  transitionId?: string;
 }
 
 /**
