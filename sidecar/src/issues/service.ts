@@ -77,15 +77,18 @@ export function sanitizeIssueText(text: string): string {
     .filter((ch) => !isHiddenChar(ch.codePointAt(0) ?? 0))
     .join("");
 
+  // Both passes repeat to a fixed point, because deleting from the middle of a
+  // run of markup can leave a fresh marker behind: "--->->" loses its inner
+  // "-->" and closes back up into a live "-->". One pass would hand that to the
+  // model. HTML ends a comment with "--!>" as well as "-->", so both spellings
+  // count — a comment closed the second way is just as invisible on the rendered
+  // issue, and missing it would leak its contents into the prompt as text.
   let withoutComments = cleaned;
   let previous: string;
   do {
     previous = withoutComments;
-    withoutComments = withoutComments.replace(/<!--[\s\S]*?-->/g, "");
-  } while (withoutComments !== previous);
-
-  return (
-    withoutComments
+    withoutComments = withoutComments
+      .replace(/<!--[\s\S]*?--!?>/g, "")
       // Whatever marker is still standing is unpaired. Dropping it is what makes
       // sanitizing a composition of sanitized parts safe: an issue's title and
       // body are sanitized separately and then joined, so a lone `<!--` left in
@@ -94,7 +97,11 @@ export function sanitizeIssueText(text: string): string {
       // doesn't spare fenced code, so a ticket demonstrating an HTML comment
       // loses the markers — the right trade for text an auto-approved session
       // reads as instruction.
-      .replace(/<!--|-->/g, "")
+      .replace(/<!--|--!?>/g, "");
+  } while (withoutComments !== previous);
+
+  return (
+    withoutComments
       // Trailing whitespace (not newlines) and runs of blank lines.
       .replace(/[^\S\n]+$/gm, "")
       .replace(/\n{3,}/g, "\n\n")
