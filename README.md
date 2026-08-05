@@ -222,9 +222,9 @@ patch left out — twenty lines from either end, or the whole stretch by clickin
 the count — and a per-file **Whole file** shows the complete file with its
 changes still highlighted, plus a strip down the edge marking where in the file
 they fall. A file's full text is only fetched once you ask for context. A copy
-button beside each filename — in the file tree and in the diff header — puts the
-file's full repo-relative path on the clipboard, for pasting into an editor or a
-prompt.
+button puts a file's full repo-relative path on the clipboard, for pasting into
+an editor or a prompt — always shown in the diff header, and in the file list on
+hovering a row, where only the basename is visible.
 
 #### Guided review and line insights
 

@@ -221,6 +221,10 @@ function FileRow({
             </>
           )}
         </button>
+        {/* Named group, unlike the bare `group` every other hover-reveal in the
+            app uses: these rows sit inside the folder `<details className="group">`
+            above, so an unnamed `group-hover:` would reveal every file's button
+            whenever any part of the folder is hovered. */}
         <CopyPathButton
           path={file.filename}
           className="opacity-0 transition-opacity focus:opacity-100 group-hover/row:opacity-100"

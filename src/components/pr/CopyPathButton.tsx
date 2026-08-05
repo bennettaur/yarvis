@@ -2,9 +2,26 @@ import { useEffect, useRef, useState } from "react";
 import { writeClipboard } from "../../lib/clipboard";
 
 /** How long the tick (or the failure mark) stays up before the icon resets. */
-const FEEDBACK_MS = 1500;
+export const FEEDBACK_MS = 1500;
 
-type Result = "idle" | "copied" | "failed";
+type CopyState = "idle" | "copied" | "failed";
+
+const LABELS: Record<CopyState, string> = {
+  idle: "Copy path",
+  copied: "Path copied",
+  failed: "Copying failed",
+};
+
+/**
+ * A path from a PR is outside-influenced data (see AGENTS.md), and git allows
+ * every byte but NUL and `/` in a path component — so a hostile branch can name
+ * a file with an embedded newline or a right-to-left override. Those survive the
+ * clipboard intact and make the pasted text read as something other than what
+ * the review page showed, which matters most where this button is meant to be
+ * used: a shell, or a prompt. Strip rather than refuse, since a path carrying
+ * control characters is not one anyone can open by hand either way.
+ */
+const clipboardSafe = (path: string): string => path.replace(/[\p{Cc}\p{Cf}]/gu, "");
 
 /**
  * Copies a changed file's repo-relative path to the system clipboard — the
@@ -12,9 +29,10 @@ type Result = "idle" | "copied" | "failed";
  * quote it to an agent. It lives next to the filename in both the file list and
  * the diff header, so it is reachable from wherever the reader happens to be.
  *
- * Both hosts wrap it in something that reacts to clicks of its own (a
- * `<summary>` that folds the file, a row that scrolls the diff into view), so
- * the click is stopped here rather than at each call site.
+ * The diff header is a `<summary>`, so a click here would otherwise fold the
+ * file away. The file list row carries no handler of its own today — the
+ * scroll-to-file one sits on a sibling button — but the click is stopped for
+ * both hosts so a future row-level handler can't hijack a copy.
  */
 export default function CopyPathButton({
   path,
@@ -24,72 +42,99 @@ export default function CopyPathButton({
   /** Extra classes from the host, e.g. hover-reveal in a dense list row. */
   className?: string;
 }) {
-  const [result, setResult] = useState<Result>("idle");
+  const [copyState, setCopyState] = useState<CopyState>("idle");
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    return () => {
       if (resetTimer.current) clearTimeout(resetTimer.current);
-    },
-    [],
-  );
+    };
+  }, []);
 
-  const copy = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
+  const copy = async (event: React.MouseEvent) => {
+    event.stopPropagation();
+    // Belt and braces with the line above: in a real browser a `<summary>`'s
+    // default activation is a separate concern from bubbling.
+    event.preventDefault();
     try {
-      await writeClipboard(path);
-      setResult("copied");
-    } catch (err) {
-      console.error("[pr] copying the file path failed:", err);
-      setResult("failed");
+      await writeClipboard(clipboardSafe(path));
+      setCopyState("copied");
+    } catch (e) {
+      console.error("[pr] copying the file path failed:", e);
+      setCopyState("failed");
     }
     if (resetTimer.current) clearTimeout(resetTimer.current);
-    resetTimer.current = setTimeout(() => setResult("idle"), FEEDBACK_MS);
+    resetTimer.current = setTimeout(() => setCopyState("idle"), FEEDBACK_MS);
   };
 
-  const label =
-    result === "copied" ? "Path copied" : result === "failed" ? "Copying failed" : "Copy path";
-
   return (
-    <button
-      type="button"
-      onClick={copy}
-      title={result === "idle" ? `Copy path: ${path}` : label}
-      aria-label={`Copy path ${path}`}
-      className={`shrink-0 rounded p-0.5 transition-colors ${
-        result === "copied"
-          ? "text-emerald-400"
-          : result === "failed"
-            ? "text-red-400"
-            : "text-zinc-500 hover:text-zinc-200"
-      } ${className}`}
-    >
-      {result === "copied" ? <CheckIcon /> : <CopyIcon />}
-      <span className="sr-only">{label}</span>
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={copy}
+        title={copyState === "idle" ? `Copy path ${path}` : LABELS[copyState]}
+        aria-label={`Copy path ${path}`}
+        className={`shrink-0 rounded p-0.5 transition-colors ${
+          copyState === "copied"
+            ? "text-emerald-400"
+            : copyState === "failed"
+              ? "text-red-400"
+              : "text-zinc-500 hover:text-zinc-200"
+        } ${className}`}
+      >
+        {copyState === "copied" ? (
+          <CheckIcon />
+        ) : copyState === "failed" ? (
+          <AlertIcon />
+        ) : (
+          <CopyIcon />
+        )}
+      </button>
+      {/* A sibling, not a child: the `aria-label` above wins the button's
+          accessible name outright, so a live region nested inside it would never
+          be read. Empty while idle, so the reset doesn't announce a second time. */}
+      <span role="status" aria-live="polite" className="sr-only">
+        {copyState === "idle" ? "" : LABELS[copyState]}
+      </span>
+    </>
   );
 }
 
 function CopyIcon() {
   return (
-    <svg
-      aria-hidden="true"
-      viewBox="0 0 16 16"
-      className="h-3.5 w-3.5"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
+    <IconFrame>
       <path d="M3.75 10.25h-.5a1.5 1.5 0 0 1-1.5-1.5v-5.5a1.5 1.5 0 0 1 1.5-1.5h5.5a1.5 1.5 0 0 1 1.5 1.5v.5" />
       <rect x="5.75" y="5.75" width="8.5" height="8.5" rx="1.5" />
-    </svg>
+    </IconFrame>
   );
 }
 
 function CheckIcon() {
+  return (
+    <IconFrame strokeWidth="2">
+      <path d="M3.5 8.5l3 3 6-6" />
+    </IconFrame>
+  );
+}
+
+/** Failure needs a shape of its own — a red tint alone conveys nothing. */
+function AlertIcon() {
+  return (
+    <IconFrame>
+      <circle cx="8" cy="8" r="6.25" />
+      <path d="M8 4.75v3.75" />
+      <path d="M8 11.25h.01" />
+    </IconFrame>
+  );
+}
+
+function IconFrame({
+  children,
+  strokeWidth = "1.5",
+}: {
+  children: React.ReactNode;
+  strokeWidth?: string;
+}) {
   return (
     <svg
       aria-hidden="true"
@@ -97,11 +142,11 @@ function CheckIcon() {
       className="h-3.5 w-3.5"
       fill="none"
       stroke="currentColor"
-      strokeWidth="2"
+      strokeWidth={strokeWidth}
       strokeLinecap="round"
       strokeLinejoin="round"
     >
-      <path d="M3.5 8.5l3 3 6-6" />
+      {children}
     </svg>
   );
 }
