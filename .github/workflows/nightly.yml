@@ -23,7 +23,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete nightly --yes --cleanup-tag || true
-          gh release create nightly --prerelease --title "Nightly Release" --notes "Nightly build from $(date +'%Y-%m-%d %H:%M:%S')"
+          cat > release-notes.md <<NOTES
+          Nightly build from $(date +'%Y-%m-%d %H:%M:%S')
+
+          ### Installing on macOS
+
+          Nightly builds are not notarized by Apple, so macOS quarantines the
+          \`.dmg\` on download and refuses to launch what it contains. After
+          dragging **Yarvis** into \`/Applications\`, clear the quarantine flag:
+
+          \`\`\`bash
+          xattr -dr com.apple.quarantine /Applications/Yarvis.app
+          \`\`\`
+
+          Skipping this step is what produces the "Yarvis is damaged and can't be
+          opened" error.
+          NOTES
+          gh release create nightly --prerelease --title "Nightly Release" --notes-file release-notes.md
 
   build:
     name: Build (${{ matrix.platform }})
@@ -72,7 +88,31 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Build app
+        env:
+          # macOS refuses to launch a quarantined bundle that carries no code
+          # signature at all, reporting it as damaged. Tauri only signs when it
+          # is given an identity, so fall back to ad-hoc signing ("-") when no
+          # Developer ID certificate is configured. Ad-hoc still leaves the app
+          # unnotarized — see the release notes for the quarantine workaround.
+          # Non-macOS runners ignore these.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
+          # Notarization is skipped with a warning unless all three are set.
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: bun run tauri build
+
+      - name: Verify macOS code signature
+        if: matrix.platform == 'macos-latest'
+        run: |
+          app="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' | head -n 1)"
+          if [ -z "$app" ]; then
+            echo "No .app bundle found to verify" >&2
+            exit 1
+          fi
+          codesign --verify --deep --strict --verbose=2 "$app"
 
       - name: Upload artifacts
         env:

@@ -25,6 +25,30 @@ Three processes with a clean ownership split:
 
 Data lives in a local **PostgreSQL + pgvector**.
 
+## Installing a nightly build
+
+Nightly `.dmg`s are published to the [`nightly`
+release](https://github.com/bennettaur/yarvis/releases/tag/nightly). They are
+ad-hoc code-signed but **not notarized** by Apple, so macOS quarantines the
+download. After dragging **Yarvis** into `/Applications`, clear the quarantine
+flag once:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Yarvis.app
+```
+
+Without it macOS blocks the launch — as "Yarvis is damaged and can't be opened"
+for a build with no signature, or as an unverified-developer warning for an
+ad-hoc signed one. Nightly builds still need the [prerequisites](#prerequisites)
+below at runtime: PostgreSQL with `pgvector`, plus the secrets entered in
+Settings.
+
+Notarizing removes the extra step entirely. It needs an Apple Developer account;
+once one exists, set `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
+`APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID` as
+repository secrets and the nightly workflow signs and notarizes without further
+changes.
+
 ## Prerequisites
 
 - [Bun](https://bun.com) (`bun --version`)

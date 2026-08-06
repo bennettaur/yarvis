@@ -61,6 +61,13 @@ hook (lefthook, installed via the `prepare` script) mirrors the biome and Rust
 checks on staged files — `cargo clippy` blocks the commit if it fails since it
 has no safe autofix.
 
+`.github/workflows/nightly.yml` builds and publishes the `nightly` prerelease.
+On macOS it always hands Tauri a signing identity — the `APPLE_SIGNING_IDENTITY`
+secret when set, ad-hoc (`-`) otherwise — because macOS rejects a quarantined
+bundle with no signature as "damaged", and Tauri skips signing entirely when
+given no identity. Notarization runs only when the Apple ID secrets are also
+present; a `codesign --verify` step guards against publishing a broken bundle.
+
 ## Conventions
 
 - Package manager is **Bun** everywhere, including the sidecar workspace.
