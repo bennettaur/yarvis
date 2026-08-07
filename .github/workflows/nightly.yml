@@ -83,29 +83,49 @@ jobs:
       - name: Install JS dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build app
+      - name: Configure macOS signing
+        if: matrix.platform == 'macos-latest'
+        shell: bash
         env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
           # macOS refuses to launch a quarantined bundle that carries no code
-          # signature at all, reporting it as damaged. Tauri only signs when it
-          # is handed an identity, so fall back to ad-hoc signing ("-") when no
-          # Developer ID certificate is configured. Ad-hoc leaves the app
-          # unnotarized — see "Installing a nightly build" in README.md for what
-          # that costs the user. Kept off the other runners so a compromised
-          # dependency there can never read the certificate.
-          APPLE_CERTIFICATE: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ matrix.platform == 'macos-latest' && (secrets.APPLE_SIGNING_IDENTITY || '-') || '' }}
-          # Notarization is skipped with a warning unless all three are set.
-          APPLE_ID: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_TEAM_ID || '' }}
+          # signature at all, reporting it as damaged, and Tauri only signs when
+          # it is handed an identity. Ad-hoc ("-") is the floor when no Developer
+          # ID certificate is configured; it leaves the app unnotarized, so see
+          # "Installing a nightly build" in README.md for what that costs users.
+          echo "APPLE_SIGNING_IDENTITY=${APPLE_SIGNING_IDENTITY:--}" >> "$GITHUB_ENV"
+
+          # Tauri reads the rest with var_os, which cannot distinguish "set to
+          # empty" from "has a value": an empty APPLE_CERTIFICATE sends it down
+          # the import-a-certificate path, and empty Apple ID credentials make it
+          # attempt notarization rather than skip it — both fail the build. A
+          # workflow cannot omit an `env:` key conditionally, so forward only the
+          # variables that actually hold something. Confining this to a macOS-only
+          # step also keeps the certificate off the Linux and Windows runners.
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            value="${!name}"
+            [ -n "$value" ] || continue
+            {
+              echo "$name<<__APPLE_ENV__"
+              echo "$value"
+              echo "__APPLE_ENV__"
+            } >> "$GITHUB_ENV"
+          done
+
+      - name: Build app
         run: bun run tauri build
 
       - name: Verify macOS code signature
         if: matrix.platform == 'macos-latest'
         shell: bash
         env:
-          EXPECT_DEVELOPER_ID: ${{ secrets.APPLE_SIGNING_IDENTITY != '' }}
+          EXPECT_DEVELOPER_ID: ${{ secrets.APPLE_SIGNING_IDENTITY != '' || secrets.APPLE_CERTIFICATE != '' }}
         run: |
           bundle_dir=src-tauri/target/release/bundle/macos
           app_bundle="$(find "$bundle_dir" -maxdepth 1 -name '*.app' | head -n 1)"
