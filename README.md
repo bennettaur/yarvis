@@ -191,7 +191,9 @@ under Settings.
 
 The PRs tab lists **My PRs**, **Needs review**, **Reviewing**, and saved
 **Filters**, grouped under collapsible per-repo headers (a collapsed repo stays
-collapsed across tabs and restarts). The box above the tabs jumps straight to a
+collapsed across tabs and restarts). Leaving the PRs tab and coming back drops
+you where you were — same provider, same list, and the same PR if you were
+reading one; that too survives a restart. The box above the tabs jumps straight to a
 PR you can already name — paste a `https://github.com/owner/repo/pull/123` link,
 or type `owner/repo#123`; a bare `repo#123` resolves against your registered
 repos, and if the name matches several owners you're asked which one.
@@ -317,7 +319,7 @@ render real components with the `renderToHtml` helper in `src/test/render.tsx`.
 ```
 src/            React frontend (Vite + TS + Tailwind)
   lib/          sidecar API client, Keychain wrappers, Omni Chat context registry, notifications, cross-tab nav (nav.ts)
-    pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs, per-file viewed state, link/shorthand locator, diff parsing + context expansion, guide + insight clients)
+    pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs, per-file viewed state, remembered panel place, link/shorthand locator, diff parsing + context expansion, guide + insight clients)
     issues/     provider-neutral issue data layer (GitHub + JIRA) — types, api client, start-work flow (useGithubStartWork.ts)
     jira/       JIRA-specific data layer (issue detail, transitions, comments, create) — types, api client, start-work flow (useJiraStartWork.ts)
   components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, Terminal, Workspaces, …)

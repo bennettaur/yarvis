@@ -34,10 +34,17 @@ const summaryOf = (raw: typeof MY_PR) => ({
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
+/** UI event types posted during a render, so tests can assert on `pr.viewed`. */
+let recordedEvents: string[] = [];
+
 // GitHub is the configured provider throughout; Azure is not, which is what
 // lets the last test exercise a remembered Azure place going stale.
 mock.module("../lib/api", () => ({
-  sidecarFetch: async (path: string) => {
+  sidecarFetch: async (path: string, init?: RequestInit) => {
+    if (path === "/api/events") {
+      recordedEvents.push(JSON.parse(String(init?.body)).type);
+      return json({ ok: true });
+    }
     if (path === "/api/github/viewer") return json({ login: "octo" });
     if (path.startsWith("/api/github/search")) return json([MY_PR]);
     if (path === "/api/github/config")
@@ -95,6 +102,7 @@ const LIST_NAV = "Needs review";
 describe("PrsPanel place", () => {
   beforeEach(() => {
     localStorage.clear();
+    recordedEvents = [];
   });
 
   it("opens on 'My PRs' when there's no remembered place", async () => {
@@ -119,6 +127,22 @@ describe("PrsPanel place", () => {
 
     expect(html).toContain(MY_PR.title);
     expect(html).not.toContain(LIST_NAV);
+  });
+
+  it("doesn't count reopening a remembered PR as viewing it", async () => {
+    storePlace({ provider: "github", tab: "mine", selected: summaryOf(MY_PR) });
+
+    await renderToHtml(<PrsPanel persistPlace />);
+
+    // Otherwise every app-tab round-trip logs the same PR again, and the
+    // Reviewing list reads those events to decide what's in progress.
+    expect(recordedEvents).not.toContain("pr.viewed");
+  });
+
+  it("counts a PR another tab asked us to open as viewing it", async () => {
+    await renderToHtml(<PrsPanel persistPlace requestedPr={summaryOf(MY_PR)} />);
+
+    expect(recordedEvents).toContain("pr.viewed");
   });
 
   it("remembers the place it restored", async () => {
