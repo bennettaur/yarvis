@@ -43,8 +43,18 @@ function summarizeGuide(guide: PrGuideRow) {
     /** True once the reviewer has reached the last step. */
     finished: guide.currentStep >= guide.steps.length - 1,
     currentStep: step
-      ? { path: step.path, startLine: step.startLine, explanation: step.explanation }
+      ? {
+          path: step.path,
+          startLine: step.startLine,
+          explanation: step.explanation,
+          // What sort of stop it is, so "where did I leave off" can say the
+          // reader is parked on a sanity check rather than on code to read.
+          kind: step.kind ?? "walkthrough",
+          covers: step.covers?.length ?? 0,
+        }
       : null,
+    /** Problems the guide flagged across the whole tour, read or not. */
+    flagged: guide.steps.reduce((n, s) => n + (s.findings?.length ?? 0), 0),
     startedAt: guide.createdAt.toISOString(),
     lastReadAt: guide.updatedAt.toISOString(),
   };

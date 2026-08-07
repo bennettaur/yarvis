@@ -78,6 +78,18 @@ Status of the build against the original vision. The full V1 plan lives at
   out a reading order from the outside in: the request that arrives, then what
   handles it, down to what it finally writes. Each step names a file and line
   range with a sentence or two on why it comes there, plus optional background.
+  Files that rarely repay a close read are checked rather than toured: data
+  files, schemas and models collapse into one sanity-check step, test files into
+  another, each naming every file it covered. Moving past any step marks the
+  files it accounted for viewed, so a sanity check clears its whole set at once
+  and the last step's Finish credits the rest; what a step may claim to cover is
+  intersected at write time with the files the pull request actually changed and
+  with what other steps walk through, since a covered file is marked viewed with
+  the reviewer's own provider token rather than merely described to them. The
+  same steps carry what the agent flagged — an unhandled failure
+  path, a comment that has drifted from its code, a test that only exercises its
+  own mocks, a path the change left untested — each a click away from the line
+  it is about, so a guide reports problems as well as ordering the read.
   The guide is stored per PR against the commit it was generated at, so a push
   marks it stale rather than silently shifting its line numbers, and an
   in-progress guide holds one coalescing item in the attention stream showing
@@ -87,10 +99,13 @@ Status of the build against the original vision. The full V1 plan lives at
   so no poller watches pull requests that have a guide. In the review the tour
   renders as a box docked to the bottom of the scroll pane (the diff moves under
   it as steps advance, so it can't scroll away from the reader) with the step
-  count, the explanation, an expandable context section, and back/next. Landing
+  count, the explanation, a badge naming the sanity check when the step is one,
+  an expandable list of the other files it covered, the findings, an expandable
+  context section, and back/next — Finish in place of next at the end. Landing
   on a step opens its file — overriding a deliberate collapse — scrolls to its
   lines, and marks them down the left edge, in both the unified and side-by-side
-  views.
+  views. Clicking a finding or a covered file drives the same focus without
+  moving the reader's place in the tour.
 - **Line insights** — a "?" beside any line asks the same tool-equipped agent
   about that code (shift-click extends from the last line asked about, so a
   block can be picked out without a drag that would fight the browser's own text

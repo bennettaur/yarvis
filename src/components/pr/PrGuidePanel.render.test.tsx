@@ -37,8 +37,10 @@ function controller(over: Partial<GuideController> = {}): GuideController {
     next: () => {},
     back: () => {},
     goTo: () => {},
+    focusOn: () => {},
     dismiss: async () => {},
-    focusNonce: 0,
+    finish: async () => {},
+    focus: null,
     ...over,
   };
 }
@@ -91,13 +93,18 @@ describe("PrGuidePanel", () => {
   const disabledButton = (label: string) =>
     new RegExp(`<button[^>]*\\bdisabled=""[^>]*>${label}</button>`);
 
-  it("disables Back on the first step and Next on the last", async () => {
+  it("disables Back on the first step", async () => {
     const first = await render();
     expect(first).toMatch(disabledButton("Back"));
     expect(first).not.toMatch(disabledButton("Next"));
+  });
 
+  // The last step ends the tour instead of offering a Next that goes nowhere,
+  // and finishing is what credits that step's files as read.
+  it("offers Finish in place of Next on the last step", async () => {
     const last = await render({ guide: guide({ currentStep: 1 }) });
-    expect(last).toMatch(disabledButton("Next"));
+    expect(last).toContain("Finish");
+    expect(last).not.toContain(">Next</button>");
     expect(last).not.toMatch(disabledButton("Back"));
   });
 
@@ -121,6 +128,61 @@ describe("PrGuidePanel", () => {
     expect(await render({ error: "no LLM provider is configured" })).toContain(
       "no LLM provider is configured",
     );
+  });
+
+  // A sanity-check step is the agent reporting rather than the reader reading,
+  // so it says which sort of check it made. Walkthrough steps say nothing:
+  // reading the code is what the rest of the tour is.
+  it("names a sanity check, and labels a walkthrough with nothing", async () => {
+    expect(await render()).not.toContain("sanity check");
+    const tests = await render({
+      guide: guide({ steps: [{ ...steps[0]!, kind: "tests" as const }] }),
+    });
+    expect(tests).toContain("Test sanity check");
+    const data = await render({
+      guide: guide({ steps: [{ ...steps[0]!, kind: "data" as const }] }),
+    });
+    expect(data).toContain("Data sanity check");
+  });
+
+  it("lists the other files a step covered, with a count", async () => {
+    const html = await render({
+      guide: guide({
+        steps: [{ ...steps[0]!, kind: "tests" as const, covers: ["a.test.ts", "b.test.ts"] }],
+      }),
+    });
+    expect(html).toContain("Also covers 2 files");
+    expect(html).toContain("a.test.ts");
+    expect(html).toContain("b.test.ts");
+  });
+
+  // A finding is about a file the step may not point at, so it carries its own
+  // location rather than borrowing the step's.
+  it("shows what the step flagged, and where", async () => {
+    const html = await render({
+      guide: guide({
+        steps: [
+          {
+            ...steps[0]!,
+            findings: [
+              {
+                kind: "error-handling" as const,
+                path: "src/fetchUser.ts",
+                startLine: 44,
+                note: "the rejected promise is never caught",
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    expect(html).toContain("error handling");
+    expect(html).toContain("the rejected promise is never caught");
+    expect(html).toContain("src/fetchUser.ts:44");
+  });
+
+  it("shows no findings section when the step flagged nothing", async () => {
+    expect(await render()).not.toContain("error handling");
   });
 });
 

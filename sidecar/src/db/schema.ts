@@ -214,6 +214,33 @@ export const omniLayouts = pgTable("omni_layouts", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * What a step is for. A `walkthrough` step is code the reviewer is expected to
+ * read; `data` and `tests` are files the agent checked over on their behalf and
+ * reports on, so a schema or a test file does not cost a close read it rarely
+ * repays.
+ */
+export type PrGuideStepKind = "walkthrough" | "data" | "tests";
+
+/** What a flagged problem is about, so the reader can weigh it before opening it. */
+export type PrGuideFindingKind =
+  | "error-handling"
+  | "stale-comment"
+  | "test-gap"
+  | "brittle-test"
+  | "naming"
+  | "convention"
+  | "other";
+
+/** Something the agent thinks is wrong with the code a step covers. */
+export interface PrGuideFinding {
+  kind: PrGuideFindingKind;
+  path: string;
+  /** Where the problem is; null when it is about the file as a whole. */
+  startLine: number | null;
+  note: string;
+}
+
 /** One stop on a guided review: what to look at, and why it comes here. */
 export interface PrGuideStep {
   path: string;
@@ -224,6 +251,15 @@ export interface PrGuideStep {
   explanation: string;
   /** Longer background, shown only when the reader asks to expand the step. */
   context?: string;
+  /** Absent on guides generated before steps carried a kind; read as a walkthrough. */
+  kind?: PrGuideStepKind;
+  /**
+   * Further files this step accounts for, beyond `path` — a sanity check over
+   * every test file in the change reports as one step, not as one per file.
+   */
+  covers?: string[];
+  /** Problems worth the reviewer's attention in the files this step covers. */
+  findings?: PrGuideFinding[];
 }
 
 /**

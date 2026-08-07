@@ -236,6 +236,24 @@ to the bottom of the review with back/next. A guide is generated once per PR and
 kept until you approve, request changes, or merge; pushing new commits marks it
 out of date rather than deleting it, and anything untouched for 30 days is swept.
 
+Not every file gets a stop of its own. Data files, schemas, models and fixtures
+fold into one **data sanity check** step — the agent reports that it checked the
+models are pragmatic, the names semantic, and the human-facing descriptions
+accurate — and test files fold into a **test sanity check**, read against the
+code they cover for untested paths, tests that only exercise their own mocks,
+and departures from how the repo's other tests are written. A file that mixes
+data with logic still gets a walkthrough step for its logic. Steps also carry
+what the agent thinks is *wrong* — an unhandled failure path, a comment that no
+longer describes its code, a misleading name — each a click away from the line
+it is about.
+
+**Next** marks every file the step accounted for as viewed — the same per-file
+state the Viewed pill sets, synced to github.com — so a sanity check clears all
+the files it covered in one move. The last step offers **Finish** instead, which
+credits its files and ends the tour. **Back** is re-reading, and unmarks nothing;
+jumping to a step marks nothing either. A step only ever covers files this pull
+request changed, and never one another step walks you through.
+
 The **?** beside any line asks about that code — shift-click to extend from the
 last line you asked about. Answers are stored against those lines and shown
 inline. They are your own notes, not review feedback: nothing reaches the author
@@ -245,7 +263,7 @@ I work out about that file?", "where did I leave off?").
 
 Both are agent runs against your configured LLM provider, so they need a
 provider key in Settings on top of the GitHub/Azure token, and neither is cheap:
-a tour gives the agent up to 40 tool-calling steps to explore the change and a
+a tour gives the agent up to 60 tool-calling steps to explore the change and a
 line question up to 16, each carrying diffs and file contents.
 
 ### Telegram remote control
