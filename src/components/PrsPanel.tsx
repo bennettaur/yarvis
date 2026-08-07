@@ -19,7 +19,7 @@ import {
   ghStars,
   ghViewer,
 } from "../lib/pr/github";
-import { type PrsTabKey, readPrsPlace, writePrsPlace } from "../lib/pr/panelState";
+import { defaultPrsPlace, type PrsTabKey, readPrsPlace, writePrsPlace } from "../lib/pr/panelState";
 import { refDisplayRepo, refKey, refNumber } from "../lib/pr/ref";
 import type { AzFilter, GhFilter, Provider, PrSummary, ReviewingList } from "../lib/pr/types";
 import PrDetailView from "./PrDetailView";
@@ -51,15 +51,22 @@ const PROVIDERS: { key: Provider; label: string }[] = [
 export default function PrsPanel({
   requestedPr = null,
   onRequestConsumed,
+  persistPlace = false,
 }: {
   /** A PR another tab has asked us to open — auto-selected on mount/change. */
   requestedPr?: PrSummary | null;
   /** Called once we've consumed `requestedPr` so the parent can clear it. */
   onRequestConsumed?: () => void;
+  /**
+   * Restore and remember which provider/list/PR the user was on. Opt-in, and
+   * only the PRs tab opts in: the place lives under one storage key, so a
+   * second mount (the Omni "Pull Requests" widget) would fight the tab over it.
+   */
+  persistPlace?: boolean;
 } = {}) {
   // Read once on mount; every later change flows back out through the effect
   // that writes the place below.
-  const [restoredPlace] = useState(readPrsPlace);
+  const [restoredPlace] = useState(() => (persistPlace ? readPrsPlace() : defaultPrsPlace()));
   const [provider, setProvider] = useState<Provider>(restoredPlace.provider);
   /**
    * Which providers have working credentials. Starts EMPTY (rather than null /
@@ -186,8 +193,18 @@ export default function PrsPanel({
   useEffect(() => {
     if (!probeComplete) return;
     if (availableProviders.has(provider)) return;
-    if (availableProviders.has("github")) setProvider("github");
-    else if (availableProviders.has("azure")) setProvider("azure");
+    const configured = availableProviders.has("github")
+      ? "github"
+      : availableProviders.has("azure")
+        ? "azure"
+        : null;
+    if (!configured) return;
+    setProvider(configured);
+    // Unlike the provider change itself, a selection the new provider's client
+    // can't fetch has to go: a restored PR whose credentials were revoked would
+    // otherwise sit on a detail view that only ever errors. A cross-tab open
+    // request is unaffected — it sets the provider to the PR's own.
+    setSelected((prev) => (prev && prev.ref.provider !== configured ? null : prev));
   }, [probeComplete, availableProviders, provider]);
 
   // Refetch the per-provider lists whenever provider or availability changes.
@@ -237,6 +254,12 @@ export default function PrsPanel({
   useEffect(() => {
     if (activeTab !== "reviewing" || provider !== "github") return;
     if (reviewingLoad !== "idle") return;
+    // Gated on the probe like the list fetch above, because a restored
+    // "reviewing" tab makes this effect reachable on the very first commit —
+    // before we know GitHub is configured, and early enough that the list
+    // effect's later `setReviewingLoad("idle")` would fire a second round-trip
+    // on top of the first.
+    if (!probeComplete || !availableProviders.has("github")) return;
     let live = true;
     setReviewingLoad("loading");
     ghReviewing()
@@ -252,7 +275,7 @@ export default function PrsPanel({
     return () => {
       live = false;
     };
-  }, [activeTab, provider, reviewingLoad]);
+  }, [activeTab, provider, reviewingLoad, probeComplete, availableProviders]);
 
   // A provider switch can retire the active tab (Azure has no Reviewing list).
   useEffect(() => {
@@ -263,8 +286,9 @@ export default function PrsPanel({
   // unmounts and remounts this panel — puts them back on the same list, or the
   // same PR, instead of resetting to GitHub / "My PRs".
   useEffect(() => {
+    if (!persistPlace) return;
     writePrsPlace({ provider, tab: activeTab, selected });
-  }, [provider, activeTab, selected]);
+  }, [persistPlace, provider, activeTab, selected]);
 
   const onToggleStar = useCallback(
     async (pr: PrSummary, starred: boolean) => {
@@ -338,7 +362,15 @@ export default function PrsPanel({
   }
 
   if (selected) {
-    return <PrDetailView pr={selected} onBack={() => setSelected(null)} />;
+    // Object identity is the test for "we restored this": every other route to
+    // a selection hands us a summary from a freshly fetched list or request.
+    return (
+      <PrDetailView
+        pr={selected}
+        onBack={() => setSelected(null)}
+        recordView={selected !== restoredPlace.selected}
+      />
+    );
   }
 
   const listProps = { isStarred, onToggleStar, onReview: setSelected };

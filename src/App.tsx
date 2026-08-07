@@ -310,7 +310,11 @@ export default function App() {
           // at the top and let only the body scroll under it (rather than
           // sharing the catch-all p-6 wrapper's scroll, which leaves a gap
           // above a `sticky` header).
-          <PrsPanel requestedPr={requestedPr} onRequestConsumed={() => setRequestedPr(null)} />
+          <PrsPanel
+            requestedPr={requestedPr}
+            onRequestConsumed={() => setRequestedPr(null)}
+            persistPlace
+          />
         ) : tab === "issues" ? (
           // Issues owns its scroll so the issue detail view can pin a header and
           // scroll only its body, matching the PRs tab.

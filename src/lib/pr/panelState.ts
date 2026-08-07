@@ -1,12 +1,12 @@
-import type { Provider, PrSummary } from "./types";
+import type { Provider, PrRef, PrSummary } from "./types";
 
 /**
  * Which list the PRs tab is showing. "reviewing" is GitHub-only — the panel
  * falls back to "mine" when the active provider doesn't offer it.
  */
-export type PrsTabKey = "mine" | "review" | "reviewing" | "filters";
+const TAB_KEYS = ["mine", "review", "reviewing", "filters"] as const;
 
-const TAB_KEYS: readonly string[] = ["mine", "review", "reviewing", "filters"];
+export type PrsTabKey = (typeof TAB_KEYS)[number];
 
 /** Where the user was in the PRs tab: provider, list, and any open PR. */
 export interface PrsPlace {
@@ -23,7 +23,7 @@ export interface PrsPlace {
  */
 const STORAGE_KEY = "yarvis.prs.place";
 
-function defaultPlace(): PrsPlace {
+export function defaultPrsPlace(): PrsPlace {
   return { provider: "github", tab: "mine", selected: null };
 }
 
@@ -32,41 +32,74 @@ function isProvider(value: unknown): value is Provider {
 }
 
 function isTabKey(value: unknown): value is PrsTabKey {
-  return typeof value === "string" && TAB_KEYS.includes(value);
+  return typeof value === "string" && (TAB_KEYS as readonly string[]).includes(value);
 }
 
 /**
- * Identity-only check rather than a full schema: the detail view refetches a
- * PR from its ref, so a stored summary just has to be enough to name the PR
- * and render the header while that fetch is in flight.
+ * Every field of the discriminated union, not just the provider: `refApiPath`
+ * interpolates the PR number into a sidecar path unencoded because the type
+ * says it's a number, so a deserializer that doesn't prove that is handing the
+ * rest of the app a lie.
  */
-function isSummary(value: unknown): value is PrSummary {
+function isPrRef(value: unknown): value is PrRef {
   if (typeof value !== "object" || value === null) return false;
-  const { ref, title, url } = value as { ref?: unknown; title?: unknown; url?: unknown };
-  if (typeof title !== "string" || typeof url !== "string") return false;
-  if (typeof ref !== "object" || ref === null) return false;
-  return isProvider((ref as { provider?: unknown }).provider);
+  const ref = value as Record<string, unknown>;
+  if (ref.provider === "github") {
+    return (
+      typeof ref.owner === "string" && typeof ref.repo === "string" && Number.isInteger(ref.number)
+    );
+  }
+  return (
+    ref.provider === "azure" &&
+    typeof ref.org === "string" &&
+    typeof ref.project === "string" &&
+    typeof ref.repo === "string" &&
+    Number.isInteger(ref.prId)
+  );
+}
+
+function isHttpUrl(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  try {
+    const { protocol } = new URL(value);
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Identity plus what the header needs while the refetch is in flight — the
+ * detail view reloads everything else from the ref, so the remaining `PrSummary`
+ * fields aren't worth gating a restore on.
+ */
+function isPrSummary(value: unknown): value is PrSummary {
+  if (typeof value !== "object" || value === null) return false;
+  const { ref, title, url } = value as Record<string, unknown>;
+  return isPrRef(ref) && typeof title === "string" && isHttpUrl(url);
 }
 
 export function readPrsPlace(): PrsPlace {
-  const place = defaultPlace();
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return place;
+    if (!raw) return defaultPrsPlace();
     const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return place;
-    const { provider, tab, selected } = parsed as Partial<PrsPlace>;
-    if (isProvider(provider)) place.provider = provider;
-    if (isTabKey(tab)) place.tab = tab;
-    // A selection belonging to a different provider than the one we're
-    // restoring can't be fetched by that provider's client, so drop it rather
-    // than open a detail view that can never populate.
-    if (isSummary(selected) && selected.ref.provider === place.provider) place.selected = selected;
-    return place;
+    if (typeof parsed !== "object" || parsed === null) return defaultPrsPlace();
+    const { provider, tab, selected } = parsed as Record<string, unknown>;
+    const restoredProvider = isProvider(provider) ? provider : "github";
+    return {
+      provider: restoredProvider,
+      tab: isTabKey(tab) ? tab : "mine",
+      // A selection belonging to a different provider than the one we're
+      // restoring can't be fetched by that provider's client, so drop it rather
+      // than open a detail view that can never populate.
+      selected:
+        isPrSummary(selected) && selected.ref.provider === restoredProvider ? selected : null,
+    };
   } catch {
     // Corrupt or unavailable storage: start at the default place; the next
     // write rewrites the slot.
-    return defaultPlace();
+    return defaultPrsPlace();
   }
 }
 
