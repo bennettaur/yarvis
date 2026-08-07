@@ -5,6 +5,7 @@ import { rowClass } from "../diff/DiffView";
 import { usePersistedBoolean } from "../SplitPane";
 import ChangeMinimap from "./ChangeMinimap";
 import CopyPathButton from "./CopyPathButton";
+import { buildFileTree, flattenFileTree } from "./fileTree";
 import GapMarker from "./GapMarker";
 import InsightBlock from "./InsightCards";
 import {
@@ -424,6 +425,11 @@ export default function PrFileDiffs({
   const [foldAll, setFoldAll] = useState<FoldAll | null>(null);
   const [split, setSplit] = usePersistedBoolean(SPLIT_VIEW_KEY, false);
 
+  // The same order `PrFileList` shows, so scrolling the diffs walks the tree
+  // top to bottom instead of the provider's own file order. Hoisted above the
+  // early returns to keep hook order stable.
+  const ordered = useMemo(() => (data ? flattenFileTree(buildFileTree(data)) : []), [data]);
+
   if (error) return <p className="text-sm text-red-400">{error}</p>;
   if (loading || !data) return <p className="text-sm text-zinc-500">Loading diff…</p>;
   if (data.length === 0) return <p className="text-sm text-zinc-600">No file changes.</p>;
@@ -473,12 +479,12 @@ export default function PrFileDiffs({
           Expand all
         </button>
       </div>
-      {data.map((f, i) => (
+      {ordered.map(({ file: f, index }) => (
         <FileDiff
           key={f.filename}
           prRef={prRef}
           file={f}
-          index={i}
+          index={index}
           threads={threads}
           isViewed={viewed.has(f.filename)}
           onToggleViewed={onToggleViewed}
