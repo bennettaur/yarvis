@@ -23,21 +23,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete nightly --yes --cleanup-tag || true
-          cat > release-notes.md <<NOTES
-          Nightly build from $(date +'%Y-%m-%d %H:%M:%S')
+          echo "Nightly build from $(date +'%Y-%m-%d %H:%M:%S')" > release-notes.md
+          cat >> release-notes.md <<'NOTES'
 
           ### Installing on macOS
 
-          Nightly builds are not notarized by Apple, so macOS quarantines the
-          \`.dmg\` on download and refuses to launch what it contains. After
-          dragging **Yarvis** into \`/Applications\`, clear the quarantine flag:
+          Nightly builds are ad-hoc code-signed but not notarized by Apple, so
+          Gatekeeper blocks the first launch. Drag **Yarvis** into
+          `/Applications`, try to open it once, then allow it from **System
+          Settings → Privacy & Security → Open Anyway**.
 
-          \`\`\`bash
-          xattr -dr com.apple.quarantine /Applications/Yarvis.app
-          \`\`\`
-
-          Skipping this step is what produces the "Yarvis is damaged and can't be
-          opened" error.
+          See "Installing a nightly build" in the README for the details.
           NOTES
           gh release create nightly --prerelease --title "Nightly Release" --notes-file release-notes.md
 
@@ -91,28 +87,40 @@ jobs:
         env:
           # macOS refuses to launch a quarantined bundle that carries no code
           # signature at all, reporting it as damaged. Tauri only signs when it
-          # is given an identity, so fall back to ad-hoc signing ("-") when no
-          # Developer ID certificate is configured. Ad-hoc still leaves the app
-          # unnotarized — see the release notes for the quarantine workaround.
-          # Non-macOS runners ignore these.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
+          # is handed an identity, so fall back to ad-hoc signing ("-") when no
+          # Developer ID certificate is configured. Ad-hoc leaves the app
+          # unnotarized — see "Installing a nightly build" in README.md for what
+          # that costs the user. Kept off the other runners so a compromised
+          # dependency there can never read the certificate.
+          APPLE_CERTIFICATE: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ matrix.platform == 'macos-latest' && (secrets.APPLE_SIGNING_IDENTITY || '-') || '' }}
           # Notarization is skipped with a warning unless all three are set.
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ matrix.platform == 'macos-latest' && secrets.APPLE_TEAM_ID || '' }}
         run: bun run tauri build
 
       - name: Verify macOS code signature
         if: matrix.platform == 'macos-latest'
+        shell: bash
+        env:
+          EXPECT_DEVELOPER_ID: ${{ secrets.APPLE_SIGNING_IDENTITY != '' }}
         run: |
-          app="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' | head -n 1)"
-          if [ -z "$app" ]; then
-            echo "No .app bundle found to verify" >&2
+          bundle_dir=src-tauri/target/release/bundle/macos
+          app_bundle="$(find "$bundle_dir" -maxdepth 1 -name '*.app' | head -n 1)"
+          if [ -z "$app_bundle" ]; then
+            echo "No .app bundle found in $bundle_dir" >&2
             exit 1
           fi
-          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign --verify --strict --verbose=2 "$app_bundle"
+          # An intact seal says nothing about who signed it, so a certificate
+          # that expired or failed to import would quietly degrade to the ad-hoc
+          # fallback and still pass the check above. spctl runs the Gatekeeper
+          # policy itself, which an ad-hoc signature cannot satisfy.
+          if [ "$EXPECT_DEVELOPER_ID" = "true" ]; then
+            spctl --assess --type execute --verbose=4 "$app_bundle"
+          fi
 
       - name: Upload artifacts
         env:
