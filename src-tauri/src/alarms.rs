@@ -6,7 +6,7 @@
 //! always-on-top + focus), shows a notification, plays an escalating sound, and
 //! emits an event the frontend renders as a full-screen overlay.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -46,6 +46,11 @@ pub struct AlarmState {
     path: PathBuf,
     /// Stop signals for currently-ringing alarms, keyed by alarm id.
     stops: Mutex<HashMap<String, Arc<Notify>>>,
+    /// Alarms that fired this run and still hold the window takeover. Tracked
+    /// separately from `stops` because a silent alarm takes the window over
+    /// without registering a ring loop, and the window may only be restored
+    /// once *every* firing alarm has been dealt with.
+    firing: Mutex<HashSet<String>>,
 }
 
 fn now_ms() -> i64 {
@@ -71,6 +76,7 @@ impl AlarmState {
             alarms: Mutex::new(alarms),
             path,
             stops: Mutex::new(HashMap::new()),
+            firing: Mutex::new(HashSet::new()),
         }
     }
 
@@ -129,6 +135,10 @@ async fn scheduler(app: AppHandle) {
 }
 
 fn fire(app: &AppHandle, alarm: Alarm) {
+    if let Ok(mut firing) = app.state::<AlarmState>().firing.lock() {
+        firing.insert(alarm.id.clone());
+    }
+
     // Take over the main window on the main thread.
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -218,6 +228,30 @@ fn restore_window(app: &AppHandle) {
     });
 }
 
+/// Drops an alarm from the firing set and hands the window back only once no
+/// other alarm is still firing. Alarms set for the same minute all fire in one
+/// scheduler tick, so dealing with the first must not drop the takeover the
+/// others still need to stay reachable. An alarm that wasn't firing (an upcoming
+/// one being cancelled, or one left over from a previous run) leaves the window
+/// alone entirely — it never took it over, and the user may have gone
+/// full-screen themselves.
+fn release_firing(app: &AppHandle, id: &str) {
+    let state = app.state::<AlarmState>();
+    let hand_back = match state.firing.lock() {
+        Ok(mut firing) => take_from_firing(&mut firing, id),
+        Err(_) => return,
+    };
+    if hand_back {
+        restore_window(app);
+    }
+}
+
+/// Removes `id` from the firing set, reporting whether that leaves the window
+/// free to be handed back.
+fn take_from_firing(firing: &mut HashSet<String>, id: &str) -> bool {
+    firing.remove(id) && firing.is_empty()
+}
+
 fn set_status(app: &AppHandle, id: &str, status: &str) {
     let state = app.state::<AlarmState>();
     if let Ok(mut alarms) = state.alarms.lock() {
@@ -261,20 +295,23 @@ pub fn create_alarm(
 #[tauri::command]
 pub fn cancel_alarm(app: AppHandle, id: String) {
     stop_ringing(&app, &id);
+    // Cancelling reaches alarms that are already firing (the alarms page lists
+    // them), so it releases the takeover the same way acknowledging does.
+    release_firing(&app, &id);
     set_status(&app, &id, "cancelled");
 }
 
 #[tauri::command]
 pub fn acknowledge_alarm(app: AppHandle, id: String) {
     stop_ringing(&app, &id);
-    restore_window(&app);
+    release_firing(&app, &id);
     set_status(&app, &id, "acknowledged");
 }
 
 #[tauri::command]
 pub fn snooze_alarm(app: AppHandle, id: String, minutes: i64) {
     stop_ringing(&app, &id);
-    restore_window(&app);
+    release_firing(&app, &id);
     let state = app.state::<AlarmState>();
     if let Ok(mut alarms) = state.alarms.lock() {
         if let Some(alarm) = alarms.iter_mut().find(|a| a.id == id) {
@@ -283,4 +320,30 @@ pub fn snooze_alarm(app: AppHandle, id: String, minutes: i64) {
         }
     }
     state.save();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn firing_set(ids: &[&str]) -> HashSet<String> {
+        ids.iter().map(|id| id.to_string()).collect()
+    }
+
+    #[test]
+    fn keeps_the_window_while_another_alarm_is_still_firing() {
+        // Two alarms set for the same time fire in one tick; dealing with the
+        // first must leave the takeover up so the second stays reachable.
+        let mut firing = firing_set(&["a", "b"]);
+        assert!(!take_from_firing(&mut firing, "a"));
+        assert!(take_from_firing(&mut firing, "b"));
+    }
+
+    #[test]
+    fn leaves_the_window_alone_for_an_alarm_that_never_fired() {
+        // Cancelling an upcoming alarm must not drag the window out of a
+        // full-screen the user put it in themselves.
+        let mut firing = HashSet::new();
+        assert!(!take_from_firing(&mut firing, "upcoming"));
+    }
 }

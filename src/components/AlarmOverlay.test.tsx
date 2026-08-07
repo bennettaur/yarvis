@@ -7,7 +7,8 @@ import { renderToHtml } from "../test/render";
 /**
  * Verifies the takeover's meeting affordance: a "Join meeting" button appears
  * only when the alarm carries a meet link, and clicking it both opens the link
- * and ends the alarm (acknowledge).
+ * and ends the alarm (acknowledge). Also covers the queue hint that tells the
+ * user other alarms are waiting behind this one (issue #201).
  */
 
 const opened: string[] = [];
@@ -58,6 +59,20 @@ describe("AlarmOverlay", () => {
       createElement(AlarmOverlay, { alarm: baseAlarm, onDone: () => {} }),
     );
     expect(html).not.toContain("Join meeting");
+  });
+
+  it("says how many alarms are waiting behind this one", async () => {
+    const html = await renderToHtml(
+      createElement(AlarmOverlay, { alarm: baseAlarm, remaining: 2, onDone: () => {} }),
+    );
+    expect(html).toContain("2 more alarms waiting behind this one");
+  });
+
+  it("says nothing about a queue when this is the only alarm", async () => {
+    const html = await renderToHtml(
+      createElement(AlarmOverlay, { alarm: baseAlarm, remaining: 0, onDone: () => {} }),
+    );
+    expect(html).not.toContain("waiting behind");
   });
 
   it("opens the link and ends the alarm when Join meeting is clicked", async () => {

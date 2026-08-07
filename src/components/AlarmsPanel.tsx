@@ -1,5 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
-import { type Alarm, cancelAlarm, createAlarm, listAlarms } from "../lib/alarms";
+import { useCallback, useMemo, useState } from "react";
+import {
+  acknowledgeAlarm,
+  cancelAlarm,
+  createAlarm,
+  snoozeAlarm,
+  useAlarms,
+  useRingingAlarms,
+} from "../lib/alarmStore";
 import { recordEvent } from "../lib/events";
 
 function localInputValue(d: Date): string {
@@ -10,31 +17,26 @@ function localInputValue(d: Date): string {
 }
 
 export default function AlarmsPanel() {
-  const [alarms, setAlarms] = useState<Alarm[]>([]);
+  const alarms = useAlarms();
+  const ringing = useRingingAlarms();
   const [label, setLabel] = useState("");
   const [when, setWhen] = useState(() => localInputValue(new Date(Date.now() + 5 * 60_000)));
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
+  const run = useCallback(async (action: () => Promise<unknown>) => {
     try {
-      setAlarms(await listAlarms());
+      await action();
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
   }, []);
 
-  useEffect(() => {
-    void refresh();
-    const t = setInterval(() => void refresh(), 5000);
-    return () => clearInterval(t);
-  }, [refresh]);
-
   const add = useCallback(async () => {
     const trimmed = label.trim();
     if (!trimmed || !when) return;
     const fireAtMs = new Date(when).getTime();
-    await createAlarm(trimmed, fireAtMs);
+    await run(() => createAlarm(trimmed, fireAtMs));
     // Record the deliberate creation (not the quick-test or calendar arming).
     void recordEvent(
       "alarm.created",
@@ -42,17 +44,17 @@ export default function AlarmsPanel() {
       "alarms",
     );
     setLabel("");
-    await refresh();
-  }, [label, when, refresh]);
+  }, [label, when, run]);
 
-  const quickTest = useCallback(async () => {
-    await createAlarm(label.trim() || "Test alarm", Date.now() + 5000);
-    await refresh();
-  }, [label, refresh]);
+  const quickTest = useCallback(
+    () => run(() => createAlarm(label.trim() || "Test alarm", Date.now() + 5000)),
+    [label, run],
+  );
 
-  const scheduled = alarms
-    .filter((a) => a.status === "scheduled")
-    .sort((a, b) => a.fireAtMs - b.fireAtMs);
+  const scheduled = useMemo(
+    () => alarms.filter((a) => a.status === "scheduled").sort((a, b) => a.fireAtMs - b.fireAtMs),
+    [alarms],
+  );
 
   return (
     <div className="space-y-6">
@@ -87,6 +89,42 @@ export default function AlarmsPanel() {
         </div>
       </section>
 
+      {/* Alarms that fired and nobody dealt with. Several alarms set for the
+          same time all fire together and the takeover only shows one at a
+          time, so this is where the rest stay reachable. */}
+      {ringing.length > 0 && (
+        <section>
+          <h2 className="mb-2 text-sm font-medium uppercase tracking-wide text-red-400">
+            Going off now ({ringing.length})
+          </h2>
+          <ul className="divide-y divide-red-900/50 rounded-xl border border-red-900/60 bg-red-950/30">
+            {ringing.map((a) => (
+              <li key={a.id} className="flex items-center gap-3 px-4 py-3">
+                <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-red-500" />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm text-zinc-100">{a.label}</div>
+                  <div className="text-xs text-zinc-500">
+                    {new Date(a.fireAtMs).toLocaleString()}
+                  </div>
+                </div>
+                <button
+                  onClick={() => void run(() => snoozeAlarm(a.id, 5))}
+                  className="rounded-md border border-zinc-700 px-3 py-1 text-sm text-zinc-300 hover:bg-zinc-800"
+                >
+                  Snooze 5 min
+                </button>
+                <button
+                  onClick={() => void run(() => acknowledgeAlarm(a.id))}
+                  className="rounded-md bg-indigo-600 px-3 py-1 text-sm font-medium hover:bg-indigo-500"
+                >
+                  Dismiss
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <section>
         <h2 className="mb-2 text-sm font-medium uppercase tracking-wide text-zinc-500">
           Upcoming ({scheduled.length})
@@ -104,10 +142,7 @@ export default function AlarmsPanel() {
                   </div>
                 </div>
                 <button
-                  onClick={async () => {
-                    await cancelAlarm(a.id);
-                    await refresh();
-                  }}
+                  onClick={() => void run(() => cancelAlarm(a.id))}
                   className="text-sm text-zinc-500 hover:text-red-400"
                 >
                   Cancel

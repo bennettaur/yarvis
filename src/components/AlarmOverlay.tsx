@@ -1,9 +1,22 @@
 import { useEffect, useState } from "react";
-import { type Alarm, acknowledgeAlarm, snoozeAlarm } from "../lib/alarms";
+import { acknowledgeAlarm, snoozeAlarm } from "../lib/alarmStore";
+import type { Alarm } from "../lib/alarms";
 import { openExternal } from "../lib/url";
 
-/** Full-screen takeover shown when an alarm fires. */
-export default function AlarmOverlay({ alarm, onDone }: { alarm: Alarm; onDone: () => void }) {
+/**
+ * Full-screen takeover shown when an alarm fires. Only one alarm is shown at a
+ * time; `remaining` counts the others still waiting behind it so dealing with
+ * this one visibly hands over to the next rather than looking like a no-op.
+ */
+export default function AlarmOverlay({
+  alarm,
+  remaining = 0,
+  onDone,
+}: {
+  alarm: Alarm;
+  remaining?: number;
+  onDone: () => void;
+}) {
   const [secondsPast, setSecondsPast] = useState(
     Math.max(0, Math.floor((Date.now() - alarm.fireAtMs) / 1000)),
   );
@@ -30,6 +43,11 @@ export default function AlarmOverlay({ alarm, onDone }: { alarm: Alarm; onDone: 
       </div>
       {escalated && (
         <div className="text-red-300">Overdue by {secondsPast}s — please acknowledge</div>
+      )}
+      {remaining > 0 && (
+        <div className="text-zinc-400">
+          {remaining} more {remaining === 1 ? "alarm" : "alarms"} waiting behind this one
+        </div>
       )}
       <div className="flex gap-4">
         {alarm.meetLink && (
