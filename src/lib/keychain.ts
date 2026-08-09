@@ -52,7 +52,7 @@ export const SECRETS: SecretMeta[] = [
     key: "cerebras_api_key",
     label: "Cerebras API key",
     placeholder: "csk-...",
-    help: "Cerebras Inference key for fast open-model chat.",
+    help: "Cerebras Cloud key for chat. The endpoint is fixed; no base URL to set.",
   },
   {
     key: "github_token",

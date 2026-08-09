@@ -42,11 +42,6 @@ const GEMINI_MODELS = [
 ];
 const CEREBRAS_MODELS = ["zai-glm-4.6", "qwen-3-coder-480b", "gpt-oss-120b", "llama-3.3-70b"];
 
-/**
- * Cerebras Inference speaks the OpenAI Chat Completions API (not the newer
- * Responses API), so it is built from `@ai-sdk/openai` pointed at this base URL
- * rather than needing its own SDK package.
- */
 const CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1";
 
 function builtInProviders(config: Config): ProviderInfo[] {
@@ -108,7 +103,7 @@ export async function availableProviders(config: Config, db?: Db): Promise<Provi
  * selection to draw on (e.g. the Telegram bot, which can't see the frontend's
  * localStorage). Returns the first available provider's first model, or null
  * when nothing is configured. Built-ins are listed before custom providers, so
- * a configured Anthropic/Gemini key wins before any proxy.
+ * any keyed built-in wins before a proxy.
  */
 export async function defaultProviderModel(
   config: Config,
@@ -190,6 +185,8 @@ export async function resolveModel(
     case "cerebras": {
       const apiKey = config.secrets.cerebrasApiKey;
       if (!apiKey) throw new Error("Cerebras API key not configured");
+      // Cerebras serves /chat/completions but not the Responses API, so this
+      // reuses the OpenAI client rather than adding a Cerebras SDK package.
       return createOpenAI({ apiKey, baseURL: CEREBRAS_BASE_URL }).chat(modelId);
     }
     case "bedrock": {

@@ -21,8 +21,6 @@ function randomToken(): string {
 export interface ProviderSecrets {
   anthropicApiKey?: string;
   geminiApiKey?: string;
-  // Cerebras Inference API key. The endpoint is OpenAI-chat-shaped, so only the
-  // key is configurable; the base URL is fixed in `llm/providers.ts`.
   cerebrasApiKey?: string;
   githubToken?: string;
   // Azure DevOps personal access token + organization base URL (e.g.

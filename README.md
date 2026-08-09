@@ -77,6 +77,11 @@ The JIRA credentials are for Atlassian Cloud: the base URL is your
 id.atlassian.com → Security → API tokens) is paired with your account email for
 Basic auth.
 
+Cerebras takes only an API key, created in the Cerebras Cloud console. Unlike a
+custom provider, its endpoint is fixed — Cerebras serves the OpenAI
+`/chat/completions` shape, so Yarvis talks to it through the OpenAI client
+rather than a separate SDK, and there is no base URL to configure.
+
 ### Embeddings
 
 The `memories.embedding` column is `vector(1536)`, and the active embedder's

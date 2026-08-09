@@ -50,12 +50,12 @@ describe("availableProviders", () => {
   });
 
   it("marks Cerebras available only once its key is configured", async () => {
-    const without = await availableProviders(configWithSecrets());
-    expect(without.find((p) => p.id === "cerebras")?.available).toBe(false);
+    const unkeyed = await availableProviders(configWithSecrets());
+    expect(unkeyed.find((p) => p.id === "cerebras")?.available).toBe(false);
 
     const config: Config = { ...configWithSecrets(), secrets: { cerebrasApiKey: "csk-fake" } };
-    const withKey = await availableProviders(config);
-    expect(withKey.find((p) => p.id === "cerebras")?.available).toBe(true);
+    const keyed = await availableProviders(config);
+    expect(keyed.find((p) => p.id === "cerebras")?.available).toBe(true);
   });
 
   it("appends configured custom providers when given a database", async () => {
@@ -112,6 +112,13 @@ describe("defaultProviderModel", () => {
     const result = await defaultProviderModel(configWithSecrets());
     expect(result?.provider).toBe("bedrock");
   });
+
+  it("picks Cerebras when it is the only keyed provider", async () => {
+    const config: Config = { ...configWithSecrets(), secrets: { cerebrasApiKey: "csk-fake" } };
+    const result = await defaultProviderModel(config);
+    expect(result?.provider).toBe("cerebras");
+    expect(result?.model).toBeTruthy();
+  });
 });
 
 describe("resolveModel for Cerebras", () => {
@@ -119,6 +126,9 @@ describe("resolveModel for Cerebras", () => {
     const config: Config = { ...configWithSecrets(), secrets: { cerebrasApiKey: "csk-fake" } };
     const model = await resolveModel(config, undefined, "cerebras", "zai-glm-4.6");
     expect((model as { modelId?: string }).modelId).toBe("zai-glm-4.6");
+    // Cerebras has no Responses API, so the model must be the chat-completions
+    // variant. `modelId` alone can't tell the two apart.
+    expect((model as { provider?: string }).provider).toBe("openai.chat");
   });
 
   it("throws when no key is configured", async () => {
