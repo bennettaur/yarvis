@@ -19,7 +19,7 @@ export interface HealthResponse {
 export interface StatusResponse {
   service: string;
   databaseConfigured: boolean;
-  providers: { anthropic: boolean; gemini: boolean };
+  providers: { anthropic: boolean; gemini: boolean; cerebras: boolean };
 }
 
 export interface DbHealthResponse {

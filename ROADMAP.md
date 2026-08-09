@@ -12,7 +12,7 @@ Status of the build against the original vision. The full V1 plan lives at
 - **Desktop shell** — full-bleed layout with a left icon nav rail and a top bar
   with live sidecar status (sharp, flat aesthetic, indigo accent), replacing the
   earlier centered card layout. Static pages remain.
-- **Chat** — multi-provider streaming (Anthropic / AWS Bedrock / Gemini) with
+- **Chat** — multi-provider streaming (Anthropic / AWS Bedrock / Gemini / Cerebras) with
   session + message persistence.
 - **Work tracking** — daily/weekly tasks driven by chat tool-calls
   ("I plan to…", "what's left?", roll yesterday forward) plus a Tasks UI.

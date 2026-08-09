@@ -93,6 +93,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
       providers: {
         anthropic: config.secrets.anthropicApiKey !== undefined,
         gemini: config.secrets.geminiApiKey !== undefined,
+        cerebras: config.secrets.cerebrasApiKey !== undefined,
       },
     }),
   );

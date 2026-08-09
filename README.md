@@ -51,7 +51,7 @@ DATABASE_URL="postgres://localhost:5432/yarvis" bun run --cwd sidecar db:migrate
 
 Secrets are entered in the app's **Settings** screen and stored in the macOS
 Keychain — not in env files: the database URL, provider keys (Anthropic,
-Gemini), a GitHub token and/or an Azure DevOps token + organization URL (for the
+Gemini, Cerebras), a GitHub token and/or an Azure DevOps token + organization URL (for the
 PR dashboard + embedded review — either provider can back it, selected with a
 toggle in the PRs tab), a JIRA base URL + account email + API token (for the JIRA
 issues integration on the Issues tab), a Google Cloud OAuth client id/secret (for the Calendar

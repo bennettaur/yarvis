@@ -87,6 +87,10 @@ export default function Dashboard() {
           value={<StatusDot state={status?.providers.anthropic ?? null} />}
         />
         <Row label="Gemini key" value={<StatusDot state={status?.providers.gemini ?? null} />} />
+        <Row
+          label="Cerebras key"
+          value={<StatusDot state={status?.providers.cerebras ?? null} />}
+        />
       </section>
     </div>
   );

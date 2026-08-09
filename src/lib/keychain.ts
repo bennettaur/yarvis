@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 export type SecretKey =
   | "anthropic_api_key"
   | "gemini_api_key"
+  | "cerebras_api_key"
   | "github_token"
   | "azure_devops_token"
   | "azure_devops_org_url"
@@ -46,6 +47,12 @@ export const SECRETS: SecretMeta[] = [
     label: "Gemini API key",
     placeholder: "AIza...",
     help: "Google Gemini API key for chat and embeddings.",
+  },
+  {
+    key: "cerebras_api_key",
+    label: "Cerebras API key",
+    placeholder: "csk-...",
+    help: "Cerebras Inference key for fast open-model chat.",
   },
   {
     key: "github_token",
