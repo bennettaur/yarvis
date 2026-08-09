@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
-import AlarmOverlay from "./components/AlarmOverlay";
 import AlarmsPanel from "./components/AlarmsPanel";
+import AlarmTakeover from "./components/AlarmTakeover";
 import AttentionAutoClear from "./components/attention/AttentionAutoClear";
 import AttentionPanel from "./components/attention/AttentionPanel";
 import ChatPanel from "./components/ChatPanel";
@@ -26,7 +26,7 @@ import TerminalTabs from "./components/shell/terminalTabs/TerminalTabs";
 import { useTabShortcuts } from "./components/shell/useTabShortcuts";
 import TasksPanel from "./components/TasksPanel";
 import WorkspacesPanel from "./components/WorkspacesPanel";
-import { type Alarm, onAlarmFired } from "./lib/alarms";
+import { useRingingAlarms } from "./lib/alarmStore";
 import type { AttentionItem } from "./lib/attention";
 import { markAttention } from "./lib/attentionStore";
 import { onClipboardSummon } from "./lib/clipboard";
@@ -50,7 +50,8 @@ export default function App() {
     const saved = localStorage.getItem("yarvis.activeTab") as Tab | null;
     return saved ?? "chat";
   });
-  const [activeAlarm, setActiveAlarm] = useState<Alarm | null>(null);
+  // Drives the nav badge; AlarmTakeover owns the full-screen overlay itself.
+  const ringingAlarms = useRingingAlarms();
 
   useEffect(() => {
     localStorage.setItem("yarvis.activeTab", tab);
@@ -254,14 +255,6 @@ export default function App() {
 
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
-    onAlarmFired((alarm) => setActiveAlarm(alarm)).then((u) => {
-      unlisten = u;
-    });
-    return () => unlisten?.();
-  }, []);
-
-  useEffect(() => {
-    let unlisten: UnlistenFn | undefined;
     onOmniChatSummon(() => openOmniChat()).then((u) => {
       unlisten = u;
     });
@@ -284,7 +277,7 @@ export default function App() {
         onOpenOmniChat={openOmniChat}
         onOpenClipboard={() => setClipboardOpen(true)}
         onOpenAttention={openAttentionPanel}
-        attentionPending={attention !== null}
+        attentionPending={attention !== null || ringingAlarms.length > 0}
       >
         {/* Chat and Omni fill the region and manage their own layout; page-like
             views scroll as a padded document. */}
@@ -346,11 +339,15 @@ export default function App() {
         wip={wip}
         wipLoading={wipLoading}
         onOpenWip={openWipItem}
+        onOpenAlarms={() => {
+          setTab("alarms");
+          setAttentionPanelOpen(false);
+        }}
       />
 
       <AttentionAutoClear />
 
-      {activeAlarm && <AlarmOverlay alarm={activeAlarm} onDone={() => setActiveAlarm(null)} />}
+      <AlarmTakeover />
     </>
   );
 }
