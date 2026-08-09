@@ -23,12 +23,15 @@ export default function AlarmsPanel() {
   const [when, setWhen] = useState(() => localInputValue(new Date(Date.now() + 5 * 60_000)));
   const [error, setError] = useState<string | null>(null);
 
+  /** Runs an alarm command, surfacing any failure in the error banner. */
   const run = useCallback(async (action: () => Promise<unknown>) => {
     try {
       await action();
       setError(null);
+      return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      return false;
     }
   }, []);
 
@@ -36,7 +39,9 @@ export default function AlarmsPanel() {
     const trimmed = label.trim();
     if (!trimmed || !when) return;
     const fireAtMs = new Date(when).getTime();
-    await run(() => createAlarm(trimmed, fireAtMs));
+    // Nothing below may run on failure: it would log an event for an alarm that
+    // doesn't exist and clear the label the user needs to retry with.
+    if (!(await run(() => createAlarm(trimmed, fireAtMs)))) return;
     // Record the deliberate creation (not the quick-test or calendar arming).
     void recordEvent(
       "alarm.created",
@@ -95,7 +100,7 @@ export default function AlarmsPanel() {
       {ringing.length > 0 && (
         <section>
           <h2 className="mb-2 text-sm font-medium uppercase tracking-wide text-red-400">
-            Going off now ({ringing.length})
+            Ringing ({ringing.length})
           </h2>
           <ul className="divide-y divide-red-900/50 rounded-xl border border-red-900/60 bg-red-950/30">
             {ringing.map((a) => (
@@ -108,12 +113,14 @@ export default function AlarmsPanel() {
                   </div>
                 </div>
                 <button
+                  type="button"
                   onClick={() => void run(() => snoozeAlarm(a.id, 5))}
                   className="rounded-md border border-zinc-700 px-3 py-1 text-sm text-zinc-300 hover:bg-zinc-800"
                 >
                   Snooze 5 min
                 </button>
                 <button
+                  type="button"
                   onClick={() => void run(() => acknowledgeAlarm(a.id))}
                   className="rounded-md bg-indigo-600 px-3 py-1 text-sm font-medium hover:bg-indigo-500"
                 >

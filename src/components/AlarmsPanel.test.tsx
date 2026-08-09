@@ -1,9 +1,15 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
-import { createRoot } from "react-dom/client";
 import type { Alarm } from "../lib/alarms";
-import { alarmInvoke, alarmListen, setCoreAlarms, UNHANDLED } from "../test/alarmFixture";
+import {
+  alarmInvoke,
+  alarmListen,
+  resetCoreAlarms,
+  setCoreAlarms,
+  UNHANDLED,
+} from "../test/alarmFixture";
 import { nativeInvoke } from "../test/nativeInvoke";
+import { mountForInteraction } from "../test/render";
 
 /**
  * The alarms page is the fallback for issue #201: whatever the full-screen
@@ -36,25 +42,19 @@ const fired = (id: string, label: string): Alarm => ({
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
 
-// Torn down even when an expectation throws: a mount left behind keeps the
-// alarm store subscribed, and the next test's first subscriber is the one that
-// triggers the refresh it needs to see its own alarms.
-let mounted: { root: ReturnType<typeof createRoot>; host: HTMLElement } | null = null;
+let unmount: (() => void) | null = null;
 
 afterEach(() => {
-  mounted?.root.unmount();
-  mounted?.host.remove();
-  mounted = null;
+  unmount?.();
+  unmount = null;
 });
 
+afterAll(resetCoreAlarms);
+
 async function mountPanel(): Promise<HTMLElement> {
-  const host = document.createElement("div");
-  document.body.appendChild(host);
-  const root = createRoot(host);
-  mounted = { root, host };
-  root.render(createElement(AlarmsPanel));
-  await settle();
-  return host;
+  const mounted = await mountForInteraction(createElement(AlarmsPanel), 50);
+  unmount = mounted.unmount;
+  return mounted.host;
 }
 
 describe("AlarmsPanel", () => {
@@ -62,7 +62,7 @@ describe("AlarmsPanel", () => {
     setCoreAlarms([fired("page-a", "Morning coffee"), fired("page-b", "Retro")]);
     const host = await mountPanel();
 
-    expect(host.innerHTML).toContain("Going off now (2)");
+    expect(host.innerHTML).toContain("Ringing (2)");
     expect(host.innerHTML).toContain("Morning coffee");
     expect(host.innerHTML).toContain("Retro");
 
@@ -75,16 +75,16 @@ describe("AlarmsPanel", () => {
     await settle();
 
     // Dismissing the first leaves the second listed and still dismissable.
-    expect(host.innerHTML).toContain("Going off now (1)");
+    expect(host.innerHTML).toContain("Ringing (1)");
     expect(host.innerHTML).not.toContain("Morning coffee");
     expect(host.innerHTML).toContain("Retro");
   });
 
-  it("hides the going-off section when nothing has fired", async () => {
+  it("hides the ringing section when nothing has fired", async () => {
     setCoreAlarms([{ ...fired("upcoming", "Later"), status: "scheduled" }]);
     const host = await mountPanel();
 
-    expect(host.innerHTML).not.toContain("Going off now");
+    expect(host.innerHTML).not.toContain("Ringing (");
     expect(host.innerHTML).toContain("Upcoming (1)");
   });
 });

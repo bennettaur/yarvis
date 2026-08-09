@@ -103,6 +103,11 @@ function AttentionGroupRow({
 }
 
 function RingingAlarmRow({ alarm, onOpen }: { alarm: Alarm; onOpen: () => void }) {
+  // Matches `markAttention`'s convention: an IPC failure is logged, not thrown,
+  // so a rejected dismiss doesn't surface as an unhandled rejection.
+  const act = (action: Promise<void>) =>
+    void action.catch((e) => console.error("[alarms] action failed:", e));
+
   return (
     <li className="flex items-start gap-3 px-4 py-3 hover:bg-zinc-800/60">
       <span className="mt-1.5 h-2 w-2 shrink-0 animate-pulse rounded-full bg-red-500" />
@@ -114,14 +119,14 @@ function RingingAlarmRow({ alarm, onOpen }: { alarm: Alarm; onOpen: () => void }
       </button>
       <button
         type="button"
-        onClick={() => void snoozeAlarm(alarm.id, 5)}
+        onClick={() => act(snoozeAlarm(alarm.id, 5))}
         className="shrink-0 rounded px-1 text-xs text-zinc-500 hover:text-zinc-200"
       >
         Snooze
       </button>
       <button
         type="button"
-        onClick={() => void acknowledgeAlarm(alarm.id)}
+        onClick={() => act(acknowledgeAlarm(alarm.id))}
         className="shrink-0 rounded px-1 text-xs text-zinc-400 hover:text-zinc-100"
       >
         Dismiss

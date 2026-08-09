@@ -20,8 +20,15 @@ export function setCoreAlarms(next: Alarm[]): void {
   alarms = next;
 }
 
-export function coreAlarms(): Alarm[] {
-  return alarms;
+/**
+ * Clears the fake core. Call from an `afterAll` in every suite that writes to
+ * it: this module and the `mock.module` stub reading it both live for the whole
+ * run, so leftovers answer `list_alarms` for unrelated files that render alarm
+ * or calendar components afterwards.
+ */
+export function resetCoreAlarms(): void {
+  alarms = [];
+  firedListeners.clear();
 }
 
 function setStatus(id: string, status: string): void {
@@ -29,29 +36,29 @@ function setStatus(id: string, status: string): void {
 }
 
 export function alarmInvoke(command: string, args: Record<string, unknown>): unknown {
-  const id = args.id as string;
   switch (command) {
     case "list_alarms":
       return alarms;
     case "create_alarm": {
       const alarm: Alarm = {
         id: `created-${alarms.length + 1}`,
-        sound: true,
-        meetLink: null,
+        label: String(args.label ?? ""),
+        fireAtMs: Number(args.fireAtMs ?? 0),
+        sound: args.sound !== false,
+        meetLink: (args.meetLink as string | null) ?? null,
         status: "scheduled",
-        ...(args as unknown as Partial<Alarm>),
-      } as Alarm;
+      };
       alarms = [...alarms, alarm];
       return alarm;
     }
     case "acknowledge_alarm":
-      setStatus(id, "acknowledged");
+      setStatus(String(args.id), "acknowledged");
       return undefined;
     case "cancel_alarm":
-      setStatus(id, "cancelled");
+      setStatus(String(args.id), "cancelled");
       return undefined;
     case "snooze_alarm":
-      setStatus(id, "scheduled");
+      setStatus(String(args.id), "scheduled");
       return undefined;
     default:
       return UNHANDLED;

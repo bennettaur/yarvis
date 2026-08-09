@@ -25,7 +25,7 @@ let alarms: Alarm[] = [];
 /** Fired and not yet dealt with, oldest first. */
 let ringing: Alarm[] = [];
 /** The subset of `ringing` this app run watched fire, oldest first. */
-let takeover: Alarm[] = [];
+let takeoverQueue: Alarm[] = [];
 
 /**
  * Ids whose `alarm-fired` event arrived during this app run. An alarm left in
@@ -39,67 +39,107 @@ const listeners = new Set<() => void>();
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let unlistenFired: (() => void) | undefined;
 
-/** Identity of the list as far as any consumer is concerned. */
+/**
+ * Whole-list identity. Every field an alarm carries is rendered somewhere, so
+ * comparing all of them means a change the core makes can't be swallowed — a
+ * narrower key would silently strand consumers on a stale array.
+ */
 function fingerprint(list: Alarm[]): string {
-  return list.map((a) => `${a.id}:${a.status}:${a.fireAtMs}`).join("|");
+  return JSON.stringify(list);
 }
 
-function sameIds(a: Alarm[], b: Alarm[]): boolean {
-  return a.length === b.length && a.every((alarm, i) => alarm.id === b[i].id);
+/** Forgets ids the core no longer reports as firing, so the set stays bounded. */
+function pruneFiredThisRun(): void {
+  if (firedThisRun.size === 0) return;
+  const stillFiring = new Set(alarms.filter((a) => a.status === "fired").map((a) => a.id));
+  for (const id of firedThisRun) {
+    if (!stillFiring.has(id)) firedThisRun.delete(id);
+  }
 }
 
 /**
  * Rebuilds the derived lists, keeping the previous array reference when nothing
- * changed. `useSyncExternalStore` re-renders on every snapshot identity change,
- * so handing back a fresh array would re-render every consumer on every poll.
+ * changed, and reports whether either moved. `useSyncExternalStore` re-renders
+ * on every snapshot identity change, so handing back a fresh array would
+ * re-render every consumer on every poll.
  */
 function recomputeDerived(): boolean {
   const nextRinging = alarms
     .filter((a) => a.status === "fired")
     .sort((a, b) => a.fireAtMs - b.fireAtMs);
-  const nextTakeover = nextRinging.filter((a) => firedThisRun.has(a.id));
+  const nextQueue = nextRinging.filter((a) => firedThisRun.has(a.id));
 
   let changed = false;
-  if (!sameIds(ringing, nextRinging)) {
+  if (fingerprint(ringing) !== fingerprint(nextRinging)) {
     ringing = nextRinging;
     changed = true;
   }
-  if (!sameIds(takeover, nextTakeover)) {
-    takeover = nextTakeover;
+  if (fingerprint(takeoverQueue) !== fingerprint(nextQueue)) {
+    takeoverQueue = nextQueue;
     changed = true;
   }
   return changed;
 }
 
-function apply(next: Alarm[]): void {
+function applyCoreList(next: Alarm[]): void {
   const listChanged = fingerprint(next) !== fingerprint(alarms);
   if (listChanged) alarms = next;
+  pruneFiredThisRun();
+  // An `alarm-fired` event for an alarm the poll already reported as fired
+  // leaves the list identical but still moves the takeover queue, so the
+  // derived lists get their own say in whether to notify.
   const derivedChanged = recomputeDerived();
   if (listChanged || derivedChanged) {
     for (const notify of listeners) notify();
   }
 }
 
+/** Monotonic token so an older in-flight read can't overwrite a newer one. */
+let refreshSeq = 0;
+
 export async function refreshAlarms(): Promise<void> {
+  const seq = ++refreshSeq;
   try {
-    apply(await listAlarms());
+    const next = await listAlarms();
+    // A poll issued before a dismissal can resolve after it. Applying that
+    // older list would put the alarm back in the queue and re-raise the
+    // takeover the user just dismissed.
+    if (seq === refreshSeq) applyCoreList(next);
   } catch {
     // Leave the last known list in place; the periodic refresh will retry.
   }
 }
 
+function handleFired(alarm: Alarm): void {
+  firedThisRun.add(alarm.id);
+  // The core has already fullscreened and pinned the window by the time this
+  // arrives, so raise the overlay straight off the payload. Waiting on the
+  // refresh would strand the user in a pinned window with no alarm UI whenever
+  // that one `list_alarms` call fails.
+  applyCoreList(
+    alarms.some((a) => a.id === alarm.id)
+      ? alarms.map((a) => (a.id === alarm.id ? alarm : a))
+      : [...alarms, alarm],
+  );
+  void refreshAlarms();
+}
+
+/** Bumped per registration so a late `listen` resolution can tell it's stale. */
+let listenGeneration = 0;
+
 function subscribe(notify: () => void): () => void {
   listeners.add(notify);
   if (listeners.size === 1) {
+    const generation = ++listenGeneration;
     void refreshAlarms();
     pollTimer = setInterval(() => void refreshAlarms(), POLL_MS);
-    onAlarmFired((alarm) => {
-      firedThisRun.add(alarm.id);
-      // The event carries the alarm, but the core is the source of truth for
-      // the rest of the list, so re-read rather than splice it in locally.
-      void refreshAlarms();
-    }).then((u) => {
-      unlistenFired = u;
+    onAlarmFired(handleFired).then((unlisten) => {
+      // The last subscriber can leave while `listen` is still resolving — its
+      // teardown had no unlisten to call yet, so drop the listener here rather
+      // than leave it registered forever. StrictMode's double-subscribe on
+      // mount hits this every time.
+      if (generation === listenGeneration && listeners.size > 0) unlistenFired = unlisten;
+      else unlisten();
     });
   }
   return () => {
@@ -132,7 +172,7 @@ export function useRingingAlarms(): Alarm[] {
  * a time rather than only ever showing whichever event landed last.
  */
 export function useAlarmTakeoverQueue(): Alarm[] {
-  return useSyncExternalStore(subscribe, () => takeover);
+  return useSyncExternalStore(subscribe, () => takeoverQueue);
 }
 
 export async function createAlarm(
