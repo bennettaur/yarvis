@@ -21,20 +21,18 @@ const ROW_PADDING_LEFT = 8;
  * Compact tree of a PR's changed files. Files nest under collapsible folders
  * (native `<details>`, open by default). Clicking a file scrolls the matching
  * `PrFileDiffs` entry into view (by shared anchor id, so it works whether the
- * diffs sit beside it or elsewhere on the page) and notifies `onSelect`. A
- * per-row checkbox marks the file as viewed; clicks on the checkbox don't
- * trigger the scroll so toggling never moves focus away. Rows only show a
- * basename, so each also carries a copy button for the full path.
+ * diffs sit beside it or elsewhere on the page). A per-row checkbox marks the
+ * file as viewed; clicks on the checkbox don't trigger the scroll so toggling
+ * never moves focus away. Rows only show a basename, so each also carries a
+ * copy button for the full path.
  */
 export default function PrFileList({
   prRef,
-  onSelect,
   onCollapse,
   viewed,
   onToggleViewed,
 }: {
   prRef: PrRef;
-  onSelect?: (index: number) => void;
   /** When set, renders a button in the header to collapse the whole panel. */
   onCollapse?: () => void;
   /** Paths the viewer has marked viewed. */
@@ -42,7 +40,7 @@ export default function PrFileList({
   onToggleViewed: (path: string) => void;
 }) {
   const { data, error, loading } = usePrFiles(prRef);
-  const [selected, setSelected] = useState<number | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
 
   // Hoisted above the early returns to keep hook order stable.
   const viewedCount = useMemo(
@@ -55,11 +53,10 @@ export default function PrFileList({
   if (loading || !data) return <p className="text-sm text-zinc-500">Loading files…</p>;
   if (data.length === 0) return <p className="text-sm text-zinc-600">No file changes.</p>;
 
-  const onClick = (index: number) => {
-    setSelected(index);
-    onSelect?.(index);
+  const onClick = (path: string) => {
+    setSelected(path);
     document
-      .getElementById(prFileAnchorId(prRef, index))
+      .getElementById(prFileAnchorId(prRef, path))
       ?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
@@ -113,9 +110,9 @@ function TreeRows({
 }: {
   node: FileTreeNode;
   depth: number;
-  selected: number | null;
+  selected: string | null;
   viewed: Set<string>;
-  onClick: (index: number) => void;
+  onClick: (path: string) => void;
   onToggleViewed: (path: string) => void;
 }) {
   if (node.type === "file") {
@@ -169,19 +166,19 @@ function FileRow({
 }: {
   node: FileTreeFile;
   depth: number;
-  selected: number | null;
+  selected: string | null;
   viewed: Set<string>;
-  onClick: (index: number) => void;
+  onClick: (path: string) => void;
   onToggleViewed: (path: string) => void;
 }) {
-  const { file, index, name } = node;
+  const { file, name } = node;
   const status = STATUS_LETTER[file.status] ?? { letter: "•", color: "text-zinc-500" };
   const isViewed = viewed.has(file.filename);
   return (
     <li>
       <div
         className={`group/row flex w-full items-center gap-2 rounded px-2 py-1 hover:bg-zinc-800 ${
-          selected === index ? "bg-zinc-800" : ""
+          selected === file.filename ? "bg-zinc-800" : ""
         } ${isViewed ? "opacity-60" : ""}`}
         style={{ paddingLeft: depth * INDENT_PER_DEPTH + ROW_PADDING_LEFT }}
       >
@@ -202,7 +199,7 @@ function FileRow({
         />
         <button
           type="button"
-          onClick={() => onClick(index)}
+          onClick={() => onClick(file.filename)}
           className="flex min-w-0 flex-1 items-center gap-2 text-left"
           title={file.filename}
         >

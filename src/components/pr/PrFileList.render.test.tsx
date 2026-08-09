@@ -1,36 +1,13 @@
-import { describe, expect, it, mock } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { PrFile, PrRef } from "../../lib/pr/types";
+import { prFile as file, setPrFiles } from "../../test/prFiles";
 import { renderToHtml } from "../../test/render";
 
-// PrFileList reads its files through usePrFiles (a sidecar-backed resource).
-// Stub the cache so each test renders against a fixed file set. mock.module is
-// process-global in bun, so keep the module's other exports (usePrDetail, …)
-// intact for any test file that shares the process.
-let filesResource: { data: PrFile[] | null; error: string | null; loading: boolean } = {
-  data: null,
-  error: null,
-  loading: false,
-};
-const actualCache = await import("../../lib/pr/cache");
-mock.module("../../lib/pr/cache", () => ({
-  ...actualCache,
-  usePrFiles: () => filesResource,
-}));
-
-// Imported after the mock so the stub is in place.
+// Imported after the shared stub so its usePrFiles mock is in place.
 const { default: PrFileList } = await import("./PrFileList");
 
 const prRef: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 1 };
-
-const file = (filename: string, over: Partial<PrFile> = {}): PrFile => ({
-  filename,
-  status: "modified",
-  additions: 1,
-  deletions: 0,
-  patch: null,
-  ...over,
-});
 
 const render = (
   data: PrFile[] | null,
@@ -41,7 +18,7 @@ const render = (
     loading?: boolean;
   } = {},
 ) => {
-  filesResource = { data, error: opts.error ?? null, loading: opts.loading ?? false };
+  setPrFiles(data, { error: opts.error, loading: opts.loading });
   return renderToHtml(
     createElement(PrFileList, {
       prRef,

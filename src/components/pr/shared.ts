@@ -7,9 +7,20 @@ export type { PrRef } from "../../lib/pr/types";
  * Stable DOM id for one file's diff, so a `PrFileList` item can scroll to the
  * matching `PrFileDiffs` entry — even when the two are separate components in
  * an Omni layout. The ref key keeps ids unique when several PRs share a page.
+ *
+ * Keyed by path rather than by position: the two components build their own
+ * lists, so a positional id only lines up for as long as both happen to order
+ * files identically, and a refetch that adds a file would repoint every id
+ * after it.
+ *
+ * Both readers resolve these with `getElementById`, which takes the string
+ * literally, so the `/` and `.` in a path are fine — and so is the whitespace
+ * in a path like `docs/release notes.md`, which the HTML spec forbids in an
+ * `id` but browsers still match. A `querySelector` on one of these would need
+ * `CSS.escape`, and would still not reach the whitespace case.
  */
-export function prFileAnchorId(ref: PrRef, index: number): string {
-  return `prfile-${refDomKey(ref)}-${index}`;
+export function prFileAnchorId(ref: PrRef, path: string): string {
+  return `prfile-${refDomKey(ref)}-${path}`;
 }
 
 /**
