@@ -148,8 +148,9 @@ describe("GithubIssuesView", () => {
         url: issue.url,
       },
     });
-    // The point of starting work: the Workspaces tab opens with the prompt.
-    expect(handoffs).toEqual([{ id: "w1", claudePrompt: "seeded prompt" }]);
+    // The point of starting work: the Workspaces tab opens on the workspace.
+    // The prompt doesn't ride along — the sidecar stored it with the workspace.
+    expect(handoffs).toEqual([{ id: "w1" }]);
     // Starting work must not navigate into the detail view.
     expect(host.textContent).toContain("Assigned to me");
     expect(button(host, "← Back")).toBeUndefined();

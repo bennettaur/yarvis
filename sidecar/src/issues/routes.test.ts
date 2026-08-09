@@ -271,3 +271,56 @@ describe("issue routes: creating an issue", () => {
     expect(res.status).toBe(400);
   });
 });
+
+/**
+ * Start work stores the composed prompt on the workspace instead of returning
+ * it, which is what lets an interrupted kick-off resume. Needs the real repos
+ * and workspaces tables.
+ */
+describe("issue routes: start work stores the kick-off prompt", () => {
+  const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
+  const sql = postgres(url, { max: 1 });
+  const dbApp = appWith({ databaseUrl: url, secrets: {} });
+
+  beforeEach(async () => {
+    await sql`TRUNCATE repos, workspaces, workspace_repos, issue_links RESTART IDENTITY CASCADE`;
+    await sql`INSERT INTO repos (name, owner, repo, clone_url, primary_clone_path, pull_issues)
+              VALUES ('widget', 'acme', 'widget', 'git@github.com:acme/widget.git',
+                      '/tmp/widget', true)`;
+  });
+
+  afterAll(async () => {
+    await sql.end();
+  });
+
+  const startWork = (body: Record<string, unknown>) =>
+    dbApp.request("/api/issues/github/start-work", {
+      method: "POST",
+      headers: json,
+      body: JSON.stringify(body),
+    });
+
+  it("stores the composed prompt, not the raw body, and keeps it off the response", async () => {
+    const res = await startWork({
+      sourceKey: "acme/widget",
+      externalId: "42",
+      title: "Fix the thing",
+      body: "It is broken.",
+      assignSelf: false,
+      applyLabel: false,
+    });
+    expect(res.status).toBe(201);
+    const created = (await res.json()) as Record<string, unknown>;
+    // The prompt no longer rides back for the caller to carry around.
+    expect(created).not.toHaveProperty("prompt");
+
+    const [row] = await sql<{ pending_issue_prompt: string | null }[]>`
+      SELECT pending_issue_prompt FROM workspaces WHERE id = ${created.workspaceId as string}`;
+    const stored = row?.pending_issue_prompt ?? "";
+    // Composed by `buildIssuePrompt` — the framing line and heading, not just
+    // the body that was posted.
+    expect(stored).toContain("Implement the following acme/widget issue #42.");
+    expect(stored).toContain("# Fix the thing");
+    expect(stored).toContain("It is broken.");
+  });
+});

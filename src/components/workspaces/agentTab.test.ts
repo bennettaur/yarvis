@@ -1,79 +1,36 @@
 import { describe, expect, it } from "bun:test";
-import {
-  agentSessionId,
-  buildAgentIssueCommand,
-  resolveAgentTab,
-  shouldAutoStartAgent,
-} from "./agentTab";
+import { agentSessionId, resolveAgentTab, shouldAutoStartAgent } from "./agentTab";
 
 const base = {
-  issuePromptReady: false,
   agentActive: false,
   dismissed: false,
   workspaceId: "ws1",
   cwd: "/work/ws1",
   agentName: "Claude",
-  agentCommand: "claude --permission-mode auto",
 };
 
 describe("resolveAgentTab", () => {
-  it("issue flow, prompt ready: launches at the workspace root with the issue command", () => {
-    const tab = resolveAgentTab({ ...base, issuePrompt: "do the thing", issuePromptReady: true });
-    expect(tab).not.toBeNull();
-    // The issue prompt file lives at the workspace root, so the agent must launch there.
-    expect(tab?.cwd).toBe("/work/ws1");
-    expect(tab?.sessionId).toBe("ws-claude:ws1");
-    expect(tab?.initialCommand).toBe(buildAgentIssueCommand(base.agentCommand));
-  });
-
-  it("issue flow, prompt not ready: no tab, even when a session happens to be active", () => {
-    // Must wait on the prompt file, never fall through to the attach branch —
-    // that would show a tab whose shell has nothing to run yet.
-    const tab = resolveAgentTab({
-      ...base,
-      issuePrompt: "do the thing",
-      issuePromptReady: false,
-      agentActive: true,
-    });
-    expect(tab).toBeNull();
-  });
-
-  it("issue flow, session now live: attaches with no initial command", () => {
-    const tab = resolveAgentTab({
-      ...base,
-      issuePrompt: "do the thing",
-      issuePromptReady: true,
-      agentActive: true,
-    });
-    // Once the launch has happened, a reattach must not re-run the whole ticket.
-    expect(tab).not.toBeNull();
-    expect(tab?.initialCommand).toBeUndefined();
-  });
-
-  it("remote-control flow, session active: attaches with no initial command", () => {
+  it("attaches to a live session at the workspace root", () => {
     const tab = resolveAgentTab({ ...base, agentActive: true });
     expect(tab).not.toBeNull();
     expect(tab?.cwd).toBe("/work/ws1");
-    // Reattaching must never re-run a launch line on a live session.
+    expect(tab?.sessionId).toBe("ws-claude:ws1");
+  });
+
+  it("never carries a command, so attaching can't re-run a ticket", () => {
+    // A workspace started from an issue has its session launched on the ticket
+    // by the sidecar. This surface only ever attaches to what already exists —
+    // handing back a launch line would run the whole ticket a second time.
+    const tab = resolveAgentTab({ ...base, agentActive: true });
     expect(tab?.initialCommand).toBeUndefined();
   });
 
-  it("no prompt and no active session: no tab", () => {
+  it("shows no tab when no session is live", () => {
     expect(resolveAgentTab(base)).toBeNull();
   });
 
   it("dismissed: no tab, whatever else would have produced one", () => {
-    // The close button has to stick. An issue prompt still pending a launch is
-    // the case that used to reappear — and relaunch the agent — on reattach.
     expect(resolveAgentTab({ ...base, dismissed: true, agentActive: true })).toBeNull();
-    expect(
-      resolveAgentTab({
-        ...base,
-        dismissed: true,
-        issuePrompt: "do the thing",
-        issuePromptReady: true,
-      }),
-    ).toBeNull();
   });
 
   it("titles the tab with the configured agent name", () => {
@@ -101,10 +58,6 @@ describe("shouldAutoStartAgent", () => {
     expect(shouldAutoStartAgent(ready)).toBe(true);
   });
 
-  it("does not start for the issue flow, which launches its own", () => {
-    expect(shouldAutoStartAgent({ ...ready, issuePrompt: "do the thing" })).toBe(false);
-  });
-
   it("does not start once the user has closed the tab", () => {
     expect(shouldAutoStartAgent({ ...ready, dismissed: true })).toBe(false);
   });
@@ -116,6 +69,9 @@ describe("shouldAutoStartAgent", () => {
   });
 
   it("waits for the liveness probe, so an existing session isn't spawned twice", () => {
+    // This is also what keeps it off a workspace kicked off from an issue: the
+    // sidecar launched that session before reporting the workspace provisioned,
+    // so the probe answers `agentActive` and the branch below declines.
     expect(shouldAutoStartAgent({ ...ready, probed: false })).toBe(false);
   });
 
@@ -125,14 +81,5 @@ describe("shouldAutoStartAgent", () => {
 
   it("fires only once per view", () => {
     expect(shouldAutoStartAgent({ ...ready, alreadyStarted: true })).toBe(false);
-  });
-});
-
-describe("buildAgentIssueCommand", () => {
-  it("appends the instruction as a double-quoted argument to the base command", () => {
-    const cmd = buildAgentIssueCommand("claude --permission-mode auto");
-    expect(cmd.startsWith("claude --permission-mode auto ")).toBe(true);
-    expect(cmd).toContain('"Read the ticket details in .yarvis/issue-prompt.md');
-    expect(cmd.endsWith('"')).toBe(true);
   });
 });

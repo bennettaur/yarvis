@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { setViewedWorkspace } from "../lib/attentionScope";
 import { useAttentionWorkspaceIds } from "../lib/attentionStore";
-import { writeIssuePromptFile } from "../lib/issues/api";
 import type { NewWorkspaceRequest, OpenWorkspaceRequest } from "../lib/nav";
 import { type AgentConfig, getAgentConfig, ptyExists, startClaudeSession } from "../lib/pty";
 import { createRepo, listRepoBranches, listRepos, type Repo } from "../lib/repos";
@@ -118,7 +117,7 @@ export default function WorkspacesPanel({
   requestedNew = null,
   onNewRequestConsumed,
 }: {
-  /** A workspace another tab asked us to open, optionally with a Claude prompt. */
+  /** A workspace another tab asked us to open. */
   requested?: OpenWorkspaceRequest | null;
   /** Called once we've consumed `requested` so the parent can clear it. */
   onRequestConsumed?: () => void;
@@ -132,9 +131,6 @@ export default function WorkspacesPanel({
   const [selectedId, setSelectedId] = useState<string | null>(() =>
     localStorage.getItem(SELECTED_WORKSPACE_KEY),
   );
-  // A pending "Start work" issue launch, scoped to one workspace id. Cleared
-  // when the user navigates to a different workspace so the prompt never leaks.
-  const [issueRequest, setIssueRequest] = useState<{ id: string; prompt: string } | null>(null);
   // A terminal session an attention item asked us to bring into view, scoped to
   // one workspace id for the same reason. Consumed by the terminal surface.
   const [focusSession, setFocusSession] = useState<{ id: string; sessionKey: string } | null>(null);
@@ -176,16 +172,13 @@ export default function WorkspacesPanel({
     return () => setViewedWorkspace(null);
   }, [selectedId]);
 
-  // Honor a cross-tab open request (Issues "Start work"): select the workspace
-  // and, if a Claude prompt came with it, stash it for the detail view to
-  // launch once provisioning finishes. Cleared via the consumed callback.
+  // Honor a cross-tab open request (Issues "Start work"): select the workspace.
+  // Nothing about the kick-off rides along — the sidecar holds the prompt on the
+  // workspace row, so the detail view picks it up from there.
   useEffect(() => {
     if (!requested) return;
     setCreating(false);
     setSelectedId(requested.id);
-    setIssueRequest(
-      requested.claudePrompt ? { id: requested.id, prompt: requested.claudePrompt } : null,
-    );
     setFocusSession(
       requested.focusSessionKey
         ? { id: requested.id, sessionKey: requested.focusSessionKey }
@@ -195,12 +188,11 @@ export default function WorkspacesPanel({
   }, [requested, onRequestConsumed]);
 
   // Honor a cross-tab "new workspace" request (Tasks): open the New form with
-  // the task's name and link pre-filled. The Claude prompt (if any) is held
-  // here and handed to the detail view once the workspace is created.
+  // the task's name and link pre-filled. The Claude prompt (if any) rides along
+  // to the sidecar when the form creates the workspace.
   useEffect(() => {
     if (!requestedNew) return;
     setSelectedId(null);
-    setIssueRequest(null);
     setNewWorkspacePrefill(requestedNew);
     setCreating(true);
     onNewRequestConsumed?.();
@@ -264,20 +256,16 @@ export default function WorkspacesPanel({
     setCreating(true);
     setNewWorkspacePrefill(null);
     setSelectedId(null);
-    setIssueRequest(null);
     setFocusSession(null);
   };
 
-  const onCreated = async (id: string, claudePrompt?: string) => {
+  const onCreated = async (id: string) => {
     // Fetch the list containing the new workspace before switching to it, so the
     // sidebar highlights it as we open its detail view.
     await refresh();
     setCreating(false);
     setNewWorkspacePrefill(null);
     setSelectedId(id);
-    // A "Start work" handoff seeds the detail view's own launch path, which
-    // skips the remote-control auto-start so the two don't fight.
-    setIssueRequest(claudePrompt ? { id, prompt: claudePrompt } : null);
   };
 
   const onRepoAdded = useCallback((repo: Repo) => {
@@ -319,7 +307,6 @@ export default function WorkspacesPanel({
                         onClick={() => {
                           setCreating(false);
                           setSelectedId(ws.id);
-                          setIssueRequest(null);
                           setFocusSession(null);
                         }}
                         title={needsAttention ? `${ws.name} — needs you` : ws.name}
@@ -379,7 +366,6 @@ export default function WorkspacesPanel({
             key={selectedId}
             id={selectedId}
             onChanged={refresh}
-            issuePrompt={issueRequest?.id === selectedId ? issueRequest.prompt : undefined}
             focusSession={focusSession?.id === selectedId ? focusSession.sessionKey : undefined}
             onFocusSessionHandled={() => setFocusSession(null)}
           />
@@ -404,9 +390,7 @@ function NewWorkspaceForm({
   /** Pre-fill from a cross-tab handoff (Tasks): name, taskId, Claude prompt. */
   prefill?: NewWorkspaceRequest | null;
   onCancel: () => void;
-  /** `claudePrompt` is set for the "Start work" handoff so the detail view can
-   *  launch a Claude session seeded with it once the workspace is provisioned. */
-  onCreated: (id: string, claudePrompt?: string) => void;
+  onCreated: (id: string) => void;
   onRepoAdded: (repo: Repo) => void;
 }) {
   const [name, setName] = useState(prefill?.name ?? "");
@@ -474,15 +458,18 @@ function NewWorkspaceForm({
         repoIds: [...selected],
         existingBranches: Object.keys(existingBranches).length ? existingBranches : undefined,
         taskId: taskId || undefined,
+        // A "Start work" handoff (Tasks) seeds the agent session; the sidecar
+        // holds it so the launch doesn't depend on this form staying mounted.
+        issuePrompt: prefill?.claudePrompt,
       });
       setPhase("provisioning");
       const result = await consumeProvision(ws.id, (text) => setLog((prev) => prev + text));
-      // A hard top-level error (workspace not found, already provisioning) has no
-      // useful detail view, so stay on the log screen. Otherwise — success or a
-      // repo whose setup failed — open the workspace: its detail view auto-opens
-      // the failed repo's setup-log tab.
+      // A hard top-level error (workspace not found, a provision that failed
+      // outright) has no useful detail view, so stay on the log screen.
+      // Otherwise — success or a repo whose setup failed — open the workspace:
+      // its detail view auto-opens the failed repo's setup-log tab.
       if (result.error) setError(result.error);
-      else onCreated(ws.id, prefill?.claudePrompt);
+      else onCreated(ws.id);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -722,16 +709,11 @@ const DETAIL_REFRESH_INTERVAL_MS = 20_000;
 function WorkspaceDetailView({
   id,
   onChanged,
-  issuePrompt,
   focusSession,
   onFocusSessionHandled,
 }: {
   id: string;
   onChanged: () => void;
-  /** When set (Issues "Start work"), auto-provision then launch an agent session
-   * seeded with this prompt. Named for the issue flow it belongs to; the nav
-   * contract that carries it here still calls it `claudePrompt`. */
-  issuePrompt?: string;
   /** A PTY session (from an attention item) to bring into view in this
    * workspace's terminal surface. */
   focusSession?: string;
@@ -744,9 +726,6 @@ function WorkspaceDetailView({
   const [provisionLog, setProvisionLog] = useState<string | null>(null);
   const [showArchive, setShowArchive] = useState(false);
   const [showLinkModal, setShowLinkModal] = useState(false);
-  // Flips once the issue prompt file has been written (post-provision), gating
-  // the issue flow's agent launch.
-  const [issuePromptReady, setIssuePromptReady] = useState(false);
   // The configured agent, loaded from the core: its tab title and the base
   // command the issue "Start work" launch line is built from. Falls back to the
   // defaults until loaded.
@@ -764,7 +743,6 @@ function WorkspaceDetailView({
   // the view is keyed by workspace id, so it re-arms when you switch workspaces.
   const setupAutoOpenedRef = useRef(false);
   const autoProvisionRef = useRef(false);
-  const promptWriteRef = useRef(false);
   // Guards the one-shot auto-start. Per-mount, and the view is keyed by workspace
   // id, so it re-arms when you switch workspaces — the auto-start effect re-runs
   // on every detail poll, so this ref is what stops it firing more than once.
@@ -911,28 +889,16 @@ function WorkspaceDetailView({
     }
   }, [id, load, onChanged]);
 
-  // Issue "Start work" handoff. First auto-provision a freshly created
-  // workspace (the user didn't come here to click "Provision"); the ref guards
-  // against re-firing on each poll.
+  // Auto-provision a workspace whose kick-off is still running. The sidecar
+  // drives it whether or not anyone is here, so this only joins the run already
+  // going — which is what puts its log on screen. The ref stops it re-firing on
+  // every poll.
   useEffect(() => {
-    if (!issuePrompt || !detail) return;
-    if (detail.status === "creating" && provisionLog === null && !autoProvisionRef.current) {
-      autoProvisionRef.current = true;
-      void provision();
-    }
-  }, [issuePrompt, detail, provisionLog, provision]);
-
-  // Once provisioned, write the prompt file so the Claude terminal can launch
-  // against it. Runs once (ref-guarded).
-  useEffect(() => {
-    if (!issuePrompt || !detail) return;
-    if (detail.status === "active" && !promptWriteRef.current) {
-      promptWriteRef.current = true;
-      writeIssuePromptFile(detail.id, issuePrompt)
-        .then(() => setIssuePromptReady(true))
-        .catch((e) => setError(e instanceof Error ? e.message : String(e)));
-    }
-  }, [issuePrompt, detail]);
+    if (detail?.status !== "creating" || provisionLog !== null) return;
+    if (autoProvisionRef.current) return;
+    autoProvisionRef.current = true;
+    void provision();
+  }, [detail?.status, provisionLog, provision]);
 
   // Load the configured agent up front so the tab is titled correctly and the
   // issue terminal launches with the right command.
@@ -978,7 +944,6 @@ function WorkspaceDetailView({
   // for what has to hold first.
   useEffect(() => {
     const start = shouldAutoStartAgent({
-      issuePrompt,
       dismissed: agentDismissed,
       workspaceStatus: detail?.status ?? "",
       probed: agentProbed,
@@ -988,7 +953,7 @@ function WorkspaceDetailView({
     if (!start) return;
     autoStartAgentRef.current = true;
     void startAgent();
-  }, [issuePrompt, agentDismissed, detail?.status, agentProbed, agentActive, startAgent]);
+  }, [agentDismissed, detail?.status, agentProbed, agentActive, startAgent]);
 
   // Closing the agent tab means closing it: TerminalTabs kills the session, and
   // dropping it from `pinnedTabs` here is what removes the header. Until this
@@ -1244,14 +1209,11 @@ function WorkspaceDetailView({
             // iTerm-style tabs and Cmd+D pane splits for its own shells. See
             // `resolveAgentTab` for how the issue and remote-control flows differ.
             const agentTab = resolveAgentTab({
-              issuePrompt,
-              issuePromptReady,
               agentActive,
               dismissed: agentDismissed,
               workspaceId: detail.id,
               cwd: agentCwd,
               agentName: agent.name,
-              agentCommand: agent.command,
             });
             const terminalArea = (
               <div className="h-full min-h-0 min-w-0">

@@ -130,6 +130,12 @@ switching workspaces (or leaving the Workspaces tab) and coming back counts as
 opening the workspace again and starts a fresh session. The header's start-session
 button brings one back on the spot.
 
+An issue's "Start work" is held by the sidecar on the workspace itself, not by
+the screen you started it from, so navigating away mid-kick-off doesn't strand
+it. Reopening the workspace rejoins the provisioning run already in flight and
+picks its log back up, then launches the agent on the ticket once it lands. If
+provisioning failed, the ticket is still waiting behind "Retry provisioning".
+
 The agent's tab title and launch command are set under Settings → Repositories →
 Agent, defaulting to `Claude` and `claude --permission-mode auto`, so you can
 bake in default options such as a model or permission mode. The
@@ -151,7 +157,10 @@ Claude starts there rather than inside a single repo: `AGENTS.md` (plus a
 branch, and a `.claude/settings.json` that registers each repo's
 `.claude/skills` and `.claude/agents` so those skills and agents still load
 even though Claude runs one directory above the repos. The settings file is
-merged, not overwritten, so any other keys already present are left intact.
+merged, not overwritten, so any other keys already present are left intact. A
+workspace opened from an issue's "Start work" also gets the ticket itself, in
+`.yarvis/issue-prompt.md` — the file its agent session is launched to read, as
+the last step of provisioning.
 
 At most 60 terminal sessions can be live at once; opening more fails until one
 is closed. Raise or lower that under Settings → Repositories → Terminals (up to

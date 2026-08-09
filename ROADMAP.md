@@ -114,10 +114,13 @@ Status of the build against the original vision. The full V1 plan lives at
   action that creates a workspace for the issue, links it, best-effort assigns
   the issue to the viewer and labels it in-progress on GitHub, then provisions
   the worktree and launches a Claude session seeded with the issue title +
-  description (written to `.yarvis/issue-prompt.md`). Every issue list row —
-  GitHub and JIRA alike — carries that same action, so an issue you already know
-  you want can be started without opening it. The chat agent can drive the same
-  start-work flow conversationally via its `list_repo_issues` /
+  description (written to `.yarvis/issue-prompt.md` by provisioning). Every issue
+  list row — GitHub and JIRA alike — carries that same action, so an issue you
+  already know you want can be started without opening it. The whole sequence
+  runs in the sidecar, which launches the session on the ticket as the last step
+  of provisioning, so the UI only ever attaches and navigating away can't
+  interrupt it. The chat agent drives the same flow conversationally via its
+  `list_repo_issues` /
   `start_work_on_issue` tools. The data model, provider layer, and
   `/api/issues/:provider` routes are source-agnostic (keyed by provider /
   sourceKey / externalId) so JIRA can be added without a rewrite.

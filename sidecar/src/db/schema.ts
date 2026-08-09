@@ -385,6 +385,13 @@ export const workspaces = pgTable(
     summary: text("summary"), // archival summary of what was done
     mergedPrUrl: text("merged_pr_url"), // archival: the landed PR
     error: text("error"), // last provisioning/archive error
+    // The "Start work" prompt for a workspace whose agent session hasn't been
+    // handed it yet. Kicking off work is a multi-step sequence (create →
+    // provision → write the prompt file → launch the agent); holding the prompt
+    // here rather than in the UI is what lets the sequence survive the user
+    // navigating away mid-provision and resume when they come back. Cleared once
+    // the agent session is live.
+    pendingIssuePrompt: text("pending_issue_prompt"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     archivedAt: timestamp("archived_at", { withTimezone: true }),

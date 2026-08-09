@@ -132,9 +132,3 @@ export const issueLinks = (provider: IssueProvider = "github") =>
 
 export const startWork = (input: StartWorkInput, provider: IssueProvider = "github") =>
   send<StartWorkResult>(`/api/issues/${provider}/start-work`, "POST", input);
-
-export const writeIssuePromptFile = (
-  workspaceId: string,
-  prompt: string,
-  provider: IssueProvider = "github",
-) => send<{ path: string }>(`/api/issues/${provider}/prompt-file`, "POST", { workspaceId, prompt });

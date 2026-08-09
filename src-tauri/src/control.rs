@@ -67,6 +67,11 @@ mod unix_impl {
         /// that hasn't been taught about it can't silently opt in.
         #[serde(rename = "remoteControl", default)]
         remote_control: bool,
+        /// What the session should start on, appended to the launch line as one
+        /// quoted argument. Set by the issue "Start work" sequence, which the
+        /// sidecar drives end to end; absent means a session the user drives.
+        #[serde(default)]
+        instruction: Option<String>,
     }
 
     #[derive(Deserialize)]
@@ -203,6 +208,7 @@ mod unix_impl {
                     p.cwd,
                     &p.name,
                     p.remote_control,
+                    p.instruction.as_deref(),
                 )
             }
             "claude.kill" => {

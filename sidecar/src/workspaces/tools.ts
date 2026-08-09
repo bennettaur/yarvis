@@ -10,7 +10,6 @@ import {
   type StartWorkSideEffectClient,
   sanitizeIssueText,
   upsertLink,
-  writeIssuePrompt,
 } from "../issues/service.ts";
 import type { IssueDetail, IssueSummary } from "../issues/types.ts";
 import {
@@ -236,8 +235,27 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           return { error: `could not load issue #${issueNumber}: ${errorMessage(e)}` };
         }
 
-        const ws = await createWorkspace(db, config, { name: issue.title, repoIds: [repo.id] });
-        await provisionWorkspace(db, ws.id, () => undefined, gitRunner);
+        const sourceKey = `${repo.owner}/${repo.repo}`;
+        // Same route the "Start work" button takes: the prompt rides on the
+        // workspace, and provisioning seeds the prompt file and launches the
+        // session on the ticket. Awaited rather than backgrounded here, because
+        // the model is reporting the outcome back to the user.
+        const ws = await createWorkspace(db, config, {
+          name: issue.title,
+          repoIds: [repo.id],
+          issuePrompt: buildIssuePrompt({
+            displayId: `#${issueNumber}`,
+            title: issue.title,
+            url: issue.url,
+            body: issue.body,
+            sourceKey,
+          }),
+        });
+        await provisionWorkspace(db, ws.id, () => undefined, {
+          runner: gitRunner,
+          startSession: startClaude,
+          remoteControl,
+        });
 
         const detail = await getWorkspace(db, ws.id);
         if (!detail) return { error: "workspace vanished after creation" };
@@ -252,8 +270,8 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
             failures,
           };
         }
-
-        const sourceKey = `${repo.owner}/${repo.repo}`;
+        // Linked and flagged only once the work is really under way, so a
+        // workspace that never provisioned leaves no trace on the issue.
         await upsertLink(db, {
           provider: "github",
           sourceKey,
@@ -277,29 +295,30 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           },
         );
 
-        // Seed the same prompt file the issue view writes, so the session (driven
-        // from claude.ai/code or the Claude app) can read and implement the ticket.
-        const prompt = buildIssuePrompt({
-          displayId: `#${issueNumber}`,
-          title: issue.title,
-          url: issue.url,
-          body: issue.body,
-          sourceKey,
-        });
-        try {
-          await writeIssuePrompt(detail.rootPath, prompt);
-        } catch (e) {
-          warnings.push(`could not write issue prompt: ${errorMessage(e)}`);
+        // The prompt is dropped once the session has been launched on it, so a
+        // prompt still sitting there is a launch that didn't happen.
+        if (detail.pendingIssuePrompt) {
+          return {
+            error: "workspace is ready, but the agent session failed to start",
+            workspaceId: ws.id,
+            name: detail.name,
+            status: detail.status,
+            warnings,
+            note: "Open the workspace locally and start the agent there; the ticket is already seeded in .yarvis/issue-prompt.md.",
+          };
         }
 
-        const launch = await launchClaude(detail);
         return {
-          ...launch,
+          workspaceId: ws.id,
+          name: detail.name,
+          status: detail.status,
+          repos: detail.repos.map((r) => r.repo.name),
+          sessionName: detail.name,
+          sessionKey: `ws-claude:${ws.id}`,
+          message: sessionStartedMessage(detail.name, remoteControl),
           issue: { number: issueNumber, title: issue.title, url: issue.url },
           warnings,
           promptFile: ".yarvis/issue-prompt.md",
-          nextStep:
-            "In the session, tell Claude to read .yarvis/issue-prompt.md and implement the ticket.",
         };
       },
     }),
@@ -322,7 +341,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         const ws = await createWorkspace(db, config, { name, repoIds, taskId });
         // Provisioning streams progress over SSE in the route; here we just drive
         // it to completion and inspect the resulting status.
-        await provisionWorkspace(db, ws.id, () => undefined, gitRunner);
+        await provisionWorkspace(db, ws.id, () => undefined, { runner: gitRunner });
 
         const detail = await getWorkspace(db, ws.id);
         if (!detail) return { error: "workspace vanished after creation" };
@@ -354,7 +373,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
       }),
       execute: async ({ name, taskId }) => {
         const ws = await createWorkspace(db, config, { name, repoIds: [], taskId });
-        await provisionWorkspace(db, ws.id, () => undefined, gitRunner);
+        await provisionWorkspace(db, ws.id, () => undefined, { runner: gitRunner });
 
         const detail = await getWorkspace(db, ws.id);
         if (!detail) return { error: "workspace vanished after creation" };

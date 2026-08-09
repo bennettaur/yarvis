@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
@@ -14,6 +14,7 @@ import {
   workspaceRepoPr,
   workspaceRepos,
 } from "../db/schema.ts";
+import type { StartClaudeSessionInput } from "./claudeSession.ts";
 import type { GitRunner } from "./git.ts";
 import {
   archiveWorkspace,
@@ -21,7 +22,9 @@ import {
   createWorkspace,
   getWorkspace,
   listRepoBranches,
+  type ProvisionEvent,
   provisionWorkspace,
+  resumeKickOffs,
   startArchiveWorkspace,
   unlinkTask,
 } from "./service.ts";
@@ -486,7 +489,7 @@ describe("provision + archive (injected git runner)", () => {
     const ws = await createWorkspace(db, config, { name: "feature", repoIds: [repo.id] });
 
     const events: string[] = [];
-    await provisionWorkspace(db, ws.id, (e) => void events.push(e.type), fakeGit);
+    await provisionWorkspace(db, ws.id, (e) => void events.push(e.type), { runner: fakeGit });
 
     expect(events).toContain("done");
     const detail = await getWorkspace(db, ws.id);
@@ -508,7 +511,7 @@ describe("provision + archive (injected git runner)", () => {
       if (args[0] === "worktree" && args[1] === "add") worktreeAdds.push(args);
       return fakeGit(args, {});
     };
-    await provisionWorkspace(db, ws.id, () => {}, trackingGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: trackingGit });
 
     const detail = await getWorkspace(db, ws.id);
     expect(detail?.status).toBe("active");
@@ -534,7 +537,7 @@ describe("provision + archive (injected git runner)", () => {
       if (args[0] === "worktree" && args[1] === "add") order.push("worktree-add");
       return fakeGit(args, {});
     };
-    await provisionWorkspace(db, ws.id, () => {}, orderingGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: orderingGit });
 
     // DWIM tracking depends on origin/feat/login existing before the add.
     expect(order).toEqual(["fetch", "worktree-add"]);
@@ -552,7 +555,7 @@ describe("provision + archive (injected git runner)", () => {
       // Only the first repo gets an existing branch; the second falls back.
       existingBranches: { [r1.id]: "feat/login", [r2.id]: "" },
     });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const detail = await getWorkspace(db, ws.id);
     const byRepo = new Map(detail?.repos.map((wr) => [wr.repoId, wr]));
@@ -585,7 +588,7 @@ describe("provision + archive (injected git runner)", () => {
     const ws = await createWorkspace(db, config, { name: "scratchpad", repoIds: [] });
 
     const events: string[] = [];
-    await provisionWorkspace(db, ws.id, (e) => void events.push(e.type), fakeGit);
+    await provisionWorkspace(db, ws.id, (e) => void events.push(e.type), { runner: fakeGit });
 
     expect(events).toContain("done");
     const detail = await getWorkspace(db, ws.id);
@@ -598,7 +601,7 @@ describe("provision + archive (injected git runner)", () => {
     const db = getDb(url).db;
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "feature with docs", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const detail = await getWorkspace(db, ws.id);
     const agents = readFileSync(`${detail?.rootPath}/AGENTS.md`, "utf-8");
@@ -615,7 +618,7 @@ describe("provision + archive (injected git runner)", () => {
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "skills ws", repoIds: [repo.id] });
 
-    await provisionWorkspace(db, ws.id, () => {}, skillsGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: skillsGit });
 
     const detail = await getWorkspace(db, ws.id);
     const worktree = detail?.repos[0]?.worktreePath ?? "";
@@ -632,7 +635,7 @@ describe("provision + archive (injected git runner)", () => {
     const db = getDb(url).db;
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "bare ws", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const detail = await getWorkspace(db, ws.id);
     const settings = JSON.parse(
@@ -647,7 +650,7 @@ describe("provision + archive (injected git runner)", () => {
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "merge ws", repoIds: [repo.id] });
 
-    await provisionWorkspace(db, ws.id, () => {}, skillsGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: skillsGit });
 
     const detail = await getWorkspace(db, ws.id);
     const settings = JSON.parse(
@@ -663,7 +666,7 @@ describe("provision + archive (injected git runner)", () => {
     const db = getDb(url).db;
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "to-archive", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const result = await archiveWorkspace(
       db,
@@ -683,7 +686,7 @@ describe("provision + archive (injected git runner)", () => {
     const db = getDb(url).db;
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "open-pr", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     const [wr] = await db
       .select()
       .from(workspaceRepos)
@@ -710,7 +713,7 @@ describe("provision + archive (injected git runner)", () => {
       name: "multi-pr",
       repoIds: [openRepo.id, mergedRepo.id],
     });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     const wrs = await db.select().from(workspaceRepos).where(eq(workspaceRepos.workspaceId, ws.id));
     const openWr = wrs.find((w) => w.repoId === openRepo.id);
     const mergedWr = wrs.find((w) => w.repoId === mergedRepo.id);
@@ -737,7 +740,7 @@ describe("provision + archive (injected git runner)", () => {
     const db = getDb(url).db;
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "explicit-pr", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     const [wr] = await db
       .select()
       .from(workspaceRepos)
@@ -758,7 +761,7 @@ describe("provision + archive (injected git runner)", () => {
     const db = getDb(url).db;
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "closed-pr", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     const [wr] = await db
       .select()
       .from(workspaceRepos)
@@ -779,7 +782,7 @@ describe("provision + archive (injected git runner)", () => {
     const db = getDb(url).db;
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "no-pr", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     await archiveWorkspace(db, ws.id, {}, fakeGit);
     const detail = await getWorkspace(db, ws.id);
@@ -803,7 +806,7 @@ describe("provision + archive (injected git runner)", () => {
       return { stdout: "", stderr: "", exitCode: 0 };
     };
 
-    await provisionWorkspace(db, ws.id, () => {}, collidingGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: collidingGit });
     const expected = `yarvis/collide-${ws.id.slice(0, 8)}`;
     expect(addedBranch).toBe(expected);
     const detail = await getWorkspace(db, ws.id);
@@ -818,7 +821,7 @@ describe("provision + archive (injected git runner)", () => {
     expect(a.slug).toBe("same-name");
     expect(b.slug).toBe("same-name-2"); // active slug is taken, so it suffixes
 
-    await provisionWorkspace(db, a.id, () => {}, fakeGit);
+    await provisionWorkspace(db, a.id, () => {}, { runner: fakeGit });
     await archiveWorkspace(db, a.id, {}, fakeGit);
     const c = await createWorkspace(db, config, { name: "Same Name", repoIds: [repo.id] });
     expect(c.slug).toBe("same-name"); // archived slug is freed for reuse
@@ -834,7 +837,7 @@ describe("provision + archive (injected git runner)", () => {
     });
     const r2 = (await created.json()) as { id: string };
     const ws = await createWorkspace(db, config, { name: "multi", repoIds: [r1.id, r2.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     // Removal fails only for the "other" repo's worktree.
     const failingGit: GitRunner = async (args) => {
@@ -859,7 +862,7 @@ describe("provision + archive (injected git runner)", () => {
   it("returns from a background archive before the worktrees are gone", async () => {
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "bg-archive", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     // Hold the removal open, so the call can only return by not waiting for it.
     let releaseRemoval: () => void = () => {};
@@ -887,7 +890,7 @@ describe("provision + archive (injected git runner)", () => {
   it("clears the recorded failure when a blocked archive is retried with force", async () => {
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "dirty", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     await startArchiveWorkspace(db, ws.id, {}, dirtyGit);
     const blocked = await waitForError(ws.id);
@@ -904,7 +907,7 @@ describe("provision + archive (injected git runner)", () => {
   it("flags a blocked archive on the attention stream", async () => {
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "needs-me", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     await startArchiveWorkspace(db, ws.id, {}, dirtyGit);
     await waitForError(ws.id);
@@ -925,7 +928,7 @@ describe("provision + archive (injected git runner)", () => {
   it("resolves the workspace's pending attention once the archive lands", async () => {
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "quiet", repoIds: [repo.id] });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     await db.insert(attentionItems).values({
       source: "claude-hook",
       sessionKey: `ws-claude:${ws.id}`,
@@ -953,7 +956,7 @@ describe("provision + archive (injected git runner)", () => {
       repoIds: [repo.id],
       taskId: task!.id,
     });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const result = await archiveWorkspace(db, ws.id, {}, fakeGit);
     expect(result.completedTasks).toBe(1);
@@ -976,7 +979,7 @@ describe("provision + archive (injected git runner)", () => {
       repoIds: [r1.id, r2.id],
       taskId: task!.id,
     });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const failingGit: GitRunner = async (args) => {
       if (
@@ -1008,7 +1011,7 @@ describe("provision + archive (injected git runner)", () => {
       repoIds: [repo.id],
       taskId: task!.id,
     });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const result = await archiveWorkspace(db, ws.id, {}, fakeGit);
     expect(result.completedTasks).toBe(0); // only OPEN tasks are completed
@@ -1025,7 +1028,7 @@ describe("provision + archive (injected git runner)", () => {
       repoIds: [repo.id],
       taskId: task!.id,
     });
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     expect(await unlinkTask(db, ws.id, task!.id)).toBe(true);
 
     const result = await archiveWorkspace(db, ws.id, {}, fakeGit);
@@ -1045,10 +1048,378 @@ describe("provision + archive (injected git runner)", () => {
     const repo = (await created.json()) as { id: string };
     const ws = await createWorkspace(db, config, { name: "flaky-task", repoIds: [repo.id] });
 
-    await provisionWorkspace(db, ws.id, () => {}, fakeGit);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     const detail = await getWorkspace(db, ws.id);
     expect(detail?.status).toBe("error");
     expect(detail?.repos[0]?.status).toBe("error");
     expect(detail?.repos[0]?.setupExitCode).toBe(3);
+  });
+});
+
+/**
+ * Kicking off work is a multi-step sequence (create → provision → write the
+ * prompt file → launch the agent). The UI used to own the steps after create,
+ * so navigating away mid-provision dropped the ticket with no way back. These
+ * cover the pieces that make it resumable: the prompt lives on the row, and
+ * provisioning — not its caller — puts it on disk.
+ */
+describe("resumable start-work kick-off", () => {
+  it("stores the kick-off prompt on the workspace, sanitized", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, {
+      name: "kickoff",
+      repoIds: [repo.id],
+      // A zero-width joiner is the kind of hidden character sanitizing strips
+      // before the prompt can reach an auto-approved agent session.
+      issuePrompt: "implement‍ the ticket",
+    });
+
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.pendingIssuePrompt).toBe("implement the ticket");
+  });
+
+  it("writes the prompt file itself, so an absent caller can't lose the ticket", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, {
+      name: "writes prompt",
+      repoIds: [repo.id],
+      issuePrompt: "# Ticket\n\nimplement the ticket",
+    });
+
+    // No emit callback at all: the client that started this has gone away.
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.status).toBe("active");
+    expect(readFileSync(join(detail?.rootPath ?? "", ".yarvis", "issue-prompt.md"), "utf-8")).toBe(
+      "# Ticket\n\nimplement the ticket",
+    );
+    // Still pending: the prompt is dropped only once a session has it.
+    expect(detail?.pendingIssuePrompt).toBe("# Ticket\n\nimplement the ticket");
+  });
+
+  it("leaves no prompt file for a workspace that wasn't kicked off from a ticket", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "no ticket", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+
+    const detail = await getWorkspace(db, ws.id);
+    expect(existsSync(join(detail?.rootPath ?? "", ".yarvis", "issue-prompt.md"))).toBe(false);
+  });
+
+  it("a second drive follows the run in flight instead of failing", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "reopened", repoIds: [repo.id] });
+
+    // Hold the first drive open until the second has joined, the way reopening a
+    // workspace mid-provision does.
+    let releaseFirst = () => {};
+    const held = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const slowGit: GitRunner = async (args, opts) => {
+      const res = await fakeGit(args, opts);
+      if (args[0] === "worktree" && args[1] === "add") await held;
+      return res;
+    };
+
+    const firstEvents: ProvisionEvent[] = [];
+    const first = provisionWorkspace(db, ws.id, (e) => void firstEvents.push(e), {
+      runner: slowGit,
+    });
+    await waitFor(ws.id, (d) => d.repos[0]?.status === "provisioning", "started provisioning");
+
+    const secondEvents: ProvisionEvent[] = [];
+    const second = provisionWorkspace(db, ws.id, (e) => void secondEvents.push(e), {
+      runner: fakeGit,
+    });
+    releaseFirst();
+    await Promise.all([first, second]);
+
+    // The joiner sees the run through to the end, including the events it missed.
+    expect(secondEvents.map((e) => e.type)).toContain("repo-start");
+    expect(secondEvents.map((e) => e.type)).toContain("done");
+    expect(secondEvents.some((e) => e.type === "error")).toBe(false);
+    // Byte-for-byte the same sequence: nothing lost or doubled across the
+    // snapshot/subscribe seam, and the replay stayed ahead of the live events.
+    expect(secondEvents).toEqual(firstEvents);
+    expect((await getWorkspace(db, ws.id))?.status).toBe("active");
+  });
+
+  it("finishes the kick-off even when the caller's stream throws on every write", async () => {
+    // The reported bug is the user navigating away, which makes the stream write
+    // *fail* — not merely go unread. Every other test passes an inert emit, so
+    // without this one the swallow in `safeEmit` could be deleted unnoticed and
+    // a cleanly provisioned workspace would land on `error`.
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, {
+      name: "stream closed",
+      repoIds: [repo.id],
+      issuePrompt: "implement the ticket",
+    });
+
+    await provisionWorkspace(
+      db,
+      ws.id,
+      () => {
+        throw new Error("stream closed");
+      },
+      { runner: fakeGit },
+    );
+
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.status).toBe("active");
+    expect(existsSync(join(detail?.rootPath ?? "", ".yarvis", "issue-prompt.md"))).toBe(true);
+  });
+
+  it("keeps the prompt and offers a retry when the prompt file can't be written", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, {
+      name: "unwritable prompt",
+      repoIds: [repo.id],
+      issuePrompt: "implement the ticket",
+    });
+    const created = await getWorkspace(db, ws.id);
+    // A file where the `.yarvis` directory needs to go, so the mkdir fails.
+    mkdirSync(created?.rootPath ?? "", { recursive: true });
+    writeFileSync(join(created?.rootPath ?? "", ".yarvis"), "");
+
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+
+    const detail = await getWorkspace(db, ws.id);
+    // Never `active` without the file the agent is launched to read.
+    expect(detail?.status).toBe("error");
+    expect(detail?.error).toContain("issue prompt file");
+    expect(detail?.pendingIssuePrompt).toBe("implement the ticket");
+  });
+
+  it("rewrites the prompt file when a failed provision is retried", async () => {
+    // The resume path: a kick-off that failed still carries its ticket, and the
+    // retry is what gets it onto disk — including when every repo is already
+    // provisioned and there is no git work left to redo.
+    const db = getDb(url).db;
+    const created = await app.request("/api/repos", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ cloneUrl: "git@github.com:acme/retry.git", setupScript: "exit 1" }),
+    });
+    const repo = (await created.json()) as { id: string };
+    const ws = await createWorkspace(db, config, {
+      name: "retried kickoff",
+      repoIds: [repo.id],
+      issuePrompt: "implement the ticket",
+    });
+
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    const failed = await getWorkspace(db, ws.id);
+    expect(failed?.status).toBe("error");
+    expect(existsSync(join(failed?.rootPath ?? "", ".yarvis", "issue-prompt.md"))).toBe(false);
+    expect(failed?.pendingIssuePrompt).toBe("implement the ticket");
+
+    // Fix what failed, then retry the way the workspace's button does.
+    await app.request(`/api/repos/${repo.id}`, {
+      method: "PATCH",
+      headers: jsonAuth,
+      body: JSON.stringify({ setupScript: "true" }),
+    });
+    await db
+      .update(workspaceRepos)
+      .set({ status: "pending", error: null })
+      .where(eq(workspaceRepos.workspaceId, ws.id));
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.status).toBe("active");
+    expect(readFileSync(join(detail?.rootPath ?? "", ".yarvis", "issue-prompt.md"), "utf-8")).toBe(
+      "implement the ticket",
+    );
+  });
+
+  it("stops following when the follower goes away, without stopping the run", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "follower left", repoIds: [repo.id] });
+
+    let releaseFirst = () => {};
+    const held = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const slowGit: GitRunner = async (args, opts) => {
+      const res = await fakeGit(args, opts);
+      if (args[0] === "worktree" && args[1] === "add") await held;
+      return res;
+    };
+
+    const first = provisionWorkspace(db, ws.id, () => {}, { runner: slowGit });
+    await waitFor(ws.id, (d) => d.repos[0]?.status === "provisioning", "started provisioning");
+
+    const gone = new AbortController();
+    const followerEvents: ProvisionEvent[] = [];
+    const follower = provisionWorkspace(db, ws.id, (e) => void followerEvents.push(e), {
+      signal: gone.signal,
+    });
+    gone.abort();
+    await follower;
+    const seenBeforeLeaving = followerEvents.length;
+
+    releaseFirst();
+    await first;
+
+    // The run finished for everyone else; the follower stopped where it left off.
+    expect(followerEvents).toHaveLength(seenBeforeLeaving);
+    expect(followerEvents.some((e) => e.type === "done")).toBe(false);
+    expect((await getWorkspace(db, ws.id))?.status).toBe("active");
+  });
+
+  it("launches the session on the ticket and drops the prompt it was owed", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, {
+      name: "launched",
+      repoIds: [repo.id],
+      issuePrompt: "implement the ticket",
+    });
+
+    const started: StartClaudeSessionInput[] = [];
+    await provisionWorkspace(db, ws.id, () => {}, {
+      runner: fakeGit,
+      startSession: async (input) => {
+        started.push(input);
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.status).toBe("active");
+    // The session runs at the workspace root, where the prompt file was seeded,
+    // and starts on the ticket rather than waiting to be told.
+    expect(started).toHaveLength(1);
+    expect(started[0]?.cwd).toBe(detail?.rootPath ?? "");
+    expect(started[0]?.instruction ?? "").toContain(".yarvis/issue-prompt.md");
+    // Started at the machine, so not remotely controllable.
+    expect(started[0]?.remoteControl).toBe(false);
+    // Nothing owed any more.
+    expect(detail?.pendingIssuePrompt).toBeNull();
+  });
+
+  it("keeps the prompt when the session fails to start, so a restart retries", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, {
+      name: "launch failed",
+      repoIds: [repo.id],
+      issuePrompt: "implement the ticket",
+    });
+
+    await provisionWorkspace(db, ws.id, () => {}, {
+      runner: fakeGit,
+      startSession: async () => {
+        throw new Error("agent not logged in");
+      },
+    });
+
+    const detail = await getWorkspace(db, ws.id);
+    // The workspace provisioned fine and stays usable; only the launch failed.
+    expect(detail?.status).toBe("active");
+    expect(detail?.pendingIssuePrompt).toBe("implement the ticket");
+
+    // Which is exactly what the startup sweep picks up.
+    const started: string[] = [];
+    await resumeKickOffs(db, {
+      startSession: async (input: StartClaudeSessionInput) => {
+        started.push(input.workspaceId);
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+      runner: fakeGit,
+    });
+    expect(started).toEqual([ws.id]);
+    expect((await getWorkspace(db, ws.id))?.pendingIssuePrompt).toBeNull();
+  });
+
+  it("does not launch a session for a workspace with no ticket", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "no ticket here", repoIds: [repo.id] });
+
+    const started: StartClaudeSessionInput[] = [];
+    await provisionWorkspace(db, ws.id, () => {}, {
+      runner: fakeGit,
+      startSession: async (input) => {
+        started.push(input);
+        return { sessionKey: "unused" };
+      },
+    });
+
+    expect(started).toEqual([]);
+  });
+});
+
+/**
+ * The pending prompt is the sole record of an *unfinished* kick-off, so what it
+ * must never do is outlive one. These pin the two places a copy could linger.
+ */
+describe("pending kick-off prompt retention", () => {
+  it("keeps it out of the workspace list, which is polled for every workspace", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    await createWorkspace(db, config, {
+      name: "listed",
+      repoIds: [repo.id],
+      issuePrompt: "implement the ticket",
+    });
+
+    const res = await app.request("/api/workspaces", { headers: auth });
+    const rows = (await res.json()) as Record<string, unknown>[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).not.toHaveProperty("pendingIssuePrompt");
+    // Nor does the detail route — it is the sidecar's own bookkeeping.
+    const one = await app.request(`/api/workspaces/${(rows[0] as { id: string }).id}`, {
+      headers: auth,
+    });
+    expect(await one.json()).not.toHaveProperty("pendingIssuePrompt");
+    // The projection is explicit, so assert the sidebar's fields survive it.
+    expect(rows[0]).toMatchObject({ name: "listed", status: "creating", repoNames: ["widget"] });
+    expect(rows[0]).toHaveProperty("archivedAt");
+    // The open workspace is where it's wanted, and it's still there.
+    expect((await getWorkspace(db, rows[0]!.id as string))?.pendingIssuePrompt).toBe(
+      "implement the ticket",
+    );
+  });
+
+  it("drops it when the workspace is archived, since no session can claim it", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, {
+      name: "archived with prompt",
+      repoIds: [repo.id],
+      issuePrompt: "implement the ticket",
+    });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+
+    const result = await archiveWorkspace(db, ws.id, {}, fakeGit);
+    expect(result.status).toBe("archived");
+    expect((await getWorkspace(db, ws.id))?.pendingIssuePrompt).toBeNull();
+  });
+
+  it("rejects a kick-off prompt too large to be a ticket", async () => {
+    // The bound is on the client-supplied field, not on start-work, which
+    // composes its prompt from an issue GitHub has already capped.
+    const repo = await addRepo();
+    const res = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        name: "oversized",
+        repoIds: [repo.id],
+        issuePrompt: "x".repeat(70000),
+      }),
+    });
+    expect(res.status).toBe(400);
   });
 });

@@ -50,6 +50,11 @@ const createWorkspaceSchema = z.object({
   // repo id -> existing branch to check out instead of a fresh branch.
   existingBranches: z.record(z.string().uuid(), z.string()).optional(),
   taskId: z.string().uuid().nullish(),
+  // A "Start work" prompt to seed the workspace's agent session with, held on
+  // the row until the launch line goes out. Capped like the issue bodies it is
+  // composed from (see `createIssueSchema`), now that it is persisted rather
+  // than passed straight through.
+  issuePrompt: z.string().max(65536).nullish(),
 });
 
 const archiveSchema = z.object({
@@ -199,18 +204,31 @@ export function createWorkspaceRoutes(config: Config): Hono {
   router.get("/:id", async (c) => {
     const workspace = await getWorkspace(db(), c.req.param("id"));
     if (!workspace) return c.json({ error: "not found" }, 404);
-    return c.json(workspace);
+    // `pendingIssuePrompt` stays server-side: it is how provisioning remembers a
+    // kick-off it still owes a session, and nothing outside the sidecar acts on
+    // it. Clients open the workspace and attach to whatever session is there.
+    const { pendingIssuePrompt: _internal, ...body } = workspace;
+    return c.json(body);
   });
 
   // Drives provisioning and streams progress as SSE. The setup script's output
-  // arrives as `log` events; the stream ends with a `done` event.
+  // arrives as `log` events; the stream ends with a `done` event. Re-driving a
+  // workspace already being provisioned follows the run in flight, so reopening
+  // a workspace mid-provision picks the log back up rather than failing.
   router.post("/:id/provision", async (c) => {
     const id = c.req.param("id");
     return streamSSE(c, async (stream) => {
       const emit = (event: ProvisionEvent) => stream.writeSSE({ data: JSON.stringify(event) });
+      // Lets a caller that is only following someone else's run stop following
+      // when its stream closes. The run itself is deliberately not cancelled:
+      // finishing it without an audience is the whole point.
+      const gone = new AbortController();
+      stream.onAbort(() => gone.abort());
       try {
-        await provisionWorkspace(db(), id, emit);
+        await provisionWorkspace(db(), id, emit, { signal: gone.signal });
       } catch (e) {
+        // Belt and braces: the run reports its own failures as a terminal event
+        // rather than throwing, so nothing is expected to land here.
         await emit({ type: "error", message: e instanceof Error ? e.message : String(e) });
       }
     });
