@@ -6,11 +6,6 @@ export interface FileTreeFile {
   /** Basename shown in the row; the full path lives on `file.filename`. */
   name: string;
   file: PrFile;
-  /**
-   * Position in the tree's top-to-bottom order. The diff list renders in that
-   * same order, so both sides agree on the index behind a file's anchor id.
-   */
-  index: number;
 }
 
 /** A directory grouping child files and subdirectories. */
@@ -59,7 +54,7 @@ function collapseChain(node: FileTreeNode): FileTreeNode {
 /**
  * Turn a flat list of changed files into a folder tree. Roots come back sorted
  * (folders first) with single-child folder chains collapsed for a compact
- * display, and each file numbered by where it lands in that display.
+ * display.
  */
 export function buildFileTree(files: PrFile[]): FileTreeNode[] {
   const root: FileTreeDir = { type: "dir", name: "", path: "", children: [] };
@@ -76,24 +71,13 @@ export function buildFileTree(files: PrFile[]): FileTreeNode[] {
       }
       dir = child;
     }
-    dir.children.push({ type: "file", name: parts[parts.length - 1], file, index: 0 });
+    dir.children.push({ type: "file", name: parts[parts.length - 1], file });
   }
   sortChildren(root.children);
-  const roots = root.children.map(collapseChain);
-  // Numbered only once the tree is in its final shape: the index has to follow
-  // the rows the reader sees, not the provider's file order, or the tree and
-  // the diff list disagree about which file an anchor id points at.
-  flattenFileTree(roots).forEach((node, index) => {
-    node.index = index;
-  });
-  return roots;
+  return root.children.map(collapseChain);
 }
 
-/**
- * Read the files back out of a tree in the order the rows appear top to bottom.
- * The diff list renders in this order so scrolling the diffs walks the same
- * sequence as the tree beside it, instead of the provider's own file order.
- */
+/** Read the files back out of a tree in the order the rows appear top to bottom. */
 export function flattenFileTree(nodes: FileTreeNode[]): FileTreeFile[] {
   const files: FileTreeFile[] = [];
   const walk = (node: FileTreeNode) => {

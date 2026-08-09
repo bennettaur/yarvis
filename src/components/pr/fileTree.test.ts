@@ -16,7 +16,7 @@ describe("buildFileTree", () => {
   it("keeps a top-level file at the root", () => {
     const tree = buildFileTree([file("README.md")]);
     expect(tree).toHaveLength(1);
-    expect(tree[0]).toMatchObject({ type: "file", name: "README.md", index: 0 });
+    expect(tree[0]).toMatchObject({ type: "file", name: "README.md" });
   });
 
   it("nests files under their directories", () => {
@@ -26,15 +26,6 @@ describe("buildFileTree", () => {
     expect(dir).toMatchObject({ type: "dir", name: "src" });
     if (!isDir(dir)) throw new Error("expected dir");
     expect(dir.children.map((c) => c.name)).toEqual(["a.ts", "b.ts"]);
-  });
-
-  it("numbers files by their place in the tree, not in the input list", () => {
-    const tree = buildFileTree([file("z.ts"), file("src/a.ts")]);
-    // Sorted dirs-first, so src comes before the root file.
-    const dir = tree[0];
-    if (!isDir(dir)) throw new Error("expected dir");
-    expect(dir.children[0]).toMatchObject({ name: "a.ts", index: 0 });
-    expect(tree[1]).toMatchObject({ name: "z.ts", index: 1 });
   });
 
   it("collapses a single-child folder chain into one node", () => {
@@ -90,12 +81,17 @@ describe("flattenFileTree", () => {
     ]);
   });
 
-  it("hands back indices matching that order", () => {
-    const tree = buildFileTree([file("z.ts"), file("src/a.ts"), file("a.ts")]);
-    expect(flattenFileTree(tree).map((n) => n.index)).toEqual([0, 1, 2]);
+  // Collapsing rebuilds the folder nodes around a file, so a collapsed chain is
+  // where a file could go missing from the flattened order.
+  it("reaches a file inside a collapsed folder chain", () => {
+    const tree = buildFileTree([file("z.ts"), file("src/components/pr/deep.ts")]);
+    expect(flattenFileTree(tree).map((n) => n.file.filename)).toEqual([
+      "src/components/pr/deep.ts",
+      "z.ts",
+    ]);
   });
 
   it("returns nothing for an empty tree", () => {
-    expect(flattenFileTree(buildFileTree([]))).toEqual([]);
+    expect(flattenFileTree([])).toEqual([]);
   });
 });

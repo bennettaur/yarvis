@@ -223,6 +223,7 @@ function FileDiff({
 }: {
   prRef: PrRef;
   file: PrFile;
+  /** Position in the review, deciding whether this file is open on mount. */
   index: number;
   threads: ReviewThread[];
   isViewed: boolean;
@@ -308,7 +309,7 @@ function FileDiff({
     // header in place, not a navigation, so an animation would just look like a
     // stutter on collapse.
     requestAnimationFrame(() => {
-      const fileEl = document.getElementById(prFileAnchorId(prRef, index));
+      const fileEl = document.getElementById(prFileAnchorId(prRef, file.filename));
       const pane = fileEl?.closest("[data-pr-scroll]");
       if (!fileEl || !pane) return;
       if (fileEl.getBoundingClientRect().top <= pane.getBoundingClientRect().top) {
@@ -320,7 +321,7 @@ function FileDiff({
   return (
     <details
       ref={detailsRef}
-      id={prFileAnchorId(prRef, index)}
+      id={prFileAnchorId(prRef, file.filename)}
       open={open}
       onToggle={(e) => {
         const nowOpen = e.currentTarget.open;
@@ -428,7 +429,7 @@ export default function PrFileDiffs({
   // The same order `PrFileList` shows, so scrolling the diffs walks the tree
   // top to bottom instead of the provider's own file order. Hoisted above the
   // early returns to keep hook order stable.
-  const ordered = useMemo(() => (data ? flattenFileTree(buildFileTree(data)) : []), [data]);
+  const orderedFiles = useMemo(() => (data ? flattenFileTree(buildFileTree(data)) : []), [data]);
 
   if (error) return <p className="text-sm text-red-400">{error}</p>;
   if (loading || !data) return <p className="text-sm text-zinc-500">Loading diff…</p>;
@@ -479,12 +480,12 @@ export default function PrFileDiffs({
           Expand all
         </button>
       </div>
-      {ordered.map(({ file: f, index }) => (
+      {orderedFiles.map(({ file: f }, i) => (
         <FileDiff
           key={f.filename}
           prRef={prRef}
           file={f}
-          index={index}
+          index={i}
           threads={threads}
           isViewed={viewed.has(f.filename)}
           onToggleViewed={onToggleViewed}
