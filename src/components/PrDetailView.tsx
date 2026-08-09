@@ -109,7 +109,21 @@ function CollapsibleSection({
  * The pieces share one fetch through the PR cache (keyed by the ref), so naming
  * the same PR here and in each child does not multiply requests.
  */
-export default function PrDetailView({ pr, onBack }: { pr: PrSummary; onBack: () => void }) {
+export default function PrDetailView({
+  pr,
+  onBack,
+  recordView = true,
+}: {
+  pr: PrSummary;
+  onBack: () => void;
+  /**
+   * Whether opening this view counts as the user viewing the PR. False when the
+   * panel put us here on its own — restoring a remembered place isn't a fresh
+   * view, and logging one on every app-tab round-trip would flood the activity
+   * log with the same PR.
+   */
+  recordView?: boolean;
+}) {
   const prRef = pr.ref;
   const { data: detail, error } = usePrDetail(prRef);
   // Shared so the file list and diffs stay in lockstep.
@@ -131,8 +145,9 @@ export default function PrDetailView({ pr, onBack }: { pr: PrSummary; onBack: ()
   // PR records a new event. Fire-and-forget.
   // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the ref identity, not the unstable pr object
   useEffect(() => {
+    if (!recordView) return;
     void recordEvent("pr.viewed", { ref: prRef, title: pr.title, url: pr.url }, prRef.provider);
-  }, [refKey(prRef)]);
+  }, [refKey(prRef), recordView]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
