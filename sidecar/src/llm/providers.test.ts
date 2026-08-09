@@ -41,7 +41,21 @@ afterAll(async () => {
 describe("availableProviders", () => {
   it("returns only built-ins when no database is provided", async () => {
     const providers = await availableProviders(configWithSecrets());
-    expect(providers.map((p) => p.id).sort()).toEqual(["anthropic", "bedrock", "gemini"]);
+    expect(providers.map((p) => p.id).sort()).toEqual([
+      "anthropic",
+      "bedrock",
+      "cerebras",
+      "gemini",
+    ]);
+  });
+
+  it("marks Cerebras available only once its key is configured", async () => {
+    const unkeyed = await availableProviders(configWithSecrets());
+    expect(unkeyed.find((p) => p.id === "cerebras")?.available).toBe(false);
+
+    const config: Config = { ...configWithSecrets(), secrets: { cerebrasApiKey: "csk-fake" } };
+    const keyed = await availableProviders(config);
+    expect(keyed.find((p) => p.id === "cerebras")?.available).toBe(true);
   });
 
   it("appends configured custom providers when given a database", async () => {
@@ -97,6 +111,30 @@ describe("defaultProviderModel", () => {
   it("falls back to Bedrock when no other provider is configured", async () => {
     const result = await defaultProviderModel(configWithSecrets());
     expect(result?.provider).toBe("bedrock");
+  });
+
+  it("picks Cerebras when it is the only keyed provider", async () => {
+    const config: Config = { ...configWithSecrets(), secrets: { cerebrasApiKey: "csk-fake" } };
+    const result = await defaultProviderModel(config);
+    expect(result?.provider).toBe("cerebras");
+    expect(result?.model).toBeTruthy();
+  });
+});
+
+describe("resolveModel for Cerebras", () => {
+  it("builds a chat-completions model from the configured key", async () => {
+    const config: Config = { ...configWithSecrets(), secrets: { cerebrasApiKey: "csk-fake" } };
+    const model = await resolveModel(config, undefined, "cerebras", "zai-glm-4.6");
+    expect((model as { modelId?: string }).modelId).toBe("zai-glm-4.6");
+    // Cerebras has no Responses API, so the model must be the chat-completions
+    // variant. `modelId` alone can't tell the two apart.
+    expect((model as { provider?: string }).provider).toBe("openai.chat");
+  });
+
+  it("throws when no key is configured", async () => {
+    await expect(
+      resolveModel(configWithSecrets(), undefined, "cerebras", "zai-glm-4.6"),
+    ).rejects.toThrow("Cerebras API key not configured");
   });
 });
 

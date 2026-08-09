@@ -21,6 +21,7 @@ function randomToken(): string {
 export interface ProviderSecrets {
   anthropicApiKey?: string;
   geminiApiKey?: string;
+  cerebrasApiKey?: string;
   githubToken?: string;
   // Azure DevOps personal access token + organization base URL (e.g.
   // https://dev.azure.com/your-org) for the PR dashboard. The org URL is
@@ -225,6 +226,7 @@ export function loadConfig(): Config {
     secrets: {
       anthropicApiKey: env.ANTHROPIC_API_KEY,
       geminiApiKey: env.GEMINI_API_KEY,
+      cerebrasApiKey: env.CEREBRAS_API_KEY,
       githubToken: env.GITHUB_TOKEN,
       azureDevopsToken: env.AZURE_DEVOPS_TOKEN,
       azureDevopsOrgUrl: env.AZURE_DEVOPS_ORG_URL,

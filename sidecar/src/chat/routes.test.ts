@@ -39,7 +39,12 @@ describe("chat routes", () => {
     const res = await app.request("/api/chat/providers", { headers: auth });
     expect(res.status).toBe(200);
     const providers = (await res.json()) as { id: string; available: boolean }[];
-    expect(providers.map((p) => p.id).sort()).toEqual(["anthropic", "bedrock", "gemini"]);
+    expect(providers.map((p) => p.id).sort()).toEqual([
+      "anthropic",
+      "bedrock",
+      "cerebras",
+      "gemini",
+    ]);
     // No keys configured, so the key-based providers are unavailable.
     expect(providers.find((p) => p.id === "anthropic")?.available).toBe(false);
   });
