@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo } from "react";
+import { type ReactNode, useEffect } from "react";
 import { recordEvent } from "../lib/events";
 import { usePrDetail } from "../lib/pr/cache";
 import { refKey } from "../lib/pr/ref";
@@ -114,23 +114,9 @@ export default function PrDetailView({ pr, onBack }: { pr: PrSummary; onBack: ()
   const { data: detail, error } = usePrDetail(prRef);
   // Shared so the file list and diffs stay in lockstep.
   const viewedFiles = usePrViewedFiles(prRef);
-  const guide = usePrGuide(prRef, pr.title, pr.url);
-
-  // The guide's current step, shaped for the diffs to open and scroll to. The
-  // nonce comes from the controller so re-selecting the step the reader is
-  // already on still takes them back to it.
-  const focus = useMemo(
-    () =>
-      guide.step
-        ? {
-            path: guide.step.path,
-            startLine: guide.step.startLine,
-            endLine: guide.step.endLine,
-            nonce: guide.focusNonce,
-          }
-        : null,
-    [guide.step, guide.focusNonce],
-  );
+  // The last argument is what ticks off a step's files as the reader moves past
+  // it; the hook decides which files that is.
+  const guide = usePrGuide(prRef, pr.title, pr.url, viewedFiles.markAllViewed);
 
   // The file list panel is resizable (ratio) and fully collapsible, both
   // persisted so a chosen layout survives navigating between PRs.
@@ -198,7 +184,7 @@ export default function PrDetailView({ pr, onBack }: { pr: PrSummary; onBack: ()
                     prRef={prRef}
                     viewed={viewedFiles.viewed}
                     onToggleViewed={viewedFiles.toggle}
-                    focus={focus}
+                    focus={guide.focus}
                   />
                 </div>
               </div>
@@ -224,7 +210,7 @@ export default function PrDetailView({ pr, onBack }: { pr: PrSummary; onBack: ()
                       prRef={prRef}
                       viewed={viewedFiles.viewed}
                       onToggleViewed={viewedFiles.toggle}
-                      focus={focus}
+                      focus={guide.focus}
                     />
                   </div>
                 }

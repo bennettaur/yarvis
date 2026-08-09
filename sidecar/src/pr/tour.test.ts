@@ -33,11 +33,25 @@ import type { PrDetail, PrFile, PrRef } from "./types.ts";
 
 const ref: PrRef = { provider: "github", owner: "o", repo: "r", number: 1 };
 
+/** The files a fake pull request changes; a step may only cover one of these. */
+const changedFiles = [
+  "a.ts",
+  "b.ts",
+  "src/api.ts",
+  "src/fetchUser.ts",
+  "step1.ts",
+  "first.ts",
+  "second.ts",
+  "a.test.ts",
+  "b.test.ts",
+  "c.test.ts",
+];
+
 function fakeSource(over: Partial<PrCodeSource> = {}): PrCodeSource {
   return {
     ref,
     detail: async () => ({ headSha: "a".repeat(40), title: "Add ordering", body: "" }) as PrDetail,
-    files: async () => [],
+    files: async () => changedFiles.map((filename) => ({ filename }) as PrFile),
     fileDiff: async () => ({}) as PrFile,
     readFile: async () => "",
     listDir: async () => [],
@@ -53,6 +67,9 @@ const step = (path: string) => ({
   endLine: 2,
   explanation: `look at ${path}`,
 });
+
+/** What a step looks like once stored: the kind is filled in even if omitted. */
+const stored = (path: string) => ({ ...step(path), kind: "walkthrough" as const });
 
 /** A model that submits a tour on every step, counting how often it is called. */
 function submittingModel(steps: () => unknown) {
@@ -78,7 +95,7 @@ describe("generateTour", () => {
     const { model, calls } = submittingModel(() => [step(`step${++n}.ts`)]);
     const result = await generateTour(model, fakeSource());
     expect(calls()).toBe(1);
-    expect(result.steps).toEqual([step("step1.ts")]);
+    expect(result.steps).toEqual([stored("step1.ts")]);
   });
 
   // A model can emit two calls in one step; a later one overwriting the first
@@ -96,7 +113,7 @@ describe("generateTour", () => {
       }),
     });
     const result = await generateTour(twice, fakeSource());
-    expect(result.steps).toEqual([step("first.ts")]);
+    expect(result.steps).toEqual([stored("first.ts")]);
   });
 
   it("carries the head commit the tour was generated against", async () => {
@@ -119,6 +136,84 @@ describe("generateTour", () => {
     const { model } = submittingModel(() => [step("a.ts")]);
     const [first] = (await generateTour(model, fakeSource())).steps;
     expect("context" in first!).toBe(false);
+  });
+
+  // A step that reports on files beyond its own carries them, so the review can
+  // tick all of them off at once when the reader moves past the step.
+  it("keeps the files a sanity-check step covered", async () => {
+    const { model } = submittingModel(() => [
+      { ...step("a.test.ts"), kind: "tests" as const, covers: ["b.test.ts", "c.test.ts"] },
+    ]);
+    const [first] = (await generateTour(model, fakeSource())).steps;
+    expect(first?.kind).toBe("tests");
+    expect(first?.covers).toEqual(["b.test.ts", "c.test.ts"]);
+  });
+
+  // The step's own path is what `covers` extends; repeating it there would have
+  // the reviewer told about the same file twice.
+  it("drops the step's own path, and duplicates, from what it covers", async () => {
+    const { model } = submittingModel(() => [
+      {
+        ...step("a.test.ts"),
+        kind: "tests" as const,
+        covers: ["a.test.ts", "b.test.ts", "b.test.ts"],
+      },
+    ]);
+    const [first] = (await generateTour(model, fakeSource())).steps;
+    expect(first?.covers).toEqual(["b.test.ts"]);
+  });
+
+  /**
+   * Covering a file is not a claim the reviewer can check — moving past the
+   * step marks it viewed with their own provider token — and every byte the
+   * model read to get here was written by whoever opened the pull request. So a
+   * covered file has to be one this change actually contains.
+   */
+  it("drops covered files the pull request does not change", async () => {
+    const { model } = submittingModel(() => [
+      {
+        ...step("a.test.ts"),
+        kind: "tests" as const,
+        covers: ["b.test.ts", "src/secrets/prod.env"],
+      },
+    ]);
+    const [first] = (await generateTour(model, fakeSource())).steps;
+    expect(first?.covers).toEqual(["b.test.ts"]);
+  });
+
+  // A file another step walks through is a file the reviewer still has to read;
+  // ticking it off from a sanity check would take it off their list first.
+  it("drops covered files another step walks through", async () => {
+    const { model } = submittingModel(() => [
+      { ...step("a.ts"), kind: "data" as const, covers: ["b.ts", "src/api.ts"] },
+      step("src/api.ts"),
+    ]);
+    const [first] = (await generateTour(model, fakeSource())).steps;
+    expect(first?.covers).toEqual(["b.ts"]);
+  });
+
+  it("stores nothing for a step that covers only itself", async () => {
+    const { model } = submittingModel(() => [{ ...step("a.ts"), covers: ["a.ts"] }]);
+    const [first] = (await generateTour(model, fakeSource())).steps;
+    expect("covers" in first!).toBe(false);
+  });
+
+  it("keeps what a step flagged, with where it is", async () => {
+    const finding = {
+      kind: "error-handling" as const,
+      path: "src/fetchUser.ts",
+      startLine: 44,
+      note: "the rejected promise is never caught",
+    };
+    const { model } = submittingModel(() => [{ ...step("src/fetchUser.ts"), findings: [finding] }]);
+    const [first] = (await generateTour(model, fakeSource())).steps;
+    expect(first?.findings).toEqual([finding]);
+  });
+
+  it("omits findings entirely when a step flagged nothing", async () => {
+    const { model } = submittingModel(() => [{ ...step("a.ts"), findings: [] }]);
+    const [first] = (await generateTour(model, fakeSource())).steps;
+    expect("findings" in first!).toBe(false);
   });
 
   // The author's framing is useful but attacker-authored on an external PR, so
