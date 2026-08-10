@@ -1,5 +1,6 @@
-import { useCallback, useSyncExternalStore } from "react";
-import { type Alarm, createAlarm, listAlarms, onAlarmFired } from "./alarms";
+import { useCallback } from "react";
+import { createAlarm, refreshAlarms, useAlarms } from "./alarmStore";
+import type { Alarm } from "./alarms";
 import type { CalendarEvent } from "./calendar";
 import { startMs } from "./calendarGrid";
 
@@ -49,54 +50,12 @@ function findArmed(event: CalendarEvent, alarms: Alarm[]): Alarm | null {
 }
 
 /**
- * Shared scheduled-alarm list backing every calendar view. A single poll +
- * `alarm-fired` listener feeds all subscribers, so placing several calendar
- * widgets (e.g. in an Omni layout) doesn't multiply the IPC traffic. The list
- * reference only changes when the alarms actually change, which keeps
- * `useSyncExternalStore` snapshots stable between ticks.
- */
-let alarmsSnapshot: Alarm[] = [];
-const listeners = new Set<() => void>();
-let pollTimer: ReturnType<typeof setInterval> | undefined;
-let unlistenFired: (() => void) | undefined;
-
-async function refreshAlarms(): Promise<void> {
-  try {
-    alarmsSnapshot = await listAlarms();
-    for (const notify of listeners) notify();
-  } catch {
-    // Leave the last known list in place; the periodic refresh will retry.
-  }
-}
-
-/** Subscribes to the shared store, starting the poll for the first subscriber. */
-function subscribe(notify: () => void): () => void {
-  listeners.add(notify);
-  if (listeners.size === 1) {
-    void refreshAlarms();
-    pollTimer = setInterval(() => void refreshAlarms(), 30_000);
-    onAlarmFired(() => void refreshAlarms()).then((u) => {
-      unlistenFired = u;
-    });
-  }
-  return () => {
-    listeners.delete(notify);
-    if (listeners.size === 0) {
-      clearInterval(pollTimer);
-      pollTimer = undefined;
-      unlistenFired?.();
-      unlistenFired = undefined;
-    }
-  };
-}
-
-/**
  * Exposes per-event arming + "already set" detection, backed by the shared
  * alarm store so "alarm set" reflects the real alarm list (and survives
  * reloads) rather than transient local state.
  */
 export function useEventAlarms() {
-  const alarms = useSyncExternalStore(subscribe, () => alarmsSnapshot);
+  const alarms = useAlarms();
 
   const isArmed = useCallback(
     (event: CalendarEvent) => findArmed(event, alarms) !== null,
@@ -108,8 +67,7 @@ export function useEventAlarms() {
       const fireAt = fireAtFor(event);
       if (fireAt === null || !isArmable(event)) return;
       if (findArmed(event, alarms)) return;
-      await createAlarm(alarmLabel(event), fireAt);
-      await refreshAlarms();
+      await createAlarm(alarmLabel(event), fireAt, true, event.meetLink);
     },
     [alarms],
   );

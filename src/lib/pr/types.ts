@@ -28,6 +28,32 @@ export interface PrStatus {
   checks: { total: number; success: number; failure: number; pending: number };
 }
 
+/**
+ * A PR the user has engaged with, plus their own footprint on it. Backs the
+ * "Reviewing" list, where a merged PR or the user's own approval means the
+ * review is done.
+ */
+export interface PrInvolvement {
+  summary: PrSummary;
+  merged: boolean;
+  /** The user's submitted review verdicts, oldest first. */
+  myReviewStates: ReviewerState[];
+}
+
+/** The "Reviewing" list, split into work still owed and work that has landed. */
+export interface ReviewingList {
+  inProgress: PrInvolvement[];
+  complete: PrInvolvement[];
+}
+
+/** User configuration for the GitHub PR dashboard (mirrors the sidecar shape). */
+export interface GhPrConfig {
+  /** GitHub search driving the "Needs review" list. */
+  reviewQuery: string;
+  /** How far back the "Reviewing" list looks for PRs the user has touched. */
+  reviewingLookbackDays: number;
+}
+
 export interface ReviewComment {
   author: string;
   body: string;
@@ -48,6 +74,27 @@ export interface CheckItem {
   url: string | null;
 }
 
+/**
+ * Provider-neutral reviewer verdict. `pending` covers both "requested but not
+ * yet reviewed" and "vote reset"; `isRequested` distinguishes an outstanding
+ * request from a review that was submitted and then dismissed.
+ */
+export type ReviewerState =
+  | "approved"
+  | "changes_requested"
+  | "commented"
+  | "pending"
+  | "dismissed";
+
+export interface Reviewer {
+  login: string;
+  state: ReviewerState;
+  isRequested: boolean;
+}
+
+/** A merge strategy the repo allows, in GitHub's GraphQL vocabulary. */
+export type MergeMethod = "MERGE" | "SQUASH" | "REBASE";
+
 export interface PrDetail {
   number: number;
   title: string;
@@ -57,11 +104,31 @@ export interface PrDetail {
   author: string;
   baseRef: string;
   headRef: string;
+  /**
+   * Commit the PR currently points at. Anchors anything derived from the code
+   * as it stands right now — expanded file context, generated review material —
+   * so a later push can be detected as having moved the ground underneath it.
+   * Empty when the provider hasn't reported one yet.
+   */
+  headSha: string;
   additions: number;
   deletions: number;
   mergeable: string;
+  /**
+   * Merge methods the repo permits, so the UI only offers valid ones. Empty
+   * when the provider doesn't expose them (Azure) — merge buttons stay hidden.
+   */
+  mergeMethods: MergeMethod[];
+  /** True when auto-merge is already armed on the PR. */
+  autoMergeEnabled: boolean;
+  /** Viewer may arm auto-merge (repo allows it, viewer has permission). */
+  canEnableAutoMerge: boolean;
+  /** Viewer may cancel an already-armed auto-merge. */
+  canDisableAutoMerge: boolean;
   checks: CheckItem[];
   reviewThreads: ReviewThread[];
+  /** Requested reviewers plus anyone who has already submitted a review. */
+  reviewers: Reviewer[];
 }
 
 export interface PrFile {

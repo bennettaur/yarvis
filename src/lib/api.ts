@@ -19,7 +19,7 @@ export interface HealthResponse {
 export interface StatusResponse {
   service: string;
   databaseConfigured: boolean;
-  providers: { anthropic: boolean; gemini: boolean };
+  providers: { anthropic: boolean; gemini: boolean; cerebras: boolean };
 }
 
 export interface DbHealthResponse {
@@ -54,11 +54,63 @@ export async function sidecarFetch(path: string, init: RequestInit = {}): Promis
   return fetch(`${baseUrl(info)}${path}`, { ...init, headers });
 }
 
+/**
+ * Pulls a human-readable reason out of a failed sidecar response body. The
+ * sidecar returns `{ error }` where `error` is either a string ("not found")
+ * or a Zod `flatten()` object ({ formErrors, fieldErrors }); both are collapsed
+ * into one line. Returns null when the body is empty or unparseable so the
+ * caller can fall back to the bare status.
+ */
+async function readErrorDetail(res: Response): Promise<string | null> {
+  let raw: string;
+  try {
+    raw = (await res.text()).trim();
+  } catch {
+    return null;
+  }
+  if (!raw) return null;
+
+  let body: unknown;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    // Non-JSON body (e.g. a plain-text error) — surface it verbatim.
+    return raw;
+  }
+
+  const err = (body as { error?: unknown })?.error;
+  if (typeof err === "string") return err;
+  if (err && typeof err === "object") {
+    const flat = err as { formErrors?: string[]; fieldErrors?: Record<string, string[]> };
+    const parts: string[] = [];
+    if (Array.isArray(flat.formErrors)) parts.push(...flat.formErrors);
+    for (const [field, msgs] of Object.entries(flat.fieldErrors ?? {})) {
+      if (Array.isArray(msgs) && msgs.length) parts.push(`${field}: ${msgs.join(", ")}`);
+    }
+    if (parts.length) return parts.join("; ");
+  }
+  return raw;
+}
+
+/**
+ * Throws a detailed Error when a sidecar response is not ok, reading the
+ * server's own reason out of the body so failures surface *why* instead of a
+ * bare status code. No-op on ok responses. `context` names the operation
+ * (e.g. "create custom provider").
+ */
+export async function ensureOk(res: Response, context: string): Promise<void> {
+  if (res.ok) return;
+  const detail = await readErrorDetail(res);
+  throw new Error(
+    detail ? `${context} failed (${res.status}): ${detail}` : `${context} failed: ${res.status}`,
+  );
+}
+
 /** Unauthenticated readiness probe. */
 export async function getHealth(): Promise<HealthResponse> {
   const info = await sidecarInfo();
   const res = await fetch(`${baseUrl(info)}/health`);
-  if (!res.ok) throw new Error(`health check failed: ${res.status}`);
+  await ensureOk(res, "health check");
   return res.json();
 }
 
@@ -95,13 +147,13 @@ export async function waitForSidecarReady({
 
 export async function getStatus(): Promise<StatusResponse> {
   const res = await sidecarFetch("/api/status");
-  if (!res.ok) throw new Error(`status failed: ${res.status}`);
+  await ensureOk(res, "status");
   return res.json();
 }
 
 export async function getDbHealth(): Promise<DbHealthResponse> {
   const res = await sidecarFetch("/api/db/health");
-  if (!res.ok) throw new Error(`db health failed: ${res.status}`);
+  await ensureOk(res, "db health");
   return res.json();
 }
 
@@ -111,9 +163,8 @@ export async function getDbHealth(): Promise<DbHealthResponse> {
  */
 export async function* streamSSE(path: string, init: RequestInit = {}): AsyncGenerator<string> {
   const res = await sidecarFetch(path, init);
-  if (!res.ok || !res.body) {
-    throw new Error(`stream failed: ${res.status}`);
-  }
+  await ensureOk(res, "stream");
+  if (!res.body) throw new Error("stream failed: response has no body");
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";

@@ -1,4 +1,4 @@
-import { sidecarFetch, streamSSE } from "./api";
+import { ensureOk, sidecarFetch, streamSSE } from "./api";
 
 /**
  * Built-in providers use their bare name; user-configured proxies are
@@ -22,12 +22,48 @@ export interface ChatSession {
   updatedAt: string;
 }
 
+/**
+ * Provenance for a message, mirrored from the sidecar's `ChatMessageMetadata`.
+ * Null/absent for messages composed in the app; set by the Telegram bot to mark
+ * Telegram-originated messages and record the sender.
+ */
+export interface ChatMessageMetadata {
+  source?: "telegram";
+  telegramUserId?: number;
+  telegramUsername?: string;
+  telegramFirstName?: string;
+}
+
 export interface ChatMessage {
   id: string;
   sessionId: string;
   role: string;
   content: string;
+  metadata?: ChatMessageMetadata | null;
   createdAt: string;
+}
+
+/** A message as rendered in a thread: its persisted role, text and provenance. */
+export interface ThreadMessage {
+  role: string;
+  content: string;
+  metadata?: ChatMessageMetadata | null;
+}
+
+/**
+ * The label shown above a message. Telegram-originated messages are marked as
+ * such and identified by the sender's @username, name, or id, so they're
+ * distinguishable from messages composed in the app.
+ */
+export function messageLabel(role: string, metadata?: ChatMessageMetadata | null): string {
+  if (metadata?.source === "telegram") {
+    const who =
+      (metadata.telegramUsername && `@${metadata.telegramUsername}`) ||
+      metadata.telegramFirstName ||
+      (metadata.telegramUserId != null ? String(metadata.telegramUserId) : "");
+    return who ? `Telegram · ${who}` : "Telegram";
+  }
+  return role;
 }
 
 export interface ChatEvent {
@@ -54,13 +90,13 @@ export interface PendingApproval {
 
 export async function listProviders(): Promise<ProviderInfo[]> {
   const res = await sidecarFetch("/api/chat/providers");
-  if (!res.ok) throw new Error(`providers failed: ${res.status}`);
+  await ensureOk(res, "providers");
   return res.json();
 }
 
 export async function listSessions(): Promise<ChatSession[]> {
   const res = await sidecarFetch("/api/chat/sessions");
-  if (!res.ok) throw new Error(`sessions failed: ${res.status}`);
+  await ensureOk(res, "sessions");
   return res.json();
 }
 
@@ -70,13 +106,13 @@ export async function createSession(title?: string): Promise<ChatSession> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title: title ?? null }),
   });
-  if (!res.ok) throw new Error(`create session failed: ${res.status}`);
+  await ensureOk(res, "create session");
   return res.json();
 }
 
 export async function getMessages(sessionId: string): Promise<ChatMessage[]> {
   const res = await sidecarFetch(`/api/chat/sessions/${sessionId}/messages`);
-  if (!res.ok) throw new Error(`messages failed: ${res.status}`);
+  await ensureOk(res, "messages");
   return res.json();
 }
 

@@ -4,6 +4,7 @@ import { OMNI_CHAT_SESSION_KEY } from "../../lib/omniChat";
 import { collectContext, formatContext } from "../../lib/omniChatContext";
 import { useChatThread } from "../../lib/useChatThread";
 import ChatComposer from "../ChatComposer";
+import ChatMessages from "../ChatMessages";
 import { ToolApprovalPrompt } from "../ToolApprovalPrompt";
 
 /**
@@ -144,23 +145,12 @@ export default function OmniChat({
           ref={threadRef}
           className="min-h-[280px] flex-1 space-y-3 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950/50 p-3"
         >
-          {messages.length === 0 && !streaming && (
-            <p className="text-sm text-zinc-600">
-              Ask about whatever you're looking at — it's sent along as context.
-            </p>
-          )}
-          {messages.map((m, i) => (
-            <div key={i} className="text-sm">
-              <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">{m.role}</div>
-              <div className="whitespace-pre-wrap text-zinc-100">{m.content}</div>
-            </div>
-          ))}
-          {streaming && (
-            <div className="text-sm">
-              <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">assistant</div>
-              <div className="whitespace-pre-wrap text-zinc-100">{streaming}</div>
-            </div>
-          )}
+          <ChatMessages
+            messages={messages}
+            streaming={streaming}
+            busy={busy}
+            emptyHint="Ask about whatever you're looking at — it's sent along as context."
+          />
           {approvals.map((a) => (
             <ToolApprovalPrompt
               key={a.id}

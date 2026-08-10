@@ -1,5 +1,11 @@
-import { useEffect, useState } from "react";
-import { fetchPrDetail, fetchPrFileDiff, fetchPrFiles, fetchPrStatus } from "./api";
+import { useEffect, useRef, useState } from "react";
+import {
+  fetchPrDetail,
+  fetchPrFileContent,
+  fetchPrFileDiff,
+  fetchPrFiles,
+  fetchPrStatus,
+} from "./api";
 import { refKey } from "./ref";
 import type { PrDetail, PrFile, PrRef, PrStatus } from "./types";
 
@@ -24,6 +30,26 @@ interface CacheEntry<T> {
 }
 
 const cache = new Map<string, CacheEntry<unknown>>();
+
+/**
+ * Subscribers currently mounted against each key. `invalidate` notifies them so
+ * a component already showing a resource refetches immediately, rather than the
+ * dropped entry only being reloaded the next time the key is mounted.
+ */
+const listeners = new Map<string, Set<() => void>>();
+
+function subscribe(key: string, notify: () => void): () => void {
+  let subscribers = listeners.get(key);
+  if (!subscribers) {
+    subscribers = new Set();
+    listeners.set(key, subscribers);
+  }
+  subscribers.add(notify);
+  return () => {
+    subscribers.delete(notify);
+    if (subscribers.size === 0) listeners.delete(key);
+  };
+}
 
 export function cachedFetch<T>(
   key: string,
@@ -53,9 +79,45 @@ export function cachedFetch<T>(
   return promise;
 }
 
-/** Drops a cached entry so the next subscriber refetches (e.g. after a write). */
+/**
+ * Drops a cached entry and notifies any mounted subscribers so they refetch
+ * now (e.g. after a write). Without the notification a component already
+ * showing the resource would keep its stale value until the key next mounts —
+ * so publishing a draft PR wouldn't flip the header's status badge to open.
+ */
 export function invalidate(key: string): void {
   cache.delete(key);
+  const subscribers = listeners.get(key);
+  if (subscribers) for (const notify of subscribers) notify();
+}
+
+/**
+ * Ceiling on provider requests in flight at once. Both providers throttle, and
+ * the per-file fetches below can be triggered en masse — expanding every file
+ * of a review at once, say — so they queue behind this instead of arriving as
+ * one burst. High enough that ordinary scrolling never waits on it.
+ */
+const MAX_IN_FLIGHT = 6;
+
+let inFlight = 0;
+const waiting: (() => void)[] = [];
+
+/**
+ * Runs `task` once a slot is free. Slots are released in a `finally` so a failed
+ * request can't strand one — a few rejections would otherwise wedge the queue
+ * permanently and the review would simply stop loading files.
+ */
+async function queued<T>(task: () => Promise<T>): Promise<T> {
+  if (inFlight >= MAX_IN_FLIGHT) {
+    await new Promise<void>((resolve) => waiting.push(resolve));
+  }
+  inFlight++;
+  try {
+    return await task();
+  } finally {
+    inFlight--;
+    waiting.shift()?.();
+  }
 }
 
 export interface Resource<T> {
@@ -76,6 +138,12 @@ function useCachedResource<T>(key: string | null, loader: () => Promise<T>): Res
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(key !== null);
 
+  // `loader` is recreated each render but closes over the same values `key`
+  // encodes (see the contract above), so we read it through a ref and key the
+  // effect on `key` alone — no re-subscribe on every render.
+  const loaderRef = useRef(loader);
+  loaderRef.current = loader;
+
   useEffect(() => {
     if (key === null) {
       setData(null);
@@ -84,27 +152,35 @@ function useCachedResource<T>(key: string | null, loader: () => Promise<T>): Res
       return;
     }
     let active = true;
-    setLoading(true);
-    setError(null);
-    cachedFetch(key, loader)
-      .then((value) => {
-        if (!active) return;
-        setData(value);
-        setLoading(false);
-      })
-      .catch((err) => {
-        if (!active) return;
-        setError(err instanceof Error ? err.message : String(err));
-        setLoading(false);
-      });
+    // An invalidation can fire `load` while a prior load is still in flight;
+    // track the latest so an out-of-order resolution can't write back a stale
+    // value over the newer one.
+    let latest = 0;
+    const load = () => {
+      const seq = ++latest;
+      setLoading(true);
+      setError(null);
+      cachedFetch(key, loaderRef.current)
+        .then((value) => {
+          if (!active || seq !== latest) return;
+          setData(value);
+          setLoading(false);
+        })
+        .catch((err) => {
+          if (!active || seq !== latest) return;
+          setError(err instanceof Error ? err.message : String(err));
+          setLoading(false);
+        });
+    };
+    load();
+    // Refetch in place when this key is invalidated by a write elsewhere, so a
+    // component already showing the resource updates without remounting.
+    const unsubscribe = subscribe(key, load);
     return () => {
       active = false;
+      unsubscribe();
     };
-    // `key` is the resource's full identity (see the contract above). `loader`
-    // is recreated each render, but it closes over the same values `key`
-    // encodes, so a re-run from its changing identity is served by the cache
-    // rather than refetching.
-  }, [key, loader]);
+  }, [key]);
 
   return { data, error, loading };
 }
@@ -127,8 +203,27 @@ export function usePrStatus(ref: PrRef | null): Resource<PrStatus> {
  * One file's diff, loaded only when `enabled` (the file's diff is open or among
  * the first few prefetched). For GitHub the patch is already on `file`, so this
  * resolves without a request.
+ *
+ * Queued rather than fired immediately: Azure has no unified-diff endpoint, so
+ * each file costs two content fetches, and "Expand all" on a large PR would
+ * otherwise open hundreds of connections at once and collect rate-limit errors.
  */
 export function usePrFileDiff(ref: PrRef, file: PrFile, enabled: boolean): Resource<PrFile> {
   const key = enabled ? `filediff:${refKey(ref)}:${file.filename}` : null;
-  return useCachedResource(key, () => fetchPrFileDiff(ref, file));
+  return useCachedResource(key, () => queued(() => fetchPrFileDiff(ref, file)));
+}
+
+/**
+ * A file's full text at a commit, for revealing the context a patch omits.
+ * Keyed by the commit so a push invalidates it rather than serving the reader
+ * lines from a version of the file the diff no longer describes.
+ */
+export function usePrFileContent(
+  ref: PrRef,
+  path: string,
+  sha: string,
+  enabled: boolean,
+): Resource<string> {
+  const key = enabled && sha ? `content:${refKey(ref)}:${sha}:${path}` : null;
+  return useCachedResource(key, () => queued(() => fetchPrFileContent(ref, path, sha)));
 }

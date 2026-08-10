@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { AzureDevOpsClient, isAllowedAzureOrgUrl, mapPolicyEvaluation } from "./client.ts";
+import {
+  AzureDevOpsClient,
+  isAllowedAzureOrgUrl,
+  mapPolicyEvaluation,
+  mapReviewer,
+} from "./client.ts";
 
 const ORG = "https://dev.azure.com/acme";
 
@@ -39,6 +44,22 @@ describe("mapPolicyEvaluation", () => {
       }
     });
   }
+});
+
+describe("mapReviewer", () => {
+  it.each([
+    [10, "approved", false],
+    [5, "approved", false],
+    [-10, "changes_requested", false],
+    [-5, "changes_requested", false],
+    [0, "pending", true],
+    [undefined, "pending", true],
+  ] as const)("maps vote %p to %s (requested=%s)", (vote, state, isRequested) => {
+    const reviewer = mapReviewer({ displayName: "Alex", vote });
+    expect(reviewer.state).toBe(state);
+    expect(reviewer.isRequested).toBe(isRequested);
+    expect(reviewer.login).toBe("Alex");
+  });
 });
 
 describe("azure client", () => {
@@ -84,6 +105,104 @@ describe("azure client", () => {
       author: "Me",
       draft: false,
     });
+  });
+
+  it("derives the org from a legacy visualstudio.com org URL's subdomain", async () => {
+    // The org lives in the subdomain, not a path segment — the summary's `org`
+    // must be "myorg", matching what parseRepoRemote extracts from a clone URL
+    // so the poller's cross-org comparison lines up.
+    const az = new AzureDevOpsClient(
+      "pat",
+      "https://myorg.visualstudio.com",
+      fakeFetch([
+        {
+          match: (u) => u.includes("connectionData"),
+          body: { authenticatedUser: { id: "user-1" } },
+        },
+        {
+          match: (u) => u.includes("/_apis/git/pullrequests"),
+          body: {
+            value: [{ pullRequestId: 1, status: "active", repository: { name: "web" } }],
+          },
+        },
+      ]),
+    );
+    const prs = await az.search("mine");
+    expect(prs[0]?.org).toBe("myorg");
+  });
+
+  it("finds a PR by its source branch, scoped to the repo", async () => {
+    let requestedUrl = "";
+    const az = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([
+        {
+          match: (u) => {
+            requestedUrl = String(u);
+            return u.includes("/repositories/web/pullrequests");
+          },
+          body: {
+            value: [
+              {
+                pullRequestId: 42,
+                status: "active",
+                isDraft: true,
+                mergeStatus: "succeeded",
+                repository: {
+                  name: "web",
+                  webUrl: "https://dev.azure.com/acme/Shop/_git/web",
+                  project: { name: "Shop" },
+                },
+              },
+            ],
+          },
+        },
+      ]),
+    );
+    const pr = await az.findPrByBranch("Shop", "web", "feature/x");
+    expect(requestedUrl).toContain("searchCriteria.sourceRefName=refs%2Fheads%2Ffeature%2Fx");
+    expect(requestedUrl).toContain("searchCriteria.status=all");
+    expect(pr).toEqual({
+      number: 42,
+      url: "https://dev.azure.com/acme/Shop/_git/web/pullrequest/42",
+      draft: true,
+      state: "open",
+      mergeable: "MERGEABLE",
+    });
+  });
+
+  it("returns null when no PR exists for the branch", async () => {
+    const az = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([
+        { match: (u) => u.includes("/repositories/web/pullrequests"), body: { value: [] } },
+      ]),
+    );
+    expect(await az.findPrByBranch("Shop", "web", "feature/x")).toBeNull();
+  });
+
+  it("maps a completed PR to merged state", async () => {
+    const az = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([
+        {
+          match: (u) => u.includes("/repositories/web/pullrequests"),
+          body: {
+            value: [
+              {
+                pullRequestId: 9,
+                status: "completed",
+                repository: { name: "web", project: { name: "Shop" } },
+              },
+            ],
+          },
+        },
+      ]),
+    );
+    expect((await az.findPrByBranch("Shop", "web", "b"))?.state).toBe("merged");
   });
 
   it("searches by reviewer for the review scope", async () => {
@@ -208,6 +327,11 @@ describe("azure client", () => {
       baseRef: "main",
       headRef: "feature",
       mergeable: "MERGEABLE",
+      // Azure exposes no in-app merge controls, so the fields stay empty/off.
+      mergeMethods: [],
+      autoMergeEnabled: false,
+      canEnableAutoMerge: false,
+      canDisableAutoMerge: false,
     });
     expect(detail.checks).toEqual([
       { name: "Build", status: "COMPLETED", conclusion: "SUCCESS", url: null },
@@ -276,6 +400,123 @@ describe("azure client", () => {
     expect(file.additions).toBe(1);
     expect(file.deletions).toBe(1);
     expect(file.patch!.startsWith("@@")).toBe(true);
+  });
+
+  it("reads a file's full text at a commit", async () => {
+    const urls: string[] = [];
+    const az = new AzureDevOpsClient("pat", ORG, (async (url: string) => {
+      urls.push(String(url));
+      return new Response(JSON.stringify({ content: "a\nb\n" }), { status: 200 });
+    }) as unknown as typeof fetch);
+
+    const content = await az.fileContent(
+      { project: "Shop", repo: "web", prId: 7 },
+      "src/app.ts",
+      "f".repeat(40),
+    );
+    expect(content).toBe("a\nb\n");
+    // Azure wants a leading slash on the item path; callers pass repo-relative
+    // paths, so the client is the one that has to put it back.
+    expect(urls[0]).toContain(`path=${encodeURIComponent("/src/app.ts")}`);
+    expect(urls[0]).toContain(`version=${"f".repeat(40)}`);
+  });
+
+  it("resolves a missing file to empty content", async () => {
+    const az = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([{ match: () => true, body: {}, status: 404 }]),
+    );
+    expect(
+      await az.fileContent({ project: "Shop", repo: "web", prId: 7 }, "gone.ts", "a".repeat(40)),
+    ).toBe("");
+  });
+
+  // Azure includes the directory being listed as the first entry of its own
+  // listing, which is not something the caller asked for.
+  it("lists a directory without echoing the directory itself", async () => {
+    const az = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([
+        {
+          match: (u) => u.includes("/items") && u.includes("recursionLevel=OneLevel"),
+          body: {
+            value: [
+              { path: "/src", isFolder: true },
+              { path: "/src/app.ts", isFolder: false },
+              { path: "/src/lib", isFolder: true },
+            ],
+          },
+        },
+      ]),
+    );
+    expect(
+      await az.listDir({ project: "Shop", repo: "web", prId: 7 }, "src", "a".repeat(40)),
+    ).toEqual([
+      { path: "src/app.ts", type: "file" },
+      { path: "src/lib", type: "dir" },
+    ]);
+  });
+
+  it("treats a missing directory as having no entries", async () => {
+    const az = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([{ match: () => true, body: {}, status: 404 }]),
+    );
+    expect(
+      await az.listDir({ project: "Shop", repo: "web", prId: 7 }, "gone", "a".repeat(40)),
+    ).toEqual([]);
+  });
+
+  describe("searchCode", () => {
+    it("posts to the search host with the repository as a filter", async () => {
+      const calls: { url: string; body: any }[] = [];
+      const az = new AzureDevOpsClient("pat", ORG, (async (url: string, init?: RequestInit) => {
+        calls.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+        return new Response(JSON.stringify({ results: [{ path: "/src/app.ts" }] }), {
+          status: 200,
+        });
+      }) as unknown as typeof fetch);
+
+      const hits = await az.searchCode({ project: "Shop", repo: "web", prId: 7 }, "callSite");
+      expect(hits).toEqual([{ path: "src/app.ts" }]);
+      expect(calls[0]!.url).toContain("almsearch.dev.azure.com/acme/Shop");
+      expect(calls[0]!.body.filters).toEqual({ Repository: ["web"] });
+    });
+
+    // Code search is an extension an organization may simply not have, so a
+    // failure resolves to null rather than ending the agent run.
+    it("resolves to null when the search service is unavailable", async () => {
+      const az = new AzureDevOpsClient(
+        "pat",
+        ORG,
+        fakeFetch([{ match: () => true, body: {}, status: 404 }]),
+      );
+      expect(await az.searchCode({ project: "Shop", repo: "web", prId: 7 }, "q")).toBeNull();
+    });
+  });
+
+  it("carries the head commit onto the PR detail", async () => {
+    const az = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([
+        {
+          match: (u) => /\/pullRequests\/7$/.test(u.split("?")[0]!),
+          body: {
+            pullRequestId: 7,
+            lastMergeSourceCommit: { commitId: "abc" },
+            lastMergeTargetCommit: { commitId: "def" },
+            repository: { name: "web", project: { name: "Shop", id: "p1" } },
+          },
+        },
+        { match: () => true, body: { value: [] } },
+      ]),
+    );
+    const detail = await az.prDetail({ project: "Shop", repo: "web", prId: 7 });
+    expect(detail.headSha).toBe("abc");
   });
 
   it("posts a right-side line comment thread", async () => {

@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
+import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { openExternal } from "../lib/url";
 
@@ -16,8 +17,11 @@ const components: Components = {
   ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
   li: ({ children }) => <li className="leading-relaxed">{children}</li>,
   a: ({ href, children }) => (
+    // The webview has no status bar, so the destination is only visible on
+    // hover — link text is free to claim it points somewhere else.
     <a
       href={href}
+      title={href}
       onClick={(e) => {
         e.preventDefault();
         openExternal(href);
@@ -58,11 +62,58 @@ const components: Components = {
   td: ({ children }) => <td className="border border-zinc-800 px-2 py-1">{children}</td>,
 };
 
-/** Renders GitHub-flavored markdown with the app's dark styling. */
-export default function Markdown({ children }: { children: string }): ReactNode {
+/**
+ * Stands in for an image rather than fetching it. An inline `<img>` reaches its
+ * host the moment it renders, so any text we display — model replies above all,
+ * since a prompt injection can put a URL of its choosing in one — could smuggle
+ * what it saw out in the query string. Inert on purpose: markdown images are
+ * often wrapped in a link, and a control here would compete with that link's
+ * click. The full source sits in the title for anyone who wants to look.
+ */
+const deferredImage: Components["img"] = ({ src, alt }) => {
+  const source = typeof src === "string" ? src : "";
+  let host = source;
+  try {
+    host = new URL(source).host || source;
+  } catch {
+    // Relative or malformed src: show it as-is.
+  }
   return (
-    <div className="text-sm text-zinc-300">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+    <span
+      title={source}
+      className="my-1 inline-flex max-w-full items-baseline gap-1 rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400"
+    >
+      <span className="text-zinc-500">Image</span>
+      <span className="truncate">{alt || host}</span>
+    </span>
+  );
+};
+
+const componentsWithDeferredImages: Components = { ...components, img: deferredImage };
+
+/** Renders GitHub-flavored markdown with the app's dark styling. */
+export default function Markdown({
+  children,
+  className = "text-sm text-zinc-300",
+  allowImages = false,
+}: {
+  children: string;
+  /** Replaces — rather than extends — the wrapper's base text size and color. */
+  className?: string;
+  /**
+   * Load images inline. Opt in only where the source is a document the user
+   * asked to see (a PR or issue body); leave it off for generated text.
+   */
+  allowImages?: boolean;
+}): ReactNode {
+  return (
+    <div className={className}>
+      {/* remark-breaks keeps a single newline a line break, the way GitHub
+          renders one — chat replies and issue bodies both rely on it. */}
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkBreaks]}
+        components={allowImages ? components : componentsWithDeferredImages}
+      >
         {children}
       </ReactMarkdown>
     </div>

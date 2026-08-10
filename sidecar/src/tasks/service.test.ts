@@ -2,9 +2,11 @@ import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import * as schema from "../db/schema.ts";
+import { listEvents } from "../events/service.ts";
 import {
   completeTask,
   createTask,
+  deleteTask,
   listTasks,
   rolloverTasks,
   tasksCompletedBetween,
@@ -16,7 +18,7 @@ const sql = postgres(url, { max: 1 });
 const db = drizzle(sql, { schema });
 
 beforeEach(async () => {
-  await sql`TRUNCATE tasks, chat_messages, chat_sessions RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE tasks, chat_messages, chat_sessions, events RESTART IDENTITY CASCADE`;
 });
 
 afterAll(async () => {
@@ -59,6 +61,28 @@ describe("task service", () => {
   it("returns null when completing a missing task", async () => {
     const missing = await completeTask(db, "00000000-0000-0000-0000-000000000000");
     expect(missing).toBeNull();
+  });
+
+  it("deletes a task and removes it from the list", async () => {
+    const task = await createTask(db, { title: "Delete me", scope: "daily" });
+    const deleted = await deleteTask(db, task.id);
+    expect(deleted?.id).toBe(task.id);
+    expect((await listTasks(db)).length).toBe(0);
+  });
+
+  it("returns null when deleting a missing task", async () => {
+    const missing = await deleteTask(db, "00000000-0000-0000-0000-000000000000");
+    expect(missing).toBeNull();
+  });
+
+  it("deleting a task emits no event", async () => {
+    const task = await createTask(db, { title: "Untracked removal", scope: "daily" });
+    const before = (await listEvents(db)).length;
+    await deleteTask(db, task.id);
+
+    // A deleted task is intentionally left out of the event log, so the delete
+    // adds nothing beyond the task.created event from setup.
+    expect((await listEvents(db)).length).toBe(before);
   });
 
   it("reopening a task clears completedAt", async () => {
@@ -107,5 +131,25 @@ describe("task service", () => {
 
     // The completed task stays on its original date.
     expect((await listTasks(db, { targetDate: "2026-05-23" })).length).toBe(1);
+  });
+
+  it("emits task.completed when updateTask sets status to done", async () => {
+    const task = await createTask(db, { title: "via edit", scope: "daily" });
+    await updateTask(db, task.id, { status: "done" });
+
+    const completed = await listEvents(db, { type: "task.completed" });
+    expect(completed.length).toBe(1);
+    expect((completed[0]!.payload as { taskId: string }).taskId).toBe(task.id);
+  });
+
+  it("does not emit task.completed for a non-completion edit or a reopen", async () => {
+    const task = await createTask(db, { title: "edit me", scope: "daily" });
+    await updateTask(db, task.id, { title: "renamed" });
+    await completeTask(db, task.id);
+    await updateTask(db, task.id, { status: "open" });
+
+    // Exactly one completion (from completeTask); the rename and reopen emit none.
+    const completed = await listEvents(db, { type: "task.completed" });
+    expect(completed.length).toBe(1);
   });
 });

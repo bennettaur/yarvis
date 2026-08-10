@@ -13,12 +13,15 @@ const config: Config = {
   port: 0,
   token: "test-token",
   tokenGenerated: false,
+  attentionToken: "test-attention-token",
   allowedOrigins: null,
   databaseUrl: url,
+  workspacesRoot: "/tmp/yarvis-test-workspaces",
   secrets: {}, // no provider keys configured
   customProviderSecrets: {},
   mcpSecrets: {},
   embeddingsSecrets: { headers: {} },
+  telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
 };
 const app = createApp(config);
 const auth = { Authorization: "Bearer test-token" };
@@ -37,7 +40,12 @@ describe("chat routes", () => {
     const res = await app.request("/api/chat/providers", { headers: auth });
     expect(res.status).toBe(200);
     const providers = (await res.json()) as { id: string; available: boolean }[];
-    expect(providers.map((p) => p.id).sort()).toEqual(["anthropic", "bedrock", "gemini"]);
+    expect(providers.map((p) => p.id).sort()).toEqual([
+      "anthropic",
+      "bedrock",
+      "cerebras",
+      "gemini",
+    ]);
     // No keys configured, so the key-based providers are unavailable.
     expect(providers.find((p) => p.id === "anthropic")?.available).toBe(false);
   });

@@ -1,13 +1,16 @@
-import { sidecarFetch } from "../api";
+import { ensureOk, sidecarFetch } from "../api";
 import { refApiPath } from "./ref";
 import type {
   GhFilter,
+  GhPrConfig,
+  MergeMethod,
   NewComment,
   PrDetail,
   PrFile,
   PrRef,
   PrStatus,
   PrSummary,
+  ReviewingList,
   StarredPr,
 } from "./types";
 
@@ -27,7 +30,7 @@ interface GhRawSummary {
 
 async function get<T>(path: string): Promise<T> {
   const res = await sidecarFetch(path);
-  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+  await ensureOk(res, path);
   return res.json();
 }
 
@@ -37,7 +40,7 @@ async function send<T>(path: string, method: string, body?: unknown): Promise<T>
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+  await ensureOk(res, path);
   return res.json();
 }
 
@@ -67,11 +70,48 @@ export async function ghSearch(query: string): Promise<PrSummary[]> {
   return raw.map(toSummary);
 }
 
+/**
+ * The list-row summary for one PR, used to open a PR the user named by link or
+ * by repo + number instead of picking it out of a list.
+ */
+export async function ghPrSummary(ref: PrRef): Promise<PrSummary> {
+  return toSummary(await get<GhRawSummary>(`${refApiPath(ref)}/summary`));
+}
+
+/** PRs the user is part-way through reviewing, split into outstanding and done. */
+export const ghReviewing = () => get<ReviewingList>("/api/github/reviewing");
+
+export const ghPrConfig = () => get<GhPrConfig>("/api/github/config");
+export const ghSavePrConfig = (config: GhPrConfig) =>
+  send<GhPrConfig>("/api/github/config", "PUT", config);
+
 export const ghPrStatus = (ref: PrRef) => get<PrStatus>(refApiPath(ref));
 export const ghPrDetail = (ref: PrRef) => get<PrDetail>(`${refApiPath(ref)}/detail`);
 export const ghPrFiles = (ref: PrRef) => get<PrFile[]>(`${refApiPath(ref)}/files`);
+export const ghFileContent = (ref: PrRef, path: string, sha: string) =>
+  get<{ content: string }>(
+    `${refApiPath(ref)}/content?path=${encodeURIComponent(path)}&ref=${encodeURIComponent(sha)}`,
+  );
 export const ghPostComment = (ref: PrRef, comment: NewComment) =>
   send<{ ok: boolean }>(`${refApiPath(ref)}/comments`, "POST", comment);
+
+export const ghMarkReady = (ref: PrRef) =>
+  send<{ ok: boolean }>(`${refApiPath(ref)}/ready`, "POST");
+
+export const ghSubmitReview = (
+  ref: PrRef,
+  event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
+  body?: string,
+) => send<{ ok: boolean }>(`${refApiPath(ref)}/reviews`, "POST", { event, body });
+
+export const ghMergePr = (ref: PrRef, method: MergeMethod) =>
+  send<{ ok: boolean }>(`${refApiPath(ref)}/merge`, "POST", { method });
+
+export const ghEnableAutoMerge = (ref: PrRef, method: MergeMethod) =>
+  send<{ ok: boolean }>(`${refApiPath(ref)}/auto-merge`, "POST", { method });
+
+export const ghDisableAutoMerge = (ref: PrRef) =>
+  send<{ ok: boolean }>(`${refApiPath(ref)}/auto-merge`, "DELETE");
 
 export const ghFilters = () => get<GhFilter[]>("/api/github/filters");
 export const ghCreateFilter = (name: string, query: string) =>

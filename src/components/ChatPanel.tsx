@@ -11,17 +11,16 @@ import {
   type ProviderInfo,
   respondToToolApproval,
   streamChat,
+  type ThreadMessage,
 } from "../lib/chat";
 import ChatComposer from "./ChatComposer";
+import ChatMessages from "./ChatMessages";
 import { ToolApprovalPrompt } from "./ToolApprovalPrompt";
-
-interface Display {
-  role: string;
-  content: string;
-}
 
 const PROVIDER_KEY = "yarvis.chat.provider";
 const MODEL_KEY = "yarvis.chat.model";
+const EMPTY_HINT =
+  'Start a conversation. Set a provider key in Settings if the picker shows "(no key)".';
 
 export default function ChatPanel() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
@@ -29,7 +28,7 @@ export default function ChatPanel() {
   const [model, setModel] = useState("");
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<Display[]>([]);
+  const [messages, setMessages] = useState<ThreadMessage[]>([]);
   const [streaming, setStreaming] = useState("");
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -85,7 +84,9 @@ export default function ChatPanel() {
   const selectSession = useCallback(async (id: string) => {
     setSessionId(id);
     const msgs = await getMessages(id);
-    setMessages(msgs.map((m: ChatMessage) => ({ role: m.role, content: m.content })));
+    setMessages(
+      msgs.map((m: ChatMessage) => ({ role: m.role, content: m.content, metadata: m.metadata })),
+    );
   }, []);
 
   const newChat = useCallback(async () => {
@@ -204,23 +205,12 @@ export default function ChatPanel() {
         ref={threadRef}
         className="flex-1 space-y-4 overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-900/50 p-5"
       >
-        {messages.length === 0 && !streaming && (
-          <p className="text-sm text-zinc-600">
-            Start a conversation. Set a provider key in Settings if the picker shows "(no key)".
-          </p>
-        )}
-        {messages.map((m, i) => (
-          <div key={i} className="text-sm">
-            <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">{m.role}</div>
-            <div className="whitespace-pre-wrap text-zinc-100">{m.content}</div>
-          </div>
-        ))}
-        {streaming && (
-          <div className="text-sm">
-            <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">assistant</div>
-            <div className="whitespace-pre-wrap text-zinc-100">{streaming}</div>
-          </div>
-        )}
+        <ChatMessages
+          messages={messages}
+          streaming={streaming}
+          busy={busy}
+          emptyHint={EMPTY_HINT}
+        />
         {approvals.map((a) => (
           <ToolApprovalPrompt
             key={a.id}
@@ -239,6 +229,7 @@ export default function ChatPanel() {
         busy={busy}
         placeholder="Message..."
         submitLabel="Send"
+        maxHeight={360}
       />
     </div>
   );

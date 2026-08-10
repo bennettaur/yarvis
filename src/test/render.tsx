@@ -18,3 +18,28 @@ export async function renderToHtml(element: ReactElement, settleMs = 100): Promi
   host.remove();
   return html;
 }
+
+/**
+ * Mounts and leaves it mounted, for tests that have to click something and read
+ * what changed — `renderToHtml` returns a static string with nothing live to
+ * dispatch on. Call `unmount` from an `afterEach` rather than the end of the
+ * test body: a mount left behind by a failed expectation keeps its
+ * external-store subscriptions alive and leaks into the next test.
+ */
+export async function mountForInteraction(
+  element: ReactElement,
+  settleMs = 100,
+): Promise<{ host: HTMLElement; unmount: () => void }> {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  root.render(element);
+  await new Promise((resolve) => setTimeout(resolve, settleMs));
+  return {
+    host,
+    unmount: () => {
+      root.unmount();
+      host.remove();
+    },
+  };
+}

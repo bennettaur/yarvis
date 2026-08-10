@@ -12,7 +12,8 @@ import { validateOutboundUrl } from "../lib/urlSafety.ts";
 /**
  * Provider identifiers.
  *
- * Built-in providers use their bare name (`anthropic`, `bedrock`, `gemini`).
+ * Built-in providers use their bare name (`anthropic`, `bedrock`, `gemini`,
+ * `cerebras`).
  * User-configured proxies are namespaced as `custom:<provider-id>` so they
  * never collide with the built-in ids.
  */
@@ -39,6 +40,9 @@ const GEMINI_MODELS = [
   "gemini-3.1-flash-lite",
   "gemini-3.1-pro-preview",
 ];
+const CEREBRAS_MODELS = ["zai-glm-4.6", "qwen-3-coder-480b", "gpt-oss-120b", "llama-3.3-70b"];
+
+const CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1";
 
 function builtInProviders(config: Config): ProviderInfo[] {
   return [
@@ -61,6 +65,12 @@ function builtInProviders(config: Config): ProviderInfo[] {
       label: "Gemini",
       models: GEMINI_MODELS,
       available: config.secrets.geminiApiKey !== undefined,
+    },
+    {
+      id: "cerebras",
+      label: "Cerebras",
+      models: CEREBRAS_MODELS,
+      available: config.secrets.cerebrasApiKey !== undefined,
     },
   ];
 }
@@ -88,10 +98,42 @@ export async function availableProviders(config: Config, db?: Db): Promise<Provi
   return [...built, ...rows.map(customProviderInfo)];
 }
 
+/**
+ * Picks a sensible default provider/model for callers that have no user
+ * selection to draw on (e.g. the Telegram bot, which can't see the frontend's
+ * localStorage). Returns the first available provider's first model, or null
+ * when nothing is configured. Built-ins are listed before custom providers, so
+ * any keyed built-in wins before a proxy.
+ */
+export async function defaultProviderModel(
+  config: Config,
+  db?: Db,
+): Promise<{ provider: ProviderId; model: string } | null> {
+  return pickDefaultModel(await availableProviders(config, db));
+}
+
+/**
+ * Chooses a default provider/model from an already-fetched provider list, so
+ * callers that already hold the list don't re-query. Returns null when nothing
+ * is usable. Bedrock reports `available` unconditionally because its AWS
+ * credentials can't be cheaply probed, so it would otherwise win the default
+ * even when the user only configured, say, Gemini; prefer any other configured
+ * provider and fall back to Bedrock only when it is the sole option.
+ */
+export function pickDefaultModel(
+  providers: ProviderInfo[],
+): { provider: ProviderId; model: string } | null {
+  const usable = providers.filter((p) => p.available && p.models.length > 0);
+  if (usable.length === 0) return null;
+  const preferred = usable.find((p) => p.id !== "bedrock") ?? usable[0]!;
+  return { provider: preferred.id, model: preferred.models[0]! };
+}
+
 function resolveCustom(row: CustomProviderRow, config: Config, modelId: string): LanguageModel {
   // Defense-in-depth: the create/update routes already validate, but DB rows
   // can have been seeded by an earlier version, so re-check at resolve time.
-  validateOutboundUrl(row.baseUrl);
+  // Local providers (e.g. a local Ollama server) legitimately live on loopback.
+  validateOutboundUrl(row.baseUrl, { allowLoopback: true });
   const secrets = config.customProviderSecrets[row.id] ?? { headers: {} };
   const options = {
     baseURL: row.baseUrl,
@@ -139,6 +181,13 @@ export async function resolveModel(
       const apiKey = config.secrets.geminiApiKey;
       if (!apiKey) throw new Error("Gemini API key not configured");
       return createGoogleGenerativeAI({ apiKey })(modelId);
+    }
+    case "cerebras": {
+      const apiKey = config.secrets.cerebrasApiKey;
+      if (!apiKey) throw new Error("Cerebras API key not configured");
+      // Cerebras serves /chat/completions but not the Responses API, so this
+      // reuses the OpenAI client rather than adding a Cerebras SDK package.
+      return createOpenAI({ apiKey, baseURL: CEREBRAS_BASE_URL }).chat(modelId);
     }
     case "bedrock": {
       return createAmazonBedrock({

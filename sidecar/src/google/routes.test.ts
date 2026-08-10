@@ -9,12 +9,15 @@ const config: Config = {
   port: 0,
   token: "test-token",
   tokenGenerated: false,
+  attentionToken: "test-attention-token",
   allowedOrigins: null,
   databaseUrl: "postgres://localhost/unused",
+  workspacesRoot: "/tmp/yarvis-test-workspaces",
   secrets: { googleClientId: "cid", googleClientSecret: "secret" },
   customProviderSecrets: {},
   mcpSecrets: {},
   embeddingsSecrets: { headers: {} },
+  telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
 };
 const app = createApp(config);
 const auth = { Authorization: "Bearer test-token" };

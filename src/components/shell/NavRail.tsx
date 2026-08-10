@@ -42,11 +42,13 @@ export default function NavRail({
   tab,
   onTabChange,
   onOpenOmniChat,
+  onOpenClipboard,
   attentionPending,
 }: {
   tab: Tab;
   onTabChange: (tab: Tab) => void;
   onOpenOmniChat: () => void;
+  onOpenClipboard: () => void;
   /** When true, the Omni Chat launcher shows an attention dot. */
   attentionPending: boolean;
 }) {
@@ -65,6 +67,7 @@ export default function NavRail({
         />
       ))}
       <div className="mt-auto flex flex-col gap-1">
+        <RailButton label="Clipboard" icon="clipboard" active={false} onClick={onOpenClipboard} />
         <RailButton
           label="Omni Chat"
           icon="omnichat"

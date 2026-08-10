@@ -1,45 +1,205 @@
-import { useCallback, useEffect, useState } from "react";
-import { completeTask, createTask, listTasks, type Task } from "../lib/tasks";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { requestNewWorkspace } from "../lib/nav";
+import { completeTask, createTask, deleteTask, listTasks, type Task } from "../lib/tasks";
+
+/**
+ * Prompt handed to Claude when the user clicks "Start work" on a task. Mirrors
+ * the issue "Start work" prompt in shape (a single markdown file written into
+ * the workspace's `.yarvis/issue-prompt.md`) so the same Claude launch line
+ * ("Read the ticket details…") drives both entry points.
+ */
+export function buildTaskPrompt(task: Task): string {
+  const lines = [
+    "Work on the following task from the Yarvis task list.",
+    "",
+    `# ${task.title}`,
+    "",
+    (task.notes ?? "").trim() || "_(no notes)_",
+  ];
+  return `${lines.join("\n")}\n`;
+}
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function TaskItem({ task, onComplete }: { task: Task; onComplete: (id: string) => void }) {
+/** Friendly date label for a task's target date, relative to today. */
+function describeDate(target: string): string {
+  const today = todayIso();
+  if (target === today) return "Today";
+  const t = new Date(`${target}T00:00:00`);
+  const now = new Date(`${today}T00:00:00`);
+  const diff = Math.round((t.getTime() - now.getTime()) / 86_400_000);
+  if (diff === 1) return "Tomorrow";
+  if (diff === -1) return "Yesterday";
+  if (diff > 1 && diff < 7) return t.toLocaleDateString(undefined, { weekday: "long" });
+  if (diff < 0) return `${-diff}d ago`;
+  return t.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function isOverdue(target: string | null): boolean {
+  if (!target) return false;
+  return target < todayIso();
+}
+
+function TaskRow({
+  task,
+  onComplete,
+  onDelete,
+}: {
+  task: Task;
+  onComplete: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  const overdue = task.status === "open" && isOverdue(task.targetDate);
+  const canWorkOn = task.status === "open";
   return (
-    <li className="flex items-center gap-3 py-1.5">
-      <input
-        type="checkbox"
-        checked={task.status === "done"}
-        onChange={() => onComplete(task.id)}
-        className="h-4 w-4 accent-indigo-500"
-      />
-      <span className={task.status === "done" ? "text-zinc-500 line-through" : ""}>
+    <li className="group flex items-center gap-3 rounded-md px-2 py-2 transition-colors hover:bg-zinc-800/40">
+      <button
+        type="button"
+        onClick={() => onComplete(task.id)}
+        aria-label={task.status === "done" ? "Completed" : "Mark complete"}
+        className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition-colors ${
+          task.status === "done"
+            ? "border-emerald-500 bg-emerald-500/20 text-emerald-300"
+            : "border-zinc-600 text-transparent hover:border-indigo-400 hover:text-indigo-300"
+        }`}
+      >
+        <svg viewBox="0 0 16 16" className="h-3 w-3" aria-hidden="true">
+          <path
+            d="M3.5 8.5l3 3 6-6"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
+      <span
+        className={`min-w-0 flex-1 truncate text-sm ${
+          task.status === "done" ? "text-zinc-500 line-through" : "text-zinc-100"
+        }`}
+        title={task.title}
+      >
         {task.title}
       </span>
-      {task.targetDate && <span className="ml-auto text-xs text-zinc-500">{task.targetDate}</span>}
+      {task.targetDate && (
+        <span
+          className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${
+            overdue
+              ? "bg-red-900/40 text-red-200"
+              : task.targetDate === todayIso()
+                ? "bg-indigo-900/40 text-indigo-200"
+                : "bg-zinc-800 text-zinc-400"
+          }`}
+        >
+          {describeDate(task.targetDate)}
+        </span>
+      )}
+      {canWorkOn && (
+        <>
+          <button
+            type="button"
+            onClick={() => requestNewWorkspace({ name: task.title, taskId: task.id })}
+            aria-label="Create workspace for this task"
+            title="Create workspace"
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-zinc-500 opacity-0 transition-opacity hover:text-indigo-300 focus:opacity-100 group-hover:opacity-100"
+          >
+            <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" aria-hidden="true">
+              <path
+                d="M2 4a1 1 0 0 1 1-1h4l1.5 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4Z"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M8 7v4M6 9h4"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              requestNewWorkspace({
+                name: task.title,
+                taskId: task.id,
+                claudePrompt: buildTaskPrompt(task),
+              })
+            }
+            aria-label="Start work on this task"
+            title="Start work"
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-zinc-500 opacity-0 transition-opacity hover:text-indigo-300 focus:opacity-100 group-hover:opacity-100"
+          >
+            <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" aria-hidden="true">
+              <path d="M5 3.5v9l7-4.5-7-4.5Z" fill="currentColor" />
+            </svg>
+          </button>
+        </>
+      )}
+      <button
+        type="button"
+        onClick={() => onDelete(task.id)}
+        aria-label="Delete task"
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-zinc-600 opacity-0 transition-opacity hover:text-red-400 focus:opacity-100 group-hover:opacity-100"
+      >
+        <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" aria-hidden="true">
+          <path
+            d="M4 4l8 8M12 4l-8 8"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+          />
+        </svg>
+      </button>
     </li>
   );
 }
 
 function TaskGroup({
   title,
+  caption,
   tasks,
   onComplete,
+  onDelete,
+  accent,
 }: {
   title: string;
+  caption?: string;
   tasks: Task[];
   onComplete: (id: string) => void;
+  onDelete: (id: string) => void;
+  accent: "indigo" | "violet" | "zinc";
 }) {
+  const accentBar: Record<typeof accent, string> = {
+    indigo: "bg-indigo-500",
+    violet: "bg-violet-500",
+    zinc: "bg-zinc-600",
+  };
   return (
-    <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
-      <h2 className="mb-2 text-sm font-medium uppercase tracking-wide text-zinc-500">{title}</h2>
+    <section className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/50">
+      <header className="flex items-center gap-3 border-b border-zinc-800 px-5 py-3">
+        <span aria-hidden="true" className={`h-5 w-1 rounded-full ${accentBar[accent]}`} />
+        <div className="min-w-0 flex-1">
+          <h2 className="text-sm font-semibold text-zinc-100">{title}</h2>
+          {caption && <p className="text-xs text-zinc-500">{caption}</p>}
+        </div>
+        <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400">
+          {tasks.length}
+        </span>
+      </header>
       {tasks.length === 0 ? (
-        <p className="text-sm text-zinc-600">Nothing here.</p>
+        <p className="px-5 py-4 text-sm text-zinc-600">Nothing here yet.</p>
       ) : (
-        <ul className="text-sm">
+        <ul className="divide-y divide-zinc-800/60 px-2 py-1">
           {tasks.map((t) => (
-            <TaskItem key={t.id} task={t} onComplete={onComplete} />
+            <TaskRow key={t.id} task={t} onComplete={onComplete} onDelete={onDelete} />
           ))}
         </ul>
       )}
@@ -86,39 +246,79 @@ export default function TasksPanel() {
     [refresh],
   );
 
-  const daily = tasks.filter((t) => t.scope === "daily");
-  const weekly = tasks.filter((t) => t.scope === "weekly");
+  const onDelete = useCallback(
+    async (id: string) => {
+      await deleteTask(id);
+      await refresh();
+    },
+    [refresh],
+  );
+
+  const { daily, weekly, overdue } = useMemo(() => {
+    const today = todayIso();
+    return {
+      overdue: tasks.filter((t) => t.targetDate && t.targetDate < today),
+      daily: tasks.filter((t) => t.scope === "daily" && t.targetDate === today),
+      weekly: tasks.filter((t) => t.scope === "weekly" || (t.scope === "daily" && !t.targetDate)),
+    };
+  }, [tasks]);
 
   return (
-    <div className="space-y-6">
-      <div className="flex gap-2">
-        <input
-          value={title}
-          placeholder="Add a task..."
-          onChange={(e) => setTitle(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") void onAdd();
-          }}
-          className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-zinc-500"
-        />
-        <select
-          value={scope}
-          onChange={(e) => setScope(e.target.value as "daily" | "weekly")}
-          className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
-        >
-          <option value="daily">Daily</option>
-          <option value="weekly">Weekly</option>
-        </select>
-        <button
-          onClick={() => void onAdd()}
-          className="rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium hover:bg-indigo-500"
-        >
-          Add
-        </button>
+    <div className="mx-auto max-w-3xl space-y-5">
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-3 shadow-sm">
+        <div className="flex gap-2">
+          <input
+            value={title}
+            placeholder="Add a task..."
+            onChange={(e) => setTitle(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void onAdd();
+            }}
+            className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm outline-none transition-colors focus:border-indigo-500"
+          />
+          <select
+            value={scope}
+            onChange={(e) => setScope(e.target.value as "daily" | "weekly")}
+            className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-2 text-sm outline-none focus:border-indigo-500"
+          >
+            <option value="daily">Today</option>
+            <option value="weekly">This week</option>
+          </select>
+          <button
+            onClick={() => void onAdd()}
+            className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-indigo-500"
+          >
+            Add
+          </button>
+        </div>
       </div>
 
-      <TaskGroup title="Today" tasks={daily} onComplete={onComplete} />
-      <TaskGroup title="This week" tasks={weekly} onComplete={onComplete} />
+      {overdue.length > 0 && (
+        <TaskGroup
+          title="Overdue"
+          caption="Carry over or complete to clear"
+          tasks={overdue}
+          onComplete={onComplete}
+          onDelete={onDelete}
+          accent="zinc"
+        />
+      )}
+
+      <TaskGroup
+        title="Today"
+        tasks={daily}
+        onComplete={onComplete}
+        onDelete={onDelete}
+        accent="indigo"
+      />
+      <TaskGroup
+        title="This week"
+        caption="No fixed day"
+        tasks={weekly}
+        onComplete={onComplete}
+        onDelete={onDelete}
+        accent="violet"
+      />
 
       {error && <p className="text-sm text-red-400">{error}</p>}
     </div>

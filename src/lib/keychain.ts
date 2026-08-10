@@ -4,12 +4,23 @@ import { invoke } from "@tauri-apps/api/core";
 export type SecretKey =
   | "anthropic_api_key"
   | "gemini_api_key"
+  | "cerebras_api_key"
   | "github_token"
   | "azure_devops_token"
   | "azure_devops_org_url"
+  | "jira_base_url"
+  | "jira_email"
+  | "jira_api_token"
   | "database_url"
   | "google_client_id"
-  | "google_client_secret";
+  | "google_client_secret"
+  // Telegram remote control. These are managed by the dedicated TelegramSection
+  // rather than the generic Secrets list, so they are intentionally absent from
+  // the SECRETS array below.
+  | "telegram_bot_token"
+  | "telegram_allowed_chat_ids"
+  | "telegram_otp_secret"
+  | "telegram_otp_window_minutes";
 
 export interface SecretMeta {
   key: SecretKey;
@@ -38,6 +49,12 @@ export const SECRETS: SecretMeta[] = [
     help: "Google Gemini API key for chat and embeddings.",
   },
   {
+    key: "cerebras_api_key",
+    label: "Cerebras API key",
+    placeholder: "csk-...",
+    help: "Cerebras Cloud key for chat. The endpoint is fixed; no base URL to set.",
+  },
+  {
     key: "github_token",
     label: "GitHub token",
     placeholder: "ghp_...",
@@ -54,6 +71,24 @@ export const SECRETS: SecretMeta[] = [
     label: "Azure DevOps org URL",
     placeholder: "https://dev.azure.com/your-org",
     help: "Organization base URL for the PR dashboard. Project is chosen per search.",
+  },
+  {
+    key: "jira_base_url",
+    label: "JIRA base URL",
+    placeholder: "https://your-org.atlassian.net",
+    help: "Atlassian Cloud site base URL for the Issues dashboard.",
+  },
+  {
+    key: "jira_email",
+    label: "JIRA email",
+    placeholder: "you@example.com",
+    help: "Atlassian account email paired with the API token.",
+  },
+  {
+    key: "jira_api_token",
+    label: "JIRA API token",
+    placeholder: "Atlassian API token",
+    help: "Create at id.atlassian.com under Security → API tokens.",
   },
   {
     key: "google_client_id",

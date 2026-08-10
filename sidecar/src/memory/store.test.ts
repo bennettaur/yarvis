@@ -15,12 +15,15 @@ const baseConfig: Config = {
   port: 0,
   token: "t",
   tokenGenerated: true,
+  attentionToken: "test-attention-token",
   allowedOrigins: null,
   databaseUrl: url,
+  workspacesRoot: "/tmp/yarvis-test-workspaces",
   secrets: {},
   customProviderSecrets: {},
   mcpSecrets: {},
   embeddingsSecrets: { headers: {} },
+  telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
 };
 
 beforeEach(async () => {
@@ -29,6 +32,9 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
+  // The suite deliberately writes a bad-dimension provider row; leaving it
+  // behind would break every other file whose routes select an embedder.
+  await sql`TRUNCATE embeddings_config RESTART IDENTITY CASCADE`;
   await sql.end();
 });
 
@@ -120,6 +126,6 @@ describe("pgvector memory store", () => {
     await sql`
       INSERT INTO embeddings_config (base_url, model, api_kind, dimensions)
       VALUES ('http://localhost:11434/v1', 'wrong-dims', 'openai', ${schema.EMBED_DIM + 1})`;
-    expect(chooseEmbedder(baseConfig, db)).rejects.toThrow(/dimension/i);
+    await expect(chooseEmbedder(baseConfig, db)).rejects.toThrow(/dimension/i);
   });
 });

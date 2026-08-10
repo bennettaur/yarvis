@@ -1,5 +1,15 @@
 import { describe, expect, it } from "bun:test";
-import { clientError, describeError } from "./errors.ts";
+import { clientError, describeError, redactSecrets } from "./errors.ts";
+
+describe("redactSecrets", () => {
+  it("redacts api-key tokens echoed back in a provider error body", () => {
+    // Cerebras keys are `csk-`-prefixed, which a bare `\bsk-` pattern misses.
+    for (const token of ["csk-abcdef0123456789abcdef", "sk-ant-abcdef0123456789abcdef"]) {
+      const out = redactSecrets(`Wrong API key provided: ${token}.`);
+      expect(out).toBe("Wrong API key provided: [redacted-token].");
+    }
+  });
+});
 
 describe("describeError", () => {
   it("returns String() for non-Error input", () => {

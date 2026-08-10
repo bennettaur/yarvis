@@ -1,4 +1,4 @@
-import { sidecarFetch } from "./api";
+import { ensureOk, sidecarFetch } from "./api";
 
 export interface Task {
   id: string;
@@ -32,7 +32,7 @@ export async function listTasks(filter: TaskFilter = {}): Promise<Task[]> {
   if (filter.targetDate) params.set("targetDate", filter.targetDate);
   const qs = params.toString();
   const res = await sidecarFetch(`/api/tasks${qs ? `?${qs}` : ""}`);
-  if (!res.ok) throw new Error(`list tasks failed: ${res.status}`);
+  await ensureOk(res, "list tasks");
   return res.json();
 }
 
@@ -42,13 +42,13 @@ export async function createTask(input: CreateTaskInput): Promise<Task> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
-  if (!res.ok) throw new Error(`create task failed: ${res.status}`);
+  await ensureOk(res, "create task");
   return res.json();
 }
 
 export async function completeTask(id: string): Promise<Task> {
   const res = await sidecarFetch(`/api/tasks/${id}/complete`, { method: "POST" });
-  if (!res.ok) throw new Error(`complete task failed: ${res.status}`);
+  await ensureOk(res, "complete task");
   return res.json();
 }
 
@@ -61,7 +61,13 @@ export async function updateTask(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   });
-  if (!res.ok) throw new Error(`update task failed: ${res.status}`);
+  await ensureOk(res, "update task");
+  return res.json();
+}
+
+export async function deleteTask(id: string): Promise<Task> {
+  const res = await sidecarFetch(`/api/tasks/${id}`, { method: "DELETE" });
+  await ensureOk(res, "delete task");
   return res.json();
 }
 
@@ -74,6 +80,6 @@ export async function rolloverTasks(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ fromDate, toDate }),
   });
-  if (!res.ok) throw new Error(`rollover failed: ${res.status}`);
+  await ensureOk(res, "rollover");
   return res.json();
 }

@@ -63,6 +63,13 @@ export default function EmbeddingsSection() {
   const [secrets, setSecrets] = useState<EmbeddingsSecretStatus | null>(null);
   const [draft, setDraft] = useState<Draft>(() => draftFromConfig(null));
   const [secretInputs, setSecretInputs] = useState<Record<string, string>>({});
+  /**
+   * Values for header names that haven't been saved to the config yet. Captured
+   * alongside the name so a brand-new header can ship with its value to the
+   * Keychain on the same Save — otherwise the sidecar restarts mid-configure
+   * with a header name but no value to send.
+   */
+  const [pendingHeaderValues, setPendingHeaderValues] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -98,22 +105,42 @@ export default function EmbeddingsSection() {
       setError("Dimension must be a positive integer.");
       return;
     }
+    const headerNames = draft.headerNames.map((h) => h.trim()).filter(Boolean);
+    const pendingWrites = headerNames
+      .map((name) => ({ name, value: pendingHeaderValues[name]?.trim() ?? "" }))
+      .filter((p) => p.value.length > 0);
     setBusy("config");
+    let step: "save config" | "store header value" | "restart sidecar" | "refresh" = "save config";
     try {
       await memSetEmbeddingsConfig({
         baseUrl: draft.baseUrl.trim(),
         model: draft.model.trim(),
         apiKind: "openai",
         dimensions,
-        headerNames: draft.headerNames.map((h) => h.trim()).filter(Boolean),
+        headerNames,
       });
+      for (const { name, value } of pendingWrites) {
+        step = "store header value";
+        await setEmbeddingsSecret(`header:${name}`, value);
+      }
+      if (pendingWrites.length > 0) {
+        setPendingHeaderValues((prev) => {
+          const next = { ...prev };
+          for (const { name } of pendingWrites) delete next[name];
+          return next;
+        });
+        step = "restart sidecar";
+        await restartAndWait();
+      }
+      step = "refresh";
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(`${step} failed: ${msg}`);
     } finally {
       setBusy(null);
     }
-  }, [draft, refresh]);
+  }, [draft, pendingHeaderValues, refresh]);
 
   const disableProvider = useCallback(async () => {
     if (
@@ -274,12 +301,12 @@ export default function EmbeddingsSection() {
           </Labeled>
         </div>
 
-        <ListEditor
-          title="Extra header names"
-          placeholder="X-Tenant"
-          helper="Values are entered below after saving."
-          items={draft.headerNames}
-          setItems={(next) => setDraft((d) => ({ ...d, headerNames: next }))}
+        <HeadersEditor
+          names={draft.headerNames}
+          setNames={(next) => setDraft((d) => ({ ...d, headerNames: next }))}
+          pendingValues={pendingHeaderValues}
+          setPendingValues={setPendingHeaderValues}
+          existingPresence={secrets?.headers ?? {}}
         />
 
         <div className="mt-4 flex justify-end gap-2">
@@ -351,65 +378,122 @@ function Labeled({
   );
 }
 
-function ListEditor({
-  title,
-  placeholder,
-  helper,
-  items,
-  setItems,
+/**
+ * Editor for extra header names + their values. The name list is part of the
+ * structural config (persisted to Postgres); each value is a secret persisted
+ * to the Keychain. To let a brand-new header ship with its value on the same
+ * Save, pending values are captured here and written by saveConfig after the
+ * config PUT succeeds. Existing headers whose value is already stored show as
+ * "set" and can still be updated below via SecretRow.
+ */
+function HeadersEditor({
+  names,
+  setNames,
+  pendingValues,
+  setPendingValues,
+  existingPresence,
 }: {
-  title: string;
-  placeholder: string;
-  helper?: string;
-  items: string[];
-  setItems: (next: string[]) => void;
+  names: string[];
+  setNames: (next: string[]) => void;
+  pendingValues: Record<string, string>;
+  setPendingValues: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+  existingPresence: Record<string, boolean>;
 }) {
-  const [pending, setPending] = useState("");
-  const addItem = useCallback(() => {
-    const v = pending.trim();
-    if (!v || items.includes(v)) return;
-    setItems([...items, v]);
-    setPending("");
-  }, [pending, items, setItems]);
+  const [pendingName, setPendingName] = useState("");
+  const [pendingValue, setPendingValue] = useState("");
+
+  const addHeader = useCallback(() => {
+    const name = pendingName.trim();
+    if (!name || names.includes(name)) return;
+    setNames([...names, name]);
+    const value = pendingValue;
+    if (value.length > 0) {
+      setPendingValues((prev) => ({ ...prev, [name]: value }));
+    }
+    setPendingName("");
+    setPendingValue("");
+  }, [pendingName, pendingValue, names, setNames, setPendingValues]);
+
+  const removeHeader = useCallback(
+    (name: string) => {
+      setNames(names.filter((n) => n !== name));
+      setPendingValues((prev) => {
+        if (!(name in prev)) return prev;
+        const next = { ...prev };
+        delete next[name];
+        return next;
+      });
+    },
+    [names, setNames, setPendingValues],
+  );
 
   return (
     <div className="mt-4">
       <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-        {title}
+        Extra headers
       </span>
-      {helper && <p className="mb-2 text-xs text-zinc-500">{helper}</p>}
-      <div className="flex flex-wrap gap-1.5">
-        {items.map((item) => (
-          <span
-            key={item}
-            className="inline-flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-xs"
-          >
-            {item}
-            <button
-              onClick={() => setItems(items.filter((i) => i !== item))}
-              className="text-zinc-500 hover:text-zinc-200"
-              aria-label={`Remove ${item}`}
-            >
-              ×
-            </button>
-          </span>
-        ))}
-      </div>
-      <div className="mt-2 flex gap-2">
+      <p className="mb-2 text-xs text-zinc-500">
+        Provide a value if the endpoint needs one to connect. Values are stored in the macOS
+        Keychain and can be updated below.
+      </p>
+      {names.length > 0 && (
+        <ul className="mb-2 space-y-1">
+          {names.map((name) => {
+            const pending = pendingValues[name];
+            const status = pending
+              ? "value pending save"
+              : existingPresence[name]
+                ? "value set"
+                : "no value";
+            return (
+              <li
+                key={name}
+                className="flex items-center justify-between rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs"
+              >
+                <span>
+                  <span className="text-zinc-200">{name}</span>
+                  <span className="ml-2 text-zinc-500">{status}</span>
+                </span>
+                <button
+                  onClick={() => removeHeader(name)}
+                  className="text-zinc-500 hover:text-zinc-200"
+                  aria-label={`Remove ${name}`}
+                >
+                  ×
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <div className="flex flex-col gap-2 sm:flex-row">
         <input
-          value={pending}
-          placeholder={placeholder}
-          onChange={(e) => setPending(e.target.value)}
+          value={pendingName}
+          placeholder="X-Tenant"
+          onChange={(e) => setPendingName(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
-              addItem();
+              addHeader();
+            }
+          }}
+          className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500"
+        />
+        <input
+          type="password"
+          value={pendingValue}
+          placeholder="Value (optional)"
+          onChange={(e) => setPendingValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addHeader();
             }
           }}
           className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500"
         />
         <button
-          onClick={addItem}
+          onClick={addHeader}
           className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
         >
           Add

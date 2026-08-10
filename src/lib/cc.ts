@@ -1,4 +1,4 @@
-import { sidecarFetch } from "./api";
+import { ensureOk, sidecarFetch } from "./api";
 
 export interface CcProject {
   dir: string;
@@ -34,7 +34,7 @@ export interface CcPlan {
 
 async function get<T>(path: string): Promise<T> {
   const res = await sidecarFetch(path);
-  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+  await ensureOk(res, path);
   return res.json();
 }
 

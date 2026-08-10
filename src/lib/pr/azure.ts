@@ -1,4 +1,4 @@
-import { sidecarFetch } from "../api";
+import { ensureOk, sidecarFetch } from "../api";
 import { refApiPath } from "./ref";
 import type {
   AzFilter,
@@ -27,7 +27,7 @@ interface AzRawSummary {
 
 async function get<T>(path: string): Promise<T> {
   const res = await sidecarFetch(path);
-  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+  await ensureOk(res, path);
   return res.json();
 }
 
@@ -37,7 +37,7 @@ async function send<T>(path: string, method: string, body?: unknown): Promise<T>
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+  await ensureOk(res, path);
   return res.json();
 }
 
@@ -106,8 +106,18 @@ export const azPrDetail = (ref: PrRef) => get<PrDetail>(`${refApiPath(ref)}/deta
 export const azPrFiles = (ref: PrRef) => get<PrFile[]>(`${refApiPath(ref)}/files`);
 export const azPrFileDiff = (ref: PrRef, path: string) =>
   get<PrFile>(`${refApiPath(ref)}/file?path=${encodeURIComponent(path)}`);
+export const azFileContent = (ref: PrRef, path: string, sha: string) =>
+  get<{ content: string }>(
+    `${refApiPath(ref)}/content?path=${encodeURIComponent(path)}&ref=${encodeURIComponent(sha)}`,
+  );
 export const azPostComment = (ref: PrRef, comment: NewComment) =>
   send<{ ok: boolean }>(`${refApiPath(ref)}/comments`, "POST", comment);
+
+export const azMarkReady = (ref: PrRef) =>
+  send<{ ok: boolean }>(`${refApiPath(ref)}/ready`, "POST");
+
+export const azSubmitVote = (ref: PrRef, vote: number, body?: string) =>
+  send<{ ok: boolean }>(`${refApiPath(ref)}/vote`, "POST", { vote, body });
 
 export const azFilters = () => get<AzFilter[]>("/api/azure/filters");
 export const azCreateFilter = (name: string, scope: "mine" | "review", project: string | null) =>

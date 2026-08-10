@@ -155,13 +155,17 @@ export interface AgentToolset {
  * the model sees each step — the "always" tools plus whatever is currently
  * mounted for this session plus the meta tools — so search-policy tools stay out
  * of context until mounted.
+ *
+ * Every MCP tool call needs the user's approval, so a caller that cannot prompt
+ * for one omits `approval`; live MCP tools are then left out of the set rather
+ * than exposed with no gate.
  */
 export async function assembleAgentToolset(opts: {
   config: Config;
   db: Db;
   sessionId: string;
   builtinTools: Record<string, Tool>;
-  approval: ApprovalHooks;
+  approval?: ApprovalHooks;
 }): Promise<AgentToolset> {
   const { config, db, sessionId, builtinTools, approval } = opts;
   const registry = await listRegistryTools(db);
@@ -177,10 +181,13 @@ export async function assembleAgentToolset(opts: {
 
   // Live MCP tools: keyed by registry id, wrapped with approval, excluded when
   // disabled. (Tools whose server is disconnected simply aren't present here.)
-  const liveTools = getMcpManager().getLiveTools();
-  for (const [id, t] of Object.entries(liveTools)) {
-    if (policyById.get(id) === "disabled") continue;
-    tools[id] = wrapMcpToolWithApproval(id, t, approval);
+  // With no approval channel they are skipped outright — see the note above.
+  if (approval) {
+    const liveTools = getMcpManager().getLiveTools();
+    for (const [id, t] of Object.entries(liveTools)) {
+      if (policyById.get(id) === "disabled") continue;
+      tools[id] = wrapMcpToolWithApproval(id, t, approval);
+    }
   }
 
   const meta = buildMetaTools({ config, db, sessionId });

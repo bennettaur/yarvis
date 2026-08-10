@@ -15,6 +15,8 @@ import type {
   PrDetail,
   PrFile,
   PrStatus,
+  Reviewer,
+  ReviewerState,
   ReviewThread,
   Viewer,
 } from "../pr/types.ts";
@@ -28,6 +30,7 @@ import type {
   AzureList,
   AzurePolicyEvaluation,
   AzurePullRequest,
+  AzureReviewer,
   AzureThread,
 } from "./apiTypes.ts";
 import { buildPatch } from "./diff.ts";
@@ -38,6 +41,8 @@ const API_VERSION = "7.1";
 // policy/evaluations is exposed only under a preview version and 400s on the GA
 // version, so that one call overrides the default.
 const POLICY_API_VERSION = "7.1-preview.1";
+// Code search is a separate service on its own host, still preview-only.
+const SEARCH_API_VERSION = "7.1-preview.1";
 
 // Azure comment/thread enum values used when posting a thread.
 const COMMENT_TYPE_TEXT = 1;
@@ -108,7 +113,7 @@ function mapChangeType(changeType: string): string {
 /** Maps an Azure mergeStatus onto the shared mergeable enum. */
 function mapMergeStatus(mergeStatus: string | undefined): {
   mergeable: boolean | null;
-  enum: string;
+  enum: MergeableEnum;
 } {
   switch (mergeStatus) {
     case "succeeded":
@@ -119,6 +124,43 @@ function mapMergeStatus(mergeStatus: string | undefined): {
     default:
       return { mergeable: null, enum: "UNKNOWN" };
   }
+}
+
+/**
+ * Maps an Azure reviewer vote onto the shared ReviewerState. Azure's vote
+ * vocabulary is signed: 10 approved, 5 approved-with-suggestions, 0 no vote
+ * yet, -5 waiting-for-author, -10 rejected. Both `-10` (rejected) and `-5`
+ * (waiting-for-author) mean the reviewer is blocking the merge on the author
+ * — collapsing them into `changes_requested` matches how GitHub renders the
+ * equivalent state.
+ */
+function mapReviewerVote(vote: number | undefined): ReviewerState {
+  switch (vote) {
+    case 10:
+    case 5:
+      return "approved";
+    case -10:
+    case -5:
+      return "changes_requested";
+    default:
+      return "pending";
+  }
+}
+
+/**
+ * Maps an Azure reviewer entry onto the shared Reviewer shape. Azure does not
+ * have a login concept, so `displayName` (a human-readable name) is what fills
+ * `login`; this matches how `PrDetail.author` handles the same conflation. A
+ * zero/absent vote is Azure's closest analogue to GitHub's "review requested":
+ * the reviewer is on the PR but hasn't weighed in yet.
+ */
+export function mapReviewer(reviewer: AzureReviewer): Reviewer {
+  const vote = reviewer.vote ?? 0;
+  return {
+    login: reviewer.displayName ?? "",
+    state: mapReviewerVote(vote),
+    isRequested: vote === 0,
+  };
 }
 
 /** Maps an Azure policy evaluation status onto the shared CheckItem shape. */
@@ -143,9 +185,42 @@ export function mapPolicyEvaluation(evaluation: AzurePolicyEvaluation): CheckIte
   };
 }
 
+/** The shared mergeable vocabulary both providers map onto. */
+export type MergeableEnum = "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+
+/** A branch's active PR, shaped for the workspace poller's cache row. */
+export interface AzureBranchPr {
+  number: number;
+  url: string;
+  draft: boolean;
+  /** Normalized to the poller's stored PR-state vocabulary. */
+  state: "open" | "closed" | "merged";
+  /** Azure mergeStatus mapped onto the shared mergeable enum. */
+  mergeable: MergeableEnum;
+}
+
+/**
+ * The organization name from a configured org URL. Modern URLs carry it as the
+ * first path segment (`dev.azure.com/{org}`); legacy accounts carry it in the
+ * subdomain (`{org}.visualstudio.com`). Deriving it the same way
+ * `parseRepoRemote` derives a clone URL's org is what lets the poller's
+ * cross-org comparison line up for both forms.
+ */
+export function orgFromOrgUrl(orgUrl: string): string {
+  try {
+    const url = new URL(orgUrl);
+    if (url.hostname.endsWith(".visualstudio.com")) return url.hostname.split(".")[0] ?? "";
+    return url.pathname.split("/").filter(Boolean)[0] ?? "";
+  } catch {
+    return orgUrl.split("/").filter(Boolean).pop() ?? "";
+  }
+}
+
 export class AzureDevOpsClient {
   private readonly orgUrl: string;
-  private readonly org: string;
+  /** The configured organization (last segment of the org URL). Public so the
+   *  poller can skip repos that live in a different org than this client. */
+  readonly org: string;
 
   constructor(
     private readonly token: string,
@@ -153,9 +228,9 @@ export class AzureDevOpsClient {
     private readonly fetchImpl: FetchFn = fetch,
   ) {
     this.orgUrl = orgUrl.replace(/\/+$/, "");
-    // Last path segment of https://dev.azure.com/<org> is the org name; kept for
-    // display/cache identity the frontend echoes back.
-    this.org = this.orgUrl.split("/").filter(Boolean).pop() ?? "";
+    // Kept for display/cache identity the frontend echoes back, and for the
+    // poller's cross-org skip — so it must match `parseRepoRemote`'s org.
+    this.org = orgFromOrgUrl(this.orgUrl);
   }
 
   private authHeader(): string {
@@ -257,19 +332,54 @@ export class AzureDevOpsClient {
     return (data.value ?? []).map((pr) => this.toSummary(pr));
   }
 
-  private toSummary(pr: AzurePullRequest): AzurePrSummary {
+  /**
+   * The most recent PR whose source branch is `branch` in the given
+   * project/repo, or null. Used by the workspace poller to auto-detect a
+   * worktree branch's PR. `status=all` mirrors the GitHub client so a
+   * merged/abandoned PR still resolves; Azure returns newest first, so `$top=1`
+   * picks the latest.
+   */
+  async findPrByBranch(
+    project: string,
+    repo: string,
+    branch: string,
+  ): Promise<AzureBranchPr | null> {
+    const base = `${this.orgUrl}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(
+      repo,
+    )}/pullrequests`;
+    const sourceRef = encodeURIComponent(`refs/heads/${branch}`);
+    const data = await this.get<AzureList<AzurePullRequest>>(
+      `${base}?searchCriteria.sourceRefName=${sourceRef}&searchCriteria.status=all&$top=1`,
+    );
+    const pr = data.value?.[0];
+    if (!pr) return null;
+    return {
+      number: pr.pullRequestId,
+      url: this.prWebUrl(pr),
+      draft: Boolean(pr.isDraft),
+      state: pr.status === "completed" ? "merged" : pr.status === "abandoned" ? "closed" : "open",
+      mergeable: mapMergeStatus(pr.mergeStatus).enum,
+    };
+  }
+
+  /** The PR's web (browser) URL, from the repo's `webUrl` when present or
+   *  reconstructed from the org/project/repo otherwise. */
+  private prWebUrl(pr: AzurePullRequest): string {
     const project = pr.repository?.project?.name ?? "";
     const repo = pr.repository?.name ?? "";
-    const webUrl = pr.repository?.webUrl
+    return pr.repository?.webUrl
       ? `${pr.repository.webUrl}/pullrequest/${pr.pullRequestId}`
       : `${this.orgUrl}/${project}/_git/${repo}/pullrequest/${pr.pullRequestId}`;
+  }
+
+  private toSummary(pr: AzurePullRequest): AzurePrSummary {
     return {
       prId: pr.pullRequestId,
       title: pr.title ?? "",
-      url: webUrl,
+      url: this.prWebUrl(pr),
       org: this.org,
-      project,
-      repo,
+      project: pr.repository?.project?.name ?? "",
+      repo: pr.repository?.name ?? "",
       author: pr.createdBy?.displayName ?? "",
       draft: Boolean(pr.isDraft),
       status: pr.status ?? "active",
@@ -300,6 +410,8 @@ export class AzureDevOpsClient {
     const pr = await this.prRaw(ref);
     const merge = mapMergeStatus(pr.mergeStatus);
     return {
+      state: pr.status ?? "active",
+      merged: pr.status === "completed",
       mergeable: merge.mergeable,
       mergeableState: pr.mergeStatus ?? "unknown",
       checks: { total: 0, success: 0, failure: 0, pending: 0 },
@@ -322,11 +434,19 @@ export class AzureDevOpsClient {
       author: pr.createdBy?.displayName ?? "",
       baseRef: (pr.targetRefName ?? "").replace("refs/heads/", ""),
       headRef: (pr.sourceRefName ?? "").replace("refs/heads/", ""),
+      headSha: pr.lastMergeSourceCommit?.commitId ?? "",
       additions: 0,
       deletions: 0,
       mergeable: mapMergeStatus(pr.mergeStatus).enum,
+      // Azure's completion/auto-complete flow isn't wired to the review UI yet,
+      // so the merge controls stay hidden for Azure PRs.
+      mergeMethods: [],
+      autoMergeEnabled: false,
+      canEnableAutoMerge: false,
+      canDisableAutoMerge: false,
       checks,
       reviewThreads,
+      reviewers: (pr.reviewers ?? []).map(mapReviewer).filter((r) => r.login),
     };
   }
 
@@ -395,6 +515,81 @@ export class AzureDevOpsClient {
       }));
   }
 
+  /**
+   * A file's full text at a commit, for showing the unchanged code around a
+   * hunk. A missing path resolves to empty, matching how the diff builder
+   * already treats a file that exists on only one side of the change.
+   */
+  fileContent(ref: AzureRef, path: string, commit: string): Promise<string> {
+    return this.itemContent(this.repoBase(ref), `/${path.replace(/^\//, "")}`, commit);
+  }
+
+  /**
+   * Entries directly under a directory at a commit. Azure returns the directory
+   * itself as the first entry of the listing, so it is filtered back out.
+   */
+  async listDir(
+    ref: AzureRef,
+    path: string,
+    commit: string,
+  ): Promise<{ path: string; type: string }[]> {
+    const scope = `/${path.replace(/^\/+|\/+$/g, "")}`;
+    const url =
+      `${this.repoBase(ref)}/items?scopePath=${encodeURIComponent(scope)}` +
+      `&recursionLevel=OneLevel&versionDescriptor.version=${encodeURIComponent(commit)}` +
+      `&versionDescriptor.versionType=commit`;
+    const res = await this.fetchImpl(this.withVersion(url, API_VERSION), {
+      headers: { Authorization: this.authHeader(), Accept: "application/json" },
+    });
+    if (res.status === 404) return [];
+    if (!res.ok) throw new Error(`azure GET items ${scope} -> ${res.status}`);
+    const body = (await res.json()) as { value?: { path?: string; isFolder?: boolean }[] };
+    return (body.value ?? [])
+      .filter((item) => item.path && item.path !== scope)
+      .map((item) => ({
+        path: (item.path ?? "").replace(/^\//, ""),
+        type: item.isFolder ? "dir" : "file",
+      }));
+  }
+
+  /**
+   * Repo-scoped code search.
+   *
+   * This is the only call that leaves `dev.azure.com` — code search lives on a
+   * separate `almsearch` host and is provided by an extension that an
+   * organization may simply not have installed. Rather than failing the whole
+   * agent run over a capability that is optional by design, an unavailable
+   * search resolves to null and the caller reports it as such.
+   */
+  async searchCode(ref: AzureRef, query: string, limit = 10): Promise<{ path: string }[] | null> {
+    const host = this.orgUrl.replace("https://dev.azure.com", "https://almsearch.dev.azure.com");
+    const url = this.withVersion(
+      `${host}/${encodeURIComponent(ref.project)}/_apis/search/codesearchresults`,
+      SEARCH_API_VERSION,
+    );
+    const res = await this.fetchImpl(url, {
+      method: "POST",
+      headers: {
+        Authorization: this.authHeader(),
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        searchText: query,
+        $top: limit,
+        filters: { Repository: [ref.repo] },
+      }),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { results?: { path?: string }[] };
+    // Azure reports matches as character offsets into the file rather than as
+    // text, so there is no snippet to hand back without fetching each hit —
+    // paths only, and the caller reads the ones it cares about.
+    return (body.results ?? []).map((hit) => ({
+      path: (hit.path ?? "").replace(/^\//, ""),
+    }));
+  }
+
   /** Builds one file's unified diff between the PR's base and head commits. */
   async prFileDiff(ref: AzureRef, path: string): Promise<PrFile> {
     const { base, head } = await this.commitPair(ref);
@@ -416,6 +611,84 @@ export class AzureDevOpsClient {
       deletions: built.deletions,
       patch: built.patch,
     };
+  }
+
+  /**
+   * Publishes a draft PR (Azure equivalent of GitHub's "Ready for review"):
+   * clears the `isDraft` flag with a PATCH on the PR itself.
+   */
+  async markReady(ref: AzureRef): Promise<void> {
+    const url = this.withVersion(`${this.repoBase(ref)}/pullRequests/${ref.prId}`, API_VERSION);
+    const res = await this.fetchImpl(url, {
+      method: "PATCH",
+      headers: {
+        Authorization: this.authHeader(),
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ isDraft: false }),
+    });
+    if (!res.ok) throw new Error(`azure mark ready -> ${res.status}`);
+  }
+
+  /**
+   * Casts the viewer's vote on the PR (Azure's equivalent of approve / request
+   * changes). The vote vocabulary is numeric:
+   *   10  approved
+   *    5  approved with suggestions
+   *    0  no vote (resets)
+   *   -5  waiting for author
+   *  -10  rejected
+   * Azure has no "review body" tied to a vote, so when `body` is supplied we
+   * additionally post a regular PR-level comment thread so the user's note
+   * isn't lost. That extra thread is best-effort — if it fails after the vote
+   * succeeded, the vote still stands.
+   */
+  async submitVote(ref: AzureRef, vote: number, body?: string): Promise<void> {
+    const reviewerId = await this.resolveViewerId();
+    const voteUrl = this.withVersion(
+      `${this.repoBase(ref)}/pullRequests/${ref.prId}/reviewers/${reviewerId}`,
+      API_VERSION,
+    );
+    const res = await this.fetchImpl(voteUrl, {
+      method: "PUT",
+      headers: {
+        Authorization: this.authHeader(),
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ vote, id: reviewerId }),
+    });
+    if (!res.ok) throw new Error(`azure submit vote -> ${res.status}`);
+
+    if (body && body.trim().length > 0) {
+      await this.postPrComment(ref, body);
+    }
+  }
+
+  /**
+   * Posts a PR-level comment thread (no file/line anchor). Used for the review
+   * body that accompanies an approve / request-changes vote, since Azure does
+   * not attach a body to the vote itself.
+   */
+  private async postPrComment(ref: AzureRef, body: string): Promise<void> {
+    const url = this.withVersion(
+      `${this.repoBase(ref)}/pullRequests/${ref.prId}/threads`,
+      API_VERSION,
+    );
+    const res = await this.fetchImpl(url, {
+      method: "POST",
+      headers: {
+        Authorization: this.authHeader(),
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        comments: [{ content: body, commentType: COMMENT_TYPE_TEXT }],
+        status: THREAD_STATUS_ACTIVE,
+      }),
+    });
+    if (!res.ok) throw new Error(`azure post pr comment -> ${res.status}`);
   }
 
   /** Posts a single-line comment thread anchored to the right side of the diff. */

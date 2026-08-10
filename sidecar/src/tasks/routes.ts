@@ -2,7 +2,14 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import { completeTask, createTask, listTasks, rolloverTasks, updateTask } from "./service.ts";
+import {
+  completeTask,
+  createTask,
+  deleteTask,
+  listTasks,
+  rolloverTasks,
+  updateTask,
+} from "./service.ts";
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD");
 
@@ -80,6 +87,12 @@ export function createTaskRoutes(config: Config): Hono {
     const parsed = updateSchema.safeParse(body);
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     const task = await updateTask(db(), c.req.param("id"), parsed.data);
+    if (!task) return c.json({ error: "not found" }, 404);
+    return c.json(task);
+  });
+
+  router.delete("/:id", async (c) => {
+    const task = await deleteTask(db(), c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);
     return c.json(task);
   });

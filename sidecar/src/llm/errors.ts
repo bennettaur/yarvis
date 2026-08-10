@@ -11,7 +11,9 @@ const REDACT_PATTERNS: Array<[RegExp, string]> = [
   [/(set-cookie:\s*)[^\r\n]+/gi, "$1[redacted]"],
   [/(postgres(?:ql)?:\/\/[^:@/\s]+:)[^@\s]+(@)/gi, "$1[redacted]$2"],
   // sk-, ghp_, github_pat_, etc. style tokens that sometimes show up in error bodies.
-  [/\b(sk-(?:proj-|ant-|or-)?[A-Za-z0-9_-]{16,})\b/g, "[redacted-token]"],
+  // The optional `c` covers Cerebras keys: `\b` won't fire between `c` and `sk-`,
+  // so a bare `sk-` pattern silently misses them.
+  [/\b(c?sk-(?:proj-|ant-|or-)?[A-Za-z0-9_-]{16,})\b/g, "[redacted-token]"],
   [/\b(ghp_[A-Za-z0-9_]{16,})\b/g, "[redacted-token]"],
   [/\b(github_pat_[A-Za-z0-9_]{16,})\b/g, "[redacted-token]"],
 ];

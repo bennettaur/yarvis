@@ -1,0 +1,364 @@
+import { useEffect, useState } from "react";
+import { requestOpenPr } from "../lib/nav";
+import type { PrSummary } from "../lib/pr/types";
+import { repoPrRef } from "../lib/repos";
+import { openExternal } from "../lib/url";
+import {
+  type ChangedFile,
+  type WorkspaceRepoDetail,
+  workspaceRepoChanges,
+  workspaceRepoFiles,
+} from "../lib/workspaces";
+
+type View = "files" | "changes" | "checks";
+
+const VIEWS: { key: View; label: string }[] = [
+  { key: "files", label: "All files" },
+  { key: "changes", label: "Changed" },
+  { key: "checks", label: "PR checks" },
+];
+
+/**
+ * The workspace detail's right column: per-repo views of all tracked files,
+ * changed files (with line counts), and the cached PR checks. Files/changes are
+ * read live from the worktree; PR checks come from the background poller's cache.
+ */
+export default function WorkspaceSidePanel({
+  workspaceId,
+  repos,
+  onOpenFile,
+}: {
+  workspaceId: string;
+  repos: WorkspaceRepoDetail[];
+  /** Open a changed file's diff in a tab (the repo it belongs to, and its path). */
+  onOpenFile: (repoId: string, path: string) => void;
+}) {
+  const [repoId, setRepoId] = useState(repos[0]?.id ?? "");
+  const [view, setView] = useState<View>("changes");
+
+  const repo = repos.find((r) => r.id === repoId) ?? repos[0];
+  if (!repo) return null;
+
+  return (
+    <div className="flex h-full min-h-0 w-full flex-col">
+      {repos.length > 1 && (
+        <select
+          value={repo.id}
+          onChange={(e) => setRepoId(e.target.value)}
+          className="m-2 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs outline-none"
+        >
+          {repos.map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.repo.name}
+            </option>
+          ))}
+        </select>
+      )}
+
+      <div className="flex shrink-0 gap-1 border-b border-zinc-800 px-2 pt-1">
+        {VIEWS.map((v) => (
+          <button
+            key={v.key}
+            onClick={() => setView(v.key)}
+            className={`border-b-2 px-2 py-1.5 text-xs ${
+              view === v.key
+                ? "border-indigo-400 text-zinc-100"
+                : "border-transparent text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            {v.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto p-2">
+        {view === "files" && <FilesView workspaceId={workspaceId} repoId={repo.id} />}
+        {view === "changes" && (
+          <ChangesView
+            workspaceId={workspaceId}
+            repoId={repo.id}
+            onOpenFile={(path) => onOpenFile(repo.id, path)}
+          />
+        )}
+        {view === "checks" && <ChecksView repo={repo} />}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * How often the files / changes views refresh while the workspace is visible.
+ * Picked to feel live without hammering git on every keystroke; the call is
+ * already cheap (a single git command per repo).
+ */
+const REFRESH_INTERVAL_MS = 5_000;
+
+/**
+ * Subscribes to a worktree-derived list (files or changes) and refreshes it on
+ * a fixed interval. Skips polling while the tab/window is hidden so a
+ * backgrounded app doesn't keep firing git commands; resumes on visibility.
+ * `same` lets the caller skip a re-render when the freshly-fetched data is
+ * deep-equal to what's already shown, which keeps the list from flickering.
+ */
+function usePolledRepoList<T>(
+  workspaceId: string,
+  repoId: string,
+  load: (workspaceId: string, repoId: string) => Promise<T>,
+  same: (prev: T | null, next: T) => boolean,
+): { data: T | null; error: string | null } {
+  const [data, setData] = useState<T | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      try {
+        const next = await load(workspaceId, repoId);
+        if (!live) return;
+        setError(null);
+        setData((prev) => (prev !== null && same(prev, next) ? prev : next));
+      } catch (e) {
+        if (!live) return;
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (live && !document.hidden) {
+          timer = setTimeout(tick, REFRESH_INTERVAL_MS);
+        }
+      }
+    };
+
+    const onVisibility = () => {
+      if (!document.hidden && live && timer === null) {
+        void tick();
+      }
+    };
+
+    setData(null);
+    setError(null);
+    void tick();
+    document.addEventListener("visibilitychange", onVisibility);
+
+    return () => {
+      live = false;
+      if (timer !== null) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [workspaceId, repoId, load, same]);
+
+  return { data, error };
+}
+
+const sameStringArray = (prev: string[] | null, next: string[]): boolean => {
+  if (prev === null || prev.length !== next.length) return false;
+  for (let i = 0; i < prev.length; i++) {
+    if (prev[i] !== next[i]) return false;
+  }
+  return true;
+};
+
+const sameChangedFiles = (prev: ChangedFile[] | null, next: ChangedFile[]): boolean => {
+  if (prev === null || prev.length !== next.length) return false;
+  for (let i = 0; i < prev.length; i++) {
+    const a = prev[i]!;
+    const b = next[i]!;
+    if (
+      a.path !== b.path ||
+      a.status !== b.status ||
+      a.additions !== b.additions ||
+      a.deletions !== b.deletions
+    ) {
+      return false;
+    }
+  }
+  return true;
+};
+
+function FilesView({ workspaceId, repoId }: { workspaceId: string; repoId: string }) {
+  const { data, error } = usePolledRepoList(
+    workspaceId,
+    repoId,
+    workspaceRepoFiles,
+    sameStringArray,
+  );
+
+  if (error) return <p className="text-xs text-red-400">{error}</p>;
+  if (!data) return <p className="text-xs text-zinc-500">Loading…</p>;
+  if (data.length === 0) return <p className="text-xs text-zinc-500">No files.</p>;
+  return (
+    <ul className="font-mono text-xs text-zinc-400">
+      {data.map((path) => (
+        <li key={path} className="truncate py-0.5" title={path}>
+          {path}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+const CHANGE_COLORS: Record<string, string> = {
+  added: "text-emerald-400",
+  modified: "text-amber-400",
+  deleted: "text-red-400",
+  renamed: "text-indigo-400",
+  untracked: "text-zinc-500",
+};
+
+function ChangesView({
+  workspaceId,
+  repoId,
+  onOpenFile,
+}: {
+  workspaceId: string;
+  repoId: string;
+  onOpenFile: (path: string) => void;
+}) {
+  const { data, error } = usePolledRepoList(
+    workspaceId,
+    repoId,
+    workspaceRepoChanges,
+    sameChangedFiles,
+  );
+
+  if (error) return <p className="text-xs text-red-400">{error}</p>;
+  if (!data) return <p className="text-xs text-zinc-500">Loading…</p>;
+  if (data.length === 0) return <p className="text-xs text-zinc-500">No changes on this branch.</p>;
+  return (
+    <ul className="font-mono text-xs">
+      {data.map((file) => (
+        <li key={file.path}>
+          <button
+            type="button"
+            onClick={() => onOpenFile(file.path)}
+            title={`Open diff for ${file.path}`}
+            className="flex w-full items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-zinc-800/60"
+          >
+            <span
+              className={`shrink-0 ${CHANGE_COLORS[file.status] ?? "text-zinc-400"}`}
+              title={file.status}
+            >
+              {file.status[0]?.toUpperCase()}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-zinc-400">{file.path}</span>
+            {(file.additions > 0 || file.deletions > 0) && (
+              <span className="shrink-0 text-zinc-500">
+                <span className="text-emerald-400">+{file.additions}</span>{" "}
+                <span className="text-red-400">−{file.deletions}</span>
+              </span>
+            )}
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+const ROLLUP_LABEL: Record<string, string> = {
+  success: "✓ checks passing",
+  failure: "✗ checks failing",
+  pending: "● checks running",
+  none: "no checks",
+};
+const ROLLUP_COLOR: Record<string, string> = {
+  success: "text-emerald-400",
+  failure: "text-red-400",
+  pending: "text-amber-400",
+  none: "text-zinc-500",
+};
+
+/**
+ * Single-line "3 passing · 1 failing · 2 running" summary so the user sees
+ * every bucket even when one wins the rollup. Buckets with zero are omitted.
+ */
+function describeChecks(checks: {
+  total: number;
+  success: number;
+  failure: number;
+  pending: number;
+}): string {
+  const parts: string[] = [];
+  if (checks.success) parts.push(`${checks.success} passing`);
+  if (checks.failure) parts.push(`${checks.failure} failing`);
+  if (checks.pending) parts.push(`${checks.pending} running`);
+  return parts.join(" · ");
+}
+
+/**
+ * Builds a minimal PrSummary from the workspace poller's cache. Fields the
+ * poller doesn't store (title, author, timestamps) are filled with placeholders
+ * — PrDetailView refetches the full detail anyway, so the only visible gap is
+ * a brief blank title while the detail loads. The ref's provider comes from the
+ * repo's clone URL, so an Azure PR opens as an Azure ref.
+ */
+function buildPrSummary(repo: WorkspaceRepoDetail): PrSummary | null {
+  const pr = repo.pr;
+  if (!pr?.prNumber || !pr.prUrl) return null;
+  return {
+    ref: repoPrRef(repo.repo, pr.prNumber),
+    title: "",
+    url: pr.prUrl,
+    author: "",
+    draft: pr.isDraft ?? false,
+    state: pr.prState ?? "open",
+    createdAt: "",
+    updatedAt: "",
+  };
+}
+
+function ChecksView({ repo }: { repo: WorkspaceRepoDetail }) {
+  const pr = repo.pr;
+  if (!pr || pr.lastPolledAt === null) {
+    return <p className="text-xs text-zinc-500">Not polled yet.</p>;
+  }
+  if (pr.prNumber === null) {
+    return (
+      <p className="text-xs text-zinc-500">
+        No PR for <span className="font-mono">{repo.branch}</span> yet.
+        {pr.lastError && <span className="block text-red-400">{pr.lastError}</span>}
+      </p>
+    );
+  }
+  const summary = buildPrSummary(repo);
+  return (
+    <div className="space-y-2 text-xs">
+      <div className="flex items-center gap-2">
+        <span className="font-mono">#{pr.prNumber}</span>
+        {pr.prState && (
+          <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-zinc-300">{pr.prState}</span>
+        )}
+        {pr.isDraft && (
+          <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-zinc-400">draft</span>
+        )}
+      </div>
+      <div className="flex gap-1.5">
+        {summary && (
+          <button
+            type="button"
+            onClick={() => requestOpenPr(summary)}
+            className="rounded-md border border-indigo-700/60 bg-indigo-900/30 px-2 py-1 text-xs text-indigo-200 hover:bg-indigo-900/60"
+          >
+            Review in yarvis
+          </button>
+        )}
+        {pr.prUrl && (
+          <button
+            type="button"
+            onClick={() => openExternal(pr.prUrl as string)}
+            className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+          >
+            Open externally ↗
+          </button>
+        )}
+      </div>
+      <div className={ROLLUP_COLOR[pr.checkRollup] ?? "text-zinc-400"}>
+        {ROLLUP_LABEL[pr.checkRollup] ?? pr.checkRollup}
+      </div>
+      {pr.checks && pr.checks.total > 0 && (
+        <div className="text-zinc-500">{describeChecks(pr.checks)}</div>
+      )}
+      {pr.mergeable && <div className="text-zinc-500">mergeable: {pr.mergeable}</div>}
+      {pr.lastError && <div className="text-red-400">{pr.lastError}</div>}
+    </div>
+  );
+}

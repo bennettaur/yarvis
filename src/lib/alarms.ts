@@ -6,13 +6,19 @@ export interface Alarm {
   label: string;
   fireAtMs: number;
   sound: boolean;
+  /** Join URL for a meeting-derived alarm; null for manually created alarms. */
+  meetLink: string | null;
   status: string;
 }
 
 export const listAlarms = () => invoke<Alarm[]>("list_alarms");
 
-export const createAlarm = (label: string, fireAtMs: number, sound = true) =>
-  invoke<Alarm>("create_alarm", { label, fireAtMs, sound });
+export const createAlarm = (
+  label: string,
+  fireAtMs: number,
+  sound = true,
+  meetLink: string | null = null,
+) => invoke<Alarm>("create_alarm", { label, fireAtMs, sound, meetLink });
 
 export const cancelAlarm = (id: string) => invoke("cancel_alarm", { id });
 

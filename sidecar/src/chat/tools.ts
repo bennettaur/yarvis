@@ -4,6 +4,7 @@ import type { Db } from "../db/client.ts";
 import {
   completeTask,
   createTask,
+  deleteTask,
   listTasks,
   rolloverTasks,
   updateTask,
@@ -78,6 +79,16 @@ export function buildTaskTools(db: Db, sessionId: string) {
       execute: async ({ id, ...patch }) => {
         const t = await updateTask(db, id, patch);
         return t ? { id: t.id } : { error: "not found" };
+      },
+    }),
+
+    delete_task: tool({
+      description:
+        "Permanently delete a task by its id. Use when a task was captured by mistake or is no longer relevant; prefer complete_task for work that actually got done.",
+      inputSchema: z.object({ id: z.string() }),
+      execute: async ({ id }) => {
+        const t = await deleteTask(db, id);
+        return t ? { id: t.id, deleted: true } : { error: "not found" };
       },
     }),
 

@@ -10,12 +10,15 @@ function appWith(secrets: Config["secrets"]): ReturnType<typeof createApp> {
     port: 0,
     token: "test-token",
     tokenGenerated: false,
+    attentionToken: "test-attention-token",
     allowedOrigins: null,
     databaseUrl: "postgres://localhost/unused",
+    workspacesRoot: "/tmp/yarvis-test-workspaces",
     secrets,
     customProviderSecrets: {},
     mcpSecrets: {},
     embeddingsSecrets: { headers: {} },
+    telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
   });
 }
 
@@ -54,6 +57,34 @@ describe("azure route validation", () => {
       method: "POST",
       headers: { ...auth, "Content-Type": "application/json" },
       body: JSON.stringify({ path: "src/app.ts", line: 0, body: "hi" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a vote value outside the allowed enum with 400", async () => {
+    const res = await configured.request("/api/azure/pr/Shop/web/1/vote", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ vote: 7 }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects vote=-10 without a body with 400", async () => {
+    const res = await configured.request("/api/azure/pr/Shop/web/1/vote", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ vote: -10 }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toContain("rejecting");
+  });
+
+  it("rejects vote=-10 with a whitespace-only body with 400", async () => {
+    const res = await configured.request("/api/azure/pr/Shop/web/1/vote", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ vote: -10, body: "   \n  " }),
     });
     expect(res.status).toBe(400);
   });

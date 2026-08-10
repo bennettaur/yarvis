@@ -8,7 +8,7 @@ use std::net::TcpListener;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rand::RngCore;
+use rand::Rng;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 use tokio::process::Command;
@@ -32,6 +32,13 @@ pub struct SidecarInfo {
     pub port: u16,
     pub token: String,
 }
+
+/// A scoped token authorizing only the sidecar's attention-ingest endpoint.
+/// Injected into Yarvis-launched Claude Code session shells (see `pty.rs`) so a
+/// session's hooks can raise an attention item without holding the full-access
+/// bearer above. Kept in managed state so `build_command` and `pty.rs` share it.
+#[derive(Clone)]
+pub struct AttentionIngestToken(pub String);
 
 /// Lets commands ask the supervisor to restart the sidecar (e.g. after a
 /// secret changes, so the new value is injected into a fresh process).
@@ -62,6 +69,10 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
         port,
         token: token.clone(),
     });
+
+    // A separate, narrowly-scoped token for the attention-ingest endpoint, handed
+    // to Claude session shells rather than the full-access bearer above.
+    app.manage(AttentionIngestToken(random_token()));
 
     let restart = Arc::new(Notify::new());
     app.manage(SidecarControl {
@@ -101,11 +112,23 @@ async fn supervise(app: AppHandle, port: u16, token: String, restart: Arc<Notify
     }
 }
 
-fn build_command(_app: &AppHandle, port: u16, token: &str) -> Command {
+fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
     let mut cmd = command_base();
     cmd.env("YARVIS_SIDECAR_PORT", port.to_string());
     cmd.env("YARVIS_SIDECAR_TOKEN", token);
     cmd.env("YARVIS_ALLOWED_ORIGINS", ALLOWED_ORIGINS);
+
+    // Path to the core's control socket, so the sidecar can ask the core to
+    // spawn/kill Claude sessions in workspace PTYs.
+    if let Some(sock) = app.try_state::<crate::control::ControlSocketPath>() {
+        cmd.env("YARVIS_CORE_SOCK", &sock.0);
+    }
+
+    // The scoped attention-ingest token the sidecar validates; the same value is
+    // injected into Claude session shells (pty.rs) so their hooks can post.
+    if let Some(attn) = app.try_state::<AttentionIngestToken>() {
+        cmd.env("YARVIS_ATTENTION_TOKEN", &attn.0);
+    }
 
     // Forward the memory/embedding debug flag when the app was launched with it
     // (e.g. `YARVIS_DEBUG_MEMORY=1 bun run tauri dev`), so the sidecar traces
@@ -126,6 +149,9 @@ fn build_command(_app: &AppHandle, port: u16, token: &str) -> Command {
     if let Some(key) = secret_from_root(&secrets, "gemini_api_key") {
         cmd.env("GEMINI_API_KEY", key);
     }
+    if let Some(key) = secret_from_root(&secrets, "cerebras_api_key") {
+        cmd.env("CEREBRAS_API_KEY", key);
+    }
     if let Some(token) = secret_from_root(&secrets, "github_token") {
         cmd.env("GITHUB_TOKEN", token);
     }
@@ -135,11 +161,32 @@ fn build_command(_app: &AppHandle, port: u16, token: &str) -> Command {
     if let Some(url) = secret_from_root(&secrets, "azure_devops_org_url") {
         cmd.env("AZURE_DEVOPS_ORG_URL", url);
     }
+    if let Some(url) = secret_from_root(&secrets, "jira_base_url") {
+        cmd.env("JIRA_BASE_URL", url);
+    }
+    if let Some(email) = secret_from_root(&secrets, "jira_email") {
+        cmd.env("JIRA_EMAIL", email);
+    }
+    if let Some(token) = secret_from_root(&secrets, "jira_api_token") {
+        cmd.env("JIRA_API_TOKEN", token);
+    }
     if let Some(id) = secret_from_root(&secrets, "google_client_id") {
         cmd.env("GOOGLE_CLIENT_ID", id);
     }
     if let Some(secret) = secret_from_root(&secrets, "google_client_secret") {
         cmd.env("GOOGLE_CLIENT_SECRET", secret);
+    }
+    if let Some(token) = secret_from_root(&secrets, "telegram_bot_token") {
+        cmd.env("TELEGRAM_BOT_TOKEN", token);
+    }
+    if let Some(ids) = secret_from_root(&secrets, "telegram_allowed_chat_ids") {
+        cmd.env("TELEGRAM_ALLOWED_CHAT_IDS", ids);
+    }
+    if let Some(secret) = secret_from_root(&secrets, "telegram_otp_secret") {
+        cmd.env("TELEGRAM_OTP_SECRET", secret);
+    }
+    if let Some(minutes) = secret_from_root(&secrets, "telegram_otp_window_minutes") {
+        cmd.env("TELEGRAM_OTP_WINDOW_MINUTES", minutes);
     }
 
     if let Some(json) = build_sidecar_env(&secrets) {

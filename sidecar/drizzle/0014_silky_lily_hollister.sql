@@ -1,0 +1,1 @@
+ALTER TABLE "workspace_repos" ADD COLUMN "existing_branch" boolean DEFAULT false NOT NULL;

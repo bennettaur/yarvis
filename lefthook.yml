@@ -1,0 +1,32 @@
+# Pre-commit hooks orchestrated by lefthook (https://lefthook.dev).
+#
+# Mirrors the CI lint/format checks (`bun run check`, `cargo fmt --check`, and
+# `cargo clippy -D warnings`) so a clean commit is also a clean CI run. Format
+# steps auto-fix and re-stage; lint steps that have no safe autofix (clippy)
+# block the commit and surface their output instead.
+#
+# `bun install` runs the `prepare` script which invokes `lefthook install` to
+# write `.git/hooks/pre-commit`. Skip with `LEFTHOOK=0 git commit ...` only when
+# you have a specific reason — CI still enforces the same checks.
+
+pre-commit:
+  parallel: true
+  jobs:
+    - name: biome
+      tags: [frontend, lint, format]
+      glob: "*.{js,jsx,ts,tsx,json,jsonc,css,html}"
+      run: bunx biome check --write --no-errors-on-unmatched {staged_files}
+      stage_fixed: true
+
+    - name: rustfmt
+      tags: [rust, format]
+      glob: "src-tauri/**/*.rs"
+      # rustfmt is fast and idempotent; formatting the whole crate keeps the
+      # invocation simple and avoids passing a long file list through cargo.
+      run: cargo fmt --manifest-path src-tauri/Cargo.toml
+      stage_fixed: true
+
+    - name: clippy
+      tags: [rust, lint]
+      glob: "src-tauri/**/*.rs"
+      run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --no-deps -- -D warnings

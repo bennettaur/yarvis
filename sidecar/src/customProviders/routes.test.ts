@@ -10,12 +10,15 @@ const config: Config = {
   port: 0,
   token: "test-token",
   tokenGenerated: false,
+  attentionToken: "test-attention-token",
   allowedOrigins: null,
   databaseUrl: url,
+  workspacesRoot: "/tmp/yarvis-test-workspaces",
   secrets: {},
   customProviderSecrets: {},
   mcpSecrets: {},
   embeddingsSecrets: { headers: {} },
+  telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
 };
 const app = createApp(config);
 const jsonAuth = {
@@ -70,6 +73,32 @@ describe("custom provider routes", () => {
       method: "POST",
       headers: jsonAuth,
       body: JSON.stringify({ name: "x", baseUrl: "not-a-url", apiKind: "openai" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("accepts a loopback baseUrl for a local provider (e.g. Ollama)", async () => {
+    const res = await app.request("/api/custom-providers", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        name: "ollama",
+        baseUrl: "http://localhost:11434/v1",
+        apiKind: "openai-chat",
+      }),
+    });
+    expect(res.status).toBe(201);
+  });
+
+  it("still rejects non-loopback private baseUrls", async () => {
+    const res = await app.request("/api/custom-providers", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        name: "lan",
+        baseUrl: "http://192.168.1.10:11434/v1",
+        apiKind: "openai-chat",
+      }),
     });
     expect(res.status).toBe(400);
   });

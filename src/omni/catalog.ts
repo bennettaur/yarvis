@@ -12,8 +12,8 @@ import { z } from "zod";
  *  - Layout primitives (Row / Column / Grid / Panel / Heading / Text / Divider)
  *    that arrange and label content.
  *  - Feature widgets (Tasks / Calendar / Memory / PullRequests / Sessions /
- *    Alarms / Settings / Chat) — self-contained, fetch their own data, fill
- *    their pane.
+ *    Alarms / Settings / Chat / Terminal / WorkspaceList / Workspace) —
+ *    self-contained, fetch their own data, fill their pane.
  */
 
 const heightProp = z
@@ -165,7 +165,7 @@ export const catalog = defineCatalog(schema, {
     PrFileList: {
       props: prRef,
       description:
-        "Compact list of a pull request's changed files (with +/− counts); clicking a file scrolls to its diff. Pairs with PrFileDiffs for the same owner/repo/number.",
+        "Collapsible folder tree of a pull request's changed files (with +/− counts); clicking a file scrolls to its diff. Pairs with PrFileDiffs for the same owner/repo/number.",
     },
     PrFileDiffs: {
       props: prRef,
@@ -202,6 +202,20 @@ export const catalog = defineCatalog(schema, {
       }),
       description:
         "A live shell terminal backed by a real PTY. Self-contained; can be placed multiple times. Give each one a unique, stable sessionId so its shell survives layout changes.",
+    },
+    WorkspaceList: {
+      props: titled,
+      description:
+        "All workspaces (repo worktrees grouped for a task) with their status and repos. Read-only; self-contained.",
+    },
+    Workspace: {
+      props: z.object({
+        workspaceId: z.string().describe("The workspace's id (a UUID)"),
+        title: z.string().optional().describe("Optional header shown above the widget"),
+        height: heightProp,
+      }),
+      description:
+        "A single workspace named by workspaceId: its status, repos (branch + cached PR/check state) and linked tasks. Read-only.",
     },
   },
   // No agent-invokable actions yet: widgets are self-contained and handle their

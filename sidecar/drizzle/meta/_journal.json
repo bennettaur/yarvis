@@ -61,8 +61,106 @@
     {
       "idx": 8,
       "version": "7",
-      "when": 1782053269827,
-      "tag": "0008_dashing_sentry",
+      "when": 1781962187355,
+      "tag": "0008_smooth_liz_osborn",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1781987505698,
+      "tag": "0009_tough_hulk",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1781988606480,
+      "tag": "0010_flowery_micromacro",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1782064537076,
+      "tag": "0011_little_hemingway",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1782066538176,
+      "tag": "0012_bright_overlord",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1783518992843,
+      "tag": "0013_zippy_sharon_ventura",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1783917010613,
+      "tag": "0014_silky_lily_hollister",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1783994944873,
+      "tag": "0015_purple_maestro",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1784036790743,
+      "tag": "0016_aspiring_gateway",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1785439349241,
+      "tag": "0017_secret_tattoo",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1785542165297,
+      "tag": "0018_shocking_morph",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1785546890630,
+      "tag": "0019_melted_logan",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1785870766033,
+      "tag": "0020_medical_the_initiative",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1785947435919,
+      "tag": "0021_last_maelstrom",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1786331920893,
+      "tag": "0022_clever_sinister_six",
       "breakpoints": true
     }
   ]

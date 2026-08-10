@@ -8,15 +8,19 @@ export type IconName =
   | "omni"
   | "chat"
   | "omnichat"
+  | "clipboard"
   | "terminal"
+  | "workspaces"
   | "tasks"
   | "prs"
+  | "issues"
   | "memory"
   | "calendar"
   | "alarms"
   | "sessions"
   | "dashboard"
-  | "settings";
+  | "settings"
+  | "bell";
 
 const PATHS: Record<IconName, React.ReactNode> = {
   omni: (
@@ -32,11 +36,27 @@ const PATHS: Record<IconName, React.ReactNode> = {
     <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
   ),
   omnichat: <path d="M13 2 3 14h7l-1 8 10-12h-7z" />,
+  clipboard: (
+    <>
+      <rect width="8" height="4" x="8" y="2" rx="1" />
+      <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+      <path d="M9 12h6" />
+      <path d="M9 16h4" />
+    </>
+  ),
   terminal: (
     <>
       <rect width="18" height="16" x="3" y="4" rx="2" />
       <path d="m7 9 3 3-3 3" />
       <path d="M13 15h4" />
+    </>
+  ),
+  workspaces: (
+    <>
+      <rect width="7" height="7" x="3" y="3" rx="1" />
+      <rect width="7" height="7" x="14" y="3" rx="1" />
+      <rect width="7" height="7" x="14" y="14" rx="1" />
+      <rect width="7" height="7" x="3" y="14" rx="1" />
     </>
   ),
   tasks: (
@@ -54,6 +74,12 @@ const PATHS: Record<IconName, React.ReactNode> = {
       <circle cx="18" cy="18" r="3" />
       <path d="M13 6h3a2 2 0 0 1 2 2v7" />
       <line x1="6" x2="6" y1="9" y2="21" />
+    </>
+  ),
+  issues: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="2.5" />
     </>
   ),
   memory: (
@@ -99,6 +125,12 @@ const PATHS: Record<IconName, React.ReactNode> = {
       <line x1="14" x2="14" y1="2" y2="6" />
       <line x1="8" x2="8" y1="10" y2="14" />
       <line x1="16" x2="16" y1="18" y2="22" />
+    </>
+  ),
+  bell: (
+    <>
+      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
     </>
   ),
   settings: (

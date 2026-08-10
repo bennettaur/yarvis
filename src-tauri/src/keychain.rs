@@ -25,12 +25,20 @@ const SECRETS_ACCOUNT: &str = "secrets";
 pub const SECRET_KEYS: &[&str] = &[
     "anthropic_api_key",
     "gemini_api_key",
+    "cerebras_api_key",
     "github_token",
     "azure_devops_token",
     "azure_devops_org_url",
+    "jira_base_url",
+    "jira_email",
+    "jira_api_token",
     "database_url",
     "google_client_id",
     "google_client_secret",
+    "telegram_bot_token",
+    "telegram_allowed_chat_ids",
+    "telegram_otp_secret",
+    "telegram_otp_window_minutes",
 ];
 
 #[derive(Serialize)]

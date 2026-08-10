@@ -1,6 +1,12 @@
 import { and, asc, eq, gte, isNotNull, lte } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { type Task, tasks } from "../db/schema.ts";
+import { emitEvent } from "../events/service.ts";
+
+/** Payload shared by task.created / task.completed events. */
+function taskEventPayload(task: Task): Record<string, unknown> {
+  return { taskId: task.id, title: task.title, scope: task.scope };
+}
 
 /**
  * Work-tracking task service. Tasks are daily or weekly, open or done, and may
@@ -43,6 +49,11 @@ export async function createTask(db: Db, input: CreateTaskInput): Promise<Task> 
       sourceSessionId: input.sourceSessionId ?? null,
     })
     .returning();
+  await emitEvent(db, {
+    type: "task.created",
+    source: "tasks",
+    payload: taskEventPayload(row!),
+  });
   return row!;
 }
 
@@ -73,12 +84,40 @@ export async function tasksCompletedBetween(db: Db, from: Date, to: Date): Promi
     .orderBy(asc(tasks.completedAt));
 }
 
+/** Tasks linked to a workspace (oldest first), for the workspace detail view. */
+export async function tasksForWorkspace(db: Db, workspaceId: string): Promise<Task[]> {
+  return db
+    .select()
+    .from(tasks)
+    .where(eq(tasks.workspaceId, workspaceId))
+    .orderBy(asc(tasks.createdAt));
+}
+
+/**
+ * Completes every still-open task linked to a workspace. Used when a workspace
+ * is archived after its PR merged. Returns the tasks that were closed.
+ */
+export async function completeTasksByWorkspace(db: Db, workspaceId: string): Promise<Task[]> {
+  return db
+    .update(tasks)
+    .set({ status: "done", completedAt: new Date() })
+    .where(and(eq(tasks.workspaceId, workspaceId), eq(tasks.status, "open")))
+    .returning();
+}
+
 export async function completeTask(db: Db, id: string): Promise<Task | null> {
   const [row] = await db
     .update(tasks)
     .set({ status: "done", completedAt: new Date() })
     .where(eq(tasks.id, id))
     .returning();
+  if (row) {
+    await emitEvent(db, {
+      type: "task.completed",
+      source: "tasks",
+      payload: taskEventPayload(row),
+    });
+  }
   return row ?? null;
 }
 
@@ -89,6 +128,24 @@ export async function updateTask(db: Db, id: string, patch: UpdateTaskInput): Pr
   if (patch.status === "done") values.completedAt = new Date();
 
   const [row] = await db.update(tasks).set(values).where(eq(tasks.id, id)).returning();
+  // Mirror completeTask: a task moving to "done" via an edit is a completion too.
+  if (row && patch.status === "done") {
+    await emitEvent(db, {
+      type: "task.completed",
+      source: "tasks",
+      payload: taskEventPayload(row),
+    });
+  }
+  return row ?? null;
+}
+
+/**
+ * Permanently removes a task. Returns the deleted row, or null if no task
+ * matched the id. Unlike completion, this leaves no trace in the event log —
+ * a removed task was never meant to be tracked.
+ */
+export async function deleteTask(db: Db, id: string): Promise<Task | null> {
+  const [row] = await db.delete(tasks).where(eq(tasks.id, id)).returning();
   return row ?? null;
 }
 

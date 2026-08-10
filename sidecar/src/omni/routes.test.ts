@@ -7,12 +7,15 @@ const config: Config = {
   port: 0,
   token: "test-token",
   tokenGenerated: false,
+  attentionToken: "test-attention-token",
   allowedOrigins: null,
   databaseUrl: undefined,
+  workspacesRoot: "/tmp/yarvis-test-workspaces",
   secrets: {}, // no provider keys configured
   customProviderSecrets: {},
   mcpSecrets: {},
   embeddingsSecrets: { headers: {} },
+  telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
 };
 const app = createApp(config);
 const jsonAuth = {
