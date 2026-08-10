@@ -25,6 +25,37 @@ Three processes with a clean ownership split:
 
 Data lives in a local **PostgreSQL + pgvector**.
 
+## Installing a nightly build
+
+Nightly `.dmg`s are published to the [`nightly`
+release](https://github.com/bennettaur/yarvis/releases/tag/nightly). macOS
+quarantines anything downloaded from the internet, and Gatekeeper refuses to
+launch a quarantined app that Apple has not notarized. Nightlies are ad-hoc
+code-signed but **not notarized**, so the first launch is blocked:
+
+1. Drag **Yarvis** into `/Applications` and try to open it — macOS refuses.
+2. Open **System Settings → Privacy & Security**, find the message about Yarvis
+   near the bottom, and click **Open Anyway**.
+
+That approves this one app while leaving quarantine — and the XProtect malware
+scan that comes with it — in place for everything else. Stripping the flag with
+`xattr -dr com.apple.quarantine /Applications/Yarvis.app` also works, but it
+skips those checks permanently for the bundle, so prefer **Open Anyway**.
+
+An app with *no* signature at all is rejected differently: macOS reports it as
+damaged and offers only to move it to the trash, with no override. That was
+[issue #189](https://github.com/bennettaur/yarvis/issues/189) — nightly builds
+went out unsigned — and it is what the ad-hoc signing fixes.
+
+Nightly builds still need the [prerequisites](#prerequisites) below at runtime:
+PostgreSQL with `pgvector`, plus the secrets entered in Settings.
+
+Notarizing removes the extra step entirely. It needs an Apple Developer account;
+once one exists, set `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
+`APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID` as
+repository secrets and the nightly workflow signs and notarizes without further
+changes.
+
 ## Prerequisites
 
 - [Bun](https://bun.com) (`bun --version`)

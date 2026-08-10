@@ -125,6 +125,21 @@ const waitForStatus = (id: string, status: string) =>
 
 const waitForError = (id: string) => waitFor(id, (d) => d.error !== null, "recorded an error");
 
+/** The workspace row flips to `archived` before the archive clears what the
+ *  workspace was flagging, so waiting on the status is not enough to read the
+ *  attention item's settled state. */
+async function waitForAttention(workspaceId: string, status: string) {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const [item] = await db
+      .select()
+      .from(attentionItems)
+      .where(eq(attentionItems.workspaceId, workspaceId));
+    if (item?.status === status) return item;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`workspace ${workspaceId}'s attention never reached ${status}`);
+}
+
 describe("assertSafeBranchName", () => {
   it("accepts ordinary branch names", () => {
     for (const name of ["main", "feat/login", "release-2.1", "fix_bug"]) {
@@ -940,11 +955,8 @@ describe("provision + archive (injected git runner)", () => {
     await startArchiveWorkspace(db, ws.id, {}, fakeGit);
     await waitForStatus(ws.id, "archived");
 
-    const [item] = await db
-      .select()
-      .from(attentionItems)
-      .where(eq(attentionItems.workspaceId, ws.id));
-    expect(item?.status).toBe("resolved");
+    const item = await waitForAttention(ws.id, "resolved");
+    expect(item.status).toBe("resolved");
   });
 
   it("completes a linked task when the workspace is fully archived", async () => {
