@@ -75,6 +75,25 @@ export interface TelegramConfig {
   otpWindowMinutes: number;
 }
 
+/**
+ * What this process is, as opposed to what it serves. Several Yarvis instances
+ * can run side by side (see `src-tauri/src/instance.rs`), and these two values
+ * decide how this one behaves at startup — nothing that handles a request reads
+ * them, which is why they are separate from [`Config`].
+ */
+export interface InstanceConfig {
+  /** Name of the instance this sidecar belongs to. */
+  name: string;
+  /**
+   * Whether this process owns the recurring background work — the Telegram bot,
+   * the workspace poller, resuming interrupted kick-offs, and the stale-guide
+   * sweep. Two instances sharing a database must not all run these: the bot's
+   * long poll rejects a second consumer of the same token, and a kick-off
+   * resumed twice launches two agent sessions in one workspace.
+   */
+  backgroundWorkers: boolean;
+}
+
 export interface Config {
   /** Loopback port to bind. The Rust core supplies this; defaults for standalone use. */
   port: number;
@@ -200,6 +219,33 @@ export function parseOtpWindowMinutes(raw: string | undefined): number {
   return Math.min(Math.floor(n), 7 * 24 * 60);
 }
 
+/** Instance name used when none is supplied; matches `instance::PRIMARY`. */
+const PRIMARY_INSTANCE = "main";
+
+export function parseInstanceName(raw: string | undefined): string {
+  const name = raw?.trim();
+  return name ? name : PRIMARY_INSTANCE;
+}
+
+/**
+ * Parses the background-worker switch, using the same `1`/`true`/`0`/`false`
+ * vocabulary as the Rust core's `parse_flag`.
+ *
+ * An absent switch falls back to the instance name rather than to "on". The core
+ * always sets both variables, so this only decides a standalone run
+ * (`sidecar:dev`, tests) — which, unnamed, is the primary and keeps running the
+ * workers as it always has. Falling back to the name matters when the switch
+ * goes missing some other way: defaulting to "on" would put a second poller and
+ * a second Telegram long-poll on the primary's data, which is the exact
+ * duplication this switch exists to prevent, and it would do it silently.
+ */
+export function parseBackgroundWorkers(raw: string | undefined, instanceName: string): boolean {
+  const value = raw?.trim().toLowerCase();
+  if (value === "1" || value === "true") return true;
+  if (value) return false;
+  return instanceName === PRIMARY_INSTANCE;
+}
+
 function parseOrigins(raw: string | undefined): string[] | null {
   if (!raw) return null;
   const origins = raw
@@ -244,5 +290,13 @@ export function loadConfig(): Config {
       otpSecret: env.TELEGRAM_OTP_SECRET || undefined,
       otpWindowMinutes: parseOtpWindowMinutes(env.TELEGRAM_OTP_WINDOW_MINUTES),
     },
+  };
+}
+
+export function loadInstanceConfig(): InstanceConfig {
+  const name = parseInstanceName(process.env.YARVIS_INSTANCE);
+  return {
+    name,
+    backgroundWorkers: parseBackgroundWorkers(process.env.YARVIS_BACKGROUND_WORKERS, name),
   };
 }

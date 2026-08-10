@@ -5,6 +5,12 @@ import { defineConfig } from "vite";
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
+// Dev-server port. Fixed at 1420 for the usual single-instance run; a second
+// Yarvis instance running alongside it needs its own (see
+// `scripts/dev-instance.ts`, which sets this and the matching `devUrl`).
+// @ts-expect-error process is a nodejs global
+const port = Number(process.env.YARVIS_DEV_PORT) || 1420;
+
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [react(), tailwindcss()],
@@ -15,14 +21,16 @@ export default defineConfig(async () => ({
   clearScreen: false,
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
-    port: 1420,
+    port,
     strictPort: true,
     host: host || false,
+    // The port above the dev server's. `scripts/dev-instance.ts` allocates
+    // instance ports in pairs so this one is never another instance's server.
     hmr: host
       ? {
           protocol: "ws",
           host,
-          port: 1421,
+          port: port + 1,
         }
       : undefined,
     watch: {

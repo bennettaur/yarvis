@@ -18,9 +18,34 @@ use tokio::time::sleep;
 use crate::custom_providers::build_sidecar_env;
 use crate::keychain::{read_root, secret_from_root};
 
-/// Origins permitted to call the sidecar. Covers the Vite dev server and the
-/// Tauri webview origins; the sidecar still requires the bearer token regardless.
-const ALLOWED_ORIGINS: &str = "http://localhost:1420,tauri://localhost,http://tauri.localhost";
+/// Webview origins permitted to call the sidecar; the sidecar still requires the
+/// bearer token regardless. The Vite dev server's origin is added alongside
+/// these, at whichever port this instance runs on (see `instance::dev_port`).
+const WEBVIEW_ORIGINS: &str = "tauri://localhost,http://tauri.localhost";
+
+fn origins_for_port(dev_port: u16) -> String {
+    format!("http://localhost:{dev_port},{WEBVIEW_ORIGINS}")
+}
+
+/// Picks the database the sidecar connects to. The instance override wins so a
+/// migration under development runs against its own database rather than the
+/// one every other instance shares.
+fn database_url(override_url: Option<String>, keychain_url: Option<String>) -> Option<String> {
+    override_url.or(keychain_url)
+}
+
+/// The instance identity handed to the sidecar. Built here rather than read
+/// there so who owns the recurring background work stays one decision, made in
+/// `instance.rs`.
+fn instance_env(name: &str, background_workers: bool) -> [(&'static str, String); 2] {
+    [
+        ("YARVIS_INSTANCE", name.to_string()),
+        (
+            "YARVIS_BACKGROUND_WORKERS",
+            if background_workers { "1" } else { "0" }.to_string(),
+        ),
+    ]
+}
 
 const TOKEN_BYTES: usize = 32;
 const RESTART_DELAY: Duration = Duration::from_secs(1);
@@ -116,7 +141,17 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
     let mut cmd = command_base();
     cmd.env("YARVIS_SIDECAR_PORT", port.to_string());
     cmd.env("YARVIS_SIDECAR_TOKEN", token);
-    cmd.env("YARVIS_ALLOWED_ORIGINS", ALLOWED_ORIGINS);
+    cmd.env(
+        "YARVIS_ALLOWED_ORIGINS",
+        origins_for_port(crate::instance::dev_port()),
+    );
+
+    for (key, value) in instance_env(
+        &crate::instance::name(),
+        crate::instance::background_workers_enabled(),
+    ) {
+        cmd.env(key, value);
+    }
 
     // Path to the core's control socket, so the sidecar can ask the core to
     // spawn/kill Claude sessions in workspace PTYs.
@@ -140,7 +175,10 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
     // Read the single secrets item once; one Keychain access covers every
     // value injected below.
     let secrets = read_root();
-    if let Some(url) = secret_from_root(&secrets, "database_url") {
+    if let Some(url) = database_url(
+        crate::instance::database_url_override(),
+        secret_from_root(&secrets, "database_url"),
+    ) {
         cmd.env("DATABASE_URL", url);
     }
     if let Some(key) = secret_from_root(&secrets, "anthropic_api_key") {
@@ -229,4 +267,58 @@ pub fn get_sidecar_info(info: tauri::State<'_, SidecarInfo>) -> SidecarInfo {
 #[tauri::command]
 pub fn restart_sidecar(control: tauri::State<'_, SidecarControl>) {
     control.restart.notify_one();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_origin_list_carries_this_instances_dev_server() {
+        assert_eq!(
+            origins_for_port(1437),
+            "http://localhost:1437,tauri://localhost,http://tauri.localhost"
+        );
+    }
+
+    #[test]
+    fn an_instance_override_beats_the_shared_keychain_database() {
+        assert_eq!(
+            database_url(
+                Some("postgres://dev".into()),
+                Some("postgres://main".into())
+            ),
+            Some("postgres://dev".into())
+        );
+    }
+
+    #[test]
+    fn the_keychain_database_is_used_when_no_override_is_set() {
+        assert_eq!(
+            database_url(None, Some("postgres://main".into())),
+            Some("postgres://main".into())
+        );
+    }
+
+    #[test]
+    fn no_database_is_configured_rather_than_the_wrong_one() {
+        assert_eq!(database_url(None, None), None);
+    }
+
+    #[test]
+    fn the_sidecar_is_told_which_instance_it_serves_and_whether_it_owns_the_workers() {
+        // The names and the "1"/"0" encoding are a contract with
+        // `sidecar/src/config.ts`; drifting either side fails open.
+        assert_eq!(
+            instance_env("migration-test", false),
+            [
+                ("YARVIS_INSTANCE", "migration-test".to_string()),
+                ("YARVIS_BACKGROUND_WORKERS", "0".to_string()),
+            ]
+        );
+        assert_eq!(
+            instance_env("main", true)[1],
+            ("YARVIS_BACKGROUND_WORKERS", "1".to_string())
+        );
+    }
 }
