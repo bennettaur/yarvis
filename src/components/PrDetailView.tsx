@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo } from "react";
+import { type ReactNode, useEffect } from "react";
 import { recordEvent } from "../lib/events";
 import { usePrDetail } from "../lib/pr/cache";
 import { refKey } from "../lib/pr/ref";
@@ -109,28 +109,28 @@ function CollapsibleSection({
  * The pieces share one fetch through the PR cache (keyed by the ref), so naming
  * the same PR here and in each child does not multiply requests.
  */
-export default function PrDetailView({ pr, onBack }: { pr: PrSummary; onBack: () => void }) {
+export default function PrDetailView({
+  pr,
+  onBack,
+  recordView = true,
+}: {
+  pr: PrSummary;
+  onBack: () => void;
+  /**
+   * Whether opening this view counts as the user viewing the PR. False when the
+   * panel put us here on its own — restoring a remembered place isn't a fresh
+   * view, and logging one on every app-tab round-trip would flood the activity
+   * log with the same PR.
+   */
+  recordView?: boolean;
+}) {
   const prRef = pr.ref;
   const { data: detail, error } = usePrDetail(prRef);
   // Shared so the file list and diffs stay in lockstep.
   const viewedFiles = usePrViewedFiles(prRef);
-  const guide = usePrGuide(prRef, pr.title, pr.url);
-
-  // The guide's current step, shaped for the diffs to open and scroll to. The
-  // nonce comes from the controller so re-selecting the step the reader is
-  // already on still takes them back to it.
-  const focus = useMemo(
-    () =>
-      guide.step
-        ? {
-            path: guide.step.path,
-            startLine: guide.step.startLine,
-            endLine: guide.step.endLine,
-            nonce: guide.focusNonce,
-          }
-        : null,
-    [guide.step, guide.focusNonce],
-  );
+  // The last argument is what ticks off a step's files as the reader moves past
+  // it; the hook decides which files that is.
+  const guide = usePrGuide(prRef, pr.title, pr.url, viewedFiles.markAllViewed);
 
   // The file list panel is resizable (ratio) and fully collapsible, both
   // persisted so a chosen layout survives navigating between PRs.
@@ -145,8 +145,9 @@ export default function PrDetailView({ pr, onBack }: { pr: PrSummary; onBack: ()
   // PR records a new event. Fire-and-forget.
   // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the ref identity, not the unstable pr object
   useEffect(() => {
+    if (!recordView) return;
     void recordEvent("pr.viewed", { ref: prRef, title: pr.title, url: pr.url }, prRef.provider);
-  }, [refKey(prRef)]);
+  }, [refKey(prRef), recordView]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -198,7 +199,7 @@ export default function PrDetailView({ pr, onBack }: { pr: PrSummary; onBack: ()
                     prRef={prRef}
                     viewed={viewedFiles.viewed}
                     onToggleViewed={viewedFiles.toggle}
-                    focus={focus}
+                    focus={guide.focus}
                   />
                 </div>
               </div>
@@ -224,7 +225,7 @@ export default function PrDetailView({ pr, onBack }: { pr: PrSummary; onBack: ()
                       prRef={prRef}
                       viewed={viewedFiles.viewed}
                       onToggleViewed={viewedFiles.toggle}
-                      focus={focus}
+                      focus={guide.focus}
                     />
                   </div>
                 }

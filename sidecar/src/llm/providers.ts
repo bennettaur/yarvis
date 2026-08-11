@@ -12,7 +12,8 @@ import { validateOutboundUrl } from "../lib/urlSafety.ts";
 /**
  * Provider identifiers.
  *
- * Built-in providers use their bare name (`anthropic`, `bedrock`, `gemini`).
+ * Built-in providers use their bare name (`anthropic`, `bedrock`, `gemini`,
+ * `cerebras`).
  * User-configured proxies are namespaced as `custom:<provider-id>` so they
  * never collide with the built-in ids.
  */
@@ -39,6 +40,9 @@ const GEMINI_MODELS = [
   "gemini-3.1-flash-lite",
   "gemini-3.1-pro-preview",
 ];
+const CEREBRAS_MODELS = ["zai-glm-4.6", "qwen-3-coder-480b", "gpt-oss-120b", "llama-3.3-70b"];
+
+const CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1";
 
 function builtInProviders(config: Config): ProviderInfo[] {
   return [
@@ -61,6 +65,12 @@ function builtInProviders(config: Config): ProviderInfo[] {
       label: "Gemini",
       models: GEMINI_MODELS,
       available: config.secrets.geminiApiKey !== undefined,
+    },
+    {
+      id: "cerebras",
+      label: "Cerebras",
+      models: CEREBRAS_MODELS,
+      available: config.secrets.cerebrasApiKey !== undefined,
     },
   ];
 }
@@ -93,7 +103,7 @@ export async function availableProviders(config: Config, db?: Db): Promise<Provi
  * selection to draw on (e.g. the Telegram bot, which can't see the frontend's
  * localStorage). Returns the first available provider's first model, or null
  * when nothing is configured. Built-ins are listed before custom providers, so
- * a configured Anthropic/Gemini key wins before any proxy.
+ * any keyed built-in wins before a proxy.
  */
 export async function defaultProviderModel(
   config: Config,
@@ -171,6 +181,13 @@ export async function resolveModel(
       const apiKey = config.secrets.geminiApiKey;
       if (!apiKey) throw new Error("Gemini API key not configured");
       return createGoogleGenerativeAI({ apiKey })(modelId);
+    }
+    case "cerebras": {
+      const apiKey = config.secrets.cerebrasApiKey;
+      if (!apiKey) throw new Error("Cerebras API key not configured");
+      // Cerebras serves /chat/completions but not the Responses API, so this
+      // reuses the OpenAI client rather than adding a Cerebras SDK package.
+      return createOpenAI({ apiKey, baseURL: CEREBRAS_BASE_URL }).chat(modelId);
     }
     case "bedrock": {
       return createAmazonBedrock({

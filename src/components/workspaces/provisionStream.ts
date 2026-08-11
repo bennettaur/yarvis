@@ -11,7 +11,10 @@ export function provisionEventLine(ev: ProvisionEvent): string | null {
 /**
  * Drives a provision stream, appending progress text via `onLine`. Resolves
  * once the stream ends. Only a hard top-level `error` event (workspace not
- * found, already provisioning) is returned, so the caller can show it inline.
+ * found, provisioning failed outright) is returned, so the caller can show it
+ * inline. A workspace already being provisioned is not one of those: the stream
+ * follows the run in flight, which is how reopening a workspace mid-provision
+ * picks its log back up.
  * A repo whose setup script failed is not a top-level error — the stream still
  * ends with a `done` event — so it resolves without one; the caller then
  * reloads and lands on the detail view, where the failed repo's setup log is

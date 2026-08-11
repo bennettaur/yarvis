@@ -25,6 +25,37 @@ Three processes with a clean ownership split:
 
 Data lives in a local **PostgreSQL + pgvector**.
 
+## Installing a nightly build
+
+Nightly `.dmg`s are published to the [`nightly`
+release](https://github.com/bennettaur/yarvis/releases/tag/nightly). macOS
+quarantines anything downloaded from the internet, and Gatekeeper refuses to
+launch a quarantined app that Apple has not notarized. Nightlies are ad-hoc
+code-signed but **not notarized**, so the first launch is blocked:
+
+1. Drag **Yarvis** into `/Applications` and try to open it — macOS refuses.
+2. Open **System Settings → Privacy & Security**, find the message about Yarvis
+   near the bottom, and click **Open Anyway**.
+
+That approves this one app while leaving quarantine — and the XProtect malware
+scan that comes with it — in place for everything else. Stripping the flag with
+`xattr -dr com.apple.quarantine /Applications/Yarvis.app` also works, but it
+skips those checks permanently for the bundle, so prefer **Open Anyway**.
+
+An app with *no* signature at all is rejected differently: macOS reports it as
+damaged and offers only to move it to the trash, with no override. That was
+[issue #189](https://github.com/bennettaur/yarvis/issues/189) — nightly builds
+went out unsigned — and it is what the ad-hoc signing fixes.
+
+Nightly builds still need the [prerequisites](#prerequisites) below at runtime:
+PostgreSQL with `pgvector`, plus the secrets entered in Settings.
+
+Notarizing removes the extra step entirely. It needs an Apple Developer account;
+once one exists, set `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
+`APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID` as
+repository secrets and the nightly workflow signs and notarizes without further
+changes.
+
 ## Prerequisites
 
 - [Bun](https://bun.com) (`bun --version`)
@@ -51,7 +82,7 @@ DATABASE_URL="postgres://localhost:5432/yarvis" bun run --cwd sidecar db:migrate
 
 Secrets are entered in the app's **Settings** screen and stored in the macOS
 Keychain — not in env files: the database URL, provider keys (Anthropic,
-Gemini), a GitHub token and/or an Azure DevOps token + organization URL (for the
+Gemini, Cerebras), a GitHub token and/or an Azure DevOps token + organization URL (for the
 PR dashboard + embedded review — either provider can back it, selected with a
 toggle in the PRs tab), a JIRA base URL + account email + API token (for the JIRA
 issues integration on the Issues tab), a Google Cloud OAuth client id/secret (for the Calendar
@@ -76,6 +107,11 @@ The JIRA credentials are for Atlassian Cloud: the base URL is your
 `https://your-org.atlassian.net` site, and the API token (created at
 id.atlassian.com → Security → API tokens) is paired with your account email for
 Basic auth.
+
+Cerebras takes only an API key, created in the Cerebras Cloud console. Unlike a
+custom provider, its endpoint is fixed — Cerebras serves the OpenAI
+`/chat/completions` shape, so Yarvis talks to it through the OpenAI client
+rather than a separate SDK, and there is no base URL to configure.
 
 ### Embeddings
 
@@ -130,6 +166,12 @@ switching workspaces (or leaving the Workspaces tab) and coming back counts as
 opening the workspace again and starts a fresh session. The header's start-session
 button brings one back on the spot.
 
+An issue's "Start work" is held by the sidecar on the workspace itself, not by
+the screen you started it from, so navigating away mid-kick-off doesn't strand
+it. Reopening the workspace rejoins the provisioning run already in flight and
+picks its log back up, then launches the agent on the ticket once it lands. If
+provisioning failed, the ticket is still waiting behind "Retry provisioning".
+
 The agent's tab title and launch command are set under Settings → Repositories →
 Agent, defaulting to `Claude` and `claude --permission-mode auto`, so you can
 bake in default options such as a model or permission mode. The
@@ -151,7 +193,10 @@ Claude starts there rather than inside a single repo: `AGENTS.md` (plus a
 branch, and a `.claude/settings.json` that registers each repo's
 `.claude/skills` and `.claude/agents` so those skills and agents still load
 even though Claude runs one directory above the repos. The settings file is
-merged, not overwritten, so any other keys already present are left intact.
+merged, not overwritten, so any other keys already present are left intact. A
+workspace opened from an issue's "Start work" also gets the ticket itself, in
+`.yarvis/issue-prompt.md` — the file its agent session is launched to read, as
+the last step of provisioning.
 
 At most 60 terminal sessions can be live at once; opening more fails until one
 is closed. Raise or lower that under Settings → Repositories → Terminals (up to
@@ -191,7 +236,9 @@ under Settings.
 
 The PRs tab lists **My PRs**, **Needs review**, **Reviewing**, and saved
 **Filters**, grouped under collapsible per-repo headers (a collapsed repo stays
-collapsed across tabs and restarts). The box above the tabs jumps straight to a
+collapsed across tabs and restarts). Leaving the PRs tab and coming back drops
+you where you were — same provider, same list, and the same PR if you were
+reading one; that too survives a restart. The box above the tabs jumps straight to a
 PR you can already name — paste a `https://github.com/owner/repo/pull/123` link,
 or type `owner/repo#123`; a bare `repo#123` resolves against your registered
 repos, and if the name matches several owners you're asked which one.
@@ -236,6 +283,24 @@ to the bottom of the review with back/next. A guide is generated once per PR and
 kept until you approve, request changes, or merge; pushing new commits marks it
 out of date rather than deleting it, and anything untouched for 30 days is swept.
 
+Not every file gets a stop of its own. Data files, schemas, models and fixtures
+fold into one **data sanity check** step — the agent reports that it checked the
+models are pragmatic, the names semantic, and the human-facing descriptions
+accurate — and test files fold into a **test sanity check**, read against the
+code they cover for untested paths, tests that only exercise their own mocks,
+and departures from how the repo's other tests are written. A file that mixes
+data with logic still gets a walkthrough step for its logic. Steps also carry
+what the agent thinks is *wrong* — an unhandled failure path, a comment that no
+longer describes its code, a misleading name — each a click away from the line
+it is about.
+
+**Next** marks every file the step accounted for as viewed — the same per-file
+state the Viewed pill sets, synced to github.com — so a sanity check clears all
+the files it covered in one move. The last step offers **Finish** instead, which
+credits its files and ends the tour. **Back** is re-reading, and unmarks nothing;
+jumping to a step marks nothing either. A step only ever covers files this pull
+request changed, and never one another step walks you through.
+
 The **?** beside any line asks about that code — shift-click to extend from the
 last line you asked about. Answers are stored against those lines and shown
 inline. They are your own notes, not review feedback: nothing reaches the author
@@ -245,7 +310,7 @@ I work out about that file?", "where did I leave off?").
 
 Both are agent runs against your configured LLM provider, so they need a
 provider key in Settings on top of the GitHub/Azure token, and neither is cheap:
-a tour gives the agent up to 40 tool-calling steps to explore the change and a
+a tour gives the agent up to 60 tool-calling steps to explore the change and a
 line question up to 16, each carrying diffs and file contents.
 
 ### Telegram remote control
@@ -298,16 +363,96 @@ bun run tauri dev
 bun run sidecar:dev
 ```
 
+### Running more than one instance
+
+A branch under development can run beside the app you use day to day. Give the
+second one a name:
+
+```bash
+bun run dev:instance migration-test
+```
+
+The name selects a bundle identifier (`com.mikebennett.yarvis.migration-test`)
+and a pair of Vite dev-server ports derived from the name — the same pair on
+every relaunch, moving to the next free pair in the 1430–1489 range if something
+else holds one. (The second port of each pair is the HMR socket, which Vite uses
+when `TAURI_DEV_HOST` is set.) `YARVIS_DEV_PORT` pins an explicit port instead;
+an occupied one then fails the launch rather than moving. Because macOS derives
+the app data directory from the identifier, each instance gets its own
+`settings.json`, `alarms.json` and core control socket, and the single-instance
+guard no longer sends the second launch to the first window. The window title
+carries the name so they're distinguishable on screen.
+
+All of that separation is the launcher's doing, not the environment variable's.
+Setting `YARVIS_INSTANCE` on a plain `bun run tauri dev` makes the process stand
+down from the hotkeys and background workers below, but leaves the bundle
+identifier alone — so it shares the primary's `settings.json`, `alarms.json` and
+control socket, and the single-instance guard still redirects the launch. Use
+`dev:instance`.
+
+Both instances read the **same Keychain item**, so provider keys, tokens and the
+database URL are entered once and shared. That means the second instance is
+looking at your real data by default — which is what you want for most testing.
+To isolate it (a migration under development is the usual reason), point it at
+its own database:
+
+```bash
+createdb yarvis_dev
+psql -d yarvis_dev -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+YARVIS_DATABASE_URL="postgres://localhost:5432/yarvis_dev" \
+  bun run dev:instance migration-test
+```
+
+`YARVIS_DATABASE_URL` overrides only the Keychain's database URL; every other
+secret still comes from the shared item. Migrations run against whichever
+database the instance is pointed at, so a schema change under test never reaches
+the primary one. Two cautions:
+
+- The Settings screen reads and writes the **shared** Keychain `database_url`,
+  not the override the instance is actually running against. Changing it from an
+  isolated instance's window repoints the primary.
+- A connection string on the command line lands in your shell history and in
+  `ps` output. Export it or use a `.pgpass` if it carries a password.
+
+Some work belongs to exactly one process, and a named instance leaves it to the
+primary one by default:
+
+| What | Why it's singular | Override |
+| --- | --- | --- |
+| Telegram bot | Telegram rejects a second long-poll consumer of the same token | `YARVIS_BACKGROUND_WORKERS=1` |
+| Workspace/PR poller | Doubles provider API traffic and writes the same rows twice | `YARVIS_BACKGROUND_WORKERS=1` |
+| Resuming interrupted kick-offs | Would launch two agent sessions in one workspace | `YARVIS_BACKGROUND_WORKERS=1` |
+| Stale PR-guide sweep | Deletes rows on a schedule; once is enough | `YARVIS_BACKGROUND_WORKERS=1` |
+| Global hotkeys (`Control + Shift + Space`, `Control + Shift + V`) | One process holds an accelerator machine-wide | `YARVIS_GLOBAL_SHORTCUTS=1` |
+
+Set an override to `1` on the instance that should take the work, or `0` on the
+primary to make it stand down instead; only `1`/`true` and `0`/`false` are read,
+and anything else is ignored.
+
+A separate database does **not** make the whole set safe to run twice — it only
+covers the rows. The Telegram bot token comes from the shared Keychain either
+way, so a second bot splits your real command stream between two processes, one
+of which is running unreviewed code; and the workspace poller still doubles
+provider API traffic against your rate limit. Turning the workers on in a second
+instance is reasonable for the kick-off resume and the guide sweep once it has
+its own database, but give it its own bot token before you let it near Telegram.
+
+Workspaces are still shared: both instances create worktrees under
+`YARVIS_WORKSPACES_ROOT` (default `~/dev/yarvis-workspaces`). Point an instance
+elsewhere with that variable if you want its worktrees kept apart too.
+
 ## Testing
 
 ```bash
-bun run test                   # frontend tests (src/) — runs under happy-dom
+bun run test                   # frontend (src/) + dev-script (scripts/) tests
 bun test sidecar/              # sidecar unit/integration tests
 bun run --cwd sidecar typecheck
 bun run build                  # typecheck + build the frontend
 ```
 
-Frontend tests use `bun test` with a happy-dom environment. The preload in
+Frontend tests use `bun test` with a happy-dom environment; the dev-script
+tests under `scripts/` are plain Bun and need none of it. The preload in
 `src/test/setup.ts` registers the DOM, pins the timezone, and stubs the Tauri
 runtime APIs; component tests stub the sidecar data layer (`src/lib/api`) and
 render real components with the `renderToHtml` helper in `src/test/render.tsx`.
@@ -317,7 +462,7 @@ render real components with the `renderToHtml` helper in `src/test/render.tsx`.
 ```
 src/            React frontend (Vite + TS + Tailwind)
   lib/          sidecar API client, Keychain wrappers, Omni Chat context registry, notifications, cross-tab nav (nav.ts)
-    pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs, per-file viewed state, link/shorthand locator, diff parsing + context expansion, guide + insight clients)
+    pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs, per-file viewed state, remembered panel place, link/shorthand locator, diff parsing + context expansion, guide + insight clients)
     issues/     provider-neutral issue data layer (GitHub + JIRA) — types, api client, start-work flow (useGithubStartWork.ts)
     jira/       JIRA-specific data layer (issue detail, transitions, comments, create) — types, api client, start-work flow (useJiraStartWork.ts)
     find/       find-on-page engine — visible-text index, match offsets, CSS Custom Highlight painting, useFind controller
@@ -334,6 +479,7 @@ src/            React frontend (Vite + TS + Tailwind)
   omni/         json-render component catalog, registry, layout primitives
 src-tauri/      Rust core (Tauri v2)
   src/keychain.rs   Keychain-backed secret commands (single consolidated item)
+  src/instance.rs   which instance this process is, and what it therefore owns
   src/sidecar.rs    sidecar supervisor
   src/alarms.rs     full-screen alarm scheduler
   src/clipboard.rs  clipboard read/write + in-memory (never persisted) clip history
@@ -358,6 +504,7 @@ sidecar/        Bun + TS service (Hono)
   src/attention/  attention stream: hook ingest, SSE stream, scoped clearing
   src/chat/attentionTools.ts  request_attention tool (badge + OS notification)
   drizzle/      generated SQL migrations
+scripts/        dev tooling (dev-instance.ts: launch a named second instance)
 ```
 
 ## Attention stream

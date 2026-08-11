@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { GitHubClient } from "../github/client.ts";
-import { createWorkspace } from "../workspaces/service.ts";
+import { createWorkspace, startKickOff } from "../workspaces/service.ts";
 import {
   addStar,
   applyStartWorkSideEffects,
@@ -12,7 +12,6 @@ import {
   createFilter,
   deleteFilter,
   findRepoBySourceKey,
-  getWorkspaceRoot,
   IN_PROGRESS_LABEL,
   listFilters,
   listIssueRepos,
@@ -20,9 +19,7 @@ import {
   listStars,
   mergeIssues,
   removeStar,
-  sanitizeIssueText,
   upsertLink,
-  writeIssuePrompt,
 } from "./service.ts";
 import type { IssueProvider } from "./types.ts";
 
@@ -86,15 +83,10 @@ const updateIssueSchema = z
     message: "no fields to update",
   });
 
-const promptFileSchema = z.object({
-  workspaceId: z.string().uuid(),
-  prompt: z.string().min(1),
-});
-
 /**
  * Providers whose issues are stored/linked through these source-agnostic routes.
- * JIRA reuses the DB-backed slices here (stars, saved filters, workspace links,
- * prompt-file), but its live queries and mutations — keyed by issue key, not
+ * JIRA reuses the DB-backed slices here (stars, saved filters, workspace
+ * links), but its live queries and mutations — keyed by issue key, not
  * owner/repo/number — live under `/api/jira`. The GitHub-shaped live routes
  * below (repos, assigned, all, search, detail, start-work) stay GitHub-only.
  */
@@ -337,9 +329,11 @@ export function createIssueRoutes(config: Config): Hono {
    * — best-effort — assigns the issue to the viewer and labels it in-progress on
    * GitHub. The workspace + link are the source of truth: a failed GitHub write
    * (e.g. a read-only token) is reported as a warning, not an error, so work
-   * still starts. The response carries the composed Claude prompt; provisioning
-   * and prompt-file writing happen next via the workspace provision route and
-   * `/prompt-file` (the worktree doesn't exist yet here).
+   * still starts. The response is only the receipt: the rest of the kick-off —
+   * provisioning, seeding `.yarvis/issue-prompt.md`, launching the agent on the
+   * ticket — runs in the background here, so nothing about it depends on the
+   * caller sticking around. Clients just open the workspace and attach to the
+   * session that is or will be there.
    */
   router.post("/:provider/start-work", async (c) => {
     const provider = c.req.param("provider");
@@ -355,9 +349,21 @@ export function createIssueRoutes(config: Config): Hono {
       return c.json({ error: `repo ${input.sourceKey} is not registered` }, 400);
     }
 
+    const prompt = buildIssuePrompt({
+      displayId: `#${number}`,
+      title: input.title,
+      url: input.url ?? null,
+      body: input.body,
+      sourceKey: input.sourceKey,
+    });
+
     let workspaceId: string;
     try {
-      const ws = await createWorkspace(db(), config, { name: input.title, repoIds: [repo.id] });
+      const ws = await createWorkspace(db(), config, {
+        name: input.title,
+        repoIds: [repo.id],
+        issuePrompt: prompt,
+      });
       workspaceId = ws.id;
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
@@ -384,40 +390,9 @@ export function createIssueRoutes(config: Config): Hono {
         })
       : [];
 
-    const prompt = buildIssuePrompt({
-      displayId: `#${number}`,
-      title: input.title,
-      url: input.url ?? null,
-      body: input.body,
-      sourceKey: input.sourceKey,
-    });
+    startKickOff(db(), workspaceId);
 
-    return c.json({ workspaceId, prompt, warnings }, 201);
-  });
-
-  /**
-   * Writes the issue prompt into a provisioned workspace and returns its
-   * absolute path. Called after provisioning completes (the worktrees, and thus
-   * the workspace root, exist by then); the terminal then launches Claude with
-   * this file.
-   *
-   * The prompt is passed through `sanitizeIssueText` at the boundary so every
-   * producer (issues, tasks, future flows) gets the same defense against hidden
-   * instructions (zero-width / bidi format characters, HTML comments, control
-   * codes) surviving into the auto-approved Claude session. Sanitizing already-
-   * sanitized content is a no-op.
-   */
-  router.post("/:provider/prompt-file", async (c) => {
-    const parsed = promptFileSchema.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const root = await getWorkspaceRoot(db(), parsed.data.workspaceId);
-    if (!root) return c.json({ error: "workspace not found" }, 404);
-    try {
-      const path = await writeIssuePrompt(root, sanitizeIssueText(parsed.data.prompt));
-      return c.json({ path });
-    } catch (e) {
-      return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
-    }
+    return c.json({ workspaceId, warnings }, 201);
   });
 
   return router;

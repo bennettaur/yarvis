@@ -110,7 +110,6 @@ export interface StartWorkInput {
 
 export interface StartWorkResult {
   workspaceId: string;
-  prompt: string;
   warnings: string[];
 }
 

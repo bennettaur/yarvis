@@ -7,6 +7,11 @@
  * webview, so it can be started headlessly (e.g. from Telegram) and the frontend
  * attaches to the same live terminal later by id.
  *
+ * A session can also be given an `instruction` to start on, which is how the
+ * issue "Start work" sequence hands over its ticket: the whole sequence —
+ * provision, seed `.yarvis/issue-prompt.md`, launch — runs here, and the
+ * frontend only ever attaches to the result.
+ *
  * `remoteControl` adds `--remote-control`, making the session drivable from
  * claude.ai/code or the Claude mobile app. It is off unless the launch came from
  * somewhere the user isn't at the machine — see `startedRemotely` in the chat
@@ -25,6 +30,13 @@ export interface StartClaudeSessionInput {
   name: string;
   /** Launch with Remote Control enabled. See this module's header. */
   remoteControl: boolean;
+  /**
+   * What the session starts on, appended to the launch line as one quoted
+   * argument by the core. Set by the issue "Start work" sequence so the ticket
+   * is under way without anyone having to type it; omitted for a session the
+   * user drives themselves.
+   */
+  instruction?: string;
 }
 
 export interface ClaudeSessionResult {

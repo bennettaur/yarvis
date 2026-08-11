@@ -104,6 +104,13 @@ export interface CreateWorkspaceInput {
    */
   existingBranches?: Record<string, string>;
   taskId?: string | null;
+  /**
+   * A "Start work" prompt to seed the workspace's agent session with. The
+   * sidecar seeds `.yarvis/issue-prompt.md` and launches the session on it as
+   * the last steps of provisioning, so the kick-off completes whether or not
+   * this view is still around.
+   */
+  issuePrompt?: string;
 }
 
 export interface ArchiveWorkspaceInput {
@@ -159,7 +166,9 @@ export async function createWorkspace(input: CreateWorkspaceInput): Promise<Work
 
 /**
  * Drives provisioning of a workspace's worktrees, yielding progress events as
- * they stream in (setup-script output arrives as `log` events).
+ * they stream in (setup-script output arrives as `log` events). A workspace
+ * already being provisioned streams the run in flight rather than failing, so
+ * reopening a workspace mid-provision picks its log back up.
  */
 export async function* provisionWorkspace(id: string): AsyncGenerator<ProvisionEvent> {
   for await (const data of streamSSE(`/api/workspaces/${id}/provision`, { method: "POST" })) {

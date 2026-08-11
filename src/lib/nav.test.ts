@@ -9,12 +9,12 @@ import {
 } from "./nav";
 
 describe("open-workspace cross-tab bus", () => {
-  it("delivers the exact request (including claudePrompt) to a subscriber", () => {
+  it("delivers the exact request (including a session to focus) to a subscriber", () => {
     const received: OpenWorkspaceRequest[] = [];
     const off = onOpenWorkspace((r) => received.push(r));
-    requestOpenWorkspace({ id: "ws-1", claudePrompt: "implement the ticket" });
+    requestOpenWorkspace({ id: "ws-1", focusSessionKey: "agent" });
     off();
-    expect(received).toEqual([{ id: "ws-1", claudePrompt: "implement the ticket" }]);
+    expect(received).toEqual([{ id: "ws-1", focusSessionKey: "agent" }]);
   });
 
   it("stops delivering after unsubscribe", () => {

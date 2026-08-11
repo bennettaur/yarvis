@@ -6,8 +6,6 @@ export interface FileTreeFile {
   /** Basename shown in the row; the full path lives on `file.filename`. */
   name: string;
   file: PrFile;
-  /** Position in the original file list, used for the diff anchor id. */
-  index: number;
 }
 
 /** A directory grouping child files and subdirectories. */
@@ -54,14 +52,13 @@ function collapseChain(node: FileTreeNode): FileTreeNode {
 }
 
 /**
- * Turn a flat list of changed files into a folder tree. Each file keeps its
- * original-list `index` so a row can still scroll its diff into view via the
- * shared anchor id. Roots come back sorted (folders first) with single-child
- * folder chains collapsed for a compact display.
+ * Turn a flat list of changed files into a folder tree. Roots come back sorted
+ * (folders first) with single-child folder chains collapsed for a compact
+ * display.
  */
 export function buildFileTree(files: PrFile[]): FileTreeNode[] {
   const root: FileTreeDir = { type: "dir", name: "", path: "", children: [] };
-  files.forEach((file, index) => {
+  for (const file of files) {
     const parts = file.filename.split("/");
     let dir = root;
     for (let i = 0; i < parts.length - 1; i++) {
@@ -74,8 +71,19 @@ export function buildFileTree(files: PrFile[]): FileTreeNode[] {
       }
       dir = child;
     }
-    dir.children.push({ type: "file", name: parts[parts.length - 1], file, index });
-  });
+    dir.children.push({ type: "file", name: parts[parts.length - 1], file });
+  }
   sortChildren(root.children);
   return root.children.map(collapseChain);
+}
+
+/** Read the files back out of a tree in the order the rows appear top to bottom. */
+export function flattenFileTree(nodes: FileTreeNode[]): FileTreeFile[] {
+  const files: FileTreeFile[] = [];
+  const walk = (node: FileTreeNode) => {
+    if (node.type === "file") files.push(node);
+    else node.children.forEach(walk);
+  };
+  nodes.forEach(walk);
+  return files;
 }

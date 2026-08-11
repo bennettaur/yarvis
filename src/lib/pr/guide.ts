@@ -7,6 +7,31 @@ import type { PrRef } from "./types";
  * request rather than the path, so one set of calls serves both providers.
  */
 
+/**
+ * What a step is for: `walkthrough` is code to read, `data` and `tests` are
+ * sanity checks the agent made over files the reviewer would otherwise have to
+ * skim themselves.
+ */
+export type PrGuideStepKind = "walkthrough" | "data" | "tests";
+
+export type PrGuideFindingKind =
+  | "error-handling"
+  | "stale-comment"
+  | "test-gap"
+  | "brittle-test"
+  | "naming"
+  | "convention"
+  | "other";
+
+/** Something the agent flagged in the code a step covers. */
+export interface PrGuideFinding {
+  kind: PrGuideFindingKind;
+  path: string;
+  /** Where the problem is; null when it is about the file as a whole. */
+  startLine: number | null;
+  note: string;
+}
+
 /** One stop on the tour: what to look at, and why it comes here. */
 export interface PrGuideStep {
   path: string;
@@ -15,6 +40,20 @@ export interface PrGuideStep {
   explanation: string;
   /** Longer background, shown only when the reader expands the step. */
   context?: string;
+  /** Absent on guides generated before steps carried a kind; read as a walkthrough. */
+  kind?: PrGuideStepKind;
+  /** Further files this step accounts for, beyond `path`. */
+  covers?: string[];
+  findings?: PrGuideFinding[];
+}
+
+/**
+ * Every file a step accounts for, its own first and each named once. The
+ * sidecar already stores `covers` clean; this is the last stop before the paths
+ * become provider writes, and a repeat here is a wasted round trip per file.
+ */
+export function stepPaths(step: PrGuideStep): string[] {
+  return [...new Set([step.path, ...(step.covers ?? [])])];
 }
 
 export interface PrGuide {

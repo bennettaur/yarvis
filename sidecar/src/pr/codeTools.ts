@@ -43,7 +43,8 @@ const UNTRUSTED =
  * URL to address an entirely different API endpoint with the user's token
  * attached.
  */
-const noTraversal = (s: string) => !s.split("/").some((part) => part === "." || part === "..");
+export const noTraversal = (s: string) =>
+  !s.split("/").some((part) => part === "." || part === "..");
 
 const filePath = z
   .string()

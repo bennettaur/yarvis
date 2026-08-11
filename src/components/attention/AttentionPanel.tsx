@@ -1,4 +1,6 @@
 import { useEffect } from "react";
+import { acknowledgeAlarm, snoozeAlarm, useRingingAlarms } from "../../lib/alarmStore";
+import type { Alarm } from "../../lib/alarms";
 import type { AttentionItem, AttentionKind } from "../../lib/attention";
 import type { AttentionGroup } from "../../lib/attentionGroups";
 import { markAttention, markAttentionScope, useAttentionGroups } from "../../lib/attentionStore";
@@ -7,11 +9,16 @@ import type { WipItem, WipSource } from "../../lib/wip";
 import { sessionTabTitle } from "../shell/terminalTabs/sessionIds";
 
 /**
- * A right slide-out panel with two streams: "Needs you now" (pending attention
- * items — Claude sessions blocked on the user, or the chat agent asking for a
- * decision) and "In progress" (the ambient WIP roll-up). Modeled on the Omni
- * Chat overlay: a fixed, z-50 layer that stays mounted while hidden so the store
- * subscription persists, with a click-away backdrop and Esc-to-close.
+ * A right slide-out panel with three streams: "Ringing" (alarms that have fired
+ * and nobody dismissed), "Needs you now" (pending attention items — Claude
+ * sessions blocked on the user, or the chat agent asking for a decision) and
+ * "In progress" (the ambient WIP roll-up). Modeled on the Omni Chat overlay: a
+ * fixed, z-50 layer that stays mounted while hidden so the store subscription
+ * persists, with a click-away backdrop and Esc-to-close.
+ *
+ * Alarms live in the Rust core rather than the sidecar's attention table, so
+ * they get their own section fed by the alarm store — the same shape the WIP
+ * roll-up already uses.
  */
 
 /** Accent colour per attention kind — amber for blocked, others muted. */
@@ -95,6 +102,39 @@ function AttentionGroupRow({
   );
 }
 
+function RingingAlarmRow({ alarm, onOpen }: { alarm: Alarm; onOpen: () => void }) {
+  // Matches `markAttention`'s convention: an IPC failure is logged, not thrown,
+  // so a rejected dismiss doesn't surface as an unhandled rejection.
+  const act = (action: Promise<void>) =>
+    void action.catch((e) => console.error("[alarms] action failed:", e));
+
+  return (
+    <li className="flex items-start gap-3 px-4 py-3 hover:bg-zinc-800/60">
+      <span className="mt-1.5 h-2 w-2 shrink-0 animate-pulse rounded-full bg-red-500" />
+      <button type="button" onClick={onOpen} className="min-w-0 flex-1 text-left">
+        <div className="truncate text-sm text-zinc-100">{alarm.label}</div>
+        <div className="mt-0.5 text-[11px] text-zinc-500">
+          {formatRelativeTime(new Date(alarm.fireAtMs).toISOString())}
+        </div>
+      </button>
+      <button
+        type="button"
+        onClick={() => act(snoozeAlarm(alarm.id, 5))}
+        className="shrink-0 rounded px-1 text-xs text-zinc-500 hover:text-zinc-200"
+      >
+        Snooze
+      </button>
+      <button
+        type="button"
+        onClick={() => act(acknowledgeAlarm(alarm.id))}
+        className="shrink-0 rounded px-1 text-xs text-zinc-400 hover:text-zinc-100"
+      >
+        Dismiss
+      </button>
+    </li>
+  );
+}
+
 function WipRow({ item, onOpen }: { item: WipItem; onOpen: (item: WipItem) => void }) {
   return (
     <li className="hover:bg-zinc-800/60">
@@ -133,6 +173,7 @@ export default function AttentionPanel({
   wip,
   wipLoading,
   onOpenWip,
+  onOpenAlarms,
 }: {
   open: boolean;
   onClose: () => void;
@@ -140,8 +181,10 @@ export default function AttentionPanel({
   wip: WipItem[];
   wipLoading: boolean;
   onOpenWip: (item: WipItem) => void;
+  onOpenAlarms: () => void;
 }) {
   const groups = useAttentionGroups();
+  const ringing = useRingingAlarms();
 
   useEffect(() => {
     if (!open) return;
@@ -177,6 +220,19 @@ export default function AttentionPanel({
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto">
+          {/* Only shown when something is actually ringing — an empty alarm
+              section would push the two permanent streams down for nothing. */}
+          {ringing.length > 0 && (
+            <>
+              <SectionHeader label="Ringing" count={ringing.length} />
+              <ul className="divide-y divide-zinc-800">
+                {ringing.map((alarm) => (
+                  <RingingAlarmRow key={alarm.id} alarm={alarm} onOpen={onOpenAlarms} />
+                ))}
+              </ul>
+            </>
+          )}
+
           <SectionHeader label="Needs you now" count={groups.length} />
           {groups.length === 0 ? (
             <p className="px-4 py-4 text-xs text-zinc-500">Nothing needs you right now.</p>

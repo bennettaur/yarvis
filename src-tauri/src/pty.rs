@@ -561,13 +561,26 @@ fn remote_control_command(base: &str, name: &str) -> String {
 }
 
 /// The launch line for an agent session: the base command, with Remote Control
-/// added only when asked for. Extracted from `spawn_claude_session` alongside
+/// added only when asked for, and an `instruction` the session should start on
+/// appended as a single argument. Extracted from `spawn_claude_session` alongside
 /// `remote_control_command` so the choice is unit-testable without app state.
-fn agent_launch_command(base: &str, name: &str, remote_control: bool) -> String {
-    if remote_control {
+///
+/// The instruction carries issue text, which an outside party writes, so it is
+/// quoted like the session name rather than interpolated raw.
+fn agent_launch_command(
+    base: &str,
+    name: &str,
+    remote_control: bool,
+    instruction: Option<&str>,
+) -> String {
+    let command = if remote_control {
         remote_control_command(base, name)
     } else {
         base.trim().to_string()
+    };
+    match instruction.map(str::trim).filter(|i| !i.is_empty()) {
+        Some(instruction) => format!("{} {}", command, shell_single_quote(instruction)),
+        None => command,
     }
 }
 
@@ -610,9 +623,10 @@ pub fn spawn_claude_session(
     cwd: String,
     name: &str,
     remote_control: bool,
+    instruction: Option<&str>,
 ) -> Result<(), String> {
     let id = format!("ws-claude:{workspace_id}");
-    let command = agent_launch_command(&agent_command(app), name, remote_control);
+    let command = agent_launch_command(&agent_command(app), name, remote_control, instruction);
     spawn_into_state(
         app,
         state,
@@ -706,6 +720,9 @@ pub fn pty_start_claude(
     name: String,
     remote_control: bool,
 ) -> Result<(), String> {
+    // No instruction: a session the frontend opens on entering a workspace is
+    // one the user drives themselves. The issue "Start work" sequence runs in
+    // the sidecar and spawns through the control channel instead.
     spawn_claude_session(
         &app,
         state.inner(),
@@ -713,6 +730,7 @@ pub fn pty_start_claude(
         cwd,
         &name,
         remote_control,
+        None,
     )
 }
 
@@ -1004,14 +1022,49 @@ mod tests {
     #[test]
     fn agent_launch_command_adds_remote_control_only_when_asked() {
         assert_eq!(
-            agent_launch_command("claude --permission-mode auto", "Fix bug", true),
+            agent_launch_command("claude --permission-mode auto", "Fix bug", true, None),
             "claude --permission-mode auto --remote-control 'Fix bug'"
         );
         // A session started at the machine is driven in its own tab; Remote
         // Control is enabled from inside it if the user later steps away.
         assert_eq!(
-            agent_launch_command("claude --permission-mode auto", "Fix bug", false),
+            agent_launch_command("claude --permission-mode auto", "Fix bug", false, None),
             "claude --permission-mode auto"
+        );
+    }
+
+    #[test]
+    fn agent_launch_command_appends_an_instruction_as_one_quoted_argument() {
+        assert_eq!(
+            agent_launch_command(
+                "claude --permission-mode auto",
+                "Fix bug",
+                false,
+                Some("Read .yarvis/issue-prompt.md")
+            ),
+            "claude --permission-mode auto 'Read .yarvis/issue-prompt.md'"
+        );
+        // Remote Control and an instruction compose; the name and the
+        // instruction are quoted independently.
+        assert_eq!(
+            agent_launch_command("claude", "Fix bug", true, Some("Do the thing")),
+            "claude --remote-control 'Fix bug' 'Do the thing'"
+        );
+    }
+
+    #[test]
+    fn agent_launch_command_quotes_an_instruction_that_carries_shell_metacharacters() {
+        // Issue text is written by an outside party, so it must not be able to
+        // end the argument and start a command of its own.
+        let cmd = agent_launch_command("claude", "n", false, Some("it's; rm -rf ~ `id` $(id)"));
+        assert_eq!(cmd, r"claude 'it'\''s; rm -rf ~ `id` $(id)'");
+    }
+
+    #[test]
+    fn agent_launch_command_ignores_a_blank_instruction() {
+        assert_eq!(
+            agent_launch_command("claude", "n", false, Some("   ")),
+            "claude"
         );
     }
 

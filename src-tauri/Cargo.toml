@@ -36,3 +36,8 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-global-shortcut = "2"
 
+[dev-dependencies]
+# `tauri/test` provides `tauri::test::mock_app`, which the alarm tests use to
+# drive the real commands against a managed AlarmState. Cargo unions features
+# across dependency tables, so this only affects test builds.
+tauri = { version = "2", features = ["test"] }

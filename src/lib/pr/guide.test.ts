@@ -1,6 +1,12 @@
 import { afterAll, describe, expect, it, spyOn } from "bun:test";
 import * as api from "../api";
-import { deletePrGuide, fetchPrGuide, setPrGuideProgress } from "./guide";
+import {
+  deletePrGuide,
+  fetchPrGuide,
+  type PrGuideStep,
+  setPrGuideProgress,
+  stepPaths,
+} from "./guide";
 import type { PrRef } from "./types";
 
 /**
@@ -73,5 +79,39 @@ describe("guide ref query", () => {
     const last = calls[calls.length - 1]!;
     expect(last.path).not.toContain("?");
     expect(JSON.parse(String(last.init?.body))).toEqual({ ref: ghRef, step: 3 });
+  });
+});
+
+/**
+ * Advancing past a step marks everything it accounted for as viewed, so this
+ * has to name every file — a sanity-check step stands in for all of them.
+ */
+describe("stepPaths", () => {
+  const step = (over: Partial<PrGuideStep> = {}): PrGuideStep => ({
+    path: "src/api.ts",
+    startLine: null,
+    endLine: null,
+    explanation: "",
+    ...over,
+  });
+
+  it("is just the step's own file when it covers nothing else", () => {
+    expect(stepPaths(step())).toEqual(["src/api.ts"]);
+  });
+
+  it("includes the files a sanity check covered", () => {
+    expect(stepPaths(step({ covers: ["a.test.ts", "b.test.ts"] }))).toEqual([
+      "src/api.ts",
+      "a.test.ts",
+      "b.test.ts",
+    ]);
+  });
+
+  // The step's own path repeated in `covers` would mark the same file twice.
+  it("does not repeat the step's own file", () => {
+    expect(stepPaths(step({ covers: ["src/api.ts", "a.test.ts"] }))).toEqual([
+      "src/api.ts",
+      "a.test.ts",
+    ]);
   });
 });

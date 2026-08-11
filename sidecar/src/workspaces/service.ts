@@ -6,7 +6,7 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { relative } from "node:path";
-import { and, eq, inArray, ne } from "drizzle-orm";
+import { and, eq, getTableColumns, inArray, isNotNull, ne } from "drizzle-orm";
 import { publish } from "../attention/hub.ts";
 import { clearAttentionScope, createAttention } from "../attention/service.ts";
 import type { Config } from "../config.ts";
@@ -24,9 +24,19 @@ import {
   workspaceRepos,
   workspaces,
 } from "../db/schema.ts";
-import { deleteLinkForWorkspace, listLinksForWorkspace, upsertLink } from "../issues/service.ts";
+import {
+  deleteLinkForWorkspace,
+  listLinksForWorkspace,
+  sanitizeIssueText,
+  upsertLink,
+  writeIssuePrompt,
+} from "../issues/service.ts";
 import { completeTasksByWorkspace, tasksForWorkspace } from "../tasks/service.ts";
-import { stopClaudeSession } from "./claudeSession.ts";
+import {
+  type ClaudeSessionStarter,
+  startClaudeSession,
+  stopClaudeSession,
+} from "./claudeSession.ts";
 import { writeClaudeSettings } from "./claudeSettings.ts";
 import { runStreaming } from "./exec.ts";
 import {
@@ -293,6 +303,12 @@ export interface CreateWorkspaceInput {
    */
   existingBranches?: Record<string, string>;
   taskId?: string | null;
+  /**
+   * The "Start work" prompt for this workspace. Stored on the row so
+   * provisioning can write it to `.yarvis/issue-prompt.md` itself and the agent
+   * launch survives the UI navigating away — see `workspaces.pendingIssuePrompt`.
+   */
+  issuePrompt?: string | null;
 }
 
 export interface WorkspaceRepoDetail extends WorkspaceRepo {
@@ -363,11 +379,18 @@ export async function createWorkspace(
     nameCounts.set(lowerName, (nameCounts.get(lowerName) ?? 0) + 1);
   }
 
+  // Sanitized here rather than at each caller so every producer (issues, JIRA,
+  // tasks) gets the same defense against hidden instructions surviving into the
+  // auto-approved agent session. Sanitizing sanitized text is a no-op.
+  const pendingIssuePrompt = input.issuePrompt?.trim()
+    ? sanitizeIssueText(input.issuePrompt)
+    : null;
+
   // One transaction so a mid-create failure never leaves a half-built workspace.
   return db.transaction(async (tx) => {
     const [workspace] = await tx
       .insert(workspaces)
-      .values({ name: input.name.trim(), slug, rootPath, status: "creating" })
+      .values({ name: input.name.trim(), slug, rootPath, status: "creating", pendingIssuePrompt })
       .returning();
 
     // A scratch workspace has no repo rows; skip the insert (Drizzle rejects an
@@ -401,13 +424,19 @@ export async function createWorkspace(
   });
 }
 
-export interface WorkspaceSummary extends Workspace {
+/**
+ * A workspace list row. Everything on the workspace except the pending kick-off
+ * prompt, which holds a whole ticket body and is wanted only by the one
+ * workspace being opened — this list is polled, and for every workspace at once.
+ */
+export interface WorkspaceSummary extends Omit<Workspace, "pendingIssuePrompt"> {
   /** Names of the repos in this workspace, for grouping in the sidebar. */
   repoNames: string[];
 }
 
 export async function listWorkspaces(db: Db): Promise<WorkspaceSummary[]> {
-  const wsRows = await db.select().from(workspaces).orderBy(workspaces.createdAt);
+  const { pendingIssuePrompt: _omitted, ...listColumns } = getTableColumns(workspaces);
+  const wsRows = await db.select(listColumns).from(workspaces).orderBy(workspaces.createdAt);
   if (!wsRows.length) return [];
 
   const memberships = await db
@@ -694,8 +723,104 @@ async function withRepoLock<T>(repoId: string, fn: () => Promise<T>): Promise<T>
   return result;
 }
 
-/** Workspaces currently being provisioned, to reject concurrent drives. */
-const provisioning = new Set<string>();
+/**
+ * How many progress events a run keeps for replay. Setup-script output can be
+ * long, so a late subscriber gets the tail rather than the whole log — enough to
+ * see what is happening now without buffering a build's worth of output per run.
+ */
+const PROVISION_HISTORY_CAP = 500;
+
+export interface ProvisionOptions {
+  runner?: GitRunner;
+  /** How the kick-off session is started. Injectable so provisioning is testable
+   *  without the Rust core on the other end of the control channel. */
+  startSession?: ClaudeSessionStarter;
+  /**
+   * Launch the kick-off session with Remote Control. Off by default: a kick-off
+   * started at the machine opens in a tab the user is on their way to. The chat
+   * agent turns it on when the request came from somewhere the user isn't.
+   */
+  remoteControl?: boolean;
+  /** Stops *following* an in-flight run when the caller's stream goes away. It
+   *  never cancels the run itself — finishing without an audience is the point. */
+  signal?: AbortSignal;
+}
+
+/** A provisioning run in flight, with what it takes for a second caller to
+ *  follow along rather than be turned away. */
+interface ProvisionRun {
+  /** Recent events, replayed to a subscriber that joined mid-run. */
+  history: ProvisionEvent[];
+  /**
+   * Everyone being served this run. Mixed on purpose: whoever started it is
+   * subscribed directly, so its writes are awaited and its backpressure reaches
+   * the setup script; followers go through `followProvision`, which queues
+   * instead of returning a promise, so they never gate the run.
+   */
+  subscribers: Set<ProvisionEmit>;
+  /** Resolves when the run has emitted its terminal event. */
+  finished: Promise<void>;
+}
+
+/** Provisioning runs in flight, keyed by workspace id. */
+const provisioning = new Map<string, ProvisionRun>();
+
+/**
+ * Follows a provisioning run already in flight: replays its recent progress,
+ * then streams the rest until it ends. This is what makes a kicked-off workspace
+ * resumable — reopening its view while provisioning runs re-drives the same
+ * endpoint, and turning that second drive into an error (as rejecting it would)
+ * collapses the view the user just came back to.
+ */
+async function followProvision(
+  run: ProvisionRun,
+  emit: ProvisionEmit,
+  signal?: AbortSignal,
+): Promise<void> {
+  // Deliveries queue on a chain, which is what keeps the replay ahead of the
+  // live events that arrive while it is still flushing. The chain never rejects
+  // and the run never waits on it: whoever started the run is the consumer whose
+  // backpressure matters, and a follower whose stream has closed must neither
+  // poison its own queue nor hold up the run for everyone else.
+  let chain: Promise<void> = Promise.resolve();
+  const ordered: ProvisionEmit = (event) => {
+    chain = chain.then(() => emit(event)).catch(() => undefined);
+  };
+  // Snapshot and subscribe in one synchronous step, so an event emitted
+  // meanwhile is neither missed nor delivered twice. `safeEmit` holds up its end
+  // by recording and fanning out in one step of its own.
+  const replay = [...run.history];
+  run.subscribers.add(ordered);
+  for (const event of replay) ordered(event);
+  try {
+    // Detaching on abort matters because a run can outlive many followers: the
+    // workspace view re-drives provisioning every time it is reopened, and Hono
+    // swallows writes to a closed stream, so a departed follower is otherwise
+    // indistinguishable from a live one and would be served every remaining
+    // event for the rest of the run.
+    await Promise.race([run.finished, aborted(signal)]);
+  } finally {
+    // Detach before draining, not after: on the abort path everything still
+    // queued is headed for a closed stream, and staying subscribed while it
+    // drains is the very thing this is here to stop.
+    run.subscribers.delete(ordered);
+  }
+  await chain;
+}
+
+/**
+ * Resolves when `signal` aborts, or never when there is nothing to wait on.
+ * The listener outlives the race when the run wins it — harmless because these
+ * signals are per-request and collected with the response, which is the only
+ * caller this has.
+ */
+function aborted(signal?: AbortSignal): Promise<void> {
+  if (!signal) return new Promise<void>(() => {});
+  if (signal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    signal.addEventListener("abort", () => resolve(), { once: true });
+  });
+}
 
 /**
  * (Re)writes AGENTS.md and CLAUDE.md at the workspace root. Claude is started
@@ -743,24 +868,50 @@ function writeContextFiles(detail: WorkspaceDetail): void {
  * Drives provisioning for a workspace: per repo, ensure the primary clone,
  * refresh its default branch, cut a worktree, and run the setup script —
  * emitting progress events (setup output streams through `emit`). Idempotent
- * enough to retry: a repo already `ready`/`removed` is skipped.
+ * enough to retry: a repo already `ready`/`removed` is skipped. A call made
+ * while a run is already in flight follows that run instead of starting a
+ * second one, and `signal` detaches that follower without disturbing the run.
  */
 export async function provisionWorkspace(
   db: Db,
   id: string,
   emit: ProvisionEmit,
-  runner: GitRunner = defaultGitRunner,
+  {
+    runner = defaultGitRunner,
+    signal,
+    startSession = startClaudeSession,
+    remoteControl = false,
+  }: ProvisionOptions = {},
 ): Promise<void> {
-  if (provisioning.has(id)) {
-    await emit({ type: "error", message: "workspace is already being provisioned" });
-    return;
-  }
-  provisioning.add(id);
+  const inFlight = provisioning.get(id);
+  if (inFlight) return followProvision(inFlight, emit, signal);
+
+  const { promise: finished, resolve: settle } = Promise.withResolvers<void>();
+  const run: ProvisionRun = { history: [], subscribers: new Set([emit]), finished };
+  provisioning.set(id, run);
+
   // Repos provision in parallel, so serialize emits: concurrent stream writes
-  // would otherwise interleave bytes within a single SSE frame.
+  // would otherwise interleave bytes within a single SSE frame. A subscriber's
+  // failure is swallowed rather than propagated — a stream that closed when its
+  // reader went away is not the run's problem to fail over.
   let emitChain: Promise<void> = Promise.resolve();
   const safeEmit: ProvisionEmit = (event) => {
-    emitChain = emitChain.then(() => emit(event));
+    emitChain = emitChain.then(async () => {
+      // Recording for replay and snapshotting the subscribers must stay a single
+      // synchronous step: an await between them is a window in which a joining
+      // subscriber (see `followProvision`) either misses this event or gets it
+      // twice.
+      run.history.push(event);
+      if (run.history.length > PROVISION_HISTORY_CAP) run.history.shift();
+      const subscribers = [...run.subscribers];
+      await Promise.all(
+        subscribers.map((subscriber) =>
+          Promise.resolve()
+            .then(() => subscriber(event))
+            .catch(() => undefined),
+        ),
+      );
+    });
     return emitChain;
   };
 
@@ -887,14 +1038,141 @@ export async function provisionWorkspace(
       );
     }
     const allReady = after?.repos.every((r) => r.status === "ready" || r.status === "removed");
-    const status = allReady ? "active" : "error";
+    let status: Workspace["status"] = allReady ? "active" : "error";
+    let error = allReady ? null : "one or more repos failed";
+
+    // Finish the "Start work" kick-off before reporting the workspace active,
+    // so by the time anything can see it there is already a session to attach
+    // to. Doing it here rather than in the caller is what frees the flow from
+    // whoever started it: seeding the prompt file and launching the agent are
+    // the last two steps of provisioning, not a UI's follow-up.
+    const pendingPrompt = after?.pendingIssuePrompt;
+    if (status === "active" && after && pendingPrompt) {
+      try {
+        await writeIssuePrompt(after.rootPath, pendingPrompt);
+      } catch (e) {
+        status = "error";
+        error = `could not write the issue prompt file: ${e instanceof Error ? e.message : String(e)}`;
+      }
+    }
+
+    // Launch before the status flips, so a workspace is never reported ready
+    // with its kick-off still owed a session — whoever looks next just attaches.
+    if (status === "active" && after && pendingPrompt) {
+      await launchKickOffSession(db, after, startSession, remoteControl);
+    }
+
     await db
       .update(workspaces)
-      .set({ status, updatedAt: new Date(), error: allReady ? null : "one or more repos failed" })
+      .set({ status, updatedAt: new Date(), error })
       .where(eq(workspaces.id, id));
     await safeEmit({ type: "done", status });
+  } catch (e) {
+    // Reported rather than rethrown, so every subscriber gets the same terminal
+    // event — only the caller that threw would otherwise learn the outcome, and
+    // a follower's stream would just end. Recording the failure on the row is
+    // what turns the workspace's button into a retry instead of leaving it stuck
+    // in `creating`.
+    const message = e instanceof Error ? e.message : String(e);
+    // Emit before recording. A failed database write is the likeliest way to
+    // land here, so writing first would throw again and cost every subscriber
+    // the terminal event this block exists to deliver.
+    await safeEmit({ type: "error", message });
+    await db
+      .update(workspaces)
+      .set({ status: "error", updatedAt: new Date(), error: message })
+      .where(eq(workspaces.id, id))
+      // The status is a convenience — it turns the workspace's button into a
+      // retry. The event above is what callers actually wait on.
+      .catch(() => undefined);
   } finally {
     provisioning.delete(id);
+    settle();
+  }
+}
+
+/**
+ * What a "Start work" session is told to do. The ticket itself is written to a
+ * known file under the workspace root, so a fixed instruction to read that file
+ * is enough and a body of any size stays off the command line.
+ */
+export const AGENT_ISSUE_INSTRUCTION =
+  "Read the ticket details in .yarvis/issue-prompt.md and implement a first pass at the ticket, following the repository's conventions.";
+
+/**
+ * Launches the session a kick-off has been waiting for and drops the prompt that
+ * recorded it was owed. Best-effort by design: the workspace is provisioned and
+ * usable either way, so a launch failure (commonly: the agent isn't logged in)
+ * leaves the prompt in place for `resumeKickOffs` to retry rather than failing
+ * the workspace. Retrying is safe — the core keys sessions by workspace and
+ * discards a spawn for an id that already has one.
+ */
+async function launchKickOffSession(
+  db: Db,
+  detail: WorkspaceDetail,
+  startSession: ClaudeSessionStarter,
+  remoteControl: boolean,
+): Promise<void> {
+  try {
+    await startSession({
+      workspaceId: detail.id,
+      cwd: detail.rootPath,
+      name: detail.name,
+      remoteControl,
+      instruction: AGENT_ISSUE_INSTRUCTION,
+    });
+  } catch (e) {
+    console.error("[workspaces] could not start the kick-off session:", e);
+    return;
+  }
+  await clearPendingIssuePrompt(db, detail.id).catch(() => undefined);
+}
+
+/**
+ * Drops a workspace's pending "Start work" prompt, once its session has been
+ * launched on the ticket. Until then the prompt stays put, which is what lets an
+ * interrupted kick-off resume.
+ */
+export async function clearPendingIssuePrompt(db: Db, id: string): Promise<void> {
+  await db
+    .update(workspaces)
+    .set({ pendingIssuePrompt: null, updatedAt: new Date() })
+    .where(eq(workspaces.id, id));
+}
+
+/**
+ * Starts a workspace's kick-off running in the background and returns at once.
+ * "Start work" answers as soon as the workspace and its issue link exist, because
+ * cloning and a setup script take minutes and nothing downstream should wait on
+ * them: provisioning, seeding the prompt file, and launching the session all
+ * finish here whether or not anyone is still looking at the screen that asked.
+ * Progress is watchable meanwhile via the provision stream, which joins the run
+ * already going.
+ */
+export function startKickOff(db: Db, id: string): void {
+  void provisionWorkspace(db, id, () => undefined).catch((e) =>
+    console.error(`[workspaces] kick-off failed for ${id}:`, e),
+  );
+}
+
+/**
+ * Resumes kick-offs stranded by a sidecar restart: any workspace still holding a
+ * prompt is one whose session was never launched. Provisioning is idempotent, so
+ * this re-drives it whatever state the workspace stopped in. Called once at
+ * startup — nothing else can strand one, since the sequence otherwise runs to
+ * completion in the background regardless of what the UI is doing.
+ */
+export async function resumeKickOffs(db: Db, options: ProvisionOptions = {}): Promise<void> {
+  const stranded = await db
+    .select({ id: workspaces.id })
+    .from(workspaces)
+    .where(and(isNotNull(workspaces.pendingIssuePrompt), ne(workspaces.status, "archived")));
+  if (!stranded.length) return;
+  console.warn(`[workspaces] resuming ${stranded.length} interrupted kick-off(s)`);
+  for (const { id } of stranded) {
+    await provisionWorkspace(db, id, () => undefined, options).catch((e) =>
+      console.error(`[workspaces] could not resume kick-off for ${id}:`, e),
+    );
   }
 }
 
@@ -1106,6 +1384,10 @@ async function removeWorktreesAndFinish(
       summary: input.summary ?? detail.summary,
       mergedPrUrl: input.mergedPrUrl ?? detail.mergedPrUrl ?? linkedPrUrl(detail),
       error: fullyRemoved ? null : "one or more worktrees could not be removed",
+      // A torn-down workspace has no session left to hand a kick-off to, so a
+      // prompt still pending on it is only a copy of the ticket body kept alive
+      // for nobody.
+      pendingIssuePrompt: fullyRemoved ? null : detail.pendingIssuePrompt,
       archivedAt: fullyRemoved ? new Date() : null,
       updatedAt: new Date(),
     })

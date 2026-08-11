@@ -2,12 +2,13 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import type { Alarm } from "../lib/alarms";
 import { nativeInvoke } from "../test/nativeInvoke";
-import { renderToHtml } from "../test/render";
+import { mountForInteraction, renderToHtml } from "../test/render";
 
 /**
  * Verifies the takeover's meeting affordance: a "Join meeting" button appears
  * only when the alarm carries a meet link, and clicking it both opens the link
- * and ends the alarm (acknowledge).
+ * and ends the alarm (acknowledge). Also covers the queue hint that tells the
+ * user other alarms are waiting behind this one (issue #201).
  */
 
 const opened: string[] = [];
@@ -47,7 +48,7 @@ describe("AlarmOverlay", () => {
     const html = await renderToHtml(
       createElement(AlarmOverlay, {
         alarm: { ...baseAlarm, meetLink: "https://meet.google.com/abc" },
-        onDone: () => {},
+        remaining: 0,
       }),
     );
     expect(html).toContain("Join meeting");
@@ -55,30 +56,35 @@ describe("AlarmOverlay", () => {
 
   it("omits the Join meeting button when there is no meet link", async () => {
     const html = await renderToHtml(
-      createElement(AlarmOverlay, { alarm: baseAlarm, onDone: () => {} }),
+      createElement(AlarmOverlay, { alarm: baseAlarm, remaining: 0 }),
     );
     expect(html).not.toContain("Join meeting");
   });
 
-  it("opens the link and ends the alarm when Join meeting is clicked", async () => {
-    let done = false;
+  it("says how many alarms are waiting behind this one", async () => {
+    const html = await renderToHtml(
+      createElement(AlarmOverlay, { alarm: baseAlarm, remaining: 2 }),
+    );
+    expect(html).toContain("2 more alarms waiting behind this one");
+  });
 
-    // Mounted by hand rather than via renderToHtml: the click has to happen
-    // between render and reading effects, and renderToHtml only returns a
-    // static HTML string with no live handle to dispatch the click on.
-    const host = document.createElement("div");
-    document.body.appendChild(host);
-    const { createRoot } = await import("react-dom/client");
-    const root = createRoot(host);
-    root.render(
+  it("says nothing about a queue when this is the only alarm", async () => {
+    const html = await renderToHtml(
+      createElement(AlarmOverlay, { alarm: baseAlarm, remaining: 0 }),
+    );
+    expect(html).not.toContain("waiting behind");
+  });
+
+  it("opens the link and ends the alarm when Join meeting is clicked", async () => {
+    // Mounted live rather than via renderToHtml: the click needs a real handle
+    // to dispatch on, which a static HTML string can't give.
+    const { host, unmount } = await mountForInteraction(
       createElement(AlarmOverlay, {
         alarm: { ...baseAlarm, meetLink: "https://meet.google.com/abc" },
-        onDone: () => {
-          done = true;
-        },
+        remaining: 0,
       }),
+      50,
     );
-    await new Promise((resolve) => setTimeout(resolve, 50));
 
     const joinButton = Array.from(host.querySelectorAll("button")).find(
       (b) => b.textContent === "Join meeting",
@@ -89,9 +95,7 @@ describe("AlarmOverlay", () => {
 
     expect(opened).toEqual(["https://meet.google.com/abc"]);
     expect(invoked).toContainEqual({ command: "acknowledge_alarm", args: { id: "a1" } });
-    expect(done).toBe(true);
 
-    root.unmount();
-    host.remove();
+    unmount();
   });
 });

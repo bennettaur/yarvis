@@ -1,5 +1,5 @@
 import { createApp } from "./app.ts";
-import { loadConfig } from "./config.ts";
+import { loadConfig, loadInstanceConfig } from "./config.ts";
 import { getDb } from "./db/client.ts";
 import { runMigrations } from "./db/migrate.ts";
 import { watchParentProcess } from "./lib/parentWatch.ts";
@@ -8,8 +8,10 @@ import { sweepStaleGuides } from "./pr/guides.ts";
 import { createReadiness } from "./readiness.ts";
 import { startTelegramBot } from "./telegram/index.ts";
 import { startWorkspacePoller } from "./workspaces/poller.ts";
+import { resumeKickOffs } from "./workspaces/service.ts";
 
 const config = loadConfig();
+const instance = loadInstanceConfig();
 
 // When launched by the Rust core (host-supplied token), exit if that parent
 // dies, so a crash/force-quit can't leave an orphaned sidecar polling Telegram
@@ -53,12 +55,26 @@ if (config.databaseUrl) {
   runMigrations(config.databaseUrl)
     .then(() => {
       readiness.set("ready");
+      // A secondary instance serves its window and nothing else: the work below
+      // reaches out to providers and writes rows on a schedule, and running it
+      // from two processes against one database duplicates both.
+      if (!instance.backgroundWorkers) {
+        console.log(`[sidecar] instance '${instance.name}' is not running background workers`);
+        return;
+      }
       // The Telegram bot drives the chat agent, which needs the database, so it
       // only starts once migrations have applied. It is a no-op without a token.
       startTelegramBot(config);
       // Background PR/checks poller. No-op without a GitHub token; reconciles
       // interrupted runs on its first tick.
       startWorkspacePoller(config);
+      // A workspace still holding a "Start work" prompt is one whose session was
+      // never launched, which only a restart mid-kick-off can leave behind — the
+      // sequence otherwise runs to completion here regardless of the UI. Pick
+      // those back up, provisioning included.
+      resumeKickOffs(getDb(config.databaseUrl as string).db).catch((e) =>
+        console.error("[sidecar] could not resume interrupted kick-offs:", e),
+      );
       // Backstop for review guides whose pull requests were closed on the
       // provider's own site, which the app never observes. Once at startup is
       // enough for a month-long TTL; a timer would only make it prompter about
