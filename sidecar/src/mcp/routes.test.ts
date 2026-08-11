@@ -25,11 +25,16 @@ const config: Config = {
   embeddingsSecrets: { headers: {} },
   telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
 };
-const app = createApp(config);
 const jsonAuth = { Authorization: "Bearer test-token", "Content-Type": "application/json" };
+
+// The tool routes seed the built-in registry once per app and remember they did,
+// so an app outliving the TRUNCATE below would serve an empty registry for every
+// test after the first. Build a fresh one per test to keep the two in step.
+let app: ReturnType<typeof createApp>;
 
 beforeEach(async () => {
   await sql`TRUNCATE agent_tools, mcp_servers RESTART IDENTITY CASCADE`;
+  app = createApp(config);
 });
 
 afterAll(async () => {
