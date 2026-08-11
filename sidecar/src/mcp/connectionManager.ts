@@ -1,6 +1,5 @@
 import { createMCPClient, type ListToolsResult, type MCPClient } from "@ai-sdk/mcp";
 import { Experimental_StdioMCPTransport } from "@ai-sdk/mcp/mcp-stdio";
-import type { Tool } from "ai";
 import type { McpServerSecrets } from "../config.ts";
 import type { McpServerRow } from "../db/schema.ts";
 import { validateOutboundUrl } from "../lib/urlSafety.ts";
@@ -33,10 +32,21 @@ const SAFE_STDIO_ENV_KEYS = [
   "SHELL",
 ];
 
+/**
+ * Executable tools as the MCP client hands them back. Taken from the client's
+ * own return type rather than written as `Record<string, Tool>`: a server's
+ * schemas are only known at runtime, so these carry an unknown input schema,
+ * which `Tool`'s own schema parameter will not accept.
+ */
+export type McpClientTools = Awaited<ReturnType<MCPClient["tools"]>>;
+
+/** A single executable tool from an MCP server. */
+export type McpClientTool = McpClientTools[string];
+
 interface Connection {
   client: MCPClient;
   /** Executable AI SDK tools, keyed by the server's bare tool name. */
-  tools: Record<string, Tool>;
+  tools: McpClientTools;
   serverName: string;
 }
 
@@ -109,8 +119,8 @@ export class McpConnectionManager {
    * id (`mcp:<serverId>:<toolName>`) so they line up with the `agent_tools`
    * registry and the chat agent's mounted-tool ids.
    */
-  getLiveTools(): Record<string, Tool> {
-    const out: Record<string, Tool> = {};
+  getLiveTools(): Record<string, McpClientTool> {
+    const out: Record<string, McpClientTool> = {};
     for (const [serverId, conn] of this.connections) {
       for (const [toolName, t] of Object.entries(conn.tools)) {
         out[`mcp:${serverId}:${toolName}`] = t;

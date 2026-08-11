@@ -1,11 +1,11 @@
-import { type Tool, type ToolCallOptions, tool } from "ai";
+import { type Tool, type ToolExecutionOptions, tool } from "ai";
 import { z } from "zod";
 import { listRegistryTools, searchRegistry } from "../agentTools/store.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { APPROVAL_TIMEOUT_MS, waitForApproval } from "./approvals.ts";
-import { getMcpManager } from "./connectionManager.ts";
+import { getMcpManager, type McpClientTool } from "./connectionManager.ts";
 import { activeMounted, mountTools, unmountAll, unmountTools } from "./mountedTools.ts";
 
 /**
@@ -32,12 +32,12 @@ export interface ApprovalHooks {
  * approval. On denial or timeout it returns a structured result the model can
  * read and move on from, rather than throwing.
  */
-export function wrapMcpToolWithApproval(id: string, t: Tool, hooks: ApprovalHooks): Tool {
+export function wrapMcpToolWithApproval(id: string, t: McpClientTool, hooks: ApprovalHooks): Tool {
   const original = t.execute;
-  if (!original) return t;
+  if (!original) return t as unknown as Tool;
   const wrapped = {
     ...t,
-    async execute(args: unknown, opts: ToolCallOptions) {
+    async execute(args: unknown, opts: ToolExecutionOptions<unknown>) {
       await hooks.onRequest({ toolCallId: opts.toolCallId, id, args });
       const approved = await waitForApproval(opts.toolCallId, {
         signal: hooks.signal,
@@ -46,7 +46,7 @@ export function wrapMcpToolWithApproval(id: string, t: Tool, hooks: ApprovalHook
       if (!approved) {
         return { denied: true, message: "The user denied this tool call." };
       }
-      return (original as (a: unknown, o: ToolCallOptions) => unknown)(args, opts);
+      return (original as (a: unknown, o: ToolExecutionOptions<unknown>) => unknown)(args, opts);
     },
   };
   return wrapped as unknown as Tool;

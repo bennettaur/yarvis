@@ -19,7 +19,7 @@ import { syncToolSet, type ToolDescriptor } from "./store.ts";
 function builtinDescriptors(): ToolDescriptor[] {
   const placeholderDb = undefined as unknown as Db;
   const placeholderMemory = undefined as unknown as MemoryService;
-  const sets: Record<string, { description?: string }> = {
+  const sets: Record<string, { description?: unknown }> = {
     ...buildTaskTools(placeholderDb, ""),
     ...buildMemoryTools(placeholderMemory, ""),
     ...buildAttentionTool(newAttentionState()),
@@ -29,7 +29,10 @@ function builtinDescriptors(): ToolDescriptor[] {
     source: "builtin" as const,
     serverId: null,
     name,
-    description: t.description ?? "",
+    // A tool's description may be a function of the calling context. The
+    // registry indexes tools ahead of any call and has no context to supply,
+    // so only fixed descriptions are embeddable; the built-ins all use those.
+    description: typeof t.description === "string" ? t.description : "",
     // Built-in execution uses the real factory tool, not the registry schema,
     // so a JSON Schema copy isn't needed here.
     inputSchema: null,
