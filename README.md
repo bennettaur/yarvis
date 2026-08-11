@@ -363,16 +363,96 @@ bun run tauri dev
 bun run sidecar:dev
 ```
 
+### Running more than one instance
+
+A branch under development can run beside the app you use day to day. Give the
+second one a name:
+
+```bash
+bun run dev:instance migration-test
+```
+
+The name selects a bundle identifier (`com.mikebennett.yarvis.migration-test`)
+and a pair of Vite dev-server ports derived from the name — the same pair on
+every relaunch, moving to the next free pair in the 1430–1489 range if something
+else holds one. (The second port of each pair is the HMR socket, which Vite uses
+when `TAURI_DEV_HOST` is set.) `YARVIS_DEV_PORT` pins an explicit port instead;
+an occupied one then fails the launch rather than moving. Because macOS derives
+the app data directory from the identifier, each instance gets its own
+`settings.json`, `alarms.json` and core control socket, and the single-instance
+guard no longer sends the second launch to the first window. The window title
+carries the name so they're distinguishable on screen.
+
+All of that separation is the launcher's doing, not the environment variable's.
+Setting `YARVIS_INSTANCE` on a plain `bun run tauri dev` makes the process stand
+down from the hotkeys and background workers below, but leaves the bundle
+identifier alone — so it shares the primary's `settings.json`, `alarms.json` and
+control socket, and the single-instance guard still redirects the launch. Use
+`dev:instance`.
+
+Both instances read the **same Keychain item**, so provider keys, tokens and the
+database URL are entered once and shared. That means the second instance is
+looking at your real data by default — which is what you want for most testing.
+To isolate it (a migration under development is the usual reason), point it at
+its own database:
+
+```bash
+createdb yarvis_dev
+psql -d yarvis_dev -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+YARVIS_DATABASE_URL="postgres://localhost:5432/yarvis_dev" \
+  bun run dev:instance migration-test
+```
+
+`YARVIS_DATABASE_URL` overrides only the Keychain's database URL; every other
+secret still comes from the shared item. Migrations run against whichever
+database the instance is pointed at, so a schema change under test never reaches
+the primary one. Two cautions:
+
+- The Settings screen reads and writes the **shared** Keychain `database_url`,
+  not the override the instance is actually running against. Changing it from an
+  isolated instance's window repoints the primary.
+- A connection string on the command line lands in your shell history and in
+  `ps` output. Export it or use a `.pgpass` if it carries a password.
+
+Some work belongs to exactly one process, and a named instance leaves it to the
+primary one by default:
+
+| What | Why it's singular | Override |
+| --- | --- | --- |
+| Telegram bot | Telegram rejects a second long-poll consumer of the same token | `YARVIS_BACKGROUND_WORKERS=1` |
+| Workspace/PR poller | Doubles provider API traffic and writes the same rows twice | `YARVIS_BACKGROUND_WORKERS=1` |
+| Resuming interrupted kick-offs | Would launch two agent sessions in one workspace | `YARVIS_BACKGROUND_WORKERS=1` |
+| Stale PR-guide sweep | Deletes rows on a schedule; once is enough | `YARVIS_BACKGROUND_WORKERS=1` |
+| Global hotkeys (`Control + Shift + Space`, `Control + Shift + V`) | One process holds an accelerator machine-wide | `YARVIS_GLOBAL_SHORTCUTS=1` |
+
+Set an override to `1` on the instance that should take the work, or `0` on the
+primary to make it stand down instead; only `1`/`true` and `0`/`false` are read,
+and anything else is ignored.
+
+A separate database does **not** make the whole set safe to run twice — it only
+covers the rows. The Telegram bot token comes from the shared Keychain either
+way, so a second bot splits your real command stream between two processes, one
+of which is running unreviewed code; and the workspace poller still doubles
+provider API traffic against your rate limit. Turning the workers on in a second
+instance is reasonable for the kick-off resume and the guide sweep once it has
+its own database, but give it its own bot token before you let it near Telegram.
+
+Workspaces are still shared: both instances create worktrees under
+`YARVIS_WORKSPACES_ROOT` (default `~/dev/yarvis-workspaces`). Point an instance
+elsewhere with that variable if you want its worktrees kept apart too.
+
 ## Testing
 
 ```bash
-bun run test                   # frontend tests (src/) — runs under happy-dom
+bun run test                   # frontend (src/) + dev-script (scripts/) tests
 bun test sidecar/              # sidecar unit/integration tests
 bun run --cwd sidecar typecheck
 bun run build                  # typecheck + build the frontend
 ```
 
-Frontend tests use `bun test` with a happy-dom environment. The preload in
+Frontend tests use `bun test` with a happy-dom environment; the dev-script
+tests under `scripts/` are plain Bun and need none of it. The preload in
 `src/test/setup.ts` registers the DOM, pins the timezone, and stubs the Tauri
 runtime APIs; component tests stub the sidecar data layer (`src/lib/api`) and
 render real components with the `renderToHtml` helper in `src/test/render.tsx`.
@@ -397,6 +477,7 @@ src/            React frontend (Vite + TS + Tailwind)
   omni/         json-render component catalog, registry, layout primitives
 src-tauri/      Rust core (Tauri v2)
   src/keychain.rs   Keychain-backed secret commands (single consolidated item)
+  src/instance.rs   which instance this process is, and what it therefore owns
   src/sidecar.rs    sidecar supervisor
   src/alarms.rs     full-screen alarm scheduler
   src/clipboard.rs  clipboard read/write + in-memory (never persisted) clip history
@@ -421,6 +502,7 @@ sidecar/        Bun + TS service (Hono)
   src/attention/  attention stream: hook ingest, SSE stream, scoped clearing
   src/chat/attentionTools.ts  request_attention tool (badge + OS notification)
   drizzle/      generated SQL migrations
+scripts/        dev tooling (dev-instance.ts: launch a named second instance)
 ```
 
 ## Attention stream

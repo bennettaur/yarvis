@@ -1,5 +1,5 @@
 import { createApp } from "./app.ts";
-import { loadConfig } from "./config.ts";
+import { loadConfig, loadInstanceConfig } from "./config.ts";
 import { getDb } from "./db/client.ts";
 import { runMigrations } from "./db/migrate.ts";
 import { watchParentProcess } from "./lib/parentWatch.ts";
@@ -11,6 +11,7 @@ import { startWorkspacePoller } from "./workspaces/poller.ts";
 import { resumeKickOffs } from "./workspaces/service.ts";
 
 const config = loadConfig();
+const instance = loadInstanceConfig();
 
 // When launched by the Rust core (host-supplied token), exit if that parent
 // dies, so a crash/force-quit can't leave an orphaned sidecar polling Telegram
@@ -54,6 +55,13 @@ if (config.databaseUrl) {
   runMigrations(config.databaseUrl)
     .then(() => {
       readiness.set("ready");
+      // A secondary instance serves its window and nothing else: the work below
+      // reaches out to providers and writes rows on a schedule, and running it
+      // from two processes against one database duplicates both.
+      if (!instance.backgroundWorkers) {
+        console.log(`[sidecar] instance '${instance.name}' is not running background workers`);
+        return;
+      }
       // The Telegram bot drives the chat agent, which needs the database, so it
       // only starts once migrations have applied. It is a no-op without a token.
       startTelegramBot(config);
