@@ -17,6 +17,23 @@
   --radius-4xl: 0px;
 }
 
+/*
+ * Find-on-page matches, painted through the CSS Custom Highlight API (see
+ * `lib/find/highlight.ts`). The registry names are shared with that module.
+ * `color` has to be restated on the active match: without it the highlight
+ * inherits whatever the underlying text is, which on the darker panels reads as
+ * unhighlighted.
+ */
+::highlight(yarvis-find) {
+  background-color: #fde68a;
+  color: #18181b;
+}
+
+::highlight(yarvis-find-active) {
+  background-color: #fb923c;
+  color: #18181b;
+}
+
 /* The shell owns the full viewport and manages its own scroll regions. */
 html,
 body,
