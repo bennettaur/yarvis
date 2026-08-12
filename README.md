@@ -470,6 +470,7 @@ src/            React frontend (Vite + TS + Tailwind)
     pr/         PR dashboard + embedded review: lists, file diffs (unified + split),
                 gap/context expansion, change minimap, guide panel, insight cards
     issue/      Issues tab views: GitHub + JIRA issue lists, detail, create/repo-picker modals
+    files/      shared file-tree rows (collapsible folders), used by PR review and workspaces
     workspaces/  workspace detail subviews + Omni widgets
     shell/      desktop shell: nav rail, top bar, boot loading screen, tab shortcuts
     omni/       Omni view — chat-driven dynamic-UI canvas

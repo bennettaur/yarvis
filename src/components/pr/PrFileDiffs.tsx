@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { buildFileTree, flattenFileTree } from "../../lib/fileTree";
 import { usePrDetail, usePrFileDiff, usePrFiles } from "../../lib/pr/cache";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { rowClass } from "../diff/DiffView";
 import { usePersistedBoolean } from "../SplitPane";
 import ChangeMinimap from "./ChangeMinimap";
 import CopyPathButton from "./CopyPathButton";
-import { buildFileTree, flattenFileTree } from "./fileTree";
 import GapMarker from "./GapMarker";
 import InsightBlock from "./InsightCards";
 import {
@@ -429,7 +429,10 @@ export default function PrFileDiffs({
   // The same order `PrFileList` shows, so scrolling the diffs walks the tree
   // top to bottom instead of the provider's own file order. Hoisted above the
   // early returns to keep hook order stable.
-  const orderedFiles = useMemo(() => (data ? flattenFileTree(buildFileTree(data)) : []), [data]);
+  const orderedFiles = useMemo(
+    () => (data ? flattenFileTree(buildFileTree(data, (f) => f.filename)) : []),
+    [data],
+  );
 
   if (error) return <p className="text-sm text-red-400">{error}</p>;
   if (loading || !data) return <p className="text-sm text-zinc-500">Loading diff…</p>;

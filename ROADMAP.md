@@ -176,8 +176,9 @@ Status of the build against the original vision. The full V1 plan lives at
   poller; task linkage that auto-completes a linked task on archive (recording a
   summary + merged-PR URL); and `WorkspaceList` / `Workspace` Omni widgets. The
   worktree engine also answers the working-directory question in "Claude Code
-  delegation" below. Files / Changes views auto-refresh every 5 seconds while
-  visible (paused when the tab is hidden); the open workspace's detail view
+  delegation" below. Both file views group their rows into the same collapsible
+  folder tree PR review uses. Files / Changes views auto-refresh every 5 seconds
+  while visible (paused when the tab is hidden); the open workspace's detail view
   re-polls every 20 seconds so PR / checks cache updates from the background
   poller appear without re-selecting. Archived workspaces are hidden by
   default with a "Show archived (N)" toggle; the active selection and the

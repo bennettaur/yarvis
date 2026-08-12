@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { buildFileTree } from "../lib/fileTree";
 import { requestOpenPr } from "../lib/nav";
 import type { PrSummary } from "../lib/pr/types";
 import { repoPrRef } from "../lib/repos";
@@ -9,6 +10,7 @@ import {
   workspaceRepoChanges,
   workspaceRepoFiles,
 } from "../lib/workspaces";
+import FileTreeRows, { treeRowPaddingLeft } from "./files/FileTreeRows";
 
 type View = "files" | "changes" | "checks";
 
@@ -98,7 +100,8 @@ const REFRESH_INTERVAL_MS = 5_000;
  * a fixed interval. Skips polling while the tab/window is hidden so a
  * backgrounded app doesn't keep firing git commands; resumes on visibility.
  * `same` lets the caller skip a re-render when the freshly-fetched data is
- * deep-equal to what's already shown, which keeps the list from flickering.
+ * deep-equal to what's already shown, which keeps the list from flickering and
+ * holds the array's identity steady so a view can memoize off it.
  */
 function usePolledRepoList<T>(
   workspaceId: string,
@@ -183,16 +186,27 @@ function FilesView({ workspaceId, repoId }: { workspaceId: string; repoId: strin
     sameStringArray,
   );
 
+  // Hoisted above the early returns to keep hook order stable. Memoized because
+  // this list is the whole worktree and the poll re-runs every few seconds.
+  const tree = useMemo(() => (data ? buildFileTree(data, (path) => path) : []), [data]);
+
   if (error) return <p className="text-xs text-red-400">{error}</p>;
   if (!data) return <p className="text-xs text-zinc-500">Loading…</p>;
   if (data.length === 0) return <p className="text-xs text-zinc-500">No files.</p>;
   return (
-    <ul className="font-mono text-xs text-zinc-400">
-      {data.map((path) => (
-        <li key={path} className="truncate py-0.5" title={path}>
-          {path}
-        </li>
-      ))}
+    <ul className="space-y-0.5 font-mono text-xs text-zinc-400">
+      <FileTreeRows
+        nodes={tree}
+        renderFile={(node, depth) => (
+          <div
+            className="truncate px-2 py-0.5"
+            style={{ paddingLeft: treeRowPaddingLeft(depth) }}
+            title={node.path}
+          >
+            {node.name}
+          </div>
+        )}
+      />
     </ul>
   );
 }
@@ -221,35 +235,43 @@ function ChangesView({
     sameChangedFiles,
   );
 
+  // Hoisted above the early returns to keep hook order stable.
+  const tree = useMemo(() => (data ? buildFileTree(data, (file) => file.path) : []), [data]);
+
   if (error) return <p className="text-xs text-red-400">{error}</p>;
   if (!data) return <p className="text-xs text-zinc-500">Loading…</p>;
   if (data.length === 0) return <p className="text-xs text-zinc-500">No changes on this branch.</p>;
   return (
-    <ul className="font-mono text-xs">
-      {data.map((file) => (
-        <li key={file.path}>
-          <button
-            type="button"
-            onClick={() => onOpenFile(file.path)}
-            title={`Open diff for ${file.path}`}
-            className="flex w-full items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-zinc-800/60"
-          >
-            <span
-              className={`shrink-0 ${CHANGE_COLORS[file.status] ?? "text-zinc-400"}`}
-              title={file.status}
+    <ul className="space-y-0.5 font-mono text-xs">
+      <FileTreeRows
+        nodes={tree}
+        renderFile={(node, depth) => {
+          const file = node.file;
+          return (
+            <button
+              type="button"
+              onClick={() => onOpenFile(file.path)}
+              title={`Open diff for ${file.path}`}
+              className="flex w-full items-center gap-2 rounded px-2 py-0.5 text-left hover:bg-zinc-800/60"
+              style={{ paddingLeft: treeRowPaddingLeft(depth) }}
             >
-              {file.status[0]?.toUpperCase()}
-            </span>
-            <span className="min-w-0 flex-1 truncate text-zinc-400">{file.path}</span>
-            {(file.additions > 0 || file.deletions > 0) && (
-              <span className="shrink-0 text-zinc-500">
-                <span className="text-emerald-400">+{file.additions}</span>{" "}
-                <span className="text-red-400">−{file.deletions}</span>
+              <span
+                className={`shrink-0 ${CHANGE_COLORS[file.status] ?? "text-zinc-400"}`}
+                title={file.status}
+              >
+                {file.status[0]?.toUpperCase()}
               </span>
-            )}
-          </button>
-        </li>
-      ))}
+              <span className="min-w-0 flex-1 truncate text-zinc-400">{node.name}</span>
+              {(file.additions > 0 || file.deletions > 0) && (
+                <span className="shrink-0 text-zinc-500">
+                  <span className="text-emerald-400">+{file.additions}</span>{" "}
+                  <span className="text-red-400">−{file.deletions}</span>
+                </span>
+              )}
+            </button>
+          );
+        }}
+      />
     </ul>
   );
 }
