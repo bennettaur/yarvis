@@ -1,11 +1,12 @@
 import { describe, expect, it } from "bun:test";
+import { textOf } from "../../test/render";
 import { parsePatch } from "./diff";
 import { cellHtml, highlightDiff, rowHtml } from "./highlight";
 
 const rowsOf = (...lines: string[]) => parsePatch(lines.join("\n"));
 
-/** The text a row's colored markup renders as, tags removed. */
-const text = (html: string | null) => (html ?? "").replace(/<[^>]*>/g, "");
+/** The text a row's colored markup renders as. */
+const text = (html: string | null) => textOf(html ?? "");
 
 describe("highlightDiff", () => {
   it("colors a line by the file's grammar", () => {
@@ -34,8 +35,7 @@ describe("highlightDiff", () => {
     const syntax = highlightDiff(rows, "a.ts");
     expect(syntax.right(1)).toContain("hljs-number");
     expect(text(syntax.right(1))).toBe("const a = 1;");
-    // Still escaped — `text` only drops the tags, it does not decode entities.
-    expect(text(syntax.left(1))).toBe("const a = &quot;unclosed;");
+    expect(text(syntax.left(1))).toBe('const a = "unclosed;');
   });
 
   // A block comment opened above a hunk still colors the lines below it.

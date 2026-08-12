@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { fakeExpansion } from "../../test/expansion";
-import { renderToHtml } from "../../test/render";
+import { renderToHtml, textOf } from "../../test/render";
 import { DiffBody } from "./PrFileDiffs";
 
 const prRef: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 1 };
@@ -112,8 +112,6 @@ describe("DiffBody guided-review highlighting", () => {
 });
 
 describe("DiffBody syntax coloring", () => {
-  const stripTags = (html: string) => html.replace(/<[^>]*>/g, "");
-
   it("colors the code of a file it has a grammar for", async () => {
     const html = await render(["@@ -1,1 +1,1 @@", "+const a = 1;"].join("\n"));
     expect(html).toContain("hljs-keyword");
@@ -124,7 +122,7 @@ describe("DiffBody syntax coloring", () => {
   // a deleted line, `-const` as a subtraction.
   it("keeps the marker column ahead of the colored code", async () => {
     const html = await render(["@@ -1,1 +1,1 @@", "+const a = 1;"].join("\n"));
-    expect(stripTags(html)).toContain("+const a = 1;");
+    expect(textOf(html)).toContain("+const a = 1;");
   });
 
   it("renders a file it has no grammar for as plain text", async () => {

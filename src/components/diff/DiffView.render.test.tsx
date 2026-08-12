@@ -1,12 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import { createElement } from "react";
-import { renderToHtml } from "../../test/render";
+import { renderToHtml, textOf } from "../../test/render";
 import DiffView from "./DiffView";
 
 const render = (patch: string, path: string) =>
   renderToHtml(createElement(DiffView, { patch, path }));
-
-const stripTags = (html: string) => html.replace(/<[^>]*>/g, "");
 
 describe("DiffView", () => {
   const patch = ["@@ -1,2 +1,2 @@", "-const a = 1;", "+const a = 2;"].join("\n");
@@ -14,8 +12,8 @@ describe("DiffView", () => {
   it("colors the code by the path it was opened for", async () => {
     const html = await render(patch, "src/lib/a.ts");
     expect(html).toContain("hljs-keyword");
-    expect(stripTags(html)).toContain("+const a = 2;");
-    expect(stripTags(html)).toContain("-const a = 1;");
+    expect(textOf(html)).toContain("+const a = 2;");
+    expect(textOf(html)).toContain("-const a = 1;");
   });
 
   it("renders a file it has no grammar for as plain text", async () => {
@@ -30,8 +28,8 @@ describe("DiffView", () => {
       ["diff --git a/a.ts b/a.ts", "--- a/a.ts", "+++ b/a.ts", patch].join("\n"),
       "a.ts",
     );
-    expect(stripTags(html)).not.toContain("diff --git");
-    expect(stripTags(html)).not.toContain("+++ b/a.ts");
+    expect(textOf(html)).not.toContain("diff --git");
+    expect(textOf(html)).not.toContain("+++ b/a.ts");
   });
 
   it("says so when there is no diff to show", async () => {
