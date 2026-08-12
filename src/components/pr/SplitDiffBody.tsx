@@ -11,6 +11,7 @@ import {
   AddCommentButton,
   AskAboutLineButton,
   hasLineComments,
+  LineActions,
   LineCommentBlock,
   useLineComments,
 } from "./LineComments";
@@ -28,10 +29,12 @@ import type { InsightsController } from "./usePrInsights";
 const FILLER_CLASS = "bg-zinc-900/40";
 
 /**
- * One side's line-number gutter. `group` sits here rather than on a row wrapper
- * because in a CSS grid every cell is a sibling — there is no per-row element to
- * hang a hover state on — so the "+" reveals when the reader moves onto the
- * gutter beside the line they want to comment on.
+ * One side's line-number gutter. `group/line` sits here rather than on a row
+ * wrapper because in a CSS grid every cell is a sibling — there is no per-row
+ * element to hang a hover state on — so the "+" reveals when the reader moves
+ * onto the gutter beside the line they want to comment on. Named rather than
+ * bare so an unrelated `group` added to an ancestor can't reveal every line's
+ * buttons at once.
  */
 function Gutter({
   cell,
@@ -51,12 +54,16 @@ function Gutter({
     <span
       style={style}
       {...(focusAnchor ? { [FOCUS_ATTR]: "true" } : {})}
-      className={`group flex w-12 shrink-0 select-none items-center justify-end gap-1 pr-2 text-zinc-600 ${
+      className={`group/line relative flex w-12 shrink-0 select-none items-center justify-end pr-2 text-zinc-600 ${
         cell ? rowClass(cell.kind) : FILLER_CLASS
       }`}
     >
-      {onAsk && <AskAboutLineButton onClick={onAsk} />}
-      {onComment && <AddCommentButton onClick={onComment} />}
+      {(onAsk || onComment) && (
+        <LineActions>
+          {onAsk && <AskAboutLineButton onClick={onAsk} />}
+          {onComment && <AddCommentButton onClick={onComment} />}
+        </LineActions>
+      )}
       <span>{cell?.line ?? ""}</span>
     </span>
   );

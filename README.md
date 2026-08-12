@@ -465,6 +465,7 @@ src/            React frontend (Vite + TS + Tailwind)
     pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs, per-file viewed state, remembered panel place, link/shorthand locator, diff parsing + context expansion, guide + insight clients)
     issues/     provider-neutral issue data layer (GitHub + JIRA) — types, api client, start-work flow (useGithubStartWork.ts)
     jira/       JIRA-specific data layer (issue detail, transitions, comments, create) — types, api client, start-work flow (useJiraStartWork.ts)
+    find/       find-on-page engine — visible-text index, match offsets, CSS Custom Highlight painting, useFind controller
   components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, Terminal, Workspaces, …)
     pr/         PR dashboard + embedded review: lists, file diffs (unified + split),
                 gap/context expansion, change minimap, guide panel, insight cards
@@ -474,6 +475,7 @@ src/            React frontend (Vite + TS + Tailwind)
     omni/       Omni view — chat-driven dynamic-UI canvas
     omnichat/   Omni Chat — global summon-from-anywhere chat overlay
     clipboard/  clipboard palette — saved snippets + screened clipboard history
+    find/       find-on-page bar (Cmd+F), hosted by the shell over the content region
   omni/         json-render component catalog, registry, layout primitives
 src-tauri/      Rust core (Tauri v2)
   src/keychain.rs   Keychain-backed secret commands (single consolidated item)
@@ -542,3 +544,10 @@ How the stream behaves:
 - **Control + Shift + V** — summon the **clipboard palette** from anywhere: search
   your saved snippets and this run's clipboard history, Enter to copy, Esc to
   close. See "Clipboard" above for what it refuses to store.
+- **Cmd/Ctrl + F** — **find on page**: a search bar over the current view's text.
+  Every hit is tinted and the current one picked out; Enter / Shift+Enter (or
+  **Cmd/Ctrl + G** / **Cmd/Ctrl + Shift + G** from anywhere) step between them,
+  `Aa` toggles case sensitivity, Esc closes. The search follows the view as it
+  changes — a streaming chat reply or fresh terminal output is re-matched — and
+  only covers what is actually rendered, so collapsed diff files and terminal
+  scrollback that has scrolled out of the viewport are not searched.

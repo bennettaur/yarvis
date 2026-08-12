@@ -13,6 +13,7 @@ import InsightBlock from "./InsightCards";
 import {
   AddCommentButton,
   AskAboutLineButton,
+  LineActions,
   LineCommentBlock,
   useLineComments,
 } from "./LineComments";
@@ -86,37 +87,42 @@ export function DiffBody({
           );
         }
         const row = item.row;
+        // Hoisted so the null check narrows inside the click handlers below —
+        // TypeScript won't carry a narrowed property access into a closure.
+        const rightLine = row.rightLine;
         const marked =
           highlight != null &&
-          row.rightLine != null &&
-          row.rightLine >= highlight.start &&
-          row.rightLine <= highlight.end;
+          rightLine != null &&
+          rightLine >= highlight.start &&
+          rightLine <= highlight.end;
         return (
           // biome-ignore lint/suspicious/noArrayIndexKey: rows are a stable render of an immutable patch
           <div key={i}>
+            {/* Named group rather than a bare one so an unrelated `group` added
+                to an ancestor can't reveal every line's buttons at once. */}
             <div
-              className={`group flex ${rowClass(row.kind)}`}
+              className={`group/line flex ${rowClass(row.kind)}`}
               style={marked ? FOCUS_STYLE : undefined}
-              {...(marked && row.rightLine === highlight.start ? { [FOCUS_ATTR]: "true" } : {})}
+              {...(marked && rightLine === highlight.start ? { [FOCUS_ATTR]: "true" } : {})}
             >
-              <span className="flex w-12 shrink-0 select-none items-center justify-end gap-1 pr-2 text-zinc-600">
-                {insights && row.rightLine != null && (
-                  <AskAboutLineButton onClick={(extend) => ask(row.rightLine as number, extend)} />
+              <span className="relative flex w-12 shrink-0 select-none items-center justify-end pr-2 text-zinc-600">
+                {rightLine != null && (
+                  <LineActions>
+                    {insights && (
+                      <AskAboutLineButton onClick={(extend) => ask(rightLine, extend)} />
+                    )}
+                    <AddCommentButton onClick={() => comments.openComposer(rightLine)} />
+                  </LineActions>
                 )}
-                {row.rightLine != null && (
-                  <AddCommentButton
-                    onClick={() => comments.openComposer(row.rightLine as number)}
-                  />
-                )}
-                <span>{row.rightLine ?? ""}</span>
+                <span>{rightLine ?? ""}</span>
               </span>
               <CodeText html={rowHtml(row, syntax)} text={row.text} />
             </div>
-            <LineCommentBlock line={row.rightLine} comments={comments} />
+            <LineCommentBlock line={rightLine} comments={comments} />
             {insights && (
               <InsightBlock
                 path={file.filename}
-                line={row.rightLine}
+                line={rightLine}
                 controller={insights}
                 currentSha={headSha}
               />

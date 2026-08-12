@@ -226,6 +226,32 @@ export function LineCommentBlock({
   );
 }
 
+/**
+ * Holds a line's "?" and "+" just past the right edge of its gutter, floating
+ * over the start of the code. The gutter is three rem wide and the line number
+ * owns it — a four-digit number fills it — so keeping the pair out of the
+ * gutter's flow is what lets them be sized for a pointer rather than shrinking
+ * to a bare glyph. `z-[5]` lifts them over the rows they overlap while staying
+ * under the file's sticky header at `z-10`.
+ *
+ * Hidden until the `group/line` around the line is hovered or holds focus. The
+ * reveal sits on this wrapper rather than on each button because a transparent
+ * parent hides its children whatever their own opacity, so a tabbed-to button
+ * would otherwise stay invisible. `pointer-events-none` while hidden so the
+ * cluster doesn't swallow clicks and text selection on the code beneath it.
+ */
+export function LineActions({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="pointer-events-none absolute top-1/2 left-full z-[5] flex -translate-y-1/2 items-center gap-1 opacity-0 group-focus-within/line:pointer-events-auto group-focus-within/line:opacity-100 group-hover/line:pointer-events-auto group-hover/line:opacity-100">
+      {children}
+    </span>
+  );
+}
+
+/** Shared shape of the per-line action buttons; the glyph's colour is the caller's. */
+const ACTION_CLASS =
+  "flex size-5 items-center justify-center rounded border border-zinc-700 bg-zinc-900 text-sm leading-none shadow";
+
 /** The hover-revealed "+" that opens the composer on a commentable line. */
 export function AddCommentButton({ onClick }: { onClick: () => void }) {
   return (
@@ -233,7 +259,10 @@ export function AddCommentButton({ onClick }: { onClick: () => void }) {
       type="button"
       onClick={onClick}
       title="Comment on this line"
-      className="text-sky-400 opacity-0 hover:text-sky-300 focus-visible:opacity-100 group-hover:opacity-100"
+      // The glyph is the label a screen reader would otherwise read out, and
+      // "plus" says nothing about what the button does.
+      aria-label="Comment on this line"
+      className={`${ACTION_CLASS} text-sky-400 hover:bg-zinc-800 hover:text-sky-300`}
     >
       +
     </button>
@@ -252,7 +281,8 @@ export function AskAboutLineButton({ onClick }: { onClick: (extend: boolean) => 
       type="button"
       onClick={(e) => onClick(e.shiftKey)}
       title="Ask about this line — shift-click to extend from the last one"
-      className="text-violet-400 opacity-0 hover:text-violet-300 focus-visible:opacity-100 group-hover:opacity-100"
+      aria-label="Ask about this line — shift-click to extend from the last one"
+      className={`${ACTION_CLASS} text-violet-400 hover:bg-zinc-800 hover:text-violet-300`}
     >
       ?
     </button>
