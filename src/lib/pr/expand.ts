@@ -35,14 +35,23 @@ export interface HunkSpan {
 const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 
 /**
- * The first new-file line a hunk header names, or null if it isn't one. Lets a
- * consumer holding only rendered rows recover a hunk's position — which is the
- * only place a deletion-only hunk's location is recorded, since none of its
- * rows carry a right-side line.
+ * The first new-file line a hunk covers, or null if the text isn't a header.
+ * Lets a consumer holding only rendered rows recover a hunk's position — which,
+ * for as long as the header is rendered, is the only place a deletion-only
+ * hunk's location is recorded, since none of its rows carry a right-side line.
+ * Once the code above it is revealed the header goes (see {@link expandRows})
+ * and that consumer reads the position off the revealed line instead.
+ *
+ * A deletion-only header names the line the change sits *after*, so the number
+ * is shifted past it the way {@link hunkSpans} does — otherwise the two ways of
+ * recovering the position disagree, and a marker drawn from them would jump by
+ * a line as the header came and went.
  */
 export function hunkRightStart(text: string): number | null {
   const match = text.match(HUNK_HEADER);
-  return match ? Number(match[3]) : null;
+  if (!match) return null;
+  const start = Number(match[3]);
+  return match[4] === "0" ? start + 1 : start;
 }
 
 /**
@@ -153,6 +162,10 @@ function contextRow(text: string, rightLine: number, lineOffset: number): DiffRo
  * ask for context before anything has been fetched; the expansion itself is
  * held back until there are lines to show, rather than briefly collapsing a
  * marker into nothing.
+ *
+ * A hunk's `@@` header is left out of the result once the line it names is
+ * already rendered directly above it, since then it marks a jump that no longer
+ * happens. Headers survive intact while `fileLines` is empty.
  */
 export function expandRows(
   rows: DiffRow[],
@@ -163,13 +176,18 @@ export function expandRows(
   const spans = hunkSpans(rows);
   const gaps = gapsBetween(spans, fileLines.length);
   const out: ExpandedRow[] = [];
-  const hunkStarts = new Map(spans.map((span) => [span.headerIndex, span.rightStart]));
 
   // The last right-file line put out so far, which is what tells a hunk header
-  // whether the reader skipped anything to reach it.
-  let lastRight = 0;
-  const emitRow = (row: DiffRow) => {
-    if (row.rightLine != null) lastRight = row.rightLine;
+  // whether the reader skipped anything to reach it. It starts at zero, so a
+  // hunk opening the file has nothing above it to skip either.
+  let lastRightLine = 0;
+  // Whether that line came from the patch rather than from a revealed gap. A
+  // header is what separates one hunk's rows from the next's, so the one
+  // directly after another hunk has to stay whatever the numbers say.
+  let insideHunk = false;
+  const emitRow = (row: DiffRow, fromPatch: boolean) => {
+    if (row.rightLine != null) lastRightLine = row.rightLine;
+    insideHunk = fromPatch;
     out.push({ kind: "row", row });
   };
 
@@ -186,7 +204,7 @@ export function expandRows(
       for (let line = from; line <= to; line++) {
         const text = fileLines[line - 1];
         if (text === undefined) continue;
-        emitRow(contextRow(text, line, gap.lineOffset));
+        emitRow(contextRow(text, line, gap.lineOffset), false);
       }
     };
 
@@ -196,16 +214,25 @@ export function expandRows(
   };
 
   // A gap sits before the hunk of the same index; the final gap trails them all.
-  const emitRows = (from: number, to: number) => {
+  //
+  // A `@@` header says where the patch jumped to. Once the line it names is
+  // sitting directly above it — or it names the file's first line, so there was
+  // never anything above it — nothing was jumped over and the header only
+  // repeats the numbers already down the side. Whole-file view opens every gap,
+  // so that is every header; a gap the reader opened in full loses its header
+  // the same way. Headers stay while the file's text is unloaded: there they
+  // are the sole record of where each hunk sits.
+  //
+  // Two hunks whose right sides touch keep the header between them even so.
+  // Nothing was skipped there either, but the header is the only thing marking
+  // where one hunk's rows end — drop it and a deletion from the hunk above
+  // pairs with an addition from the one below in the side-by-side view.
+  const emitPatchRows = (from: number, to: number, span?: HunkSpan) => {
     for (let i = from; i < to; i++) {
-      // A `@@` header says where the patch jumped to. Once the line it names
-      // is sitting directly above it, nothing was jumped over and the header
-      // only repeats the numbers already down the side — which is every header
-      // in the whole-file view. Headers stay while the file's text is
-      // unloaded: there they are the sole record of where each hunk sits.
-      const start = hunkStarts.get(i);
-      if (loaded && start !== undefined && start === lastRight + 1) continue;
-      emitRow(rows[i]!);
+      const redundantHeader =
+        i === span?.headerIndex && span.rightStart === lastRightLine + 1 && !insideHunk;
+      if (loaded && redundantHeader) continue;
+      emitRow(rows[i]!, true);
     }
   };
 
@@ -219,10 +246,10 @@ export function expandRows(
 
   // Rows before the first hunk (a raw `git diff`'s file header is already
   // stripped by `parsePatch`, so in practice there are none) stay put.
-  emitRows(0, spans[0]?.headerIndex ?? rows.length);
+  emitPatchRows(0, spans[0]?.headerIndex ?? rows.length);
   for (const span of spans) {
     nextGapBefore(span.rightStart);
-    emitRows(span.headerIndex, span.endIndex);
+    emitPatchRows(span.headerIndex, span.endIndex, span);
   }
   while (gapCursor < gaps.length) {
     emitGap(gaps[gapCursor]!);

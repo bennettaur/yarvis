@@ -142,16 +142,31 @@ describe("expandRows", () => {
   });
 
   // The header says where the patch jumped to. Reveal the line it names as its
-  // predecessor and nothing was jumped over, so the header only repeats the
-  // line numbers already down the side.
+  // predecessor — line 4, here — and nothing was jumped over, so the header
+  // only repeats the line numbers already down the side.
   it("drops a header once the line above it is on screen", () => {
     const expansions: Expansions = new Map([[0, { top: 0, bottom: 1 }]]);
-    expect(shape(expandRows(rows, FILE, expansions))).not.toContain("hunk@-");
+    expect(shape(expandRows(rows, FILE, expansions))).toEqual([
+      "gap:3",
+      "context@4",
+      "del@-",
+      "add@5",
+      "gap:5",
+    ]);
   });
 
-  it("keeps a header while anything above it is still hidden", () => {
+  it("keeps a header while the line above it is still hidden", () => {
     const expansions: Expansions = new Map([[0, { top: 3, bottom: 0 }]]);
-    expect(shape(expandRows(rows, FILE, expansions))).toContain("hunk@-");
+    expect(shape(expandRows(rows, FILE, expansions))).toEqual([
+      "context@1",
+      "context@2",
+      "context@3",
+      "gap:1",
+      "hunk@-",
+      "del@-",
+      "add@5",
+      "gap:5",
+    ]);
   });
 
   // The whole-file view is every gap opened at once, which leaves no hunk with
@@ -159,7 +174,18 @@ describe("expandRows", () => {
   it("leaves no headers in the whole-file view", () => {
     const two = parsePatch(["@@ -2,1 +2,1 @@", "+b", "@@ -8,1 +8,1 @@", "+h"].join("\n"));
     const all = expandAllGaps(two, FILE.length);
-    expect(shape(expandRows(two, FILE, all))).not.toContain("hunk@-");
+    expect(shape(expandRows(two, FILE, all))).toEqual([
+      "context@1",
+      "add@2",
+      "context@3",
+      "context@4",
+      "context@5",
+      "context@6",
+      "context@7",
+      "add@8",
+      "context@9",
+      "context@10",
+    ]);
   });
 
   // `@@ -5,3 +4,0 @@` deletes without adding, so the hunk covers no right-side
@@ -168,7 +194,64 @@ describe("expandRows", () => {
   it("drops a deletion-only hunk's header too", () => {
     const deleted = parsePatch(["@@ -5,3 +4,0 @@", "-a", "-b", "-c"].join("\n"));
     const all = expandAllGaps(deleted, FILE.length);
-    expect(shape(expandRows(deleted, FILE, all))).not.toContain("hunk@-");
+    expect(shape(expandRows(deleted, FILE, all))).toEqual([
+      "context@1",
+      "context@2",
+      "context@3",
+      "context@4",
+      "del@-",
+      "del@-",
+      "del@-",
+      "context@5",
+      "context@6",
+      "context@7",
+      "context@8",
+      "context@9",
+      "context@10",
+    ]);
+  });
+
+  // A hunk opening the file has nothing above it to have skipped, so its header
+  // goes as soon as there is a file to compare against — even while a gap
+  // further down is still closed.
+  it("drops the header of a hunk that starts at line 1", () => {
+    const first = parsePatch(["@@ -1,1 +1,1 @@", "+a", "@@ -8,1 +8,1 @@", "+h"].join("\n"));
+    expect(shape(expandRows(first, FILE, new Map()))).toEqual([
+      "add@1",
+      "gap:6",
+      "hunk@-",
+      "add@8",
+      "gap:2",
+    ]);
+  });
+
+  // Nothing separates two hunks whose right sides touch except the header, so
+  // it stays even though no line was skipped to reach it. Without it the first
+  // hunk's deletion would read as the line the second hunk's addition replaced.
+  it("keeps the header between two hunks that touch", () => {
+    const touching = parsePatch(
+      ["@@ -1,2 +1,1 @@", " l1", "-x", "@@ -4,0 +2,1 @@", "+y"].join("\n"),
+    );
+    expect(shape(expandRows(touching, FILE, new Map()))).toEqual([
+      "context@1",
+      "del@-",
+      "hunk@-",
+      "add@2",
+      "gap:8",
+    ]);
+  });
+
+  // `@@ -1,2 +0,0 @@` deletes the file's opening lines: the hunk sits before
+  // line 1, so there is nothing above it and its header goes with the rest.
+  it("drops the header of a deletion-only hunk at the top of the file", () => {
+    const deleted = parsePatch(["@@ -1,2 +0,0 @@", "-a", "-b"].join("\n"));
+    const all = expandAllGaps(deleted, FILE.length);
+    expect(shape(expandRows(deleted, FILE, all)).slice(0, 4)).toEqual([
+      "del@-",
+      "del@-",
+      "context@1",
+      "context@2",
+    ]);
   });
 
   // Both ends opening past each other must not double up on lines in the middle.
