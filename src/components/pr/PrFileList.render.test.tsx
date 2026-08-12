@@ -33,11 +33,14 @@ describe("PrFileList", () => {
   it("nests files under a folder row", async () => {
     const html = await render([file("src/a.ts"), file("src/b.ts")]);
     // The folder name renders once, and both basenames render as file rows.
-    expect(html).toContain("src");
-    expect(html).toContain("a.ts");
-    expect(html).toContain("b.ts");
-    // Rows show basenames, not the full path repeated as visible text.
     expect(html).toContain("<details");
+    expect(html).toContain(">src</span>");
+    // Rows show basenames, not the full path repeated as visible text (the
+    // paths still reach the copy button and the row's title attribute).
+    expect(html).not.toContain(">src/a.ts<");
+    expect(html).not.toContain(">src/b.ts<");
+    expect(html).toContain(">a.ts<");
+    expect(html).toContain(">b.ts<");
   });
 
   it("shows the viewed count from the viewed set", async () => {

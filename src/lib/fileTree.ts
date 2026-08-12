@@ -1,26 +1,27 @@
-import type { PrFile } from "../../lib/pr/types";
-
-/** A changed file, sitting at a leaf of the tree. */
-export interface FileTreeFile {
+/** A file, sitting at a leaf of the tree. */
+export interface FileTreeFile<T> {
   type: "file";
-  /** Basename shown in the row; the full path lives on `file.filename`. */
+  /** Basename shown in the row. */
   name: string;
-  file: PrFile;
+  /** Full slash path from the root, unique per node — used as a stable key. */
+  path: string;
+  /** The caller's own item for this path (a PR file, a changed file, a path). */
+  file: T;
 }
 
 /** A directory grouping child files and subdirectories. */
-export interface FileTreeDir {
+export interface FileTreeDir<T> {
   type: "dir";
   /** Segment label; chained single-child folders join as `a/b/c`. */
   name: string;
   /** Full slash path from the root, unique per node — used as a stable key. */
   path: string;
-  children: FileTreeNode[];
+  children: FileTreeNode<T>[];
 }
 
-export type FileTreeNode = FileTreeFile | FileTreeDir;
+export type FileTreeNode<T> = FileTreeFile<T> | FileTreeDir<T>;
 
-function sortChildren(children: FileTreeNode[]): void {
+function sortChildren<T>(children: FileTreeNode<T>[]): void {
   children.sort((a, b) => {
     // Directories before files, then alphabetical within each group.
     if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
@@ -36,7 +37,7 @@ function sortChildren(children: FileTreeNode[]): void {
  * deep `src/components/pr` chain reads on one row instead of three empty levels
  * — matching how GitHub renders its file tree.
  */
-function collapseChain(node: FileTreeNode): FileTreeNode {
+function collapseChain<T>(node: FileTreeNode<T>): FileTreeNode<T> {
   if (node.type === "file") return node;
   let dir = node;
   while (dir.children.length === 1 && dir.children[0].type === "dir") {
@@ -52,35 +53,42 @@ function collapseChain(node: FileTreeNode): FileTreeNode {
 }
 
 /**
- * Turn a flat list of changed files into a folder tree. Roots come back sorted
- * (folders first) with single-child folder chains collapsed for a compact
- * display.
+ * Turn a flat list of files into a folder tree. Roots come back sorted (folders
+ * first) with single-child folder chains collapsed for a compact display.
+ * `getPath` reads the slash path off each item, so the same tree serves PR
+ * files, worktree changes, and bare path strings.
  */
-export function buildFileTree(files: PrFile[]): FileTreeNode[] {
-  const root: FileTreeDir = { type: "dir", name: "", path: "", children: [] };
+export function buildFileTree<T>(files: T[], getPath: (file: T) => string): FileTreeNode<T>[] {
+  const root: FileTreeDir<T> = { type: "dir", name: "", path: "", children: [] };
+  // Directories by full path, so finding a parent stays O(1) — a workspace's
+  // "all files" list is the whole worktree, where scanning a folder's children
+  // once per path segment is quadratic.
+  const dirs = new Map<string, FileTreeDir<T>>([["", root]]);
   for (const file of files) {
-    const parts = file.filename.split("/");
+    const filePath = getPath(file);
+    const parts = filePath.split("/");
     let dir = root;
     for (let i = 0; i < parts.length - 1; i++) {
       const seg = parts[i];
       const path = dir.path ? `${dir.path}/${seg}` : seg;
-      let child = dir.children.find((c): c is FileTreeDir => c.type === "dir" && c.path === path);
+      let child = dirs.get(path);
       if (!child) {
         child = { type: "dir", name: seg, path, children: [] };
         dir.children.push(child);
+        dirs.set(path, child);
       }
       dir = child;
     }
-    dir.children.push({ type: "file", name: parts[parts.length - 1], file });
+    dir.children.push({ type: "file", name: parts[parts.length - 1], path: filePath, file });
   }
   sortChildren(root.children);
   return root.children.map(collapseChain);
 }
 
 /** Read the files back out of a tree in the order the rows appear top to bottom. */
-export function flattenFileTree(nodes: FileTreeNode[]): FileTreeFile[] {
-  const files: FileTreeFile[] = [];
-  const walk = (node: FileTreeNode) => {
+export function flattenFileTree<T>(nodes: FileTreeNode<T>[]): FileTreeFile<T>[] {
+  const files: FileTreeFile<T>[] = [];
+  const walk = (node: FileTreeNode<T>) => {
     if (node.type === "file") files.push(node);
     else node.children.forEach(walk);
   };
