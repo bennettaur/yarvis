@@ -24,6 +24,18 @@ export interface VoiceSettings {
   ttsModel: string;
   /** Provider-specific voice id; blank means the provider's default. */
   ttsVoice: string;
+  /**
+   * Reference clip for a voice-cloning model, as a base64 audio data URI. Some
+   * servers (MOSS-TTS-Nano) take one instead of a voice id and refuse a request
+   * without it.
+   */
+  ttsRefAudio: string;
+  /**
+   * Extra JSON fields merged into each synthesis request, as typed by the user.
+   * Kept as raw text rather than parsed so a half-finished edit survives a
+   * re-render; it is parsed at call time and a syntax error is reported then.
+   */
+  ttsExtraBody: string;
   speakReplies: boolean;
   /**
    * Ends a turn on silence and re-opens the mic once the reply finishes, so a
@@ -47,6 +59,8 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   ttsProvider: "",
   ttsModel: "",
   ttsVoice: "",
+  ttsRefAudio: "",
+  ttsExtraBody: "",
   speakReplies: true,
   handsFree: false,
 };
@@ -78,6 +92,8 @@ export function loadVoiceSettings(): VoiceSettings {
     ttsProvider: stringField(raw.ttsProvider, DEFAULT_VOICE_SETTINGS.ttsProvider),
     ttsModel: stringField(raw.ttsModel, DEFAULT_VOICE_SETTINGS.ttsModel),
     ttsVoice: stringField(raw.ttsVoice, DEFAULT_VOICE_SETTINGS.ttsVoice),
+    ttsRefAudio: stringField(raw.ttsRefAudio, DEFAULT_VOICE_SETTINGS.ttsRefAudio),
+    ttsExtraBody: stringField(raw.ttsExtraBody, DEFAULT_VOICE_SETTINGS.ttsExtraBody),
     speakReplies: boolField(raw.speakReplies, DEFAULT_VOICE_SETTINGS.speakReplies),
     handsFree: boolField(raw.handsFree, DEFAULT_VOICE_SETTINGS.handsFree),
   };
@@ -85,6 +101,60 @@ export function loadVoiceSettings(): VoiceSettings {
 
 export function saveVoiceSettings(settings: VoiceSettings): void {
   localStorage.setItem(VOICE_SETTINGS_KEY, JSON.stringify(settings));
+}
+
+/**
+ * Parses the user's extra-fields JSON. Throws a message worth showing rather
+ * than a raw `SyntaxError`, since this is a field someone types into by hand.
+ * Blank means none.
+ */
+export function parseTtsExtras(raw: string): Record<string, string | number | boolean> | undefined {
+  const text = raw.trim();
+  if (!text) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error('Extra TTS fields must be valid JSON, e.g. {"response_format": "wav"}');
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Extra TTS fields must be a JSON object");
+  }
+  const out: Record<string, string | number | boolean> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    // The sidecar refuses nested values anyway; saying so here points at the
+    // field the user can actually see.
+    if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
+      throw new Error(`Extra TTS field "${key}" must be a string, number or boolean`);
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * The synthesis arguments implied by the current settings, shared by the voice
+ * loop and the settings bar's test button so the two can't drift.
+ */
+export function ttsRequestFrom(
+  settings: VoiceSettings,
+  text: string,
+): {
+  provider: string;
+  model: string;
+  text: string;
+  voice?: string;
+  refAudio?: string;
+  extras?: Record<string, string | number | boolean>;
+} {
+  return {
+    provider: settings.ttsProvider,
+    model: settings.ttsModel,
+    text,
+    voice: settings.ttsVoice || undefined,
+    refAudio: settings.ttsRefAudio || undefined,
+    extras: parseTtsExtras(settings.ttsExtraBody),
+  };
 }
 
 /**
@@ -111,8 +181,12 @@ export function withVoiceDefaults(
   };
 
   const llm = usable(llmProviders, settings.llmProvider, (p) => p.models.length > 0);
-  const stt = usable(voiceProviders, settings.sttProvider);
-  const tts = usable(voiceProviders, settings.ttsProvider);
+  // A provider that can't do the half it was chosen for is dropped the same way
+  // an unconfigured one is: it would fail every request with nothing on screen
+  // to explain why. This is what moves an older saved Hugging Face TTS choice
+  // off a backend whose router refuses every speech model.
+  const stt = usable(voiceProviders, settings.sttProvider, (p) => p.capabilities.includes("stt"));
+  const tts = usable(voiceProviders, settings.ttsProvider, (p) => p.capabilities.includes("tts"));
 
   /**
    * A saved model survives only when the provider it belongs to is the one

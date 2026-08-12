@@ -120,8 +120,10 @@ describe("listVoiceProviders", () => {
         id: "huggingface",
         label: "Hugging Face",
         available: true,
+        // Transcription only: the serverless router refuses every TTS model.
+        capabilities: ["stt" as const],
         sttModels: ["openai/whisper-large-v3-turbo"],
-        ttsModels: ["hexgrad/Kokoro-82M"],
+        ttsModels: [],
       },
     ];
     nextResponse = () => json(catalog);

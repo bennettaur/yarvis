@@ -1,10 +1,32 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import type { ProviderInfo } from "../../lib/chat";
 import type { VoiceProviderInfo } from "../../lib/voice";
+import * as voiceApi from "../../lib/voice";
 import { DEFAULT_VOICE_SETTINGS, type VoiceSettings } from "../../lib/voiceSettings";
 import { mountForInteraction, renderToHtml } from "../../test/render";
-import VoiceSettingsBar from "./VoiceSettingsBar";
+
+/**
+ * `speak` and audio playback are stubbed by spreading their real modules and
+ * replacing one export each — a wholesale stub would strip the rest for every
+ * file that runs after this one.
+ */
+let speakBehavior: () => Blob = () => new Blob(["audio"]);
+let spokenText = "";
+
+mock.module("../../lib/voice", () => ({
+  ...voiceApi,
+  speak: async (request: { text: string }) => {
+    spokenText = request.text;
+    return speakBehavior();
+  },
+}));
+
+mock.module("../../lib/audioPlayback", () => ({
+  playAudioBlob: async () => {},
+}));
+
+const { default: VoiceSettingsBar } = await import("./VoiceSettingsBar");
 
 /**
  * Rendered from props alone — no sidecar stub — because a `mock.module` of
@@ -22,6 +44,7 @@ const VOICE_PROVIDERS: VoiceProviderInfo[] = [
     id: "huggingface",
     label: "Hugging Face",
     available: true,
+    capabilities: ["stt"],
     sttModels: ["openai/whisper-large-v3-turbo"],
     ttsModels: ["hexgrad/Kokoro-82M"],
   },
@@ -29,6 +52,7 @@ const VOICE_PROVIDERS: VoiceProviderInfo[] = [
     id: "custom:local",
     label: "Local speech server",
     available: true,
+    capabilities: ["stt", "tts"],
     sttModels: [],
     ttsModels: [],
   },
@@ -103,7 +127,14 @@ describe("VoiceSettingsBar interaction", () => {
   afterEach(() => {
     unmount?.();
     unmount = null;
+    speakBehavior = () => new Blob(["audio"]);
+    spokenText = "";
   });
+
+  const testButton = (host: HTMLElement) =>
+    Array.from(host.querySelectorAll("button")).find((b) => b.textContent?.startsWith("Test")) as
+      | HTMLButtonElement
+      | undefined;
 
   async function mountBar(settings = SETTINGS) {
     const changes: VoiceSettings[] = [];
@@ -162,5 +193,54 @@ describe("VoiceSettingsBar interaction", () => {
     expect(changes[0]?.llmModel).toBe("claude-opus-4-7");
     expect(changes[0]?.sttProvider).toBe("huggingface");
     expect(changes[0]?.ttsProvider).toBe("huggingface");
+  });
+
+  /**
+   * The test button exists because a wrong model, a missing key and a cold
+   * server are indistinguishable from the tab otherwise — all three are just
+   * silence followed by a failed turn.
+   */
+  it("reports a failed test rather than leaving it silent", async () => {
+    speakBehavior = () => {
+      throw new Error("speak failed (400): Model not supported by provider hf-inference");
+    };
+    const { host } = await mountBar();
+
+    testButton(host)?.click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(host.innerHTML).toContain("Model not supported by provider");
+  });
+
+  it("confirms a working configuration", async () => {
+    speakBehavior = () => new Blob(["audio"]);
+    const { host } = await mountBar();
+
+    testButton(host)?.click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(host.innerHTML).toContain("Played the test phrase");
+    expect(spokenText).toContain("Voice output is working");
+  });
+
+  it("refuses to test before a TTS model is chosen", async () => {
+    const { host } = await mountBar({ ...SETTINGS, ttsModel: "" });
+    expect(testButton(host)?.disabled).toBe(true);
+  });
+});
+
+describe("VoiceSettingsBar capability filtering", () => {
+  it("does not offer a transcription-only provider under Text to speech", async () => {
+    const html = await render();
+    const ttsSection = html.slice(html.indexOf("Text to speech"));
+    // Hugging Face can transcribe but its router refuses every TTS model;
+    // offering it here is offering a choice that fails on every request.
+    expect(ttsSection.slice(0, ttsSection.indexOf("TTS model"))).not.toContain("Hugging Face");
+  });
+
+  it("still offers it under Speech to text", async () => {
+    const html = await render();
+    const sttSection = html.slice(html.indexOf("Speech to text"));
+    expect(sttSection.slice(0, sttSection.indexOf("STT model"))).toContain("Hugging Face");
   });
 });

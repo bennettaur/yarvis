@@ -27,7 +27,14 @@ describe("availableVoiceProviders", () => {
     // Suggestions are listed whether or not the key is set, so the UI can show
     // what the provider would offer.
     expect(huggingface?.sttModels.length).toBeGreaterThan(0);
-    expect(huggingface?.ttsModels.length).toBeGreaterThan(0);
+  });
+
+  it("suggests no Hugging Face speech models, because none are served", async () => {
+    const [huggingface] = await availableVoiceProviders(configWith({ huggingFaceApiKey: "hf_x" }));
+    // The obvious candidates all answer "Model not supported by provider
+    // hf-inference". Suggesting one made a dead configuration look like the
+    // default; transcription still works, speech out needs a local server.
+    expect(huggingface?.ttsModels).toEqual([]);
   });
 
   it("marks Hugging Face available once a token is configured", async () => {

@@ -1,6 +1,8 @@
+import { useState } from "react";
+import { playAudioBlob } from "../../lib/audioPlayback";
 import type { ProviderInfo } from "../../lib/chat";
-import type { VoiceProviderInfo } from "../../lib/voice";
-import type { VoiceSettings } from "../../lib/voiceSettings";
+import { speak, type VoiceProviderInfo } from "../../lib/voice";
+import { ttsRequestFrom, type VoiceSettings } from "../../lib/voiceSettings";
 
 /**
  * Provider/model selection for the voice loop: which model answers, which
@@ -12,6 +14,12 @@ import type { VoiceSettings } from "../../lib/voiceSettings";
  * catalogues move, and a local server's model names are its own. The provider's
  * suggestions ride along as a datalist.
  */
+
+/** Phrase the test button speaks. Long enough to judge the voice by. */
+const TEST_PHRASE = "Voice output is working. This is how I will read replies back to you.";
+
+/** Largest reference clip accepted, before base64 inflates it by a third. */
+const MAX_REF_AUDIO_BYTES = 3 * 1024 * 1024;
 
 const FIELD =
   "rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500";
@@ -57,16 +65,69 @@ export default function VoiceSettingsBar({
 }) {
   const patch = (fields: Partial<VoiceSettings>) => onChange({ ...settings, ...fields });
 
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  /** Reads a chosen clip as the base64 data URI the synthesis route expects. */
+  async function pickReferenceClip(file: File | undefined): Promise<void> {
+    if (!file) return;
+    if (file.size > MAX_REF_AUDIO_BYTES) {
+      setTestResult({
+        ok: false,
+        message: `Reference clip is too large (${Math.round(file.size / 1024)} KB). A few seconds of speech is enough.`,
+      });
+      return;
+    }
+    const reader = new FileReader();
+    const dataUri = await new Promise<string>((resolve, reject) => {
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new Error("could not read that file"));
+      reader.readAsDataURL(file);
+    }).catch((e: Error) => {
+      setTestResult({ ok: false, message: e.message });
+      return "";
+    });
+    if (dataUri) {
+      setTestResult(null);
+      patch({ ttsRefAudio: dataUri });
+    }
+  }
+
+  /**
+   * Speaks a fixed phrase with the current settings. Without this the only way
+   * to find out a TTS configuration is wrong is to finish a whole turn and hear
+   * nothing — and a bad model, a missing key and a cold server all look alike.
+   */
+  async function testVoice(): Promise<void> {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      await playAudioBlob(await speak(ttsRequestFrom(settings, TEST_PHRASE)));
+      setTestResult({ ok: true, message: "Played the test phrase." });
+    } catch (e) {
+      setTestResult({ ok: false, message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setTesting(false);
+    }
+  }
+
   const llmModels = llmProviders.find((p) => p.id === settings.llmProvider)?.models ?? [];
   const sttModels = voiceProviders.find((p) => p.id === settings.sttProvider)?.sttModels ?? [];
   const ttsModels = voiceProviders.find((p) => p.id === settings.ttsProvider)?.ttsModels ?? [];
 
-  const speechProviderOptions = voiceProviders.map((p) => (
-    <option key={p.id} value={p.id} disabled={!p.available}>
-      {p.label}
-      {p.available ? "" : " (no key)"}
-    </option>
-  ));
+  /**
+   * Only providers that serve this half. Listing one that can't — Hugging Face
+   * under Text to speech — offers a choice whose every request fails.
+   */
+  const speechProviderOptions = (capability: "stt" | "tts") =>
+    voiceProviders
+      .filter((p) => p.capabilities.includes(capability))
+      .map((p) => (
+        <option key={p.id} value={p.id} disabled={!p.available}>
+          {p.label}
+          {p.available ? "" : " (no key)"}
+        </option>
+      ));
 
   return (
     <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
@@ -115,7 +176,7 @@ export default function VoiceSettingsBar({
             className={FIELD}
           >
             <option value="">— provider —</option>
-            {speechProviderOptions}
+            {speechProviderOptions("stt")}
           </select>
         </Field>
         <Field label="STT model">
@@ -144,7 +205,7 @@ export default function VoiceSettingsBar({
             className={FIELD}
           >
             <option value="">— provider —</option>
-            {speechProviderOptions}
+            {speechProviderOptions("tts")}
           </select>
         </Field>
         <Field label="TTS model">
@@ -180,7 +241,51 @@ export default function VoiceSettingsBar({
         </Field>
       </div>
 
-      <div className="flex flex-wrap gap-4">
+      {/* Cloning servers take a reference clip instead of a voice id, and some
+          want body fields of their own; both are per-server, so they sit apart
+          from the pickers rather than beside them. */}
+      <details className="rounded-md border border-zinc-800 bg-zinc-900/40 px-3 py-2">
+        <summary className="cursor-pointer text-xs uppercase tracking-wide text-zinc-500">
+          Voice cloning &amp; server-specific fields
+        </summary>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <Field label="Reference clip">
+            <div className="flex items-center gap-2">
+              <input
+                type="file"
+                accept="audio/*"
+                onChange={(e) => void pickReferenceClip(e.target.files?.[0])}
+                className="text-xs text-zinc-400 file:mr-2 file:rounded-md file:border-0 file:bg-zinc-800 file:px-2 file:py-1 file:text-xs file:text-zinc-200"
+              />
+              {settings.ttsRefAudio && (
+                <button
+                  type="button"
+                  onClick={() => patch({ ttsRefAudio: "" })}
+                  className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            <span className="text-xs text-zinc-500">
+              {settings.ttsRefAudio
+                ? `Loaded (${Math.round(settings.ttsRefAudio.length / 1024)} KB). Sent as ref_audio.`
+                : "Only for models that clone a voice, e.g. MOSS-TTS-Nano."}
+            </span>
+          </Field>
+          <Field label="Extra request fields (JSON)">
+            <textarea
+              value={settings.ttsExtraBody}
+              onChange={(e) => patch({ ttsExtraBody: e.target.value })}
+              rows={2}
+              placeholder='{"response_format": "wav"}'
+              className={`${FIELD} font-mono`}
+            />
+          </Field>
+        </div>
+      </details>
+
+      <div className="flex flex-wrap items-center gap-4">
         <Toggle
           label="Speak replies"
           checked={settings.speakReplies}
@@ -193,7 +298,21 @@ export default function VoiceSettingsBar({
           onChange={(handsFree) => patch({ handsFree })}
           title="End a turn on silence and re-open the mic once the reply finishes."
         />
+        <button
+          type="button"
+          onClick={() => void testVoice()}
+          disabled={testing || !settings.ttsProvider || !settings.ttsModel}
+          className="ml-auto rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800 disabled:opacity-40"
+        >
+          {testing ? "Testing…" : "Test voice"}
+        </button>
       </div>
+
+      {testResult && (
+        <p className={`text-sm ${testResult.ok ? "text-emerald-400" : "text-red-400"}`}>
+          {testResult.message}
+        </p>
+      )}
     </div>
   );
 }

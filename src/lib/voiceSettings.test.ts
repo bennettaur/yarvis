@@ -4,7 +4,9 @@ import type { VoiceProviderInfo } from "./voice";
 import {
   DEFAULT_VOICE_SETTINGS,
   loadVoiceSettings,
+  parseTtsExtras,
   saveVoiceSettings,
+  ttsRequestFrom,
   VOICE_SETTINGS_KEY,
   withVoiceDefaults,
 } from "./voiceSettings";
@@ -20,10 +22,18 @@ const VOICE_PROVIDERS: VoiceProviderInfo[] = [
     id: "huggingface",
     label: "Hugging Face",
     available: true,
+    capabilities: ["stt"],
     sttModels: ["openai/whisper-large-v3-turbo"],
     ttsModels: ["hexgrad/Kokoro-82M"],
   },
-  { id: "custom:local", label: "Local Ollama", available: true, sttModels: [], ttsModels: [] },
+  {
+    id: "custom:local",
+    label: "Local Ollama",
+    available: true,
+    capabilities: ["stt", "tts"],
+    sttModels: [],
+    ttsModels: [],
+  },
 ];
 
 beforeEach(() => {
@@ -65,7 +75,10 @@ describe("withVoiceDefaults", () => {
     expect(filled.llmModel).toBe("zai-glm-4.6");
     expect(filled.sttProvider).toBe("huggingface");
     expect(filled.sttModel).toBe("openai/whisper-large-v3-turbo");
-    expect(filled.ttsModel).toBe("hexgrad/Kokoro-82M");
+    // Hugging Face is listed first but can only transcribe, so speech falls to
+    // the local server — which names its own models, hence the blank field.
+    expect(filled.ttsProvider).toBe("custom:local");
+    expect(filled.ttsModel).toBe("");
   });
 
   it("keeps a saved selection that is still configured", () => {
@@ -112,10 +125,95 @@ describe("withVoiceDefaults", () => {
     expect(filled.sttProvider).toBe("custom:local");
   });
 
+  it("moves off a provider that cannot serve the half it was chosen for", () => {
+    // An older saved selection points TTS at Hugging Face, whose router refuses
+    // every speech model. Keeping it would fail every reply silently.
+    const saved = {
+      ...DEFAULT_VOICE_SETTINGS,
+      ttsProvider: "huggingface",
+      ttsModel: "hexgrad/Kokoro-82M",
+    };
+    const filled = withVoiceDefaults(saved, LLM_PROVIDERS, VOICE_PROVIDERS);
+    expect(filled.ttsProvider).toBe("custom:local");
+    expect(filled.ttsModel).toBe("");
+    // Transcription on the same provider is untouched — it can do that half.
+    expect(filled.sttProvider).toBe("huggingface");
+  });
+
+  it("leaves TTS blank when nothing can speak", () => {
+    const sttOnly = [VOICE_PROVIDERS[0]!];
+    const filled = withVoiceDefaults(DEFAULT_VOICE_SETTINGS, LLM_PROVIDERS, sttOnly);
+    expect(filled.sttProvider).toBe("huggingface");
+    expect(filled.ttsProvider).toBe("");
+  });
+
   it("leaves the toggles alone", () => {
     const saved = { ...DEFAULT_VOICE_SETTINGS, speakReplies: false, handsFree: false };
     const filled = withVoiceDefaults(saved, LLM_PROVIDERS, VOICE_PROVIDERS);
     expect(filled.speakReplies).toBe(false);
     expect(filled.handsFree).toBe(false);
+  });
+});
+
+describe("parseTtsExtras", () => {
+  it("treats blank as no extras at all", () => {
+    expect(parseTtsExtras("")).toBeUndefined();
+    expect(parseTtsExtras("   ")).toBeUndefined();
+  });
+
+  it("parses a scalar object", () => {
+    expect(
+      parseTtsExtras('{"response_format": "wav", "temperature": 0.5, "stream": false}'),
+    ).toEqual({ response_format: "wav", temperature: 0.5, stream: false });
+  });
+
+  it("explains malformed JSON instead of throwing a SyntaxError", () => {
+    // This is a field someone types into by hand, so the message matters.
+    expect(() => parseTtsExtras("{not json")).toThrow(/must be valid JSON/);
+  });
+
+  it("rejects a non-object and a nested value", () => {
+    expect(() => parseTtsExtras("[1,2]")).toThrow(/must be a JSON object/);
+    expect(() => parseTtsExtras('{"opts": {"nested": true}}')).toThrow(/string, number or boolean/);
+  });
+});
+
+describe("ttsRequestFrom", () => {
+  const configured = {
+    ...DEFAULT_VOICE_SETTINGS,
+    ttsProvider: "custom:local",
+    ttsModel: "moss-tts-nano",
+  };
+
+  it("carries the reference clip and parsed extras", () => {
+    const request = ttsRequestFrom(
+      {
+        ...configured,
+        ttsRefAudio: "data:audio/wav;base64,AAAA",
+        ttsExtraBody: '{"response_format": "wav"}',
+      },
+      "hello",
+    );
+    expect(request).toEqual({
+      provider: "custom:local",
+      model: "moss-tts-nano",
+      text: "hello",
+      voice: undefined,
+      refAudio: "data:audio/wav;base64,AAAA",
+      extras: { response_format: "wav" },
+    });
+  });
+
+  it("omits the optional parts when they are blank", () => {
+    const request = ttsRequestFrom(configured, "hello");
+    expect(request.refAudio).toBeUndefined();
+    expect(request.extras).toBeUndefined();
+    expect(request.voice).toBeUndefined();
+  });
+
+  it("propagates a malformed extras field so the caller can report it once", () => {
+    expect(() => ttsRequestFrom({ ...configured, ttsExtraBody: "{oops" }, "hi")).toThrow(
+      /must be valid JSON/,
+    );
   });
 });

@@ -228,6 +228,66 @@ describe("OpenAICompatibleSpeech.synthesize", () => {
   });
 });
 
+/**
+ * TTS servers have not converged: a cloning model takes a reference clip and
+ * ignores `voice`, and several want body fields of their own.
+ */
+describe("OpenAICompatibleSpeech synthesis extras", () => {
+  const client = (fetchImpl: typeof fetch) =>
+    new OpenAICompatibleSpeech({ baseUrl: BASE_URL, fetchImpl, allowLoopback: true });
+
+  it("passes a reference clip through as ref_audio", async () => {
+    const { calls, fetchImpl } = captureFetch(new Response(new Uint8Array([1])));
+
+    await client(fetchImpl).synthesize({
+      text: "hello",
+      model: "moss-tts-nano",
+      refAudio: "data:audio/wav;base64,AAAA",
+    });
+
+    // MOSS-TTS-Nano refuses a request without it.
+    expect(JSON.parse(calls[0]!.init.body as string).ref_audio).toBe("data:audio/wav;base64,AAAA");
+  });
+
+  it("omits ref_audio entirely when there is no clip", async () => {
+    const { calls, fetchImpl } = captureFetch(new Response(new Uint8Array([1])));
+    await client(fetchImpl).synthesize({ text: "hello", model: "kokoro" });
+    expect("ref_audio" in JSON.parse(calls[0]!.init.body as string)).toBe(false);
+  });
+
+  it("merges extra fields and lets them override the defaults", async () => {
+    const { calls, fetchImpl } = captureFetch(new Response(new Uint8Array([1])));
+
+    await client(fetchImpl).synthesize({
+      text: "hello",
+      model: "moss-tts-nano",
+      voice: "ignored-by-this-server",
+      extras: { response_format: "wav", temperature: 0.7, stream: false },
+    });
+
+    const body = JSON.parse(calls[0]!.init.body as string);
+    expect(body.response_format).toBe("wav");
+    expect(body.temperature).toBe(0.7);
+    expect(body.stream).toBe(false);
+  });
+
+  it("refuses to let extras rewrite the model or the text", async () => {
+    const { calls, fetchImpl } = captureFetch(new Response(new Uint8Array([1])));
+
+    await client(fetchImpl).synthesize({
+      text: "the real text",
+      model: "kokoro",
+      extras: { model: "something-else", input: "not this" },
+    });
+
+    // Both are validated and length-capped before they get here; an override
+    // would route around those checks.
+    const body = JSON.parse(calls[0]!.init.body as string);
+    expect(body.model).toBe("kokoro");
+    expect(body.input).toBe("the real text");
+  });
+});
+
 describe("outbound guard", () => {
   it("refuses loopback unless the caller opted in", async () => {
     const { fetchImpl } = captureFetch(jsonResponse({ text: "x" }));

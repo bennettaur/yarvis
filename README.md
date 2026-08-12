@@ -131,9 +131,13 @@ hosted one is the point of the split.
 Two kinds of speech backend are supported:
 
 - **Hugging Face** — Inference API models, using the Hugging Face token from
-  Settings. `openai/whisper-large-v3-turbo` for transcription and
-  `hexgrad/Kokoro-82M` for speech are reasonable starting points. A cold model
-  answers 503 with a wait estimate; the error says so.
+  Settings. `openai/whisper-large-v3-turbo` is a good transcription default. A
+  cold model answers 503 with a wait estimate; the error says so.
+
+  **Transcription only in practice.** The serverless router refuses the TTS
+  models with "Model not supported by provider hf-inference" — text-to-speech
+  is largely not served there, so no TTS models are suggested for it. Use a
+  local server for speech out.
 - **An OpenAI-kind custom provider** — any entry under Settings → Custom
   providers whose API kind is `openai` or `openai-chat`, since those are the
   ones that speak `/audio/transcriptions` and `/audio/speech`. (An
@@ -151,7 +155,45 @@ and 16 kHz mono is what speech models work in anyway.
 Ollama is a working STT backend as of 0.32: point a custom provider at
 `http://localhost:11434/v1` and name an audio-capable model (`gemma4:latest`).
 It is the same entry the chat side uses, so one provider can answer *and*
-transcribe.
+transcribe. It has no speech synthesis, so TTS needs a second server.
+
+For speech out, anything serving `POST /v1/audio/speech` works.
+
+**On Apple Silicon, use [mlx-audio](https://github.com/Blaizzy/mlx-audio)** — it
+runs natively on MLX with no GPU, and serves the OpenAI audio API:
+
+```bash
+pip install mlx-audio
+mlx_audio.server --host 127.0.0.1 --port 8000
+```
+
+Then add a custom provider at `http://127.0.0.1:8000/v1` (API kind `openai`),
+select it under **Text to speech**, set the TTS model to
+`mlx-community/Kokoro-82M-bf16` and the voice to `af_heart`, and press **Test
+voice**. Weights download on first use; no repository needs cloning. The same
+server also serves `/v1/audio/transcriptions`, so it can back both halves.
+
+**With an NVIDIA GPU**, vLLM-Omni covers most of the current open models:
+
+```bash
+vllm serve Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice --omni --port 8091
+```
+
+Models with speaker presets — Qwen3-TTS, Voxtral — need only a **Voice** id.
+Audio8-TTS serves the same endpoint through its SGLang Omni adapter and works
+without a reference clip. Note that vLLM is CUDA-first: it is not the path to
+take on a Mac.
+
+**Voice-cloning models** take a reference clip instead of a voice id.
+MOSS-TTS-Nano (`vllm serve OpenMOSS-Team/MOSS-TTS-Nano --omni --port 8091`, so
+NVIDIA only) requires one on every call and ignores `voice` entirely. Load a few seconds of
+speech under **Voice cloning & server-specific fields** → *Reference clip*; it
+is sent as `ref_audio`. The *Extra request fields* box beside it puts arbitrary
+JSON into the request body for anything else a server wants, e.g.
+`{"response_format": "wav"}`. Neither can overwrite the model or the text.
+
+**Test voice** synthesizes a fixed phrase with the current settings and plays
+it, so a configuration can be checked without finishing a whole turn.
 
 Model names are free text, because a local server's names are its own and
 hosted catalogues move; the provider's suggestions are only suggestions. The

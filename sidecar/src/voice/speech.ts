@@ -49,11 +49,33 @@ export interface TranscribeInput {
   language?: string;
 }
 
+/**
+ * Extra body fields for a synthesis request, passed through untouched.
+ *
+ * TTS servers have not converged the way transcription has. A voice-cloning
+ * model takes a reference clip instead of a voice id (MOSS-TTS-Nano requires
+ * `ref_audio` on every call and ignores `voice`), and others take
+ * caption/instruction fields of their own. Rather than grow a field per
+ * server, the user names them and they ride along.
+ */
+export type SynthesisExtras = Record<string, string | number | boolean>;
+
+/** Body fields this client owns; a caller's extras may not overwrite them. */
+export const RESERVED_SYNTHESIS_FIELDS = ["model", "input"] as const;
+
 export interface SynthesizeInput {
   text: string;
   model: string;
-  /** Provider-specific voice id. Meaningless to Hugging Face's TTS models. */
+  /** Provider-specific voice id. Ignored by voice-cloning models and by HF. */
   voice?: string;
+  /**
+   * Reference clip for voice cloning, as a `data:audio/…;base64,…` URI. Sent as
+   * `ref_audio`, which is the field vLLM-Omni's OpenAI-compatible TTS route
+   * expects.
+   */
+  refAudio?: string;
+  /** Merged into the request body last, so it can override `voice` etc. */
+  extras?: SynthesisExtras;
 }
 
 export interface SpeechAudio {
@@ -334,19 +356,34 @@ export class OpenAICompatibleSpeech implements SpeechClient {
     return readTranscript(await res.json());
   }
 
-  async synthesize({ text, model, voice }: SynthesizeInput): Promise<SpeechAudio> {
+  async synthesize({
+    text,
+    model,
+    voice,
+    refAudio,
+    extras,
+  }: SynthesizeInput): Promise<SpeechAudio> {
+    const body: Record<string, unknown> = {
+      model: assertModelId(model),
+      input: text,
+      // Servers that ignore voices still require the field to be present.
+      voice: voice || "alloy",
+      response_format: "mp3",
+    };
+    if (refAudio) body.ref_audio = refAudio;
+    // Merged last so a server that wants, say, `response_format: "wav"` can say
+    // so — but never over the model or the text, which are validated above.
+    for (const [key, value] of Object.entries(extras ?? {})) {
+      if ((RESERVED_SYNTHESIS_FIELDS as readonly string[]).includes(key)) continue;
+      body[key] = value;
+    }
+
     const res = await guardedFetch(
       `${this.baseUrl}/audio/speech`,
       {
         method: "POST",
         headers: this.headers({ "Content-Type": "application/json" }),
-        body: JSON.stringify({
-          model: assertModelId(model),
-          input: text,
-          // Servers that ignore voices still require the field to be present.
-          voice: voice || "alloy",
-          response_format: "mp3",
-        }),
+        body: JSON.stringify(body),
       },
       this.fetchOptions(SYNTHESIZE_TIMEOUT_MS),
     );

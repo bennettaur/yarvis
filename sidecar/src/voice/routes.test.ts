@@ -100,6 +100,19 @@ describe("POST /api/voice/speak", () => {
       body: JSON.stringify(body),
     });
 
+  /**
+   * Same request with no key configured, so a body that passes validation stops
+   * at provider resolution instead of reaching out to the real Hugging Face.
+   * "Rejected at the door" and "accepted and then unconfigured" are different
+   * messages, which is what lets these assert acceptance without a network call.
+   */
+  const speakUnconfigured = (body: unknown) =>
+    app().request("/api/voice/speak", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
   it("rejects an empty body", async () => {
     expect((await speak({})).status).toBe(400);
   });
@@ -119,6 +132,43 @@ describe("POST /api/voice/speak", () => {
       headers: { ...auth, "Content-Type": "application/json" },
       body: JSON.stringify({ provider: "huggingface", model: "hexgrad/Kokoro-82M", text: "hi" }),
     });
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("Hugging Face API key not configured");
+  });
+
+  const speakBody = (extra: Record<string, unknown>) => ({
+    provider: "huggingface",
+    model: "some-model",
+    text: "hi",
+    ...extra,
+  });
+
+  it("rejects a reference clip that is not an audio data URI", async () => {
+    // A bare URL here would make the sidecar fetch on the model's behalf.
+    expect((await speak(speakBody({ refAudio: "https://example.com/clip.wav" }))).status).toBe(400);
+    expect((await speak(speakBody({ refAudio: "data:text/html;base64,AAAA" }))).status).toBe(400);
+  });
+
+  it("accepts a well-formed reference clip", async () => {
+    // Reaches provider resolution rather than failing validation.
+    const res = await speakUnconfigured(speakBody({ refAudio: "data:audio/wav;base64,AAAA" }));
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("Hugging Face API key not configured");
+  });
+
+  it("refuses extras that would rewrite the model or the text", async () => {
+    expect((await speak(speakBody({ extras: { model: "other" } }))).status).toBe(400);
+    expect((await speak(speakBody({ extras: { input: "other" } }))).status).toBe(400);
+  });
+
+  it("refuses a nested extras value", async () => {
+    expect((await speak(speakBody({ extras: { opts: { nested: true } } }))).status).toBe(400);
+  });
+
+  it("accepts scalar extras", async () => {
+    const res = await speakUnconfigured(
+      speakBody({ extras: { response_format: "wav", temperature: 0.5, stream: false } }),
+    );
     expect(res.status).toBe(400);
     expect(await res.text()).toContain("Hugging Face API key not configured");
   });

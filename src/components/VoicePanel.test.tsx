@@ -66,6 +66,7 @@ mock.module("../lib/api", () => ({
           id: "huggingface",
           label: "Hugging Face",
           available: true,
+          capabilities: ["stt", "tts"],
           sttModels: ["openai/whisper-large-v3-turbo"],
           ttsModels: ["hexgrad/Kokoro-82M"],
         },

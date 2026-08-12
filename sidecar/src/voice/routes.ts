@@ -7,6 +7,7 @@ import { availableVoiceProviders, resolveSpeechClient } from "./providers.ts";
 import {
   MAX_AUDIO_BYTES,
   MAX_SPEECH_CHARS,
+  RESERVED_SYNTHESIS_FIELDS,
   type SpeechClient,
   SpeechRequestRejected,
   SpeechValidationError,
@@ -26,11 +27,37 @@ import {
 const AUDIO_CONTENT_TYPE =
   /^audio\/(webm|ogg|wav|x-wav|wave|mpeg|mp3|mp4|m4a|x-m4a|flac|aac)(;.*)?$/i;
 
+/**
+ * Reference clips are base64 inside JSON, so a few seconds of wav runs to
+ * hundreds of kilobytes. This bounds the request without ruling out the ~10s
+ * clip a cloning model actually wants.
+ */
+const MAX_REF_AUDIO_CHARS = 4 * 1024 * 1024;
+
+/** `data:audio/<subtype>;base64,<payload>` and nothing else. */
+const REF_AUDIO_DATA_URI = /^data:audio\/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/]+=*$/;
+
 const speakSchema = z.object({
   provider: z.string().min(1),
   model: z.string().min(1),
   text: z.string().min(1).max(MAX_SPEECH_CHARS),
   voice: z.string().max(128).optional(),
+  refAudio: z
+    .string()
+    .max(MAX_REF_AUDIO_CHARS)
+    .regex(REF_AUDIO_DATA_URI, "reference audio must be a base64 audio data URI")
+    .optional(),
+  /**
+   * Server-specific body fields. Values stay scalar: a nested object would be
+   * unbounded, and no TTS server here needs one.
+   */
+  extras: z
+    .record(z.string().min(1).max(64), z.union([z.string().max(4096), z.number(), z.boolean()]))
+    .refine(
+      (fields) => !RESERVED_SYNTHESIS_FIELDS.some((key) => key in fields),
+      `these fields are set from the request itself: ${RESERVED_SYNTHESIS_FIELDS.join(", ")}`,
+    )
+    .optional(),
 });
 
 const transcribeQuerySchema = z.object({
@@ -151,6 +178,8 @@ export function createVoiceRoutes(config: Config): Hono {
         text: parsed.data.text,
         model: parsed.data.model,
         voice: parsed.data.voice,
+        refAudio: parsed.data.refAudio,
+        extras: parsed.data.extras,
       });
       return new Response(audio, {
         status: 200,

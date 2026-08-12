@@ -17,6 +17,7 @@ import { listVoiceProviders, speak, transcribe, type VoiceProviderInfo } from ".
 import {
   loadVoiceSettings,
   saveVoiceSettings,
+  ttsRequestFrom,
   type VoiceSettings,
   withVoiceDefaults,
 } from "../lib/voiceSettings";
@@ -100,16 +101,14 @@ export default function VoicePanel() {
     saveVoiceSettings(settings);
   }, [settings]);
 
+  /** Throws if the extra-fields JSON is malformed, so the turn reports it once. */
   const createSpeechQueueFor = useCallback((current: VoiceSettings): SpeechQueue | null => {
     if (!current.speakReplies || !current.ttsProvider || !current.ttsModel) return null;
+    // Built once up front: parsing per chunk would report the same syntax error
+    // on every sentence, and would do it from inside the streaming loop.
+    const request = ttsRequestFrom(current, "");
     return createSpeechQueue({
-      synthesize: (text) =>
-        speak({
-          provider: current.ttsProvider,
-          model: current.ttsModel,
-          text,
-          voice: current.ttsVoice || undefined,
-        }),
+      synthesize: (text) => speak({ ...request, text }),
       play: playAudioBlob,
       // One unspeakable chunk shouldn't silence the rest of the reply, so the
       // queue carries on and the failure is reported once, visibly.
@@ -197,7 +196,15 @@ export default function VoicePanel() {
       setPhase("thinking");
 
       const splitter = createSentenceSplitter();
-      const queue = createSpeechQueueFor(current);
+      let queue: SpeechQueue | null;
+      try {
+        queue = createSpeechQueueFor(current);
+      } catch (e) {
+        // A malformed extra-fields JSON is worth stopping for: the reply would
+        // otherwise stream silently with every sentence failing to synthesize.
+        fail(e);
+        return;
+      }
       queueRef.current = queue;
       const abort = new AbortController();
       abortRef.current = abort;

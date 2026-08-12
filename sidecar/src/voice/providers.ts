@@ -18,10 +18,19 @@ import { HuggingFaceSpeech, OpenAICompatibleSpeech, type SpeechClient } from "./
 
 export type VoiceProviderId = string;
 
+/** Which half of the voice loop a provider can serve. */
+export type SpeechCapability = "stt" | "tts";
+
 export interface VoiceProviderInfo {
   id: VoiceProviderId;
   label: string;
   available: boolean;
+  /**
+   * What this backend can actually do. Not every provider does both: Hugging
+   * Face transcribes but its serverless router refuses every TTS model, so
+   * offering it under "Text to speech" only leads somewhere that 400s.
+   */
+  capabilities: SpeechCapability[];
   /**
    * Model ids known to work, offered as suggestions. Any model string the
    * backend serves is accepted — hosted catalogues change faster than this list
@@ -43,11 +52,15 @@ const HUGGINGFACE_STT_MODELS = [
   "distil-whisper/distil-large-v3",
 ];
 
-const HUGGINGFACE_TTS_MODELS = [
-  "hexgrad/Kokoro-82M",
-  "facebook/mms-tts-eng",
-  "espnet/kan-bayashi_ljspeech_vits",
-];
+/**
+ * Deliberately empty. The obvious candidates — `hexgrad/Kokoro-82M`,
+ * `facebook/mms-tts-eng`, `espnet/kan-bayashi_ljspeech_vits` — are all refused
+ * by the serverless router with "Model not supported by provider hf-inference";
+ * text-to-speech is largely not served there. Offering them as suggestions made
+ * a dead configuration look like the default. Transcription is unaffected, and
+ * a local server (see the README) is the working path for speech out.
+ */
+const HUGGINGFACE_TTS_MODELS: string[] = [];
 
 /**
  * A custom provider can serve speech only if it speaks the OpenAI audio API;
@@ -62,6 +75,9 @@ function customVoiceProviderInfo(row: CustomProviderRow): VoiceProviderInfo {
     id: `${CUSTOM_PROVIDER_PREFIX}${row.id}`,
     label: row.name,
     available: true,
+    // An OpenAI-audio server may serve either endpoint or both; which one it
+    // implements is only discoverable by asking it, so both are offered.
+    capabilities: ["stt", "tts"],
     // Its configured models are chat models; audio model names are the
     // server's own, so the user names them per request.
     sttModels: [],
@@ -80,6 +96,8 @@ export async function availableVoiceProviders(
       id: "huggingface",
       label: "Hugging Face",
       available: config.secrets.huggingFaceApiKey !== undefined,
+      // Transcription only: see HUGGINGFACE_TTS_MODELS.
+      capabilities: ["stt"],
       sttModels: HUGGINGFACE_STT_MODELS,
       ttsModels: HUGGINGFACE_TTS_MODELS,
     },
