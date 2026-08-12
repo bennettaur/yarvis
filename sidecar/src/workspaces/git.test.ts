@@ -281,40 +281,71 @@ describe("branchSync", () => {
 });
 
 describe("worktreeStatus", () => {
-  it("reports modified tracked files and ignores untracked ones", async () => {
-    const { runner } = fakeRunner((args) => {
-      if (args[0] === "status") {
-        return { stdout: " M src/app.ts\nA  src/new.ts\n?? scratch.txt\n" };
-      }
-      if (args[0] === "rev-parse") return { exitCode: 1 }; // no MERGE_HEAD
-      return {};
+  /** Answers the non-`status` probes the way a clean worktree on `feature` does. */
+  const cleanWorktree = (args: string[]) => {
+    if (args[0] === "symbolic-ref") return { stdout: "feature\n" };
+    if (args[0] === "rev-parse" && args[1] === "--git-path") return { stdout: "" };
+    if (args[0] === "rev-parse") return { exitCode: 1 }; // no sequencer ref
+    return {};
+  };
+
+  it("reports modified tracked files and the branch they are on", async () => {
+    const { runner, calls } = fakeRunner((args) => {
+      // `-z` output: NUL-separated entries, no trailing newline.
+      if (args[0] === "status") return { stdout: " M src/app.ts\0A  src/new.ts\0" };
+      return cleanWorktree(args);
     });
     expect(await worktreeStatus(runner, "/wt")).toEqual({
       dirtyFiles: ["src/app.ts", "src/new.ts"],
-      mergeInProgress: false,
+      branch: "feature",
+      inProgress: null,
     });
+    // Untracked files never block a merge, so git is asked not to walk them.
+    expect(calls[0]).toEqual(["status", "--porcelain", "-z", "--untracked-files=no"]);
   });
 
-  it("takes the new path of a rename", async () => {
+  it("keeps paths git would have quoted, and takes the new path of a rename", async () => {
+    // Under `-z` a rename is "R  <new>\0<original>\0" — the original comes
+    // second, the reverse of the quoted format — and nothing is quoted, so a
+    // path with a space or a non-ASCII character arrives intact.
     const { runner } = fakeRunner((args) => {
-      if (args[0] === "status") return { stdout: "R  src/old.ts -> src/new.ts\n" };
+      if (args[0] === "status") {
+        return { stdout: "R  src/new name.ts\0src/old.ts\0 M src/café.ts\0" };
+      }
+      return cleanWorktree(args);
+    });
+    const status = await worktreeStatus(runner, "/wt");
+    expect(status.dirtyFiles).toEqual(["src/new name.ts", "src/café.ts"]);
+  });
+
+  it("reports a detached HEAD as no branch", async () => {
+    const { runner } = fakeRunner((args) => {
+      if (args[0] === "status") return { stdout: "" };
+      if (args[0] === "symbolic-ref") return { exitCode: 1 }; // detached
+      if (args[0] === "rev-parse" && args[1] === "--git-path") return { stdout: "" };
       if (args[0] === "rev-parse") return { exitCode: 1 };
       return {};
     });
-    const status = await worktreeStatus(runner, "/wt");
-    expect(status.dirtyFiles).toEqual(["src/new.ts"]);
+    expect((await worktreeStatus(runner, "/wt")).branch).toBeNull();
   });
 
-  it("flags a merge already in progress", async () => {
-    const { runner } = fakeRunner((args) => {
-      if (args[0] === "status") return { stdout: "" };
-      if (args[0] === "rev-parse") return { exitCode: 0 }; // MERGE_HEAD present
-      return {};
-    });
-    expect(await worktreeStatus(runner, "/wt")).toEqual({
-      dirtyFiles: [],
-      mergeInProgress: true,
-    });
+  it("names the sequencer operation already under way", async () => {
+    // A cherry-pick stopped on a conflict is as unsafe to merge into as a merge.
+    for (const [ref, expected] of [
+      ["MERGE_HEAD", "merge"],
+      ["CHERRY_PICK_HEAD", "cherry-pick"],
+      ["REVERT_HEAD", "revert"],
+      ["REBASE_HEAD", "rebase"],
+    ] as const) {
+      const { runner } = fakeRunner((args) => {
+        if (args[0] === "status") return { stdout: "" };
+        if (args[0] === "symbolic-ref") return { stdout: "feature\n" };
+        if (args[0] === "rev-parse" && args[1] === "--git-path") return { stdout: "" };
+        if (args[0] === "rev-parse") return { exitCode: args[3] === ref ? 0 : 1 };
+        return {};
+      });
+      expect((await worktreeStatus(runner, "/wt")).inProgress).toBe(expected);
+    }
   });
 });
 
@@ -351,7 +382,7 @@ describe("mergeBaseIntoWorktree", () => {
       }
       return {}; // no unmerged paths
     });
-    expect(mergeBaseIntoWorktree(runner, "/wt", "main")).rejects.toThrow(
+    await expect(mergeBaseIntoWorktree(runner, "/wt", "main")).rejects.toThrow(
       "refusing to merge unrelated histories",
     );
   });
@@ -366,6 +397,6 @@ describe("pushBranch", () => {
 
   it("throws with git's own message when the push is rejected", async () => {
     const { runner } = fakeRunner(() => ({ exitCode: 1, stderr: "! [rejected] fetch first" }));
-    expect(pushBranch(runner, "/wt", "feature")).rejects.toThrow("fetch first");
+    await expect(pushBranch(runner, "/wt", "feature")).rejects.toThrow("fetch first");
   });
 });

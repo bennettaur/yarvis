@@ -200,13 +200,23 @@ the last step of provisioning.
 
 When several workspaces need the same upstream fix, ask the in-app agent (or
 Telegram) to merge main into them — "merge main into all my open PRs" — and it
-syncs them in bulk: fetch, merge each branch's base into it, and push what merged
-cleanly. A worktree with uncommitted changes, or one already mid-merge, is left
-alone and reported rather than merged over. A merge that conflicts is left in the
-worktree with its markers in place and isn't pushed, so you can pick it up
-yourself or hand it back: the agent can type an instruction like "resolve the
-merge conflicts and commit" straight into that workspace's running session, and
-it's answered there in the background.
+syncs them in bulk: fetch, merge each branch's base into it, and push the branch
+when the remote is missing commits. A repo is left alone, and the reason
+reported, when its worktree has uncommitted changes, is part-way through a
+merge/rebase/cherry-pick/revert, isn't on the workspace's own branch, or isn't
+finished provisioning. Note that a branch you have never pushed is published by
+this, since it counts as ahead of a remote it doesn't have yet.
+
+A merge that conflicts is left in the worktree with its markers in place and
+isn't pushed, so you can pick it up yourself or hand it back: the agent can type
+an instruction like "resolve the merge conflicts and commit" straight into that
+workspace's running session, and it's answered there in the background. That send
+is refused unless the configured agent itself is what's reading the session's
+prompt — if it has exited, or you left something else running in that terminal,
+nothing is typed — and an instruction may not open with `!`, `/`, `#`, or `@`,
+which the agent reads as a command rather than a request. What it can't tell is
+*what* the agent is showing: submitting while a permission prompt is up answers
+that prompt, so it confirms delivery only, never that the work was done.
 
 At most 60 terminal sessions can be live at once; opening more fails until one
 is closed. Raise or lower that under Settings → Repositories → Terminals (up to
@@ -492,9 +502,12 @@ src-tauri/      Rust core (Tauri v2)
   src/keychain.rs   Keychain-backed secret commands (single consolidated item)
   src/instance.rs   which instance this process is, and what it therefore owns
   src/sidecar.rs    sidecar supervisor
+  src/pty.rs        PTY sessions (terminals + workspace agent sessions), owned by the core
+  src/control.rs    fixed-method UDS control channel the sidecar drives PTY sessions through
   src/alarms.rs     full-screen alarm scheduler
   src/clipboard.rs  clipboard read/write + in-memory (never persisted) clip history
 sidecar/        Bun + TS service (Hono)
+  src/core/     client for the Rust core's control channel (spawn/kill/send to a session)
   src/db/       Drizzle schema, client, migrations (applied on startup)
   src/chat/     multi-provider streaming chat + tool-calls (agent.ts: shared agent turn)
   src/clipboard/ saved clipboard entries + the credential screen (screening.ts)
@@ -511,7 +524,8 @@ sidecar/        Bun + TS service (Hono)
   src/jira/     JIRA Cloud REST client + routes + agent tools + ADF↔Markdown conversion
   src/google/   Google Calendar OAuth + events
   src/omni/     Omni UI generation (streaming) + saved layouts
-  src/workspaces/ repo registry + git-worktree provisioning (/api/repos, /api/workspaces)
+  src/workspaces/ repo registry + git-worktree provisioning, bulk base-branch sync, and
+                  teardown (/api/repos, /api/workspaces)
   src/attention/  attention stream: hook ingest, SSE stream, scoped clearing
   src/chat/attentionTools.ts  request_attention tool (badge + OS notification)
   drizzle/      generated SQL migrations

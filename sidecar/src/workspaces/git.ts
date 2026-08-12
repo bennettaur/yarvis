@@ -12,7 +12,7 @@
  */
 
 import { existsSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { run } from "./exec.ts";
 
 export interface GitRunResult {
@@ -33,10 +33,12 @@ const NETWORK_TIMEOUT_MS = 10 * 60 * 1000;
 /**
  * Real runner: shells out to `git` with a scrubbed env. `GIT_TERMINAL_PROMPT=0`
  * makes a missing-credential clone fail fast instead of hanging on a prompt the
- * headless sidecar can never answer.
+ * headless sidecar can never answer. `LC_ALL=C` pins git's messages to English:
+ * `scrubbedEnv` passes the user's locale through, and `mergeBaseIntoWorktree`
+ * reads "Already up to date" out of that output.
  */
 export const defaultGitRunner: GitRunner = (args, opts) =>
-  run(["git", ...args], { ...opts, env: { GIT_TERMINAL_PROMPT: "0" } });
+  run(["git", ...args], { ...opts, env: { GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" } });
 
 /** Runs a git command and throws a descriptive error on non-zero exit. */
 async function git(
@@ -153,11 +155,29 @@ export async function branchSync(
 /** What stands in the way of merging into a worktree, if anything. */
 export interface WorktreeStatus {
   /** Tracked files with staged or unstaged modifications, conflicts included.
-   *  Untracked files are excluded: they don't block a merge. */
+   *  Untracked files are excluded: git only refuses the merge over one when it
+   *  would be overwritten, which surfaces as a failed merge instead. */
   dirtyFiles: string[];
-  /** True when a merge is already under way (`MERGE_HEAD` present). */
-  mergeInProgress: boolean;
+  /** The name of the branch checked out, or null on a detached HEAD. What a
+   *  merge lands on — which is not necessarily the branch the workspace row
+   *  names, since the worktree is a real checkout the user can move. */
+  branch: string | null;
+  /** The sequencer operation already under way, if any ("merge", "rebase",
+   *  "cherry-pick", "revert"). Merging into a worktree part-way through one of
+   *  these is how in-flight work gets lost. */
+  inProgress: string | null;
 }
+
+/**
+ * An interrupted sequencer operation leaves its own head ref behind; a rebase
+ * leaves a state directory instead, since it has no single such ref.
+ */
+const SEQUENCER_REFS: [string, string][] = [
+  ["MERGE_HEAD", "merge"],
+  ["CHERRY_PICK_HEAD", "cherry-pick"],
+  ["REVERT_HEAD", "revert"],
+  ["REBASE_HEAD", "rebase"],
+];
 
 /**
  * The worktree state a merge cares about. Read before merging so a sync can say
@@ -167,18 +187,50 @@ export async function worktreeStatus(
   runner: GitRunner,
   worktreePath: string,
 ): Promise<WorktreeStatus> {
-  const porcelain = await git(runner, ["status", "--porcelain"], worktreePath);
-  const dirtyFiles = porcelain
-    .split("\n")
-    .filter((line) => line.trim() && !line.startsWith("??"))
-    // Porcelain v1 is "XY <path>"; a rename is "R  old -> new".
-    .map((line) => line.slice(3).split(" -> ").pop() ?? "")
-    .filter(Boolean);
+  // `-z` turns off the path quoting `--porcelain` applies to names with spaces
+  // or non-ASCII characters, so the paths come out usable. It also reverses the
+  // rename fields: entries are "XY <path>\0", and a rename or copy adds a
+  // second "<original>\0" *after* the new path.
+  const porcelain = await git(
+    runner,
+    ["status", "--porcelain", "-z", "--untracked-files=no"],
+    worktreePath,
+  );
+  const fields = porcelain.split("\0").filter(Boolean);
+  const dirtyFiles: string[] = [];
+  for (let i = 0; i < fields.length; i++) {
+    const entry = fields[i] as string;
+    dirtyFiles.push(entry.slice(3));
+    // Skip the original path a rename/copy entry carries as its own field.
+    if (entry[0] === "R" || entry[0] === "C") i++;
+  }
 
-  const mergeHead = await runner(["rev-parse", "--verify", "--quiet", "MERGE_HEAD"], {
-    cwd: worktreePath,
-  });
-  return { dirtyFiles, mergeInProgress: mergeHead.exitCode === 0 };
+  const head = await runner(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: worktreePath });
+  const branch = head.exitCode === 0 ? head.stdout.trim() || null : null;
+
+  let inProgress: string | null = null;
+  for (const [ref, name] of SEQUENCER_REFS) {
+    const result = await runner(["rev-parse", "--verify", "--quiet", ref], { cwd: worktreePath });
+    if (result.exitCode === 0) {
+      inProgress = name;
+      break;
+    }
+  }
+  // An interactive rebase stopped between commits has no REBASE_HEAD, only its
+  // state directory, so ask git directly rather than trusting the refs alone.
+  // `--git-path` answers relative to the worktree it ran in, not to the
+  // sidecar's own cwd, so resolve it there before looking.
+  if (!inProgress) {
+    const rebaseDir = await runner(["rev-parse", "--git-path", "rebase-merge"], {
+      cwd: worktreePath,
+    });
+    const path = rebaseDir.stdout.trim();
+    if (rebaseDir.exitCode === 0 && path && existsSync(resolve(worktreePath, path))) {
+      inProgress = "rebase";
+    }
+  }
+
+  return { dirtyFiles, branch, inProgress };
 }
 
 /** The outcome of merging a base branch into a worktree's branch. */
@@ -207,6 +259,7 @@ export async function mergeBaseIntoWorktree(
     cwd: worktreePath,
   });
   if (result.exitCode === 0) {
+    // `defaultGitRunner` pins LC_ALL=C so this message is not translated.
     return /already up to date/i.test(result.stdout)
       ? { result: "up-to-date" }
       : { result: "merged" };

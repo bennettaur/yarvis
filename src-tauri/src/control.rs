@@ -11,9 +11,10 @@
 //! reach the launch line, and that line is typed into an interactive shell rather
 //! than exec'd, so `pty::sanitize_session_name` strips it — see that function for
 //! why quoting alone is not enough. `claude.send` types free text at a prompt
-//! instead, which `pty::send_session_instruction` sanitizes and refuses to send
-//! unless an agent, rather than the bare shell, is reading it. Requests and
-//! responses are newline-delimited JSON.
+//! instead, which `pty::send_session_instruction` sanitizes, refuses to send
+//! unless the configured agent itself is what reads that prompt, and refuses
+//! outright when it opens with a character the agent reads as a command rather
+//! than a request. Requests and responses are newline-delimited JSON.
 
 /// Absolute path to the control socket, kept in managed state so `sidecar.rs`
 /// can pass it to the child process via env.
@@ -232,7 +233,7 @@ mod unix_impl {
             "claude.send" => {
                 let p: SendParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
                 validate_workspace_id(&p.workspace_id)?;
-                send_session_instruction(state.inner(), &p.workspace_id, &p.instruction)
+                send_session_instruction(app, state.inner(), &p.workspace_id, &p.instruction)
             }
             other => Err(format!("unknown method: {other}")),
         }
