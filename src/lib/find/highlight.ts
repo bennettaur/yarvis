@@ -19,21 +19,47 @@ export function highlightsSupported(): boolean {
   return typeof CSS !== "undefined" && "highlights" in CSS && typeof Highlight === "function";
 }
 
+/**
+ * The two highlights, registered once and then mutated in place for the rest of
+ * the session.
+ *
+ * Handing the registry a *replacement* `Highlight` under the same key is what an
+ * earlier version did, and it left matches from the previous query painted:
+ * swapping the entry does not reliably invalidate what the old one had already
+ * drawn. Editing a registered highlight's contents is the path the browser
+ * watches, so `clear()` + `add()` repaints — and it skips rebuilding a set of up
+ * to two thousand ranges on every keystroke besides.
+ */
+let layers: { all: Highlight; active: Highlight } | null = null;
+
+function highlightLayers(): { all: Highlight; active: Highlight } | null {
+  if (!highlightsSupported()) return null;
+  if (!layers) {
+    layers = { all: new Highlight(), active: new Highlight() };
+    CSS.highlights.set(ALL_MATCHES, layers.all);
+    CSS.highlights.set(ACTIVE_MATCH, layers.active);
+  }
+  return layers;
+}
+
 /** Tints every match, with the one at `activeIndex` picked out from the rest. */
 export function showMatches(ranges: Range[], activeIndex: number): void {
-  if (!highlightsSupported()) return;
+  const highlights = highlightLayers();
+  if (!highlights) return;
 
-  const active = ranges[activeIndex];
-  const rest = ranges.filter((_, index) => index !== activeIndex);
-  CSS.highlights.set(ALL_MATCHES, new Highlight(...rest));
-  if (active) CSS.highlights.set(ACTIVE_MATCH, new Highlight(active));
-  else CSS.highlights.delete(ACTIVE_MATCH);
+  highlights.all.clear();
+  highlights.active.clear();
+  ranges.forEach((range, index) => {
+    if (index === activeIndex) highlights.active.add(range);
+    else highlights.all.add(range);
+  });
 }
 
 export function clearMatches(): void {
-  if (!highlightsSupported()) return;
-  CSS.highlights.delete(ALL_MATCHES);
-  CSS.highlights.delete(ACTIVE_MATCH);
+  // Only touches highlights that were registered — nothing to clear otherwise,
+  // and registering a pair just to empty them would be busywork.
+  layers?.all.clear();
+  layers?.active.clear();
 }
 
 /**
