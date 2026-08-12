@@ -25,6 +25,7 @@ import {
 import TerminalTabs from "./components/shell/terminalTabs/TerminalTabs";
 import { useTabShortcuts } from "./components/shell/useTabShortcuts";
 import TasksPanel from "./components/TasksPanel";
+import VoicePanel from "./components/VoicePanel";
 import WorkspacesPanel from "./components/WorkspacesPanel";
 import { useRingingAlarms } from "./lib/alarmStore";
 import type { AttentionItem } from "./lib/attention";
@@ -283,6 +284,10 @@ export default function App() {
             views scroll as a padded document. */}
         {tab === "chat" ? (
           <ChatPanel />
+        ) : tab === "voice" ? (
+          // Voice owns its layout like Chat: a fixed mic control under a
+          // transcript that scrolls on its own.
+          <VoicePanel />
         ) : tab === "omni" ? (
           <OmniView />
         ) : tab === "terminal" ? (

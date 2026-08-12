@@ -22,6 +22,7 @@ import { createPrRoutes } from "./pr/routes.ts";
 import { createReadiness, type Readiness } from "./readiness.ts";
 import { createTaskRoutes } from "./tasks/routes.ts";
 import { createTelegramRoutes } from "./telegram/routes.ts";
+import { createVoiceRoutes } from "./voice/routes.ts";
 import { createWipRoutes } from "./wip/routes.ts";
 import { createRepoRoutes, createWorkspaceRoutes } from "./workspaces/routes.ts";
 
@@ -95,6 +96,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
         anthropic: config.secrets.anthropicApiKey !== undefined,
         gemini: config.secrets.geminiApiKey !== undefined,
         cerebras: config.secrets.cerebrasApiKey !== undefined,
+        huggingface: config.secrets.huggingFaceApiKey !== undefined,
       },
     }),
   );
@@ -126,6 +128,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/omni", createOmniRoutes(config));
   app.route("/api/pr", createPrRoutes(config));
   app.route("/api/telegram", createTelegramRoutes());
+  app.route("/api/voice", createVoiceRoutes(config));
   app.route("/api/repos", createRepoRoutes(config));
   app.route("/api/workspaces", createWorkspaceRoutes(config));
 

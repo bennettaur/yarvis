@@ -110,6 +110,12 @@ back to ad-hoc.
   the tools in `codeTools.ts` are written once and GitHub/Azure each supply an
   implementation. A capability one provider lacks resolves to `null` so the
   caller can say so, rather than throwing.
+- Speech backends sit behind the `SpeechClient` interface in
+  `sidecar/src/voice/speech.ts`, resolved by `voice/providers.ts` the same way
+  `llm/providers.ts` resolves chat models — built-ins keep a bare id, user
+  providers keep the `custom:<id>` namespace. The voice surface picks its own
+  provider/model rather than reading the chat tab's, which is what lets voice
+  and chat run on different models.
 - Anything an outside party can influence — file contents, diffs, PR titles,
   recalled memories — enters a prompt as data, not instruction: fenced in
   per-request nonce tags (see `sidecar/src/pr/ask.ts`) with the system prompt

@@ -86,7 +86,8 @@ Gemini, Cerebras), a GitHub token and/or an Azure DevOps token + organization UR
 PR dashboard + embedded review — either provider can back it, selected with a
 toggle in the PRs tab), a JIRA base URL + account email + API token (for the JIRA
 issues integration on the Issues tab), a Google Cloud OAuth client id/secret (for the Calendar
-integration), an optional embeddings-provider secret (an API key and/or
+integration), an optional Hugging Face token (for the Voice tab's speech-to-text
+and text-to-speech), an optional embeddings-provider secret (an API key and/or
 custom header values for an OpenAI-compatible embeddings endpoint), and an
 optional Telegram bot token + allowed chat-id list (and, when the optional second
 factor is enabled, a TOTP secret + re-auth window) for the remote-control bot,
@@ -112,6 +113,45 @@ Cerebras takes only an API key, created in the Cerebras Cloud console. Unlike a
 custom provider, its endpoint is fixed — Cerebras serves the OpenAI
 `/chat/completions` shape, so Yarvis talks to it through the OpenAI client
 rather than a separate SDK, and there is no base URL to configure.
+
+### Voice
+
+The **Voice** tab talks to the same chat agent as the Chat tab — same sessions,
+same tools, same memory — with speech either side of it: what you say is
+transcribed and sent as the prompt, and the reply is spoken back.
+
+Three choices are made independently on that tab, and none of them touch the
+Chat tab's picker: the model that answers, the speech-to-text backend, and the
+text-to-speech backend. Running voice on a local model while chat stays on a
+hosted one is the point of the split.
+
+Two kinds of speech backend are supported:
+
+- **Hugging Face** — Inference API models, using the Hugging Face token from
+  Settings. `openai/whisper-large-v3-turbo` for transcription and
+  `hexgrad/Kokoro-82M` for speech are reasonable starting points. A cold model
+  answers 503 with a wait estimate; the error says so.
+- **Any custom provider** whose base URL speaks the OpenAI audio API
+  (`/audio/transcriptions`, `/audio/speech`). This reuses the entries under
+  Settings → Custom providers, so a local speech server on loopback — a
+  whisper.cpp or MOSS-TTS/Kokoro wrapper — needs no separate configuration.
+  Model names there are the server's own, so the model fields accept anything
+  you type; the provider's suggestions are only suggestions.
+
+Replies are spoken a sentence at a time as they stream, rather than after the
+whole answer completes, so speech starts about a sentence behind the model. Code
+blocks are dropped from what gets spoken rather than read out symbol by symbol.
+
+**Hands-free** ends a turn after a stretch of silence and re-opens the
+microphone once the reply finishes, so a back-and-forth needs no clicking; with
+it off the tab is push-to-talk. **Speak replies** off leaves transcription and
+the written answer, with no audio out.
+
+macOS gates the microphone: the app bundle carries the usage description and the
+audio-input entitlement, and the first recording raises the system permission
+prompt. Under `bun run tauri dev` the binary is not bundled, so the prompt is
+attributed to the terminal that launched it — run a built app if permission
+looks stuck.
 
 ### Embeddings
 
@@ -466,7 +506,8 @@ src/            React frontend (Vite + TS + Tailwind)
     issues/     provider-neutral issue data layer (GitHub + JIRA) — types, api client, start-work flow (useGithubStartWork.ts)
     jira/       JIRA-specific data layer (issue detail, transitions, comments, create) — types, api client, start-work flow (useJiraStartWork.ts)
     find/       find-on-page engine — visible-text index, match offsets, CSS Custom Highlight painting, useFind controller
-  components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, Terminal, Workspaces, …)
+  components/   one panel per tab (Chat, Voice, Tasks, PRs, Memory, Calendar, Terminal, Workspaces, …)
+    voice/      Voice tab pieces: provider/model bar, microphone control
     pr/         PR dashboard + embedded review: lists, file diffs (unified + split),
                 gap/context expansion, change minimap, guide panel, insight cards
     issue/      Issues tab views: GitHub + JIRA issue lists, detail, create/repo-picker modals
@@ -487,6 +528,8 @@ src-tauri/      Rust core (Tauri v2)
 sidecar/        Bun + TS service (Hono)
   src/db/       Drizzle schema, client, migrations (applied on startup)
   src/chat/     multi-provider streaming chat + tool-calls (agent.ts: shared agent turn)
+  src/voice/    speech-to-text + text-to-speech (/api/voice): Hugging Face Inference
+                and the OpenAI audio API, the latter reusing a custom provider's base URL
   src/clipboard/ saved clipboard entries + the credential screen (screening.ts)
   src/telegram/ Telegram remote-control bot (long-poll loop, slash commands, chat→session map)
   src/tasks/    daily/weekly work tracking

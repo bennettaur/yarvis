@@ -13,13 +13,13 @@ const ev = (over: Partial<ShortcutEvent>): ShortcutEvent => ({
 describe("resolveTabShortcut", () => {
   it("jumps to the Nth top-level tab on Cmd/Ctrl+digit", () => {
     expect(resolveTabShortcut(ev({ metaKey: true, key: "1" }), "settings")).toBe("chat");
-    expect(resolveTabShortcut(ev({ metaKey: true, key: "5" }), "chat")).toBe("tasks");
-    expect(resolveTabShortcut(ev({ ctrlKey: true, key: "3" }), "chat")).toBe("terminal");
+    expect(resolveTabShortcut(ev({ metaKey: true, key: "5" }), "chat")).toBe("workspaces");
+    expect(resolveTabShortcut(ev({ ctrlKey: true, key: "3" }), "chat")).toBe("omni");
   });
 
   it("cycles forward and wraps with Cmd/Ctrl+Shift+]", () => {
     expect(resolveTabShortcut(ev({ metaKey: true, shiftKey: true, key: "]" }), "chat")).toBe(
-      "omni",
+      "voice",
     );
     // settings is the last tab → wraps to the first.
     expect(resolveTabShortcut(ev({ metaKey: true, shiftKey: true, key: "}" }), "settings")).toBe(
@@ -32,7 +32,7 @@ describe("resolveTabShortcut", () => {
       "settings",
     );
     expect(resolveTabShortcut(ev({ metaKey: true, shiftKey: true, key: "{" }), "omni")).toBe(
-      "chat",
+      "voice",
     );
   });
 
