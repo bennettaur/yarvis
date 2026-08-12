@@ -1,6 +1,6 @@
 import { syncBuiltins } from "./agentTools/registry.ts";
 import { createApp } from "./app.ts";
-import { loadConfig } from "./config.ts";
+import { loadConfig, loadInstanceConfig } from "./config.ts";
 import { getDb } from "./db/client.ts";
 import { runMigrations } from "./db/migrate.ts";
 import { watchParentProcess } from "./lib/parentWatch.ts";
@@ -13,6 +13,7 @@ import { startWorkspacePoller } from "./workspaces/poller.ts";
 import { resumeKickOffs } from "./workspaces/service.ts";
 
 const config = loadConfig();
+const instance = loadInstanceConfig();
 
 // When launched by the Rust core (host-supplied token), exit if that parent
 // dies, so a crash/force-quit can't leave an orphaned sidecar polling Telegram
@@ -56,9 +57,18 @@ if (config.databaseUrl) {
   runMigrations(config.databaseUrl)
     .then(async () => {
       readiness.set("ready");
+      // A secondary instance serves its window and nothing else: the work below
+      // reaches out to providers and writes rows on a schedule, and running it
+      // from two processes against one database duplicates both.
+      if (!instance.backgroundWorkers) {
+        console.log(`[sidecar] instance '${instance.name}' is not running background workers`);
+        return;
+      }
       // Seed the built-in tools into the unified registry so the Tool Manager
       // and tool search see them. Best-effort: a failure here (e.g. embedder
-      // misconfig) must not take the service down.
+      // misconfig) must not take the service down. Gated with the rest because
+      // it embeds and upserts against the shared database; the tool routes seed
+      // the registry lazily, so a secondary instance still reads a correct one.
       try {
         const db = getDb(config.databaseUrl as string).db;
         await syncBuiltins(db, await chooseEmbedder(config, db));

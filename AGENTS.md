@@ -35,9 +35,12 @@ Run from the repo root unless noted.
 bun install                      # install deps (root + sidecar workspace)
 
 bun run tauri dev                # full app: frontend + Rust core + sidecar
+bun run dev:instance <name>       # a second app beside the primary one; add
+                                  #   YARVIS_DATABASE_URL to give it its own DB
 bun run sidecar:dev               # sidecar only (prints a dev bearer token)
 
-bun run test                      # frontend tests (src/), happy-dom
+bun run test                      # frontend tests (src/, happy-dom) + the
+                                  #   dev-script tests (scripts/)
 bun run sidecar:test               # sidecar tests — needs a Postgres+pgvector
                                     #   test DB; set TEST_DATABASE_URL (and
                                     #   DATABASE_URL for migrations)
@@ -89,6 +92,13 @@ back to ad-hoc.
   `YARVIS_WORKSPACES_ROOT`) uses env vars instead. Preferences the user is
   expected to change from the UI go in `src-tauri/src/settings.rs` when the
   Rust core enforces them, and in Postgres via the sidecar otherwise.
+- Several instances of the app can run at once (`bun run dev:instance`), sharing
+  one Keychain item and, unless told otherwise, one database. Anything singular
+  to the machine or to that shared database — a global hotkey, a poll loop, a
+  resume-on-startup sweep — belongs behind `instance.rs`, which decides who owns
+  it, rather than being started unconditionally. Per-instance state that Tauri
+  already keys by bundle identifier (the app data dir, the single-instance
+  socket) needs nothing.
 - Work that must finish regardless of what the UI is doing belongs in the
   sidecar, not in a React effect. An issue's "Start work" is the worked example:
   the route answers as soon as the workspace exists and the rest — provisioning,

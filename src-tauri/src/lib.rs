@@ -3,6 +3,7 @@ mod clipboard;
 mod control;
 mod custom_providers;
 mod embeddings_secrets;
+mod instance;
 mod keychain;
 mod mcp;
 mod pty;
@@ -104,6 +105,7 @@ pub fn run() {
     builder
         .setup(|app| {
             use tauri::Manager;
+            instance::label_window(app.handle());
             app.manage(pty::PtyState::default());
             if let Err(e) = settings::init(app.handle()) {
                 eprintln!("[settings] init failed: {e}");
@@ -127,11 +129,19 @@ pub fn run() {
             #[cfg(desktop)]
             {
                 use tauri_plugin_global_shortcut::GlobalShortcutExt;
-                if let Err(e) = app.global_shortcut().register(OMNI_CHAT_SHORTCUT) {
-                    eprintln!("[omni-chat] global shortcut registration failed: {e}");
-                }
-                if let Err(e) = app.global_shortcut().register(CLIPBOARD_SHORTCUT) {
-                    eprintln!("[clipboard] global shortcut registration failed: {e}");
+                if instance::global_shortcuts_enabled() {
+                    if let Err(e) = app.global_shortcut().register(OMNI_CHAT_SHORTCUT) {
+                        eprintln!("[omni-chat] global shortcut registration failed: {e}");
+                    }
+                    if let Err(e) = app.global_shortcut().register(CLIPBOARD_SHORTCUT) {
+                        eprintln!("[clipboard] global shortcut registration failed: {e}");
+                    }
+                } else {
+                    eprintln!(
+                        "[instance] '{}' left the global hotkeys to the primary instance; \
+                         set YARVIS_GLOBAL_SHORTCUTS=1 to claim them",
+                        instance::name()
+                    );
                 }
             }
             Ok(())
