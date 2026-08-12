@@ -13,6 +13,37 @@ export function stepLocation(step: {
 }
 
 /**
+ * A path as its leading directories and the part that identifies it — the
+ * basename, plus whatever line range the caller appended.
+ */
+function splitPath(location: string): { dir: string; name: string } {
+  const cut = location.lastIndexOf("/");
+  return cut === -1
+    ? { dir: "", name: location }
+    : { dir: location.slice(0, cut + 1), name: location.slice(cut + 1) };
+}
+
+/**
+ * A file location that gives up its directories before its name.
+ *
+ * The panel is a fixed 420px, so a path from a deep tree does not fit, and a
+ * plain `truncate` drops exactly the end — the basename and the line numbers,
+ * the only part that says which file this is. Two files in the same deep folder
+ * then render as the same string. Truncating the directory prefix instead keeps
+ * the name whole and still shows where in the tree it starts; the full location
+ * is on the hover title.
+ */
+function FileLocation({ location, className }: { location: string; className?: string }) {
+  const { dir, name } = splitPath(location);
+  return (
+    <span className={`flex max-w-full overflow-hidden ${className ?? ""}`} title={location}>
+      {dir && <span className="min-w-0 truncate opacity-70">{dir}</span>}
+      <span className="shrink-0">{name}</span>
+    </span>
+  );
+}
+
+/**
  * What a sanity-check step is called in the panel. A walkthrough gets no label:
  * reading the code is what a tour is for, so saying so on every other step is
  * noise.
@@ -65,7 +96,9 @@ function Findings({
               {FINDING_LABEL[finding.kind] ?? "flagged"}
             </span>
             <span className="text-zinc-300">{finding.note}</span>
-            <span className="ml-1 font-mono text-[11px] text-zinc-500">
+            {/* Wraps rather than truncating: the row is free to run onto a
+                second line, so the path never loses its name. */}
+            <span className="ml-1 break-words font-mono text-[11px] text-zinc-500">
               {stepLocation({ path: finding.path, startLine: finding.startLine, endLine: null })}
             </span>
           </button>
@@ -94,9 +127,10 @@ function CoveredFiles({ step, onOpen }: { step: PrGuideStep; onOpen: (path: stri
             <button
               type="button"
               onClick={() => onOpen(path)}
-              className="block max-w-full truncate font-mono text-[11px] text-zinc-400 hover:text-sky-300"
+              aria-label={`Open ${path}`}
+              className="block max-w-full font-mono text-[11px] text-zinc-400 hover:text-sky-300"
             >
-              {path}
+              <FileLocation location={path} />
             </button>
           </li>
         ))}
@@ -165,13 +199,16 @@ export default function PrGuidePanel({ guide: controller }: { guide: GuideContro
         </div>
 
         <div className="space-y-2 px-3 py-2">
+          {/* The hover title is on the location itself, which fills the button:
+              a title on the button would win nowhere the reader actually
+              hovers, and the full path is the more useful thing to show. */}
           <button
             type="button"
             onClick={() => controller.goTo(position)}
-            title="Jump back to this code"
-            className="block max-w-full truncate font-mono text-xs text-sky-400 hover:text-sky-300"
+            aria-label={`Jump back to ${stepLocation(step)}`}
+            className="block max-w-full font-mono text-xs text-sky-400 hover:text-sky-300"
           >
-            {stepLocation(step)}
+            <FileLocation location={stepLocation(step)} />
           </button>
           <p className="text-sm text-zinc-200">{step.explanation}</p>
           <CoveredFiles

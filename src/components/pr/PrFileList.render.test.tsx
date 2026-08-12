@@ -1,8 +1,10 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { PrFile, PrRef } from "../../lib/pr/types";
 import { prFile as file, setPrFiles } from "../../test/prFiles";
-import { renderToHtml } from "../../test/render";
+import { mountForInteraction, renderToHtml } from "../../test/render";
+import { FLASH_CLASS } from "./flashFile";
+import { prFileAnchorId } from "./shared";
 
 // Imported after the shared stub so its usePrFiles mock is in place.
 const { default: PrFileList } = await import("./PrFileList");
@@ -73,5 +75,41 @@ describe("PrFileList", () => {
     expect(await render([])).toContain("No file changes.");
     expect(await render(null, { loading: true })).toContain("Loading files…");
     expect(await render(null, { error: "boom" })).toContain("boom");
+  });
+});
+
+describe("PrFileList jump", () => {
+  let cleanup: (() => void) | null = null;
+
+  afterEach(() => {
+    cleanup?.();
+    cleanup = null;
+    document.getElementById(prFileAnchorId(prRef, "src/deep/a.ts"))?.remove();
+  });
+
+  // The scroll ends among a page of near-identical file headers, so the file
+  // asked for is flashed to say which one the page landed on.
+  it("flashes the diff it scrolled to", async () => {
+    const diff = document.createElement("details");
+    diff.id = prFileAnchorId(prRef, "src/deep/a.ts");
+    diff.innerHTML = "<summary>src/deep/a.ts</summary>";
+    document.body.appendChild(diff);
+
+    setPrFiles([file("src/deep/a.ts")]);
+    const mounted = await mountForInteraction(
+      createElement(PrFileList, {
+        prRef,
+        viewed: new Set<string>(),
+        onToggleViewed: () => {},
+      }),
+    );
+    cleanup = mounted.unmount;
+
+    const row = [...mounted.host.querySelectorAll("button")].find((b) =>
+      b.title.includes("src/deep/a.ts"),
+    );
+    row?.click();
+
+    expect(diff.querySelector("summary")?.classList.contains(FLASH_CLASS)).toBe(true);
   });
 });

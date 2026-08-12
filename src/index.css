@@ -34,6 +34,28 @@
   color: #18181b;
 }
 
+/*
+ * The landing flash for a file jumped to from the guided review or the file
+ * tree (see `components/pr/flashFile.ts`, which owns the class). Colour only,
+ * no movement, so it stays readable for anyone who has asked for reduced
+ * motion. The inset shadow leaves the sticky header's own box alone; an outset
+ * ring would be clipped by the pane it scrolls in.
+ */
+@keyframes yarvis-file-flash {
+  from {
+    background-color: #0c4a6e;
+    box-shadow: inset 0 0 0 2px #38bdf8;
+  }
+  to {
+    background-color: transparent;
+    box-shadow: inset 0 0 0 2px transparent;
+  }
+}
+
+.yarvis-file-flash {
+  animation: yarvis-file-flash 1.2s ease-out;
+}
+
 /* The shell owns the full viewport and manages its own scroll regions. */
 html,
 body,
