@@ -114,12 +114,33 @@ function errorDetail(body: string): string {
   return redactSecrets(body.trim()).slice(0, 300);
 }
 
+/**
+ * A backend that rejected the request rather than failing to serve it. Reported
+ * to the client as 400, because a 502 sends the user looking for an outage when
+ * what they need to change is the model, the format, or the key.
+ */
+export class SpeechRequestRejected extends Error {
+  constructor(
+    message: string,
+    readonly upstreamStatus: number,
+  ) {
+    super(message);
+    this.name = "SpeechRequestRejected";
+  }
+}
+
 async function throwSpeechError(what: string, res: Response): Promise<never> {
   const body = await res.text().catch(() => "");
   const detail = errorDetail(body);
-  throw new Error(
-    detail ? `${what} failed (${res.status}): ${detail}` : `${what} failed (${res.status})`,
-  );
+  const message = detail
+    ? `${what} failed (${res.status}): ${detail}`
+    : `${what} failed (${res.status})`;
+  // 4xx is the backend saying the request was wrong — except 429, which is the
+  // backend being busy and is worth retrying unchanged.
+  if (res.status >= 400 && res.status < 500 && res.status !== 429) {
+    throw new SpeechRequestRejected(message, res.status);
+  }
+  throw new Error(message);
 }
 
 /** Response shape shared by every ASR endpoint here: `{ text }`, or a list of them. */

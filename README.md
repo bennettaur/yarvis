@@ -141,6 +141,18 @@ Two kinds of speech backend are supported:
   picker.) A local speech server on loopback — a whisper.cpp or
   MOSS-TTS/Kokoro wrapper — therefore needs no separate configuration.
 
+Recordings are converted to 16 kHz mono WAV in the app before they are
+uploaded. The browser only encodes compressed containers — Opus in WebM, or AAC
+in MP4 in the macOS webview — and backends disagree about those: Whisper
+servers take them, while Ollama's transcription endpoint answers "Failed to
+load image or audio file" for anything but WAV. WAV is what all of them accept,
+and 16 kHz mono is what speech models work in anyway.
+
+Ollama is a working STT backend as of 0.32: point a custom provider at
+`http://localhost:11434/v1` and name an audio-capable model (`gemma4:latest`).
+It is the same entry the chat side uses, so one provider can answer *and*
+transcribe.
+
 Model names are free text, because a local server's names are its own and
 hosted catalogues move; the provider's suggestions are only suggestions. The
 accepted shape is a Hub-style `namespace/name` with an optional `:tag`

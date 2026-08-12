@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toSpeechWav } from "../lib/audioEncoding";
 import { playAudioBlob } from "../lib/audioPlayback";
 import {
   createSession,
@@ -160,10 +161,13 @@ export default function VoicePanel() {
       let text: string;
       try {
         setPhase("transcribing");
+        // Converted here rather than sent as recorded: the browser only encodes
+        // compressed containers, and not every backend can decode them (Ollama
+        // takes WAV and refuses AAC). See `toSpeechWav`.
         text = await transcribe({
           provider: current.sttProvider,
           model: current.sttModel,
-          audio,
+          audio: await toSpeechWav(audio),
           language: current.sttLanguage || undefined,
         });
       } catch (e) {

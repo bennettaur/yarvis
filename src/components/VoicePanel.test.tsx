@@ -14,6 +14,7 @@ import { mountForInteraction, renderToHtml } from "../test/render";
 interface Recorded {
   path: string;
   body: unknown;
+  init: RequestInit;
 }
 
 const requests: Recorded[] = [];
@@ -58,7 +59,7 @@ mock.module("../lib/api", () => ({
   ...api,
   sidecarFetch: async (path: string, init: RequestInit = {}) => {
     const body = typeof init.body === "string" ? JSON.parse(init.body) : init.body;
-    requests.push({ path, body });
+    requests.push({ path, body, init });
     if (path.startsWith("/api/voice/providers")) {
       return json([
         {
@@ -124,6 +125,16 @@ function installRecorderFakes(): void {
     createMediaStreamSource() {
       return { connect: () => {} };
     }
+    // The panel converts the recording to WAV before upload; happy-dom has no
+    // decoder, so hand back a short buffer's worth of silence.
+    async decodeAudioData() {
+      return {
+        numberOfChannels: 1,
+        length: 160,
+        sampleRate: 16_000,
+        getChannelData: () => new Float32Array(160),
+      };
+    }
     async close() {}
   };
   Object.defineProperty(navigator, "mediaDevices", {
@@ -180,6 +191,24 @@ describe("VoicePanel", () => {
     expect(paths).toContain("/api/chat");
     // The reply was synthesized, which is the half that makes it a voice loop.
     expect(paths.some((p) => p.startsWith("/api/voice/speak"))).toBe(true);
+  });
+
+  it("uploads WAV rather than whatever the browser recorded", async () => {
+    installRecorderFakes();
+    chatEvents = [{ type: "delta", text: "Done." }, { type: "done" }];
+
+    const mounted = await mountForInteraction(createElement(VoicePanel));
+    cleanup = mounted.unmount;
+
+    mounted.host.querySelector<HTMLButtonElement>('[aria-label="Start listening"]')?.click();
+    await settle();
+    deliverUtterance?.();
+    await settle(400);
+
+    // Backends differ in what they can decode — Ollama refuses the AAC the
+    // macOS webview records — so the conversion happens before upload.
+    const upload = requests.find((r) => r.path.startsWith("/api/voice/transcribe"));
+    expect(new Headers(upload?.init?.headers).get("Content-Type")).toBe("audio/wav");
   });
 
   it("marks the turn as spoken so the agent gates its destructive tools", async () => {

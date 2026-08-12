@@ -8,6 +8,7 @@ import {
   MAX_AUDIO_BYTES,
   MAX_SPEECH_CHARS,
   type SpeechClient,
+  SpeechRequestRejected,
   SpeechValidationError,
 } from "./speech.ts";
 
@@ -43,14 +44,18 @@ const transcribeQuerySchema = z.object({
 });
 
 /**
- * Maps a failure onto a status the UI can act on. A rejected URL or a mistyped
- * model id is the user's to fix (400); anything else came back from the
- * backend (502). Model ids are free text in the picker, so getting this split
- * right is the difference between "fix what you typed" and "the provider is
- * down".
+ * Maps a failure onto a status the UI can act on. A rejected URL, a mistyped
+ * model id, or a backend that refused the request outright is the user's to fix
+ * (400); only a backend that failed to serve it is a 502. Model and format are
+ * both free choices here, so getting this split right is the difference between
+ * "fix what you sent" and "the provider is down".
  */
 function speechErrorStatus(error: unknown): 400 | 502 {
-  return error instanceof UrlSafetyError || error instanceof SpeechValidationError ? 400 : 502;
+  return error instanceof UrlSafetyError ||
+    error instanceof SpeechValidationError ||
+    error instanceof SpeechRequestRejected
+    ? 400
+    : 502;
 }
 
 function errorMessage(error: unknown): string {
