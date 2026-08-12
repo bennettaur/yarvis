@@ -1,7 +1,7 @@
 import { Fragment, useMemo } from "react";
 import { type DiffRow, pairRows, type SplitCell, type SplitRow } from "../../lib/pr/diff";
-import { codeRows, type Gap } from "../../lib/pr/expand";
-import { cellHtml, type DiffHighlight, highlightDiff } from "../../lib/pr/highlight";
+import type { Gap } from "../../lib/pr/expand";
+import { cellHtml, type DiffHighlight } from "../../lib/pr/highlight";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { CodeText, rowClass } from "../diff/DiffView";
 import ChangeMinimap from "./ChangeMinimap";
@@ -19,6 +19,7 @@ import { FOCUS_ATTR, FOCUS_STYLE } from "./shared";
 import { useAskSelection } from "./useAskSelection";
 import type { FileExpansion } from "./useFileExpansion";
 import type { InsightsController } from "./usePrInsights";
+import { useSyntaxHighlight } from "./useSyntaxHighlight";
 
 /**
  * Background for the blank half of an uneven change — three deletions across
@@ -144,10 +145,7 @@ export default function SplitDiffBody({
   const rows = useMemo(() => pairAroundGaps(expansion.rows), [expansion.rows]);
   const comments = useLineComments(prRef, file, threads);
   const ask = useAskSelection(file.filename, expansion.rows, insights);
-  const syntax = useMemo(
-    () => highlightDiff(codeRows(expansion.rows), file.filename),
-    [expansion.rows, file.filename],
-  );
+  const syntax = useSyntaxHighlight(prRef, file.filename, file.patch ?? "", headSha);
 
   return (
     <div className="relative overflow-x-auto rounded-b-lg bg-zinc-950 font-mono text-xs leading-relaxed">

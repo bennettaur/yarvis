@@ -178,11 +178,20 @@ const BY_FILENAME: Record<string, keyof typeof GRAMMARS> = {
 };
 
 /**
- * Beyond this much text a file is colouring the reader can't use — a minified
- * bundle or a generated blob — and tokenising it would stall the render. The
- * cap is on the whole document, which in whole-file mode is the entire file.
+ * Where colouring stops being worth its cost. A file past any of these is
+ * generated, minified or a data blob — output nobody reads a token at a time,
+ * and the size that makes it unreadable is the size that makes tokenising it
+ * stall the render. Dropping highlighting there rather than degrading it is
+ * what GitHub does with the same class of file.
  */
 const MAX_HIGHLIGHT_CHARS = 400_000;
+const MAX_HIGHLIGHT_LINES = 20_000;
+/**
+ * A single line this long is a minified bundle whose newlines were stripped —
+ * the whole file can arrive under the character cap and still be one line that
+ * sends the grammar's regexes into heavy backtracking.
+ */
+const MAX_LINE_CHARS = 2_000;
 
 /** The grammar for a path, or null when we have none for it. */
 export function languageForPath(path: string): string | null {
@@ -192,6 +201,21 @@ export function languageForPath(path: string): string | null {
   const dot = name.lastIndexOf(".");
   if (dot <= 0) return null;
   return BY_EXTENSION[name.slice(dot + 1)] ?? null;
+}
+
+/** Whether a document is small enough to be worth colouring at all. */
+function worthHighlighting(code: string): boolean {
+  if (code.length > MAX_HIGHLIGHT_CHARS) return false;
+  let lines = 1;
+  let lineStart = 0;
+  for (let i = 0; i < code.length; i++) {
+    if (code[i] !== "\n") continue;
+    if (i - lineStart > MAX_LINE_CHARS) return false;
+    lineStart = i + 1;
+    lines++;
+    if (lines > MAX_HIGHLIGHT_LINES) return false;
+  }
+  return code.length - lineStart <= MAX_LINE_CHARS;
 }
 
 /**
@@ -240,7 +264,7 @@ function splitLines(html: string): string[] {
  * reads as one on its own if the lexer has seen where it started.
  */
 export function highlightLines(code: string, language: string): string[] | null {
-  if (code.length > MAX_HIGHLIGHT_CHARS) return null;
+  if (!worthHighlighting(code)) return null;
   if (!hljs.getLanguage(language)) return null;
   // A diff shows a file mid-edit, so syntax that doesn't parse is expected and
   // must not throw away the colouring of everything around it.

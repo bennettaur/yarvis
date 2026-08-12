@@ -138,11 +138,6 @@ export type Expansions = Map<number, GapExpansion>;
 /** Rows to render: real patch rows, plus a marker for each still-hidden gap. */
 export type ExpandedRow = { kind: "row"; row: DiffRow } | { kind: "gap"; gap: Gap; hidden: number };
 
-/** Just the source lines of a render list, with the gap markers dropped. */
-export function codeRows(rows: ExpandedRow[]): DiffRow[] {
-  return rows.flatMap((item) => (item.kind === "row" ? [item.row] : []));
-}
-
 function contextRow(text: string, rightLine: number, lineOffset: number): DiffRow {
   // Rebuilt in the patch's own shape, marker column and all, so a synthesized
   // line is indistinguishable from one the provider sent and every renderer

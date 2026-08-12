@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePrDetail, usePrFileDiff, usePrFiles } from "../../lib/pr/cache";
-import { codeRows } from "../../lib/pr/expand";
-import { highlightDiff, rowHtml } from "../../lib/pr/highlight";
+import { rowHtml } from "../../lib/pr/highlight";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { CodeText, rowClass } from "../diff/DiffView";
 import { usePersistedBoolean } from "../SplitPane";
@@ -23,6 +22,7 @@ import { useAskSelection } from "./useAskSelection";
 import { useExpandOnApproach } from "./useExpandOnApproach";
 import { type FileExpansion, useFileExpansion } from "./useFileExpansion";
 import { type InsightsController, usePrInsights } from "./usePrInsights";
+import { useSyntaxHighlight } from "./useSyntaxHighlight";
 
 /**
  * Files whose diffs are open on mount. Scrolling opens the rest as they come
@@ -67,10 +67,7 @@ export function DiffBody({
 }) {
   const comments = useLineComments(prRef, file, threads);
   const ask = useAskSelection(file.filename, expansion.rows, insights);
-  const syntax = useMemo(
-    () => highlightDiff(codeRows(expansion.rows), file.filename),
-    [expansion.rows, file.filename],
-  );
+  const syntax = useSyntaxHighlight(prRef, file.filename, file.patch ?? "", headSha);
 
   return (
     <div className="relative overflow-x-auto rounded-b-lg bg-zinc-950 font-mono text-xs leading-relaxed">

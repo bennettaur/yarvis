@@ -1,7 +1,8 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { fakeExpansion } from "../../test/expansion";
+import { setPrFileContent } from "../../test/prFiles";
 import { renderToHtml, textOf } from "../../test/render";
 import { DiffBody } from "./PrFileDiffs";
 
@@ -136,5 +137,56 @@ describe("DiffBody syntax coloring", () => {
     );
     expect(html).not.toContain("hljs-");
     expect(html).toContain("+const a = 1;");
+  });
+});
+
+describe("DiffBody coloring from the whole file", () => {
+  // The hunk opens three lines into a block comment. Nothing in the patch says
+  // so — only the file's full text does — so this is the end-to-end check that
+  // the fetched content actually reaches the rendered rows.
+  const patch = ["@@ -4,2 +4,2 @@", "- * fetched up front.", "+ * fetched on demand.", "  */"].join(
+    "\n",
+  );
+  const content = [
+    "/**",
+    " * Reveals the code a patch left out.",
+    " *",
+    " * fetched on demand.",
+    " */",
+    "const reveal = 1;",
+  ].join("\n");
+
+  const renderWithContent = (headSha: string) =>
+    renderToHtml(
+      createElement(DiffBody, {
+        prRef,
+        file: { ...file, patch },
+        threads: [],
+        expansion: fakeExpansion(patch),
+        headSha,
+      }),
+    );
+
+  afterEach(() => setPrFileContent(null));
+
+  it("colors a hunk that opens inside a block comment", async () => {
+    setPrFileContent(content);
+    expect(await renderWithContent("abc123")).toContain("hljs-comment");
+  });
+
+  // The old side is rebuilt by reversing the patch, so it gets the same context
+  // without a second fetch.
+  it("colors the deleted line from the rebuilt old file", async () => {
+    setPrFileContent(content);
+    const html = await renderWithContent("abc123");
+    expect(textOf(html)).toContain("- * fetched up front.");
+    expect(html.split("hljs-comment").length - 1).toBeGreaterThan(1);
+  });
+
+  // Without a commit to read the file at there is nothing to fetch, and the
+  // patch's own lines can't reveal the comment.
+  it("falls back to the patch when there is no head commit", async () => {
+    setPrFileContent(content);
+    expect(await renderWithContent("")).not.toContain("hljs-comment");
   });
 });
