@@ -199,7 +199,16 @@ describe("PrGuidePanel", () => {
     // the name.
     expect(html).toContain(">/PrGuidePanel.tsx:10–20</span>");
     expect(html).toContain("truncate-start");
-    expect(html).toContain(">src/components/pr/guide</span>");
+    expect(html).toContain("<bdi>src/components/pr/guide</bdi>");
+  });
+
+  // The prefix is laid out right-to-left so the ellipsis lands at its front,
+  // which reorders a leading "." unless the text is isolated as left-to-right.
+  it("isolates the directory prefix so a dot-directory keeps its order", async () => {
+    const html = await render({
+      guide: guide({ steps: [{ ...steps[0]!, path: ".github/workflows/ci.yml" }] }),
+    });
+    expect(html).toContain("<bdi>.github/workflows</bdi>");
   });
 
   it("puts the full location on the hover title", async () => {

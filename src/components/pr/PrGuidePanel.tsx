@@ -43,8 +43,17 @@ function FileLocation({ location }: { location: string }) {
   return (
     <span className="flex max-w-full overflow-hidden" title={location}>
       {/* The prefix takes essentially all of the shrinking, so the name only
-          starts to truncate once there are no directories left to give. */}
-      {dir && <span className="min-w-0 shrink-[9999] truncate-start opacity-70">{dir}</span>}
+          starts to truncate once there are no directories left to give.
+          `truncate-start` clips it by laying it out right-to-left, so the text
+          itself is isolated as left-to-right: without that, a leading neutral
+          character has nothing before it to take its direction from and is
+          reordered to the far end — `.github/workflows` reads as
+          `github/workflows.`. */}
+      {dir && (
+        <span className="min-w-0 shrink-[9999] truncate-start opacity-70">
+          <bdi>{dir}</bdi>
+        </span>
+      )}
       <span className="min-w-0 truncate">{nameAndLines}</span>
     </span>
   );
