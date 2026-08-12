@@ -110,3 +110,33 @@ describe("DiffBody guided-review highlighting", () => {
     );
   });
 });
+
+describe("DiffBody syntax coloring", () => {
+  const stripTags = (html: string) => html.replace(/<[^>]*>/g, "");
+
+  it("colors the code of a file it has a grammar for", async () => {
+    const html = await render(["@@ -1,1 +1,1 @@", "+const a = 1;"].join("\n"));
+    expect(html).toContain("hljs-keyword");
+  });
+
+  // The marker column is rendered alongside the colored code rather than
+  // handed to the highlighter, which would read `+const` as one token and, on
+  // a deleted line, `-const` as a subtraction.
+  it("keeps the marker column ahead of the colored code", async () => {
+    const html = await render(["@@ -1,1 +1,1 @@", "+const a = 1;"].join("\n"));
+    expect(stripTags(html)).toContain("+const a = 1;");
+  });
+
+  it("renders a file it has no grammar for as plain text", async () => {
+    const html = await renderToHtml(
+      createElement(DiffBody, {
+        prRef,
+        file: { ...file, filename: "notes.txt", patch: "" },
+        threads: [],
+        expansion: fakeExpansion(["@@ -1,1 +1,1 @@", "+const a = 1;"].join("\n")),
+      }),
+    );
+    expect(html).not.toContain("hljs-");
+    expect(html).toContain("+const a = 1;");
+  });
+});

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePrDetail, usePrFileDiff, usePrFiles } from "../../lib/pr/cache";
+import { codeRows } from "../../lib/pr/expand";
+import { highlightDiff, rowHtml } from "../../lib/pr/highlight";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
-import { rowClass } from "../diff/DiffView";
+import { CodeText, rowClass } from "../diff/DiffView";
 import { usePersistedBoolean } from "../SplitPane";
 import ChangeMinimap from "./ChangeMinimap";
 import CopyPathButton from "./CopyPathButton";
@@ -64,6 +66,10 @@ export function DiffBody({
 }) {
   const comments = useLineComments(prRef, file, threads);
   const ask = useAskSelection(file.filename, expansion.rows, insights);
+  const syntax = useMemo(
+    () => highlightDiff(codeRows(expansion.rows), file.filename),
+    [expansion.rows, file.filename],
+  );
 
   return (
     <div className="relative overflow-x-auto rounded-b-lg bg-zinc-950 font-mono text-xs leading-relaxed">
@@ -104,7 +110,7 @@ export function DiffBody({
                 )}
                 <span>{row.rightLine ?? ""}</span>
               </span>
-              <span className="whitespace-pre">{row.text || " "}</span>
+              <CodeText html={rowHtml(row, syntax)} text={row.text} />
             </div>
             <LineCommentBlock line={row.rightLine} comments={comments} />
             {insights && (

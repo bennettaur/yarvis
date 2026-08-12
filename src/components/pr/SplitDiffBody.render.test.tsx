@@ -30,6 +30,8 @@ const render = (
     }),
   );
 
+const stripTags = (html: string) => html.replace(/<[^>]*>/g, "");
+
 describe("SplitDiffBody", () => {
   // The whole point of the split view: the old file's numbering on the left and
   // the new file's on the right, which diverge as soon as a hunk adds a line.
@@ -42,11 +44,14 @@ describe("SplitDiffBody", () => {
   });
 
   it("strips the marker column from the code cells", async () => {
-    const html = await render(["@@ -1,1 +1,1 @@", "-old()", "+new()"].join("\n"));
-    expect(html).toContain(">old()<");
-    expect(html).toContain(">new()<");
-    expect(html).not.toContain(">-old()<");
-    expect(html).not.toContain(">+new()<");
+    // Read as text, not markup: the fixture is a `.ts` file, so its code cells
+    // come out wrapped in syntax-coloring spans that a raw substring match
+    // would trip over.
+    const text = stripTags(await render(["@@ -1,1 +1,1 @@", "-old()", "+new()"].join("\n")));
+    expect(text).toContain("old()");
+    expect(text).toContain("new()");
+    expect(text).not.toContain("-old()");
+    expect(text).not.toContain("+new()");
   });
 
   // Hunk headers belong to neither file, so they run the full width instead of

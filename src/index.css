@@ -23,3 +23,76 @@ body,
 #root {
   height: 100%;
 }
+
+/*
+ * Syntax colors for the code views (see `src/lib/highlight.ts`).
+ *
+ * Foregrounds only: a diff row's background is what marks it added or deleted,
+ * and the token colors have to sit on top of that rather than compete with it.
+ * `.syntax` itself resets the row's own text color, so the plain stretches of
+ * an added line don't read as a token type of their own.
+ *
+ * Written here rather than imported from a highlight.js stylesheet because
+ * those all paint a background over the row, and because unlayered rules beat
+ * Tailwind's utilities — which is what lets these override `rowClass`.
+ */
+.syntax {
+  color: #c9d1d9;
+}
+.syntax .hljs-comment,
+.syntax .hljs-quote {
+  color: #8b949e;
+  font-style: italic;
+}
+.syntax .hljs-keyword,
+.syntax .hljs-selector-tag,
+.syntax .hljs-literal,
+.syntax .hljs-type,
+.syntax .hljs-tag,
+.syntax .hljs-doctag,
+.syntax .hljs-meta .hljs-keyword,
+.syntax .hljs-template-tag {
+  color: #ff7b72;
+}
+.syntax .hljs-title,
+.syntax .hljs-title.class_,
+.syntax .hljs-title.function_,
+.syntax .hljs-section,
+.syntax .hljs-selector-id,
+.syntax .hljs-selector-class {
+  color: #d2a8ff;
+}
+.syntax .hljs-string,
+.syntax .hljs-regexp,
+.syntax .hljs-char.escape_,
+.syntax .hljs-subst,
+.syntax .hljs-link,
+.syntax .hljs-symbol,
+.syntax .hljs-bullet {
+  color: #a5d6ff;
+}
+.syntax .hljs-number,
+.syntax .hljs-built_in,
+.syntax .hljs-name,
+.syntax .hljs-attr,
+.syntax .hljs-attribute,
+.syntax .hljs-property,
+.syntax .hljs-variable.constant_,
+.syntax .hljs-variable.language_,
+.syntax .hljs-selector-attr,
+.syntax .hljs-selector-pseudo {
+  color: #79c0ff;
+}
+.syntax .hljs-variable,
+.syntax .hljs-template-variable,
+.syntax .hljs-params,
+.syntax .hljs-meta,
+.syntax .hljs-formula {
+  color: #ffa657;
+}
+.syntax .hljs-emphasis {
+  font-style: italic;
+}
+.syntax .hljs-strong {
+  font-weight: 600;
+}
