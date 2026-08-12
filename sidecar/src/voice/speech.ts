@@ -165,6 +165,24 @@ async function throwSpeechError(what: string, res: Response): Promise<never> {
   throw new Error(message);
 }
 
+/**
+ * Rejects an empty synthesis response.
+ *
+ * A server that fails partway through generating can answer 200 with a
+ * zero-byte body: mlx-audio does exactly this when its model errors after the
+ * headers are out, and the real failure only appears in its own log. Passing
+ * that on would surface as "audio playback failed" from the browser's decoder,
+ * pointing at the wrong thing entirely.
+ */
+function assertAudio(audio: Uint8Array, contentType: string): SpeechAudio {
+  if (audio.byteLength === 0) {
+    throw new Error(
+      "the speech provider returned no audio (it answered OK with an empty body) — check its log",
+    );
+  }
+  return { audio, contentType };
+}
+
 /** Response shape shared by every ASR endpoint here: `{ text }`, or a list of them. */
 function readTranscript(payload: unknown): string {
   const first = Array.isArray(payload) ? payload[0] : payload;
@@ -275,12 +293,12 @@ export class HuggingFaceSpeech implements SpeechClient {
       { fetchImpl: this.fetchImpl, timeoutMs: SYNTHESIZE_TIMEOUT_MS, allowLoopback: false },
     );
     if (!res.ok) await throwSpeechError("speech synthesis", res);
-    return {
-      audio: new Uint8Array(await res.arrayBuffer()),
+    return assertAudio(
+      new Uint8Array(await res.arrayBuffer()),
       // Which audio format comes back depends on the model (flac, wav, mp3),
       // so the response's own content type is the only reliable source.
-      contentType: res.headers.get("content-type") ?? "audio/mpeg",
-    };
+      res.headers.get("content-type") ?? "audio/mpeg",
+    );
   }
 }
 
@@ -388,9 +406,9 @@ export class OpenAICompatibleSpeech implements SpeechClient {
       this.fetchOptions(SYNTHESIZE_TIMEOUT_MS),
     );
     if (!res.ok) await throwSpeechError("speech synthesis", res);
-    return {
-      audio: new Uint8Array(await res.arrayBuffer()),
-      contentType: res.headers.get("content-type") ?? "audio/mpeg",
-    };
+    return assertAudio(
+      new Uint8Array(await res.arrayBuffer()),
+      res.headers.get("content-type") ?? "audio/mpeg",
+    );
   }
 }

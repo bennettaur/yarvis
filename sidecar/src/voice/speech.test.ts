@@ -446,3 +446,34 @@ describe("HuggingFaceSpeech", () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+describe("empty synthesis responses", () => {
+  it("refuses a 200 with no audio in it", async () => {
+    // mlx-audio answers exactly this way when its model fails after the headers
+    // are sent; the real reason only shows up in that server's own log.
+    const { fetchImpl } = captureFetch(
+      new Response(new Uint8Array(), { status: 200, headers: { "Content-Type": "audio/mp3" } }),
+    );
+    const client = new OpenAICompatibleSpeech({
+      baseUrl: BASE_URL,
+      fetchImpl,
+      allowLoopback: true,
+    });
+
+    await expect(client.synthesize({ text: "hello", model: "kokoro" })).rejects.toThrow(
+      /returned no audio/,
+    );
+  });
+
+  it("applies the same check to Hugging Face", async () => {
+    const { fetchImpl } = captureFetch(new Response(new Uint8Array(), { status: 200 }));
+    const client = new HuggingFaceSpeech(
+      "hf_token",
+      "https://93.184.216.34/hf-inference",
+      fetchImpl,
+    );
+    await expect(client.synthesize({ text: "hello", model: "some/model" })).rejects.toThrow(
+      /returned no audio/,
+    );
+  });
+});
