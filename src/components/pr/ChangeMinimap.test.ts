@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { parsePatch } from "../../lib/pr/diff";
-import { expandRows } from "../../lib/pr/expand";
+import { expandAllGaps, expandRows, toFileLines } from "../../lib/pr/expand";
 import { changeBands } from "./ChangeMinimap";
 
 const bandsFor = (patch: string, totalLines: number) =>
@@ -39,6 +39,17 @@ describe("changeBands", () => {
     const bands = bandsFor(["@@ -10,2 +9,0 @@", "-a", "-b"].join("\n"), 100);
     expect(bands).toHaveLength(1);
     expect(bands[0]!.added).toBe(false);
+  });
+
+  // The whole-file view carries no `@@` headers, so a deletion-only hunk — the
+  // one case whose position the header used to supply — has to take its place
+  // from the revealed line above it instead.
+  it("places a deletion-only change with the headers gone", () => {
+    const lines = toFileLines(Array.from({ length: 10 }, (_, i) => `l${i + 1}`).join("\n"));
+    const rows = parsePatch(["@@ -5,2 +4,0 @@", "-a", "-b"].join("\n"));
+    const bands = changeBands(expandRows(rows, lines, expandAllGaps(rows, lines.length)), 10);
+    expect(bands).toHaveLength(1);
+    expect(bands[0]!.top).toBe(40);
   });
 
   it("has nothing to draw for a file of unknown length", () => {

@@ -122,7 +122,6 @@ describe("expandRows", () => {
       "gap:2",
       "context@3",
       "context@4",
-      "hunk@-",
       "del@-",
       "add@5",
       "gap:5",
@@ -136,11 +135,40 @@ describe("expandRows", () => {
       "context@2",
       "context@3",
       "context@4",
-      "hunk@-",
       "del@-",
       "add@5",
       "gap:5",
     ]);
+  });
+
+  // The header says where the patch jumped to. Reveal the line it names as its
+  // predecessor and nothing was jumped over, so the header only repeats the
+  // line numbers already down the side.
+  it("drops a header once the line above it is on screen", () => {
+    const expansions: Expansions = new Map([[0, { top: 0, bottom: 1 }]]);
+    expect(shape(expandRows(rows, FILE, expansions))).not.toContain("hunk@-");
+  });
+
+  it("keeps a header while anything above it is still hidden", () => {
+    const expansions: Expansions = new Map([[0, { top: 3, bottom: 0 }]]);
+    expect(shape(expandRows(rows, FILE, expansions))).toContain("hunk@-");
+  });
+
+  // The whole-file view is every gap opened at once, which leaves no hunk with
+  // a hidden line above it — so none of the headers survive.
+  it("leaves no headers in the whole-file view", () => {
+    const two = parsePatch(["@@ -2,1 +2,1 @@", "+b", "@@ -8,1 +8,1 @@", "+h"].join("\n"));
+    const all = expandAllGaps(two, FILE.length);
+    expect(shape(expandRows(two, FILE, all))).not.toContain("hunk@-");
+  });
+
+  // `@@ -5,3 +4,0 @@` deletes without adding, so the hunk covers no right-side
+  // line at all. Its header still has to go once line 4 — the line it sits
+  // after — is showing.
+  it("drops a deletion-only hunk's header too", () => {
+    const deleted = parsePatch(["@@ -5,3 +4,0 @@", "-a", "-b", "-c"].join("\n"));
+    const all = expandAllGaps(deleted, FILE.length);
+    expect(shape(expandRows(deleted, FILE, all))).not.toContain("hunk@-");
   });
 
   // Both ends opening past each other must not double up on lines in the middle.

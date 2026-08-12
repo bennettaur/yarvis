@@ -163,6 +163,15 @@ export function expandRows(
   const spans = hunkSpans(rows);
   const gaps = gapsBetween(spans, fileLines.length);
   const out: ExpandedRow[] = [];
+  const hunkStarts = new Map(spans.map((span) => [span.headerIndex, span.rightStart]));
+
+  // The last right-file line put out so far, which is what tells a hunk header
+  // whether the reader skipped anything to reach it.
+  let lastRight = 0;
+  const emitRow = (row: DiffRow) => {
+    if (row.rightLine != null) lastRight = row.rightLine;
+    out.push({ kind: "row", row });
+  };
 
   const emitGap = (gap: Gap) => {
     const size = gap.to - gap.from + 1;
@@ -177,7 +186,7 @@ export function expandRows(
       for (let line = from; line <= to; line++) {
         const text = fileLines[line - 1];
         if (text === undefined) continue;
-        out.push({ kind: "row", row: contextRow(text, line, gap.lineOffset) });
+        emitRow(contextRow(text, line, gap.lineOffset));
       }
     };
 
@@ -188,7 +197,16 @@ export function expandRows(
 
   // A gap sits before the hunk of the same index; the final gap trails them all.
   const emitRows = (from: number, to: number) => {
-    for (let i = from; i < to; i++) out.push({ kind: "row", row: rows[i]! });
+    for (let i = from; i < to; i++) {
+      // A `@@` header says where the patch jumped to. Once the line it names
+      // is sitting directly above it, nothing was jumped over and the header
+      // only repeats the numbers already down the side — which is every header
+      // in the whole-file view. Headers stay while the file's text is
+      // unloaded: there they are the sole record of where each hunk sits.
+      const start = hunkStarts.get(i);
+      if (loaded && start !== undefined && start === lastRight + 1) continue;
+      emitRow(rows[i]!);
+    }
   };
 
   let gapCursor = 0;
