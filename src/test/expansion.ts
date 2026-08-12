@@ -1,6 +1,6 @@
 import type { FileExpansion } from "../components/pr/useFileExpansion";
 import { parsePatch } from "../lib/pr/diff";
-import { type Expansions, expandRows } from "../lib/pr/expand";
+import { type Expansions, expandAllGaps, expandRows } from "../lib/pr/expand";
 
 /**
  * Builds the expansion a diff renderer consumes, without the hook's fetching.
@@ -17,8 +17,16 @@ export function fakeExpansion(
   } = {},
 ): FileExpansion {
   const fileLines = options.fileLines ?? [];
+  const rows = parsePatch(patch);
+  // Whole-file mode is every gap opened at once, which is how the hook derives
+  // it too — a caller asking for it shouldn't have to hand-build the expansions.
+  const expansions =
+    options.expansions ??
+    (options.wholeFile && fileLines.length > 0
+      ? expandAllGaps(rows, fileLines.length)
+      : (new Map() as Expansions));
   return {
-    rows: expandRows(parsePatch(patch), fileLines, options.expansions ?? new Map()),
+    rows: expandRows(rows, fileLines, expansions),
     totalLines: fileLines.length,
     loading: false,
     error: null,

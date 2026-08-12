@@ -53,7 +53,10 @@ function Gutter({
     <span
       style={style}
       {...(focusAnchor ? { [FOCUS_ATTR]: "true" } : {})}
-      className={`group/line relative flex w-12 shrink-0 select-none items-center justify-end pr-2 text-zinc-600 ${
+      // Top-aligned rather than centred: a line long enough to wrap makes its
+      // row several lines tall, and the number belongs beside the line's first
+      // visual row, not floating in the middle of the block.
+      className={`group/line relative flex w-12 shrink-0 select-none items-start justify-end pr-2 text-zinc-600 ${
         cell ? rowClass(cell.kind) : FILLER_CLASS
       }`}
     >
@@ -68,9 +71,21 @@ function Gutter({
   );
 }
 
+/**
+ * One side's code cell. Lines wrap to stay inside their half of the pane (see
+ * the layout note on `SplitDiffBody`) — unlike the unified view, where a line
+ * running off sideways hides nothing but itself. `wrap-anywhere` rather than
+ * `wrap-break-word` so a line with no break opportunity at all — a minified
+ * bundle, a base64 blob — wraps too. `pre-wrap` keeps the leading spaces, so
+ * indentation reads the same as it does unwrapped.
+ */
 function Code({ cell }: { cell: SplitCell | null }) {
   return (
-    <span className={`whitespace-pre pr-4 ${cell ? rowClass(cell.kind) : FILLER_CLASS}`}>
+    <span
+      className={`whitespace-pre-wrap wrap-anywhere pr-4 ${
+        cell ? rowClass(cell.kind) : FILLER_CLASS
+      }`}
+    >
       {cell ? cell.text || " " : " "}
     </span>
   );
@@ -82,9 +97,20 @@ function Code({ cell }: { cell: SplitCell | null }) {
  *
  * Laid out as one CSS grid rather than two scrolling columns: comment blocks are
  * full-width and their height varies, so independent columns would drift out of
- * vertical alignment the moment a thread appeared. `w-max` lets the two code
- * tracks size to the widest line and stay equal to each other, so the whole
- * diff scrolls horizontally as a single unit with both sides in step.
+ * vertical alignment the moment a thread appeared.
+ *
+ * The two code tracks are `minmax(0, 1fr)` of the pane's own width, so each is
+ * always an equal, visible half. They must never be sized to their content: one
+ * long line anywhere in the file then widens both tracks past the pane and parks
+ * the new file off the right edge, where it reads as if the "after" side had
+ * vanished — and since showing the whole file pulls in lines the patch never
+ * had, a file can look fine until it is expanded. Lines wrap to stay inside
+ * their half (see `Code`), and because the two cells of a row share one grid
+ * row, a wrapped line grows both sides together and the numbering stays in step.
+ *
+ * Everything spanning all four columns wraps for the same reason, so nothing
+ * here is read by scrolling sideways; the scroll container behind it is a guard
+ * against content that can't wrap rather than part of how the diff is read.
  *
  * Comments anchor to the right (new file) line, matching what both providers
  * accept — so the composer is only offered on the right gutter.
@@ -144,7 +170,7 @@ export default function SplitDiffBody({
 
   return (
     <div className="relative overflow-x-auto rounded-b-lg bg-zinc-950 font-mono text-xs leading-relaxed">
-      <div className="grid w-max min-w-full grid-cols-[3rem_1fr_3rem_1fr]">
+      <div className="grid w-full grid-cols-[3rem_minmax(0,1fr)_3rem_minmax(0,1fr)]">
         {rows.map((row, i) => {
           if (row.kind === "gap") {
             return (
@@ -163,7 +189,10 @@ export default function SplitDiffBody({
               <span
                 // biome-ignore lint/suspicious/noArrayIndexKey: rows are a stable render of an immutable patch
                 key={i}
-                className={`col-span-4 whitespace-pre px-2 ${rowClass(row.kind)}`}
+                // Wrapped like the code cells: a header carrying a long section
+                // heading would otherwise run past the pane, and its stripe of
+                // colour stops at the pane's edge whatever the text does.
+                className={`col-span-4 whitespace-pre-wrap wrap-anywhere px-2 ${rowClass(row.kind)}`}
               >
                 {row.text}
               </span>
@@ -197,10 +226,8 @@ export default function SplitDiffBody({
               <Code cell={row.right} />
               {/* Only emitted for lines that actually have something below
                   them: a wrapper per line would double the grid's item count
-                  on a long file. Capped in width so a long comment can't widen
-                  the grid and force the code columns to scroll sideways — the
-                  cap sits under the pane's own width, so in practice it never
-                  binds before `min-w-full` does. */}
+                  on a long file. Held to a readable measure rather than run out
+                  to the full width of the two code columns. */}
               {hasLineComments(rightLine, comments) && (
                 <div className="col-span-4 min-w-0 max-w-2xl">
                   <LineCommentBlock line={rightLine} comments={comments} />
