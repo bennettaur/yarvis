@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { ensureOk, sidecarFetch } from "./api";
+import { clipboardSafePath } from "./clipboard";
 
 /**
  * Self-review comments a reviewer leaves on their own workspace diffs before
@@ -59,7 +60,7 @@ export async function createReviewComment(
 export async function updateReviewComment(
   workspaceId: string,
   commentId: string,
-  patch: { body?: string; resolved?: boolean },
+  patch: { resolved: boolean },
 ): Promise<ReviewComment> {
   const res = await sidecarFetch(`/api/workspaces/${workspaceId}/review-comments/${commentId}`, {
     method: "PATCH",
@@ -84,6 +85,27 @@ export function formatLineRange(comment: Pick<ReviewComment, "startLine" | "endL
     : `${comment.startLine}-${comment.endLine}`;
 }
 
+/** Whether a comment still needs acting on. */
+export const isResolved = (comment: ReviewComment): boolean => comment.resolvedAt !== null;
+
+/**
+ * Where a comment sits, as one label — `src/a.ts:12-18`, prefixed with the repo
+ * when the workspace has more than one to tell apart. The list view and the
+ * copied text show the same string, so they can't drift apart.
+ *
+ * The path is stripped of control characters: it comes from the worktree's own
+ * filenames, and this label ends up both on screen and in text pasted into an
+ * agent session, where an embedded newline would forge a line of its own.
+ */
+export function formatCommentLocation(
+  comment: ReviewComment,
+  repoName: (workspaceRepoId: string) => string | null,
+): string {
+  const repo = repoName(comment.workspaceRepoId);
+  const path = clipboardSafePath(comment.path);
+  return `${repo ? `${clipboardSafePath(repo)}/` : ""}${path}:${formatLineRange(comment)}`;
+}
+
 /**
  * The whole review as text to paste into an agent session: one numbered entry
  * per open comment, each naming the file, the lines, and the commit it was
@@ -98,7 +120,7 @@ export function formatReviewComments(
   comments: ReviewComment[],
   repoName: (workspaceRepoId: string) => string | null,
 ): string {
-  const open = comments.filter((c) => c.resolvedAt === null);
+  const open = comments.filter((c) => !isResolved(c));
   if (open.length === 0) return "";
 
   const lines = [
@@ -108,12 +130,10 @@ export function formatReviewComments(
     "",
   ];
   open.forEach((comment, i) => {
-    const repo = repoName(comment.workspaceRepoId);
-    const location = `${repo ? `${repo}/` : ""}${comment.path}:${formatLineRange(comment)}`;
     // The sha is provenance, not an instruction — abbreviated so it reads as a
     // reference rather than filling the line.
     const at = comment.commitSha ? ` (at ${comment.commitSha.slice(0, 7)})` : "";
-    lines.push(`${i + 1}. ${location}${at}`);
+    lines.push(`${i + 1}. ${formatCommentLocation(comment, repoName)}${at}`);
     for (const bodyLine of comment.body.split("\n")) {
       lines.push(`   ${bodyLine}`);
     }
@@ -123,22 +143,35 @@ export function formatReviewComments(
 }
 
 /**
- * One entry per workspace whose comments are on screen. Both the diff tabs and
- * the comments list subscribe to the same entry, so a write from either is
- * reflected in the other immediately rather than on some later refetch.
+ * One entry per workspace whose comments have been read this session. Both the
+ * diff tabs and the comments list subscribe to the same entry, so a write from
+ * either is reflected in the other immediately rather than on some later
+ * refetch. Entries are kept after their last view closes: reopening a workspace
+ * then paints the list it last had while the refetch is in flight, and the map
+ * is bounded by the workspaces visited.
  */
 const byWorkspace = new Map<string, ReviewComment[]>();
 const listeners = new Map<string, Set<() => void>>();
 /** Loads in flight, so several views mounting at once make one request. */
 const loads = new Map<string, Promise<ReviewComment[]>>();
 
-function notify(workspaceId: string): void {
+/** Stable identity for a workspace with nothing stored, which
+ *  `useSyncExternalStore` requires — a fresh `[]` per read would loop. */
+const NO_COMMENTS: ReviewComment[] = [];
+
+function publish(workspaceId: string, comments: ReviewComment[]): void {
+  byWorkspace.set(workspaceId, comments);
   for (const listener of listeners.get(workspaceId) ?? []) listener();
 }
 
-function setComments(workspaceId: string, comments: ReviewComment[]): void {
-  byWorkspace.set(workspaceId, comments);
-  notify(workspaceId);
+function subscribe(workspaceId: string, notify: () => void): () => void {
+  const subscribers = listeners.get(workspaceId) ?? new Set<() => void>();
+  subscribers.add(notify);
+  listeners.set(workspaceId, subscribers);
+  return () => {
+    subscribers.delete(notify);
+    if (subscribers.size === 0) listeners.delete(workspaceId);
+  };
 }
 
 function loadInto(workspaceId: string): Promise<ReviewComment[]> {
@@ -146,7 +179,7 @@ function loadInto(workspaceId: string): Promise<ReviewComment[]> {
   if (inFlight) return inFlight;
   const load = listReviewComments(workspaceId)
     .then((loaded) => {
-      setComments(workspaceId, loaded);
+      publish(workspaceId, loaded);
       return loaded;
     })
     .finally(() => loads.delete(workspaceId));
@@ -158,40 +191,36 @@ function loadInto(workspaceId: string): Promise<ReviewComment[]> {
  * A workspace's review comments, kept in step across every view showing them.
  * The mutations returned here write through the sidecar and then update the
  * shared list, so callers never hold their own copy.
+ *
+ * The list is read through `useSyncExternalStore` rather than mirrored into
+ * state: the side panel is not remounted when the user switches workspaces, so
+ * a snapshot captured at mount would render the previous workspace's comments
+ * until the next effect ran.
  */
 export function useReviewComments(workspaceId: string): {
   comments: ReviewComment[];
   error: string | null;
   add: (input: CreateReviewCommentInput) => Promise<void>;
-  setResolved: (commentId: string, resolved: boolean) => Promise<void>;
+  toggleResolved: (comment: ReviewComment) => Promise<void>;
   remove: (commentId: string) => Promise<void>;
 } {
-  const [comments, setLocal] = useState<ReviewComment[]>(() => byWorkspace.get(workspaceId) ?? []);
   const [error, setError] = useState<string | null>(null);
+  const comments = useSyncExternalStore(
+    useCallback((notify: () => void) => subscribe(workspaceId, notify), [workspaceId]),
+    useCallback(() => byWorkspace.get(workspaceId) ?? NO_COMMENTS, [workspaceId]),
+  );
 
   useEffect(() => {
     let live = true;
-    const sync = () => {
-      if (live) setLocal(byWorkspace.get(workspaceId) ?? []);
-    };
-    const subscribers = listeners.get(workspaceId) ?? new Set<() => void>();
-    subscribers.add(sync);
-    listeners.set(workspaceId, subscribers);
-
-    sync();
-    loadInto(workspaceId).catch((e) => {
-      if (live) setError(e instanceof Error ? e.message : String(e));
-    });
-
+    loadInto(workspaceId)
+      .then(() => {
+        if (live) setError(null);
+      })
+      .catch((e) => {
+        if (live) setError(e instanceof Error ? e.message : String(e));
+      });
     return () => {
       live = false;
-      subscribers.delete(sync);
-      if (subscribers.size === 0) {
-        listeners.delete(workspaceId);
-        // Nothing is showing this workspace any more, so a stale list can't be
-        // read back the next time one of its views mounts.
-        byWorkspace.delete(workspaceId);
-      }
     };
   }, [workspaceId]);
 
@@ -202,10 +231,13 @@ export function useReviewComments(workspaceId: string): {
    * for them the failure only needs to reach `error`.
    */
   const run = useCallback(
-    async (mutate: () => Promise<ReviewComment[]>, rethrow: boolean) => {
+    async (mutate: (current: ReviewComment[]) => Promise<ReviewComment[]>, rethrow: boolean) => {
       setError(null);
       try {
-        setComments(workspaceId, await mutate());
+        // Read the list inside the mutation rather than closing over the
+        // rendered one, so two writes in flight at once don't overwrite each
+        // other with a list that predates the first.
+        publish(workspaceId, await mutate(byWorkspace.get(workspaceId) ?? NO_COMMENTS));
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
         if (rethrow) throw e;
@@ -214,25 +246,22 @@ export function useReviewComments(workspaceId: string): {
     [workspaceId],
   );
 
-  const current = () => byWorkspace.get(workspaceId) ?? [];
-
   return {
     comments,
     error,
     add: (input) =>
-      run(async () => {
-        const created = await createReviewComment(workspaceId, input);
-        return [...current(), created];
-      }, true),
-    setResolved: (commentId, resolved) =>
-      run(async () => {
-        const updated = await updateReviewComment(workspaceId, commentId, { resolved });
-        return current().map((c) => (c.id === commentId ? updated : c));
+      run(async (current) => [...current, await createReviewComment(workspaceId, input)], true),
+    toggleResolved: (comment) =>
+      run(async (current) => {
+        const updated = await updateReviewComment(workspaceId, comment.id, {
+          resolved: !isResolved(comment),
+        });
+        return current.map((c) => (c.id === comment.id ? updated : c));
       }, false),
     remove: (commentId) =>
-      run(async () => {
+      run(async (current) => {
         await deleteReviewComment(workspaceId, commentId);
-        return current().filter((c) => c.id !== commentId);
+        return current.filter((c) => c.id !== commentId);
       }, false),
   };
 }

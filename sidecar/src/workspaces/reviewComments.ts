@@ -26,8 +26,7 @@ export interface CreateReviewCommentInput {
 }
 
 export interface UpdateReviewCommentInput {
-  body?: string;
-  resolved?: boolean;
+  resolved: boolean;
 }
 
 /** The workspace repo ids belonging to a workspace, for scoping every query. */
@@ -60,7 +59,9 @@ export async function listReviewComments(
 /**
  * Records a comment against a file's line range and the worktree's current
  * HEAD. Returns null when the repo isn't part of this workspace, so a caller
- * can't reach another workspace's worktree by guessing an id.
+ * can't reach another workspace's worktree by guessing an id. The range is
+ * taken as given — the route schema is what rejects a backwards one, so there
+ * is one answer to that input rather than two.
  */
 export async function createReviewComment(
   db: Db,
@@ -89,8 +90,8 @@ export async function createReviewComment(
     .values({
       workspaceRepoId: wr.id,
       path: input.path,
-      startLine: Math.min(input.startLine, input.endLine),
-      endLine: Math.max(input.startLine, input.endLine),
+      startLine: input.startLine,
+      endLine: input.endLine,
       commitSha,
       body: input.body,
     })
@@ -98,8 +99,8 @@ export async function createReviewComment(
   return row ?? null;
 }
 
-/** Edits a comment's body and/or its resolved state. Null if it isn't this
- *  workspace's comment. */
+/** Marks a comment resolved or reopens it. Null if it isn't this workspace's
+ *  comment. */
 export async function updateReviewComment(
   db: Db,
   workspaceId: string,
@@ -110,11 +111,7 @@ export async function updateReviewComment(
   if (repoIds.length === 0) return null;
   const [row] = await db
     .update(workspaceReviewComments)
-    .set({
-      ...(patch.body === undefined ? {} : { body: patch.body }),
-      ...(patch.resolved === undefined ? {} : { resolvedAt: patch.resolved ? new Date() : null }),
-      updatedAt: new Date(),
-    })
+    .set({ resolvedAt: patch.resolved ? new Date() : null, updatedAt: new Date() })
     .where(
       and(
         eq(workspaceReviewComments.id, commentId),
@@ -150,12 +147,10 @@ export async function deleteReviewComment(
  * archived: the notes were scaffolding for work that is now finished, and the
  * worktree they point into is gone.
  */
-export async function deleteWorkspaceReviewComments(db: Db, workspaceId: string): Promise<number> {
+export async function deleteWorkspaceReviewComments(db: Db, workspaceId: string): Promise<void> {
   const repoIds = await repoIdsForWorkspace(db, workspaceId);
-  if (repoIds.length === 0) return 0;
-  const rows = await db
+  if (repoIds.length === 0) return;
+  await db
     .delete(workspaceReviewComments)
-    .where(inArray(workspaceReviewComments.workspaceRepoId, repoIds))
-    .returning({ id: workspaceReviewComments.id });
-  return rows.length;
+    .where(inArray(workspaceReviewComments.workspaceRepoId, repoIds));
 }

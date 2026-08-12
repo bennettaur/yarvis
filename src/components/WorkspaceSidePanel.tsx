@@ -4,7 +4,7 @@ import { requestOpenPr } from "../lib/nav";
 import type { PrSummary } from "../lib/pr/types";
 import { repoPrRef } from "../lib/repos";
 import { openExternal } from "../lib/url";
-import { useReviewComments } from "../lib/workspaceReview";
+import { isResolved, useReviewComments } from "../lib/workspaceReview";
 import {
   type ChangedFile,
   type WorkspaceRepoDetail,
@@ -46,7 +46,7 @@ export default function WorkspaceSidePanel({
   // Read here as well as inside the comments view so the tab can carry the open
   // count — the reason to switch to it is knowing there is something in it.
   const { comments } = useReviewComments(workspaceId);
-  const openComments = comments.filter((c) => c.resolvedAt === null).length;
+  const openComments = comments.filter((c) => !isResolved(c)).length;
 
   const repo = repos.find((r) => r.id === repoId) ?? repos[0];
   if (!repo) return null;

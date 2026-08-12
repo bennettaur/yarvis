@@ -119,4 +119,15 @@ describe("WorkspaceSidePanel", () => {
     await clickTab(host, "All files");
     expect(host.textContent).toContain("No files.");
   });
+
+  it("reaches the self-review comments through their own tab", async () => {
+    const host = await mount();
+    await clickTab(host, "Comments");
+    expect(host.textContent).toContain("No comments yet.");
+    // With none open, the tab carries no count beside its label.
+    const tab = [...host.querySelectorAll("button")].find((b) =>
+      b.textContent?.startsWith("Comments"),
+    );
+    expect(tab?.textContent).toBe("Comments");
+  });
 });

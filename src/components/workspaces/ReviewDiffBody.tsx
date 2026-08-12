@@ -13,11 +13,21 @@ import ReviewCommentCard from "./ReviewCommentCard";
  * describes the code as it will land.
  */
 
-/** The line range a composer is open for. */
-interface Draft {
+/** An inclusive run of right-hand (new file) line numbers. */
+interface LineRange {
   start: number;
   end: number;
 }
+
+/** The two ends of a drag as an ordered range, so dragging up reads the same
+ *  as dragging down. */
+const span = (a: number, b: number): LineRange => ({
+  start: Math.min(a, b),
+  end: Math.max(a, b),
+});
+
+const covers = (range: LineRange | null, line: number | null): boolean =>
+  range !== null && line !== null && line >= range.start && line <= range.end;
 
 /** Inline composer for a new comment, mirroring the PR review's. */
 function Composer({
@@ -25,7 +35,7 @@ function Composer({
   onSubmit,
   onCancel,
 }: {
-  range: Draft;
+  range: LineRange;
   onSubmit: (body: string) => Promise<void>;
   onCancel: () => void;
 }) {
@@ -122,41 +132,57 @@ export default function ReviewDiffBody({
 }) {
   const rows = useMemo(() => parsePatch(patch), [patch]);
   const byLine = useMemo(() => commentsByLine(comments), [comments]);
-  const [draft, setDraft] = useState<Draft | null>(null);
-  /** Where a gutter drag started; null when no drag is in progress. */
-  const [dragAnchor, setDragAnchor] = useState<number | null>(null);
-  /** The line the drag currently reaches, so the range highlights as it grows. */
-  const [dragLine, setDragLine] = useState<number | null>(null);
+  const [draft, setDraft] = useState<LineRange | null>(null);
+  /** The gutter lines a drag in progress covers; null when none is. */
+  const [dragging, setDragging] = useState<LineRange | null>(null);
+  /** Where the drag started and where it currently reaches. Held in a ref
+   *  because the window listener below is registered once per drag and would
+   *  otherwise close over the values as they were at mousedown. */
+  const drag = useRef<{ anchor: number; cursor: number } | null>(null);
 
-  // The drag ends wherever the pointer is released, including outside the diff,
-  // so the release is watched on the window rather than on a row.
-  useEffect(() => {
-    if (dragAnchor === null) return;
-    const finish = () => {
-      const end = dragLine ?? dragAnchor;
-      setDraft({ start: Math.min(dragAnchor, end), end: Math.max(dragAnchor, end) });
-      setDragAnchor(null);
-      setDragLine(null);
-    };
-    window.addEventListener("mouseup", finish);
-    return () => window.removeEventListener("mouseup", finish);
-  }, [dragAnchor, dragLine]);
+  // The release is watched on the window, since a drag can end anywhere —
+  // including outside the diff. Registered from the mousedown handler rather
+  // than an effect: an effect runs after paint, so a click quicker than that
+  // (tap-to-click routinely is) would release before anything was listening and
+  // leave the drag stuck to the pointer.
+  const startDrag = (line: number) => {
+    drag.current = { anchor: line, cursor: line };
+    setDragging({ start: line, end: line });
+    window.addEventListener(
+      "mouseup",
+      () => {
+        const range = drag.current;
+        drag.current = null;
+        setDragging(null);
+        if (!range) return;
+        // A drag that ends where an unsaved composer is open would throw away
+        // what the reviewer has typed, so the existing draft wins.
+        setDraft((open) => open ?? span(range.anchor, range.cursor));
+      },
+      { once: true },
+    );
+  };
+
+  const extendDrag = (line: number) => {
+    if (!drag.current) return;
+    drag.current = { ...drag.current, cursor: line };
+    setDragging(span(drag.current.anchor, line));
+  };
+
+  // Cleared when the diff unmounts mid-drag, so a release that arrives after
+  // has no range left to act on.
+  useEffect(
+    () => () => {
+      drag.current = null;
+    },
+    [],
+  );
 
   if (patch.trim().length === 0) {
     return <p className="p-3 text-xs text-zinc-600">No textual diff (binary or unchanged).</p>;
   }
 
-  const dragging =
-    dragAnchor === null
-      ? null
-      : {
-          start: Math.min(dragAnchor, dragLine ?? dragAnchor),
-          end: Math.max(dragAnchor, dragLine ?? dragAnchor),
-        };
-  const inRange = (line: number | null, range: Draft | null): boolean =>
-    line !== null && range !== null && line >= range.start && line <= range.end;
-
-  const save = async (range: Draft, body: string) => {
+  const save = async (range: LineRange, body: string) => {
     await onAdd({
       workspaceRepoId,
       path,
@@ -171,17 +197,19 @@ export default function ReviewDiffBody({
     <div className="h-full overflow-auto bg-zinc-950 font-mono text-xs leading-relaxed">
       {rows.map((row, i) => {
         const line = row.rightLine;
-        const selected = inRange(line, dragging) || inRange(line, draft);
+        const selected = covers(dragging, line) || covers(draft, line);
         const lineComments = line === null ? undefined : byLine.get(line);
+        const composing = draft !== null && line === draft.end;
         return (
           // biome-ignore lint/suspicious/noArrayIndexKey: rows are a stable render of an immutable patch
           <div key={i}>
             <div
               className={`group/line flex ${rowClass(row.kind)} ${selected ? "bg-sky-900/40" : ""}`}
             >
-              {/* The gutter is the drag handle: `select-none` on it already
-                  stops a drag here from turning into a text selection, so the
-                  gesture doesn't fight the browser over the code beside it. */}
+              {/* The gutter is the drag handle. `preventDefault` on its
+                  mousedown is what stops the gesture from also starting a text
+                  selection that would run into the code beside it — `select-none`
+                  only governs the gutter's own text. */}
               {/* biome-ignore lint/a11y/noStaticElementInteractions: a pointer-only shortcut for the "+" button it contains, which is the keyboard and screen-reader path */}
               <span
                 className={`relative flex w-12 shrink-0 select-none items-center justify-end pr-2 text-zinc-600 ${
@@ -190,14 +218,12 @@ export default function ReviewDiffBody({
                 onMouseDown={
                   line === null
                     ? undefined
-                    : () => {
-                        setDragAnchor(line);
-                        setDragLine(line);
+                    : (e) => {
+                        e.preventDefault();
+                        startDrag(line);
                       }
                 }
-                onMouseEnter={
-                  line === null || dragAnchor === null ? undefined : () => setDragLine(line)
-                }
+                onMouseEnter={line === null ? undefined : () => extendDrag(line)}
               >
                 {line !== null && (
                   <LineActions>
@@ -208,7 +234,7 @@ export default function ReviewDiffBody({
               </span>
               <span className="whitespace-pre">{row.text || " "}</span>
             </div>
-            {(lineComments || (draft && line === draft.end)) && (
+            {(lineComments || composing) && (
               <div className="space-y-2 px-3 py-2 font-sans">
                 {lineComments?.map((comment) => (
                   <ReviewCommentCard
@@ -218,7 +244,7 @@ export default function ReviewDiffBody({
                     onDelete={() => onDelete(comment)}
                   />
                 ))}
-                {draft && line === draft.end && (
+                {draft && composing && (
                   <Composer
                     range={draft}
                     onSubmit={(body) => save(draft, body)}

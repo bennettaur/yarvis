@@ -88,25 +88,37 @@ const linkIssueSchema = issueRefSchema.extend({
   url: httpUrl.nullish(),
 });
 
+// The path a comment is filed under names a file inside the worktree. It is
+// stored and later interpolated into the text the user copies for an agent, so
+// it is held to a relative path on one line: an absolute path or a `..` segment
+// points outside the worktree, and a control character could forge a line of
+// that copied text.
+const worktreePath = z
+  .string()
+  .min(1)
+  .max(1024)
+  .refine((p) => !p.startsWith("/"), "path must be relative to the worktree")
+  .refine((p) => !p.split("/").includes(".."), "path must not escape the worktree")
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting control characters is the point
+  .refine((p) => !/[\u0000-\u001f\u007f]/.test(p), "path must not contain control characters");
+
 // A self-review note on a diff line range. The body is capped like the other
 // free text we persist; the range is validated as an ordered pair of 1-based
 // right-hand (new file) line numbers, matching how the diff renders them.
 const createReviewCommentSchema = z
   .object({
     workspaceRepoId: z.string().uuid(),
-    path: z.string().min(1).max(1024),
+    path: worktreePath,
     startLine: z.number().int().positive(),
     endLine: z.number().int().positive(),
     body: z.string().min(1).max(16384),
   })
   .refine((c) => c.startLine <= c.endLine, "startLine must not be after endLine");
 
-const updateReviewCommentSchema = z
-  .object({
-    body: z.string().min(1).max(16384).optional(),
-    resolved: z.boolean().optional(),
-  })
-  .refine((p) => p.body !== undefined || p.resolved !== undefined, "nothing to update");
+// Only the resolved flag: a note is short enough to delete and rewrite, and an
+// editable body would have to answer what happens to the commit it was stamped
+// against.
+const updateReviewCommentSchema = z.object({ resolved: z.boolean() });
 
 /** Repo registry CRUD, mounted under /api/repos. */
 export function createRepoRoutes(config: Config): Hono {
@@ -302,44 +314,68 @@ export function createWorkspaceRoutes(config: Config): Hono {
 
   // Local self-review comments on the workspace's own diffs. They stay on this
   // machine — nothing here talks to a PR provider.
-  router.get("/:id/review-comments", async (c) =>
-    c.json(await listReviewComments(db(), c.req.param("id"))),
-  );
+  //
+  // Both ids are checked before they reach a query: they land in a uuid column,
+  // so a malformed one would otherwise surface as a Postgres type error — a 500
+  // carrying internal detail, for what is a bad request.
+  const uuidParam = (
+    c: { req: { param: (name: string) => string } },
+    name: string,
+  ): string | null =>
+    z.string().uuid().safeParse(c.req.param(name)).success ? c.req.param(name) : null;
+
+  router.get("/:id/review-comments", async (c) => {
+    const id = uuidParam(c, "id");
+    if (!id) return c.json({ error: "invalid workspace id" }, 400);
+    try {
+      return c.json(await listReviewComments(db(), id));
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
+    }
+  });
 
   router.post("/:id/review-comments", async (c) => {
+    const id = uuidParam(c, "id");
+    if (!id) return c.json({ error: "invalid workspace id" }, 400);
     const body = await c.req.json().catch(() => null);
     const parsed = createReviewCommentSchema.safeParse(body);
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
-      const comment = await createReviewComment(db(), c.req.param("id"), parsed.data);
+      const comment = await createReviewComment(db(), id, parsed.data);
       if (!comment) return c.json({ error: "workspace repo not found" }, 404);
       return c.json(comment, 201);
     } catch (e) {
-      return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
     }
   });
 
   router.patch("/:id/review-comments/:commentId", async (c) => {
+    const id = uuidParam(c, "id");
+    const commentId = uuidParam(c, "commentId");
+    if (!id || !commentId) return c.json({ error: "invalid id" }, 400);
     const body = await c.req.json().catch(() => null);
     const parsed = updateReviewCommentSchema.safeParse(body);
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const commentId = c.req.param("commentId");
-    if (!z.string().uuid().safeParse(commentId).success) {
-      return c.json({ error: "invalid comment id" }, 400);
+    try {
+      const comment = await updateReviewComment(db(), id, commentId, parsed.data);
+      if (!comment) return c.json({ error: "not found" }, 404);
+      return c.json(comment);
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
     }
-    const comment = await updateReviewComment(db(), c.req.param("id"), commentId, parsed.data);
-    if (!comment) return c.json({ error: "not found" }, 404);
-    return c.json(comment);
   });
 
   router.delete("/:id/review-comments/:commentId", async (c) => {
-    const commentId = c.req.param("commentId");
-    if (!z.string().uuid().safeParse(commentId).success) {
-      return c.json({ error: "invalid comment id" }, 400);
+    const id = uuidParam(c, "id");
+    const commentId = uuidParam(c, "commentId");
+    if (!id || !commentId) return c.json({ error: "invalid id" }, 400);
+    try {
+      const ok = await deleteReviewComment(db(), id, commentId);
+      if (!ok) return c.json({ error: "not found" }, 404);
+      return c.json({ ok: true });
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
     }
-    const ok = await deleteReviewComment(db(), c.req.param("id"), commentId);
-    if (!ok) return c.json({ error: "not found" }, 404);
-    return c.json({ ok: true });
   });
 
   // Link / unlink a task (archiving the workspace completes linked tasks).

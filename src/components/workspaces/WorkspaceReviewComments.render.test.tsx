@@ -63,6 +63,10 @@ beforeEach(() => {
 afterEach(() => {
   unmount?.();
   unmount = null;
+  // A module mock outlives the file that registered it, and `WorkspaceSidePanel`
+  // reads the same hook for its tab badge. Emptying the list here means a suite
+  // running after this one sees no comments however the files are ordered.
+  stored = [];
 });
 
 const mount = async (onOpenFile: (repoId: string, path: string) => void = () => {}) => {

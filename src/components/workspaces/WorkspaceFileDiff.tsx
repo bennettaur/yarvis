@@ -79,9 +79,7 @@ export default function WorkspaceFileDiff({
             workspaceRepoId={repoId}
             comments={fileComments}
             onAdd={review.add}
-            onToggleResolved={(comment) =>
-              void review.setResolved(comment.id, comment.resolvedAt === null)
-            }
+            onToggleResolved={(comment) => void review.toggleResolved(comment)}
             onDelete={(comment) => void review.remove(comment.id)}
           />
         )}

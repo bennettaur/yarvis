@@ -151,6 +151,8 @@ Console and register the loopback redirect
 for Desktop clients), then enter the client id/secret in Settings and connect
 from the Calendar tab. See `ROADMAP.md` for the full verification steps.
 
+### Workspaces
+
 Workspaces manage their own repo clones and git worktrees under a base
 directory, `~/dev/yarvis-workspaces` by default and overridable with the
 `YARVIS_WORKSPACES_ROOT` env var (non-secret config, unlike the Keychain
@@ -210,18 +212,27 @@ is stored in `settings.json` in the app data directory.
 The right column's **Changed** list opens a file's diff in a tab, and that diff
 takes comments the way a PR review does. Drag down the line-number gutter to
 pick out a range — or use the **+** that appears on hovering a line for a single
-one — and the note hangs under the last line it covers. Each comment records the
-file, the lines, and the worktree's HEAD at the time, so a note written before
-more work landed is still recognisable as such.
+one — and the note hangs under the last line it covers. Comments attach to the
+right-hand (new file) line, the side a PR review anchors to, so a line the
+change only deletes takes no comment. Each one records the file, the lines, and
+the commit the worktree was on when you wrote it, shown abbreviated on the card
+so you can tell a note written against older code from one written against what
+is there now.
 
 Nothing is published: the comments live in the local database and never reach a
 PR, which is the point — reviewing your own change on github.com means leaving
 feedback other people read, and that goes obsolete as soon as the agent acts on
 it. The **Comments** tab beside Changed lists the whole review, spanning every
-repo in the workspace, with **Copy for Claude** putting it on the clipboard as
-numbered entries to paste into the agent session. Resolved comments stay in the
-list but are left out of the copied text; **×** deletes one outright. Archiving
-the workspace deletes them all — they were scaffolding for work that is done.
+repo in the workspace and carrying a count of what is still open; a comment's
+file-and-line heading opens that diff. **Copy for Claude** puts the review on
+the clipboard as numbered entries to paste into the agent session.
+
+**Resolve** on a comment marks it dealt with — it stays in the list, so a
+decision isn't lost, but drops out of the copied text; **Reopen** puts it back
+and **×** deletes it outright. Archiving a workspace deletes every comment in
+it once the worktrees are actually gone: they were scaffolding for work that is
+done. An archive that stops partway (a worktree that won't remove) is still
+reopenable, so its comments are left where they are.
 
 ### Clipboard
 
@@ -489,7 +500,8 @@ src/            React frontend (Vite + TS + Tailwind)
                 gap/context expansion, change minimap, guide panel, insight cards
     issue/      Issues tab views: GitHub + JIRA issue lists, detail, create/repo-picker modals
     files/      shared file-tree rows (collapsible folders), used by PR review and workspaces
-    workspaces/  workspace detail subviews + Omni widgets
+    workspaces/  workspace detail subviews + Omni widgets, and the self-review
+                comment layer over a changed file's diff
     shell/      desktop shell: nav rail, top bar, boot loading screen, tab shortcuts
     omni/       Omni view — chat-driven dynamic-UI canvas
     omnichat/   Omni Chat — global summon-from-anywhere chat overlay

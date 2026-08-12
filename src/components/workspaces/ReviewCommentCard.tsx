@@ -1,5 +1,5 @@
 import { formatRelativeTime } from "../../lib/time";
-import { formatLineRange, type ReviewComment } from "../../lib/workspaceReview";
+import { formatLineRange, isResolved, type ReviewComment } from "../../lib/workspaceReview";
 
 /**
  * One self-review comment, styled after a PR review comment so a workspace diff
@@ -22,7 +22,7 @@ export default function ReviewCommentCard({
   onToggleResolved: () => void;
   onDelete: () => void;
 }) {
-  const resolved = comment.resolvedAt !== null;
+  const resolved = isResolved(comment);
   const label = location ?? `line ${formatLineRange(comment)}`;
   return (
     <div

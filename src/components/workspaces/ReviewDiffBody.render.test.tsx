@@ -8,6 +8,7 @@ const PATCH = [
   " const a = 1;",
   "+const b = 2;",
   "+const c = 3;",
+  "-const gone = 0;",
   " const d = 4;",
 ].join("\n");
 
@@ -57,16 +58,36 @@ const gutters = (host: HTMLElement) => [
   ...host.querySelectorAll<HTMLElement>("span.cursor-ns-resize"),
 ];
 
+/**
+ * Presses on one gutter, moves to another, and releases — with nothing settling
+ * in between, which is the point: the window `mouseup` is registered from the
+ * mousedown handler itself, so even a release in the same tick is caught.
+ *
+ * The move is dispatched as `mouseover` because React synthesises `onMouseEnter`
+ * from it; dispatching `mouseenter` directly reaches nothing and would leave
+ * this passing as a single-line click.
+ */
 const drag = async (host: HTMLElement, fromIndex: number, toIndex: number) => {
   const cells = gutters(host);
   cells[fromIndex]?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-  // Each step settles before the next: the window-level mouseup listener is
-  // only attached once React has committed the mousedown that starts the drag,
-  // which for a real pointer is always several frames earlier.
-  await settle();
   cells[toIndex]?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
-  await settle();
   window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  await settle();
+};
+
+/**
+ * Types into the open composer. React tracks the last value it wrote, so a
+ * direct assignment looks like a no-op to it — go through the prototype setter
+ * it doesn't shadow.
+ */
+const type = async (host: HTMLElement, text: string) => {
+  const textarea = host.querySelector("textarea");
+  if (!textarea) throw new Error("no composer is open");
+  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
+    textarea,
+    text,
+  );
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
   await settle();
 };
 
@@ -96,15 +117,7 @@ describe("ReviewDiffBody", () => {
       saved.push(input);
     });
     await drag(host, 1, 2);
-
-    const textarea = host.querySelector("textarea");
-    if (!textarea) throw new Error("no composer");
-    // React tracks the last value it wrote, so a direct assignment looks like a
-    // no-op to it — go through the prototype setter it doesn't shadow.
-    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-    setValue?.call(textarea, "Squash these.");
-    textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    await settle();
+    await type(host, "Squash these.");
 
     const save = [...host.querySelectorAll("button")].find((b) => b.textContent === "Save comment");
     save?.click();
@@ -119,5 +132,83 @@ describe("ReviewDiffBody", () => {
         body: "Squash these.",
       },
     ]);
+  });
+
+  it("reads a drag up the gutter the same as a drag down it", async () => {
+    const host = await mount([]);
+    await drag(host, 2, 0);
+    expect(host.textContent).toContain("Lines 1–3");
+  });
+
+  // A deleted line exists only in the old file, so there is no line in the
+  // change to anchor a note to — the same side a PR review comments on.
+  it("offers no comment handle on a deleted line", async () => {
+    const host = await mount([]);
+    // Four rows carry a right-hand line (1, 2, 3, 4); the deletion carries none.
+    expect(gutters(host)).toHaveLength(4);
+    expect(host.querySelectorAll('[aria-label="Comment on this line"]')).toHaveLength(4);
+  });
+
+  it("keeps the typed text and shows the reason when a save fails", async () => {
+    const host = await mount([], async () => {
+      throw new Error("sidecar is down");
+    });
+    await drag(host, 0, 0);
+    await type(host, "Worth keeping.");
+
+    const save = [...host.querySelectorAll("button")].find((b) => b.textContent === "Save comment");
+    save?.click();
+    await settle();
+
+    expect(host.textContent).toContain("sidecar is down");
+    expect(host.querySelector("textarea")?.value).toBe("Worth keeping.");
+    // Still offering to save, rather than stuck reading "Saving…".
+    expect([...host.querySelectorAll("button")].some((b) => b.textContent === "Save comment")).toBe(
+      true,
+    );
+  });
+
+  it("closes the composer on cancel without saving", async () => {
+    const saved: CreateReviewCommentInput[] = [];
+    const host = await mount([], async (input) => {
+      saved.push(input);
+    });
+    await drag(host, 0, 0);
+    await type(host, "Never mind.");
+
+    const cancel = [...host.querySelectorAll("button")].find((b) => b.textContent === "Cancel");
+    cancel?.click();
+    await settle();
+
+    expect(host.querySelector("textarea")).toBeNull();
+    expect(saved).toEqual([]);
+  });
+
+  // Clicking a line number while a composer holds unsaved text would otherwise
+  // move the composer and take the text with it.
+  it("leaves an open composer alone when another line is clicked", async () => {
+    const host = await mount([]);
+    await drag(host, 0, 0);
+    await type(host, "Half-written.");
+
+    await drag(host, 2, 2);
+    expect(host.textContent).toContain("Line 1");
+    expect(host.querySelector("textarea")?.value).toBe("Half-written.");
+  });
+
+  it("says so when the file has no textual diff", async () => {
+    const mounted = await mountForInteraction(
+      <ReviewDiffBody
+        patch=""
+        path="logo.png"
+        workspaceRepoId="wr-1"
+        comments={[]}
+        onAdd={async () => {}}
+        onToggleResolved={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+    unmount = mounted.unmount;
+    expect(mounted.host.textContent).toContain("No textual diff");
   });
 });

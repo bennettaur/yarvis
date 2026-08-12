@@ -65,19 +65,34 @@ interface Comment {
   resolvedAt: string | null;
 }
 
-/** A provisioned single-repo workspace, plus the id of its worktree row. Each
- *  gets its own repo, since repos are unique per owner/name. */
-async function workspaceWithRepo(name = "review"): Promise<{ id: string; repoId: string }> {
-  const repoRes = await app.request("/api/repos", {
+/** Registers a repo; each needs its own name, since repos are unique per
+ *  owner/name. */
+async function addRepo(name: string): Promise<string> {
+  const res = await app.request("/api/repos", {
     method: "POST",
     headers: jsonAuth,
     body: JSON.stringify({ cloneUrl: `git@github.com:acme/${name}.git` }),
   });
-  const repo = (await repoRes.json()) as { id: string };
-  const ws = await createWorkspace(db, config, { name, repoIds: [repo.id] });
+  return ((await res.json()) as { id: string }).id;
+}
+
+/** A provisioned workspace, plus the ids of its worktree rows in order. */
+async function workspaceWithRepos(
+  name: string,
+  repoNames: string[],
+): Promise<{ id: string; repoIds: string[] }> {
+  const repoIds = [];
+  for (const repoName of repoNames) repoIds.push(await addRepo(repoName));
+  const ws = await createWorkspace(db, config, { name, repoIds });
   await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
   const detail = await getWorkspace(db, ws.id);
-  return { id: ws.id, repoId: detail?.repos[0]?.id ?? "" };
+  return { id: ws.id, repoIds: (detail?.repos ?? []).map((r) => r.id) };
+}
+
+/** The common case: one repo, and its worktree row id to file comments against. */
+async function workspaceWithRepo(name = "review"): Promise<{ id: string; repoId: string }> {
+  const ws = await workspaceWithRepos(name, [name]);
+  return { id: ws.id, repoId: ws.repoIds[0] ?? "" };
 }
 
 const post = (workspaceId: string, body: unknown) =>
@@ -192,6 +207,68 @@ describe("review comment routes", () => {
     expect((await list(theirs.id)).map((c) => c.body)).toEqual(["Theirs."]);
   });
 
+  // The list spans the workspace, not the repo the side panel happens to have
+  // selected — a review is read as one list.
+  it("lists comments from every repo in the workspace", async () => {
+    const ws = await workspaceWithRepos("multi", ["web", "api"]);
+    const base = { path: "src/a.ts", startLine: 1, endLine: 1 };
+    await post(ws.id, { ...base, workspaceRepoId: ws.repoIds[0], body: "In the first repo." });
+    await post(ws.id, { ...base, workspaceRepoId: ws.repoIds[1], body: "In the second repo." });
+
+    const comments = await list(ws.id);
+    expect(comments.map((c) => c.body)).toEqual(["In the first repo.", "In the second repo."]);
+    expect(new Set(comments.map((c) => c.workspaceRepoId))).toEqual(new Set(ws.repoIds));
+  });
+
+  // The copied text numbers entries in list order, so the order is a contract.
+  it("lists comments oldest first, in the order they were written", async () => {
+    const ws = await workspaceWithRepo();
+    const base = { workspaceRepoId: ws.repoId, path: "src/a.ts" };
+    // Descending lines, so an accidental sort by anything but time shows up.
+    await post(ws.id, { ...base, startLine: 30, endLine: 30, body: "First." });
+    await post(ws.id, { ...base, startLine: 20, endLine: 20, body: "Second." });
+    await post(ws.id, { ...base, startLine: 10, endLine: 10, body: "Third." });
+
+    expect((await list(ws.id)).map((c) => c.body)).toEqual(["First.", "Second.", "Third."]);
+  });
+
+  it("answers with an empty list for a workspace that has no repos", async () => {
+    const ws = await createWorkspace(db, config, { name: "scratch", repoIds: [] });
+    const res = await app.request(`/api/workspaces/${ws.id}/review-comments`, { headers: auth });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([]);
+  });
+
+  // A malformed id reaches a uuid column, so without the check it would surface
+  // as a Postgres type error — a 500 carrying driver detail.
+  it("rejects a malformed workspace id as a bad request", async () => {
+    const res = await app.request("/api/workspaces/not-a-uuid/review-comments", { headers: auth });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a malformed comment id as a bad request", async () => {
+    const ws = await workspaceWithRepo();
+    const res = await app.request(`/api/workspaces/${ws.id}/review-comments/not-a-uuid`, {
+      method: "DELETE",
+      headers: auth,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("refuses a path that points outside the worktree or forges a line", async () => {
+    const ws = await workspaceWithRepo();
+    for (const path of ["/etc/hosts", "../secrets.txt", "src/a.ts\n2. and also"]) {
+      const res = await post(ws.id, {
+        workspaceRepoId: ws.repoId,
+        path,
+        startLine: 1,
+        endLine: 1,
+        body: "Nope.",
+      });
+      expect(res.status).toBe(400);
+    }
+  });
+
   it("resolves and reopens a comment", async () => {
     const ws = await workspaceWithRepo();
     const created = (await (
@@ -270,5 +347,29 @@ describe("review comment routes", () => {
     const result = await archiveWorkspace(db, ws.id, {}, fakeGit);
     expect(result.status).toBe("archived");
     expect(await list(ws.id)).toEqual([]);
+  });
+
+  // A partial archive stays reopenable — linked tasks aren't completed and the
+  // workspace never reaches `archived` — so the review has to survive it too.
+  it("keeps the comments when a worktree refuses to be removed", async () => {
+    const ws = await workspaceWithRepo();
+    await post(ws.id, {
+      workspaceRepoId: ws.repoId,
+      path: "src/a.ts",
+      startLine: 1,
+      endLine: 1,
+      body: "Still needed — this archive did not finish.",
+    });
+
+    const dirtyGit: GitRunner = async (args, opts) =>
+      args[0] === "worktree" && args[1] === "remove" && !args.includes("--force")
+        ? { stdout: "", stderr: "worktree contains modified files", exitCode: 1 }
+        : fakeGit(args, opts);
+
+    const result = await archiveWorkspace(db, ws.id, {}, dirtyGit);
+    expect(result.status).toBe("archiving");
+    expect((await list(ws.id)).map((c) => c.body)).toEqual([
+      "Still needed — this archive did not finish.",
+    ]);
   });
 });

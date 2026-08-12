@@ -1,12 +1,22 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { writeClipboard } from "../../lib/clipboard";
 import {
-  formatLineRange,
+  formatCommentLocation,
   formatReviewComments,
+  isResolved,
   useReviewComments,
 } from "../../lib/workspaceReview";
 import type { WorkspaceRepoDetail } from "../../lib/workspaces";
+import { FEEDBACK_MS } from "../pr/CopyPathButton";
 import ReviewCommentCard from "./ReviewCommentCard";
+
+type CopyState = "idle" | "copied" | "failed";
+
+const COPY_LABELS: Record<CopyState, string> = {
+  idle: "Copy for Claude",
+  copied: "Copied",
+  failed: "Copying failed",
+};
 
 /**
  * Every self-review comment in the workspace, in the order they were written.
@@ -24,32 +34,38 @@ export default function WorkspaceReviewComments({
   repos: WorkspaceRepoDetail[];
   onOpenFile: (workspaceRepoId: string, path: string) => void;
 }) {
-  const { comments, error, setResolved, remove } = useReviewComments(workspaceId);
-  const [copied, setCopied] = useState(false);
-  const [copyError, setCopyError] = useState<string | null>(null);
+  const { comments, error, toggleResolved, remove } = useReviewComments(workspaceId);
+  const [copyState, setCopyState] = useState<CopyState>("idle");
+  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (resetTimer.current) clearTimeout(resetTimer.current);
+    };
+  }, []);
 
   // A single-repo workspace has nothing to disambiguate, so the repo name would
   // only lengthen every location line.
-  const repoName = (workspaceRepoId: string): string | null =>
+  const repoNameFor = (workspaceRepoId: string): string | null =>
     repos.length > 1 ? (repos.find((r) => r.id === workspaceRepoId)?.repo.name ?? null) : null;
 
-  const open = comments.filter((c) => c.resolvedAt === null);
+  const open = comments.filter((c) => !isResolved(c));
 
   const copy = async () => {
     try {
-      await writeClipboard(formatReviewComments(comments, repoName));
-      setCopyError(null);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      await writeClipboard(formatReviewComments(comments, repoNameFor));
+      setCopyState("copied");
     } catch (e) {
-      setCopyError(e instanceof Error ? e.message : String(e));
+      console.error("[workspaces] copying the review comments failed:", e);
+      setCopyState("failed");
     }
+    if (resetTimer.current) clearTimeout(resetTimer.current);
+    resetTimer.current = setTimeout(() => setCopyState("idle"), FEEDBACK_MS);
   };
 
   return (
     <div className="space-y-2">
       {error && <p className="text-xs text-red-400">{error}</p>}
-      {copyError && <p className="text-xs text-red-400">{copyError}</p>}
       <div className="flex items-center gap-2 text-xs text-zinc-500">
         <span>
           {open.length} open
@@ -59,9 +75,11 @@ export default function WorkspaceReviewComments({
           type="button"
           onClick={() => void copy()}
           disabled={open.length === 0}
-          className="ml-auto rounded border border-zinc-700 px-2 py-0.5 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-50"
+          className={`ml-auto rounded border border-zinc-700 px-2 py-0.5 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-50 ${
+            copyState === "failed" ? "text-red-400" : ""
+          }`}
         >
-          {copied ? "Copied" : "Copy for Claude"}
+          {COPY_LABELS[copyState]}
         </button>
       </div>
       {comments.length === 0 ? (
@@ -70,21 +88,17 @@ export default function WorkspaceReviewComments({
         </p>
       ) : (
         <ul className="space-y-2">
-          {comments.map((comment) => {
-            const repo = repoName(comment.workspaceRepoId);
-            const location = `${repo ? `${repo}/` : ""}${comment.path}:${formatLineRange(comment)}`;
-            return (
-              <li key={comment.id}>
-                <ReviewCommentCard
-                  comment={comment}
-                  location={location}
-                  onOpenLocation={() => onOpenFile(comment.workspaceRepoId, comment.path)}
-                  onToggleResolved={() => void setResolved(comment.id, comment.resolvedAt === null)}
-                  onDelete={() => void remove(comment.id)}
-                />
-              </li>
-            );
-          })}
+          {comments.map((comment) => (
+            <li key={comment.id}>
+              <ReviewCommentCard
+                comment={comment}
+                location={formatCommentLocation(comment, repoNameFor)}
+                onOpenLocation={() => onOpenFile(comment.workspaceRepoId, comment.path)}
+                onToggleResolved={() => void toggleResolved(comment)}
+                onDelete={() => void remove(comment.id)}
+              />
+            </li>
+          ))}
         </ul>
       )}
     </div>
