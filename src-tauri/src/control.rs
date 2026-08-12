@@ -1,16 +1,19 @@
 //! Local control channel: a Unix-domain-socket RPC the Bun sidecar uses to ask
-//! the core to do things it can't do itself — currently, spawning and killing a
-//! Claude Code session in a workspace PTY.
+//! the core to do things it can't do itself — spawning, killing, and typing an
+//! instruction into a Claude Code session in a workspace PTY.
 //!
 //! Security model: the socket lives in the app's private data dir (mode 0700) as
 //! a mode-0600 file, so only the same user can connect, and a UDS is never
 //! reachable over the network. The protocol is deliberately narrow — the sidecar
-//! can only start or stop a Claude session for a workspace, and chooses only
-//! whether to launch the configured agent, not what runs: the command comes from
-//! settings, which only the webview can write. The sidecar's `name` does reach
-//! the launch line, and that line is typed into an interactive shell rather than
-//! exec'd, so `pty::sanitize_session_name` strips it — see that function for why
-//! quoting alone is not enough. Requests and responses are newline-delimited JSON.
+//! can only start, stop, or talk to a Claude session for a workspace, and chooses
+//! only whether to launch the configured agent, not what runs: the command comes
+//! from settings, which only the webview can write. The sidecar's `name` does
+//! reach the launch line, and that line is typed into an interactive shell rather
+//! than exec'd, so `pty::sanitize_session_name` strips it — see that function for
+//! why quoting alone is not enough. `claude.send` types free text at a prompt
+//! instead, which `pty::send_session_instruction` sanitizes and refuses to send
+//! unless an agent, rather than the bare shell, is reading it. Requests and
+//! responses are newline-delimited JSON.
 
 /// Absolute path to the control socket, kept in managed state so `sidecar.rs`
 /// can pass it to the child process via env.
@@ -35,7 +38,7 @@ mod unix_impl {
     use tokio::net::{UnixListener, UnixStream};
 
     use super::ControlSocketPath;
-    use crate::pty::{kill_session, spawn_claude_session, PtyState};
+    use crate::pty::{kill_session, send_session_instruction, spawn_claude_session, PtyState};
 
     /// Cap on a single request line, bounding what one message can buffer.
     const MAX_LINE: usize = 64 * 1024;
@@ -78,6 +81,15 @@ mod unix_impl {
     struct KillParams {
         #[serde(rename = "workspaceId")]
         workspace_id: String,
+    }
+
+    #[derive(Deserialize)]
+    struct SendParams {
+        #[serde(rename = "workspaceId")]
+        workspace_id: String,
+        /// What to type at the running agent's prompt. Composed by the chat
+        /// model, so `pty::send_session_instruction` sanitizes and bounds it.
+        instruction: String,
     }
 
     fn socket_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -216,6 +228,11 @@ mod unix_impl {
                 validate_workspace_id(&p.workspace_id)?;
                 kill_session(state.inner(), &format!("ws-claude:{}", p.workspace_id));
                 Ok(())
+            }
+            "claude.send" => {
+                let p: SendParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+                validate_workspace_id(&p.workspace_id)?;
+                send_session_instruction(state.inner(), &p.workspace_id, &p.instruction)
             }
             other => Err(format!("unknown method: {other}")),
         }

@@ -200,7 +200,11 @@ Status of the build against the original vision. The full V1 plan lives at
   can list repos and their open issues, spin up workspaces (from repos, from an
   issue like the "Start work" button, or scratch) and start agent sessions
   (remote-controllable only when the request came in over Telegram, where there
-  is no local tab to drive), report a workspace's PR / CI-check / mergeable status, and
+  is no local tab to drive), report a workspace's PR / CI-check / mergeable status,
+  bulk-sync workspaces with their base branch (fetch, merge main in, push what
+  merged cleanly; a conflicted merge is left in the worktree and reported rather
+  than aborted), type a follow-up instruction into a workspace's running agent
+  session over the core's control channel, and
   archive workspaces — all from natural language, and reachable from Chat, Omni,
   and the Telegram bot alike. Tab shortcuts too: Cmd/Ctrl+1–9 jump to a
   tab, Cmd/Ctrl+Shift+[ / ] cycle through them.

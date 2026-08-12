@@ -1,7 +1,7 @@
 /**
- * Workspaces service: the repo registry plus provisioning and teardown of the
- * per-workspace worktrees. Git/filesystem work is delegated to `git.ts`; this
- * module owns the database state and orchestration.
+ * Workspaces service: the repo registry plus provisioning, syncing, and teardown
+ * of the per-workspace worktrees. Git/filesystem work is delegated to `git.ts`;
+ * this module owns the database state and orchestration.
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -56,8 +56,11 @@ import {
   listChangedFiles,
   listFiles,
   listRemoteBranches,
+  mergeBaseIntoWorktree,
+  pushBranch,
   removeWorktree,
   updateDefaultBranch,
+  worktreeStatus,
 } from "./git.ts";
 
 const SETUP_LOG_CAP = 16 * 1024;
@@ -617,6 +620,152 @@ export async function workspaceRepoSync(
 
   const sync = await branchSync(runner, wr.worktreePath, wr.branch, wr.baseBranch);
   return { ...sync, fetchError };
+}
+
+// ---------------------------------------------------------------------------
+// Bulk sync: merge each branch's base into it, and push what merged cleanly
+// ---------------------------------------------------------------------------
+
+/** What a sync did to one workspace repo's branch, and what it stopped short of. */
+export interface RepoSyncOutcome {
+  workspaceRepoId: string;
+  repo: string;
+  branch: string;
+  baseBranch: string;
+  /** `skipped` means the merge was never attempted — see `note`. */
+  merge: "up-to-date" | "merged" | "conflict" | "skipped";
+  /** Paths left with conflict markers in the worktree, when `merge` is `conflict`. */
+  conflicts: string[];
+  pushed: boolean;
+  /** Why the merge was skipped, or why the push didn't happen. Null when the
+   *  repo synced with nothing worth reporting. */
+  note: string | null;
+}
+
+export interface WorkspaceSyncResult {
+  workspaceId: string;
+  name: string;
+  repos: RepoSyncOutcome[];
+}
+
+export interface SyncWorkspaceOptions {
+  runner?: GitRunner;
+  /** Push each branch that merged cleanly and has commits the remote lacks.
+   *  Default true — pushing is half of what "sync" means here. */
+  push?: boolean;
+}
+
+/**
+ * Merges each of a workspace's branches with the base it was cut from and pushes
+ * what merged cleanly. This is the bulk operation behind "pull main into all my
+ * open PRs": one workspace's repos in one pass, with every reason a repo was
+ * left alone reported rather than thrown.
+ *
+ * A repo is skipped, not merged, when its worktree has uncommitted tracked
+ * changes or a merge is already under way — merging over either would entangle
+ * work the user hasn't committed with an upstream change they asked for. A merge
+ * that conflicts is left in the worktree (see `mergeBaseIntoWorktree`) so it can
+ * be handed to the workspace's agent session to resolve, and that repo is not
+ * pushed.
+ */
+export async function syncWorkspaceWithBase(
+  db: Db,
+  workspaceId: string,
+  options: SyncWorkspaceOptions = {},
+): Promise<WorkspaceSyncResult> {
+  const runner = options.runner ?? defaultGitRunner;
+  const push = options.push ?? true;
+
+  const detail = await getWorkspace(db, workspaceId);
+  if (!detail) throw new Error("workspace not found");
+
+  const outcomes: RepoSyncOutcome[] = [];
+  // Sequential: two repos in one workspace often share a primary clone lock, and
+  // a bulk run's value is in the report, which is easier to trust when each
+  // repo's fetch/merge/push happened in a known order.
+  for (const wr of detail.repos) {
+    const base: Omit<RepoSyncOutcome, "merge" | "conflicts" | "pushed" | "note"> = {
+      workspaceRepoId: wr.id,
+      repo: wr.repo.name,
+      branch: wr.branch,
+      baseBranch: wr.baseBranch,
+    };
+    if (wr.status !== "ready") {
+      outcomes.push({
+        ...base,
+        merge: "skipped",
+        conflicts: [],
+        pushed: false,
+        note: `worktree is not ready (status: ${wr.status})`,
+      });
+      continue;
+    }
+
+    try {
+      outcomes.push({ ...base, ...(await syncOneRepo(runner, wr, push)) });
+    } catch (e) {
+      outcomes.push({
+        ...base,
+        merge: "skipped",
+        conflicts: [],
+        pushed: false,
+        note: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  return { workspaceId: detail.id, name: detail.name, repos: outcomes };
+}
+
+/** The fetch/merge/push sequence for one workspace repo. Split out so
+ *  `syncWorkspaceWithBase` reads as the loop and the reporting it is. */
+async function syncOneRepo(
+  runner: GitRunner,
+  wr: WorkspaceRepoDetail,
+  push: boolean,
+): Promise<Pick<RepoSyncOutcome, "merge" | "conflicts" | "pushed" | "note">> {
+  // Under the repo lock so the fetch never races a worktree add/remove on the
+  // same primary clone.
+  await withRepoLock(wr.repoId, () => fetchRemote(runner, wr.repo.primaryClonePath));
+
+  const status = await worktreeStatus(runner, wr.worktreePath);
+  if (status.mergeInProgress) {
+    return {
+      merge: "skipped",
+      conflicts: [],
+      pushed: false,
+      note: "a merge is already in progress in this worktree",
+    };
+  }
+  if (status.dirtyFiles.length) {
+    return {
+      merge: "skipped",
+      conflicts: [],
+      pushed: false,
+      note: `uncommitted changes in ${status.dirtyFiles.length} file(s); commit or stash them first`,
+    };
+  }
+
+  const merge = await mergeBaseIntoWorktree(runner, wr.worktreePath, wr.baseBranch);
+  if (merge.result === "conflict") {
+    return {
+      merge: "conflict",
+      conflicts: merge.files,
+      pushed: false,
+      note: "merge left conflicts in the worktree; resolve them before pushing",
+    };
+  }
+
+  if (!push) return { merge: merge.result, conflicts: [], pushed: false, note: null };
+
+  // Push only what the remote is actually missing, so a bulk run over a dozen
+  // workspaces doesn't make a dozen no-op network calls.
+  const sync = await branchSync(runner, wr.worktreePath, wr.branch, wr.baseBranch);
+  if (sync.ahead === 0) {
+    return { merge: merge.result, conflicts: [], pushed: false, note: "nothing to push" };
+  }
+  await pushBranch(runner, wr.worktreePath, wr.branch);
+  return { merge: merge.result, conflicts: [], pushed: true, note: null };
 }
 
 /** A workspace the PR view can link back to, keyed by a cached PR match. */

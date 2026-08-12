@@ -15,8 +15,11 @@ import {
   listChangedFiles,
   listFiles,
   listRemoteBranches,
+  mergeBaseIntoWorktree,
+  pushBranch,
   removeWorktree,
   updateDefaultBranch,
+  worktreeStatus,
 } from "./git.ts";
 
 /** A scripted GitRunner that records calls and answers based on the args. */
@@ -274,5 +277,95 @@ describe("branchSync", () => {
       baseBehind: 0,
       hasRemote: false,
     });
+  });
+});
+
+describe("worktreeStatus", () => {
+  it("reports modified tracked files and ignores untracked ones", async () => {
+    const { runner } = fakeRunner((args) => {
+      if (args[0] === "status") {
+        return { stdout: " M src/app.ts\nA  src/new.ts\n?? scratch.txt\n" };
+      }
+      if (args[0] === "rev-parse") return { exitCode: 1 }; // no MERGE_HEAD
+      return {};
+    });
+    expect(await worktreeStatus(runner, "/wt")).toEqual({
+      dirtyFiles: ["src/app.ts", "src/new.ts"],
+      mergeInProgress: false,
+    });
+  });
+
+  it("takes the new path of a rename", async () => {
+    const { runner } = fakeRunner((args) => {
+      if (args[0] === "status") return { stdout: "R  src/old.ts -> src/new.ts\n" };
+      if (args[0] === "rev-parse") return { exitCode: 1 };
+      return {};
+    });
+    const status = await worktreeStatus(runner, "/wt");
+    expect(status.dirtyFiles).toEqual(["src/new.ts"]);
+  });
+
+  it("flags a merge already in progress", async () => {
+    const { runner } = fakeRunner((args) => {
+      if (args[0] === "status") return { stdout: "" };
+      if (args[0] === "rev-parse") return { exitCode: 0 }; // MERGE_HEAD present
+      return {};
+    });
+    expect(await worktreeStatus(runner, "/wt")).toEqual({
+      dirtyFiles: [],
+      mergeInProgress: true,
+    });
+  });
+});
+
+describe("mergeBaseIntoWorktree", () => {
+  it("merges the remote base branch, never a local ref", async () => {
+    const { runner, calls } = fakeRunner(() => ({ stdout: "Merge made by the 'ort' strategy.\n" }));
+    expect(await mergeBaseIntoWorktree(runner, "/wt", "main")).toEqual({ result: "merged" });
+    expect(calls[0]).toEqual(["merge", "--no-edit", "origin/main"]);
+  });
+
+  it("distinguishes an already-merged base from a real merge", async () => {
+    const { runner } = fakeRunner(() => ({ stdout: "Already up to date.\n" }));
+    expect(await mergeBaseIntoWorktree(runner, "/wt", "main")).toEqual({ result: "up-to-date" });
+  });
+
+  it("reports the conflicted files and leaves the merge in the worktree", async () => {
+    const { runner, calls } = fakeRunner((args) => {
+      if (args[0] === "merge") return { exitCode: 1, stderr: "Automatic merge failed" };
+      if (args[0] === "diff") return { stdout: "src/app.ts\nREADME.md\n" };
+      return {};
+    });
+    expect(await mergeBaseIntoWorktree(runner, "/wt", "main")).toEqual({
+      result: "conflict",
+      files: ["src/app.ts", "README.md"],
+    });
+    // The conflict markers are the point; nothing may undo them.
+    expect(calls.some((c) => c.includes("--abort"))).toBe(false);
+  });
+
+  it("throws when the merge failed for a reason other than conflicts", async () => {
+    const { runner } = fakeRunner((args) => {
+      if (args[0] === "merge") {
+        return { exitCode: 128, stderr: "fatal: refusing to merge unrelated histories" };
+      }
+      return {}; // no unmerged paths
+    });
+    expect(mergeBaseIntoWorktree(runner, "/wt", "main")).rejects.toThrow(
+      "refusing to merge unrelated histories",
+    );
+  });
+});
+
+describe("pushBranch", () => {
+  it("pushes the branch and sets it as upstream", async () => {
+    const { runner, calls } = fakeRunner(() => ({}));
+    await pushBranch(runner, "/wt", "yarvis/fix-the-widget");
+    expect(calls[0]).toEqual(["push", "--set-upstream", "origin", "yarvis/fix-the-widget"]);
+  });
+
+  it("throws with git's own message when the push is rejected", async () => {
+    const { runner } = fakeRunner(() => ({ exitCode: 1, stderr: "! [rejected] fetch first" }));
+    expect(pushBranch(runner, "/wt", "feature")).rejects.toThrow("fetch first");
   });
 });

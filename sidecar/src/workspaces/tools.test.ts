@@ -85,6 +85,59 @@ function fakeGitHub(overrides: Partial<WorkspaceGitHubClient> = {}) {
   return { client, calls };
 }
 
+/**
+ * A provisioned, active workspace with one ready repo — the starting state every
+ * sync/instruction test needs, built through the same tool the user would.
+ */
+async function activeWorkspace(
+  name: string,
+  cloneUrl = "https://github.com/acme/widget.git",
+): Promise<{ workspaceId: string }> {
+  const repo = await createRepo(db, config, { cloneUrl });
+  const tools = buildWorkspaceTools(db, config, {
+    gitRunner: okRunner,
+    startClaudeSession: async (input) => ({ sessionKey: `ws-claude:${input.workspaceId}` }),
+  });
+  return (await tools.create_workspace_session.execute!({ name, repoIds: [repo.id] }, opts)) as {
+    workspaceId: string;
+  };
+}
+
+/**
+ * A git runner scripted for the sync sequence: a clean worktree that merges and
+ * has commits to push, with each step overridable to produce the outcomes the
+ * sync has to report (dirty worktree, conflicts, a rejected push).
+ */
+function syncRunner(
+  overrides: { dirty?: string; conflicts?: string[]; pushExitCode?: number } = {},
+): { runner: GitRunner; calls: string[][] } {
+  const calls: string[][] = [];
+  const runner: GitRunner = async (args) => {
+    calls.push(args);
+    const ok = (stdout = "") => ({ stdout, stderr: "", exitCode: 0 });
+    if (args[0] === "status") return ok(overrides.dirty ?? "");
+    // `rev-parse --verify --quiet <ref>`: MERGE_HEAD (is a merge under way?) and
+    // the remote-tracking ref (has the branch been pushed?) both land here.
+    if (args[0] === "rev-parse") {
+      return args[3] === "MERGE_HEAD" ? { stdout: "", stderr: "", exitCode: 1 } : ok("abc123\n");
+    }
+    if (args[0] === "merge") {
+      return overrides.conflicts
+        ? { stdout: "", stderr: "Automatic merge failed", exitCode: 1 }
+        : ok("Merge made by the 'ort' strategy.\n");
+    }
+    if (args[0] === "diff") return ok(`${(overrides.conflicts ?? []).join("\n")}\n`);
+    if (args[0] === "rev-list") return ok("2\n"); // commits to push
+    if (args[0] === "push") {
+      return overrides.pushExitCode
+        ? { stdout: "", stderr: "! [rejected] fetch first", exitCode: overrides.pushExitCode }
+        : ok();
+    }
+    return ok();
+  };
+  return { runner, calls };
+}
+
 beforeEach(async () => {
   await sql`TRUNCATE workspaces, workspace_repos, workspace_repo_pr, repos, tasks, issue_links RESTART IDENTITY CASCADE`;
 });
@@ -624,5 +677,147 @@ describe("workspace tools", () => {
       opts,
     )) as { error?: string };
     expect(result.error).toContain("not found");
+  });
+
+  it("sync_workspaces_with_base merges the base in and pushes the branch", async () => {
+    const created = await activeWorkspace("Sync me");
+    const { runner, calls } = syncRunner();
+    const tools = buildWorkspaceTools(db, config, { gitRunner: runner });
+
+    const result = (await tools.sync_workspaces_with_base.execute!(
+      { workspaceIds: [created.workspaceId], push: true },
+      opts,
+    )) as { workspaces: Array<{ repos: Array<{ merge: string; pushed: boolean }> }> };
+
+    expect(result.workspaces[0]!.repos[0]!.merge).toBe("merged");
+    expect(result.workspaces[0]!.repos[0]!.pushed).toBe(true);
+    // The base is merged from the remote-tracking ref, after a fetch.
+    expect(calls.some((c) => c[0] === "fetch")).toBe(true);
+    expect(calls.some((c) => c[0] === "merge" && c[2] === "origin/main")).toBe(true);
+    expect(calls.some((c) => c[0] === "push")).toBe(true);
+  });
+
+  it("sync_workspaces_with_base leaves a conflicted merge in place and skips the push", async () => {
+    const created = await activeWorkspace("Conflicted");
+    const { runner, calls } = syncRunner({ conflicts: ["src/app.ts"] });
+    const tools = buildWorkspaceTools(db, config, { gitRunner: runner });
+
+    const result = (await tools.sync_workspaces_with_base.execute!(
+      { workspaceIds: [created.workspaceId], push: true },
+      opts,
+    )) as {
+      workspaces: Array<{ repos: Array<{ merge: string; conflicts: string[]; pushed: boolean }> }>;
+    };
+
+    const repo = result.workspaces[0]!.repos[0]!;
+    expect(repo.merge).toBe("conflict");
+    expect(repo.conflicts).toEqual(["src/app.ts"]);
+    expect(repo.pushed).toBe(false);
+    // The conflict is what the workspace's agent needs in order to resolve it.
+    expect(calls.some((c) => c.includes("--abort"))).toBe(false);
+    expect(calls.some((c) => c[0] === "push")).toBe(false);
+  });
+
+  it("sync_workspaces_with_base skips a worktree with uncommitted changes", async () => {
+    const created = await activeWorkspace("Dirty");
+    const { runner, calls } = syncRunner({ dirty: " M src/app.ts\n" });
+    const tools = buildWorkspaceTools(db, config, { gitRunner: runner });
+
+    const result = (await tools.sync_workspaces_with_base.execute!(
+      { workspaceIds: [created.workspaceId], push: true },
+      opts,
+    )) as { workspaces: Array<{ repos: Array<{ merge: string; note: string | null }> }> };
+
+    expect(result.workspaces[0]!.repos[0]!.merge).toBe("skipped");
+    expect(result.workspaces[0]!.repos[0]!.note).toContain("uncommitted changes");
+    expect(calls.some((c) => c[0] === "merge")).toBe(false);
+  });
+
+  it("sync_workspaces_with_base reports a failed push without failing the run", async () => {
+    const created = await activeWorkspace("Rejected push");
+    const { runner } = syncRunner({ pushExitCode: 1 });
+    const tools = buildWorkspaceTools(db, config, { gitRunner: runner });
+
+    const result = (await tools.sync_workspaces_with_base.execute!(
+      { workspaceIds: [created.workspaceId], push: true },
+      opts,
+    )) as { workspaces: Array<{ repos: Array<{ pushed: boolean; note: string | null }> }> };
+
+    expect(result.workspaces[0]!.repos[0]!.pushed).toBe(false);
+    expect(result.workspaces[0]!.repos[0]!.note).toContain("git push");
+  });
+
+  it("sync_workspaces_with_base covers every active workspace when given no ids", async () => {
+    await activeWorkspace("First", "https://github.com/acme/widget.git");
+    await activeWorkspace("Second", "https://github.com/acme/gadget.git");
+    const { runner } = syncRunner();
+    const tools = buildWorkspaceTools(db, config, { gitRunner: runner });
+
+    const result = (await tools.sync_workspaces_with_base.execute!({ push: true }, opts)) as {
+      workspaces: Array<{ name: string }>;
+    };
+
+    expect(result.workspaces.map((w) => w.name).sort()).toEqual(["First", "Second"]);
+  });
+
+  it("send_workspace_instruction hands the instruction to the workspace's session", async () => {
+    const created = await activeWorkspace("Talk to me");
+    const sent: Array<{ workspaceId: string; instruction: string }> = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      sendSessionInstruction: async (input) => {
+        sent.push(input);
+      },
+    });
+
+    const result = (await tools.send_workspace_instruction.execute!(
+      { workspaceId: created.workspaceId, instruction: "resolve the merge conflicts and commit" },
+      opts,
+    )) as { error?: string; sessionKey?: string; message?: string };
+
+    expect(result.error).toBeUndefined();
+    expect(result.sessionKey).toBe(`ws-claude:${created.workspaceId}`);
+    expect(sent).toEqual([
+      {
+        workspaceId: created.workspaceId,
+        instruction: "resolve the merge conflicts and commit",
+      },
+    ]);
+  });
+
+  it("send_workspace_instruction reports a session that isn't running", async () => {
+    const created = await activeWorkspace("No session");
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      sendSessionInstruction: async () => {
+        throw new Error("no agent session is running for that workspace");
+      },
+    });
+
+    const result = (await tools.send_workspace_instruction.execute!(
+      { workspaceId: created.workspaceId, instruction: "resolve the conflicts" },
+      opts,
+    )) as { error?: string; note?: string };
+
+    expect(result.error).toContain("no agent session is running");
+    expect(result.note).toContain("start_workspace_session");
+  });
+
+  it("send_workspace_instruction errors on an unknown workspace without sending", async () => {
+    let sends = 0;
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      sendSessionInstruction: async () => {
+        sends++;
+      },
+    });
+
+    const result = (await tools.send_workspace_instruction.execute!(
+      { workspaceId: "00000000-0000-0000-0000-000000000000", instruction: "do the thing" },
+      opts,
+    )) as { error?: string };
+
+    expect(result.error).toBe("workspace not found");
+    expect(sends).toBe(0);
   });
 });

@@ -13,7 +13,9 @@ import {
 } from "../issues/service.ts";
 import type { IssueDetail, IssueSummary } from "../issues/types.ts";
 import {
+  type ClaudeSessionMessenger,
   type ClaudeSessionStarter,
+  sendSessionInstruction as defaultSendSessionInstruction,
   startClaudeSession as defaultStartClaudeSession,
   sessionDescription,
   sessionStartedMessage,
@@ -27,7 +29,9 @@ import {
   listRepos,
   listWorkspaces,
   provisionWorkspace,
+  syncWorkspaceWithBase,
   type WorkspaceDetail,
+  type WorkspaceSyncResult,
 } from "./service.ts";
 
 const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -93,6 +97,8 @@ export interface WorkspaceGitHubClient extends StartWorkSideEffectClient {
  */
 export interface WorkspaceToolDeps {
   startClaudeSession?: ClaudeSessionStarter;
+  /** Overrides how an instruction reaches a running session's prompt. */
+  sendSessionInstruction?: ClaudeSessionMessenger;
   gitRunner?: GitRunner;
   /** Overrides the GitHub client the issue tools use; defaults to a client built
    *  from the configured token (null when no token is set). */
@@ -110,11 +116,14 @@ export interface WorkspaceToolDeps {
  * Workspace tools for the chat agent. Read-only lookups (repos, a repo's open
  * issues, workspace list, workspace PR/check status) plus fixed-purpose actions:
  * create a workspace (from repos, from an issue like the issue-view "Start
- * work", or scratch) and start a Claude Code session in it, and archive a
- * workspace. Deliberately no general shell access.
+ * work", or scratch) and start a Claude Code session in it, bulk-merge each
+ * workspace's base branch into it and push, hand an instruction to a running
+ * session, and archive a workspace. Deliberately no general shell access: every
+ * git action here is a fixed sequence the model chooses only the targets of.
  */
 export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolDeps = {}) {
   const startClaude = deps.startClaudeSession ?? defaultStartClaudeSession;
+  const sendInstruction = deps.sendSessionInstruction ?? defaultSendSessionInstruction;
   const remoteControl = deps.remoteControl ?? false;
   const gitRunner = deps.gitRunner ?? defaultGitRunner;
   // `undefined` means "not overridden" → fall back to a token-backed client;
@@ -448,6 +457,75 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         return details
           .filter((d): d is WorkspaceDetail => d !== null)
           .map(summarizeWorkspaceStatus);
+      },
+    }),
+
+    sync_workspaces_with_base: tool({
+      description:
+        "Bulk-update workspaces with what has landed upstream: for each workspace repo, fetch, merge its base branch (main/master) into the workspace's branch, and push the result. Use this when the user says something like 'merge main into all my open PRs'. Omit workspaceIds to sync every active workspace, or pass ids from list_workspaces to sync specific ones. Repos with uncommitted changes or a merge already under way are skipped, not merged. A merge that conflicts is LEFT IN PLACE in the worktree and not pushed — report which workspaces conflicted and offer to have their agent session resolve them with send_workspace_instruction.",
+      inputSchema: z.object({
+        workspaceIds: z
+          .array(z.string().uuid())
+          .optional()
+          .describe("Workspaces to sync, from list_workspaces; omit for all non-archived ones"),
+        push: z
+          .boolean()
+          .default(true)
+          .describe("Push each branch that merged cleanly and has unpushed commits"),
+      }),
+      execute: async ({ workspaceIds, push }) => {
+        let ids = workspaceIds;
+        if (!ids) {
+          const rows = await listWorkspaces(db);
+          ids = rows.filter((w) => w.status === "active").map((w) => w.id);
+        }
+        if (!ids.length) return { workspaces: [], note: "no workspaces to sync" };
+
+        const results: (WorkspaceSyncResult | { workspaceId: string; error: string })[] = [];
+        for (const id of ids) {
+          try {
+            results.push(await syncWorkspaceWithBase(db, id, { runner: gitRunner, push }));
+          } catch (e) {
+            results.push({ workspaceId: id, error: errorMessage(e) });
+          }
+        }
+        return { workspaces: results };
+      },
+    }),
+
+    send_workspace_instruction: tool({
+      description:
+        "Type an instruction at the prompt of a workspace's already-running agent session and submit it, as if the user had typed it there — e.g. 'resolve the merge conflicts and commit' after sync_workspaces_with_base left conflicts behind. The instruction is submitted as one message; it cannot answer a permission prompt or interrupt work already in flight. Fails if no agent session is running for that workspace, in which case offer start_workspace_session instead. Resolve the workspace id with list_workspaces first.",
+      inputSchema: z.object({
+        workspaceId: z
+          .string()
+          .uuid()
+          .describe("Id of the workspace whose session receives the instruction"),
+        instruction: z
+          .string()
+          .min(1)
+          .max(4000)
+          .describe("What to tell the agent, e.g. 'resolve the merge conflicts and commit'"),
+      }),
+      execute: async ({ workspaceId, instruction }) => {
+        const detail = await getWorkspace(db, workspaceId);
+        if (!detail) return { error: "workspace not found" };
+        try {
+          await sendInstruction({ workspaceId, instruction });
+          return {
+            workspaceId,
+            name: detail.name,
+            sessionKey: `ws-claude:${workspaceId}`,
+            message: `Sent to the agent session in workspace "${detail.name}". It works on it in the background; check the Workspaces tab to watch, and note that nothing here confirms it finished.`,
+          };
+        } catch (e) {
+          return {
+            error: errorMessage(e),
+            workspaceId,
+            name: detail.name,
+            note: "The instruction was not delivered. If no agent session is running, start one with start_workspace_session.",
+          };
+        }
       },
     }),
 

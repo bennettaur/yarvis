@@ -549,6 +549,84 @@ fn sanitize_session_name(name: &str) -> String {
         .to_string()
 }
 
+/// Longest instruction accepted into a running agent session. Instructions are
+/// composed by the chat model from text it was given, so this bounds what one
+/// call can type rather than reflecting a limit the agent enforces.
+const MAX_INSTRUCTION_CHARS: usize = 4000;
+
+/// Strips unsafe characters from an instruction and bounds its length. The
+/// character rules are `sanitize_session_name`'s, for the same reasons, plus one
+/// that is specific to typing at a live prompt: `is_control` also covers CR and
+/// LF, which the agent's line editor reads as "submit". Leaving them in would let
+/// one instruction submit several, each of which the agent acts on.
+fn sanitize_instruction(text: &str) -> String {
+    text.chars()
+        .filter(|c| !is_unsafe_name_char(*c))
+        .take(MAX_INSTRUCTION_CHARS)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// Types `instruction` at the prompt of the agent session for `workspace_id` and
+/// submits it, exactly as if the user had typed it there.
+///
+/// Refused unless a non-shell process holds the PTY's foreground (see
+/// `has_foreground_child`). That process is the agent: when it has exited, the
+/// session falls back to the bare shell it was launched from, where the same
+/// text would be run as a command line instead of read as a prompt. The check
+/// can only be made on Unix, so this is refused everywhere else.
+pub fn send_session_instruction(
+    state: &PtyState,
+    workspace_id: &str,
+    instruction: &str,
+) -> Result<(), String> {
+    let text = sanitize_instruction(instruction);
+    if text.is_empty() {
+        return Err("instruction is empty".into());
+    }
+    let id = format!("ws-claude:{workspace_id}");
+    let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    let session = sessions
+        .get_mut(&id)
+        .ok_or("no agent session is running for that workspace")?;
+    if !matches!(session.child.try_wait(), Ok(None)) {
+        return Err("the agent session has exited".into());
+    }
+    if !has_foreground_child(session) {
+        return Err("no agent is running in that session; it is at a shell prompt".into());
+    }
+    session
+        .writer
+        .write_all(format!("{text}\r").as_bytes())
+        .map_err(|e| e.to_string())?;
+    session.writer.flush().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// True when a non-shell process holds the PTY's foreground — the session's
+/// shell has handed off to a child, which for a workspace session is the agent.
+/// Compares the PTY's foreground process group to the shell's pid. False for
+/// platforms that can't report a process group (Windows, serial PTYs), so
+/// callers that treat this as a safety gate fail closed there.
+fn has_foreground_child(session: &PtySession) -> bool {
+    #[cfg(unix)]
+    {
+        let Some(fg) = session.master.process_group_leader() else {
+            return false;
+        };
+        let Some(shell_pid) = session.child.process_id() else {
+            return false;
+        };
+        fg > 0 && (fg as u32) != shell_pid
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = session;
+        false
+    }
+}
+
 /// Composes the remote-control launch line from a base command and a session
 /// name. Extracted from `spawn_claude_session` so the composition is unit-testable
 /// without reading the environment or spawning a PTY.
@@ -790,31 +868,15 @@ pub fn pty_resize(
 }
 
 /// True when a non-shell foreground process is running in the PTY (e.g. the user
-/// is in vim, tailing logs, or running tests). Compares the PTY's foreground
-/// process group to the shell's pid: if they differ, the shell has handed off
-/// the foreground to a child. Returns false for unknown sessions or when the
-/// platform can't report a process group (Windows, serial PTYs).
+/// is in vim, tailing logs, or running tests). Returns false for unknown sessions
+/// or when the platform can't report a process group — see `has_foreground_child`.
 #[tauri::command]
 pub fn pty_is_busy(state: tauri::State<'_, PtyState>, id: String) -> Result<bool, String> {
     let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let Some(session) = sessions.get(&id) else {
         return Ok(false);
     };
-    #[cfg(unix)]
-    {
-        let Some(fg) = session.master.process_group_leader() else {
-            return Ok(false);
-        };
-        let Some(shell_pid) = session.child.process_id() else {
-            return Ok(false);
-        };
-        Ok(fg > 0 && (fg as u32) != shell_pid)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = session;
-        Ok(false)
-    }
+    Ok(has_foreground_child(session))
 }
 
 #[tauri::command]
@@ -828,8 +890,8 @@ mod tests {
     use super::{
         agent_launch_command, attention_env, attention_workspace_id, is_unsafe_name_char,
         lock_scrollback, remote_control_command, resolve_agent_command, resolve_max_sessions,
-        snapshot, Scrollback, DEFAULT_AGENT_COMMAND, DEFAULT_MAX_SESSIONS,
-        MAX_CONFIGURABLE_SESSIONS, MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
+        sanitize_instruction, snapshot, Scrollback, DEFAULT_AGENT_COMMAND, DEFAULT_MAX_SESSIONS,
+        MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
     };
     use std::sync::Mutex;
 
@@ -882,6 +944,32 @@ mod tests {
             resolve_agent_command(Some("claude\u{15}whoami".to_string()), None),
             "claudewhoami"
         );
+    }
+
+    #[test]
+    fn sanitize_instruction_drops_the_newlines_that_would_submit_early() {
+        // Each newline would submit what precedes it, turning one instruction
+        // into three the agent acts on in turn.
+        assert_eq!(
+            sanitize_instruction("resolve the conflicts\rrm -rf /\ngit push --force"),
+            "resolve the conflictsrm -rf /git push --force"
+        );
+    }
+
+    #[test]
+    fn sanitize_instruction_bounds_its_length() {
+        let long = "a".repeat(MAX_INSTRUCTION_CHARS + 50);
+        assert_eq!(
+            sanitize_instruction(&long).chars().count(),
+            MAX_INSTRUCTION_CHARS
+        );
+    }
+
+    #[test]
+    fn sanitize_instruction_trims_to_empty_when_there_is_nothing_left() {
+        // The caller rejects an empty instruction rather than pressing enter on
+        // whatever the agent already had in its prompt.
+        assert_eq!(sanitize_instruction("  \u{202e}  "), "");
     }
 
     #[test]

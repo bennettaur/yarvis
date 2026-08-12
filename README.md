@@ -198,6 +198,16 @@ workspace opened from an issue's "Start work" also gets the ticket itself, in
 `.yarvis/issue-prompt.md` — the file its agent session is launched to read, as
 the last step of provisioning.
 
+When several workspaces need the same upstream fix, ask the in-app agent (or
+Telegram) to merge main into them — "merge main into all my open PRs" — and it
+syncs them in bulk: fetch, merge each branch's base into it, and push what merged
+cleanly. A worktree with uncommitted changes, or one already mid-merge, is left
+alone and reported rather than merged over. A merge that conflicts is left in the
+worktree with its markers in place and isn't pushed, so you can pick it up
+yourself or hand it back: the agent can type an instruction like "resolve the
+merge conflicts and commit" straight into that workspace's running session, and
+it's answered there in the background.
+
 At most 60 terminal sessions can be live at once; opening more fails until one
 is closed. Raise or lower that under Settings → Repositories → Terminals (up to
 1000) — each session is a real shell, so the cap trades memory and process count

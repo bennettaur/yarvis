@@ -7,7 +7,8 @@
  * absolute. The key safety rule baked in here: worktrees are always cut from
  * `origin/<default>` after a fetch — we never `checkout` or `pull` the primary
  * clone, so other worktrees referencing it are never disturbed and the
- * "branch already checked out" failure can't occur.
+ * "branch already checked out" failure can't occur. Working-tree mutations
+ * (merge, push) likewise run in a worktree, never in the primary clone.
  */
 
 import { existsSync, mkdirSync } from "node:fs";
@@ -147,6 +148,86 @@ export async function branchSync(
     };
   }
   return { ahead: await count(`${base}..HEAD`), behind: 0, baseBehind, hasRemote: false };
+}
+
+/** What stands in the way of merging into a worktree, if anything. */
+export interface WorktreeStatus {
+  /** Tracked files with staged or unstaged modifications, conflicts included.
+   *  Untracked files are excluded: they don't block a merge. */
+  dirtyFiles: string[];
+  /** True when a merge is already under way (`MERGE_HEAD` present). */
+  mergeInProgress: boolean;
+}
+
+/**
+ * The worktree state a merge cares about. Read before merging so a sync can say
+ * *why* it left a branch alone rather than merging on top of work in progress.
+ */
+export async function worktreeStatus(
+  runner: GitRunner,
+  worktreePath: string,
+): Promise<WorktreeStatus> {
+  const porcelain = await git(runner, ["status", "--porcelain"], worktreePath);
+  const dirtyFiles = porcelain
+    .split("\n")
+    .filter((line) => line.trim() && !line.startsWith("??"))
+    // Porcelain v1 is "XY <path>"; a rename is "R  old -> new".
+    .map((line) => line.slice(3).split(" -> ").pop() ?? "")
+    .filter(Boolean);
+
+  const mergeHead = await runner(["rev-parse", "--verify", "--quiet", "MERGE_HEAD"], {
+    cwd: worktreePath,
+  });
+  return { dirtyFiles, mergeInProgress: mergeHead.exitCode === 0 };
+}
+
+/** The outcome of merging a base branch into a worktree's branch. */
+export type MergeOutcome =
+  | { result: "up-to-date" }
+  | { result: "merged" }
+  /** The merge stopped on conflicts and was *left in place* — see `mergeBaseIntoWorktree`. */
+  | { result: "conflict"; files: string[] };
+
+/**
+ * Merges `origin/<baseBranch>` into whatever the worktree has checked out. Fetch
+ * the base first (see `fetchRemote`) or this merges a stale ref.
+ *
+ * A conflicted merge is deliberately left in the worktree rather than aborted:
+ * the conflict markers are what an agent session started in that worktree needs
+ * in order to resolve them, and a caller that wanted the branch untouched can
+ * check `worktreeStatus` first. A merge that fails for any other reason throws,
+ * since only conflicts have a defined half-done state.
+ */
+export async function mergeBaseIntoWorktree(
+  runner: GitRunner,
+  worktreePath: string,
+  baseBranch: string,
+): Promise<MergeOutcome> {
+  const result = await runner(["merge", "--no-edit", `origin/${baseBranch}`], {
+    cwd: worktreePath,
+  });
+  if (result.exitCode === 0) {
+    return /already up to date/i.test(result.stdout)
+      ? { result: "up-to-date" }
+      : { result: "merged" };
+  }
+
+  const conflicted = await git(runner, ["diff", "--name-only", "--diff-filter=U"], worktreePath);
+  const files = conflicted.split("\n").filter(Boolean);
+  if (files.length) return { result: "conflict", files };
+
+  throw new Error(
+    `git merge origin/${baseBranch} failed (${result.exitCode}): ${result.stderr.trim()}`,
+  );
+}
+
+/** Pushes the branch to origin, setting it as upstream so later pushes need no args. */
+export async function pushBranch(
+  runner: GitRunner,
+  worktreePath: string,
+  branch: string,
+): Promise<void> {
+  await git(runner, ["push", "--set-upstream", "origin", branch], worktreePath, NETWORK_TIMEOUT_MS);
 }
 
 /** Fetches the latest default branch into the remote-tracking ref. No checkout. */
