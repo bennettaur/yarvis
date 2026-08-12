@@ -212,7 +212,8 @@ describe("OpenAICompatibleSpeech.synthesize", () => {
       model: "kokoro",
       input: "hello",
       voice: "af_bella",
-      response_format: "mp3",
+      // WAV by default: mp3 needs an encoder the server may not have.
+      response_format: "wav",
     });
   });
 

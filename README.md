@@ -163,15 +163,29 @@ For speech out, anything serving `POST /v1/audio/speech` works.
 runs natively on MLX with no GPU, and serves the OpenAI audio API:
 
 ```bash
-pip install mlx-audio
+pip install "mlx-audio[server]"   # the `server` extra: plain mlx-audio has no HTTP server
 mlx_audio.server --host 127.0.0.1 --port 8000
 ```
 
 Then add a custom provider at `http://127.0.0.1:8000/v1` (API kind `openai`),
 select it under **Text to speech**, set the TTS model to
-`mlx-community/Kokoro-82M-bf16` and the voice to `af_heart`, and press **Test
-voice**. Weights download on first use; no repository needs cloning. The same
-server also serves `/v1/audio/transcriptions`, so it can back both halves.
+`mlx-community/Soprano-1.1-80M-bf16`, and press **Test voice**. Weights download
+on first use; no repository needs cloning. The same server also serves
+`/v1/audio/transcriptions`, so it can back both halves.
+
+Two things that bite on a fresh install:
+
+- **mp3 needs ffmpeg**, which mlx-audio shells out to and a fresh Mac lacks.
+  Yarvis asks for `wav` for exactly this reason — it needs no encoder — so this
+  only matters if you override `response_format` yourself.
+- **Kokoro needs a working espeak-ng**, and `pip install misaki` is not enough:
+  its English G2P wants `misaki[en]`, and mlx-audio's bundled `espeakng_loader`
+  looks for its data one directory above where it ships it, so synthesis fails
+  with `espeakng_loader//phontab: No such file or directory`. Installing
+  espeak-ng system-wide does *not* fix it, because that path is hard-coded.
+  Until it is fixed upstream, either use a model that needs no phonemizer
+  (Soprano, Spark-TTS, OuteTTS) or symlink the data where the loader looks:
+  `cd <venv>/lib/python*/site-packages/espeakng_loader && ln -sf espeak-ng-data/* .`
 
 **With an NVIDIA GPU**, vLLM-Omni covers most of the current open models:
 

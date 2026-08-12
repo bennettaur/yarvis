@@ -386,7 +386,11 @@ export class OpenAICompatibleSpeech implements SpeechClient {
       input: text,
       // Servers that ignore voices still require the field to be present.
       voice: voice || "alloy",
-      response_format: "mp3",
+      // WAV rather than mp3: it needs no encoder on the server side, where mp3
+      // often shells out to ffmpeg that a local install may not have (mlx-audio
+      // fails outright without it). The extra bytes are irrelevant on loopback,
+      // and `extras` can ask for mp3 where bandwidth actually matters.
+      response_format: "wav",
     };
     if (refAudio) body.ref_audio = refAudio;
     // Merged last so a server that wants, say, `response_format: "wav"` can say
