@@ -31,6 +31,11 @@ const METHOD_NOT_ALLOWED = {
  * but a page in a browser can resolve a name it controls to 127.0.0.1 and reach
  * it — so the transport is told which Host values are ours, the same way the app
  * pins CORS to the webview's origins rather than trusting the token alone.
+ *
+ * The IPv6 literal is deliberately absent: everything Yarvis hands out (a
+ * workspace's `.mcp.json`, the command the Settings screen copies) addresses
+ * `127.0.0.1`, and a client that typed `localhost` sends that name in the header
+ * whichever family it resolved to.
  */
 function allowedHosts(port: number): string[] {
   return [`127.0.0.1:${port}`, `localhost:${port}`];

@@ -20,6 +20,9 @@ import type { MemoryRecord, MemoryService } from "../memory/index.ts";
  */
 const MAX_CONTENT_CHARS = 4000;
 
+/** A search query is a phrase; anything longer embeds badly and costs the same. */
+const MAX_QUERY_CHARS = 500;
+
 /**
  * A memory id lands in a `uuid` column, so a non-uuid would surface as a
  * database error rather than a schema rejection. Matched by shape rather than
@@ -102,7 +105,7 @@ export function registerMemoryTools(server: McpServer, memory: () => Promise<Mem
       description:
         "Search the user's stored memories, notes, and ingested documents for anything relevant to a query.",
       inputSchema: {
-        query: z.string().min(1).max(MAX_CONTENT_CHARS).describe("What to search for"),
+        query: z.string().min(1).max(MAX_QUERY_CHARS).describe("What to search for"),
         limit: z.number().int().min(1).max(20).optional().describe("How many hits to return"),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
