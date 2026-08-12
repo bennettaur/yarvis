@@ -20,10 +20,10 @@ const SPEECH_LEVEL = 0.04;
 const SILENCE_LEVEL = 0.02;
 
 /** Silence after speech that ends the utterance, when auto-stop is on. */
-const DEFAULT_SILENCE_MS = 1200;
+export const DEFAULT_SILENCE_MS = 1200;
 
 /** Hard cap on one utterance, bounding both the upload and a stuck recorder. */
-const MAX_UTTERANCE_MS = 60_000;
+export const MAX_UTTERANCE_MS = 60_000;
 
 /** Recording containers in preference order; the first supported one wins. */
 const CANDIDATE_MIME_TYPES = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"];
@@ -40,7 +40,8 @@ export interface VoiceRecorder {
   error: string | null;
   /** Opens the mic. Resolves false when it could not start, or was already open. */
   start: () => Promise<boolean>;
-  stop: () => void;
+  /** Ends the recording. `discard` throws the audio away instead of sending it. */
+  stop: (options?: { discard?: boolean }) => void;
 }
 
 export interface VoiceRecorderOptions {
@@ -48,24 +49,42 @@ export interface VoiceRecorderOptions {
   onUtterance: (audio: Blob) => void;
   /** Silence that ends a turn; null keeps recording until `stop`. */
   autoStopSilenceMs?: number | null;
+  /**
+   * Longest one recording may run. Callers use the default; it is settable so a
+   * test can reach the cap without waiting a real minute.
+   */
+  maxUtteranceMs?: number;
 }
+
+/** Why a recording ended, which decides whether its audio is worth sending. */
+type EndReason = "user" | "silence" | "cap" | "discard";
 
 export function useVoiceRecorder({
   onUtterance,
   autoStopSilenceMs = DEFAULT_SILENCE_MS,
+  maxUtteranceMs = MAX_UTTERANCE_MS,
 }: VoiceRecorderOptions): VoiceRecorder {
   const [recording, setRecording] = useState(false);
   const [level, setLevel] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Set before the `getUserMedia` await so a second `start` during that window
   // — the hands-free effect can fire again before `recording` flips — can't
   // open a second stream onto the same microphone.
   const startingRef = useRef(false);
-  const streamRef = useRef<MediaStream | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /**
+   * Bumped by every teardown. `start` captures it before awaiting permission
+   * and re-checks after: an unmount during that await has nothing to tear down
+   * yet, so without this the stream it was granted would stay open with no
+   * component left to stop it — a live microphone and no recording indicator.
+   */
+  const generationRef = useRef(0);
+  /** How the current recording ended, read by `onstop`. */
+  const endReasonRef = useRef<EndReason>("user");
 
   // Held in refs so the sampling loop, which is set up once per recording, always
   // sees the current handler and threshold rather than the ones it started with.
@@ -73,8 +92,11 @@ export function useVoiceRecorder({
   onUtteranceRef.current = onUtterance;
   const silenceMsRef = useRef(autoStopSilenceMs);
   silenceMsRef.current = autoStopSilenceMs;
+  const maxUtteranceMsRef = useRef(maxUtteranceMs);
+  maxUtteranceMsRef.current = maxUtteranceMs;
 
   const teardown = useCallback(() => {
+    generationRef.current++;
     if (timerRef.current !== null) {
       clearInterval(timerRef.current);
       timerRef.current = null;
@@ -89,13 +111,19 @@ export function useVoiceRecorder({
     setRecording(false);
   }, []);
 
-  const stop = useCallback(() => {
+  const endRecording = useCallback((reason: EndReason) => {
     const recorder = recorderRef.current;
     if (!recorder || recorder.state === "inactive") return;
+    endReasonRef.current = reason;
     // `onstop` delivers the blob; teardown runs from there so the last data
     // event is not cut off.
     recorder.stop();
   }, []);
+
+  const stop = useCallback(
+    (options: { discard?: boolean } = {}) => endRecording(options.discard ? "discard" : "user"),
+    [endRecording],
+  );
 
   const start = useCallback(async (): Promise<boolean> => {
     if (recorderRef.current || startingRef.current) return false;
@@ -105,6 +133,7 @@ export function useVoiceRecorder({
       return false;
     }
     startingRef.current = true;
+    const generation = generationRef.current;
 
     let stream: MediaStream;
     try {
@@ -118,11 +147,25 @@ export function useVoiceRecorder({
       );
       return false;
     }
+
+    // Torn down while the permission prompt was up: release what we were just
+    // granted rather than wiring it to a component that is gone.
+    if (generation !== generationRef.current) {
+      for (const track of stream.getTracks()) track.stop();
+      return false;
+    }
     streamRef.current = stream;
 
     const mimeType = pickMimeType();
     const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
     recorderRef.current = recorder;
+    endReasonRef.current = "user";
+
+    // Declared before the handlers that read them, since `onstop` consults
+    // `heardSpeech` to decide whether the recording is worth sending.
+    let heardSpeech = false;
+    let silentMs = 0;
+    let elapsedMs = 0;
 
     const parts: Blob[] = [];
     recorder.ondataavailable = (event) => {
@@ -130,7 +173,16 @@ export function useVoiceRecorder({
     };
     recorder.onstop = () => {
       const blob = new Blob(parts, { type: recorder.mimeType || mimeType || "audio/webm" });
+      const reason = endReasonRef.current;
+      const heard = heardSpeech;
       teardown();
+      // The cap can fire in a room that was never quiet enough to auto-stop but
+      // where nobody was talking to the assistant either. Sending that is a
+      // minute of ambient audio uploaded to a third party for nothing, so an
+      // utterance with no speech in it is only delivered when the user
+      // themselves ended it.
+      if (reason === "discard") return;
+      if (reason !== "user" && !heard) return;
       if (blob.size > 0) onUtteranceRef.current(blob);
     };
     recorder.onerror = () => {
@@ -145,9 +197,6 @@ export function useVoiceRecorder({
     audioContext.createMediaStreamSource(stream).connect(analyser);
     const samples = new Uint8Array(analyser.fftSize);
 
-    let heardSpeech = false;
-    let silentMs = 0;
-    let elapsedMs = 0;
     timerRef.current = setInterval(() => {
       analyser.getByteTimeDomainData(samples);
       let sumSquares = 0;
@@ -158,23 +207,24 @@ export function useVoiceRecorder({
       const rms = Math.sqrt(sumSquares / samples.length);
       setLevel(rms);
 
+      if (rms >= SPEECH_LEVEL) heardSpeech = true;
+
       elapsedMs += LEVEL_INTERVAL_MS;
-      if (elapsedMs >= MAX_UTTERANCE_MS) {
-        stop();
+      if (elapsedMs >= maxUtteranceMsRef.current) {
+        endRecording("cap");
         return;
       }
 
       const silenceMs = silenceMsRef.current;
       if (silenceMs === null) return;
-      if (rms >= SPEECH_LEVEL) heardSpeech = true;
       silentMs = rms < SILENCE_LEVEL ? silentMs + LEVEL_INTERVAL_MS : 0;
-      if (heardSpeech && silentMs >= silenceMs) stop();
+      if (heardSpeech && silentMs >= silenceMs) endRecording("silence");
     }, LEVEL_INTERVAL_MS);
 
     recorder.start(LEVEL_INTERVAL_MS);
     setRecording(true);
     return true;
-  }, [stop, teardown]);
+  }, [endRecording, teardown]);
 
   // Releasing the microphone matters more than delivering a half-utterance, so
   // an unmount mid-recording drops it rather than stopping cleanly.

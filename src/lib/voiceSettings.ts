@@ -14,6 +14,12 @@ export interface VoiceSettings {
   llmModel: string;
   sttProvider: string;
   sttModel: string;
+  /**
+   * ISO-639-1 hint for transcription, e.g. "en". Blank lets the model detect
+   * the language, which is the right default but measurably worse at picking
+   * out a short utterance in a noisy room.
+   */
+  sttLanguage: string;
   ttsProvider: string;
   ttsModel: string;
   /** Provider-specific voice id; blank means the provider's default. */
@@ -22,6 +28,10 @@ export interface VoiceSettings {
   /**
    * Ends a turn on silence and re-opens the mic once the reply finishes, so a
    * conversation runs without touching the keyboard. Off means push-to-talk.
+   *
+   * Off by default, and deliberately: with it on, anything audible in the room
+   * can become a turn the user never addressed to the assistant. Turning it on
+   * should be a choice made about a particular room.
    */
   handsFree: boolean;
 }
@@ -33,11 +43,12 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   llmModel: "",
   sttProvider: "",
   sttModel: "",
+  sttLanguage: "",
   ttsProvider: "",
   ttsModel: "",
   ttsVoice: "",
   speakReplies: true,
-  handsFree: true,
+  handsFree: false,
 };
 
 function stringField(value: unknown, fallback: string): string {
@@ -63,6 +74,7 @@ export function loadVoiceSettings(): VoiceSettings {
     llmModel: stringField(raw.llmModel, DEFAULT_VOICE_SETTINGS.llmModel),
     sttProvider: stringField(raw.sttProvider, DEFAULT_VOICE_SETTINGS.sttProvider),
     sttModel: stringField(raw.sttModel, DEFAULT_VOICE_SETTINGS.sttModel),
+    sttLanguage: stringField(raw.sttLanguage, DEFAULT_VOICE_SETTINGS.sttLanguage),
     ttsProvider: stringField(raw.ttsProvider, DEFAULT_VOICE_SETTINGS.ttsProvider),
     ttsModel: stringField(raw.ttsModel, DEFAULT_VOICE_SETTINGS.ttsModel),
     ttsVoice: stringField(raw.ttsVoice, DEFAULT_VOICE_SETTINGS.ttsVoice),
@@ -77,36 +89,56 @@ export function saveVoiceSettings(settings: VoiceSettings): void {
 
 /**
  * Fills in whatever the user hasn't chosen from the catalogs, and drops a
- * selection whose provider is no longer configured — a stale provider id would
- * otherwise fail every request with no visible reason. A model the catalog
- * doesn't list is kept: the suggestions are not the full set of what a backend
- * serves.
+ * selection the app can no longer use — one whose provider is gone, or whose
+ * provider is listed but has no key. Either would fail every request with
+ * nothing on screen explaining why, so the picker moves to something that
+ * works instead. A model the catalog doesn't list is kept: the suggestions are
+ * not the full set of what a backend serves.
  */
 export function withVoiceDefaults(
   settings: VoiceSettings,
   llmProviders: ProviderInfo[],
   voiceProviders: VoiceProviderInfo[],
 ): VoiceSettings {
-  const llm =
-    llmProviders.find((p) => p.id === settings.llmProvider) ??
-    llmProviders.find((p) => p.available && p.models.length > 0);
-  const stt =
-    voiceProviders.find((p) => p.id === settings.sttProvider) ??
-    voiceProviders.find((p) => p.available);
-  const tts =
-    voiceProviders.find((p) => p.id === settings.ttsProvider) ??
-    voiceProviders.find((p) => p.available);
+  const usable = <T extends { id: string; available: boolean }>(
+    providers: T[],
+    savedId: string,
+    extra: (provider: T) => boolean = () => true,
+  ): T | undefined => {
+    const saved = providers.find((p) => p.id === savedId);
+    if (saved?.available && extra(saved)) return saved;
+    return providers.find((p) => p.available && extra(p));
+  };
 
-  const keepModel = (model: string, provider: { id: string } | undefined, chosen: string) =>
-    model && provider?.id === chosen ? model : "";
+  const llm = usable(llmProviders, settings.llmProvider, (p) => p.models.length > 0);
+  const stt = usable(voiceProviders, settings.sttProvider);
+  const tts = usable(voiceProviders, settings.ttsProvider);
+
+  /**
+   * A saved model survives only when the provider it belongs to is the one
+   * still resolved — a model name means nothing to a different backend. Returns
+   * "" otherwise, so the caller falls back to the new provider's first
+   * suggestion.
+   */
+  const keepModelIfProviderUnchanged = (
+    savedModel: string,
+    resolvedProvider: { id: string } | undefined,
+    savedProviderId: string,
+  ) => (savedModel && resolvedProvider?.id === savedProviderId ? savedModel : "");
 
   return {
     ...settings,
     llmProvider: llm?.id ?? "",
-    llmModel: keepModel(settings.llmModel, llm, settings.llmProvider) || (llm?.models[0] ?? ""),
+    llmModel:
+      keepModelIfProviderUnchanged(settings.llmModel, llm, settings.llmProvider) ||
+      (llm?.models[0] ?? ""),
     sttProvider: stt?.id ?? "",
-    sttModel: keepModel(settings.sttModel, stt, settings.sttProvider) || (stt?.sttModels[0] ?? ""),
+    sttModel:
+      keepModelIfProviderUnchanged(settings.sttModel, stt, settings.sttProvider) ||
+      (stt?.sttModels[0] ?? ""),
     ttsProvider: tts?.id ?? "",
-    ttsModel: keepModel(settings.ttsModel, tts, settings.ttsProvider) || (tts?.ttsModels[0] ?? ""),
+    ttsModel:
+      keepModelIfProviderUnchanged(settings.ttsModel, tts, settings.ttsProvider) ||
+      (tts?.ttsModels[0] ?? ""),
   };
 }

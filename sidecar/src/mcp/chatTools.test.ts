@@ -7,6 +7,7 @@ import { setToolPolicy } from "../agentTools/store.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { HashEmbedder } from "../memory/embedder.ts";
+import { resolveApproval } from "./approvals.ts";
 import { assembleAgentToolset } from "./chatTools.ts";
 import { mountTools, unmountAll } from "./mountedTools.ts";
 
@@ -92,5 +93,110 @@ describe("assembleAgentToolset", () => {
     expect(computeActiveTools()).not.toContain("create_task"); // not mounted yet
     mountTools("sess-b", ["builtin:create_task"]);
     expect(computeActiveTools()).toContain("create_task"); // mounted → active
+  });
+});
+
+/**
+ * A turn the user spoke rather than typed puts the irreversible built-ins
+ * behind the same approval prompt MCP tools use. `execute` is driven directly
+ * here — going through a model would test the provider, not the gate.
+ */
+describe("assembleAgentToolset with confirmed built-ins", () => {
+  const executeOptions = { toolCallId: "call-1", messages: [] } as never;
+
+  async function run(
+    name: string,
+    opts: {
+      confirmBuiltins?: ReadonlySet<string>;
+      approval?: Parameters<typeof assembleAgentToolset>[0]["approval"];
+      sessionId: string;
+    },
+  ) {
+    const { tools } = await assembleAgentToolset({
+      config,
+      db,
+      sessionId: opts.sessionId,
+      builtinTools: { [name]: fakeBuiltin(name), create_task: fakeBuiltin("create_task") },
+      approval: opts.approval,
+      confirmBuiltins: opts.confirmBuiltins,
+    });
+    return tools;
+  }
+
+  it("runs a destructive tool once the user approves", async () => {
+    const asked: string[] = [];
+    const tools = await run("delete_task", {
+      sessionId: "sess-voice-ok",
+      confirmBuiltins: new Set(["delete_task"]),
+      approval: {
+        onRequest: async ({ toolCallId, id }) => {
+          asked.push(id);
+          resolveApproval(toolCallId, true);
+        },
+      },
+    });
+
+    const result = await tools.delete_task!.execute!({}, executeOptions);
+    expect(asked).toEqual(["delete_task"]);
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("does not run it when the user denies", async () => {
+    const tools = await run("delete_task", {
+      sessionId: "sess-voice-deny",
+      confirmBuiltins: new Set(["delete_task"]),
+      approval: {
+        onRequest: async ({ toolCallId }) => {
+          resolveApproval(toolCallId, false);
+        },
+      },
+    });
+
+    const result = await tools.delete_task!.execute!({}, executeOptions);
+    expect(result).toEqual({ denied: true, message: "The user denied this tool call." });
+  });
+
+  it("leaves tools outside the set unwrapped", async () => {
+    const asked: string[] = [];
+    const tools = await run("delete_task", {
+      sessionId: "sess-voice-other",
+      confirmBuiltins: new Set(["delete_task"]),
+      approval: {
+        onRequest: async ({ toolCallId, id }) => {
+          asked.push(id);
+          resolveApproval(toolCallId, true);
+        },
+      },
+    });
+
+    await tools.create_task!.execute!({}, executeOptions);
+    expect(asked).toEqual([]);
+  });
+
+  it("runs destructive tools unprompted on a turn that wasn't spoken", async () => {
+    const asked: string[] = [];
+    const tools = await run("delete_task", {
+      sessionId: "sess-typed",
+      approval: {
+        onRequest: async ({ toolCallId, id }) => {
+          asked.push(id);
+          resolveApproval(toolCallId, true);
+        },
+      },
+    });
+
+    await tools.delete_task!.execute!({}, executeOptions);
+    expect(asked).toEqual([]);
+  });
+
+  it("drops a tool needing confirmation when there is no way to ask", async () => {
+    const tools = await run("delete_task", {
+      sessionId: "sess-no-channel",
+      confirmBuiltins: new Set(["delete_task"]),
+    });
+
+    // Silently running it would be the one unacceptable outcome.
+    expect(Object.keys(tools)).not.toContain("delete_task");
+    expect(Object.keys(tools)).toContain("create_task");
   });
 });

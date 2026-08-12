@@ -5,9 +5,10 @@ Guidance for AI agents building features in this repo.
 ## What this is
 
 Yarvis is a personal-assistant desktop app for macOS, built with Tauri v2: an
-LLM chat interface with memory, work tracking, PR review, calendar, and
-workspace/git-worktree management. See `README.md` for the full user-facing
-setup and feature docs — this file is about working in the codebase.
+LLM chat interface with memory, a spoken (STT/TTS) front end to the same agent,
+work tracking, PR review, calendar, and workspace/git-worktree management. See
+`README.md` for the full user-facing setup and feature docs — this file is about
+working in the codebase.
 
 ## Architecture
 
@@ -116,6 +117,19 @@ back to ad-hoc.
   providers keep the `custom:<id>` namespace. The voice surface picks its own
   provider/model rather than reading the chat tab's, which is what lets voice
   and chat run on different models.
+- Outbound speech calls go through `guardedFetch` in that same file, never a
+  bare `fetch`: it re-runs the SSRF guard on every redirect hop rather than only
+  the first (`redirect: "manual"`, mirroring `memory/ingest.ts`) and puts a
+  deadline on the whole chain. `fetch` strips `Authorization` across origins but
+  not a custom provider's own auth headers, so following a redirect unchecked
+  would hand those to whatever host it named.
+- What a surface can do without asking depends on whether the user proof-read
+  the turn. `ChatMessageMetadata.source` records where it came from, and
+  `runAgentTurn` uses it: a `voice` turn puts the tools in
+  `chat/destructiveTools.ts` behind the same approval prompt MCP tools use,
+  because a transcript can be misheard or picked up from the room. A surface
+  that can't prompt gets those tools dropped rather than run unattended —
+  silently doing the irreversible thing is the one unacceptable outcome.
 - Anything an outside party can influence — file contents, diffs, PR titles,
   recalled memories — enters a prompt as data, not instruction: fenced in
   per-request nonce tags (see `sidecar/src/pr/ask.ts`) with the system prompt

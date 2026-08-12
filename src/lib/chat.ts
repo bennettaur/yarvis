@@ -28,7 +28,7 @@ export interface ChatSession {
  * Telegram-originated messages and record the sender.
  */
 export interface ChatMessageMetadata {
-  source?: "telegram";
+  source?: "telegram" | "voice";
   telegramUserId?: number;
   telegramUsername?: string;
   telegramFirstName?: string;
@@ -56,6 +56,9 @@ export interface ThreadMessage {
  * distinguishable from messages composed in the app.
  */
 export function messageLabel(role: string, metadata?: ChatMessageMetadata | null): string {
+  // A spoken turn is worth marking in the transcript: it was transcribed rather
+  // than typed, so a word that looks wrong probably was misheard.
+  if (metadata?.source === "voice") return `${role} · spoken`;
   if (metadata?.source === "telegram") {
     const who =
       (metadata.telegramUsername && `@${metadata.telegramUsername}`) ||
@@ -123,6 +126,12 @@ export interface ChatRequest {
   model: string;
   /** Optional snapshot of the screen the user summoned the chat from. */
   context?: string;
+  /**
+   * Set by the Voice tab to mark a turn the user spoke rather than typed. The
+   * sidecar puts the irreversible tools behind a confirmation for those, since
+   * a transcript was never proof-read.
+   */
+  source?: "voice";
 }
 
 /** Responds to a pending MCP tool-call approval mid-stream. */
@@ -135,11 +144,21 @@ export async function respondToToolApproval(toolCallId: string, approved: boolea
   if (!res.ok) throw new Error(`approval failed: ${res.status}`);
 }
 
-export async function* streamChat(req: ChatRequest): AsyncGenerator<ChatEvent> {
+/**
+ * Streams one agent turn. Passing a `signal` lets the caller end it early —
+ * aborting the fetch disconnects the SSE stream, which the sidecar treats as
+ * the client going away and uses to cancel the upstream model call, so a
+ * stopped turn stops costing tokens instead of running to completion unseen.
+ */
+export async function* streamChat(
+  req: ChatRequest,
+  options: { signal?: AbortSignal } = {},
+): AsyncGenerator<ChatEvent> {
   for await (const data of streamSSE("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req),
+    signal: options.signal,
   })) {
     yield JSON.parse(data) as ChatEvent;
   }

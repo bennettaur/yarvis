@@ -29,7 +29,11 @@ export interface VoiceProviderInfo {
    */
   sttModels: string[];
   ttsModels: string[];
-  /** True for user-configured providers; helps the UI render them distinctly. */
+  /**
+   * True for user-configured providers. Carried to match `ProviderInfo` in
+   * `llm/providers.ts` field for field, so the two lists stay interchangeable
+   * to a reader; no picker distinguishes on it today.
+   */
   custom?: boolean;
 }
 
@@ -53,7 +57,7 @@ function servesSpeech(row: CustomProviderRow): boolean {
   return row.apiKind === "openai" || row.apiKind === "openai-chat";
 }
 
-function customVoiceProvider(row: CustomProviderRow): VoiceProviderInfo {
+function customVoiceProviderInfo(row: CustomProviderRow): VoiceProviderInfo {
   return {
     id: `${CUSTOM_PROVIDER_PREFIX}${row.id}`,
     label: row.name,
@@ -82,7 +86,7 @@ export async function availableVoiceProviders(
   ];
   if (!db) return built;
   const rows = await listCustomProviders(db);
-  return [...built, ...rows.filter(servesSpeech).map(customVoiceProvider)];
+  return [...built, ...rows.filter(servesSpeech).map(customVoiceProviderInfo)];
 }
 
 /** Resolves the client that talks to a speech provider, or throws if it can't. */
@@ -103,6 +107,9 @@ export async function resolveSpeechClient(
     return new OpenAICompatibleSpeech({
       baseUrl: row.baseUrl,
       secrets: config.customProviderSecrets[row.id],
+      // A user-configured speech server on loopback is the case this branch
+      // exists for; every other private range stays refused.
+      allowLoopback: true,
     });
   }
 

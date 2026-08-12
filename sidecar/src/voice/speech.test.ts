@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { assertModelId, OpenAICompatibleSpeech } from "./speech.ts";
+import {
+  assertModelId,
+  HuggingFaceSpeech,
+  MAX_TRANSCRIPT_CHARS,
+  OpenAICompatibleSpeech,
+  SpeechValidationError,
+} from "./speech.ts";
 
 /**
  * The OpenAI-compatible client is exercised against a loopback base URL with an
@@ -29,14 +35,57 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+/**
+ * Answers each call from `responses` in order, so a redirect chain can be
+ * played out one hop at a time.
+ */
+function scriptedFetch(responses: Response[]): { calls: Captured[]; fetchImpl: typeof fetch } {
+  const calls: Captured[] = [];
+  let index = 0;
+  const fetchImpl = (async (url: string | URL | Request, init: RequestInit = {}) => {
+    calls.push({ url: String(url), init });
+    const res = responses[Math.min(index++, responses.length - 1)]!;
+    return res.clone();
+  }) as unknown as typeof fetch;
+  return { calls, fetchImpl };
+}
+
+function redirectTo(location: string): Response {
+  return new Response(null, { status: 302, headers: { Location: location } });
+}
+
+const transcribeArgs = {
+  audio: new Uint8Array([1]),
+  contentType: "audio/wav",
+  model: "whisper-1",
+};
+
 describe("assertModelId", () => {
   it("accepts Hub-style namespaced ids", () => {
     expect(assertModelId("openai/whisper-large-v3")).toBe("openai/whisper-large-v3");
   });
 
+  it("accepts a bare name and an Ollama-style tag", () => {
+    expect(assertModelId("whisper-1")).toBe("whisper-1");
+    expect(assertModelId("whisper:latest")).toBe("whisper:latest");
+  });
+
   it("rejects a model id that would escape the request path", () => {
     expect(() => assertModelId("../../admin")).toThrow(/invalid model id/);
+    // A leading dot is not what makes this dangerous — an interior `..` walks
+    // out of the /models prefix just as well, with the token still attached.
+    expect(() => assertModelId("a/../../../v1/models")).toThrow(/path traversal/);
+    expect(() => assertModelId("openai/whisper/../../admin")).toThrow(/path traversal/);
+  });
+
+  it("rejects ids outside the namespace/name shape", () => {
     expect(() => assertModelId("model?query=1")).toThrow(/invalid model id/);
+    expect(() => assertModelId("too/many/segments")).toThrow(/invalid model id/);
+    expect(() => assertModelId(`${"x".repeat(129)}`)).toThrow(/too long/);
+  });
+
+  it("reports a bad id as the user's to fix, not the backend's", () => {
+    expect(() => assertModelId("nope!")).toThrow(SpeechValidationError);
   });
 });
 
@@ -47,6 +96,7 @@ describe("OpenAICompatibleSpeech.transcribe", () => {
       baseUrl: `${BASE_URL}/`,
       secrets: { apiKey: "sk-test", headers: { "X-Extra": "1" } },
       fetchImpl,
+      allowLoopback: true,
     });
 
     const text = await client.transcribe({
@@ -74,7 +124,11 @@ describe("OpenAICompatibleSpeech.transcribe", () => {
 
   it("reads the text out of a list-shaped response", async () => {
     const { fetchImpl } = captureFetch(jsonResponse([{ text: "hi" }]));
-    const client = new OpenAICompatibleSpeech({ baseUrl: BASE_URL, fetchImpl });
+    const client = new OpenAICompatibleSpeech({
+      baseUrl: BASE_URL,
+      fetchImpl,
+      allowLoopback: true,
+    });
     expect(
       await client.transcribe({
         audio: new Uint8Array([1]),
@@ -86,7 +140,11 @@ describe("OpenAICompatibleSpeech.transcribe", () => {
 
   it("surfaces the backend's status and body when it fails", async () => {
     const { fetchImpl } = captureFetch(new Response("model not loaded", { status: 503 }));
-    const client = new OpenAICompatibleSpeech({ baseUrl: BASE_URL, fetchImpl });
+    const client = new OpenAICompatibleSpeech({
+      baseUrl: BASE_URL,
+      fetchImpl,
+      allowLoopback: true,
+    });
     await expect(
       client.transcribe({
         audio: new Uint8Array([1]),
@@ -100,7 +158,11 @@ describe("OpenAICompatibleSpeech.transcribe", () => {
     const { fetchImpl } = captureFetch(
       new Response("bad key: hf_abcdefghijklmnopqrstuvwxyz", { status: 401 }),
     );
-    const client = new OpenAICompatibleSpeech({ baseUrl: BASE_URL, fetchImpl });
+    const client = new OpenAICompatibleSpeech({
+      baseUrl: BASE_URL,
+      fetchImpl,
+      allowLoopback: true,
+    });
     await expect(
       client.transcribe({
         audio: new Uint8Array([1]),
@@ -112,7 +174,11 @@ describe("OpenAICompatibleSpeech.transcribe", () => {
 
   it("refuses a non-loopback private address", async () => {
     const { fetchImpl } = captureFetch(jsonResponse({ text: "x" }));
-    const client = new OpenAICompatibleSpeech({ baseUrl: "http://10.0.0.5/v1", fetchImpl });
+    const client = new OpenAICompatibleSpeech({
+      baseUrl: "http://10.0.0.5/v1",
+      fetchImpl,
+      allowLoopback: true,
+    });
     await expect(
       client.transcribe({
         audio: new Uint8Array([1]),
@@ -131,7 +197,11 @@ describe("OpenAICompatibleSpeech.synthesize", () => {
         headers: { "Content-Type": "audio/wav" },
       }),
     );
-    const client = new OpenAICompatibleSpeech({ baseUrl: BASE_URL, fetchImpl });
+    const client = new OpenAICompatibleSpeech({
+      baseUrl: BASE_URL,
+      fetchImpl,
+      allowLoopback: true,
+    });
 
     const result = await client.synthesize({ text: "hello", model: "kokoro", voice: "af_bella" });
 
@@ -148,8 +218,171 @@ describe("OpenAICompatibleSpeech.synthesize", () => {
 
   it("sends a default voice when none is chosen", async () => {
     const { calls, fetchImpl } = captureFetch(new Response(new Uint8Array([1])));
-    const client = new OpenAICompatibleSpeech({ baseUrl: BASE_URL, fetchImpl });
+    const client = new OpenAICompatibleSpeech({
+      baseUrl: BASE_URL,
+      fetchImpl,
+      allowLoopback: true,
+    });
     await client.synthesize({ text: "hello", model: "kokoro" });
     expect(JSON.parse(calls[0]!.init.body as string).voice).toBe("alloy");
+  });
+});
+
+describe("outbound guard", () => {
+  it("refuses loopback unless the caller opted in", async () => {
+    const { fetchImpl } = captureFetch(jsonResponse({ text: "x" }));
+    const client = new OpenAICompatibleSpeech({ baseUrl: BASE_URL, fetchImpl });
+    await expect(client.transcribe(transcribeArgs)).rejects.toThrow(/private address/);
+  });
+
+  it("re-checks the target of a redirect instead of following it blindly", async () => {
+    // The guard would pass on the configured host and then be bypassed if the
+    // redirect were followed by fetch itself.
+    const { calls, fetchImpl } = scriptedFetch([
+      redirectTo("http://169.254.169.254/latest/meta-data/"),
+      jsonResponse({ text: "should never be reached" }),
+    ]);
+    const client = new OpenAICompatibleSpeech({
+      baseUrl: BASE_URL,
+      fetchImpl,
+      allowLoopback: true,
+    });
+
+    await expect(client.transcribe(transcribeArgs)).rejects.toThrow(/private address/);
+    // Only the first hop was made; the second was refused before the request.
+    expect(calls).toHaveLength(1);
+  });
+
+  it("does not let fetch follow redirects on its own", async () => {
+    const { calls, fetchImpl } = scriptedFetch([jsonResponse({ text: "ok" })]);
+    const client = new OpenAICompatibleSpeech({
+      baseUrl: BASE_URL,
+      fetchImpl,
+      allowLoopback: true,
+    });
+    await client.transcribe(transcribeArgs);
+    expect(calls[0]!.init.redirect).toBe("manual");
+  });
+
+  it("follows a redirect that stays within the allowed space", async () => {
+    const { calls, fetchImpl } = scriptedFetch([
+      redirectTo("http://127.0.0.1:9099/v2/audio/transcriptions"),
+      jsonResponse({ text: "moved" }),
+    ]);
+    const client = new OpenAICompatibleSpeech({
+      baseUrl: BASE_URL,
+      fetchImpl,
+      allowLoopback: true,
+    });
+
+    expect(await client.transcribe(transcribeArgs)).toBe("moved");
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.url).toBe("http://127.0.0.1:9099/v2/audio/transcriptions");
+  });
+
+  it("gives up rather than following a redirect loop", async () => {
+    const { fetchImpl } = scriptedFetch([redirectTo("http://127.0.0.1:9099/v1/loop")]);
+    const client = new OpenAICompatibleSpeech({
+      baseUrl: BASE_URL,
+      fetchImpl,
+      allowLoopback: true,
+    });
+    await expect(client.transcribe(transcribeArgs)).rejects.toThrow(/too many redirects/);
+  });
+
+  it("passes an abort signal so a hung provider cannot stall the turn", async () => {
+    const { calls, fetchImpl } = captureFetch(jsonResponse({ text: "ok" }));
+    const client = new OpenAICompatibleSpeech({
+      baseUrl: BASE_URL,
+      fetchImpl,
+      allowLoopback: true,
+    });
+    await client.transcribe(transcribeArgs);
+    expect(calls[0]!.init.signal).toBeDefined();
+  });
+});
+
+describe("transcript bounds", () => {
+  it("refuses a transcript past the cap rather than prompting with it", async () => {
+    const { fetchImpl } = captureFetch(
+      jsonResponse({ text: "a".repeat(MAX_TRANSCRIPT_CHARS + 1) }),
+    );
+    const client = new OpenAICompatibleSpeech({
+      baseUrl: BASE_URL,
+      fetchImpl,
+      allowLoopback: true,
+    });
+    await expect(client.transcribe(transcribeArgs)).rejects.toThrow(/exceeds/);
+  });
+});
+
+/**
+ * Hugging Face is the provider that ships available out of the box, so it is
+ * covered here too. A public IP literal keeps the SSRF guard offline — literals
+ * skip the DNS lookup — while the real request path still runs.
+ */
+describe("HuggingFaceSpeech", () => {
+  const HF_BASE = "https://93.184.216.34/hf-inference";
+
+  it("posts the raw audio to the model's ASR endpoint", async () => {
+    const { calls, fetchImpl } = captureFetch(jsonResponse({ text: " hello " }));
+    const client = new HuggingFaceSpeech("hf_token", `${HF_BASE}/`, fetchImpl);
+
+    const text = await client.transcribe({
+      audio: new Uint8Array([1, 2, 3]),
+      contentType: "audio/webm;codecs=opus",
+      model: "openai/whisper-large-v3",
+    });
+
+    expect(text).toBe("hello");
+    // A trailing slash on the base must not double up in the path.
+    expect(calls[0]!.url).toBe("https://93.184.216.34/hf-inference/models/openai/whisper-large-v3");
+    const headers = calls[0]!.init.headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer hf_token");
+    expect(headers["Content-Type"]).toBe("audio/webm;codecs=opus");
+  });
+
+  it("sends TTS text as `inputs` and carries the response's audio type back", async () => {
+    const { calls, fetchImpl } = captureFetch(
+      new Response(new Uint8Array([7, 7]), {
+        status: 200,
+        headers: { "Content-Type": "audio/flac" },
+      }),
+    );
+    const client = new HuggingFaceSpeech("hf_token", HF_BASE, fetchImpl);
+
+    const result = await client.synthesize({ text: "hello", model: "hexgrad/Kokoro-82M" });
+
+    expect(result.contentType).toBe("audio/flac");
+    expect(Array.from(result.audio)).toEqual([7, 7]);
+    expect(JSON.parse(calls[0]!.init.body as string)).toEqual({ inputs: "hello" });
+  });
+
+  it("falls back to audio/mpeg when the provider declares no type", async () => {
+    const { fetchImpl } = captureFetch(new Response(new Uint8Array([1])));
+    const client = new HuggingFaceSpeech("hf_token", HF_BASE, fetchImpl);
+    const result = await client.synthesize({ text: "hi", model: "hexgrad/Kokoro-82M" });
+    expect(result.contentType).toBe("audio/mpeg");
+  });
+
+  it("surfaces a cold-model 503 so the user knows to retry", async () => {
+    const { fetchImpl } = captureFetch(
+      new Response(JSON.stringify({ error: "Model is loading", estimated_time: 20 }), {
+        status: 503,
+      }),
+    );
+    const client = new HuggingFaceSpeech("hf_token", HF_BASE, fetchImpl);
+    await expect(
+      client.transcribe({ ...transcribeArgs, model: "openai/whisper-large-v3" }),
+    ).rejects.toThrow(/transcription failed \(503\).*Model is loading/);
+  });
+
+  it("refuses a traversal model id before making any request", async () => {
+    const { calls, fetchImpl } = captureFetch(jsonResponse({ text: "x" }));
+    const client = new HuggingFaceSpeech("hf_token", HF_BASE, fetchImpl);
+    await expect(
+      client.transcribe({ ...transcribeArgs, model: "a/../../../v1/models" }),
+    ).rejects.toThrow(SpeechValidationError);
+    expect(calls).toHaveLength(0);
   });
 });

@@ -116,9 +116,12 @@ rather than a separate SDK, and there is no base URL to configure.
 
 ### Voice
 
-The **Voice** tab talks to the same chat agent as the Chat tab — same sessions,
-same tools, same memory — with speech either side of it: what you say is
-transcribed and sent as the prompt, and the reply is spoken back.
+The **Voice** tab drives the same chat agent as the Chat tab — same tools, same
+memory — with speech either side of it: what you say is transcribed and sent as
+the prompt, and the reply is spoken back. It keeps its **own** conversation
+rather than joining the Chat tab's: a session is created on your first utterance
+and lives as long as the tab is open, so leaving the tab starts a fresh one next
+time. There is no session picker here.
 
 Three choices are made independently on that tab, and none of them touch the
 Chat tab's picker: the model that answers, the speech-to-text backend, and the
@@ -131,21 +134,44 @@ Two kinds of speech backend are supported:
   Settings. `openai/whisper-large-v3-turbo` for transcription and
   `hexgrad/Kokoro-82M` for speech are reasonable starting points. A cold model
   answers 503 with a wait estimate; the error says so.
-- **Any custom provider** whose base URL speaks the OpenAI audio API
-  (`/audio/transcriptions`, `/audio/speech`). This reuses the entries under
-  Settings → Custom providers, so a local speech server on loopback — a
-  whisper.cpp or MOSS-TTS/Kokoro wrapper — needs no separate configuration.
-  Model names there are the server's own, so the model fields accept anything
-  you type; the provider's suggestions are only suggestions.
+- **An OpenAI-kind custom provider** — any entry under Settings → Custom
+  providers whose API kind is `openai` or `openai-chat`, since those are the
+  ones that speak `/audio/transcriptions` and `/audio/speech`. (An
+  Anthropic-kind provider has no audio endpoints and is left out of the
+  picker.) A local speech server on loopback — a whisper.cpp or
+  MOSS-TTS/Kokoro wrapper — therefore needs no separate configuration.
+
+Model names are free text, because a local server's names are its own and
+hosted catalogues move; the provider's suggestions are only suggestions. The
+accepted shape is a Hub-style `namespace/name` with an optional `:tag`
+(`openai/whisper-large-v3`, `whisper:latest`), which is what keeps a model name
+from reaching somewhere other than the model endpoint. **Spoken language** is an
+optional ISO-639-1 hint (`en`, `fr`) — leave it blank to let the model detect,
+or set it to sharpen recognition of short utterances in a noisy room.
 
 Replies are spoken a sentence at a time as they stream, rather than after the
 whole answer completes, so speech starts about a sentence behind the model. Code
 blocks are dropped from what gets spoken rather than read out symbol by symbol.
+**Stop** ends the turn outright: it silences the queued speech, discards
+whatever is being recorded, and cancels the model mid-generation.
 
-**Hands-free** ends a turn after a stretch of silence and re-opens the
-microphone once the reply finishes, so a back-and-forth needs no clicking; with
-it off the tab is push-to-talk. **Speak replies** off leaves transcription and
-the written answer, with no audio out.
+**Speak replies** (on by default) can be turned off to leave transcription and
+the written answer with no audio out. **Hands-free** (off by default) ends a
+turn after a stretch of silence and re-opens the microphone once the reply
+finishes, so a back-and-forth needs no clicking; with it off the tab is
+push-to-talk. It is off by default on purpose — with it on, anything audible in
+the room can become a turn you never addressed to the assistant. One recording
+is capped at 60 seconds, and a recording the app never heard speech in is
+discarded rather than uploaded.
+
+Because a transcript is never proof-read the way a typed message is, the agent's
+irreversible tools ask before they run on a spoken turn: deleting a task,
+archiving a workspace, starting work on an issue (which assigns and labels it),
+filing a JIRA issue, and launching an agent session. Each surfaces the same
+approval prompt that external MCP tools use, and is announced aloud when Speak
+replies is on. Everything else — reading, recalling, creating tasks — runs
+without interruption. Turns from this tab are labelled `spoken` in the
+transcript.
 
 macOS gates the microphone: the app bundle carries the usage description and the
 audio-input entitlement, and the first recording raises the system permission
@@ -501,7 +527,9 @@ render real components with the `renderToHtml` helper in `src/test/render.tsx`.
 
 ```
 src/            React frontend (Vite + TS + Tailwind)
-  lib/          sidecar API client, Keychain wrappers, Omni Chat context registry, notifications, cross-tab nav (nav.ts)
+  lib/          sidecar API client, Keychain wrappers, Omni Chat context registry, notifications, cross-tab nav (nav.ts),
+                voice loop pieces (voice.ts client, voiceSettings.ts, useVoiceRecorder.ts mic capture,
+                speechChunks.ts sentence splitting, speechQueue.ts pipelined playback, audioPlayback.ts)
     pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs, per-file viewed state, remembered panel place, link/shorthand locator, diff parsing + context expansion, guide + insight clients)
     issues/     provider-neutral issue data layer (GitHub + JIRA) — types, api client, start-work flow (useGithubStartWork.ts)
     jira/       JIRA-specific data layer (issue detail, transitions, comments, create) — types, api client, start-work flow (useJiraStartWork.ts)

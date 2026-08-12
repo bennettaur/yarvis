@@ -169,6 +169,15 @@ export default function VoiceSettingsBar({
             className={FIELD}
           />
         </Field>
+        <Field label="Spoken language">
+          <input
+            value={settings.sttLanguage}
+            onChange={(e) => patch({ sttLanguage: e.target.value.trim() })}
+            placeholder="auto-detect"
+            maxLength={5}
+            className={FIELD}
+          />
+        </Field>
       </div>
 
       <div className="flex flex-wrap gap-4">

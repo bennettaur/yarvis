@@ -101,6 +101,17 @@ describe("withVoiceDefaults", () => {
     expect(filled.ttsModel).toBe("");
   });
 
+  it("moves off a provider whose key was removed", () => {
+    const saved = { ...DEFAULT_VOICE_SETTINGS, sttProvider: "huggingface", sttModel: "whisper-1" };
+    const unkeyed: VoiceProviderInfo[] = [
+      { ...VOICE_PROVIDERS[0]!, available: false },
+      VOICE_PROVIDERS[1]!,
+    ];
+    const filled = withVoiceDefaults(saved, LLM_PROVIDERS, unkeyed);
+    // Keeping it would 400 every request with nothing on screen to explain it.
+    expect(filled.sttProvider).toBe("custom:local");
+  });
+
   it("leaves the toggles alone", () => {
     const saved = { ...DEFAULT_VOICE_SETTINGS, speakReplies: false, handsFree: false };
     const filled = withVoiceDefaults(saved, LLM_PROVIDERS, VOICE_PROVIDERS);

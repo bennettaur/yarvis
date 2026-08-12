@@ -37,12 +37,18 @@ export const EMBED_DIM: number = 1536;
 export const messageRole = pgEnum("message_role", ["user", "assistant", "system", "tool"]);
 
 /**
- * Optional provenance for a chat message. The in-app UI leaves it null; the
+ * Optional provenance for a chat message. The in-app chat leaves it null; the
  * Telegram bot sets it on the user messages it persists so the chat history can
- * show that a message came from Telegram and which Telegram user sent it.
+ * show that a message came from Telegram and which Telegram user sent it, and
+ * the Voice tab sets it so a turn the user *spoke* is distinguishable from one
+ * they typed and read back.
+ *
+ * That distinction is load-bearing, not cosmetic: a spoken turn was never
+ * proof-read, so `runAgentTurn` puts the destructive tools behind an explicit
+ * confirmation for it.
  */
 export interface ChatMessageMetadata {
-  source?: "telegram";
+  source?: "telegram" | "voice";
   telegramUserId?: number;
   telegramUsername?: string;
   telegramFirstName?: string;

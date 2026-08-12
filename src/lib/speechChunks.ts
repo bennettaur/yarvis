@@ -15,7 +15,12 @@
 /** Below this a sentence end is ignored, so "Hi." doesn't become its own call. */
 const DEFAULT_MIN_CHARS = 60;
 
-/** Above this a chunk is cut at a word break even without a sentence end. */
+/**
+ * Above this a chunk is cut at a word break even without a sentence end. Chosen
+ * for prosody, but it must also stay at or below the synthesis route's
+ * `MAX_SPEECH_CHARS` — a longer chunk is rejected outright and its sentence
+ * never gets spoken.
+ */
 const DEFAULT_MAX_CHARS = 320;
 
 const FENCE = "```";
@@ -40,9 +45,16 @@ export function speakableText(markdown: string): string {
  * enough in yet. A terminator counts only when the character after it is
  * already in the buffer and is whitespace — otherwise "3.5" and "e.g." split
  * mid-word, and a terminator at the very end may still be growing.
+ *
+ * The search stops at `maxChars` whatever it finds there. Scanning the whole
+ * buffer for a terminator first would let one large delta — a model that emits
+ * a paragraph in a single event rather than token by token — produce a chunk
+ * longer than the synthesis endpoint accepts, which comes back as a 400 and
+ * drops that sentence from the spoken reply entirely.
  */
 function findBoundary(text: string, minChars: number, maxChars: number): number | null {
-  for (let i = 0; i < text.length; i++) {
+  const limit = Math.min(text.length, maxChars);
+  for (let i = 0; i < limit; i++) {
     const ch = text.charAt(i);
     if (ch === "\n") return i + 1;
     if (ch !== "." && ch !== "!" && ch !== "?" && ch !== "…") continue;

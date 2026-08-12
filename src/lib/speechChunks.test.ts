@@ -87,3 +87,46 @@ describe("createSentenceSplitter", () => {
     expect(splitStream("   \n  ")).toEqual([]);
   });
 });
+
+/**
+ * The synthesis route rejects anything past MAX_SPEECH_CHARS, and a rejected
+ * chunk is a sentence the user never hears. Mirrored here rather than imported
+ * because the sidecar is a separate workspace.
+ */
+const MAX_SPEECH_CHARS = 2000;
+
+describe("chunks stay within the synthesis limit", () => {
+  const paragraph = `${"This sentence has no early terminator and just keeps going ".repeat(60)}.`;
+
+  it("holds however the deltas are chunked", () => {
+    // A model that emits a whole paragraph in one event is the case that used
+    // to produce an oversized chunk: the scan found a terminator far past the
+    // cut-off and returned it.
+    for (const deltaSize of [1, 7, 100, paragraph.length]) {
+      const splitter = createSentenceSplitter();
+      const chunks: string[] = [];
+      for (let i = 0; i < paragraph.length; i += deltaSize) {
+        chunks.push(...splitter.push(paragraph.slice(i, i + deltaSize)));
+      }
+      chunks.push(...splitter.flush());
+
+      expect(chunks.length).toBeGreaterThan(0);
+      for (const chunk of chunks) {
+        expect(chunk.length).toBeLessThanOrEqual(MAX_SPEECH_CHARS);
+      }
+    }
+  });
+
+  it("holds for one enormous delta with no sentence ends at all", () => {
+    const splitter = createSentenceSplitter();
+    const chunks = [...splitter.push("word ".repeat(2000)), ...splitter.flush()];
+    for (const chunk of chunks) expect(chunk.length).toBeLessThanOrEqual(MAX_SPEECH_CHARS);
+  });
+
+  it("still speaks the whole paragraph, just in pieces", () => {
+    const splitter = createSentenceSplitter();
+    const spoken = [...splitter.push(paragraph), ...splitter.flush()].join(" ");
+    // Nothing is dropped on the way through — the words all survive the split.
+    expect(spoken.split(/\s+/).length).toBe(paragraph.trim().split(/\s+/).length);
+  });
+});
