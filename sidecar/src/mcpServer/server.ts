@@ -8,10 +8,11 @@ import { registerMemoryTools } from "./memoryTools.ts";
  * Code and other MCP clients reach into Yarvis, starting with its memory.
  */
 
+/** Identifies the server to clients, and names it in a workspace's `.mcp.json`. */
 export const MCP_SERVER_NAME = "yarvis";
 
-/** Advertised to clients; bump alongside a change in the tool contract. */
-export const MCP_SERVER_VERSION = "0.1.0";
+/** Version advertised to clients during the handshake. */
+const MCP_SERVER_VERSION = "0.1.0";
 
 const INSTRUCTIONS =
   "Yarvis is the user's personal assistant app. Its memory holds durable facts, " +

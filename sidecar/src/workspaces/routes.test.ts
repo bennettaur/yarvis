@@ -648,6 +648,19 @@ describe("provision + archive (injected git runner)", () => {
     expect(settings.agents.paths).toContain(join(worktree, ".claude", "agents"));
   });
 
+  it("points a Claude session at the Yarvis MCP endpoint via .mcp.json", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "mcp ws", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+
+    const detail = await getWorkspace(db, ws.id);
+    const mcp = JSON.parse(readFileSync(join(detail?.rootPath ?? "", ".mcp.json"), "utf-8"));
+    expect(mcp.mcpServers.yarvis.type).toBe("http");
+    // The token is referenced, never written: the session's environment supplies it.
+    expect(JSON.stringify(mcp)).toContain("YARVIS_MCP_TOKEN");
+  });
+
   it("omits skills/agents keys when a repo has no .claude directory", async () => {
     const db = getDb(url).db;
     const repo = await addRepo();

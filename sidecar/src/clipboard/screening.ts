@@ -91,8 +91,12 @@ const RULES: SecretRule[] = [
     // the secret itself, so those stay saveable — a curl recipe is exactly the
     // kind of thing this feature is for.
     reason: "contains an authorization header value",
+    // The scheme word is optional and skipped over: `Authorization: Bearer <hex>`
+    // otherwise reads as a six-character value and slips through, which is the
+    // exact shape the Settings screen offers for copying (the MCP endpoint's
+    // token, and a `claude mcp add` command carrying it).
     pattern:
-      /\b(?:authorization|x-api-key|proxy-authorization)\s*[:=]\s*(?![$<{"']?\$)[^\s"']{8,}/i,
+      /\b(?:authorization|x-api-key|proxy-authorization)\s*[:=]\s*(?:(?:bearer|basic|token)\s+)?(?![$<{"']?\$)[^\s"']{8,}/i,
   },
   {
     kind: "credential-assignment",

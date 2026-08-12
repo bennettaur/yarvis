@@ -4,8 +4,7 @@ import { bearerAuth } from "hono/bearer-auth";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
-import type { MemoryService } from "../memory/index.ts";
-import { PgVectorMemoryStore } from "../memory/index.ts";
+import { type MemoryService, PgVectorMemoryStore } from "../memory/index.ts";
 import { createYarvisMcpServer } from "./server.ts";
 
 /**
@@ -27,7 +26,17 @@ const METHOD_NOT_ALLOWED = {
   id: null,
 } as const;
 
-export function createMcpServerRoutes(config: Config): Hono {
+/**
+ * Hosts a request may claim to have addressed. The endpoint binds to loopback,
+ * but a page in a browser can resolve a name it controls to 127.0.0.1 and reach
+ * it — so the transport is told which Host values are ours, the same way the app
+ * pins CORS to the webview's origins rather than trusting the token alone.
+ */
+function allowedHosts(port: number): string[] {
+  return [`127.0.0.1:${port}`, `localhost:${port}`];
+}
+
+export function createMcpEndpointRoutes(config: Config): Hono {
   const router = new Hono();
 
   router.use("*", bearerAuth({ token: config.mcpToken }));
@@ -46,11 +55,15 @@ export function createMcpServerRoutes(config: Config): Hono {
 
   router.post("/", async (c) => {
     const server = createYarvisMcpServer(memory);
-    const transport = new StreamableHTTPTransport({ enableJsonResponse: true });
+    const transport = new StreamableHTTPTransport({
+      enableJsonResponse: true,
+      enableDnsRebindingProtection: true,
+      allowedHosts: allowedHosts(config.port),
+    });
     try {
       await server.connect(transport);
-      // A batch of notifications alone produces no response body; the transport
-      // answers 202 itself, but returns undefined for anything it fully handled.
+      // The transport answers every case itself (including 202 for a batch of
+      // notifications); the fallback only satisfies its optional return type.
       return (await transport.handleRequest(c)) ?? c.body(null, 202);
     } finally {
       // Closes the transport too, releasing this request's stream mapping.
@@ -60,8 +73,8 @@ export function createMcpServerRoutes(config: Config): Hono {
 
   // No server-initiated stream and no sessions to terminate: the spec's answer
   // for both is 405, which clients treat as "POST-only server".
-  router.get("/", (c) => c.json(METHOD_NOT_ALLOWED, 405));
-  router.delete("/", (c) => c.json(METHOD_NOT_ALLOWED, 405));
+  router.get("/", (c) => c.json(METHOD_NOT_ALLOWED, 405, { Allow: "POST" }));
+  router.delete("/", (c) => c.json(METHOD_NOT_ALLOWED, 405, { Allow: "POST" }));
 
   return router;
 }
@@ -73,7 +86,7 @@ export function createMcpServerRoutes(config: Config): Hono {
  * — Claude Code in a terminal Yarvis didn't spawn, another editor — needs to be
  * pointed at the endpoint by hand.
  */
-export function createMcpConnectionRoutes(config: Config): Hono {
+export function createMcpEndpointInfoRoutes(config: Config): Hono {
   const router = new Hono();
 
   router.get("/connection", (c) =>

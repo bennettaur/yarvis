@@ -45,12 +45,21 @@ describe("detectSecret", () => {
   it("flags an inline credential assignment", () => {
     expect(detectSecret("PASSWORD=correcthorse")?.kind).toBe("credential-assignment");
     expect(detectSecret('curl -H "x-api-key: 8f3ba91c22de"')?.kind).toBe("auth-header");
+    // A hex token behind a scheme word: no character class triggers the entropy
+    // fallback, so the header rule is the only thing that can catch it.
+    expect(
+      detectSecret('--header "Authorization: Bearer 4f2b8c1de9a03b77c5f61a2d8e4b0937"')?.kind,
+    ).toBe("auth-header");
   });
 
   it("flags a long random-looking token with no recognizable prefix", () => {
     expect(detectSecret("Zm9vYmFy8QxK2mNpQ7rT4vWyA1sD3fG6hJ0kL9zX")?.kind).toBe(
       "high-entropy-token",
     );
+  });
+
+  it("leaves a header written as a variable reference saveable", () => {
+    expect(detectSecret('--header "Authorization: Bearer ${YARVIS_MCP_TOKEN}"')).toBeNull();
   });
 
   it("allows the identifiers the clipboard book exists to hold", () => {

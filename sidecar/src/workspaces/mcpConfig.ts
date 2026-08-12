@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { MCP_SERVER_NAME } from "../mcpServer/server.ts";
 
 /**
  * Generates the `.mcp.json` that points a Yarvis-launched Claude Code session at
@@ -7,16 +8,13 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
  * the config shape and the merge semantics are testable without a filesystem.
  */
 
-/** Key we own in the file's server map; anything else is the user's. */
-export const YARVIS_SERVER_KEY = "yarvis";
-
 /**
  * The port and the scoped MCP token are read from the session's environment
  * (injected by the Rust core when it spawns the PTY, see `pty.rs`), never
- * written to disk: the file lives in a workspace directory the user may commit
- * or share, and the token grants access to their memory.
+ * written to disk: the token grants read and write access to the user's memory,
+ * and a file is a far easier thing to copy out of than a process environment.
  */
-export function yarvisServerEntry(): Record<string, unknown> {
+function yarvisServerEntry(): Record<string, unknown> {
   return {
     type: "http",
     // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
@@ -39,7 +37,7 @@ export function buildMcpConfig(existing: Record<string, unknown> = {}): Record<s
 
   return {
     ...existing,
-    mcpServers: { ...servers, [YARVIS_SERVER_KEY]: yarvisServerEntry() },
+    mcpServers: { ...servers, [MCP_SERVER_NAME]: yarvisServerEntry() },
   };
 }
 
@@ -65,7 +63,6 @@ export function writeMcpConfig(rootPath: string): void {
       }
     }
 
-    mkdirSync(rootPath, { recursive: true });
     writeFileSync(file, `${JSON.stringify(buildMcpConfig(existing), null, 2)}\n`);
   } catch (e) {
     console.error("[workspaces] failed to write .mcp.json:", e);

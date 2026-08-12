@@ -36,6 +36,24 @@ describe("workspace .mcp.json", () => {
     expect(servers.yarvis?.url).toBe("http://127.0.0.1:${YARVIS_SIDECAR_PORT}/mcp");
   });
 
+  it("keeps a user's own server when rewriting an existing file", () => {
+    const root = mkdtempSync(join(tmpdir(), "yarvis-mcp-config-"));
+    writeFileSync(
+      join(root, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: { linear: { type: "http", url: "https://mcp.linear.app/mcp" } },
+      }),
+    );
+
+    writeMcpConfig(root);
+
+    const written = JSON.parse(readFileSync(join(root, ".mcp.json"), "utf8")) as {
+      mcpServers: Record<string, { url?: string }>;
+    };
+    expect(Object.keys(written.mcpServers).sort()).toEqual(["linear", "yarvis"]);
+    expect(written.mcpServers.linear?.url).toBe("https://mcp.linear.app/mcp");
+  });
+
   it("writes the file at the workspace root, overwriting a corrupt one", () => {
     const root = mkdtempSync(join(tmpdir(), "yarvis-mcp-config-"));
     writeFileSync(join(root, ".mcp.json"), "{ not json");

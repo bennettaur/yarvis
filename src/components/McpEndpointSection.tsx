@@ -1,11 +1,23 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { writeClipboard } from "../lib/clipboard";
 import { getMcpEndpoint, type McpEndpoint } from "../lib/mcp";
+import { FEEDBACK_MS } from "./pr/CopyPathButton";
+
+/** Width of the mask standing in for the token; unrelated to its real length. */
+const MASK_WIDTH = 32;
 
 /** The `claude mcp add` invocation that registers this endpoint by hand. */
-function claudeAddCommand(endpoint: McpEndpoint): string {
+export function claudeAddCommand(endpoint: McpEndpoint): string {
   return `claude mcp add --transport http yarvis ${endpoint.url} --header "Authorization: Bearer ${endpoint.token}"`;
 }
+
+type CopyState = "idle" | "copied" | "failed";
+
+const COPY_LABELS: Record<CopyState, string> = {
+  idle: "Copy claude mcp add command",
+  copied: "Copied",
+  failed: "Copying failed",
+};
 
 /**
  * The MCP server Yarvis serves, as opposed to the ones it connects out to.
@@ -22,24 +34,42 @@ function claudeAddCommand(endpoint: McpEndpoint): string {
 export default function McpEndpointSection() {
   const [endpoint, setEndpoint] = useState<McpEndpoint | null>(null);
   const [revealed, setRevealed] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<CopyState>("idle");
   const [error, setError] = useState<string | null>(null);
+  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      setEndpoint(await getMcpEndpoint());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
 
   useEffect(() => {
-    getMcpEndpoint()
-      .then(setEndpoint)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    return () => {
+      if (resetTimer.current) clearTimeout(resetTimer.current);
+    };
   }, []);
 
   const copy = async () => {
     if (!endpoint) return;
     try {
       await writeClipboard(claudeAddCommand(endpoint));
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      setCopyState("copied");
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      // Kept out of `error`, which reports a failure to reach the endpoint at
+      // all — a failed copy would otherwise read as "MCP is broken".
+      console.error("[mcp] copying the connect command failed:", e);
+      setCopyState("failed");
     }
+    if (resetTimer.current) clearTimeout(resetTimer.current);
+    resetTimer.current = setTimeout(() => setCopyState("idle"), FEEDBACK_MS);
   };
 
   return (
@@ -50,11 +80,18 @@ export default function McpEndpointSection() {
       <p className="mb-4 text-xs text-zinc-500">
         Yarvis serves its memory tools over MCP, so Claude Code can recall and store memories.
         Sessions Yarvis launches are configured automatically. Point another client here to give it
-        the same access — the token is scoped to this endpoint and changes each time Yarvis
-        restarts.
+        the same access — the token is scoped to this endpoint, and both it and the port are
+        reallocated each time you relaunch Yarvis (restarting the sidecar keeps them).
       </p>
 
-      {error && <p className="mb-3 text-sm text-red-400">{error}</p>}
+      {error && (
+        <p className="mb-3 text-sm text-red-400">
+          {error}{" "}
+          <button type="button" onClick={() => void load()} className="underline">
+            Retry
+          </button>
+        </p>
+      )}
 
       {endpoint && (
         <div className="space-y-3">
@@ -69,7 +106,7 @@ export default function McpEndpointSection() {
             <span className="mb-1 block uppercase tracking-wide">Token</span>
             <div className="flex items-center gap-2">
               <code className="flex-1 truncate rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200">
-                {revealed ? endpoint.token : "•".repeat(32)}
+                {revealed ? endpoint.token : "•".repeat(MASK_WIDTH)}
               </code>
               <button
                 type="button"
@@ -82,13 +119,18 @@ export default function McpEndpointSection() {
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={copy}
-            className="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
-          >
-            {copied ? "Copied" : "Copy claude mcp add command"}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={copy}
+              className="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+            >
+              {COPY_LABELS[copyState]}
+            </button>
+            <span role="status" aria-live="polite" className="sr-only">
+              {copyState === "idle" ? "" : COPY_LABELS[copyState]}
+            </span>
+          </div>
         </div>
       )}
     </section>

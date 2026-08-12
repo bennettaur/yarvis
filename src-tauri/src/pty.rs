@@ -272,22 +272,31 @@ fn is_attention_addressable(id: &str) -> bool {
     surface == "tab:terminal" || surface.strip_prefix("ws:").is_some_and(|id| !id.is_empty())
 }
 
-/// Environment a PTY needs to reach back into the sidecar: the attention token,
-/// so a tool running in it (a Claude Code session and its hooks, a script) can
-/// raise an attention item for *that* session, and the MCP token, so a Claude
-/// Code session there can call the Yarvis memory tools through the `.mcp.json`
-/// written at the workspace root. The session key is the PTY id, which the
-/// frontend maps back to the exact terminal tab and pane, so an item can point
-/// at the tab that raised it rather than at the workspace as a whole;
-/// `YARVIS_WORKSPACE_ID` is set only when the id encodes one. Sessions the UI
-/// cannot navigate to get nothing, which keeps both tokens out of shells that
-/// could only ever raise an item leading nowhere. Pure so the derivation is
+/// Environment a PTY needs to reach back into the sidecar.
+///
+/// The attention token lets a tool running in the session (a Claude Code session
+/// and its hooks, a script) raise an attention item for *that* session. The
+/// session key is the PTY id, which the frontend maps back to the exact terminal
+/// tab and pane, so an item can point at the tab that raised it rather than at
+/// the workspace as a whole; `YARVIS_WORKSPACE_ID` is set only when the id
+/// encodes one.
+///
+/// The MCP token lets a Claude Code session reach the Yarvis memory tools via
+/// the `.mcp.json` written at the workspace root, which references it rather
+/// than carrying it. It is absent when the core has no token to give, so the
+/// attention side keeps working on its own.
+///
+/// Both tokens go only to sessions the UI can navigate to. For attention that is
+/// the whole point — an item raised elsewhere would lead nowhere. For MCP it is
+/// a narrower grant than the feature needs: those are the sessions the user
+/// drives interactively, which is where a Claude Code run belongs, and it keeps
+/// memory access out of repo run scripts. Pure so the derivation is
 /// unit-testable without a live PTY.
 fn session_env(
     id: &str,
     port: u16,
     attention_token: &str,
-    mcp_token: &str,
+    mcp_token: Option<&str>,
 ) -> Vec<(String, String)> {
     if !is_attention_addressable(id) {
         return Vec::new();
@@ -298,9 +307,11 @@ fn session_env(
             "YARVIS_ATTENTION_TOKEN".to_string(),
             attention_token.to_string(),
         ),
-        ("YARVIS_MCP_TOKEN".to_string(), mcp_token.to_string()),
         ("YARVIS_SESSION_KEY".to_string(), id.to_string()),
     ];
+    if let Some(token) = mcp_token {
+        env.push(("YARVIS_MCP_TOKEN".to_string(), token.to_string()));
+    }
     if let Some(workspace_id) = attention_workspace_id(id) {
         env.push(("YARVIS_WORKSPACE_ID".to_string(), workspace_id.to_string()));
     }
@@ -325,12 +336,13 @@ fn spawn_session(app: &AppHandle, id: &str, spec: &SpawnSpec) -> Result<PtySessi
     // Every session carries the sidecar port + the two scoped tokens, so whatever
     // runs in it can post to the ingest endpoint (keyed by this exact PTY id) and
     // call the MCP endpoint, without ever seeing the full-access bearer.
-    if let (Some(info), Some(attn), Some(mcp)) = (
+    if let (Some(info), Some(attn)) = (
         app.try_state::<crate::sidecar::SidecarInfo>(),
         app.try_state::<crate::sidecar::AttentionIngestToken>(),
-        app.try_state::<crate::sidecar::McpToken>(),
     ) {
-        for (key, value) in session_env(id, info.port, &attn.0, &mcp.0) {
+        let mcp = app.try_state::<crate::sidecar::McpToken>();
+        for (key, value) in session_env(id, info.port, &attn.0, mcp.as_ref().map(|m| m.0.as_str()))
+        {
             cmd.env(key, value);
         }
     }
@@ -1099,17 +1111,17 @@ mod tests {
 
     #[test]
     fn session_env_populates_workspace_claude_sessions() {
-        let env = session_env("ws-claude:abc-123", 8765, "tok", "mcp-tok");
+        let env = session_env("ws-claude:abc-123", 8765, "tok", Some("mcp-tok"));
         assert_eq!(
             env,
             vec![
                 ("YARVIS_SIDECAR_PORT".to_string(), "8765".to_string()),
                 ("YARVIS_ATTENTION_TOKEN".to_string(), "tok".to_string()),
-                ("YARVIS_MCP_TOKEN".to_string(), "mcp-tok".to_string()),
                 (
                     "YARVIS_SESSION_KEY".to_string(),
                     "ws-claude:abc-123".to_string()
                 ),
+                ("YARVIS_MCP_TOKEN".to_string(), "mcp-tok".to_string()),
                 ("YARVIS_WORKSPACE_ID".to_string(), "abc-123".to_string()),
             ]
         );
@@ -1117,17 +1129,17 @@ mod tests {
 
     #[test]
     fn session_env_keys_a_workspace_terminal_pane_by_its_pty_id() {
-        let env = session_env("ws:abc-123/t1/p1", 8765, "tok", "mcp-tok");
+        let env = session_env("ws:abc-123/t1/p1", 8765, "tok", Some("mcp-tok"));
         assert_eq!(
             env,
             vec![
                 ("YARVIS_SIDECAR_PORT".to_string(), "8765".to_string()),
                 ("YARVIS_ATTENTION_TOKEN".to_string(), "tok".to_string()),
-                ("YARVIS_MCP_TOKEN".to_string(), "mcp-tok".to_string()),
                 (
                     "YARVIS_SESSION_KEY".to_string(),
                     "ws:abc-123/t1/p1".to_string()
                 ),
+                ("YARVIS_MCP_TOKEN".to_string(), "mcp-tok".to_string()),
                 ("YARVIS_WORKSPACE_ID".to_string(), "abc-123".to_string()),
             ]
         );
@@ -1136,29 +1148,38 @@ mod tests {
     #[test]
     fn session_env_is_empty_for_sessions_the_ui_cannot_navigate_to() {
         // An Omni-hosted terminal or a repo run script has nowhere to be shown,
-        // so it must not receive the ingest token.
-        assert!(session_env("omni:s1/t1/p1", 8765, "tok", "mcp-tok").is_empty());
-        assert!(session_env("ws-run:repo-1", 8765, "tok", "mcp-tok").is_empty());
+        // so it must receive neither the ingest token nor the MCP token.
+        assert!(session_env("omni:s1/t1/p1", 8765, "tok", Some("mcp-tok")).is_empty());
+        assert!(session_env("ws-run:repo-1", 8765, "tok", Some("mcp-tok")).is_empty());
         // A surface key with no tab/pane names no session the UI can focus.
-        assert!(session_env("ws:w1", 8765, "tok", "mcp-tok").is_empty());
-        assert!(session_env("tab:terminal", 8765, "tok", "mcp-tok").is_empty());
+        assert!(session_env("ws:w1", 8765, "tok", Some("mcp-tok")).is_empty());
+        assert!(session_env("tab:terminal", 8765, "tok", Some("mcp-tok")).is_empty());
     }
 
     #[test]
     fn session_env_omits_the_workspace_for_a_standalone_terminal() {
-        let env = session_env("tab:terminal/abc/def", 8765, "tok", "mcp-tok");
+        let env = session_env("tab:terminal/abc/def", 8765, "tok", Some("mcp-tok"));
         assert_eq!(
             env,
             vec![
                 ("YARVIS_SIDECAR_PORT".to_string(), "8765".to_string()),
                 ("YARVIS_ATTENTION_TOKEN".to_string(), "tok".to_string()),
-                ("YARVIS_MCP_TOKEN".to_string(), "mcp-tok".to_string()),
                 (
                     "YARVIS_SESSION_KEY".to_string(),
                     "tab:terminal/abc/def".to_string()
                 ),
+                ("YARVIS_MCP_TOKEN".to_string(), "mcp-tok".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn session_env_still_carries_attention_when_no_mcp_token_exists() {
+        // The two tokens are managed together today, but a session that can raise
+        // an attention item must not lose that because the MCP side is absent.
+        let env = session_env("tab:terminal/abc/def", 8765, "tok", None);
+        assert!(env.iter().any(|(key, _)| key == "YARVIS_ATTENTION_TOKEN"));
+        assert!(!env.iter().any(|(key, _)| key == "YARVIS_MCP_TOKEN"));
     }
 
     #[test]
