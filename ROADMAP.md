@@ -125,17 +125,20 @@ Status of the build against the original vision. The full V1 plan lives at
   are pulled from repos flagged with a per-repo "Pull issues" toggle, and new
   issues can be opened in any of those repos. The issue detail view (title,
   labels, assignees, markdown body, comments) grooms a ticket in place — editing
-  its title and description, closing and reopening it — and has a "Start work"
-  action that creates a workspace for the issue, links it, best-effort assigns
-  the issue to the viewer and labels it in-progress on GitHub, then provisions
-  the worktree and launches a Claude session seeded with the issue title +
-  description (written to `.yarvis/issue-prompt.md` by provisioning). Every issue
-  list row — GitHub and JIRA alike — carries that same action, so an issue you
-  already know you want can be started without opening it. The whole sequence
-  runs in the sidecar, which launches the session on the ticket as the last step
-  of provisioning, so the UI only ever attaches and navigating away can't
-  interrupt it. The chat agent drives the same flow conversationally via its
-  `list_repo_issues` /
+  its title and description, its labels and assignees, closing and reopening it,
+  and posting comments. Labels and assignees are chosen from the sets the repo
+  itself offers, fetched on first use of a picker, and each save replaces the
+  whole set, so clearing a picker unlabels or unassigns. The view also has a
+  "Start work" action that creates a workspace for the issue, links it,
+  best-effort assigns the issue to the viewer and labels it in-progress on
+  GitHub, then provisions the worktree and launches a Claude session seeded with
+  the issue title + description (written to `.yarvis/issue-prompt.md` by
+  provisioning). Every issue list row — GitHub and JIRA alike — carries that
+  same action, so an issue you already know you want can be started without
+  opening it. The whole sequence runs in the sidecar, which launches the session
+  on the ticket as the last step of provisioning, so the UI only ever attaches
+  and navigating away can't interrupt it. The chat agent drives the same flow
+  conversationally via its `list_repo_issues` /
   `start_work_on_issue` tools. The data model, provider layer, and
   `/api/issues/:provider` routes are source-agnostic (keyed by provider /
   sourceKey / externalId) so JIRA can be added without a rewrite.
