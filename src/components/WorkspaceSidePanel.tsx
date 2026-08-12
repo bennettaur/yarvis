@@ -4,6 +4,7 @@ import { requestOpenPr } from "../lib/nav";
 import type { PrSummary } from "../lib/pr/types";
 import { repoPrRef } from "../lib/repos";
 import { openExternal } from "../lib/url";
+import { useReviewComments } from "../lib/workspaceReview";
 import {
   type ChangedFile,
   type WorkspaceRepoDetail,
@@ -11,19 +12,24 @@ import {
   workspaceRepoFiles,
 } from "../lib/workspaces";
 import FileTreeRows, { treeRowPaddingLeft } from "./files/FileTreeRows";
+import WorkspaceReviewComments from "./workspaces/WorkspaceReviewComments";
 
-type View = "files" | "changes" | "checks";
+type View = "files" | "changes" | "comments" | "checks";
 
 const VIEWS: { key: View; label: string }[] = [
   { key: "files", label: "All files" },
   { key: "changes", label: "Changed" },
+  { key: "comments", label: "Comments" },
   { key: "checks", label: "PR checks" },
 ];
 
 /**
  * The workspace detail's right column: per-repo views of all tracked files,
- * changed files (with line counts), and the cached PR checks. Files/changes are
- * read live from the worktree; PR checks come from the background poller's cache.
+ * changed files (with line counts), and the cached PR checks, plus the
+ * self-review comments left on the diffs. Files/changes are read live from the
+ * worktree; PR checks come from the background poller's cache. The comments
+ * view spans the whole workspace rather than the selected repo — a review is
+ * read as one list, and each entry names the repo it belongs to.
  */
 export default function WorkspaceSidePanel({
   workspaceId,
@@ -37,6 +43,10 @@ export default function WorkspaceSidePanel({
 }) {
   const [repoId, setRepoId] = useState(repos[0]?.id ?? "");
   const [view, setView] = useState<View>("changes");
+  // Read here as well as inside the comments view so the tab can carry the open
+  // count — the reason to switch to it is knowing there is something in it.
+  const { comments } = useReviewComments(workspaceId);
+  const openComments = comments.filter((c) => c.resolvedAt === null).length;
 
   const repo = repos.find((r) => r.id === repoId) ?? repos[0];
   if (!repo) return null;
@@ -69,6 +79,9 @@ export default function WorkspaceSidePanel({
             }`}
           >
             {v.label}
+            {v.key === "comments" && openComments > 0 && (
+              <span className="ml-1 rounded bg-zinc-800 px-1 text-zinc-300">{openComments}</span>
+            )}
           </button>
         ))}
       </div>
@@ -80,6 +93,13 @@ export default function WorkspaceSidePanel({
             workspaceId={workspaceId}
             repoId={repo.id}
             onOpenFile={(path) => onOpenFile(repo.id, path)}
+          />
+        )}
+        {view === "comments" && (
+          <WorkspaceReviewComments
+            workspaceId={workspaceId}
+            repos={repos}
+            onOpenFile={onOpenFile}
           />
         )}
         {view === "checks" && <ChecksView repo={repo} />}

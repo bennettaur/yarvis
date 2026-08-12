@@ -4,6 +4,12 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import {
+  createReviewComment,
+  deleteReviewComment,
+  listReviewComments,
+  updateReviewComment,
+} from "./reviewComments.ts";
+import {
   createRepo,
   createWorkspace,
   deleteRepo,
@@ -81,6 +87,26 @@ const linkIssueSchema = issueRefSchema.extend({
   title: z.string().max(1024).nullish(),
   url: httpUrl.nullish(),
 });
+
+// A self-review note on a diff line range. The body is capped like the other
+// free text we persist; the range is validated as an ordered pair of 1-based
+// right-hand (new file) line numbers, matching how the diff renders them.
+const createReviewCommentSchema = z
+  .object({
+    workspaceRepoId: z.string().uuid(),
+    path: z.string().min(1).max(1024),
+    startLine: z.number().int().positive(),
+    endLine: z.number().int().positive(),
+    body: z.string().min(1).max(16384),
+  })
+  .refine((c) => c.startLine <= c.endLine, "startLine must not be after endLine");
+
+const updateReviewCommentSchema = z
+  .object({
+    body: z.string().min(1).max(16384).optional(),
+    resolved: z.boolean().optional(),
+  })
+  .refine((p) => p.body !== undefined || p.resolved !== undefined, "nothing to update");
 
 /** Repo registry CRUD, mounted under /api/repos. */
 export function createRepoRoutes(config: Config): Hono {
@@ -272,6 +298,48 @@ export function createWorkspaceRoutes(config: Config): Hono {
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
     }
+  });
+
+  // Local self-review comments on the workspace's own diffs. They stay on this
+  // machine — nothing here talks to a PR provider.
+  router.get("/:id/review-comments", async (c) =>
+    c.json(await listReviewComments(db(), c.req.param("id"))),
+  );
+
+  router.post("/:id/review-comments", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const parsed = createReviewCommentSchema.safeParse(body);
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    try {
+      const comment = await createReviewComment(db(), c.req.param("id"), parsed.data);
+      if (!comment) return c.json({ error: "workspace repo not found" }, 404);
+      return c.json(comment, 201);
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+  });
+
+  router.patch("/:id/review-comments/:commentId", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const parsed = updateReviewCommentSchema.safeParse(body);
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const commentId = c.req.param("commentId");
+    if (!z.string().uuid().safeParse(commentId).success) {
+      return c.json({ error: "invalid comment id" }, 400);
+    }
+    const comment = await updateReviewComment(db(), c.req.param("id"), commentId, parsed.data);
+    if (!comment) return c.json({ error: "not found" }, 404);
+    return c.json(comment);
+  });
+
+  router.delete("/:id/review-comments/:commentId", async (c) => {
+    const commentId = c.req.param("commentId");
+    if (!z.string().uuid().safeParse(commentId).success) {
+      return c.json({ error: "invalid comment id" }, 400);
+    }
+    const ok = await deleteReviewComment(db(), c.req.param("id"), commentId);
+    if (!ok) return c.json({ error: "not found" }, 404);
+    return c.json({ ok: true });
   });
 
   // Link / unlink a task (archiving the workspace completes linked tasks).

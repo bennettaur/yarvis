@@ -2,7 +2,7 @@ import { Fragment, useMemo } from "react";
 import { type DiffRow, pairRows, type SplitCell, type SplitRow } from "../../lib/pr/diff";
 import type { Gap } from "../../lib/pr/expand";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
-import { rowClass } from "../diff/DiffView";
+import { rowClass } from "../diff/rowStyles";
 import ChangeMinimap from "./ChangeMinimap";
 import GapMarker from "./GapMarker";
 import InsightBlock, { hasInsightsAt } from "./InsightCards";

@@ -205,6 +205,24 @@ for how many workspaces you can keep open. Leaving the field blank restores the
 default. The value applies to the next terminal opened, without a restart, and
 is stored in `settings.json` in the app data directory.
 
+#### Reviewing your own work
+
+The right column's **Changed** list opens a file's diff in a tab, and that diff
+takes comments the way a PR review does. Drag down the line-number gutter to
+pick out a range — or use the **+** that appears on hovering a line for a single
+one — and the note hangs under the last line it covers. Each comment records the
+file, the lines, and the worktree's HEAD at the time, so a note written before
+more work landed is still recognisable as such.
+
+Nothing is published: the comments live in the local database and never reach a
+PR, which is the point — reviewing your own change on github.com means leaving
+feedback other people read, and that goes obsolete as soon as the agent acts on
+it. The **Comments** tab beside Changed lists the whole review, spanning every
+repo in the workspace, with **Copy for Claude** putting it on the clipboard as
+numbered entries to paste into the agent session. Resolved comments stay in the
+list but are left out of the copied text; **×** deletes one outright. Archiving
+the workspace deletes them all — they were scaffolding for work that is done.
+
 ### Clipboard
 
 **Control + Shift + V** (or the clipboard icon in the nav rail) opens the
@@ -501,7 +519,8 @@ sidecar/        Bun + TS service (Hono)
   src/jira/     JIRA Cloud REST client + routes + agent tools + ADF↔Markdown conversion
   src/google/   Google Calendar OAuth + events
   src/omni/     Omni UI generation (streaming) + saved layouts
-  src/workspaces/ repo registry + git-worktree provisioning (/api/repos, /api/workspaces)
+  src/workspaces/ repo registry + git-worktree provisioning (/api/repos, /api/workspaces),
+                local self-review comments on a workspace's own diffs (reviewComments.ts)
   src/attention/  attention stream: hook ingest, SSE stream, scoped clearing
   src/chat/attentionTools.ts  request_attention tool (badge + OS notification)
   drizzle/      generated SQL migrations

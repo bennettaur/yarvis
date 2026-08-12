@@ -59,6 +59,7 @@ import {
   removeWorktree,
   updateDefaultBranch,
 } from "./git.ts";
+import { deleteWorkspaceReviewComments } from "./reviewComments.ts";
 
 const SETUP_LOG_CAP = 16 * 1024;
 const SETUP_TIMEOUT_MS = 10 * 60 * 1000;
@@ -1398,6 +1399,9 @@ async function removeWorktreesAndFinish(
   const completedTasks = fullyRemoved ? await completeTasksByWorkspace(db, id) : [];
 
   if (fullyRemoved) {
+    // The self-review notes pointed at worktrees that no longer exist, and were
+    // never meant to outlive the work they were written against.
+    await deleteWorkspaceReviewComments(db, id);
     // An archived workspace can't want anything: drop whatever it was still
     // flagging, including the failure a previous attempt raised.
     for (const item of await clearAttentionScope(db, { workspaceId: id }, "resolved")) {

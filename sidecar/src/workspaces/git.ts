@@ -279,6 +279,17 @@ async function resolveDiffBase(
   return result.stdout.trim() || remoteBase;
 }
 
+/**
+ * The worktree's current HEAD commit, or null on a branch with no commits yet.
+ * Recorded alongside a review comment so a note written before further work
+ * landed can be told apart from one written against the code as it stands.
+ */
+export async function headCommit(runner: GitRunner, worktreePath: string): Promise<string | null> {
+  const result = await runner(["rev-parse", "HEAD"], { cwd: worktreePath });
+  if (result.exitCode !== 0) return null;
+  return result.stdout.trim() || null;
+}
+
 /** All tracked files in the worktree (`git ls-files`). */
 export async function listFiles(runner: GitRunner, worktreePath: string): Promise<string[]> {
   const out = await git(runner, ["ls-files"], worktreePath);

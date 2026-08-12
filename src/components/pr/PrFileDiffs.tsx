@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { buildFileTree, flattenFileTree } from "../../lib/fileTree";
 import { usePrDetail, usePrFileDiff, usePrFiles } from "../../lib/pr/cache";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
-import { rowClass } from "../diff/DiffView";
+import { rowClass } from "../diff/rowStyles";
 import { usePersistedBoolean } from "../SplitPane";
 import ChangeMinimap from "./ChangeMinimap";
 import CopyPathButton from "./CopyPathButton";
