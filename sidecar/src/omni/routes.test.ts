@@ -8,6 +8,7 @@ const config: Config = {
   token: "test-token",
   tokenGenerated: false,
   attentionToken: "test-attention-token",
+  mcpToken: "test-mcp-token",
   allowedOrigins: null,
   databaseUrl: undefined,
   workspacesRoot: "/tmp/yarvis-test-workspaces",

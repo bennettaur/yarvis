@@ -502,11 +502,41 @@ sidecar/        Bun + TS service (Hono)
   src/google/   Google Calendar OAuth + events
   src/omni/     Omni UI generation (streaming) + saved layouts
   src/workspaces/ repo registry + git-worktree provisioning (/api/repos, /api/workspaces)
+  src/mcp/      MCP client: connected servers, tool registry sync, approvals
+  src/mcpServer/  the MCP endpoint Yarvis serves (memory tools over /mcp)
   src/attention/  attention stream: hook ingest, SSE stream, scoped clearing
   src/chat/attentionTools.ts  request_attention tool (badge + OS notification)
   drizzle/      generated SQL migrations
 scripts/        dev tooling (dev-instance.ts: launch a named second instance)
 ```
+
+## Yarvis as an MCP server
+
+Yarvis serves its own MCP endpoint, so Claude Code (or any other MCP client) can
+reach into the app. Today it exposes the memory tools — `recall`, `remember`,
+`take_note`, `list_memories`, `forget` — over the same pgvector store the in-app
+chat uses, so a coding session can look up what you told Yarvis last week and
+write back what it learns.
+
+The endpoint is `POST http://127.0.0.1:<sidecar port>/mcp`, authenticated with a
+scoped token that grants access to those tools and nothing else — not the rest of
+the API, which keeps its own bearer. Both the port and the token are per-run: the
+Rust core picks them at launch and they change on restart.
+
+**Sessions Yarvis launches need no setup.** Workspace provisioning writes a
+`.mcp.json` at the workspace root pointing at `${YARVIS_SIDECAR_PORT}` with an
+`Authorization: Bearer ${YARVIS_MCP_TOKEN}` header, and the core injects both
+variables into the session's shell — so the file on disk carries no secret. Claude
+Code asks you to approve the project's MCP server the first time it sees it.
+
+**Any other client** — Claude Code in a terminal Yarvis didn't spawn, another
+editor — needs pointing by hand. *Settings → Tools & MCP → Yarvis MCP endpoint*
+shows the URL and token and copies a ready-made `claude mcp add` command. Since
+the token changes on restart, re-copy it after one.
+
+Memory contents are treated as untrusted reference data on the way out: `recall`
+and `list_memories` fence each hit and tell the caller to read it as quoted text,
+the same treatment the in-app chat tools apply.
 
 ## Attention stream
 

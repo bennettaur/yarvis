@@ -16,6 +16,7 @@ const baseConfig: Config = {
   token: "t",
   tokenGenerated: true,
   attentionToken: "test-attention-token",
+  mcpToken: "test-mcp-token",
   allowedOrigins: null,
   databaseUrl: url,
   workspacesRoot: "/tmp/yarvis-test-workspaces",

@@ -82,7 +82,24 @@ export interface McpSecretStatus {
   env: Record<string, boolean>;
 }
 
+/** Where an outside MCP client connects to Yarvis, and with what token. */
+export interface McpEndpoint {
+  url: string;
+  token: string;
+}
+
 /* ---------- Structure (sidecar HTTP, Postgres-backed) ---------- */
+
+/**
+ * Connection details for the MCP server Yarvis *serves* (the memory tools),
+ * as opposed to the servers it connects out to above. Sessions Yarvis launches
+ * are wired up automatically; this is for a client it didn't spawn.
+ */
+export async function getMcpEndpoint(): Promise<McpEndpoint> {
+  const res = await sidecarFetch("/api/mcp-server/connection");
+  if (!res.ok) throw new Error(`mcp endpoint failed: ${res.status}`);
+  return res.json();
+}
 
 export async function listMcpServers(): Promise<McpServer[]> {
   const res = await sidecarFetch("/api/mcp/servers");

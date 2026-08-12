@@ -122,6 +122,13 @@ export interface Config {
    * hooks can POST an attention item without holding the full-access bearer above.
    */
   attentionToken: string;
+  /**
+   * A scoped token authorizing only the MCP server endpoint. Injected into
+   * Yarvis-launched Claude Code session shells (via the Rust core) and shown in
+   * Settings for outside clients, so a tool can call the Yarvis memory tools
+   * without holding the full-access bearer above.
+   */
+  mcpToken: string;
   /** Allowed values for the Origin header, or null to skip the check (dev). */
   allowedOrigins: string[] | null;
   /** Postgres connection string. May be undefined until the user configures it. */
@@ -322,6 +329,7 @@ export function loadConfig(): Config {
     token,
     tokenGenerated: suppliedToken === undefined,
     attentionToken: env.YARVIS_ATTENTION_TOKEN ?? randomToken(),
+    mcpToken: env.YARVIS_MCP_TOKEN ?? randomToken(),
     allowedOrigins: parseOrigins(env.YARVIS_ALLOWED_ORIGINS),
     databaseUrl: env.DATABASE_URL,
     workspacesRoot: env.YARVIS_WORKSPACES_ROOT ?? join(homedir(), "dev", "yarvis-workspaces"),
