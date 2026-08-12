@@ -13,32 +13,39 @@ export function stepLocation(step: {
 }
 
 /**
- * A path as its leading directories and the part that identifies it — the
- * basename, plus whatever line range the caller appended.
+ * Splits a location into the directories leading up to the file and everything
+ * from the separator on — the file name and whatever line range came with it.
+ * The separator travels with the name so the prefix can be clipped from its
+ * front (see `truncate-start` in `index.css`).
  */
-function splitPath(location: string): { dir: string; name: string } {
+function splitLocation(location: string): { dir: string; nameAndLines: string } {
   const cut = location.lastIndexOf("/");
   return cut === -1
-    ? { dir: "", name: location }
-    : { dir: location.slice(0, cut + 1), name: location.slice(cut + 1) };
+    ? { dir: "", nameAndLines: location }
+    : { dir: location.slice(0, cut), nameAndLines: location.slice(cut) };
 }
 
 /**
  * A file location that gives up its directories before its name.
  *
- * The panel is a fixed 420px, so a path from a deep tree does not fit, and a
- * plain `truncate` drops exactly the end — the basename and the line numbers,
- * the only part that says which file this is. Two files in the same deep folder
- * then render as the same string. Truncating the directory prefix instead keeps
- * the name whole and still shows where in the tree it starts; the full location
- * is on the hover title.
+ * The panel is a fixed 420px, so a location from a deep tree does not fit, and
+ * a plain `truncate` drops exactly the end — the file name and the line
+ * numbers, the only part that says which file this is. Two files in the same
+ * deep folder then render as the same string.
+ *
+ * So the name is what is kept and the directories are what go, from their front
+ * rather than their end: the folder closest to the file is the one that
+ * separates two files sharing a name. The full location is on the hover title
+ * either way.
  */
-function FileLocation({ location, className }: { location: string; className?: string }) {
-  const { dir, name } = splitPath(location);
+function FileLocation({ location }: { location: string }) {
+  const { dir, nameAndLines } = splitLocation(location);
   return (
-    <span className={`flex max-w-full overflow-hidden ${className ?? ""}`} title={location}>
-      {dir && <span className="min-w-0 truncate opacity-70">{dir}</span>}
-      <span className="shrink-0">{name}</span>
+    <span className="flex max-w-full overflow-hidden" title={location}>
+      {/* The prefix takes essentially all of the shrinking, so the name only
+          starts to truncate once there are no directories left to give. */}
+      {dir && <span className="min-w-0 shrink-[9999] truncate-start opacity-70">{dir}</span>}
+      <span className="min-w-0 truncate">{nameAndLines}</span>
     </span>
   );
 }
@@ -96,8 +103,10 @@ function Findings({
               {FINDING_LABEL[finding.kind] ?? "flagged"}
             </span>
             <span className="text-zinc-300">{finding.note}</span>
-            {/* Wraps rather than truncating: the row is free to run onto a
-                second line, so the path never loses its name. */}
+            {/* Runs inline after the note rather than as its own line, so it
+                cannot be the flex row `FileLocation` needs. Nothing here is
+                clipped either — the row is free to wrap — so it only has to
+                break a path that is longer than the panel. */}
             <span className="ml-1 break-words font-mono text-[11px] text-zinc-500">
               {stepLocation({ path: finding.path, startLine: finding.startLine, endLine: null })}
             </span>
@@ -199,9 +208,8 @@ export default function PrGuidePanel({ guide: controller }: { guide: GuideContro
         </div>
 
         <div className="space-y-2 px-3 py-2">
-          {/* The hover title is on the location itself, which fills the button:
-              a title on the button would win nowhere the reader actually
-              hovers, and the full path is the more useful thing to show. */}
+          {/* The location's own title fills the button and would shadow a
+              title set here anyway. */}
           <button
             type="button"
             onClick={() => controller.goTo(position)}

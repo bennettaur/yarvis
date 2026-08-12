@@ -1,5 +1,11 @@
-/** Set on the element for the length of the flash; styled in `index.css`. */
-export const FLASH_CLASS = "yarvis-file-flash";
+/**
+ * Set on the element for the length of the flash; styled in `index.css`.
+ *
+ * An attribute rather than a class because React owns the header's `className`
+ * — it is rewritten whenever the file folds or unfolds — and a re-render inside
+ * the flash would drop a class added from outside React halfway through.
+ */
+export const FLASH_ATTR = "data-yarvis-flash";
 
 /**
  * Marks the file a jump just landed on with a brief flash.
@@ -10,14 +16,22 @@ export const FLASH_CLASS = "yarvis-file-flash";
  * the top of the review pane, so it stays on screen whether the scroll aimed at
  * the file's top or at a line in the middle of a long diff.
  */
-export function flashFile(fileEl: Element | null | undefined): void {
-  const el = fileEl?.querySelector("summary") ?? fileEl;
-  if (!(el instanceof HTMLElement)) return;
+export function flashFile(fileEl: Element | null): void {
+  const header = fileEl?.querySelector("summary") ?? fileEl;
+  if (!(header instanceof HTMLElement)) return;
   // Jumping to the file you are already on has to flash again to read as a
-  // landing. A class that never left runs no animation, so drop it and force a
-  // reflow before re-adding to make the browser start over.
-  el.classList.remove(FLASH_CLASS);
-  void el.offsetWidth;
-  el.classList.add(FLASH_CLASS);
-  el.addEventListener("animationend", () => el.classList.remove(FLASH_CLASS), { once: true });
+  // landing. An attribute that never left runs no animation, so drop it and
+  // force a reflow before re-setting it to make the browser start over.
+  header.removeAttribute(FLASH_ATTR);
+  void header.offsetWidth;
+  header.setAttribute(FLASH_ATTR, "");
+  // `animationend` bubbles, so the handler has to check what ended: an
+  // animation on anything inside the header would otherwise clear the flash
+  // early — and a `once` listener would have spent itself on it.
+  const done = (e: AnimationEvent) => {
+    if (e.target !== header) return;
+    header.removeAttribute(FLASH_ATTR);
+    header.removeEventListener("animationend", done);
+  };
+  header.addEventListener("animationend", done);
 }

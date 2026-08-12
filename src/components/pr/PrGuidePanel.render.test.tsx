@@ -186,21 +186,20 @@ describe("PrGuidePanel", () => {
   });
 
   /**
-   * The panel is too narrow for a path from a deep tree, and the end of it —
-   * the basename and the line numbers — is the part that says which file the
+   * The panel is too narrow for a location from a deep tree, and the end of it
+   * — the file name and the line numbers — is the part that says which file the
    * step is about. Two files in the same folder are otherwise the same string
    * once an end-ellipsis has taken the difference away.
    */
   it("keeps a deep path's file name whole, giving up the directories instead", async () => {
     const deep = "src/components/pr/guide/PrGuidePanel.tsx";
-    const html = await render({
-      guide: guide({ steps: [{ ...steps[0]!, path: deep }] }),
-    });
-    // The name and its line range are one unshrinkable run; only the directory
-    // prefix beside it is allowed to truncate.
-    expect(html).toContain(">PrGuidePanel.tsx:10–20</span>");
-    expect(html).toContain(">src/components/pr/guide/</span>");
-    expect(html).toMatch(/truncate[^>]*>src\/components\/pr\/guide\/</);
+    const html = await render({ guide: guide({ steps: [{ ...steps[0]!, path: deep }] }) });
+    // The separator belongs to the name, so what is left to clip is only the
+    // folders — and it is clipped from its front, keeping the folder next to
+    // the name.
+    expect(html).toContain(">/PrGuidePanel.tsx:10–20</span>");
+    expect(html).toContain("truncate-start");
+    expect(html).toContain(">src/components/pr/guide</span>");
   });
 
   it("puts the full location on the hover title", async () => {
@@ -216,7 +215,7 @@ describe("PrGuidePanel", () => {
   it("renders a bare file name on its own", async () => {
     const html = await render({ guide: guide({ steps: [{ ...steps[0]!, path: "README.md" }] }) });
     expect(html).toContain(">README.md:10–20</span>");
-    expect(html).not.toContain("truncate");
+    expect(html).not.toContain("truncate-start");
   });
 });
 

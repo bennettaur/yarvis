@@ -18,11 +18,11 @@ const STATUS_LETTER: Record<string, { letter: string; color: string }> = {
  * Compact tree of a PR's changed files. Files nest under collapsible folders
  * (native `<details>`, open by default). Clicking a file scrolls the matching
  * `PrFileDiffs` entry into view (by shared anchor id, so it works whether the
- * diffs sit beside it or elsewhere on the page) and flashes its header, so the
- * scroll ends somewhere the reader can see it arrived. A per-row checkbox marks the
- * file as viewed; clicks on the checkbox don't trigger the scroll so toggling
- * never moves focus away. Rows only show a basename, so each also carries a
- * copy button for the full path.
+ * diffs sit beside it or elsewhere on the page) and flashes its header to show
+ * where the scroll landed. A per-row checkbox marks the file as viewed; clicks
+ * on the checkbox don't trigger the scroll so toggling never moves focus away.
+ * Rows only show a basename, so each also carries a copy button for the full
+ * path.
  */
 export default function PrFileList({
   prRef,

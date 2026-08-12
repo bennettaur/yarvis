@@ -1,48 +1,64 @@
-import { describe, expect, it } from "bun:test";
-import { FLASH_CLASS, flashFile } from "./flashFile";
+import { afterEach, describe, expect, it } from "bun:test";
+import { FLASH_ATTR, flashFile } from "./flashFile";
+
+const mounted: HTMLElement[] = [];
 
 function fileEl(): HTMLElement {
   const details = document.createElement("details");
   details.innerHTML = "<summary>src/a.ts</summary><div>diff</div>";
   document.body.appendChild(details);
+  mounted.push(details);
   return details;
 }
+
+const header = (details: HTMLElement) => details.querySelector("summary") as HTMLElement;
+const flashing = (el: HTMLElement) => el.hasAttribute(FLASH_ATTR);
+
+afterEach(() => {
+  for (const el of mounted.splice(0)) el.remove();
+});
 
 describe("flashFile", () => {
   it("flashes the file's header rather than the whole diff", () => {
     const details = fileEl();
     flashFile(details);
-    expect(details.querySelector("summary")?.classList.contains(FLASH_CLASS)).toBe(true);
-    expect(details.classList.contains(FLASH_CLASS)).toBe(false);
+    expect(flashing(header(details))).toBe(true);
+    expect(flashing(details)).toBe(false);
   });
 
-  it("clears the class once the animation ends, so a later jump can re-run it", () => {
+  it("stops flashing once the animation ends", () => {
     const details = fileEl();
-    const summary = details.querySelector("summary") as HTMLElement;
     flashFile(details);
-    summary.dispatchEvent(new Event("animationend"));
-    expect(summary.classList.contains(FLASH_CLASS)).toBe(false);
-
-    flashFile(details);
-    expect(summary.classList.contains(FLASH_CLASS)).toBe(true);
+    header(details).dispatchEvent(new Event("animationend"));
+    expect(flashing(header(details))).toBe(false);
   });
 
   // Jumping to the file already on screen is the case the reader most needs
-  // marked, and it arrives with the class still set from the previous flash.
+  // marked, and it arrives with the flash still set from the previous jump.
   it("re-applies to a file flashed a moment ago", () => {
     const details = fileEl();
-    const summary = details.querySelector("summary") as HTMLElement;
     flashFile(details);
     flashFile(details);
-    expect(summary.classList.contains(FLASH_CLASS)).toBe(true);
-    summary.dispatchEvent(new Event("animationend"));
-    expect(summary.classList.contains(FLASH_CLASS)).toBe(false);
+    expect(flashing(header(details))).toBe(true);
+    header(details).dispatchEvent(new Event("animationend"));
+    expect(flashing(header(details))).toBe(false);
+  });
+
+  // `animationend` bubbles: a spinner or any other animation inside the header
+  // must not be mistaken for the flash finishing.
+  it("ignores an animation ending on something inside the header", () => {
+    const details = fileEl();
+    const spinner = document.createElement("span");
+    header(details).appendChild(spinner);
+    flashFile(details);
+    spinner.dispatchEvent(new Event("animationend", { bubbles: true }));
+    expect(flashing(header(details))).toBe(true);
   });
 
   it("falls back to the element itself when it has no header", () => {
     const div = document.createElement("div");
     flashFile(div);
-    expect(div.classList.contains(FLASH_CLASS)).toBe(true);
+    expect(flashing(div)).toBe(true);
   });
 
   it("does nothing without an element", () => {

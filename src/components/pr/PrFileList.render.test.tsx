@@ -3,7 +3,7 @@ import { createElement } from "react";
 import type { PrFile, PrRef } from "../../lib/pr/types";
 import { prFile as file, setPrFiles } from "../../test/prFiles";
 import { mountForInteraction, renderToHtml } from "../../test/render";
-import { FLASH_CLASS } from "./flashFile";
+import { FLASH_ATTR } from "./flashFile";
 import { prFileAnchorId } from "./shared";
 
 // Imported after the shared stub so its usePrFiles mock is in place.
@@ -87,8 +87,6 @@ describe("PrFileList jump", () => {
     document.getElementById(prFileAnchorId(prRef, "src/deep/a.ts"))?.remove();
   });
 
-  // The scroll ends among a page of near-identical file headers, so the file
-  // asked for is flashed to say which one the page landed on.
   it("flashes the diff it scrolled to", async () => {
     const diff = document.createElement("details");
     diff.id = prFileAnchorId(prRef, "src/deep/a.ts");
@@ -105,11 +103,14 @@ describe("PrFileList jump", () => {
     );
     cleanup = mounted.unmount;
 
-    const row = [...mounted.host.querySelectorAll("button")].find((b) =>
-      b.title.includes("src/deep/a.ts"),
+    // Matched on the exact title: the row's copy button carries the same path
+    // inside a longer one.
+    const row = [...mounted.host.querySelectorAll("button")].find(
+      (b) => b.title === "src/deep/a.ts",
     );
+    expect(row).toBeDefined();
     row?.click();
 
-    expect(diff.querySelector("summary")?.classList.contains(FLASH_CLASS)).toBe(true);
+    expect(diff.querySelector("summary")?.hasAttribute(FLASH_ATTR)).toBe(true);
   });
 });
