@@ -25,6 +25,7 @@ function configWithSecrets(secrets: Config["customProviderSecrets"] = {}): Confi
     workspacesRoot: "/tmp/yarvis-test-workspaces",
     secrets: {},
     customProviderSecrets: secrets,
+    mcpSecrets: {},
     embeddingsSecrets: { headers: {} },
     telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
   };

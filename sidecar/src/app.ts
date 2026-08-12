@@ -15,6 +15,7 @@ import { createCalendarRoutes, createGoogleCallbackRoutes } from "./google/route
 import { createIssueRoutes } from "./issues/routes.ts";
 import { createJiraRoutes } from "./jira/routes.ts";
 import { redactSecrets } from "./llm/errors.ts";
+import { createMcpRoutes } from "./mcp/routes.ts";
 import { createMemoryRoutes } from "./memory/routes.ts";
 import { createOmniRoutes } from "./omni/routes.ts";
 import { createPrRoutes } from "./pr/routes.ts";
@@ -111,6 +112,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/chat", createChatRoutes(config));
   app.route("/api/clipboard", createClipboardRoutes(config));
   app.route("/api/custom-providers", createCustomProviderRoutes(config));
+  app.route("/api/mcp", createMcpRoutes(config));
   app.route("/api/cc", createCcRoutes());
   app.route("/api/github", createGithubRoutes(config));
   app.route("/api/issues", createIssueRoutes(config));

@@ -15,6 +15,7 @@ const config: Config = {
   workspacesRoot: "/tmp/yarvis-test-workspaces",
   secrets: { googleClientId: "cid", googleClientSecret: "secret" },
   customProviderSecrets: {},
+  mcpSecrets: {},
   embeddingsSecrets: { headers: {} },
   telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
 };

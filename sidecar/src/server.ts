@@ -1,9 +1,11 @@
+import { syncBuiltins } from "./agentTools/registry.ts";
 import { createApp } from "./app.ts";
 import { loadConfig, loadInstanceConfig } from "./config.ts";
 import { getDb } from "./db/client.ts";
 import { runMigrations } from "./db/migrate.ts";
 import { watchParentProcess } from "./lib/parentWatch.ts";
 import { redactSecrets } from "./llm/errors.ts";
+import { chooseEmbedder } from "./memory/embedder.ts";
 import { sweepStaleGuides } from "./pr/guides.ts";
 import { createReadiness } from "./readiness.ts";
 import { startTelegramBot } from "./telegram/index.ts";
@@ -53,7 +55,7 @@ if (config.tokenGenerated) {
 
 if (config.databaseUrl) {
   runMigrations(config.databaseUrl)
-    .then(() => {
+    .then(async () => {
       readiness.set("ready");
       // A secondary instance serves its window and nothing else: the work below
       // reaches out to providers and writes rows on a schedule, and running it
@@ -61,6 +63,17 @@ if (config.databaseUrl) {
       if (!instance.backgroundWorkers) {
         console.log(`[sidecar] instance '${instance.name}' is not running background workers`);
         return;
+      }
+      // Seed the built-in tools into the unified registry so the Tool Manager
+      // and tool search see them. Best-effort: a failure here (e.g. embedder
+      // misconfig) must not take the service down. Gated with the rest because
+      // it embeds and upserts against the shared database; the tool routes seed
+      // the registry lazily, so a secondary instance still reads a correct one.
+      try {
+        const db = getDb(config.databaseUrl as string).db;
+        await syncBuiltins(db, await chooseEmbedder(config, db));
+      } catch (e) {
+        console.error("[sidecar] built-in tool sync failed:", redactSecrets(String(e)));
       }
       // The Telegram bot drives the chat agent, which needs the database, so it
       // only starts once migrations have applied. It is a no-op without a token.

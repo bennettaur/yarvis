@@ -13,6 +13,7 @@ function app(): ReturnType<typeof createApp> {
     workspacesRoot: "/tmp/yarvis-test-workspaces",
     secrets: {},
     customProviderSecrets: {},
+    mcpSecrets: {},
     embeddingsSecrets: { headers: {} },
     telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
   });

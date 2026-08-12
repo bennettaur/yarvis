@@ -67,11 +67,25 @@ export function messageLabel(role: string, metadata?: ChatMessageMetadata | null
 }
 
 export interface ChatEvent {
-  type: "delta" | "done" | "error" | "attention";
+  type: "delta" | "done" | "error" | "attention" | "tool_approval_request";
   text?: string;
   message?: string;
   /** Present on `attention` events: why the agent needs the user. */
   reason?: string;
+  /** `tool_approval_request`: the tool call id to approve or deny. */
+  id?: string;
+  /** `tool_approval_request`: the tool name, owning server, and arguments. */
+  name?: string;
+  server?: string;
+  args?: unknown;
+}
+
+/** A pending MCP tool call awaiting the user's approve/deny decision. */
+export interface PendingApproval {
+  id: string;
+  name: string;
+  server: string;
+  args: unknown;
 }
 
 export async function listProviders(): Promise<ProviderInfo[]> {
@@ -109,6 +123,16 @@ export interface ChatRequest {
   model: string;
   /** Optional snapshot of the screen the user summoned the chat from. */
   context?: string;
+}
+
+/** Responds to a pending MCP tool-call approval mid-stream. */
+export async function respondToToolApproval(toolCallId: string, approved: boolean): Promise<void> {
+  const res = await sidecarFetch(`/api/chat/approvals/${encodeURIComponent(toolCallId)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ approved }),
+  });
+  if (!res.ok) throw new Error(`approval failed: ${res.status}`);
 }
 
 export async function* streamChat(req: ChatRequest): AsyncGenerator<ChatEvent> {

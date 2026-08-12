@@ -58,6 +58,21 @@ export interface CustomProviderSecrets {
 }
 
 /**
+ * Secret bundle for a single configured MCP server. Like a custom provider, the
+ * structural fields (name, transport, url/command, header names) live in
+ * Postgres; this is just the matching credentials, pulled from the macOS
+ * Keychain and injected by the Rust core via the YARVIS_MCP_SECRETS env var,
+ * keyed by the server's database id.
+ *
+ * `headers` are auth header values for HTTP transports; `env` are sensitive
+ * environment variables for stdio (subprocess) transports.
+ */
+export interface McpServerSecrets {
+  headers: Record<string, string>;
+  env: Record<string, string>;
+}
+
+/**
  * Telegram remote-control settings. The bot lets the user chat with Yarvis (and
  * issue control commands) from Telegram. Absent a bot token the bot stays off.
  * Access is locked to `allowedChatIds`; an empty list means "not yet paired" —
@@ -116,6 +131,8 @@ export interface Config {
   secrets: ProviderSecrets;
   /** Keyed by custom provider id from the database. */
   customProviderSecrets: Record<string, CustomProviderSecrets>;
+  /** Keyed by MCP server id from the database. */
+  mcpSecrets: Record<string, McpServerSecrets>;
   /**
    * Credentials for the active embeddings provider. Same shape as a custom
    * provider's secrets (the embeddings proxy may need an API key and/or custom
@@ -165,6 +182,45 @@ function parseCustomProviderSecrets(
   for (const [id, entry] of Object.entries(parsed as Record<string, unknown>)) {
     if (!entry || typeof entry !== "object") continue;
     out[id] = parseSecretEntry(entry);
+  }
+  return out;
+}
+
+/** Parses a single `{ headers, env }` MCP secret bundle from untrusted JSON. */
+function parseMcpSecretEntry(entry: unknown): McpServerSecrets {
+  const empty: McpServerSecrets = { headers: {}, env: {} };
+  if (!entry || typeof entry !== "object") return empty;
+  const obj = entry as Record<string, unknown>;
+  const stringMap = (value: unknown): Record<string, string> =>
+    value && typeof value === "object"
+      ? Object.fromEntries(
+          Object.entries(value as Record<string, unknown>).filter(
+            (kv): kv is [string, string] => typeof kv[1] === "string",
+          ),
+        )
+      : {};
+  return { headers: stringMap(obj.headers), env: stringMap(obj.env) };
+}
+
+function parseMcpSecrets(raw: string | undefined): Record<string, McpServerSecrets> {
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    // Log only the error name — a JSON.parse message can echo a fragment of the
+    // offending input, which here is secret material.
+    console.warn(
+      "[config] YARVIS_MCP_SECRETS is not valid JSON:",
+      e instanceof Error ? e.name : "parse error",
+    );
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const out: Record<string, McpServerSecrets> = {};
+  for (const [id, entry] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!entry || typeof entry !== "object") continue;
+    out[id] = parseMcpSecretEntry(entry);
   }
   return out;
 }
@@ -283,6 +339,7 @@ export function loadConfig(): Config {
       googleClientSecret: env.GOOGLE_CLIENT_SECRET,
     },
     customProviderSecrets: parseCustomProviderSecrets(env.YARVIS_CUSTOM_PROVIDER_SECRETS),
+    mcpSecrets: parseMcpSecrets(env.YARVIS_MCP_SECRETS),
     embeddingsSecrets: parseEmbeddingsSecrets(env.YARVIS_EMBEDDINGS_SECRETS),
     telegram: {
       botToken: env.TELEGRAM_BOT_TOKEN || undefined,

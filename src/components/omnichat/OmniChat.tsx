@@ -5,6 +5,7 @@ import { collectContext, formatContext } from "../../lib/omniChatContext";
 import { useChatThread } from "../../lib/useChatThread";
 import ChatComposer from "../ChatComposer";
 import ChatMessages from "../ChatMessages";
+import { ToolApprovalPrompt } from "../ToolApprovalPrompt";
 
 /**
  * A centered, summon-from-anywhere chat overlay. It stays mounted while hidden
@@ -33,6 +34,8 @@ export default function OmniChat({
     streaming,
     busy,
     error,
+    approvals,
+    respondApproval,
     send,
     newChat,
   } = useChatThread({
@@ -148,6 +151,13 @@ export default function OmniChat({
             busy={busy}
             emptyHint="Ask about whatever you're looking at — it's sent along as context."
           />
+          {approvals.map((a) => (
+            <ToolApprovalPrompt
+              key={a.id}
+              approval={a}
+              onRespond={(approved) => void respondApproval(a.id, approved)}
+            />
+          ))}
         </div>
 
         {error && <p className="text-sm text-red-400">{error}</p>}

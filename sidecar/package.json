@@ -16,6 +16,7 @@
     "@ai-sdk/amazon-bedrock": "^5.0.40",
     "@ai-sdk/anthropic": "^4.0.27",
     "@ai-sdk/google": "^4.0.31",
+    "@ai-sdk/mcp": "^2.0.29",
     "@ai-sdk/openai": "^4.0.27",
     "ai": "^7.0.47",
     "diff": "^9.0.0",

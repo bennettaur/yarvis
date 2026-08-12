@@ -24,6 +24,7 @@ function appWith(overrides: {
     workspacesRoot: "/tmp/yarvis-test-workspaces",
     secrets: overrides.secrets ?? {},
     customProviderSecrets: {},
+    mcpSecrets: {},
     embeddingsSecrets: { headers: {} },
     telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
   });

@@ -4,8 +4,10 @@ import {
   createSession,
   getMessages,
   listProviders,
+  type PendingApproval,
   type ProviderId,
   type ProviderInfo,
+  respondToToolApproval,
   streamChat,
   type ThreadMessage,
 } from "./chat";
@@ -41,6 +43,16 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
   const [streaming, setStreaming] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [approvals, setApprovals] = useState<PendingApproval[]>([]);
+
+  const respondApproval = useCallback(async (id: string, approved: boolean) => {
+    setApprovals((prev) => prev.filter((a) => a.id !== id));
+    try {
+      await respondToToolApproval(id, approved);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
 
   const loadSession = useCallback(async (id: string) => {
     setSessionId(id);
@@ -138,6 +150,12 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
           if (evt.type === "delta" && evt.text) {
             acc += evt.text;
             setStreaming(acc);
+          } else if (evt.type === "tool_approval_request" && evt.id) {
+            const id = evt.id;
+            setApprovals((prev) => [
+              ...prev,
+              { id, name: evt.name ?? id, server: evt.server ?? "", args: evt.args },
+            ]);
           } else if (evt.type === "attention" && evt.reason) {
             onAttention?.(evt.reason);
           } else if (evt.type === "error") {
@@ -150,6 +168,8 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
         if (acc) setMessages((prev) => [...prev, { role: "assistant", content: acc }]);
         setStreaming("");
         setBusy(false);
+        // Any approvals not acted on are moot once the turn ends.
+        setApprovals([]);
       }
     },
     [provider, model, busy, sessionId, getContext, onAttention],
@@ -167,6 +187,8 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     streaming,
     busy,
     error,
+    approvals,
+    respondApproval,
     send,
     newChat,
     loadSession,

@@ -3,17 +3,28 @@ import AgentSection from "./AgentSection";
 import CustomProviderSection from "./CustomProviderSection";
 import EmbeddingsSection from "./EmbeddingsSection";
 import KeychainSection from "./KeychainSection";
+import McpServerSection from "./McpServerSection";
 import PrReviewSection from "./PrReviewSection";
 import ReposSection from "./ReposSection";
 import TelegramSection from "./TelegramSection";
 import TerminalSection from "./TerminalSection";
+import ToolManagerSection from "./ToolManagerSection";
 import WipSection from "./WipSection";
 
-type TabKey = "credentials" | "providers" | "repos" | "prs" | "embeddings" | "telegram" | "wip";
+type TabKey =
+  | "credentials"
+  | "providers"
+  | "tools"
+  | "repos"
+  | "prs"
+  | "embeddings"
+  | "telegram"
+  | "wip";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "credentials", label: "Credentials" },
   { key: "providers", label: "LLM Providers" },
+  { key: "tools", label: "Tools & MCP" },
   { key: "repos", label: "Repositories" },
   { key: "prs", label: "PR review" },
   { key: "embeddings", label: "Embeddings" },
@@ -24,10 +35,10 @@ const TABS: { key: TabKey; label: string }[] = [
 const TAB_STORAGE_KEY = "yarvis.settings.activeTab";
 
 /**
- * The Settings tab — where the user configures credentials and custom LLM
- * providers. Health/status indicators stay on the Dashboard tab. Sections are
- * grouped into tabs so each one stays self-contained and the page doesn't
- * become an ever-growing scroll.
+ * The Settings tab — where the user configures credentials, custom LLM
+ * providers, MCP servers, and tool policies. Health/status indicators stay on
+ * the Dashboard tab. Sections are grouped into tabs so each one stays
+ * self-contained and the page doesn't become an ever-growing scroll.
  */
 export default function SettingsPanel() {
   const [active, setActive] = useState<TabKey>(() => {
@@ -60,6 +71,12 @@ export default function SettingsPanel() {
 
       {active === "credentials" && <KeychainSection />}
       {active === "providers" && <CustomProviderSection />}
+      {active === "tools" && (
+        <div className="space-y-5">
+          <McpServerSection />
+          <ToolManagerSection />
+        </div>
+      )}
       {active === "repos" && (
         <div className="space-y-5">
           <ReposSection />

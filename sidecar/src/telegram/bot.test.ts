@@ -42,6 +42,7 @@ function config(): Config {
     workspacesRoot: "/tmp/yarvis-test-workspaces",
     secrets: {},
     customProviderSecrets: {},
+    mcpSecrets: {},
     embeddingsSecrets: { headers: {} },
     telegram: { allowedChatIds: [CHAT], otpWindowMinutes: 120 },
   };

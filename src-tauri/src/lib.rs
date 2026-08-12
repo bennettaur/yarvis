@@ -5,6 +5,7 @@ mod custom_providers;
 mod embeddings_secrets;
 mod instance;
 mod keychain;
+mod mcp;
 mod pty;
 mod settings;
 mod sidecar;
@@ -154,6 +155,10 @@ pub fn run() {
             custom_providers::set_custom_provider_secret,
             custom_providers::delete_custom_provider_secret,
             custom_providers::delete_custom_provider_all_secrets,
+            mcp::list_mcp_secret_status,
+            mcp::set_mcp_secret,
+            mcp::delete_mcp_secret,
+            mcp::delete_mcp_all_secrets,
             embeddings_secrets::get_embeddings_secret_status,
             embeddings_secrets::set_embeddings_secret,
             embeddings_secrets::delete_embeddings_secret,

@@ -22,6 +22,7 @@ const config: Config = {
   workspacesRoot: "/tmp/yarvis-test-root",
   secrets: {},
   customProviderSecrets: {},
+  mcpSecrets: {},
   embeddingsSecrets: { headers: {} },
   telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
 };

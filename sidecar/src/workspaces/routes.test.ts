@@ -43,6 +43,7 @@ const config: Config = {
   workspacesRoot,
   secrets: {},
   customProviderSecrets: {},
+  mcpSecrets: {},
   embeddingsSecrets: { headers: {} },
   telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
 };

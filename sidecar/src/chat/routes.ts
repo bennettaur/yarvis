@@ -4,6 +4,8 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { availableProviders, resolveModel } from "../llm/providers.ts";
+import { resolveApproval } from "../mcp/approvals.ts";
+import { listMcpServers } from "../mcp/service.ts";
 import { runAgentTurn } from "./agent.ts";
 import { createSession, getMessages, listSessions } from "./service.ts";
 
@@ -20,6 +22,8 @@ const chatSchema = z.object({
 });
 
 const createSessionSchema = z.object({ title: z.string().nullish() });
+
+const approvalSchema = z.object({ approved: z.boolean() });
 
 /** Chat routes, mounted under /api/chat. */
 export function createChatRoutes(config: Config): Hono {
@@ -67,8 +71,19 @@ export function createChatRoutes(config: Config): Hono {
       console.error("[chat] model resolution failed:", e);
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
     }
+    const servers = await listMcpServers(dbh);
+    const serverNames = new Map(servers.map((s) => [s.id, s.name]));
 
     return streamSSE(c, async (stream) => {
+      // Tool-approval requests are emitted from inside a tool's `execute`, out of
+      // band with the delta loop. Serialize every write through one chain so the
+      // two producers can't interleave and corrupt the SSE framing.
+      let writeChain: Promise<void> = Promise.resolve();
+      const safeWrite = (data: unknown): Promise<void> => {
+        writeChain = writeChain.then(() => stream.writeSSE({ data: JSON.stringify(data) }));
+        return writeChain;
+      };
+
       // The agent yields delta/attention/error/done events; map each onto the
       // SSE wire protocol the frontend consumes. `done.text` is ignored here
       // because the deltas already carried the full reply to the client.
@@ -81,22 +96,44 @@ export function createChatRoutes(config: Config): Hono {
         context,
         // Cancel the upstream call if the client disconnects.
         signal: c.req.raw.signal,
+        // This surface holds a live channel to the user, so it can ask for MCP
+        // tool approval; the answer comes back on POST /approvals/:toolCallId.
+        approval: {
+          signal: c.req.raw.signal,
+          onRequest: async ({ toolCallId, id, args }) => {
+            const [, serverId = "", ...rest] = id.split(":");
+            await safeWrite({
+              type: "tool_approval_request",
+              id: toolCallId,
+              name: rest.join(":"),
+              server: serverNames.get(serverId) ?? serverId,
+              args,
+            });
+          },
+        },
       })) {
         if (event.type === "delta") {
-          await stream.writeSSE({ data: JSON.stringify({ type: "delta", text: event.text }) });
+          await safeWrite({ type: "delta", text: event.text });
         } else if (event.type === "attention") {
-          await stream.writeSSE({
-            data: JSON.stringify({ type: "attention", reason: event.reason }),
-          });
+          await safeWrite({ type: "attention", reason: event.reason });
         } else if (event.type === "error") {
-          await stream.writeSSE({
-            data: JSON.stringify({ type: "error", message: event.message }),
-          });
+          await safeWrite({ type: "error", message: event.message });
         } else if (event.type === "done") {
-          await stream.writeSSE({ data: JSON.stringify({ type: "done" }) });
+          await safeWrite({ type: "done" });
         }
       }
     });
+  });
+
+  // Human-in-the-loop response to a pending MCP tool call. The chat stream emits
+  // a `tool_approval_request` (keyed by the tool call id) and the tool's execute
+  // blocks until this resolves it.
+  router.post("/approvals/:toolCallId", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const parsed = approvalSchema.safeParse(body);
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const delivered = resolveApproval(c.req.param("toolCallId"), parsed.data.approved);
+    return c.json({ delivered });
   });
 
   return router;
