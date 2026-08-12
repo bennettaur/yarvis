@@ -739,9 +739,12 @@ const skipped = (note: string): RepoSyncProgress => ({
   note,
 });
 
-/** Git's own message, which carries remote-authored text (`remote:` lines from
- *  a pre-receive hook) and can carry credentials from a clone URL's userinfo.
- *  Both are stripped before the message becomes something a model reads. */
+/** Git's own message, with any credentials a clone URL's userinfo carried
+ *  removed, since these become something a model reads. Callers pair this with
+ *  `sanitizeIssueText` for the hidden characters. What neither removes is the
+ *  `remote:` prose a server-side hook writes, which git relays verbatim: that
+ *  stays third-party text, and the chat agent's system prompt is what keeps it
+ *  from being read as instruction. */
 function errorText(e: unknown): string {
   const raw = e instanceof Error ? e.message : String(e);
   return raw.replace(/([a-z][a-z0-9+.-]*:\/\/)[^@/\s]*@/gi, "$1");
@@ -750,10 +753,10 @@ function errorText(e: unknown): string {
 /**
  * The fetch/merge/push sequence for one workspace repo: refuse to touch a
  * worktree that is not on its own branch with a clean tree and no sequencer
- * operation open, then merge, then push what the remote is missing. Throws only
- * from the steps before the merge; once the worktree has been mutated, every
- * outcome is reported rather than raised, so a failed push can't be mistaken for
- * a merge that never ran.
+ * operation open, then merge, then push what the remote is missing. Nothing past
+ * the merge throws: once the worktree has been mutated, every outcome is
+ * reported rather than raised, so a failure there can't be mistaken for a merge
+ * that never ran.
  */
 async function syncOneRepo(
   runner: GitRunner,
@@ -779,6 +782,9 @@ async function syncOneRepo(
   if (status.branch !== wr.branch) {
     return skipped(`worktree is on ${status.branch ?? "a detached HEAD"} rather than ${wr.branch}`);
   }
+  // Checked before the merge rather than before the push, so a name git could
+  // misread stops the sequence while the worktree is still untouched.
+  if (push) assertSafeBranchName(wr.branch);
 
   const merge = await mergeBaseIntoWorktree(runner, wr.worktreePath, wr.baseBranch);
   if (merge.result === "conflict") {
@@ -800,17 +806,16 @@ async function syncOneRepo(
   };
   if (!push) return merged;
 
-  // Push only what the remote is actually missing, so a bulk run over a dozen
-  // workspaces doesn't make a dozen no-op network calls.
-  const sync = await branchSync(runner, wr.worktreePath, wr.branch, wr.baseBranch);
-  if (sync.ahead === 0) return { ...merged, note: "nothing to push" };
-
-  assertSafeBranchName(wr.branch);
+  // Everything past the merge reports rather than throws: the worktree carries a
+  // merge commit from here on, and letting a failure escape would have the
+  // caller record it as a repo that was skipped — the opposite of what happened.
   try {
+    // Push only what the remote is actually missing, so a bulk run over a dozen
+    // workspaces doesn't make a dozen no-op network calls.
+    const sync = await branchSync(runner, wr.worktreePath, wr.branch, wr.baseBranch);
+    if (sync.ahead === 0) return { ...merged, note: "nothing to push" };
     await pushBranch(runner, wr.worktreePath, wr.branch);
   } catch (e) {
-    // The merge already happened; saying "skipped" here would tell the caller
-    // the branch was left alone when it now carries a merge commit.
     return { ...merged, note: `merged, but the push failed: ${sanitizeIssueText(errorText(e))}` };
   }
   return { ...merged, pushed: true };

@@ -7,6 +7,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
+import { workspaceRepos } from "../db/schema.ts";
 import type { IssueDetail, IssueSummary } from "../issues/types.ts";
 import type { GitRunner } from "./git.ts";
 import { createRepo, getWorkspace } from "./service.ts";
@@ -812,6 +813,57 @@ describe("workspace tools", () => {
     expect(result.workspaces[0]!.repos[0]!.merge).toBe("merged");
     expect(result.workspaces[0]!.repos[0]!.pushed).toBe(false);
     expect(result.workspaces[0]!.repos[0]!.note).toContain("the push failed");
+  });
+
+  it("sync_workspaces_with_base caps the conflict list but reports the true count", async () => {
+    const created = await activeWorkspace("Many conflicts");
+    const conflicts = Array.from({ length: 25 }, (_, i) => `src/file${i}.ts`);
+    const { runner } = syncRunner(created.branch, { conflicts });
+
+    const result = await runSync(runner, { workspaceIds: [created.workspaceId], push: true });
+
+    // A sync over every workspace would otherwise pour a whole tree of paths
+    // into the model's context.
+    expect(result.workspaces[0]!.repos[0]!.conflicts.length).toBe(20);
+    expect(result.workspaces[0]!.repos[0]!.conflictCount).toBe(25);
+  });
+
+  it("sync_workspaces_with_base strips credentials out of what git said", async () => {
+    const created = await activeWorkspace("Auth failed");
+    const { runner } = syncRunner(created.branch, { pushRejected: true });
+    // A clone URL's userinfo can reach the model through a push failure.
+    const leaky: GitRunner = async (args, opts) =>
+      args[0] === "push"
+        ? {
+            stdout: "",
+            stderr:
+              "fatal: Authentication failed for 'https://user:ghp_secret@github.com/acme/widget.git/'",
+            exitCode: 128,
+          }
+        : runner(args, opts);
+
+    const result = await runSync(leaky, { workspaceIds: [created.workspaceId], push: true });
+
+    const note = result.workspaces[0]!.repos[0]!.note ?? "";
+    expect(note).toContain("the push failed");
+    expect(note).not.toContain("ghp_secret");
+    expect(note).toContain("https://github.com/acme/widget.git");
+  });
+
+  it("sync_workspaces_with_base skips a repo whose worktree never provisioned", async () => {
+    const created = await activeWorkspace("Half built");
+    await db
+      .update(workspaceRepos)
+      .set({ status: "error", error: "clone failed" })
+      .where(eq(workspaceRepos.workspaceId, created.workspaceId));
+    const { runner, calls } = syncRunner(created.branch);
+
+    const result = await runSync(runner, { workspaceIds: [created.workspaceId], push: true });
+
+    expect(result.workspaces[0]!.repos[0]!.merge).toBe("skipped");
+    expect(result.workspaces[0]!.repos[0]!.note).toContain("not ready");
+    // Nothing is even fetched for a worktree that may not exist.
+    expect(calls).toEqual([]);
   });
 
   it("sync_workspaces_with_base reports a fetch failure as a skip", async () => {
