@@ -34,6 +34,50 @@
   color: #18181b;
 }
 
+/*
+ * The landing flash for a file jumped to from the guided review or the file
+ * tree (see `components/pr/flashFile.ts`, which sets the attribute). Colour
+ * only, no movement, so it stays readable for anyone who has asked for reduced
+ * motion. The inset shadow leaves the sticky header's own box alone; an outset
+ * ring would be clipped by the pane it scrolls in.
+ *
+ * It fades to the header's own `bg-zinc-900` rather than to `transparent`: the
+ * animated colour outranks the class for as long as it runs, and a header that
+ * went see-through would show the diff scrolling underneath it.
+ */
+@keyframes yarvis-file-flash {
+  from {
+    background-color: #0c4a6e;
+    box-shadow: inset 0 0 0 2px #38bdf8;
+  }
+  to {
+    background-color: #18181b;
+    box-shadow: inset 0 0 0 2px transparent;
+  }
+}
+
+[data-yarvis-flash] {
+  animation: yarvis-file-flash 1.2s ease-out;
+}
+
+/*
+ * Ellipsis at the start rather than the end, for the directory prefix of a file
+ * path. The folder nearest the file name is what tells two same-named files
+ * apart, so it is the part that has to survive the clip.
+ *
+ * `direction: rtl` moves the clipped end without reordering the text: every run
+ * in a path is Latin, and a `/` between two of them takes their direction. The
+ * separator next to the file name is deliberately not part of the prefix — a
+ * neutral character at the edge of the string would be pulled to the far side.
+ */
+@utility truncate-start {
+  direction: rtl;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* The shell owns the full viewport and manages its own scroll regions. */
 html,
 body,

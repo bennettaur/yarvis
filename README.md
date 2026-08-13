@@ -271,7 +271,9 @@ changes still highlighted, plus a strip down the edge marking where in the file
 they fall. A file's full text is only fetched once you ask for context. A copy
 button puts a file's full repo-relative path on the clipboard, for pasting into
 an editor or a prompt — always shown in the diff header, and in the file list on
-hovering a row, where only the basename is visible.
+hovering a row, where only the basename is visible. Clicking a row scrolls its
+diff into view and flashes the file's header, so a jump lands somewhere you can
+see it arrived.
 
 #### Guided review and line insights
 
@@ -279,7 +281,10 @@ hovering a row, where only the basename is visible.
 lay out an order to review it in, working from the outside in — the request
 that arrives, then what handles it, down to what it finally writes. Each step
 names a file and lines with a sentence on why it comes there, and the box docks
-to the bottom of the review with back/next. A guide is generated once per PR and
+to the bottom of the review with back/next. A location too long for the box
+keeps its file name and line numbers and drops directories from the front of the
+path, with the whole thing on hover; clicking one jumps to the code and flashes
+that file's header. A guide is generated once per PR and
 kept until you approve, request changes, or merge; pushing new commits marks it
 out of date rather than deleting it, and anything untouched for 30 days is swept.
 

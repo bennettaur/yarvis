@@ -7,6 +7,7 @@ import { CodeText, rowClass } from "../diff/DiffView";
 import { usePersistedBoolean } from "../SplitPane";
 import ChangeMinimap from "./ChangeMinimap";
 import CopyPathButton from "./CopyPathButton";
+import { flashFile } from "./flashFile";
 import GapMarker from "./GapMarker";
 import InsightBlock from "./InsightCards";
 import {
@@ -283,6 +284,7 @@ function FileDiff({
         const fileEl = detailsRef.current;
         const line = fileEl?.querySelector(`[${FOCUS_ATTR}]`);
         (line ?? fileEl)?.scrollIntoView({ behavior: "smooth", block: "center" });
+        flashFile(fileEl);
       }),
     );
   }, [focus?.nonce]);
