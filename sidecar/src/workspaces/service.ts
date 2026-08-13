@@ -1,7 +1,7 @@
 /**
- * Workspaces service: the repo registry plus provisioning and teardown of the
- * per-workspace worktrees. Git/filesystem work is delegated to `git.ts`; this
- * module owns the database state and orchestration.
+ * Workspaces service: the repo registry plus provisioning, syncing, and teardown
+ * of the per-workspace worktrees. Git/filesystem work is delegated to `git.ts`;
+ * this module owns the database state and orchestration.
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -56,8 +56,12 @@ import {
   listChangedFiles,
   listFiles,
   listRemoteBranches,
+  type MergeOutcome,
+  mergeBaseIntoWorktree,
+  pushBranch,
   removeWorktree,
   updateDefaultBranch,
+  worktreeStatus,
 } from "./git.ts";
 import { writeMcpConfig } from "./mcpConfig.ts";
 
@@ -618,6 +622,204 @@ export async function workspaceRepoSync(
 
   const sync = await branchSync(runner, wr.worktreePath, wr.branch, wr.baseBranch);
   return { ...sync, fetchError };
+}
+
+// ---------------------------------------------------------------------------
+// Bulk sync: merge each branch's base into it, and push what merged cleanly
+// ---------------------------------------------------------------------------
+
+/** How many conflicted paths a repo reports before the list is cut short. A sync
+ *  over every workspace otherwise pours a whole tree of paths into the chat
+ *  model's context; `conflictCount` still carries the true total. */
+const CONFLICT_LIST_CAP = 20;
+
+/** What a sync did to one workspace repo's branch, and what it stopped short of. */
+export interface RepoSyncOutcome {
+  workspaceRepoId: string;
+  repo: string;
+  branch: string;
+  baseBranch: string;
+  /** `skipped` means the merge was never attempted — see `note`. Anything else
+   *  means the merge ran and the worktree was mutated, whatever happened after. */
+  merge: MergeOutcome["result"] | "skipped";
+  /** Paths left with conflict markers in the worktree, when `merge` is
+   *  `conflict`. Capped at `CONFLICT_LIST_CAP`. */
+  conflicts: string[];
+  /** How many paths conflicted, which `conflicts` may not list in full. */
+  conflictCount: number;
+  pushed: boolean;
+  /** Why the merge was skipped, why the push didn't happen, or what git said
+   *  when a step failed outright. Null when the repo synced with nothing worth
+   *  reporting. */
+  note: string | null;
+}
+
+export interface WorkspaceSyncResult {
+  workspaceId: string;
+  name: string;
+  repos: RepoSyncOutcome[];
+}
+
+export interface SyncWorkspaceOptions {
+  runner?: GitRunner;
+  /** Push each branch that merged cleanly and has commits the remote lacks.
+   *  Default true — pushing is half of what "sync" means here. */
+  push?: boolean;
+}
+
+/**
+ * Merges each of a workspace's branches with the base it was cut from and pushes
+ * what merged cleanly. This is the bulk operation behind "pull main into all my
+ * open PRs": one workspace's repos in one pass, with every reason a repo was
+ * left alone reported rather than thrown.
+ *
+ * A repo is skipped, not merged, when its worktree has uncommitted tracked
+ * changes, is part-way through a merge/rebase/cherry-pick, or has something
+ * other than its own branch checked out — merging over any of those would
+ * entangle work the user hasn't committed, or land the merge somewhere the push
+ * that follows wouldn't publish. A merge that conflicts is left in the worktree
+ * (see `mergeBaseIntoWorktree`) so it can be handed to the workspace's agent
+ * session to resolve, and that repo is not pushed.
+ */
+export async function syncWorkspaceWithBase(
+  db: Db,
+  workspaceId: string,
+  options: SyncWorkspaceOptions = {},
+): Promise<WorkspaceSyncResult> {
+  const runner = options.runner ?? defaultGitRunner;
+  const push = options.push ?? true;
+
+  const detail = await getWorkspace(db, workspaceId);
+  if (!detail) throw new Error("workspace not found");
+  // Matches the other workspace-wide actions: an archiving or half-provisioned
+  // workspace has worktrees that may already be gone.
+  if (detail.status !== "active") {
+    throw new Error(`workspace is not active (status: ${detail.status})`);
+  }
+
+  const outcomes: RepoSyncOutcome[] = [];
+  // Sequential: two repos in one workspace often share a primary clone lock, and
+  // a bulk run's value is in the report, which is easier to trust when each
+  // repo's fetch/merge/push happened in a known order.
+  for (const wr of detail.repos) {
+    const identity: Omit<RepoSyncOutcome, keyof RepoSyncProgress> = {
+      workspaceRepoId: wr.id,
+      repo: wr.repo.name,
+      branch: wr.branch,
+      baseBranch: wr.baseBranch,
+    };
+    if (wr.status !== "ready") {
+      outcomes.push({ ...identity, ...skipped(`worktree is not ready (status: ${wr.status})`) });
+      continue;
+    }
+
+    try {
+      outcomes.push({ ...identity, ...(await syncOneRepo(runner, wr, push)) });
+    } catch (e) {
+      // Nothing here reaches past the merge: `syncOneRepo` handles its own push
+      // failure, so anything thrown happened before the worktree was touched.
+      outcomes.push({ ...identity, ...skipped(sanitizeIssueText(errorText(e))) });
+    }
+  }
+
+  return { workspaceId: detail.id, name: detail.name, repos: outcomes };
+}
+
+/** What a sync worked out about one repo, as opposed to which repo it was. */
+type RepoSyncProgress = Pick<
+  RepoSyncOutcome,
+  "merge" | "conflicts" | "conflictCount" | "pushed" | "note"
+>;
+
+/** A repo the sync left exactly as it found it, and why. */
+const skipped = (note: string): RepoSyncProgress => ({
+  merge: "skipped",
+  conflicts: [],
+  conflictCount: 0,
+  pushed: false,
+  note,
+});
+
+/** Git's own message, with any credentials a clone URL's userinfo carried
+ *  removed, since these become something a model reads. Callers pair this with
+ *  `sanitizeIssueText` for the hidden characters. What neither removes is the
+ *  `remote:` prose a server-side hook writes, which git relays verbatim: that
+ *  stays third-party text, and the chat agent's system prompt is what keeps it
+ *  from being read as instruction. */
+function errorText(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e);
+  return raw.replace(/([a-z][a-z0-9+.-]*:\/\/)[^@/\s]*@/gi, "$1");
+}
+
+/**
+ * The fetch/merge/push sequence for one workspace repo: refuse to touch a
+ * worktree that is not on its own branch with a clean tree and no sequencer
+ * operation open, then merge, then push what the remote is missing. Nothing past
+ * the merge throws: once the worktree has been mutated, every outcome is
+ * reported rather than raised, so a failure there can't be mistaken for a merge
+ * that never ran.
+ */
+async function syncOneRepo(
+  runner: GitRunner,
+  wr: WorkspaceRepoDetail,
+  push: boolean,
+): Promise<RepoSyncProgress> {
+  // Under the repo lock so the fetch never races a worktree add/remove on the
+  // same primary clone.
+  await withRepoLock(wr.repoId, () => fetchRemote(runner, wr.repo.primaryClonePath));
+
+  const status = await worktreeStatus(runner, wr.worktreePath);
+  if (status.inProgress) {
+    return skipped(`a ${status.inProgress} is already in progress in this worktree`);
+  }
+  if (status.dirtyFiles.length) {
+    return skipped(
+      `uncommitted changes in ${status.dirtyFiles.length} file(s); commit or stash them first`,
+    );
+  }
+  // The worktree is a real checkout the user or its agent can move. Merging into
+  // a detached HEAD, or into a branch other than the one the push below names,
+  // would strand the merge commit and report a push that published none of it.
+  if (status.branch !== wr.branch) {
+    return skipped(`worktree is on ${status.branch ?? "a detached HEAD"} rather than ${wr.branch}`);
+  }
+  // Checked before the merge rather than before the push, so a name git could
+  // misread stops the sequence while the worktree is still untouched.
+  if (push) assertSafeBranchName(wr.branch);
+
+  const merge = await mergeBaseIntoWorktree(runner, wr.worktreePath, wr.baseBranch);
+  if (merge.result === "conflict") {
+    return {
+      merge: "conflict",
+      conflicts: merge.files.slice(0, CONFLICT_LIST_CAP),
+      conflictCount: merge.files.length,
+      pushed: false,
+      note: "merge left conflicts in the worktree; resolve them before pushing",
+    };
+  }
+
+  const merged: RepoSyncProgress = {
+    merge: merge.result,
+    conflicts: [],
+    conflictCount: 0,
+    pushed: false,
+    note: null,
+  };
+  if (!push) return merged;
+
+  // Everything past the merge reports rather than throws: the worktree carries a
+  // merge commit from here on, and letting a failure escape would have the
+  // caller record it as a repo that was skipped — the opposite of what happened.
+  try {
+    // Push only what the remote is actually missing, so a bulk run over a dozen
+    // workspaces doesn't make a dozen no-op network calls.
+    const sync = await branchSync(runner, wr.worktreePath, wr.branch, wr.baseBranch);
+    if (sync.ahead === 0) return { ...merged, note: "nothing to push" };
+    await pushBranch(runner, wr.worktreePath, wr.branch);
+  } catch (e) {
+    return { ...merged, note: `merged, but the push failed: ${sanitizeIssueText(errorText(e))}` };
+  }
+  return { ...merged, pushed: true };
 }
 
 /** A workspace the PR view can link back to, keyed by a cached PR match. */

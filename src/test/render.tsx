@@ -2,6 +2,22 @@ import type { ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 
 /**
+ * The text a fragment of markup reads as. Syntax coloring wraps code in a span
+ * per token, so an assertion about what a line *says* has to go through the
+ * text rather than matching the HTML around it.
+ *
+ * Parsed by the DOM rather than by stripping tags with a regex: the DOM is
+ * what the assertion is really about, it decodes the entities highlight.js
+ * escapes, and a tag-shaped regex over HTML is a well-known way to get a
+ * subtly wrong answer.
+ */
+export function textOf(html: string): string {
+  const host = document.createElement("div");
+  host.innerHTML = html;
+  return host.textContent ?? "";
+}
+
+/**
  * Mounts a React element into a detached DOM node, lets effects, pending
  * promises (e.g. the sidecar fetch), and external-store subscriptions settle,
  * then returns the rendered HTML and unmounts. Keeps component tests to a

@@ -16,6 +16,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -575,6 +576,208 @@ fn sanitize_session_name(name: &str) -> String {
         .to_string()
 }
 
+/// Longest instruction accepted into a running agent session. Instructions are
+/// composed by the chat model from text it was given, so this bounds what one
+/// call can type rather than reflecting a limit the agent enforces.
+const MAX_INSTRUCTION_CHARS: usize = 4000;
+
+/// Prefixes an agent's prompt reads as something other than a request. Claude
+/// Code takes `!` into bash mode (the line runs as a shell command), `/` as a
+/// slash command, `#` as a write to project memory, and `@` opens file
+/// completion. None of those are gated by `--permission-mode auto`, because none
+/// of them is a tool call — so the foreground check below, which only decides
+/// *who* reads the line, cannot stop them.
+///
+/// The set is a property of the configured agent, and `resolve_agent_command`
+/// lets that be swapped, so an instruction is rejected rather than stripped:
+/// deleting a leading character silently changes what was asked for, and no
+/// legitimate instruction needs to open with punctuation.
+const INSTRUCTION_PREFIXES_REJECTED: [char; 4] = ['!', '/', '#', '@'];
+
+/// Prepares an instruction for typing at a live agent prompt, or explains why it
+/// can't be sent.
+///
+/// Unsafe characters become spaces rather than being deleted. The character
+/// rules are `sanitize_session_name`'s, for the same reasons, and they matter
+/// more here: `is_control` covers CR and LF, which the agent's line editor reads
+/// as "submit", so leaving them in would let one instruction submit several.
+/// Deleting them instead would weld the surrounding words together and submit
+/// *that*, which is how a two-line instruction turns into nonsense the agent
+/// still acts on.
+///
+/// Over-length is an error, not a truncation: `pty_write` already refuses an
+/// oversized payload rather than trimming it, and a sentence cut in half here
+/// would be submitted and acted on. The caller bounds the same length, so
+/// reaching this is a mismatch between the two limits — exactly what should be
+/// heard about rather than papered over.
+fn prepare_instruction(text: &str) -> Result<String, String> {
+    if text.chars().count() > MAX_INSTRUCTION_CHARS {
+        return Err(format!(
+            "instruction exceeds {MAX_INSTRUCTION_CHARS} characters"
+        ));
+    }
+    let spaced: String = text
+        .chars()
+        .map(|c| if is_unsafe_name_char(c) { ' ' } else { c })
+        .collect();
+    // Collapsing runs keeps a stripped newline from leaving a double space, and
+    // is what makes the substitution above read as the original instruction.
+    let collapsed = spaced.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return Err("instruction is empty".into());
+    }
+    if let Some(first) = collapsed.chars().next() {
+        if INSTRUCTION_PREFIXES_REJECTED.contains(&first) {
+            return Err(format!(
+                "instruction may not start with '{first}'; the agent reads that as a command rather than a request"
+            ));
+        }
+    }
+    Ok(collapsed)
+}
+
+/// Types `instruction` at the prompt of the agent session for `workspace_id` and
+/// submits it, exactly as if the user had typed it there.
+///
+/// Refused unless the configured agent itself holds the PTY's foreground (see
+/// `foreground_is_agent`). The session is a real terminal: its agent can be
+/// interrupted, leaving the bare shell — where the text would run as a command
+/// line — or replaced by whatever the user ran next, and text plus a carriage
+/// return typed into `vim` or a REPL is no better. The check needs the
+/// foreground process's executable, so it is refused on platforms that can't
+/// report one.
+///
+/// What it still cannot establish is *what the agent is showing*. An agent
+/// sitting on a permission prompt or any select-list dialog also holds the
+/// foreground, and there the trailing carriage return answers the dialog rather
+/// than submitting a request. Callers must not describe this as unable to
+/// answer a prompt.
+pub fn send_session_instruction(
+    app: &AppHandle,
+    state: &PtyState,
+    workspace_id: &str,
+    instruction: &str,
+) -> Result<(), String> {
+    let text = prepare_instruction(instruction)?;
+    let id = format!("ws-claude:{workspace_id}");
+    let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    let session = sessions
+        .get_mut(&id)
+        .ok_or("no agent session is running for that workspace")?;
+    if !matches!(session.child.try_wait(), Ok(None)) {
+        return Err("the agent session has exited".into());
+    }
+    if !foreground_is_agent(app, session) {
+        return Err(
+            "the configured agent is not what is reading that session's prompt; open the workspace and check what is running there".into(),
+        );
+    }
+    session
+        .writer
+        .write_all(format!("{text}\r").as_bytes())
+        .map_err(|e| e.to_string())?;
+    session.writer.flush().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// True when a non-shell process holds the PTY's foreground — the session's
+/// shell has handed off to a child. Compares the PTY's foreground process group
+/// to the shell's pid. False for platforms that can't report a process group
+/// (Windows, serial PTYs), so callers that treat this as a safety gate fail
+/// closed there.
+///
+/// This says only that the shell is *not* what is reading input, which is enough
+/// for a busy indicator but not for handing a process text to act on — see
+/// `foreground_is_agent`.
+fn has_foreground_child(session: &PtySession) -> bool {
+    foreground_pid(session).is_some()
+}
+
+/// The pid of the process group holding the PTY's foreground, when that is
+/// something other than the session's own shell. None when the shell itself is
+/// in the foreground, or when the platform can't report a process group.
+fn foreground_pid(session: &PtySession) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        let fg = session.master.process_group_leader()?;
+        let shell_pid = session.child.process_id()?;
+        if fg > 0 && (fg as u32) != shell_pid {
+            Some(fg as u32)
+        } else {
+            None
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = session;
+        None
+    }
+}
+
+/// True when the process reading the PTY's input is the agent the session was
+/// launched with, matched on the executable's file name against the launch
+/// command's first word.
+///
+/// Matching on the executable rather than on "anything that isn't the shell" is
+/// what makes this a gate: `vim`, a language REPL, or a test run left in the
+/// foreground would all pass the weaker check and then be handed a line of text
+/// and a carriage return.
+///
+/// It fails closed, and an agent installed as a script rather than a binary
+/// fails with it: the foreground executable is then the interpreter (`node`,
+/// `bun`), which doesn't match the command's first word, so the send is refused
+/// rather than delivered to a process this can't identify.
+fn foreground_is_agent(app: &AppHandle, session: &PtySession) -> bool {
+    let Some(pid) = foreground_pid(session) else {
+        return false;
+    };
+    let Some(exe) = process_executable(pid) else {
+        return false;
+    };
+    let command = agent_command(app);
+    let Some(argv0) = command.split_whitespace().next() else {
+        return false;
+    };
+    let expected = Path::new(argv0).file_name().unwrap_or(argv0.as_ref());
+    Path::new(&exe).file_name() == Some(expected)
+}
+
+/// Absolute path to a running process's executable, or None when it can't be
+/// read (the process exited, the platform offers no way to ask, or the call was
+/// refused). Callers treat None as "unidentified", so every such case fails closed.
+#[cfg(target_os = "macos")]
+fn process_executable(pid: u32) -> Option<String> {
+    // `proc_pidpath` writes a NUL-terminated path and returns its length, or 0
+    // on failure.
+    let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: `proc_pidpath` writes at most `buf.len()` bytes into the buffer we
+    // own and only reads the pid by value.
+    let written = unsafe {
+        libc::proc_pidpath(
+            pid as libc::c_int,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            buf.len() as u32,
+        )
+    };
+    if written <= 0 {
+        return None;
+    }
+    buf.truncate(written as usize);
+    String::from_utf8(buf).ok()
+}
+
+#[cfg(target_os = "linux")]
+fn process_executable(pid: u32) -> Option<String> {
+    std::fs::read_link(format!("/proc/{pid}/exe"))
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn process_executable(_pid: u32) -> Option<String> {
+    None
+}
+
 /// Composes the remote-control launch line from a base command and a session
 /// name. Extracted from `spawn_claude_session` so the composition is unit-testable
 /// without reading the environment or spawning a PTY.
@@ -816,31 +1019,15 @@ pub fn pty_resize(
 }
 
 /// True when a non-shell foreground process is running in the PTY (e.g. the user
-/// is in vim, tailing logs, or running tests). Compares the PTY's foreground
-/// process group to the shell's pid: if they differ, the shell has handed off
-/// the foreground to a child. Returns false for unknown sessions or when the
-/// platform can't report a process group (Windows, serial PTYs).
+/// is in vim, tailing logs, or running tests). Returns false for unknown sessions
+/// or when the platform can't report a process group — see `has_foreground_child`.
 #[tauri::command]
 pub fn pty_is_busy(state: tauri::State<'_, PtyState>, id: String) -> Result<bool, String> {
     let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let Some(session) = sessions.get(&id) else {
         return Ok(false);
     };
-    #[cfg(unix)]
-    {
-        let Some(fg) = session.master.process_group_leader() else {
-            return Ok(false);
-        };
-        let Some(shell_pid) = session.child.process_id() else {
-            return Ok(false);
-        };
-        Ok(fg > 0 && (fg as u32) != shell_pid)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = session;
-        Ok(false)
-    }
+    Ok(has_foreground_child(session))
 }
 
 #[tauri::command]
@@ -853,9 +1040,9 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 mod tests {
     use super::{
         agent_launch_command, attention_workspace_id, is_unsafe_name_char, lock_scrollback,
-        remote_control_command, resolve_agent_command, resolve_max_sessions, session_env, snapshot,
-        Scrollback, DEFAULT_AGENT_COMMAND, DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS,
-        MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
+        prepare_instruction, remote_control_command, resolve_agent_command, resolve_max_sessions,
+        session_env, snapshot, Scrollback, DEFAULT_AGENT_COMMAND, DEFAULT_MAX_SESSIONS,
+        MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
     };
     use std::sync::Mutex;
 
@@ -908,6 +1095,56 @@ mod tests {
             resolve_agent_command(Some("claude\u{15}whoami".to_string()), None),
             "claudewhoami"
         );
+    }
+
+    #[test]
+    fn prepare_instruction_replaces_the_newlines_that_would_submit_early() {
+        // Each newline would submit what precedes it, turning one instruction
+        // into three the agent acts on in turn. They become spaces rather than
+        // vanishing, so the words either side stay separate words.
+        assert_eq!(
+            prepare_instruction("resolve the conflicts\rthen commit\nand push"),
+            Ok("resolve the conflicts then commit and push".to_string())
+        );
+    }
+
+    #[test]
+    fn prepare_instruction_rejects_an_over_length_instruction() {
+        // Truncating would submit a sentence cut in half, which the agent acts on.
+        let long = "a".repeat(MAX_INSTRUCTION_CHARS + 1);
+        assert_eq!(
+            prepare_instruction(&long),
+            Err(format!(
+                "instruction exceeds {MAX_INSTRUCTION_CHARS} characters"
+            ))
+        );
+        assert!(prepare_instruction(&"a".repeat(MAX_INSTRUCTION_CHARS)).is_ok());
+    }
+
+    #[test]
+    fn prepare_instruction_rejects_what_sanitizes_to_nothing() {
+        // Otherwise this presses enter on whatever the agent already had in its
+        // prompt.
+        assert_eq!(
+            prepare_instruction("  \u{202e}  "),
+            Err("instruction is empty".to_string())
+        );
+    }
+
+    #[test]
+    fn prepare_instruction_rejects_the_agent_prompt_prefixes() {
+        // `!` is bash mode in Claude Code, so this one would run a shell command
+        // that no permission mode gates.
+        for text in ["!rm -rf /", "/exit", "#remember this", "@src/main.rs"] {
+            assert!(
+                prepare_instruction(text).is_err(),
+                "expected {text:?} to be rejected"
+            );
+        }
+        // A leading prefix is rejected even when whitespace hides it.
+        assert!(prepare_instruction("  !whoami").is_err());
+        // The same characters mid-instruction are ordinary text.
+        assert!(prepare_instruction("run the tests with !important skipped").is_ok());
     }
 
     #[test]

@@ -34,9 +34,126 @@
   color: #18181b;
 }
 
+/*
+ * The landing flash for a file jumped to from the guided review or the file
+ * tree (see `components/pr/flashFile.ts`, which sets the attribute). Colour
+ * only, no movement, so it stays readable for anyone who has asked for reduced
+ * motion. The inset shadow leaves the sticky header's own box alone; an outset
+ * ring would be clipped by the pane it scrolls in.
+ *
+ * It fades to the header's own `bg-zinc-900` rather than to `transparent`: the
+ * animated colour outranks the class for as long as it runs, and a header that
+ * went see-through would show the diff scrolling underneath it.
+ */
+@keyframes yarvis-file-flash {
+  from {
+    background-color: #0c4a6e;
+    box-shadow: inset 0 0 0 2px #38bdf8;
+  }
+  to {
+    background-color: #18181b;
+    box-shadow: inset 0 0 0 2px transparent;
+  }
+}
+
+[data-yarvis-flash] {
+  animation: yarvis-file-flash 1.2s ease-out;
+}
+
+/*
+ * Ellipsis at the start rather than the end, for the directory prefix of a file
+ * path. The folder nearest the file name is what tells two same-named files
+ * apart, so it is the part that has to survive the clip.
+ *
+ * `direction: rtl` moves the clipped end without reordering the text: every run
+ * in a path is Latin, and a `/` between two of them takes their direction. The
+ * separator next to the file name is deliberately not part of the prefix — a
+ * neutral character at the edge of the string would be pulled to the far side.
+ */
+@utility truncate-start {
+  direction: rtl;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* The shell owns the full viewport and manages its own scroll regions. */
 html,
 body,
 #root {
   height: 100%;
+}
+
+/*
+ * Syntax colors for the code views (see `src/lib/highlight.ts`).
+ *
+ * Foregrounds only: a diff row's background is what marks it added or deleted,
+ * and the token colors have to sit on top of that rather than compete with it.
+ * `.syntax` itself resets the row's own text color, so the plain stretches of
+ * an added line don't read as a token type of their own.
+ *
+ * Written here rather than imported from a highlight.js stylesheet because
+ * those all paint a background over the row, and because unlayered rules beat
+ * Tailwind's utilities — which is what lets these override `rowClass`.
+ */
+.syntax {
+  color: #c9d1d9;
+}
+.syntax .hljs-comment,
+.syntax .hljs-quote {
+  color: #8b949e;
+  font-style: italic;
+}
+.syntax .hljs-keyword,
+.syntax .hljs-selector-tag,
+.syntax .hljs-literal,
+.syntax .hljs-type,
+.syntax .hljs-tag,
+.syntax .hljs-doctag,
+.syntax .hljs-meta .hljs-keyword,
+.syntax .hljs-template-tag {
+  color: #ff7b72;
+}
+.syntax .hljs-title,
+.syntax .hljs-title.class_,
+.syntax .hljs-title.function_,
+.syntax .hljs-section,
+.syntax .hljs-selector-id,
+.syntax .hljs-selector-class {
+  color: #d2a8ff;
+}
+.syntax .hljs-string,
+.syntax .hljs-regexp,
+.syntax .hljs-char.escape_,
+.syntax .hljs-subst,
+.syntax .hljs-link,
+.syntax .hljs-symbol,
+.syntax .hljs-bullet {
+  color: #a5d6ff;
+}
+.syntax .hljs-number,
+.syntax .hljs-built_in,
+.syntax .hljs-name,
+.syntax .hljs-attr,
+.syntax .hljs-attribute,
+.syntax .hljs-property,
+.syntax .hljs-variable.constant_,
+.syntax .hljs-variable.language_,
+.syntax .hljs-selector-attr,
+.syntax .hljs-selector-pseudo {
+  color: #79c0ff;
+}
+.syntax .hljs-variable,
+.syntax .hljs-template-variable,
+.syntax .hljs-params,
+.syntax .hljs-meta,
+.syntax .hljs-formula {
+  color: #ffa657;
+}
+.syntax .hljs-emphasis {
+  font-style: italic;
+}
+.syntax .hljs-strong {
+  font-weight: 600;
 }
