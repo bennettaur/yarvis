@@ -48,11 +48,25 @@ export interface IssueCreateInput {
   body?: string;
 }
 
-/** A partial issue edit; at least one field must be set. */
+/**
+ * A partial issue edit; at least one field must be set. `labels` and
+ * `assignees` replace the whole set rather than merging, so an empty array
+ * clears them.
+ */
 export interface IssueUpdateInput {
   title?: string;
   body?: string;
   state?: "open" | "closed";
+  labels?: string[];
+  assignees?: string[];
+}
+
+/** The label and assignee sets a repo offers, for the issue detail editors. */
+export interface IssueRepoMeta {
+  labels: IssueLabel[];
+  assignees: string[];
+  /** Per set, whether the repo has more than the page that was listed. */
+  truncated: { labels: boolean; assignees: boolean };
 }
 
 /** A repo configured to pull issues, as the /repos route returns it. */

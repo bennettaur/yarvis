@@ -143,6 +143,73 @@ describe("issue routes: input validation", () => {
     expect(res.status).toBe(400);
   });
 
+  it("400s an update carrying more assignees than GitHub accepts", async () => {
+    const res = await configured.request("/api/issues/github/detail/octo/repo/1", {
+      method: "PATCH",
+      headers: json,
+      body: JSON.stringify({ assignees: Array.from({ length: 11 }, (_, i) => `user${i}`) }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("400s an update with a blank label name", async () => {
+    const res = await configured.request("/api/issues/github/detail/octo/repo/1", {
+      method: "PATCH",
+      headers: json,
+      body: JSON.stringify({ labels: ["bug", "  "] }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("400s a comment with a blank body", async () => {
+    const res = await configured.request("/api/issues/github/detail/octo/repo/1/comments", {
+      method: "POST",
+      headers: json,
+      body: JSON.stringify({ body: "   " }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("400s a comment on a non-numeric issue id", async () => {
+    const res = await configured.request("/api/issues/github/detail/octo/repo/abc/comments", {
+      method: "POST",
+      headers: json,
+      body: JSON.stringify({ body: "hi" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("400s repo-meta for a path-injecting owner", async () => {
+    const res = await configured.request("/api/issues/github/repo-meta/oct%2Fo..%2Fx/repo", {
+      headers: auth,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  // A repo name is interpolated into a GitHub API path, so it must not smuggle
+  // extra segments. A `..` never survives the trip — URL parsing collapses a dot
+  // segment (percent-encoded or not) before the router matches, so those requests
+  // 404 rather than reaching the schema. An encoded slash does survive, which is
+  // the case worth pinning here.
+  it("404s a dot segment in the repo before it can reach a handler", async () => {
+    const res = await configured.request("/api/issues/github/repo-meta/octo/%2E%2E", {
+      headers: auth,
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("400s a repo carrying an encoded path separator", async () => {
+    const res = await configured.request("/api/issues/github/repo-meta/octo/re%2Fpo", {
+      headers: auth,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("404s repo-meta for JIRA", async () => {
+    const res = await configured.request("/api/issues/jira/repo-meta/octo/repo", { headers: auth });
+    expect(res.status).toBe(404);
+  });
+
   it("400s start-work on a schema failure (missing title)", async () => {
     const res = await configured.request("/api/issues/github/start-work", {
       method: "POST",
@@ -212,6 +279,100 @@ describe("issue routes: updating an issue", () => {
     const res = await patchIssue({ state: "closed" });
     expect(res.status).toBe(502);
     expect(((await res.json()) as { error: string }).error).toContain("403");
+  });
+
+  it("forwards an empty label set, so clearing every label reaches GitHub", async () => {
+    const bodies: unknown[] = [];
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const path = String(url).replace("https://api.github.com", "");
+      if (init?.method === "PATCH") bodies.push(JSON.parse(String(init.body)));
+      if (path.includes("/comments")) return new Response("[]", { status: 200 });
+      return new Response(JSON.stringify({ number: 1, title: "t", labels: [] }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const res = await patchIssue({ labels: [], assignees: ["alice"] });
+    expect(res.status).toBe(200);
+    expect(bodies).toEqual([{ labels: [], assignees: ["alice"] }]);
+  });
+});
+
+/**
+ * Commenting and the editors' repo-meta lookup both reach GitHub and never the
+ * database, so a stubbed global fetch covers them the same way it does updates.
+ */
+describe("issue routes: commenting and repo metadata", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it("posts the comment and responds with detail fetched afterwards", async () => {
+    const calls: string[] = [];
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const path = String(url).replace("https://api.github.com", "");
+      const method = init?.method ?? "GET";
+      calls.push(`${method} ${path}`);
+      if (method === "GET" && path.includes("/comments")) {
+        return new Response(
+          JSON.stringify([{ user: { login: "me" }, body: "as stored", created_at: "2026-01-03" }]),
+          { status: 200 },
+        );
+      }
+      if (method === "POST") return new Response("{}", { status: 201 });
+      return new Response(JSON.stringify({ number: 1, title: "t" }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const res = await configured.request("/api/issues/github/detail/octo/repo/1/comments", {
+      method: "POST",
+      headers: json,
+      body: JSON.stringify({ body: "  as sent  " }),
+    });
+    expect(res.status).toBe(201);
+    // The stored comment comes back, not the draft that was posted.
+    expect(await res.json()).toMatchObject({
+      comments: [{ author: "me", body: "as stored", createdAt: "2026-01-03" }],
+    });
+    expect(calls[0]).toBe("POST /repos/octo/repo/issues/1/comments");
+  });
+
+  it("502s when GitHub rejects the comment", async () => {
+    globalThis.fetch = (async () =>
+      new Response("locked", { status: 403 })) as unknown as typeof fetch;
+    const res = await configured.request("/api/issues/github/detail/octo/repo/1/comments", {
+      method: "POST",
+      headers: json,
+      body: JSON.stringify({ body: "hi" }),
+    });
+    expect(res.status).toBe(502);
+  });
+
+  it("serves the repo's label and assignee sets", async () => {
+    globalThis.fetch = (async (url: string | URL) => {
+      const path = String(url).replace("https://api.github.com", "");
+      if (path.startsWith("/repos/octo/repo/labels")) {
+        return new Response(JSON.stringify([{ name: "bug", color: "d73a4a" }]), { status: 200 });
+      }
+      return new Response(JSON.stringify([{ login: "alice" }]), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const res = await configured.request("/api/issues/github/repo-meta/octo/repo", {
+      headers: auth,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      labels: [{ name: "bug", color: "d73a4a" }],
+      assignees: ["alice"],
+      truncated: { labels: false, assignees: false },
+    });
+  });
+
+  it("502s when GitHub rejects the repo-meta lookup", async () => {
+    globalThis.fetch = (async () =>
+      new Response("nope", { status: 404 })) as unknown as typeof fetch;
+    const res = await configured.request("/api/issues/github/repo-meta/octo/repo", {
+      headers: auth,
+    });
+    expect(res.status).toBe(502);
   });
 });
 

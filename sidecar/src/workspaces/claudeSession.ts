@@ -19,7 +19,11 @@
  * inside the session itself.
  */
 
-import { killClaudeSession, spawnClaudeSession } from "../core/controlClient.ts";
+import {
+  killClaudeSession,
+  sendClaudeInstruction,
+  spawnClaudeSession,
+} from "../core/controlClient.ts";
 
 export interface StartClaudeSessionInput {
   /** Workspace the session belongs to; forms the PTY session key. */
@@ -77,4 +81,28 @@ export async function startClaudeSession(
 /** Best-effort stop of a workspace's Claude session via the core. */
 export async function stopClaudeSession(workspaceId: string): Promise<void> {
   await killClaudeSession(workspaceId);
+}
+
+export interface SendSessionInstructionInput {
+  /** Workspace whose session receives the instruction. */
+  workspaceId: string;
+  /** What to type at the session's prompt, as the user would have typed it. */
+  instruction: string;
+}
+
+/** Injectable sender so the workspace tool is testable without the core. */
+export type ClaudeSessionMessenger = (input: SendSessionInstructionInput) => Promise<void>;
+
+/**
+ * Types an instruction at a workspace session's prompt and submits it, so an
+ * already-running agent can be given follow-up work — resolving the conflicts a
+ * bulk sync left behind, say — without a new session or the user switching tabs.
+ *
+ * The core refuses to send unless an agent, rather than the bare shell the
+ * session was launched from, is reading the prompt; it also strips the control
+ * characters that would submit a partial instruction. Both matter because the
+ * instruction is composed by a model from text an outside party can influence.
+ */
+export async function sendSessionInstruction(input: SendSessionInstructionInput): Promise<void> {
+  await sendClaudeInstruction(input);
 }
