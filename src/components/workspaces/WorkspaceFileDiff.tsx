@@ -59,7 +59,7 @@ export default function WorkspaceFileDiff({
         ) : patch === null ? (
           <p className="p-3 text-xs text-zinc-500">Loading diff…</p>
         ) : (
-          <DiffView patch={patch} />
+          <DiffView patch={patch} path={path} />
         )}
       </div>
     </div>

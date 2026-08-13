@@ -14,8 +14,14 @@ setup and feature docs — this file is about working in the codebase.
 Three processes, each with a clean ownership boundary:
 
 - **Rust core** (`src-tauri/`) — native OS integration (window, tray,
-  notifications), Keychain-backed secret storage, and sidecar supervision
-  (port selection, bearer token, secrets injected as env vars).
+  notifications), Keychain-backed secret storage, sidecar supervision
+  (port selection, bearer token, secrets injected as env vars), and every PTY
+  session: both the Terminal tab's shells and each workspace's agent session
+  live in `pty.rs`, independent of the webview that renders them. The sidecar
+  reaches them only through `control.rs`, a Unix-domain-socket RPC with a fixed
+  method list (`claude.spawn`, `claude.kill`, `claude.send`) driven from
+  `sidecar/src/core/controlClient.ts`. New ways to act on a session belong
+  there, as another narrow method — not as a sidecar route that writes to a PTY.
 - **React frontend** (`src/`) — Vite + TypeScript + Tailwind. Talks to the
   Rust core via `invoke` (native + secrets) and to the sidecar over
   authenticated loopback HTTP (data + AI).
@@ -126,5 +132,17 @@ back to ad-hoc.
   telling the model to treat it as reference material. A path or query a *model*
   chooses is untrusted input too: `sidecar/src/pr/codeTools.ts` refuses `..`
   segments and search qualifiers before they reach a provider client.
+- Text a *model* composes that will be typed into another agent's prompt is the
+  sharpest form of that, since the receiving agent acts on it with its own
+  permissions. `claude.send` is the only such path and it is guarded on both
+  sides: `pty.rs`'s `prepare_instruction` turns the control characters that would
+  submit early into spaces and rejects an instruction opening with a character
+  the agent reads as a command (`!` is bash mode, `/` a slash command, `#` a
+  memory write), `foreground_is_agent` refuses to type at all unless the
+  configured agent is what's reading the prompt, and the chat agent's system
+  prompt forbids relaying third-party text as an instruction. What no layer can
+  establish is *what the agent is showing*, so a send is reported as delivered,
+  never as done. Anything new that forwards text into a session owes the same
+  three.
 - Follow the repo's existing comment style: comments explain *why*, not
   *what* — no restating what a well-named function already says.

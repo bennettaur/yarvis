@@ -1,8 +1,9 @@
 import { Fragment, useMemo } from "react";
 import { type DiffRow, pairRows, type SplitCell, type SplitRow } from "../../lib/pr/diff";
 import type { Gap } from "../../lib/pr/expand";
+import { cellHtml, type DiffHighlight } from "../../lib/pr/highlight";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
-import { rowClass } from "../diff/DiffView";
+import { CodeText, rowClass } from "../diff/DiffView";
 import ChangeMinimap from "./ChangeMinimap";
 import GapMarker from "./GapMarker";
 import InsightBlock, { hasInsightsAt } from "./InsightCards";
@@ -18,6 +19,7 @@ import { FOCUS_ATTR, FOCUS_STYLE } from "./shared";
 import { useAskSelection } from "./useAskSelection";
 import type { FileExpansion } from "./useFileExpansion";
 import type { InsightsController } from "./usePrInsights";
+import { useSyntaxHighlight } from "./useSyntaxHighlight";
 
 /**
  * Background for the blank half of an uneven change — three deletions across
@@ -68,11 +70,13 @@ function Gutter({
   );
 }
 
-function Code({ cell }: { cell: SplitCell | null }) {
+function Code({ cell, syntax }: { cell: SplitCell | null; syntax: DiffHighlight }) {
   return (
-    <span className={`whitespace-pre pr-4 ${cell ? rowClass(cell.kind) : FILLER_CLASS}`}>
-      {cell ? cell.text || " " : " "}
-    </span>
+    <CodeText
+      html={cell ? cellHtml(cell, syntax) : null}
+      text={cell ? cell.text : " "}
+      className={`pr-4 ${cell ? rowClass(cell.kind) : FILLER_CLASS}`}
+    />
   );
 }
 
@@ -141,6 +145,7 @@ export default function SplitDiffBody({
   const rows = useMemo(() => pairAroundGaps(expansion.rows), [expansion.rows]);
   const comments = useLineComments(prRef, file, threads);
   const ask = useAskSelection(file.filename, expansion.rows, insights);
+  const syntax = useSyntaxHighlight(prRef, file.filename, file.patch ?? "", headSha);
 
   return (
     <div className="relative overflow-x-auto rounded-b-lg bg-zinc-950 font-mono text-xs leading-relaxed">
@@ -186,7 +191,7 @@ export default function SplitDiffBody({
                 style={marked ? FOCUS_STYLE : undefined}
                 focusAnchor={marked && rightLine === highlight.start}
               />
-              <Code cell={row.left} />
+              <Code cell={row.left} syntax={syntax} />
               <Gutter
                 cell={row.right}
                 onComment={rightLine != null ? () => comments.openComposer(rightLine) : undefined}
@@ -194,7 +199,7 @@ export default function SplitDiffBody({
                   insights && rightLine != null ? (extend) => ask(rightLine, extend) : undefined
                 }
               />
-              <Code cell={row.right} />
+              <Code cell={row.right} syntax={syntax} />
               {/* Only emitted for lines that actually have something below
                   them: a wrapper per line would double the grid's item count
                   on a long file. Capped in width so a long comment can't widen
