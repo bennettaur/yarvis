@@ -184,6 +184,48 @@ describe("PrGuidePanel", () => {
   it("shows no findings section when the step flagged nothing", async () => {
     expect(await render()).not.toContain("error handling");
   });
+
+  /**
+   * The panel is too narrow for a location from a deep tree, and the end of it
+   * — the file name and the line numbers — is the part that says which file the
+   * step is about. Two files in the same folder are otherwise the same string
+   * once an end-ellipsis has taken the difference away.
+   */
+  it("keeps a deep path's file name whole, giving up the directories instead", async () => {
+    const deep = "src/components/pr/guide/PrGuidePanel.tsx";
+    const html = await render({ guide: guide({ steps: [{ ...steps[0]!, path: deep }] }) });
+    // The separator belongs to the name, so what is left to clip is only the
+    // folders — and it is clipped from its front, keeping the folder next to
+    // the name.
+    expect(html).toContain(">/PrGuidePanel.tsx:10–20</span>");
+    expect(html).toContain("truncate-start");
+    expect(html).toContain("<bdi>src/components/pr/guide</bdi>");
+  });
+
+  // The prefix is laid out right-to-left so the ellipsis lands at its front,
+  // which reorders a leading "." unless the text is isolated as left-to-right.
+  it("isolates the directory prefix so a dot-directory keeps its order", async () => {
+    const html = await render({
+      guide: guide({ steps: [{ ...steps[0]!, path: ".github/workflows/ci.yml" }] }),
+    });
+    expect(html).toContain("<bdi>.github/workflows</bdi>");
+  });
+
+  it("puts the full location on the hover title", async () => {
+    const html = await render({
+      guide: guide({ steps: [{ ...steps[0]!, covers: ["src/deep/nested/helper.ts"] }] }),
+    });
+    expect(html).toContain('title="src/api.ts:10–20"');
+    expect(html).toContain('title="src/deep/nested/helper.ts"');
+  });
+
+  // A file with no directories has nothing to give up, and must not render an
+  // empty prefix span before its name.
+  it("renders a bare file name on its own", async () => {
+    const html = await render({ guide: guide({ steps: [{ ...steps[0]!, path: "README.md" }] }) });
+    expect(html).toContain(">README.md:10–20</span>");
+    expect(html).not.toContain("truncate-start");
+  });
 });
 
 describe("PrGuideStart", () => {

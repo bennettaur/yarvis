@@ -3,7 +3,7 @@
  * implementation is injectable so response shaping can be unit-tested.
  */
 
-import type { IssueDetail, IssueLabel, IssueSummary } from "../issues/types.ts";
+import type { IssueDetail, IssueLabel, IssueRepoMeta, IssueSummary } from "../issues/types.ts";
 import type {
   CheckItem,
   ChecksSummary,
@@ -924,16 +924,56 @@ export class GitHubClient {
   }
 
   /**
-   * Edits an issue's title, body, or open/closed state. GitHub ignores fields
-   * the caller omits, so a partial update leaves the rest untouched.
+   * Edits an issue's title, body, open/closed state, labels, or assignees.
+   * GitHub ignores fields the caller omits, so a partial update leaves the rest
+   * untouched. `labels` and `assignees` are whole-set replacements, not merges —
+   * an empty array clears them, which is how the editors unassign and unlabel.
    */
   async updateIssue(
     owner: string,
     repo: string,
     number: number,
-    input: { title?: string; body?: string; state?: "open" | "closed" },
+    input: {
+      title?: string;
+      body?: string;
+      state?: "open" | "closed";
+      labels?: string[];
+      assignees?: string[];
+    },
   ): Promise<void> {
     await this.mutate(`/repos/${owner}/${repo}/issues/${number}`, "PATCH", input);
+  }
+
+  /** Posts a comment on an issue. */
+  async addIssueComment(owner: string, repo: string, number: number, body: string): Promise<void> {
+    await this.mutate(`/repos/${owner}/${repo}/issues/${number}/comments`, "POST", { body });
+  }
+
+  /**
+   * The label and assignee sets a repo offers, for the issue editors' pickers.
+   * Fetched together because the detail view opens both from the same issue.
+   * `/assignees` lists the users who can be assigned, which is narrower than
+   * the repo's collaborators and is exactly what GitHub will accept.
+   *
+   * Both are read as a single page, like every other list in this client. A
+   * repo can exceed that, so a full page marks that set truncated and the picker
+   * says so — silently offering a short list would leave a user hunting for a
+   * teammate who is simply missing from it.
+   */
+  async repoIssueMeta(owner: string, repo: string): Promise<IssueRepoMeta> {
+    const perPage = 100;
+    const [labels, assignees] = await Promise.all([
+      this.api<any[]>(`/repos/${owner}/${repo}/labels?per_page=${perPage}`),
+      this.api<any[]>(`/repos/${owner}/${repo}/assignees?per_page=${perPage}`),
+    ]);
+    return {
+      labels: toIssueLabels(labels),
+      assignees: (assignees ?? []).map((a) => a.login).filter(Boolean),
+      truncated: {
+        labels: (labels ?? []).length >= perPage,
+        assignees: (assignees ?? []).length >= perPage,
+      },
+    };
   }
 
   /** Adds assignees to an issue (GitHub merges, it does not replace). */

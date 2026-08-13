@@ -203,6 +203,88 @@ describe("github issue client", () => {
     });
   });
 
+  it("replaces the whole label and assignee set on an update", async () => {
+    const calls: { method: string; path: string; body: unknown }[] = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      calls.push({
+        method: init?.method ?? "GET",
+        path: String(url).replace("https://api.github.com", ""),
+        body: JSON.parse(String(init?.body ?? "null")),
+      });
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const gh = new GitHubClient("t", fetchImpl);
+    await gh.updateIssue("o", "r", 5, { labels: ["bug"], assignees: [] });
+    expect(calls[0]).toEqual({
+      method: "PATCH",
+      path: "/repos/o/r/issues/5",
+      body: { labels: ["bug"], assignees: [] },
+    });
+  });
+
+  it("posts an issue comment", async () => {
+    const calls: { method: string; path: string; body: unknown }[] = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      calls.push({
+        method: init?.method ?? "GET",
+        path: String(url).replace("https://api.github.com", ""),
+        body: JSON.parse(String(init?.body ?? "null")),
+      });
+      return new Response("{}", { status: 201 });
+    }) as unknown as typeof fetch;
+
+    const gh = new GitHubClient("t", fetchImpl);
+    await gh.addIssueComment("o", "r", 5, "looking into it");
+    expect(calls[0]).toEqual({
+      method: "POST",
+      path: "/repos/o/r/issues/5/comments",
+      body: { body: "looking into it" },
+    });
+  });
+
+  it("throws when a comment is rejected", async () => {
+    const fetchImpl = (async () =>
+      new Response("forbidden", { status: 403 })) as unknown as typeof fetch;
+    const gh = new GitHubClient("t", fetchImpl);
+    await expect(gh.addIssueComment("o", "r", 5, "hi")).rejects.toThrow(
+      "github POST /repos/o/r/issues/5/comments -> 403",
+    );
+  });
+
+  it("reads a repo's label and assignee sets for the issue editors", async () => {
+    const gh = new GitHubClient(
+      "t",
+      fakeFetch({
+        "/repos/o/r/labels": [{ name: "bug", color: "d73a4a" }, { name: "chore" }],
+        "/repos/o/r/assignees": [{ login: "alice" }, { login: "bob" }, {}],
+      }),
+    );
+    const meta = await gh.repoIssueMeta("o", "r");
+    expect(meta).toEqual({
+      labels: [
+        { name: "bug", color: "d73a4a" },
+        { name: "chore", color: null },
+      ],
+      // The entry with no login is dropped rather than becoming a blank row.
+      assignees: ["alice", "bob"],
+      truncated: { labels: false, assignees: false },
+    });
+  });
+
+  it("reports truncation when a set fills its page", async () => {
+    const gh = new GitHubClient(
+      "t",
+      fakeFetch({
+        "/repos/o/r/labels": Array.from({ length: 100 }, (_, i) => ({ name: `l${i}` })),
+        "/repos/o/r/assignees": [{ login: "alice" }],
+      }),
+    );
+    const meta = await gh.repoIssueMeta("o", "r");
+    // Only labels filled a page; the short assignee list is complete.
+    expect(meta.truncated).toEqual({ labels: true, assignees: false });
+  });
+
   it("throws when an issue update is rejected", async () => {
     const fetchImpl = (async () =>
       new Response("forbidden", { status: 403 })) as unknown as typeof fetch;

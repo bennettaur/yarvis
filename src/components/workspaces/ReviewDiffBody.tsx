@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { parsePatch } from "../../lib/pr/diff";
+import { highlightDiff, rowHtml } from "../../lib/pr/highlight";
 import type { CreateReviewCommentInput, ReviewComment } from "../../lib/workspaceReview";
-import { rowClass } from "../diff/rowStyles";
+import { CodeText, rowClass } from "../diff/DiffRow";
 import { AddCommentButton, LineActions } from "../pr/LineComments";
 import ReviewCommentCard from "./ReviewCommentCard";
 
@@ -10,7 +11,8 @@ import ReviewCommentCard from "./ReviewCommentCard";
  * comments hang under the lines they were left on, and dragging down the line
  * gutter picks out a range to comment on. Comments anchor to the right-hand
  * (new file) line, the same side a PR review anchors to, so a note written here
- * describes the code as it will land.
+ * describes the code as it will land. The code is syntax-colored from the file's
+ * path, as the PR review's diffs are.
  */
 
 /** An inclusive run of right-hand (new file) line numbers. */
@@ -131,6 +133,7 @@ export default function ReviewDiffBody({
   onDelete: (comment: ReviewComment) => void;
 }) {
   const rows = useMemo(() => parsePatch(patch), [patch]);
+  const highlight = useMemo(() => highlightDiff(rows, path), [rows, path]);
   const byLine = useMemo(() => commentsByLine(comments), [comments]);
   const [draft, setDraft] = useState<LineRange | null>(null);
   /** The gutter lines a drag in progress covers; null when none is. */
@@ -232,7 +235,7 @@ export default function ReviewDiffBody({
                 )}
                 <span>{line ?? ""}</span>
               </span>
-              <span className="whitespace-pre">{row.text || " "}</span>
+              <CodeText html={rowHtml(row, highlight)} text={row.text} />
             </div>
             {(lineComments || composing) && (
               <div className="space-y-2 px-3 py-2 font-sans">

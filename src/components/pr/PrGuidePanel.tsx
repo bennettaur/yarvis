@@ -13,6 +13,53 @@ export function stepLocation(step: {
 }
 
 /**
+ * Splits a location into the directories leading up to the file and everything
+ * from the separator on — the file name and whatever line range came with it.
+ * The separator travels with the name so the prefix can be clipped from its
+ * front (see `truncate-start` in `index.css`).
+ */
+function splitLocation(location: string): { dir: string; nameAndLines: string } {
+  const cut = location.lastIndexOf("/");
+  return cut === -1
+    ? { dir: "", nameAndLines: location }
+    : { dir: location.slice(0, cut), nameAndLines: location.slice(cut) };
+}
+
+/**
+ * A file location that gives up its directories before its name.
+ *
+ * The panel is a fixed 420px, so a location from a deep tree does not fit, and
+ * a plain `truncate` drops exactly the end — the file name and the line
+ * numbers, the only part that says which file this is. Two files in the same
+ * deep folder then render as the same string.
+ *
+ * So the name is what is kept and the directories are what go, from their front
+ * rather than their end: the folder closest to the file is the one that
+ * separates two files sharing a name. The full location is on the hover title
+ * either way.
+ */
+function FileLocation({ location }: { location: string }) {
+  const { dir, nameAndLines } = splitLocation(location);
+  return (
+    <span className="flex max-w-full overflow-hidden" title={location}>
+      {/* The prefix takes essentially all of the shrinking, so the name only
+          starts to truncate once there are no directories left to give.
+          `truncate-start` clips it by laying it out right-to-left, so the text
+          itself is isolated as left-to-right: without that, a leading neutral
+          character has nothing before it to take its direction from and is
+          reordered to the far end — `.github/workflows` reads as
+          `github/workflows.`. */}
+      {dir && (
+        <span className="min-w-0 shrink-[9999] truncate-start opacity-70">
+          <bdi>{dir}</bdi>
+        </span>
+      )}
+      <span className="min-w-0 truncate">{nameAndLines}</span>
+    </span>
+  );
+}
+
+/**
  * What a sanity-check step is called in the panel. A walkthrough gets no label:
  * reading the code is what a tour is for, so saying so on every other step is
  * noise.
@@ -65,7 +112,11 @@ function Findings({
               {FINDING_LABEL[finding.kind] ?? "flagged"}
             </span>
             <span className="text-zinc-300">{finding.note}</span>
-            <span className="ml-1 font-mono text-[11px] text-zinc-500">
+            {/* Runs inline after the note rather than as its own line, so it
+                cannot be the flex row `FileLocation` needs. Nothing here is
+                clipped either — the row is free to wrap — so it only has to
+                break a path that is longer than the panel. */}
+            <span className="ml-1 break-words font-mono text-[11px] text-zinc-500">
               {stepLocation({ path: finding.path, startLine: finding.startLine, endLine: null })}
             </span>
           </button>
@@ -94,9 +145,10 @@ function CoveredFiles({ step, onOpen }: { step: PrGuideStep; onOpen: (path: stri
             <button
               type="button"
               onClick={() => onOpen(path)}
-              className="block max-w-full truncate font-mono text-[11px] text-zinc-400 hover:text-sky-300"
+              aria-label={`Open ${path}`}
+              className="block max-w-full font-mono text-[11px] text-zinc-400 hover:text-sky-300"
             >
-              {path}
+              <FileLocation location={path} />
             </button>
           </li>
         ))}
@@ -165,13 +217,15 @@ export default function PrGuidePanel({ guide: controller }: { guide: GuideContro
         </div>
 
         <div className="space-y-2 px-3 py-2">
+          {/* The location's own title fills the button and would shadow a
+              title set here anyway. */}
           <button
             type="button"
             onClick={() => controller.goTo(position)}
-            title="Jump back to this code"
-            className="block max-w-full truncate font-mono text-xs text-sky-400 hover:text-sky-300"
+            aria-label={`Jump back to ${stepLocation(step)}`}
+            className="block max-w-full font-mono text-xs text-sky-400 hover:text-sky-300"
           >
-            {stepLocation(step)}
+            <FileLocation location={stepLocation(step)} />
           </button>
           <p className="text-sm text-zinc-200">{step.explanation}</p>
           <CoveredFiles

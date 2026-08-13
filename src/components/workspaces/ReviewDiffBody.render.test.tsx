@@ -34,14 +34,22 @@ afterEach(() => {
   unmount = null;
 });
 
-const mount = async (
-  comments: ReviewComment[],
-  onAdd: (input: CreateReviewCommentInput) => Promise<void> = async () => {},
-) => {
+/** Mounts the body over one patch; every field has a default worth reading past. */
+const render = async ({
+  patch = PATCH,
+  path = "src/a.ts",
+  comments = [],
+  onAdd = async () => {},
+}: {
+  patch?: string;
+  path?: string;
+  comments?: ReviewComment[];
+  onAdd?: (input: CreateReviewCommentInput) => Promise<void>;
+} = {}) => {
   const mounted = await mountForInteraction(
     <ReviewDiffBody
-      patch={PATCH}
-      path="src/a.ts"
+      patch={patch}
+      path={path}
       workspaceRepoId="wr-1"
       comments={comments}
       onAdd={onAdd}
@@ -52,6 +60,11 @@ const mount = async (
   unmount = mounted.unmount;
   return mounted.host;
 };
+
+const mount = async (
+  comments: ReviewComment[],
+  onAdd: (input: CreateReviewCommentInput) => Promise<void> = async () => {},
+) => render({ comments, onAdd });
 
 /** The line-number gutters, in render order — the drag handles under test. */
 const gutters = (host: HTMLElement) => [
@@ -197,18 +210,30 @@ describe("ReviewDiffBody", () => {
   });
 
   it("says so when the file has no textual diff", async () => {
-    const mounted = await mountForInteraction(
-      <ReviewDiffBody
-        patch=""
-        path="logo.png"
-        workspaceRepoId="wr-1"
-        comments={[]}
-        onAdd={async () => {}}
-        onToggleResolved={() => {}}
-        onDelete={() => {}}
-      />,
-    );
-    unmount = mounted.unmount;
-    expect(mounted.host.textContent).toContain("No textual diff");
+    const host = await render({ patch: "", path: "logo.png" });
+    expect(host.textContent).toContain("No textual diff");
+  });
+
+  it("colors the code by the path the file was opened for", async () => {
+    const host = await render({ path: "src/a.ts" });
+    expect(host.innerHTML).toContain("hljs-keyword");
+    // The coloring wraps each token in its own span, so what the line *says*
+    // has to be read through the text rather than matched in the markup.
+    expect(host.textContent).toContain("+const b = 2;");
+  });
+
+  it("renders a file it has no grammar for as plain text", async () => {
+    const host = await render({ path: "notes.txt" });
+    expect(host.innerHTML).not.toContain("hljs-");
+    expect(host.textContent).toContain("+const b = 2;");
+  });
+
+  // A workspace diff arrives straight from `git diff`, header block and all.
+  it("keeps git's file header out of the rendered rows", async () => {
+    const host = await render({
+      patch: ["diff --git a/a.ts b/a.ts", "--- a/a.ts", "+++ b/a.ts", PATCH].join("\n"),
+    });
+    expect(host.textContent).not.toContain("diff --git");
+    expect(host.textContent).not.toContain("+++ b/a.ts");
   });
 });
