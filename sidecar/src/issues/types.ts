@@ -61,3 +61,20 @@ export interface IssueDetail extends IssueSummary {
 export interface IssueViewer {
   login: string;
 }
+
+/**
+ * The sets a repo offers when editing an issue's labels and assignees. Both are
+ * curated per repo on GitHub — labels carry the repo's colours, and only users
+ * with access can be assigned — so the editors pick from these rather than
+ * accepting free text that the provider would reject or silently create.
+ */
+export interface IssueRepoMeta {
+  labels: IssueLabel[];
+  assignees: string[];
+  /**
+   * Whether each set filled its page, meaning the repo has more than is listed.
+   * Tracked separately so a repo with many labels and few collaborators doesn't
+   * warn about a short assignee list that is in fact complete.
+   */
+  truncated: { labels: boolean; assignees: boolean };
+}
