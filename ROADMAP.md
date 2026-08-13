@@ -200,9 +200,15 @@ Status of the build against the original vision. The full V1 plan lives at
   can list repos and their open issues, spin up workspaces (from repos, from an
   issue like the "Start work" button, or scratch) and start agent sessions
   (remote-controllable only when the request came in over Telegram, where there
-  is no local tab to drive), report a workspace's PR / CI-check / mergeable status, and
-  archive workspaces — all from natural language, and reachable from Chat, Omni,
-  and the Telegram bot alike. Tab shortcuts too: Cmd/Ctrl+1–9 jump to a
+  is no local tab to drive), report a workspace's PR / CI-check / mergeable
+  status, and archive workspaces — all from natural language, and reachable from
+  Chat, Omni, and the Telegram bot alike. Two of those tools operate in bulk
+  across workspaces: one merges each workspace branch's base into it and pushes
+  what merged cleanly, skipping any worktree that is dirty, mid-rebase, or off
+  its own branch, and leaving a conflicted merge in place rather than aborting
+  it; the other types a follow-up instruction into a workspace's running agent
+  session over the core's control channel, refusing unless the configured agent
+  is what is reading that prompt. Tab shortcuts too: Cmd/Ctrl+1–9 jump to a
   tab, Cmd/Ctrl+Shift+[ / ] cycle through them.
 - **Telegram remote control** — chat with Yarvis and issue control commands from
   Telegram. A long-poll bot in the sidecar drives the same chat agent (extracted
@@ -237,6 +243,10 @@ Status of the build against the original vision. The full V1 plan lives at
 ### 1. Claude Code delegation
 Dispatch coding tasks to Claude Code from the app (e.g. "fix all my failing
 PRs" → check out the PR branch and run an agent to fix it).
+- **Partly covered already:** the workspace tools above bulk-operate across
+  branches and can hand follow-up work to a workspace's agent — but through its
+  PTY session, which means no structured progress and no confirmation that the
+  instruction was carried out. What remains is the in-sidecar SDK run.
 - **Approach:** `@anthropic-ai/claude-agent-sdk` `query()` in the Bun sidecar,
   pointed at a working directory; stream progress to the UI; tie into the PR
   dashboard to target failing PRs.
