@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { buildFileTree, flattenFileTree } from "../../lib/fileTree";
 import { usePrDetail, usePrFileDiff, usePrFiles } from "../../lib/pr/cache";
+import { rowHtml } from "../../lib/pr/highlight";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
-import { rowClass } from "../diff/DiffView";
+import { CodeText, rowClass } from "../diff/DiffView";
 import { usePersistedBoolean } from "../SplitPane";
 import ChangeMinimap from "./ChangeMinimap";
 import CopyPathButton from "./CopyPathButton";
@@ -21,6 +22,7 @@ import { useAskSelection } from "./useAskSelection";
 import { useExpandOnApproach } from "./useExpandOnApproach";
 import { type FileExpansion, useFileExpansion } from "./useFileExpansion";
 import { type InsightsController, usePrInsights } from "./usePrInsights";
+import { useSyntaxHighlight } from "./useSyntaxHighlight";
 
 /**
  * Files whose diffs are open on mount. Scrolling opens the rest as they come
@@ -65,6 +67,7 @@ export function DiffBody({
 }) {
   const comments = useLineComments(prRef, file, threads);
   const ask = useAskSelection(file.filename, expansion.rows, insights);
+  const syntax = useSyntaxHighlight(prRef, file.filename, file.patch ?? "", headSha);
 
   return (
     <div className="relative overflow-x-auto rounded-b-lg bg-zinc-950 font-mono text-xs leading-relaxed">
@@ -110,7 +113,7 @@ export function DiffBody({
                 )}
                 <span>{rightLine ?? ""}</span>
               </span>
-              <span className="whitespace-pre">{row.text || " "}</span>
+              <CodeText html={rowHtml(row, syntax)} text={row.text} />
             </div>
             <LineCommentBlock line={rightLine} comments={comments} />
             {insights && (
