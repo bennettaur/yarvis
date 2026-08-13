@@ -6,6 +6,7 @@ import type {
   IssueLink,
   IssueProvider,
   IssueRepo,
+  IssueRepoMeta,
   IssueStar,
   IssueSummary,
   IssueUpdateInput,
@@ -35,10 +36,18 @@ async function send<T>(path: string, method: string, body?: unknown): Promise<T>
   return res.json();
 }
 
-/** Splits a GitHub "owner/repo" sourceKey for the detail route's path params. */
+/**
+ * Splits a GitHub "owner/repo" sourceKey for the detail route's path params.
+ * Each half is encoded so a malformed key can't add path segments; the sidecar
+ * validates them again, but there is no reason to send it a request it will
+ * only reject.
+ */
 function splitSourceKey(sourceKey: string): { owner: string; repo: string } {
   const slash = sourceKey.indexOf("/");
-  return { owner: sourceKey.slice(0, slash), repo: sourceKey.slice(slash + 1) };
+  return {
+    owner: encodeURIComponent(sourceKey.slice(0, slash)),
+    repo: encodeURIComponent(sourceKey.slice(slash + 1)),
+  };
 }
 
 export const issuesRepos = (provider: IssueProvider = "github") =>
@@ -62,7 +71,7 @@ export function issueDetail(
   return get<IssueDetail>(`/api/issues/${provider}/detail/${owner}/${repo}/${externalId}`);
 }
 
-// --- Issue writes (create / edit / close) ---
+// --- Issue writes (create / edit / close / comment) ---
 
 export function createIssue(
   owner: string,
@@ -73,7 +82,10 @@ export function createIssue(
   return send<IssueSummary>(`/api/issues/${provider}/create/${owner}/${repo}`, "POST", input);
 }
 
-/** Edits title, body, and/or open/closed state; resolves with fresh detail. */
+/**
+ * Edits title, body, open/closed state, labels, and/or assignees; resolves with
+ * fresh detail.
+ */
 export function updateIssue(
   sourceKey: string,
   externalId: string,
@@ -86,6 +98,30 @@ export function updateIssue(
     "PATCH",
     input,
   );
+}
+
+/** Posts a comment; resolves with fresh detail including the stored comment. */
+export function addIssueComment(
+  sourceKey: string,
+  externalId: string,
+  body: string,
+  provider: IssueProvider = "github",
+): Promise<IssueDetail> {
+  const { owner, repo } = splitSourceKey(sourceKey);
+  return send<IssueDetail>(
+    `/api/issues/${provider}/detail/${owner}/${repo}/${externalId}/comments`,
+    "POST",
+    { body },
+  );
+}
+
+/** The label and assignee sets the detail view's pickers offer. */
+export function issueRepoMeta(
+  sourceKey: string,
+  provider: IssueProvider = "github",
+): Promise<IssueRepoMeta> {
+  const { owner, repo } = splitSourceKey(sourceKey);
+  return get<IssueRepoMeta>(`/api/issues/${provider}/repo-meta/${owner}/${repo}`);
 }
 
 // --- Saved filters ---

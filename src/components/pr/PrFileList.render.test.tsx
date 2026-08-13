@@ -1,8 +1,10 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { PrFile, PrRef } from "../../lib/pr/types";
 import { prFile as file, setPrFiles } from "../../test/prFiles";
-import { renderToHtml } from "../../test/render";
+import { mountForInteraction, renderToHtml } from "../../test/render";
+import { FLASH_ATTR } from "./flashFile";
+import { prFileAnchorId } from "./shared";
 
 // Imported after the shared stub so its usePrFiles mock is in place.
 const { default: PrFileList } = await import("./PrFileList");
@@ -73,5 +75,42 @@ describe("PrFileList", () => {
     expect(await render([])).toContain("No file changes.");
     expect(await render(null, { loading: true })).toContain("Loading files…");
     expect(await render(null, { error: "boom" })).toContain("boom");
+  });
+});
+
+describe("PrFileList jump", () => {
+  let cleanup: (() => void) | null = null;
+
+  afterEach(() => {
+    cleanup?.();
+    cleanup = null;
+    document.getElementById(prFileAnchorId(prRef, "src/deep/a.ts"))?.remove();
+  });
+
+  it("flashes the diff it scrolled to", async () => {
+    const diff = document.createElement("details");
+    diff.id = prFileAnchorId(prRef, "src/deep/a.ts");
+    diff.innerHTML = "<summary>src/deep/a.ts</summary>";
+    document.body.appendChild(diff);
+
+    setPrFiles([file("src/deep/a.ts")]);
+    const mounted = await mountForInteraction(
+      createElement(PrFileList, {
+        prRef,
+        viewed: new Set<string>(),
+        onToggleViewed: () => {},
+      }),
+    );
+    cleanup = mounted.unmount;
+
+    // Matched on the exact title: the row's copy button carries the same path
+    // inside a longer one.
+    const row = [...mounted.host.querySelectorAll("button")].find(
+      (b) => b.title === "src/deep/a.ts",
+    );
+    expect(row).toBeDefined();
+    row?.click();
+
+    expect(diff.querySelector("summary")?.hasAttribute(FLASH_ATTR)).toBe(true);
   });
 });

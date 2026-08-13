@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { fakeExpansion } from "../../test/expansion";
-import { mountForInteraction, renderToHtml } from "../../test/render";
+import { mountForInteraction, renderToHtml, textOf } from "../../test/render";
 import SplitDiffBody, { pairAroundGaps } from "./SplitDiffBody";
 
 const prRef: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 1 };
@@ -78,11 +78,14 @@ describe("SplitDiffBody", () => {
   });
 
   it("strips the marker column from the code cells", async () => {
-    const html = await render(["@@ -1,1 +1,1 @@", "-old()", "+new()"].join("\n"));
-    expect(html).toContain(">old()<");
-    expect(html).toContain(">new()<");
-    expect(html).not.toContain(">-old()<");
-    expect(html).not.toContain(">+new()<");
+    // Read as text, not markup: the fixture is a `.ts` file, so its code cells
+    // come out wrapped in syntax-coloring spans that a raw substring match
+    // would trip over.
+    const text = textOf(await render(["@@ -1,1 +1,1 @@", "-old()", "+new()"].join("\n")));
+    expect(text).toContain("old()");
+    expect(text).toContain("new()");
+    expect(text).not.toContain("-old()");
+    expect(text).not.toContain("+new()");
   });
 
   // Hunk headers belong to neither file, so they run the full width instead of

@@ -8,6 +8,17 @@ interface FilesResource {
 }
 
 let filesResource: FilesResource = { data: null, error: null, loading: false };
+let fileContent: string | null = null;
+
+/**
+ * Point `usePrFileContent` at a file's full text for the next render — what
+ * syntax colouring reads instead of the fragments in a patch. Null (the
+ * default) stands for "not fetched", which is also what a render that passes no
+ * head commit gets.
+ */
+export function setPrFileContent(text: string | null): void {
+  fileContent = text;
+}
 
 /**
  * Point every component reading `usePrFiles` at a fixed file set for the next
@@ -35,6 +46,11 @@ const actualCache = await import("../lib/pr/cache");
 mock.module("../lib/pr/cache", () => ({
   ...actualCache,
   usePrFiles: () => filesResource,
+  usePrFileContent: (_ref: unknown, _path: string, sha: string, enabled: boolean) => ({
+    data: enabled && sha ? fileContent : null,
+    error: null,
+    loading: false,
+  }),
 }));
 
 // `PrFileDiffs` mounts `usePrInsights`, which loads through `lib/pr/insights`.
