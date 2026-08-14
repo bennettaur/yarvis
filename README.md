@@ -63,6 +63,8 @@ changes.
   Tauri core)
 - Xcode Command Line Tools (`xcode-select --install`)
 - PostgreSQL with the `pgvector` extension available
+- [uv](https://docs.astral.sh/uv/) — only for the local speech server behind the
+  Voice feature; skip it if you are not using voice
 
 ## Setup
 
@@ -116,138 +118,160 @@ rather than a separate SDK, and there is no base URL to configure.
 
 ### Voice
 
-Voice is a capability of the chat surfaces rather than a place of its own. The
-Chat tab and Omni Chat each carry a microphone button and two checkboxes —
-**Speak replies** and **Hands-free** — so a conversation can be spoken instead of
-typed without leaving what you were doing. A spoken turn goes to whichever model
-that chat is already set to, keeps its session, and appears in the transcript
-labelled `spoken`.
+Talk to the assistant and hear it answer. The microphone lives on the Chat tab
+and in Omni Chat, so a spoken turn goes to whatever model that chat is already
+using, in the same session, and shows up in the transcript labelled `spoken`.
 
-The speech backends are configured once, under **Settings → Voice**, and shared
-by everything that speaks. They live in the database rather than in the window,
-so the Telegram bot can use the same setup once it grows voice notes
-([#226](https://github.com/bennettaur/yarvis/issues/226)).
+#### Quick start
 
-Two kinds of speech backend are supported:
-
-- **Hugging Face** — Inference API models, using the Hugging Face token from
-  Settings. `openai/whisper-large-v3-turbo` is a good transcription default. A
-  cold model answers 503 with a wait estimate; the error says so.
-
-  **Transcription only in practice.** The serverless router refuses the TTS
-  models with "Model not supported by provider hf-inference" — text-to-speech
-  is largely not served there, so no TTS models are suggested for it. Use a
-  local server for speech out.
-- **An OpenAI-kind custom provider** — any entry under Settings → Custom
-  providers whose API kind is `openai` or `openai-chat`, since those are the
-  ones that speak `/audio/transcriptions` and `/audio/speech`. (An
-  Anthropic-kind provider has no audio endpoints and is left out of the
-  picker.) A local speech server on loopback — a whisper.cpp or
-  MOSS-TTS/Kokoro wrapper — therefore needs no separate configuration.
-
-Recordings are converted to 16 kHz mono WAV in the app before they are
-uploaded. The browser only encodes compressed containers — Opus in WebM, or AAC
-in MP4 in the macOS webview — and backends disagree about those: Whisper
-servers take them, while Ollama's transcription endpoint answers "Failed to
-load image or audio file" for anything but WAV. WAV is what all of them accept,
-and 16 kHz mono is what speech models work in anyway.
-
-Ollama is a working STT backend as of 0.32: point a custom provider at
-`http://localhost:11434/v1` and name an audio-capable model (`gemma4:latest`).
-It is the same entry the chat side uses, so one provider can answer *and*
-transcribe. It has no speech synthesis, so TTS needs a second server.
-
-For speech out, anything serving `POST /v1/audio/speech` works.
-
-**On Apple Silicon, use [mlx-audio](https://github.com/Blaizzy/mlx-audio)** — it
-runs natively on MLX with no GPU, and serves the OpenAI audio API:
+Speech runs on your own machine — no key, no cloud. On Apple Silicon:
 
 ```bash
-pip install "mlx-audio[server]"   # the `server` extra: plain mlx-audio has no HTTP server
-mlx_audio.server --host 127.0.0.1 --port 8000
+uv sync                                            # installs the speech server
+uv run mlx_audio.server --host 127.0.0.1 --port 8000
 ```
 
-Then add a custom provider at `http://127.0.0.1:8000/v1` (API kind `openai`),
-select it under **Text to speech**, set the TTS model to
-`mlx-community/Soprano-1.1-80M-bf16`, and press **Test voice**. Weights download
-on first use; no repository needs cloning. The same server also serves
-`/v1/audio/transcriptions`, so it can back both halves.
+Leave that running, then in the app:
 
-Two things that bite on a fresh install:
+1. **Settings → LLM Providers → Add** a provider named e.g. `local speech`, base
+   URL `http://127.0.0.1:8000/v1`, API kind `openai`. (Put anything in Models —
+   the field needs one entry to save; speech models are named separately.)
+2. **Settings → Voice** — set both halves to that provider:
+   - Speech to text · model `mlx-community/whisper-large-v3-turbo-asr-fp16`
+   - Text to speech · model `mlx-community/Soprano-1.1-80M-bf16`
+3. Press **Test voice**. You should hear a sentence. Weights download on first
+   use, so the first call takes a minute.
+4. Open the Chat tab and press the microphone.
 
-- **mp3 needs ffmpeg**, which mlx-audio shells out to and a fresh Mac lacks.
-  Yarvis asks for `wav` for exactly this reason — it needs no encoder — so this
-  only matters if you override `response_format` yourself.
-- **Kokoro needs a working espeak-ng**, and `pip install misaki` is not enough:
-  its English G2P wants `misaki[en]`, and mlx-audio's bundled `espeakng_loader`
-  looks for its data one directory above where it ships it, so synthesis fails
-  with `espeakng_loader//phontab: No such file or directory`. Installing
-  espeak-ng system-wide does *not* fix it, because that path is hard-coded.
-  Until it is fixed upstream, either use a model that needs no phonemizer
-  (Soprano, Spark-TTS, OuteTTS) or symlink the data where the loader looks:
-  `cd <venv>/lib/python*/site-packages/espeakng_loader && ln -sf espeak-ng-data/* .`
+Prefer a different transcriber? If you already run **Ollama**, point Speech to
+text at `http://localhost:11434/v1` with an audio-capable model such as
+`gemma4:latest` — one provider entry can both answer and transcribe.
 
-**With an NVIDIA GPU**, vLLM-Omni covers most of the current open models:
+#### Using it
 
-```bash
-vllm serve Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice --omni --port 8091
-```
-
-Models with speaker presets — Qwen3-TTS, Voxtral — need only a **Voice** id.
-Audio8-TTS serves the same endpoint through its SGLang Omni adapter and works
-without a reference clip. Note that vLLM is CUDA-first: it is not the path to
-take on a Mac.
-
-**Voice-cloning models** take a reference clip instead of a voice id.
-MOSS-TTS-Nano (`vllm serve OpenMOSS-Team/MOSS-TTS-Nano --omni --port 8091`, so
-NVIDIA only) requires one on every call and ignores `voice` entirely. Load a few seconds of
-speech under **Voice cloning & server-specific fields** → *Reference clip*; it
-is sent as `ref_audio`. The *Extra request fields* box beside it puts arbitrary
-JSON into the request body for anything else a server wants, e.g.
-`{"response_format": "wav"}`. Neither can overwrite the model or the text.
-
-**Test voice**, in Settings → Voice, synthesizes a fixed phrase with the current
-settings and plays it, so a configuration can be checked without finishing a
-whole turn.
-
-Model names are free text, because a local server's names are its own and
-hosted catalogues move; the provider's suggestions are only suggestions. The
-accepted shape is a Hub-style `namespace/name` with an optional `:tag`
-(`openai/whisper-large-v3`, `whisper:latest`), which is what keeps a model name
-from reaching somewhere other than the model endpoint. **Spoken language** is an
-optional ISO-639-1 hint (`en`, `fr`) — leave it blank to let the model detect,
-or set it to sharpen recognition of short utterances in a noisy room.
-
-Replies are spoken a sentence at a time as they stream, rather than after the
-whole answer completes, so speech starts about a sentence behind the model. Code
-blocks are dropped from what gets spoken rather than read out symbol by symbol.
-**Stop** ends the turn outright: it silences the queued speech, discards
-whatever is being recorded, and cancels the model mid-generation.
-
-**Speak replies** (on by default) can be turned off to leave transcription and
-the written answer with no audio out. **Hands-free** (off by default) ends a
-turn after a stretch of silence and re-opens the microphone once the reply
-finishes, so a back-and-forth needs no clicking; with it off it is
-push-to-talk. It is off by default on purpose — with it on, anything audible in
-the room can become a turn you never addressed to the assistant. One recording
-is capped at 60 seconds, and a recording the app never heard speech in is
-discarded rather than uploaded. Both toggles are saved with the rest of the
-speech settings, so they carry across surfaces.
+- **Speak replies** synthesizes each finished sentence as the answer streams, so
+  speech starts about a sentence behind the model rather than a whole answer
+  behind it. Code blocks are skipped rather than read out symbol by symbol.
+- **Hands-free** ends a turn after a stretch of silence and re-opens the
+  microphone once the reply finishes. It is **off by default on purpose**: with
+  it on, anything audible in the room can become a turn you never addressed to
+  the assistant.
+- **Stop** ends the turn outright — silences queued speech, discards the
+  recording, and cancels the model mid-generation.
+- A recording is capped at 60 seconds, and one the app never heard speech in is
+  discarded rather than uploaded.
 
 Because a transcript is never proof-read the way a typed message is, the agent's
 irreversible tools ask before they run on a spoken turn: deleting a task,
-archiving a workspace, starting work on an issue (which assigns and labels it),
-filing a JIRA issue, and launching an agent session. Each surfaces the same
-approval prompt that external MCP tools use, and is announced aloud when Speak
-replies is on. Everything else — reading, recalling, creating tasks — runs
-without interruption. Turns from this tab are labelled `spoken` in the
-transcript.
+archiving a workspace, starting work on an issue, filing a JIRA issue, syncing
+branches, instructing a running agent session, and launching one. Each raises
+the same approval prompt external MCP tools use, and is announced aloud when
+Speak replies is on. Everything else — reading, recalling, creating tasks — runs
+uninterrupted.
 
-macOS gates the microphone: the app bundle carries the usage description and the
-audio-input entitlement, and the first recording raises the system permission
-prompt. Under `bun run tauri dev` the binary is not bundled, so the prompt is
-attributed to the terminal that launched it — run a built app if permission
-looks stuck.
+#### Choosing models
+
+Model names are free text, because a local server's names are its own. The
+accepted shape is `namespace/name` with an optional `:tag`
+(`openai/whisper-large-v3`, `whisper:latest`), which is what stops a model name
+from addressing something other than the model endpoint.
+
+These are verified working on Apple Silicon through the server above:
+
+| Purpose | Model | Notes |
+| --- | --- | --- |
+| Speech out | `mlx-community/Soprano-1.1-80M-bf16` | Tiny, no phonemizer. The default worth starting with. |
+| Speech out | `mlx-community/Kokoro-82M-bf16` | Nicer voice; set **Voice** to `af_heart`. Needs espeak-ng — see below. |
+| Speech out | `mlx-community/MOSS-TTS-Nano-100M` | Clones a voice; see below. |
+| Speech in | `mlx-community/whisper-large-v3-turbo-asr-fp16` | Same server as speech out. |
+| Speech in | `gemma4:latest` (Ollama) | Audio-capable chat model; transcribes well. |
+
+**Hugging Face** is also available with a token from Settings, but in practice
+only for transcription (`openai/whisper-large-v3-turbo`). Its serverless router
+refuses the text-to-speech models with "Model not supported by provider
+hf-inference", so it is not offered under Text to speech at all.
+
+#### Voice cloning, and server-specific fields
+
+Settings → Voice has a collapsible section for models that need more than a
+model name. Two fields:
+
+- **Reference clip** — an audio file, sent as a base64 `ref_audio` data URI.
+- **Extra request fields** — arbitrary JSON merged into the synthesis request,
+  for whatever else a server wants. Neither can overwrite the model or the text.
+
+Servers disagree about how a reference clip arrives, so which field you use
+depends on the server:
+
+- **mlx-audio** wants a *path on disk*. For **MOSS-TTS-Nano**, leave Reference
+  clip empty and put the path in Extra request fields:
+  ```json
+  {"ref_audio": "/Users/you/voice-samples/reference.wav"}
+  ```
+  A few seconds of clean speech is enough. (Verified: MOSS-TTS-Nano-100M
+  produces cloned speech this way.)
+- **vLLM-Omni** wants the base64 data URI, which is what the Reference clip
+  field sends. That is the path to use on an NVIDIA box.
+
+#### Running MOSS through vLLM instead (untested)
+
+On Linux/NVIDIA, vLLM-Omni serves MOSS-TTS-Nano over the same OpenAI endpoint:
+
+```bash
+vllm serve OpenMOSS-Team/MOSS-TTS-Nano --omni --port 8091
+```
+
+Point a provider at `http://localhost:8091/v1` and use the **Reference clip**
+field — it requires one on every request and ignores the Voice field entirely.
+
+On Apple Silicon this needs the community
+[vllm-metal](https://github.com/vllm-project/vllm-metal) plugin:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vllm-project/vllm-metal/main/install.sh | bash
+source ~/.venv-vllm-metal/bin/activate
+```
+
+**Untested here, and it may not work at all**: vllm-metal describes itself as a
+text-generation backend and documents no audio support or `--omni` flag, so the
+TTS serving path likely isn't covered. The mlx-audio route above runs the same
+MOSS model natively and is verified, so prefer it on a Mac.
+
+#### If something doesn't work
+
+Press **Test voice** in Settings → Voice first — it plays a fixed phrase and
+shows the backend's own error, which distinguishes a wrong model from a missing
+key from a cold server. Then:
+
+- **"Model not supported by provider hf-inference"** — Hugging Face does not
+  serve that TTS model. Use a local server.
+- **"Failed to load image or audio file"** (Ollama) — the audio format. The app
+  converts recordings to 16 kHz mono WAV before upload precisely because
+  backends disagree here, so this points at a hand-made request rather than the
+  app.
+- **"ffmpeg not found"** — only mp3 needs it. Yarvis asks for `wav`, so this
+  only appears if you override `response_format` yourself.
+- **"the speech provider returned no audio"** — the server answered OK with an
+  empty body, which means it failed after it started responding. Its own log has
+  the real reason.
+- **Kokoro fails with `espeakng_loader//phontab: No such file or directory`** —
+  its grapheme-to-phoneme step looks for espeak-ng data one directory above
+  where mlx-audio ships it. Installing espeak-ng system-wide does *not* help,
+  because the path is hard-coded. Either use Soprano, which needs no phonemizer,
+  or link the data where it looks:
+  ```bash
+  cd .venv/lib/python3.12/site-packages/espeakng_loader && ln -sf espeak-ng-data/* .
+  ```
+- **No microphone prompt** — macOS gates it. The app bundle carries the usage
+  description and audio-input entitlement, but under `bun run tauri dev` the
+  binary is not bundled, so the prompt is attributed to the terminal that
+  launched it. Run a built app if permission looks stuck.
+
+Speech settings live in Postgres rather than this window, so every surface
+shares one setup — including the Telegram bot once it grows voice notes
+([#226](https://github.com/bennettaur/yarvis/issues/226)). Starting the speech
+server is still a manual step; having the app supervise it is
+[#228](https://github.com/bennettaur/yarvis/issues/228).
 
 ### Embeddings
 

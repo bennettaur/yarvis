@@ -20,15 +20,13 @@ dist-ssr
 # Sidecar binary compiled at packaging time
 src-tauri/binaries/
 
-# Python, from running a local speech server alongside the app (mlx-audio and
-# the like). Nothing in this repo is Python; these are a developer's scratch
-# environment, and a venv is far too big to land in a commit by accident.
+# The Python environment for the local speech server (see README → Voice).
+# `pyproject.toml` and `uv.lock` are committed so `uv sync` reproduces it; the
+# environment itself never is.
 .venv/
 __pycache__/
 *.py[cod]
 .python-version
-pyproject.toml
-uv.lock
 # Anchored to the root so this only catches `uv init`'s scaffold, not a real
 # Python script somewhere under scripts/ later on.
 /main.py

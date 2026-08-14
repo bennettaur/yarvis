@@ -1,0 +1,21 @@
+[project]
+# Not the app — the app is TypeScript and Rust. This is the local speech server
+# the Voice feature talks to, kept here so `uv sync` reproduces it in one step.
+# See README → Voice.
+name = "yarvis-speech"
+version = "0.1.0"
+description = "Local speech-to-text and text-to-speech server for the Yarvis Voice feature"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # The `server` extra is the one that matters: plain `mlx-audio` omits
+    # fastapi, uvicorn and webrtcvad, so `mlx_audio.server` fails to import.
+    "mlx-audio[server]>=0.4.8",
+    # Kokoro's grapheme-to-phoneme step. The `en` extra pulls num2words, without
+    # which `misaki.en` won't import. Not needed by Soprano or MOSS.
+    "misaki[en]>=0.9.4",
+    # Pinned, not merely floated: setuptools 81 removed pkg_resources, which
+    # webrtcvad imports at module load. mlx-audio[server] pins this too, but
+    # stating it here keeps the resolution honest if that pin ever moves.
+    "setuptools<81",
+]
