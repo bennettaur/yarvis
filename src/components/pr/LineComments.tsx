@@ -239,10 +239,16 @@ export function LineCommentBlock({
  * parent hides its children whatever their own opacity, so a tabbed-to button
  * would otherwise stay invisible. `pointer-events-none` while hidden so the
  * cluster doesn't swallow clicks and text selection on the code beneath it.
+ *
+ * Centred on the line's first visual row rather than on the gutter as a whole:
+ * in the split view a long line wraps and makes its row several lines tall, and
+ * the buttons belong beside the number they act on. `0.8em` is half a line box
+ * at the diff's own leading, so on a single-line row — every row of the unified
+ * view — this lands where centring on the gutter did.
  */
 export function LineActions({ children }: { children: React.ReactNode }) {
   return (
-    <span className="pointer-events-none absolute top-1/2 left-full z-[5] flex -translate-y-1/2 items-center gap-1 opacity-0 group-focus-within/line:pointer-events-auto group-focus-within/line:opacity-100 group-hover/line:pointer-events-auto group-hover/line:opacity-100">
+    <span className="pointer-events-none absolute top-[0.8em] left-full z-[5] flex -translate-y-1/2 items-center gap-1 opacity-0 group-focus-within/line:pointer-events-auto group-focus-within/line:opacity-100 group-hover/line:pointer-events-auto group-hover/line:opacity-100">
       {children}
     </span>
   );
