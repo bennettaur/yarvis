@@ -3,7 +3,6 @@ import type { IconName } from "./icons";
 /** The views reachable from the nav rail. */
 export type Tab =
   | "chat"
-  | "voice"
   | "omni"
   | "terminal"
   | "workspaces"
@@ -27,7 +26,6 @@ export interface NavItem {
 
 export const NAV_ITEMS: NavItem[] = [
   { id: "chat", label: "Chat", icon: "chat" },
-  { id: "voice", label: "Voice", icon: "voice" },
   { id: "omni", label: "Omni", icon: "omni" },
   { id: "terminal", label: "Terminal", icon: "terminal" },
   { id: "workspaces", label: "Workspaces", icon: "workspaces" },

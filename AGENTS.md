@@ -114,9 +114,14 @@ back to ad-hoc.
 - Speech backends sit behind the `SpeechClient` interface in
   `sidecar/src/voice/speech.ts`, resolved by `voice/providers.ts` the same way
   `llm/providers.ts` resolves chat models — built-ins keep a bare id, user
-  providers keep the `custom:<id>` namespace. The voice surface picks its own
-  provider/model rather than reading the chat tab's, which is what lets voice
-  and chat run on different models.
+  providers keep the `custom:<id>` namespace.
+- Voice is a capability of the chat surfaces, not a surface of its own:
+  `src/lib/useVoice.ts` wraps speech around a thread the caller already owns,
+  taking that surface's `send` and watching the reply text it is already
+  accumulating. A spoken turn therefore uses whatever provider/model that chat
+  is set to. Which speech backends to use lives in Postgres
+  (`sidecar/src/voice/config.ts`), not in the frontend, because the Telegram bot
+  runs in the sidecar and needs the same settings (#226).
 - Outbound speech calls go through `guardedFetch` in that same file, never a
   bare `fetch`: it re-runs the SSRF guard on every redirect hop rather than only
   the first (`redirect: "manual"`, mirroring `memory/ingest.ts`) and puts a

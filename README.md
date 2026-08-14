@@ -86,8 +86,8 @@ Gemini, Cerebras), a GitHub token and/or an Azure DevOps token + organization UR
 PR dashboard + embedded review — either provider can back it, selected with a
 toggle in the PRs tab), a JIRA base URL + account email + API token (for the JIRA
 issues integration on the Issues tab), a Google Cloud OAuth client id/secret (for the Calendar
-integration), an optional Hugging Face token (for the Voice tab's speech-to-text
-and text-to-speech), an optional embeddings-provider secret (an API key and/or
+integration), an optional Hugging Face token (for speech-to-text; see
+Settings → Voice), an optional embeddings-provider secret (an API key and/or
 custom header values for an OpenAI-compatible embeddings endpoint), and an
 optional Telegram bot token + allowed chat-id list (and, when the optional second
 factor is enabled, a TOTP secret + re-auth window) for the remote-control bot,
@@ -116,17 +116,17 @@ rather than a separate SDK, and there is no base URL to configure.
 
 ### Voice
 
-The **Voice** tab drives the same chat agent as the Chat tab — same tools, same
-memory — with speech either side of it: what you say is transcribed and sent as
-the prompt, and the reply is spoken back. It keeps its **own** conversation
-rather than joining the Chat tab's: a session is created on your first utterance
-and lives as long as the tab is open, so leaving the tab starts a fresh one next
-time. There is no session picker here.
+Voice is a capability of the chat surfaces rather than a place of its own. The
+Chat tab and Omni Chat each carry a microphone button and two checkboxes —
+**Speak replies** and **Hands-free** — so a conversation can be spoken instead of
+typed without leaving what you were doing. A spoken turn goes to whichever model
+that chat is already set to, keeps its session, and appears in the transcript
+labelled `spoken`.
 
-Three choices are made independently on that tab, and none of them touch the
-Chat tab's picker: the model that answers, the speech-to-text backend, and the
-text-to-speech backend. Running voice on a local model while chat stays on a
-hosted one is the point of the split.
+The speech backends are configured once, under **Settings → Voice**, and shared
+by everything that speaks. They live in the database rather than in the window,
+so the Telegram bot can use the same setup once it grows voice notes
+([#226](https://github.com/bennettaur/yarvis/issues/226)).
 
 Two kinds of speech backend are supported:
 
@@ -206,8 +206,9 @@ is sent as `ref_audio`. The *Extra request fields* box beside it puts arbitrary
 JSON into the request body for anything else a server wants, e.g.
 `{"response_format": "wav"}`. Neither can overwrite the model or the text.
 
-**Test voice** synthesizes a fixed phrase with the current settings and plays
-it, so a configuration can be checked without finishing a whole turn.
+**Test voice**, in Settings → Voice, synthesizes a fixed phrase with the current
+settings and plays it, so a configuration can be checked without finishing a
+whole turn.
 
 Model names are free text, because a local server's names are its own and
 hosted catalogues move; the provider's suggestions are only suggestions. The
@@ -226,11 +227,12 @@ whatever is being recorded, and cancels the model mid-generation.
 **Speak replies** (on by default) can be turned off to leave transcription and
 the written answer with no audio out. **Hands-free** (off by default) ends a
 turn after a stretch of silence and re-opens the microphone once the reply
-finishes, so a back-and-forth needs no clicking; with it off the tab is
+finishes, so a back-and-forth needs no clicking; with it off it is
 push-to-talk. It is off by default on purpose — with it on, anything audible in
 the room can become a turn you never addressed to the assistant. One recording
 is capped at 60 seconds, and a recording the app never heard speech in is
-discarded rather than uploaded.
+discarded rather than uploaded. Both toggles are saved with the rest of the
+speech settings, so they carry across surfaces.
 
 Because a transcript is never proof-read the way a typed message is, the agent's
 irreversible tools ask before they run on a spoken turn: deleting a task,
@@ -596,14 +598,15 @@ render real components with the `renderToHtml` helper in `src/test/render.tsx`.
 ```
 src/            React frontend (Vite + TS + Tailwind)
   lib/          sidecar API client, Keychain wrappers, Omni Chat context registry, notifications, cross-tab nav (nav.ts),
-                voice loop pieces (voice.ts client, voiceSettings.ts, useVoiceRecorder.ts mic capture,
-                speechChunks.ts sentence splitting, speechQueue.ts pipelined playback, audioPlayback.ts)
+                voice loop pieces (useVoice.ts the turn hook, voice.ts + voiceConfig.ts clients,
+                useVoiceRecorder.ts mic capture, speechChunks.ts sentence splitting,
+                speechQueue.ts pipelined playback, audioEncoding.ts, audioPlayback.ts)
     pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs, per-file viewed state, remembered panel place, link/shorthand locator, diff parsing + context expansion, guide + insight clients)
     issues/     provider-neutral issue data layer (GitHub + JIRA) — types, api client, start-work flow (useGithubStartWork.ts)
     jira/       JIRA-specific data layer (issue detail, transitions, comments, create) — types, api client, start-work flow (useJiraStartWork.ts)
     find/       find-on-page engine — visible-text index, match offsets, CSS Custom Highlight painting, useFind controller
-  components/   one panel per tab (Chat, Voice, Tasks, PRs, Memory, Calendar, Terminal, Workspaces, …)
-    voice/      Voice tab pieces: provider/model bar, microphone control
+  components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, Terminal, Workspaces, …)
+    voice/      the mic button and the voice controls shared by the chat surfaces
     pr/         PR dashboard + embedded review: lists, file diffs (unified + split),
                 gap/context expansion, change minimap, guide panel, insight cards
     issue/      Issues tab views: GitHub + JIRA issue lists, detail, create/repo-picker modals
@@ -625,7 +628,8 @@ sidecar/        Bun + TS service (Hono)
   src/db/       Drizzle schema, client, migrations (applied on startup)
   src/chat/     multi-provider streaming chat + tool-calls (agent.ts: shared agent turn)
   src/voice/    speech-to-text + text-to-speech (/api/voice): Hugging Face Inference
-                and the OpenAI audio API, the latter reusing a custom provider's base URL
+                and the OpenAI audio API, the latter reusing a custom provider's base URL;
+                config.ts holds the settings every surface shares
   src/clipboard/ saved clipboard entries + the credential screen (screening.ts)
   src/telegram/ Telegram remote-control bot (long-poll loop, slash commands, chat→session map)
   src/tasks/    daily/weekly work tracking

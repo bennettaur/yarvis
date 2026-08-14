@@ -578,6 +578,47 @@ export const issueStars = pgTable(
  * error otherwise. `apiKind` is "openai" today — both the user's proxy and a
  * local Ollama server speak the OpenAI-compatible embeddings API.
  */
+/**
+ * The speech backends every surface uses — the Voice controls in chat, and the
+ * Telegram bot once it grows them (#226). It lives here rather than in the
+ * frontend precisely because the bot runs in this process and has no way to
+ * read a browser's localStorage. Single row, like `embeddings_config`.
+ *
+ * Credentials are not here: a Hugging Face token is a Keychain secret, and a
+ * custom provider's key rides its own entry. This is the structural half only.
+ */
+export const voiceConfig = pgTable("voice_config", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sttProvider: text("stt_provider").notNull().default(""),
+  sttModel: text("stt_model").notNull().default(""),
+  /** ISO-639-1 hint; blank lets the model detect the language. */
+  sttLanguage: text("stt_language").notNull().default(""),
+  ttsProvider: text("tts_provider").notNull().default(""),
+  ttsModel: text("tts_model").notNull().default(""),
+  ttsVoice: text("tts_voice").notNull().default(""),
+  /**
+   * Reference clip for a voice-cloning model, as a base64 audio data URI. Text
+   * rather than bytea: it goes out as a JSON string field, so storing it
+   * decoded would mean re-encoding on every request.
+   */
+  ttsRefAudio: text("tts_ref_audio").notNull().default(""),
+  /** Extra body fields for the synthesis request, keyed by field name. */
+  ttsExtras: jsonb("tts_extras")
+    .$type<Record<string, string | number | boolean>>()
+    .notNull()
+    .default({}),
+  /** Speak replies aloud by default on a surface that can. */
+  speakReplies: boolean("speak_replies").notNull().default(true),
+  /**
+   * End a turn on silence and re-open the mic after the reply. Off by default:
+   * with it on, anything audible in the room can become a turn the user never
+   * addressed to the assistant.
+   */
+  handsFree: boolean("hands_free").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const embeddingsConfig = pgTable("embeddings_config", {
   id: uuid("id").primaryKey().defaultRandom(),
   baseUrl: text("base_url").notNull(),
@@ -649,6 +690,9 @@ export type NewAgentToolRow = typeof agentTools.$inferInsert;
 
 export type EmbeddingsConfigRow = typeof embeddingsConfig.$inferSelect;
 export type NewEmbeddingsConfigRow = typeof embeddingsConfig.$inferInsert;
+
+export type VoiceConfigRow = typeof voiceConfig.$inferSelect;
+export type NewVoiceConfigRow = typeof voiceConfig.$inferInsert;
 
 /**
  * A local, on-device log of meaningful actions (tasks added/completed, a chat

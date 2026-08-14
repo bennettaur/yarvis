@@ -30,16 +30,19 @@ Status of the build against the original vision. The full V1 plan lives at
   in-app review and shows a draft label, CI/merge status, and relative dates.
   Stars and saved filters too. A provider toggle switches between GitHub and
   Azure DevOps, which share one provider-agnostic UI (PRs tab).
-- **Voice** — speak to the chat agent and hear it answer (Voice tab). Speech to
-  text and text to speech run on Hugging Face Inference or any OpenAI-audio
-  endpoint (a local whisper/Kokoro server reuses its custom-provider entry), and
-  the answering model is picked separately from the Chat tab's, so voice can run
-  on a local model while chat stays hosted. Replies are synthesized a sentence
-  at a time as they stream, so speech starts a sentence behind the model rather
-  than a whole answer behind it. Push-to-talk by default, with an opt-in
-  hands-free mode that ends a turn on silence and re-opens the mic after the
-  reply. Because a transcript is never proof-read, the agent's irreversible
-  tools ask for confirmation on a spoken turn.
+- **Voice** — speak to the chat agent and hear it answer, from the Chat tab and
+  Omni Chat rather than a tab of its own: each carries a mic button plus
+  speak-replies and hands-free toggles, and a spoken turn uses that chat's own
+  model and session. Speech to text and text to speech run on Hugging Face
+  Inference or any OpenAI-audio endpoint (a local whisper/Kokoro server reuses
+  its custom-provider entry), configured once under Settings → Voice and stored
+  in Postgres so every surface — including the Telegram bot, once it grows voice
+  notes (#226) — shares one setup. Replies are synthesized a sentence at a time
+  as they stream, so speech starts a sentence behind the model rather than a
+  whole answer behind it. Push-to-talk by default, with an opt-in hands-free
+  mode that ends a turn on silence and re-opens the mic after the reply. Because
+  a transcript is never proof-read, the agent's irreversible tools ask for
+  confirmation on a spoken turn.
 - **Alarms** — full-screen takeover + escalating sound/notification, with
   acknowledge/snooze, plus a Join-meeting action on meeting-derived alarms that
   opens the meet link and ends the alarm (Alarms tab).

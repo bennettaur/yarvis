@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { UrlSafetyError } from "../lib/urlSafety.ts";
+import { DEFAULT_VOICE_CONFIG, getVoiceConfig, saveVoiceConfig } from "./config.ts";
 import { availableVoiceProviders, resolveSpeechClient } from "./providers.ts";
 import {
   MAX_AUDIO_BYTES,
@@ -37,27 +38,51 @@ const MAX_REF_AUDIO_CHARS = 4 * 1024 * 1024;
 /** `data:audio/<subtype>;base64,<payload>` and nothing else. */
 const REF_AUDIO_DATA_URI = /^data:audio\/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/]+=*$/;
 
+const refAudioSchema = z
+  .string()
+  .max(MAX_REF_AUDIO_CHARS)
+  .regex(REF_AUDIO_DATA_URI, "reference audio must be a base64 audio data URI");
+
+/**
+ * Server-specific body fields. Values stay scalar: a nested object would be
+ * unbounded, and no TTS server here needs one.
+ */
+const extrasSchema = z
+  .record(z.string().min(1).max(64), z.union([z.string().max(4096), z.number(), z.boolean()]))
+  .refine(
+    (fields) => !RESERVED_SYNTHESIS_FIELDS.some((key) => key in fields),
+    `these fields are set from the request itself: ${RESERVED_SYNTHESIS_FIELDS.join(", ")}`,
+  );
+
 const speakSchema = z.object({
   provider: z.string().min(1),
   model: z.string().min(1),
   text: z.string().min(1).max(MAX_SPEECH_CHARS),
   voice: z.string().max(128).optional(),
-  refAudio: z
+  refAudio: refAudioSchema.optional(),
+  extras: extrasSchema.optional(),
+});
+
+/**
+ * Every field is optional so the settings UI can save one at a time. Blank is
+ * meaningful — it clears a selection — so absent and empty differ here.
+ */
+const voiceConfigSchema = z.object({
+  sttProvider: z.string().max(128).optional(),
+  sttModel: z.string().max(128).optional(),
+  sttLanguage: z
     .string()
-    .max(MAX_REF_AUDIO_CHARS)
-    .regex(REF_AUDIO_DATA_URI, "reference audio must be a base64 audio data URI")
+    .regex(/^([a-z]{2}(-[A-Za-z]{2})?)?$/, "language must be an ISO-639-1 code, or blank")
     .optional(),
-  /**
-   * Server-specific body fields. Values stay scalar: a nested object would be
-   * unbounded, and no TTS server here needs one.
-   */
-  extras: z
-    .record(z.string().min(1).max(64), z.union([z.string().max(4096), z.number(), z.boolean()]))
-    .refine(
-      (fields) => !RESERVED_SYNTHESIS_FIELDS.some((key) => key in fields),
-      `these fields are set from the request itself: ${RESERVED_SYNTHESIS_FIELDS.join(", ")}`,
-    )
-    .optional(),
+  ttsProvider: z.string().max(128).optional(),
+  ttsModel: z.string().max(128).optional(),
+  ttsVoice: z.string().max(128).optional(),
+  // Blank clears the stored clip, so the data-URI shape is only enforced when
+  // there is something there.
+  ttsRefAudio: z.union([refAudioSchema, z.literal("")]).optional(),
+  ttsExtras: extrasSchema.optional(),
+  speakReplies: z.boolean().optional(),
+  handsFree: z.boolean().optional(),
 });
 
 const transcribeQuerySchema = z.object({
@@ -106,6 +131,25 @@ export function createVoiceRoutes(config: Config): Hono {
   const db = () => (config.databaseUrl ? getDb(config.databaseUrl).db : undefined);
 
   router.get("/providers", async (c) => c.json(await availableVoiceProviders(config, db())));
+
+  /**
+   * The speech settings, shared by every surface. Answers the defaults with no
+   * database rather than 503: a surface that can't reach one should render its
+   * controls as unconfigured, not fail to load.
+   */
+  router.get("/config", async (c) => {
+    const database = db();
+    if (!database) return c.json(DEFAULT_VOICE_CONFIG);
+    return c.json(await getVoiceConfig(database));
+  });
+
+  router.patch("/config", async (c) => {
+    const database = db();
+    if (!database) return c.json({ error: "database not configured" }, 503);
+    const parsed = voiceConfigSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    return c.json(await saveVoiceConfig(database, parsed.data));
+  });
 
   /**
    * Transcribes one utterance. The audio rides as the raw request body rather

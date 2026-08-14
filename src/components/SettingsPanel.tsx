@@ -9,6 +9,7 @@ import ReposSection from "./ReposSection";
 import TelegramSection from "./TelegramSection";
 import TerminalSection from "./TerminalSection";
 import ToolManagerSection from "./ToolManagerSection";
+import VoiceSection from "./VoiceSection";
 import WipSection from "./WipSection";
 
 type TabKey =
@@ -17,6 +18,7 @@ type TabKey =
   | "tools"
   | "repos"
   | "prs"
+  | "voice"
   | "embeddings"
   | "telegram"
   | "wip";
@@ -27,6 +29,7 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "tools", label: "Tools & MCP" },
   { key: "repos", label: "Repositories" },
   { key: "prs", label: "PR review" },
+  { key: "voice", label: "Voice" },
   { key: "embeddings", label: "Embeddings" },
   { key: "telegram", label: "Telegram" },
   { key: "wip", label: "Work in progress" },
@@ -85,6 +88,7 @@ export default function SettingsPanel() {
         </div>
       )}
       {active === "prs" && <PrReviewSection />}
+      {active === "voice" && <VoiceSection />}
       {active === "embeddings" && <EmbeddingsSection />}
       {active === "telegram" && <TelegramSection />}
       {active === "wip" && <WipSection />}
