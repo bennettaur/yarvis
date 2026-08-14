@@ -82,7 +82,7 @@ export type SplitRow =
   | { kind: "pair"; left: SplitCell | null; right: SplitCell | null };
 
 /** Strips the leading marker column (`+`, `-`, or space) from a patch line. */
-function body(text: string): string {
+export function diffBody(text: string): string {
   return /^[+\- ]/.test(text) ? text.slice(1) : text;
 }
 
@@ -110,11 +110,11 @@ export function pairRows(rows: DiffRow[]): SplitRow[] {
 
   for (const row of rows) {
     if (row.kind === "del") {
-      dels.push({ kind: "del", text: body(row.text), line: row.leftLine });
+      dels.push({ kind: "del", text: diffBody(row.text), line: row.leftLine });
       continue;
     }
     if (row.kind === "add") {
-      adds.push({ kind: "add", text: body(row.text), line: row.rightLine });
+      adds.push({ kind: "add", text: diffBody(row.text), line: row.rightLine });
       continue;
     }
     // Anything else ends the run of changed lines and closes out its pairing.
@@ -124,7 +124,7 @@ export function pairRows(rows: DiffRow[]): SplitRow[] {
     } else if (row.kind === "meta") {
       out.push({ kind: "meta", text: row.text });
     } else {
-      const text = body(row.text);
+      const text = diffBody(row.text);
       out.push({
         kind: "pair",
         left: { kind: "context", text, line: row.leftLine },

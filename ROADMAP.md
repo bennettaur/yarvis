@@ -138,17 +138,20 @@ Status of the build against the original vision. The full V1 plan lives at
   are pulled from repos flagged with a per-repo "Pull issues" toggle, and new
   issues can be opened in any of those repos. The issue detail view (title,
   labels, assignees, markdown body, comments) grooms a ticket in place — editing
-  its title and description, closing and reopening it — and has a "Start work"
-  action that creates a workspace for the issue, links it, best-effort assigns
-  the issue to the viewer and labels it in-progress on GitHub, then provisions
-  the worktree and launches a Claude session seeded with the issue title +
-  description (written to `.yarvis/issue-prompt.md` by provisioning). Every issue
-  list row — GitHub and JIRA alike — carries that same action, so an issue you
-  already know you want can be started without opening it. The whole sequence
-  runs in the sidecar, which launches the session on the ticket as the last step
-  of provisioning, so the UI only ever attaches and navigating away can't
-  interrupt it. The chat agent drives the same flow conversationally via its
-  `list_repo_issues` /
+  its title and description, its labels and assignees, closing and reopening it,
+  and posting comments. Labels and assignees are chosen from the sets the repo
+  itself offers, fetched on first use of a picker, and each save replaces the
+  whole set, so clearing a picker unlabels or unassigns. The view also has a
+  "Start work" action that creates a workspace for the issue, links it,
+  best-effort assigns the issue to the viewer and labels it in-progress on
+  GitHub, then provisions the worktree and launches a Claude session seeded with
+  the issue title + description (written to `.yarvis/issue-prompt.md` by
+  provisioning). Every issue list row — GitHub and JIRA alike — carries that
+  same action, so an issue you already know you want can be started without
+  opening it. The whole sequence runs in the sidecar, which launches the session
+  on the ticket as the last step of provisioning, so the UI only ever attaches
+  and navigating away can't interrupt it. The chat agent drives the same flow
+  conversationally via its `list_repo_issues` /
   `start_work_on_issue` tools. The data model, provider layer, and
   `/api/issues/:provider` routes are source-agnostic (keyed by provider /
   sourceKey / externalId) so JIRA can be added without a rewrite.
@@ -185,9 +188,10 @@ Status of the build against the original vision. The full V1 plan lives at
   refresh default branch, cut worktrees off `origin/<default>`, run per-repo
   setup scripts; metadata in Postgres); a Workspaces sidebar tab with a
   per-workspace terminal at the parent folder + per-repo run-script terminals; a
-  right-hand All files / Changed / PR-checks column backed by a background PR
-  poller; task linkage that auto-completes a linked task on archive (recording a
-  summary + merged-PR URL); and `WorkspaceList` / `Workspace` Omni widgets. The
+  right-hand All files / Changed / Comments / PR-checks column backed by a
+  background PR poller; task linkage that auto-completes a linked task on archive
+  (recording a summary + merged-PR URL); and `WorkspaceList` / `Workspace` Omni
+  widgets. The
   worktree engine also answers the working-directory question in "Claude Code
   delegation" below. Both file views group their rows into the same collapsible
   folder tree PR review uses. Files / Changes views auto-refresh every 5 seconds
@@ -200,7 +204,12 @@ Status of the build against the original vision. The full V1 plan lives at
   "+ Add new" repo creation so a fresh repo can be registered without leaving
   the page. The PR-checks panel's "Review in yarvis" button hands off to the
   PRs tab (via an in-app event bus) and opens the detail view directly,
-  alongside an "Open externally ↗" button for the provider's web UI.
+  alongside an "Open externally ↗" button for the provider's web UI. A changed
+  file's diff takes local self-review comments — a single line, or a range
+  dragged down the line-number gutter — stored against the file, the lines, and
+  the worktree's HEAD, and never sent to a PR provider. The Comments tab lists
+  them across every repo in the workspace with a copy-for-the-agent button,
+  resolve/reopen, and delete; a completed archive deletes them all.
 - **Omni Chat + keyboard navigation** — a global `Control+Shift+Space` hotkey
   (registered in the Rust core) raises a centered chat overlay over any tab; Esc
   hides it while the session keeps streaming in the background, and re-summoning
@@ -213,9 +222,15 @@ Status of the build against the original vision. The full V1 plan lives at
   can list repos and their open issues, spin up workspaces (from repos, from an
   issue like the "Start work" button, or scratch) and start agent sessions
   (remote-controllable only when the request came in over Telegram, where there
-  is no local tab to drive), report a workspace's PR / CI-check / mergeable status, and
-  archive workspaces — all from natural language, and reachable from Chat, Omni,
-  and the Telegram bot alike. Tab shortcuts too: Cmd/Ctrl+1–9 jump to a
+  is no local tab to drive), report a workspace's PR / CI-check / mergeable
+  status, and archive workspaces — all from natural language, and reachable from
+  Chat, Omni, and the Telegram bot alike. Two of those tools operate in bulk
+  across workspaces: one merges each workspace branch's base into it and pushes
+  what merged cleanly, skipping any worktree that is dirty, mid-rebase, or off
+  its own branch, and leaving a conflicted merge in place rather than aborting
+  it; the other types a follow-up instruction into a workspace's running agent
+  session over the core's control channel, refusing unless the configured agent
+  is what is reading that prompt. Tab shortcuts too: Cmd/Ctrl+1–9 jump to a
   tab, Cmd/Ctrl+Shift+[ / ] cycle through them.
 - **Telegram remote control** — chat with Yarvis and issue control commands from
   Telegram. A long-poll bot in the sidecar drives the same chat agent (extracted
@@ -250,6 +265,10 @@ Status of the build against the original vision. The full V1 plan lives at
 ### 1. Claude Code delegation
 Dispatch coding tasks to Claude Code from the app (e.g. "fix all my failing
 PRs" → check out the PR branch and run an agent to fix it).
+- **Partly covered already:** the workspace tools above bulk-operate across
+  branches and can hand follow-up work to a workspace's agent — but through its
+  PTY session, which means no structured progress and no confirmation that the
+  instruction was carried out. What remains is the in-sidecar SDK run.
 - **Approach:** `@anthropic-ai/claude-agent-sdk` `query()` in the Bun sidecar,
   pointed at a working directory; stream progress to the UI; tie into the PR
   dashboard to target failing PRs.

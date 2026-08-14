@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { parsePatch } from "../../lib/pr/diff";
-import { expandRows } from "../../lib/pr/expand";
+import { expandAllGaps, expandRows, toFileLines } from "../../lib/pr/expand";
 import { changeBands } from "./ChangeMinimap";
 
 const bandsFor = (patch: string, totalLines: number) =>
@@ -39,6 +39,35 @@ describe("changeBands", () => {
     const bands = bandsFor(["@@ -10,2 +9,0 @@", "-a", "-b"].join("\n"), 100);
     expect(bands).toHaveLength(1);
     expect(bands[0]!.added).toBe(false);
+  });
+
+  // The whole-file view carries no `@@` headers, so a deletion-only hunk — the
+  // one case whose position the header used to supply — has to take its place
+  // from the revealed line above it instead. The deletion renders between
+  // context lines 4 and 5, so the band sits at line 5 of 10: 40% down.
+  it("places a deletion-only change with the headers gone", () => {
+    const lines = toFileLines(
+      ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9", "l10"].join("\n"),
+    );
+    const rows = parsePatch(["@@ -5,2 +4,0 @@", "-a", "-b"].join("\n"));
+    const bands = changeBands(expandRows(rows, lines, expandAllGaps(rows, lines.length)), 10);
+    expect(bands).toHaveLength(1);
+    expect(bands[0]!.top).toBe(40);
+    expect(bands[0]!.added).toBe(false);
+  });
+
+  // Toggling the whole file on must not slide a marker down the strip. The two
+  // views reach a deletion-only hunk's position by different routes — the
+  // header while it is rendered, the revealed line above it once it is gone —
+  // and they have to agree.
+  it("puts a deletion-only change in the same place either way", () => {
+    const lines = toFileLines(
+      ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9", "l10"].join("\n"),
+    );
+    const rows = parsePatch(["@@ -5,2 +4,0 @@", "-a", "-b"].join("\n"));
+    const collapsed = changeBands(expandRows(rows, lines, new Map()), 10);
+    const whole = changeBands(expandRows(rows, lines, expandAllGaps(rows, lines.length)), 10);
+    expect(collapsed[0]!.top).toBe(whole[0]!.top);
   });
 
   it("has nothing to draw for a file of unknown length", () => {

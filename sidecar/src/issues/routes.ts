@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { GitHubClient } from "../github/client.ts";
+import { noTraversal } from "../pr/codeTools.ts";
 import { createWorkspace, startKickOff } from "../workspaces/service.ts";
 import {
   addStar,
@@ -33,11 +34,19 @@ const ownerName = z
   .min(1)
   .max(39)
   .regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/, "invalid github owner");
+// `.` and `..` are legal GitHub repo characters, so the charset regex admits a
+// whole dot segment. Nothing can deliver one over HTTP today — URL parsing
+// collapses it before the router matches, and the request 404s — but this value
+// is interpolated into a GitHub API path, where a surviving `..` would resolve
+// to a different endpoint with the user's token attached. The guard sits with
+// the other validation rather than resting on a normalization step happening
+// somewhere else, which is the boundary codeTools.ts draws for the same reason.
 const repoName = z
   .string()
   .min(1)
   .max(100)
-  .regex(/^[A-Za-z0-9._-]+$/, "invalid github repo");
+  .regex(/^[A-Za-z0-9._-]+$/, "invalid github repo")
+  .refine(noTraversal, "invalid github repo");
 const ownerRepoParams = z.object({ owner: ownerName, repo: repoName });
 
 const filterSchema = z.object({
@@ -69,19 +78,37 @@ const createIssueSchema = z.object({
   body: z.string().max(65536).default(""),
 });
 
+// GitHub caps a label name at 50 characters, a username at 39, and an issue at
+// 10 assignees. The 100-label array bound is ours, not GitHub's: no issue
+// carries that many, and it keeps an unbounded array off the wire. Both fields
+// are whole-set replacements, so an empty array is a valid clear.
+const labelNames = z.array(z.string().trim().min(1).max(50)).max(100);
+const assigneeLogins = z.array(z.string().trim().min(1).max(39)).max(10);
+
 /**
- * A partial issue edit: title, body, and open/closed state are each optional,
- * but at least one must be present so an empty PATCH doesn't hit GitHub.
+ * A partial issue edit: every field is optional, but at least one must be
+ * present so an empty PATCH doesn't hit GitHub.
+ *
+ * The emptiness check reads the parsed output, which holds only the fields the
+ * request actually carried — so every field above must stay a bare `.optional()`.
+ * Giving one a `.default()` (as `createIssueSchema` does for `body`) would put a
+ * value there unconditionally and let an empty PATCH through.
  */
 const updateIssueSchema = z
   .object({
     title: z.string().trim().min(1).max(256).optional(),
     body: z.string().max(65536).optional(),
     state: z.enum(["open", "closed"]).optional(),
+    labels: labelNames.optional(),
+    assignees: assigneeLogins.optional(),
   })
-  .refine((v) => v.title !== undefined || v.body !== undefined || v.state !== undefined, {
+  .refine((v) => Object.values(v).some((field) => field !== undefined), {
     message: "no fields to update",
   });
+
+const issueCommentSchema = z.object({
+  body: z.string().trim().min(1).max(65536),
+});
 
 /**
  * Providers whose issues are stored/linked through these source-agnostic routes.
@@ -128,6 +155,7 @@ export function createIssueRoutes(config: Config): Hono {
   }
   router.use("/:provider/detail/*", githubOnly);
   router.use("/:provider/create/*", githubOnly);
+  router.use("/:provider/repo-meta/*", githubOnly);
 
   const db = () => getDb(config.databaseUrl as string).db;
   const github = () =>
@@ -248,9 +276,10 @@ export function createIssueRoutes(config: Config): Hono {
   });
 
   /**
-   * Edits an issue's title, body, or open/closed state (closing and reopening
-   * both go through `state`). Responds with freshly fetched detail so the caller
-   * renders what GitHub actually stored rather than its own optimistic guess.
+   * Edits an issue's title, body, open/closed state, labels, or assignees
+   * (closing and reopening both go through `state`). Responds with freshly
+   * fetched detail so the caller renders what GitHub actually stored rather than
+   * its own optimistic guess.
    *
    * Unlike create, this is deliberately not scoped to the repos configured to
    * pull issues: saved filters run GitHub search, which surfaces issues from any
@@ -270,6 +299,55 @@ export function createIssueRoutes(config: Config): Hono {
     try {
       await gh.updateIssue(params.owner, params.repo, params.number, parsed.data);
       return c.json(await gh.issueDetail(params.owner, params.repo, params.number));
+    } catch (e) {
+      return c.json({ error: String(e) }, 502);
+    }
+  });
+
+  /**
+   * Posts a comment and responds with freshly fetched detail, so the caller
+   * renders the comment as GitHub stored it — with the author and timestamp the
+   * server assigned — instead of echoing back the draft.
+   *
+   * Scoped like the edit route above rather than like create, deliberately: a
+   * comment is a mutation of an issue already on screen, which the unscoped edit
+   * route can already rewrite wholesale. Create is the one route that puts a new
+   * artifact in a repo the user never registered, which is why it alone is
+   * restricted to the configured set.
+   */
+  router.post("/:provider/detail/:owner/:repo/:number/comments", async (c) => {
+    const gh = github();
+    if (!gh) return c.json({ error: "github token not configured" }, 400);
+    const params = parseIssueParams(
+      c.req.param("owner"),
+      c.req.param("repo"),
+      c.req.param("number"),
+    );
+    if ("error" in params) return c.json({ error: params.error }, 400);
+    const parsed = issueCommentSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    try {
+      await gh.addIssueComment(params.owner, params.repo, params.number, parsed.data.body);
+      return c.json(await gh.issueDetail(params.owner, params.repo, params.number), 201);
+    } catch (e) {
+      return c.json({ error: String(e) }, 502);
+    }
+  });
+
+  /**
+   * The label and assignee sets the issue editors pick from. Keyed by
+   * owner/repo, not by issue, since both sets are properties of the repo.
+   */
+  router.get("/:provider/repo-meta/:owner/:repo", async (c) => {
+    const gh = github();
+    if (!gh) return c.json({ error: "github token not configured" }, 400);
+    const target = ownerRepoParams.safeParse({
+      owner: c.req.param("owner"),
+      repo: c.req.param("repo"),
+    });
+    if (!target.success) return c.json({ error: target.error.flatten() }, 400);
+    try {
+      return c.json(await gh.repoIssueMeta(target.data.owner, target.data.repo));
     } catch (e) {
       return c.json({ error: String(e) }, 502);
     }

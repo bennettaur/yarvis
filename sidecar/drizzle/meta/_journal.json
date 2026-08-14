@@ -166,8 +166,15 @@
     {
       "idx": 23,
       "version": "7",
-      "when": 1786629865382,
-      "tag": "0023_huge_freak",
+      "when": 1786511212073,
+      "tag": "0023_good_mister_sinister",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1786680124924,
+      "tag": "0024_mysterious_fantastic_four",
       "breakpoints": true
     }
   ]

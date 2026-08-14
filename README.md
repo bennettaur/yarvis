@@ -287,6 +287,8 @@ Console and register the loopback redirect
 for Desktop clients), then enter the client id/secret in Settings and connect
 from the Calendar tab. See `ROADMAP.md` for the full verification steps.
 
+### Workspaces
+
 Workspaces manage their own repo clones and git worktrees under a base
 directory, `~/dev/yarvis-workspaces` by default and overridable with the
 `YARVIS_WORKSPACES_ROOT` env var (non-secret config, unlike the Keychain
@@ -334,12 +336,59 @@ workspace opened from an issue's "Start work" also gets the ticket itself, in
 `.yarvis/issue-prompt.md` — the file its agent session is launched to read, as
 the last step of provisioning.
 
+When several workspaces need the same upstream fix, ask the in-app agent (or
+Telegram) to merge main into them — "merge main into all my open PRs" — and it
+syncs them in bulk: fetch, merge each branch's base into it, and push the branch
+when the remote is missing commits. A repo is left alone, and the reason
+reported, when its worktree has uncommitted changes, is part-way through a
+merge/rebase/cherry-pick/revert, isn't on the workspace's own branch, or isn't
+finished provisioning. Note that a branch you have never pushed is published by
+this, since it counts as ahead of a remote it doesn't have yet.
+
+A merge that conflicts is left in the worktree with its markers in place and
+isn't pushed, so you can pick it up yourself or hand it back: the agent can type
+an instruction like "resolve the merge conflicts and commit" straight into that
+workspace's running session, and it's answered there in the background. That send
+is refused unless the configured agent itself is what's reading the session's
+prompt — if it has exited, or you left something else running in that terminal,
+nothing is typed — and an instruction may not open with `!`, `/`, `#`, or `@`,
+which the agent reads as a command rather than a request. What it can't tell is
+*what* the agent is showing: submitting while a permission prompt is up answers
+that prompt, so it confirms delivery only, never that the work was done.
+
 At most 60 terminal sessions can be live at once; opening more fails until one
 is closed. Raise or lower that under Settings → Repositories → Terminals (up to
 1000) — each session is a real shell, so the cap trades memory and process count
 for how many workspaces you can keep open. Leaving the field blank restores the
 default. The value applies to the next terminal opened, without a restart, and
 is stored in `settings.json` in the app data directory.
+
+#### Reviewing your own work
+
+The right column's **Changed** list opens a file's diff in a tab, and that diff
+takes comments the way a PR review does. Drag down the line-number gutter to
+pick out a range — or use the **+** that appears on hovering a line for a single
+one — and the note hangs under the last line it covers. Comments attach to the
+right-hand (new file) line, the side a PR review anchors to, so a line the
+change only deletes takes no comment. Each one records the file, the lines, and
+the commit the worktree was on when you wrote it, shown abbreviated on the card
+so you can tell a note written against older code from one written against what
+is there now.
+
+Nothing is published: the comments live in the local database and never reach a
+PR, which is the point — reviewing your own change on github.com means leaving
+feedback other people read, and that goes obsolete as soon as the agent acts on
+it. The **Comments** tab beside Changed lists the whole review, spanning every
+repo in the workspace and carrying a count of what is still open; a comment's
+file-and-line heading opens that diff. **Copy for Claude** puts the review on
+the clipboard as numbered entries to paste into the agent session.
+
+**Resolve** on a comment marks it dealt with — it stays in the list, so a
+decision isn't lost, but drops out of the copied text; **Reopen** puts it back
+and **×** deletes it outright. Archiving a workspace deletes every comment in
+it once the worktrees are actually gone: they were scaffolding for work that is
+done. An archive that stops partway (a worktree that won't remove) is still
+reopenable, so its comments are left where they are.
 
 ### Clipboard
 
@@ -407,7 +456,9 @@ changes still highlighted, plus a strip down the edge marking where in the file
 they fall. A file's full text is only fetched once you ask for context. A copy
 button puts a file's full repo-relative path on the clipboard, for pasting into
 an editor or a prompt — always shown in the diff header, and in the file list on
-hovering a row, where only the basename is visible.
+hovering a row, where only the basename is visible. Clicking a row scrolls its
+diff into view and flashes the file's header, so a jump lands somewhere you can
+see it arrived.
 
 #### Guided review and line insights
 
@@ -415,7 +466,10 @@ hovering a row, where only the basename is visible.
 lay out an order to review it in, working from the outside in — the request
 that arrives, then what handles it, down to what it finally writes. Each step
 names a file and lines with a sentence on why it comes there, and the box docks
-to the bottom of the review with back/next. A guide is generated once per PR and
+to the bottom of the review with back/next. A location too long for the box
+keeps its file name and line numbers and drops directories from the front of the
+path, with the whole thing on hover; clicking one jumps to the code and flashes
+that file's header. A guide is generated once per PR and
 kept until you approve, request changes, or merge; pushing new commits marks it
 out of date rather than deleting it, and anything untouched for 30 days is swept.
 
@@ -611,7 +665,8 @@ src/            React frontend (Vite + TS + Tailwind)
                 gap/context expansion, change minimap, guide panel, insight cards
     issue/      Issues tab views: GitHub + JIRA issue lists, detail, create/repo-picker modals
     files/      shared file-tree rows (collapsible folders), used by PR review and workspaces
-    workspaces/  workspace detail subviews + Omni widgets
+    workspaces/  workspace detail subviews + Omni widgets, and the self-review
+                comment layer over a changed file's diff
     shell/      desktop shell: nav rail, top bar, boot loading screen, tab shortcuts
     omni/       Omni view — chat-driven dynamic-UI canvas
     omnichat/   Omni Chat — global summon-from-anywhere chat overlay
@@ -622,9 +677,12 @@ src-tauri/      Rust core (Tauri v2)
   src/keychain.rs   Keychain-backed secret commands (single consolidated item)
   src/instance.rs   which instance this process is, and what it therefore owns
   src/sidecar.rs    sidecar supervisor
+  src/pty.rs        PTY sessions (terminals + workspace agent sessions), owned by the core
+  src/control.rs    fixed-method UDS control channel the sidecar drives PTY sessions through
   src/alarms.rs     full-screen alarm scheduler
   src/clipboard.rs  clipboard read/write + in-memory (never persisted) clip history
 sidecar/        Bun + TS service (Hono)
+  src/core/     client for the Rust core's control channel (spawn/kill/send to a session)
   src/db/       Drizzle schema, client, migrations (applied on startup)
   src/chat/     multi-provider streaming chat + tool-calls (agent.ts: shared agent turn)
   src/voice/    speech-to-text + text-to-speech (/api/voice): Hugging Face Inference
@@ -644,7 +702,9 @@ sidecar/        Bun + TS service (Hono)
   src/jira/     JIRA Cloud REST client + routes + agent tools + ADF↔Markdown conversion
   src/google/   Google Calendar OAuth + events
   src/omni/     Omni UI generation (streaming) + saved layouts
-  src/workspaces/ repo registry + git-worktree provisioning (/api/repos, /api/workspaces)
+  src/workspaces/ repo registry + git-worktree provisioning, bulk base-branch sync, and
+                  teardown (/api/repos, /api/workspaces), plus local self-review
+                  comments on a workspace's own diffs (reviewComments.ts)
   src/attention/  attention stream: hook ingest, SSE stream, scoped clearing
   src/chat/attentionTools.ts  request_attention tool (badge + OS notification)
   drizzle/      generated SQL migrations

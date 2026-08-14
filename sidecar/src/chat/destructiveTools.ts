@@ -27,4 +27,11 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "create_workspace_session",
   "create_scratch_workspace_session",
   "start_workspace_session",
+  // Merges and pushes across every active workspace by default, publishing a
+  // branch that had never been pushed before.
+  "sync_workspaces_with_base",
+  // Submits text at a running agent's prompt. Delivery is all it confirms — the
+  // session may have been showing a dialog that the text answers instead — so a
+  // misheard instruction is both unreviewable and unrecoverable.
+  "send_workspace_instruction",
 ]);
