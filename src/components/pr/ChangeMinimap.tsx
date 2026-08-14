@@ -44,9 +44,11 @@ export function changeBands(rows: ExpandedRow[], totalLines: number): Band[] {
   for (const item of rows) {
     if (item.kind !== "row") continue;
     // A hunk that only deletes has no row carrying a right-side line at all —
-    // its position in the new file exists solely in the `@@` header. Without
-    // reading it, such a hunk inherits whatever line the previous hunk left
-    // behind and its marker lands in the wrong part of the file.
+    // where a header is rendered, its position in the new file exists solely
+    // there. Without reading it, such a hunk inherits whatever line the
+    // previous hunk left behind and its marker lands in the wrong part of the
+    // file. A header is dropped once the line above it is revealed, and then
+    // that revealed line carries the position instead.
     if (item.row.kind === "hunk") {
       const start = hunkRightStart(item.row.text);
       if (start !== null) lastLine = start - 1;

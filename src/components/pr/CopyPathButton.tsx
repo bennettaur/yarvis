@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { writeClipboard } from "../../lib/clipboard";
+import { clipboardSafePath, writeClipboard } from "../../lib/clipboard";
 
 /** How long the tick (or the failure mark) stays up before the icon resets. */
 export const FEEDBACK_MS = 1500;
@@ -11,17 +11,6 @@ const LABELS: Record<CopyState, string> = {
   copied: "Path copied",
   failed: "Copying failed",
 };
-
-/**
- * A path from a PR is outside-influenced data (see AGENTS.md), and git allows
- * every byte but NUL and `/` in a path component — so a hostile branch can name
- * a file with an embedded newline or a right-to-left override. Those survive the
- * clipboard intact and make the pasted text read as something other than what
- * the review page showed, which matters most where this button is meant to be
- * used: a shell, or a prompt. Strip rather than refuse, since a path carrying
- * control characters is not one anyone can open by hand either way.
- */
-const clipboardSafe = (path: string): string => path.replace(/[\p{Cc}\p{Cf}]/gu, "");
 
 /**
  * Copies a changed file's repo-relative path to the system clipboard — the
@@ -57,7 +46,7 @@ export default function CopyPathButton({
     // default activation is a separate concern from bubbling.
     event.preventDefault();
     try {
-      await writeClipboard(clipboardSafe(path));
+      await writeClipboard(clipboardSafePath(path));
       setCopyState("copied");
     } catch (e) {
       console.error("[pr] copying the file path failed:", e);

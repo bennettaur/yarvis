@@ -175,9 +175,10 @@ Status of the build against the original vision. The full V1 plan lives at
   refresh default branch, cut worktrees off `origin/<default>`, run per-repo
   setup scripts; metadata in Postgres); a Workspaces sidebar tab with a
   per-workspace terminal at the parent folder + per-repo run-script terminals; a
-  right-hand All files / Changed / PR-checks column backed by a background PR
-  poller; task linkage that auto-completes a linked task on archive (recording a
-  summary + merged-PR URL); and `WorkspaceList` / `Workspace` Omni widgets. The
+  right-hand All files / Changed / Comments / PR-checks column backed by a
+  background PR poller; task linkage that auto-completes a linked task on archive
+  (recording a summary + merged-PR URL); and `WorkspaceList` / `Workspace` Omni
+  widgets. The
   worktree engine also answers the working-directory question in "Claude Code
   delegation" below. Both file views group their rows into the same collapsible
   folder tree PR review uses. Files / Changes views auto-refresh every 5 seconds
@@ -190,7 +191,12 @@ Status of the build against the original vision. The full V1 plan lives at
   "+ Add new" repo creation so a fresh repo can be registered without leaving
   the page. The PR-checks panel's "Review in yarvis" button hands off to the
   PRs tab (via an in-app event bus) and opens the detail view directly,
-  alongside an "Open externally ↗" button for the provider's web UI.
+  alongside an "Open externally ↗" button for the provider's web UI. A changed
+  file's diff takes local self-review comments — a single line, or a range
+  dragged down the line-number gutter — stored against the file, the lines, and
+  the worktree's HEAD, and never sent to a PR provider. The Comments tab lists
+  them across every repo in the workspace with a copy-for-the-agent button,
+  resolve/reopen, and delete; a completed archive deletes them all.
 - **Omni Chat + keyboard navigation** — a global `Control+Shift+Space` hotkey
   (registered in the Rust core) raises a centered chat overlay over any tab; Esc
   hides it while the session keeps streaming in the background, and re-summoning
