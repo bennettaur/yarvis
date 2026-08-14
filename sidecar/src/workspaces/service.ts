@@ -63,6 +63,7 @@ import {
   updateDefaultBranch,
   worktreeStatus,
 } from "./git.ts";
+import { writeMcpConfig } from "./mcpConfig.ts";
 import { deleteWorkspaceReviewComments } from "./reviewComments.ts";
 
 const SETUP_LOG_CAP = 16 * 1024;
@@ -1239,6 +1240,7 @@ export async function provisionWorkspace(
         after.id,
         after.repos.map((wr) => wr.worktreePath),
       );
+      writeMcpConfig(after.rootPath);
     }
     const allReady = after?.repos.every((r) => r.status === "ready" || r.status === "removed");
     let status: Workspace["status"] = allReady ? "active" : "error";

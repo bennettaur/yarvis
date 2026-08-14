@@ -3,6 +3,7 @@ import AgentSection from "./AgentSection";
 import CustomProviderSection from "./CustomProviderSection";
 import EmbeddingsSection from "./EmbeddingsSection";
 import KeychainSection from "./KeychainSection";
+import McpEndpointSection from "./McpEndpointSection";
 import McpServerSection from "./McpServerSection";
 import PrReviewSection from "./PrReviewSection";
 import ReposSection from "./ReposSection";
@@ -74,6 +75,7 @@ export default function SettingsPanel() {
       {active === "tools" && (
         <div className="space-y-5">
           <McpServerSection />
+          <McpEndpointSection />
           <ToolManagerSection />
         </div>
       )}

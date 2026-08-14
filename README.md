@@ -194,8 +194,10 @@ Claude starts there rather than inside a single repo: `AGENTS.md` (plus a
 `CLAUDE.md` that includes it) describing which repos are present and on what
 branch, and a `.claude/settings.json` that registers each repo's
 `.claude/skills` and `.claude/agents` so those skills and agents still load
-even though Claude runs one directory above the repos. The settings file is
-merged, not overwritten, so any other keys already present are left intact. A
+even though Claude runs one directory above the repos. It also writes a
+`.mcp.json` pointing the session at Yarvis's own MCP endpoint (see "Yarvis as an
+MCP server"). Both files are merged, not overwritten, so any other keys — or
+other MCP servers — already present are left intact. A
 workspace opened from an issue's "Start work" also gets the ticket itself, in
 `.yarvis/issue-prompt.md` — the file its agent session is launched to read, as
 the last step of provisioning.
@@ -562,11 +564,52 @@ sidecar/        Bun + TS service (Hono)
   src/workspaces/ repo registry + git-worktree provisioning, bulk base-branch sync, and
                   teardown (/api/repos, /api/workspaces), plus local self-review
                   comments on a workspace's own diffs (reviewComments.ts)
+  src/mcp/      MCP client: connected servers, tool registry sync, approvals
+  src/mcpServer/  the MCP endpoint Yarvis serves (memory tools over /mcp)
   src/attention/  attention stream: hook ingest, SSE stream, scoped clearing
   src/chat/attentionTools.ts  request_attention tool (badge + OS notification)
   drizzle/      generated SQL migrations
 scripts/        dev tooling (dev-instance.ts: launch a named second instance)
 ```
+
+## Yarvis as an MCP server
+
+Yarvis serves its own MCP endpoint, so Claude Code (or any other MCP client) can
+reach into the app. Today it exposes the memory tools — `recall`, `remember`,
+`take_note`, `list_memories`, `forget` — over the same pgvector store the in-app
+chat uses, so a coding session can look up what you told Yarvis last week and
+write back what it learns.
+
+The endpoint is `POST http://127.0.0.1:<sidecar port>/mcp`, authenticated with a
+scoped token that grants access to those tools and nothing else — not the rest of
+the API, which keeps its own bearer. It also checks the `Host` header, so a page
+that resolves a name it controls to 127.0.0.1 can't reach it. Both the port and
+the token are allocated once per app launch: restarting the sidecar (which saving
+a secret does) keeps them, relaunching Yarvis picks new ones.
+
+**Sessions Yarvis launches need no setup.** Workspace provisioning writes a
+`.mcp.json` at the workspace root pointing at `${YARVIS_SIDECAR_PORT}` with an
+`Authorization: Bearer ${YARVIS_MCP_TOKEN}` header, and the core injects both
+variables into the session's shell — so the file on disk carries no secret. Claude
+Code asks you to approve the project's MCP server the first time it sees it. Two
+caveats: a workspace provisioned before this existed gets the file when it is next
+provisioned, and only sessions the UI can navigate to (a workspace's agent
+session, a workspace or standalone terminal pane) receive the variables — the same
+sessions that can raise an attention item.
+
+**Any other client** — Claude Code in a terminal Yarvis didn't spawn, another
+editor — needs pointing by hand. *Settings → Tools & MCP → Yarvis MCP endpoint*
+shows the URL and token and copies a ready-made `claude mcp add` command. Re-copy
+it after relaunching Yarvis, since the token is new. Against a standalone sidecar
+(`bun run sidecar:dev`) the token is generated and never printed, so set
+`YARVIS_MCP_TOKEN` yourself if you want to point a client at one.
+
+Memory contents are treated as untrusted reference data on the way out: `recall`
+and `list_memories` fence each hit in tags carrying a per-request nonce and name
+that nonce in the accompanying warning, so content that writes a closing tag of
+its own can't end the block and address the calling agent. Memories written
+through this endpoint are stamped `source: "mcp"` and reported as such, so a
+reading agent can tell what it wrote itself from what you said.
 
 ## Attention stream
 
@@ -579,6 +622,8 @@ navigate back to — a workspace's tabs and the standalone Terminal tab — carr
 `YARVIS_SESSION_KEY` (plus `YARVIS_WORKSPACE_ID` when it belongs to a workspace)
 and a create-only ingest token, so a Claude run started by hand in one of a
 workspace's terminal tabs flags *that* tab rather than the workspace as a whole.
+The same env carries the scoped MCP token (see "Yarvis as an MCP server"), which
+is why the two features reach the same set of sessions.
 
 How the stream behaves:
 

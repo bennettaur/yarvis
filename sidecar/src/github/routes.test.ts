@@ -13,6 +13,7 @@ function appWith(secrets: Config["secrets"]): ReturnType<typeof createApp> {
     token: "test-token",
     tokenGenerated: false,
     attentionToken: "test-attention-token",
+    mcpToken: "test-mcp-token",
     allowedOrigins: null,
     databaseUrl: "postgres://localhost/unused",
     workspacesRoot: "/tmp/yarvis-test-workspaces",

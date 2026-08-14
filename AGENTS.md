@@ -126,6 +126,11 @@ back to ad-hoc.
   the tools in `codeTools.ts` are written once and GitHub/Azure each supply an
   implementation. A capability one provider lacks resolves to `null` so the
   caller can say so, rather than throwing.
+- `sidecar/src/mcp/` is the MCP *client* (servers Yarvis connects out to);
+  `sidecar/src/mcpServer/` is the MCP endpoint Yarvis *serves*. A tool exposed
+  over that endpoint is reached by outside clients holding only the scoped
+  `YARVIS_MCP_TOKEN`, so it must be one that token is meant to grant — the
+  endpoint deliberately sits outside the main bearer wall, like attention-ingest.
 - Anything an outside party can influence — file contents, diffs, PR titles,
   recalled memories — enters a prompt as data, not instruction: fenced in
   per-request nonce tags (see `sidecar/src/pr/ask.ts`) with the system prompt

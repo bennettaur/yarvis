@@ -20,6 +20,7 @@ function configWithSecrets(secrets: Config["customProviderSecrets"] = {}): Confi
     token: "t",
     tokenGenerated: false,
     attentionToken: "test-attention-token",
+    mcpToken: "test-mcp-token",
     allowedOrigins: null,
     databaseUrl: url,
     workspacesRoot: "/tmp/yarvis-test-workspaces",
