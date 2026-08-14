@@ -144,6 +144,18 @@ export async function scanClipboardTexts(
 /** Puts text on the system clipboard. */
 export const writeClipboard = (text: string): Promise<void> => invoke("clipboard_write", { text });
 
+/**
+ * Strips control and formatting characters from a file path bound for the
+ * clipboard. Git allows every byte but NUL and `/` in a path component, so a
+ * hostile branch can name a file with an embedded newline or a right-to-left
+ * override (see AGENTS.md on outside-influenced data). Those survive the
+ * clipboard intact and make the pasted text read as something other than what
+ * was on screen, which matters most where these paths are pasted: a shell, or a
+ * prompt. Strip rather than refuse — a path carrying control characters is not
+ * one anyone can open by hand either way.
+ */
+export const clipboardSafePath = (path: string): string => path.replace(/[\p{Cc}\p{Cf}]/gu, "");
+
 /** The clips the Rust core has seen this run, newest first. */
 export const readClipboardHistory = (): Promise<ClipboardHistoryItem[]> =>
   invoke("clipboard_history");

@@ -492,6 +492,35 @@ export const workspaceRepoPr = pgTable(
 );
 
 /**
+ * Self-review comments left on a workspace's own diffs, before any PR exists.
+ * They never leave the machine: the point is to review your own work without
+ * publishing half-formed notes to a PR, then hand the collected text to the
+ * agent. Anchored to the right-hand (new file) line range the way a PR review
+ * comment is, plus the commit the worktree was on when the note was written so
+ * a stale anchor is recognisable after further work lands.
+ */
+export const workspaceReviewComments = pgTable(
+  "workspace_review_comments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceRepoId: uuid("workspace_repo_id")
+      .notNull()
+      .references(() => workspaceRepos.id, { onDelete: "cascade" }),
+    path: text("path").notNull(), // worktree-relative path of the reviewed file
+    startLine: integer("start_line").notNull(),
+    endLine: integer("end_line").notNull(), // equal to startLine for a single line
+    // Worktree HEAD when the comment was written. Null when the branch has no
+    // commits yet, so the note is still recorded rather than refused.
+    commitSha: text("commit_sha"),
+    body: text("body").notNull(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }), // null = still open
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("workspace_review_comments_wr_path_idx").on(t.workspaceRepoId, t.path)],
+);
+
+/**
  * Ticket-system integration (GitHub Issues today, JIRA later). These tables are
  * deliberately source-agnostic: a ticket is identified by (`provider`,
  * `sourceKey`, `externalId`) rather than GitHub-specific columns, so a second
@@ -856,6 +885,8 @@ export type WorkspaceRepo = typeof workspaceRepos.$inferSelect;
 export type NewWorkspaceRepo = typeof workspaceRepos.$inferInsert;
 export type WorkspaceRepoPr = typeof workspaceRepoPr.$inferSelect;
 export type NewWorkspaceRepoPr = typeof workspaceRepoPr.$inferInsert;
+export type WorkspaceReviewComment = typeof workspaceReviewComments.$inferSelect;
+export type NewWorkspaceReviewComment = typeof workspaceReviewComments.$inferInsert;
 export type IssueLink = typeof issueLinks.$inferSelect;
 export type NewIssueLink = typeof issueLinks.$inferInsert;
 export type IssueFilter = typeof issueFilters.$inferSelect;
