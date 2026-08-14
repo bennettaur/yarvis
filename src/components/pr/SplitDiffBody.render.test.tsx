@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
+import { parsePatch } from "../../lib/pr/diff";
+import { expandAllGaps } from "../../lib/pr/expand";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { fakeExpansion } from "../../test/expansion";
 import { mountForInteraction, renderToHtml, textOf } from "../../test/render";
@@ -222,5 +224,30 @@ describe("SplitDiffBody guided-review highlighting", () => {
 
   it("marks nothing without a range", async () => {
     expect(await render(patch)).not.toContain("inset 3px");
+  });
+});
+
+describe("SplitDiffBody whole-file view", () => {
+  const patch = ["@@ -3,1 +3,1 @@", "-old", "+new"].join("\n");
+  const fileLines = ["l1", "l2", "l3", "l4", "l5"];
+
+  // Issue #191: with the file shown in full, a header marks a jump the reader
+  // can see did not happen.
+  it("draws no hunk header once the whole file is showing", async () => {
+    const html = await renderToHtml(
+      createElement(SplitDiffBody, {
+        prRef,
+        file: { ...file, patch },
+        threads: [],
+        expansion: fakeExpansion(patch, {
+          fileLines,
+          expansions: expandAllGaps(parsePatch(patch), fileLines.length),
+          wholeFile: true,
+        }),
+      }),
+    );
+    expect(html).not.toContain("@@ -3,1 +3,1 @@");
+    expect(html).toContain(">old<");
+    expect(html).toContain(">new<");
   });
 });

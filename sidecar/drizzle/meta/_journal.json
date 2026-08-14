@@ -162,6 +162,13 @@
       "when": 1786331920893,
       "tag": "0022_clever_sinister_six",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1786511212073,
+      "tag": "0023_good_mister_sinister",
+      "breakpoints": true
     }
   ]
 }

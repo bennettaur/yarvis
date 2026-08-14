@@ -3,7 +3,7 @@ import { type DiffRow, pairRows, type SplitCell, type SplitRow } from "../../lib
 import type { Gap } from "../../lib/pr/expand";
 import { cellHtml, type DiffHighlight } from "../../lib/pr/highlight";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
-import { CodeText, rowClass } from "../diff/DiffView";
+import { CodeText, rowClass } from "../diff/DiffRow";
 import ChangeMinimap from "./ChangeMinimap";
 import GapMarker from "./GapMarker";
 import InsightBlock, { hasInsightsAt } from "./InsightCards";

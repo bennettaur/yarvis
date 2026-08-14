@@ -1,0 +1,9 @@
+[advisories]
+# RUSTSEC-2024-0429 is glib VariantStrIter unsoundness in the Linux GTK3 stack,
+# which Tauri v2 still pins at glib 0.18 — no patched 0.18.x exists, so we can't
+# clear it without a Tauri release that moves off it, and it isn't reachable
+# from our own code.
+#
+# This suppresses noise only: with no `deny` set, cargo audit fails on
+# vulnerabilities and merely warns on informational advisories like this one.
+ignore = ["RUSTSEC-2024-0429"]

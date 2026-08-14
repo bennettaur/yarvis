@@ -3,7 +3,7 @@ import { buildFileTree, flattenFileTree } from "../../lib/fileTree";
 import { usePrDetail, usePrFileDiff, usePrFiles } from "../../lib/pr/cache";
 import { rowHtml } from "../../lib/pr/highlight";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
-import { CodeText, rowClass } from "../diff/DiffView";
+import { CodeText, rowClass } from "../diff/DiffRow";
 import { usePersistedBoolean } from "../SplitPane";
 import ChangeMinimap from "./ChangeMinimap";
 import CopyPathButton from "./CopyPathButton";

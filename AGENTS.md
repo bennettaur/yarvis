@@ -61,11 +61,21 @@ bun run check:write                # same, auto-fixing what it can
 
 cargo fmt --manifest-path src-tauri/Cargo.toml            # Rust format
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --no-deps -- -D warnings
+cargo test --manifest-path src-tauri/Cargo.toml --all-targets   # Rust tests
+(cd src-tauri && cargo audit)   # Rust advisories — run from src-tauri/ so the
+                                #   accepted-advisory list in
+                                #   src-tauri/.cargo/audit.toml applies
 ```
 
 CI (`.github/workflows/ci.yml`) runs all of the above (frontend tests, sidecar
 tests against a `pgvector/pgvector:pg16` service container, both typechecks,
-biome, `bun audit --prod`, `cargo fmt --check`, `cargo clippy`). A pre-commit
+biome, `bun audit --prod`, `cargo fmt --check`, `cargo clippy`, `cargo test`,
+`cargo audit`). Every job in it runs on a read-only `GITHUB_TOKEN` — ci.yml
+sets that default itself, so a job that needs to write back to GitHub has to
+say so in its own `permissions:` block, where review can see it — and its
+actions are pinned to commit SHAs, with the ref they were resolved from in a
+trailing comment. `nightly.yml`
+and `codeql.yml` follow neither convention yet. A pre-commit
 hook (lefthook, installed via the `prepare` script) mirrors the biome and Rust
 checks on staged files — `cargo clippy` blocks the commit if it fails since it
 has no safe autofix.
