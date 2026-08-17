@@ -175,9 +175,13 @@ function isUnauthorized(error: unknown): boolean {
 
 /**
  * Starts (or restarts) an authorization, returning the URL the user must open.
- * Reuses the URL a failed connect already produced when there is one, so the
- * PKCE verifier that connect saved stays the one the callback will need.
  * Returns null when the server is unknown or is not an OAuth server.
+ *
+ * A flow already waiting on the user is handed back as-is, because the PKCE
+ * verifier the callback will need belongs to that one URL. Otherwise any token
+ * held is dropped first: the user pressed Authorize, so a token that is somehow
+ * still working is not what they asked for, and without dropping it the
+ * connection would just succeed and there would be no URL to return.
  */
 export async function beginAuthorization(
   config: Config,
@@ -194,6 +198,7 @@ export async function beginAuthorization(
   if (provider.authorizationUrl) {
     return { authorizationUrl: provider.authorizationUrl };
   }
+  await provider.invalidateCredentials("tokens");
   const result = await refreshServer(config, db, serverId);
   const url = result?.authorizationUrl ?? provider.authorizationUrl;
   if (!url) {

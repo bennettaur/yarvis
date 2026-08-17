@@ -181,12 +181,7 @@ describe("mcp oauth routes", () => {
     const res = await app.request(`/api/mcp/servers/${created.id}/status`, { headers: jsonAuth });
     const status = (await res.json()) as { connected: boolean; oauth: unknown };
     expect(status.connected).toBe(false);
-    expect(status.oauth).toEqual({
-      registered: false,
-      authorized: false,
-      scope: null,
-      authorizationUrl: null,
-    });
+    expect(status.oauth).toEqual({ registered: false, authorized: false, scope: null });
   });
 
   it("reports no oauth status for a server that doesn't use it", async () => {

@@ -81,11 +81,6 @@ export interface McpOAuthStatus {
   authorized: boolean;
   /** Scopes the authorization server granted, when it said. */
   scope: string | null;
-  /**
-   * Where the user must go to finish authorizing, captured from the last flow
-   * that needed one. Null once authorized, or before a flow has started.
-   */
-  authorizationUrl: string | null;
 }
 
 export class McpOAuthProvider {
@@ -241,7 +236,6 @@ export class McpOAuthProvider {
       registered: Boolean(this.credentials.clientId),
       authorized: Boolean(tokens?.access_token),
       scope: tokens?.scope ?? null,
-      authorizationUrl: tokens?.access_token ? null : this.pendingAuthorizationUrl,
     };
   }
 

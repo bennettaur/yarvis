@@ -84,7 +84,6 @@ export interface McpOAuthStatus {
   registered: boolean;
   authorized: boolean;
   scope: string | null;
-  authorizationUrl: string | null;
 }
 
 export interface ServerStatus {

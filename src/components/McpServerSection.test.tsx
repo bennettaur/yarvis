@@ -75,7 +75,7 @@ describe("McpServerSection OAuth", () => {
     status = {
       connected: false,
       toolCount: 0,
-      oauth: { registered: false, authorized: false, scope: null, authorizationUrl: null },
+      oauth: { registered: false, authorized: false, scope: null },
     };
     const html = await renderToHtml(createElement(McpServerSection));
     expect(html).toContain("not signed in");
@@ -87,12 +87,7 @@ describe("McpServerSection OAuth", () => {
     status = {
       connected: true,
       toolCount: 3,
-      oauth: {
-        registered: true,
-        authorized: true,
-        scope: "api:read tools:execute",
-        authorizationUrl: null,
-      },
+      oauth: { registered: true, authorized: true, scope: "api:read tools:execute" },
     };
     const html = await renderToHtml(createElement(McpServerSection));
     expect(html).toContain("signed in");
@@ -112,7 +107,7 @@ describe("McpServerSection OAuth", () => {
     status = {
       connected: false,
       toolCount: 0,
-      oauth: { registered: false, authorized: false, scope: null, authorizationUrl: null },
+      oauth: { registered: false, authorized: false, scope: null },
     };
     const mounted = await mountForInteraction(createElement(McpServerSection));
     unmount = mounted.unmount;

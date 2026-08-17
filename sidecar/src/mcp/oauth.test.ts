@@ -115,7 +115,7 @@ describe("McpOAuthProvider", () => {
     provider.redirectToAuthorization(new URL("https://as.example.com/authorize"));
     await provider.saveTokens(tokens("at"));
     expect(provider.authorizationUrl).toBeNull();
-    expect(provider.status()).toMatchObject({ authorized: true, authorizationUrl: null });
+    expect(provider.status()).toMatchObject({ authorized: true });
   });
 
   it("keeps the code verifier only in memory and refuses to invent one", () => {
@@ -146,12 +146,7 @@ describe("McpOAuthProvider", () => {
       tokens: { access_token: "at", token_type: "Bearer" },
     });
     await provider.clear();
-    expect(provider.status()).toEqual({
-      registered: false,
-      authorized: false,
-      scope: null,
-      authorizationUrl: null,
-    });
+    expect(provider.status()).toEqual({ registered: false, authorized: false, scope: null });
   });
 });
 
