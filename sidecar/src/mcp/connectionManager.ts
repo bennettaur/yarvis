@@ -3,6 +3,7 @@ import { Experimental_StdioMCPTransport } from "@ai-sdk/mcp/mcp-stdio";
 import type { McpServerSecrets } from "../config.ts";
 import type { McpServerRow } from "../db/schema.ts";
 import { validateOutboundUrl } from "../lib/urlSafety.ts";
+import { redactSecrets } from "../llm/errors.ts";
 import { isUnauthorized, type McpOAuthProvider } from "./oauth.ts";
 
 /**
@@ -63,6 +64,51 @@ export interface ServerStatus {
 }
 
 /**
+ * Whether an error is a cancelled operation rather than a failed one.
+ *
+ * Closing a transport aborts its in-flight inbound stream, and the rejection
+ * that produces is reported through `onUncaughtError` — including when the
+ * client library closes the transport itself after a failed connect, which it
+ * does before we hold a client to mark. Nothing here ever aborts a request for
+ * any other reason, so an abort is always the shutdown we asked for and never
+ * news on its own; the failure that caused the shutdown is reported separately.
+ */
+function isAbort(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+/**
+ * Set `YARVIS_DEBUG_MCP=1` when a server's replies don't match the protocol and
+ * the schema complaint alone doesn't say why — it prints what the server
+ * actually sent. Off by default: these bodies carry whatever the server returns.
+ */
+const DEBUG_MCP = process.env.YARVIS_DEBUG_MCP === "1";
+
+/** Cap on a logged body, so one `tools/list` can't bury the rest of the log. */
+const DEBUG_BODY_LIMIT = 4000;
+
+/**
+ * Logs a request and its response body under `YARVIS_DEBUG_MCP`. Reads a clone,
+ * leaving the original for the caller, and only for POSTs — the transport's
+ * inbound SSE stream is a GET that stays open for the life of the connection, so
+ * draining a clone of it would never finish.
+ */
+async function debugLogExchange(method: string, url: string, response: Response): Promise<void> {
+  if (method.toUpperCase() !== "POST") {
+    console.log(`[mcp:debug] ${method} ${url} -> ${response.status}`);
+    return;
+  }
+  let body: string;
+  try {
+    body = await response.clone().text();
+  } catch (error) {
+    body = `<unreadable: ${error instanceof Error ? error.message : String(error)}>`;
+  }
+  const shown = body.length > DEBUG_BODY_LIMIT ? `${body.slice(0, DEBUG_BODY_LIMIT)}…` : body;
+  console.log(`[mcp:debug] ${method} ${url} -> ${response.status} ${redactSecrets(shown)}`);
+}
+
+/**
  * Wraps `fetch` so requests the transport makes to hosts *other than* the
  * configured MCP server are checked before they go out.
  *
@@ -83,20 +129,6 @@ export interface ServerStatus {
  * Requests to the server's own origin skip the check entirely: that URL was
  * validated when it was configured, and every tool call goes through this path.
  */
-/**
- * Whether an error is a cancelled operation rather than a failed one.
- *
- * Closing a transport aborts its in-flight inbound stream, and the rejection
- * that produces is reported through `onUncaughtError` — including when the
- * client library closes the transport itself after a failed connect, which it
- * does before we hold a client to mark. Nothing here ever aborts a request for
- * any other reason, so an abort is always the shutdown we asked for and never
- * news on its own; the failure that caused the shutdown is reported separately.
- */
-function isAbort(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
-}
-
 export function offServerFetchGuard(serverUrl: string): typeof globalThis.fetch {
   const serverOrigin = new URL(serverUrl).origin;
   const guarded = async (
@@ -107,7 +139,12 @@ export function offServerFetchGuard(serverUrl: string): typeof globalThis.fetch 
     if (new URL(target).origin !== serverOrigin) {
       validateOutboundUrl(target);
     }
-    return fetch(input, init);
+    const response = await fetch(input, init);
+    if (DEBUG_MCP) {
+      const method = input instanceof Request ? input.method : (init?.method ?? "GET");
+      await debugLogExchange(method, target, response);
+    }
+    return response;
   };
   // `fetch` carries a `preconnect` member the callers here never use; borrow the
   // global's so the wrapper still satisfies the type.
@@ -152,7 +189,11 @@ export class McpConnectionManager {
       },
     });
     try {
-      const [tools, list] = await Promise.all([client.tools(), client.listTools()]);
+      // One `tools/list`, not two: `client.tools()` fetches the same list
+      // internally and then builds from it, so asking for both sent the request
+      // twice and left the server answering a duplicate it never needed to see.
+      const list = await client.listTools();
+      const tools = client.toolsFromDefinitions(list);
       this.connections.set(server.id, { client, tools, serverName: server.name, markClosing });
       return { toolCount: list.tools.length, descriptors: list.tools };
     } catch (error) {

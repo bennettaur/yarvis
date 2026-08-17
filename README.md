@@ -187,6 +187,15 @@ The two compose: an OAuth server can still carry extra headers (a tenant id, say
 alongside its bearer token. `Authorization` itself is reserved and can't be set
 as a custom header on either kind.
 
+When a connection fails, the card shows the reason and the sidecar log carries
+the full version — status, URL, and response body. If a server's replies don't
+match the MCP schema and the complaint alone doesn't explain why, launch with
+`YARVIS_DEBUG_MCP=1` to log what it actually sent:
+
+```bash
+YARVIS_DEBUG_MCP=1 bun run tauri dev
+```
+
 ### Workspaces
 
 Workspaces manage their own repo clones and git worktrees under a base
