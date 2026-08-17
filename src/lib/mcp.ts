@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { sidecarFetch } from "./api";
+import { ensureOk, sidecarFetch } from "./api";
 
 /**
  * Two sides of MCP. Most of this file is the client: the servers Yarvis connects
@@ -106,7 +106,7 @@ export interface McpSecretStatus {
 
 export async function listMcpServers(): Promise<McpServer[]> {
   const res = await sidecarFetch("/api/mcp/servers");
-  if (!res.ok) throw new Error(`list mcp servers failed: ${res.status}`);
+  await ensureOk(res, "list mcp servers");
   return res.json();
 }
 
@@ -116,7 +116,7 @@ export async function createMcpServer(input: McpServerInput): Promise<McpServer>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
-  if (!res.ok) throw new Error(`create mcp server failed: ${res.status}`);
+  await ensureOk(res, "create mcp server");
   return res.json();
 }
 
@@ -126,26 +126,24 @@ export async function updateMcpServer(id: string, patch: McpServerUpdate): Promi
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   });
-  if (!res.ok) throw new Error(`update mcp server failed: ${res.status}`);
+  await ensureOk(res, "update mcp server");
   return res.json();
 }
 
 export async function deleteMcpServer(id: string): Promise<void> {
   const res = await sidecarFetch(`/api/mcp/servers/${id}`, { method: "DELETE" });
-  if (!res.ok && res.status !== 204) {
-    throw new Error(`delete mcp server failed: ${res.status}`);
-  }
+  if (res.status !== 204) await ensureOk(res, "delete mcp server");
 }
 
 export async function refreshMcpServer(id: string): Promise<RefreshResult> {
   const res = await sidecarFetch(`/api/mcp/servers/${id}/refresh`, { method: "POST" });
-  if (!res.ok) throw new Error(`refresh mcp server failed: ${res.status}`);
+  await ensureOk(res, "refresh mcp server");
   return res.json();
 }
 
 export async function getMcpServerStatus(id: string): Promise<ServerStatus> {
   const res = await sidecarFetch(`/api/mcp/servers/${id}/status`);
-  if (!res.ok) throw new Error(`mcp server status failed: ${res.status}`);
+  await ensureOk(res, "mcp server status");
   return res.json();
 }
 
@@ -156,22 +154,19 @@ export async function getMcpServerStatus(id: string): Promise<ServerStatus> {
  */
 export async function authorizeMcpServer(id: string): Promise<{ authorizationUrl: string }> {
   const res = await sidecarFetch(`/api/mcp/servers/${id}/authorize`, { method: "POST" });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.error ?? `authorize mcp server failed: ${res.status}`);
-  }
+  await ensureOk(res, "authorize mcp server");
   return res.json();
 }
 
 /** Forgets a server's OAuth tokens and client registration. */
 export async function disconnectMcpOAuth(id: string): Promise<void> {
   const res = await sidecarFetch(`/api/mcp/servers/${id}/oauth/disconnect`, { method: "POST" });
-  if (!res.ok) throw new Error(`disconnect mcp oauth failed: ${res.status}`);
+  await ensureOk(res, "disconnect mcp oauth");
 }
 
 export async function listAgentTools(): Promise<RegistryTool[]> {
   const res = await sidecarFetch("/api/mcp/tools");
-  if (!res.ok) throw new Error(`list agent tools failed: ${res.status}`);
+  await ensureOk(res, "list agent tools");
   return res.json();
 }
 
@@ -181,7 +176,7 @@ export async function setToolPolicy(id: string, policy: ToolPolicy): Promise<Reg
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ policy }),
   });
-  if (!res.ok) throw new Error(`set tool policy failed: ${res.status}`);
+  await ensureOk(res, "set tool policy");
   return res.json();
 }
 
@@ -191,7 +186,7 @@ export async function searchTools(query: string, limit?: number): Promise<ToolSe
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, limit }),
   });
-  if (!res.ok) throw new Error(`tool search failed: ${res.status}`);
+  await ensureOk(res, "tool search");
   return res.json();
 }
 
@@ -210,7 +205,7 @@ export interface McpEndpoint {
  */
 export async function getMcpEndpoint(): Promise<McpEndpoint> {
   const res = await sidecarFetch("/api/mcp-endpoint/connection");
-  if (!res.ok) throw new Error(`mcp endpoint failed: ${res.status}`);
+  await ensureOk(res, "mcp endpoint");
   return res.json();
 }
 

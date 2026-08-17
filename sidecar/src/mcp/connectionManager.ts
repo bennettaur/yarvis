@@ -3,7 +3,7 @@ import { Experimental_StdioMCPTransport } from "@ai-sdk/mcp/mcp-stdio";
 import type { McpServerSecrets } from "../config.ts";
 import type { McpServerRow } from "../db/schema.ts";
 import { validateOutboundUrl } from "../lib/urlSafety.ts";
-import type { McpOAuthProvider } from "./oauth.ts";
+import { isUnauthorized, type McpOAuthProvider } from "./oauth.ts";
 
 /**
  * Maintains live connections to enabled MCP servers and exposes their tools.
@@ -111,8 +111,16 @@ export class McpConnectionManager {
     const transport = this.buildTransport(server, secrets, authProvider);
     const client = await createMCPClient({
       transport,
-      onUncaughtError: (error) =>
-        console.error(`[mcp] ${server.name} (${server.id}) uncaught error:`, error),
+      onUncaughtError: (error) => {
+        // A server that wants OAuth answers 401 until the user has authorized,
+        // and the transport reports that here as well as throwing it. It is the
+        // normal first step of a flow, not a fault, so it doesn't get a trace.
+        if (isUnauthorized(error)) {
+          console.warn(`[mcp] ${server.name} (${server.id}) needs authorization`);
+          return;
+        }
+        console.error(`[mcp] ${server.name} (${server.id}) uncaught error:`, error);
+      },
     });
     try {
       const [tools, list] = await Promise.all([client.tools(), client.listTools()]);

@@ -1,8 +1,9 @@
-import type {
-  OAuthAuthorizationServerInformation,
-  OAuthClientInformation,
-  OAuthClientMetadata,
-  OAuthTokens,
+import {
+  type OAuthAuthorizationServerInformation,
+  type OAuthClientInformation,
+  type OAuthClientMetadata,
+  type OAuthTokens,
+  UnauthorizedError,
 } from "@ai-sdk/mcp";
 import type { Config, McpOAuthCredentials } from "../config.ts";
 import { saveMcpOAuth } from "../core/controlClient.ts";
@@ -32,6 +33,19 @@ import type { McpServerRow } from "../db/schema.ts";
 
 /** Client name presented to an authorization server during registration. */
 const CLIENT_NAME = "Yarvis";
+
+/**
+ * Whether an error is the client library saying "the user has to authorize".
+ * The transport wraps whatever the failing request threw, so the cause chain has
+ * to be walked rather than the top-level error checked.
+ */
+export function isUnauthorized(error: unknown): boolean {
+  for (let e = error, depth = 0; e && depth < 5; depth++) {
+    if (e instanceof UnauthorizedError) return true;
+    e = e instanceof Error ? e.cause : undefined;
+  }
+  return false;
+}
 
 /** Bound on remembered `state` values, and how long an unfinished flow lives. */
 const STATE_TTL_MS = 5 * 60_000;

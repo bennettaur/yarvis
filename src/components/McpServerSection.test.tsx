@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
+import * as realApi from "../lib/api";
 import type { McpServer, ServerStatus } from "../lib/mcp";
 import { mountForInteraction, renderToHtml } from "../test/render";
 import McpServerSection from "./McpServerSection";
@@ -39,7 +40,12 @@ const json = (body: unknown) =>
     headers: { "content-type": "application/json" },
   });
 
+// `mock.module` replaces the module for the whole test process, so everything
+// except the one function being faked is passed straight through — otherwise a
+// suite running after this file (api.test.ts, which exercises the real
+// `ensureOk`) would get a stub in place of the code it is testing.
 mock.module("../lib/api", () => ({
+  ...realApi,
   sidecarFetch: async (path: string, init?: RequestInit) => {
     if (path === "/api/mcp/servers") return json(servers);
     if (path.endsWith("/status")) return json(status);

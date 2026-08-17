@@ -1,4 +1,4 @@
-import { auth, UnauthorizedError } from "@ai-sdk/mcp";
+import { auth } from "@ai-sdk/mcp";
 import { asc, eq } from "drizzle-orm";
 import { syncToolSet, type ToolDescriptor } from "../agentTools/store.ts";
 import type { Config } from "../config.ts";
@@ -7,7 +7,12 @@ import { type McpServerRow, mcpServers } from "../db/schema.ts";
 import { clientError } from "../llm/errors.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { getMcpManager, offServerFetchGuard } from "./connectionManager.ts";
-import { consumeOAuthState, forgetOAuthProvider, getOAuthProvider } from "./oauth.ts";
+import {
+  consumeOAuthState,
+  forgetOAuthProvider,
+  getOAuthProvider,
+  isUnauthorized,
+} from "./oauth.ts";
 
 /**
  * MCP server CRUD (structure only — credentials live in the macOS Keychain and
@@ -157,20 +162,6 @@ export async function refreshServer(
     }
     return { connected: false, toolCount: 0, error: clientError(error) };
   }
-}
-
-/**
- * The client library reports "you need to authorize" by throwing
- * `UnauthorizedError`, but the transport wraps whatever the initialize request
- * threw, so the cause chain has to be walked rather than the top-level error
- * checked.
- */
-function isUnauthorized(error: unknown): boolean {
-  for (let e = error, depth = 0; e && depth < 5; depth++) {
-    if (e instanceof UnauthorizedError) return true;
-    e = e instanceof Error ? e.cause : undefined;
-  }
-  return false;
 }
 
 /**

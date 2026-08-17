@@ -93,6 +93,43 @@ describe("mcp server routes", () => {
     expect(res.status).toBe(201);
   });
 
+  it("accepts the form's payload, which nulls the unused transport's field", async () => {
+    // The Add-server form always sends both `url` and `command`, nulling
+    // whichever the chosen transport doesn't use. Declaring them merely
+    // optional rejected that null and made the form unable to create anything.
+    const http = await app.request("/api/mcp/servers", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        name: "locker",
+        transport: "http",
+        url: "https://mcp.example.com/mcp",
+        command: null,
+        args: [],
+        headerNames: [],
+        oauth: false,
+        oauthScope: null,
+      }),
+    });
+    expect(http.status).toBe(201);
+
+    const stdio = await app.request("/api/mcp/servers", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        name: "fs",
+        transport: "stdio",
+        url: null,
+        command: "npx",
+        args: ["-y", "server"],
+        headerNames: [],
+        oauth: false,
+        oauthScope: null,
+      }),
+    });
+    expect(stdio.status).toBe(201);
+  });
+
   it("rejects an http server without a url", async () => {
     const res = await app.request("/api/mcp/servers", {
       method: "POST",

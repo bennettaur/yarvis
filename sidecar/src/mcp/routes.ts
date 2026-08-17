@@ -75,8 +75,10 @@ const createSchema = z
   .object({
     name: z.string().min(1),
     transport,
-    url: httpUrl.optional(),
-    command: z.string().min(1).optional(),
+    // Nullable, not merely optional: the form always sends both fields and
+    // nulls the one the chosen transport doesn't use.
+    url: httpUrl.nullable().optional(),
+    command: z.string().min(1).nullable().optional(),
     args: z.array(z.string()).default([]),
     headerNames: z.array(headerName).default([]),
     oauth: z.boolean().default(false),
