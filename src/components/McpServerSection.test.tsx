@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import * as realApi from "../lib/api";
 import type { McpServer, ServerStatus } from "../lib/mcp";
@@ -40,20 +40,21 @@ const json = (body: unknown) =>
     headers: { "content-type": "application/json" },
   });
 
-// `mock.module` replaces the module for the whole test process, so everything
-// except the one function being faked is passed straight through — otherwise a
-// suite running after this file (api.test.ts, which exercises the real
-// `ensureOk`) would get a stub in place of the code it is testing.
+// `mock.module` replaces the module for the whole test process, not just this
+// file, so this stub has to be invisible to every other suite: real exports are
+// passed through, and a path this file doesn't care about goes to the real
+// `sidecarFetch` rather than to a catch-all. Answering everything with `{}` once
+// fed an empty object to unrelated components that expected a list.
 mock.module("../lib/api", () => ({
   ...realApi,
   sidecarFetch: async (path: string, init?: RequestInit) => {
     if (path === "/api/mcp/servers") return json(servers);
-    if (path.endsWith("/status")) return json(status);
+    if (path.startsWith("/api/mcp/servers/") && path.endsWith("/status")) return json(status);
     if (path.endsWith("/authorize") && init?.method === "POST") {
       authorizeCalls.push(path);
       return json({ authorizationUrl: "https://as.example.com/authorize?client_id=cl" });
     }
-    return json({});
+    return realApi.sidecarFetch(path, init);
   },
 }));
 
@@ -65,6 +66,11 @@ mock.module("@tauri-apps/plugin-opener", () => ({
 }));
 
 let unmount: (() => void) | null = null;
+
+// Hand the real module back, so nothing after this file runs against the stub.
+afterAll(() => {
+  mock.module("../lib/api", () => realApi);
+});
 
 afterEach(() => {
   unmount?.();
