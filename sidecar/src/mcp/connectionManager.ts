@@ -95,7 +95,7 @@ const DEBUG_BODY_LIMIT = 4000;
  */
 async function debugLogExchange(method: string, url: string, response: Response): Promise<void> {
   if (method.toUpperCase() !== "POST") {
-    console.log(`[mcp:debug] ${method} ${url} -> ${response.status}`);
+    console.info(`[mcp:debug] ${method} ${url} -> ${response.status}`);
     return;
   }
   let body: string;
@@ -105,7 +105,7 @@ async function debugLogExchange(method: string, url: string, response: Response)
     body = `<unreadable: ${error instanceof Error ? error.message : String(error)}>`;
   }
   const shown = body.length > DEBUG_BODY_LIMIT ? `${body.slice(0, DEBUG_BODY_LIMIT)}…` : body;
-  console.log(`[mcp:debug] ${method} ${url} -> ${response.status} ${redactSecrets(shown)}`);
+  console.info(`[mcp:debug] ${method} ${url} -> ${response.status} ${redactSecrets(shown)}`);
 }
 
 /**
