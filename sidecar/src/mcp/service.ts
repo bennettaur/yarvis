@@ -9,6 +9,7 @@ import { chooseEmbedder } from "../memory/embedder.ts";
 import { getMcpManager, offServerFetchGuard } from "./connectionManager.ts";
 import {
   consumeOAuthState,
+  discoverProtectedResourceScopes,
   forgetOAuthProvider,
   getOAuthProvider,
   isUnauthorized,
@@ -128,6 +129,13 @@ export async function refreshServer(
     return { connected: false, toolCount: 0 };
   }
   const authProvider = getOAuthProvider(config, server);
+  // Learn the server's scopes before the first 401 turns into an authorization,
+  // so the token we come back with is one it will actually accept.
+  if (server.url && authProvider?.needsScopeDiscovery()) {
+    authProvider.setDiscoveredScope(
+      await discoverProtectedResourceScopes(server.url, offServerFetchGuard(server.url)),
+    );
+  }
   try {
     const { descriptors } = await manager.connect(
       server,

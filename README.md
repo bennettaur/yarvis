@@ -171,9 +171,18 @@ A remote server authenticates one of two ways:
   server, registers itself as a public client (dynamic client registration,
   PKCE), and **Authorize** opens your browser to consent. The tokens land back
   on a loopback redirect, get stored in the Keychain, and refresh on their own
-  while the app runs. Leave **Scopes** blank to take the server's defaults, or
-  name them explicitly — include `offline_access` if the server needs it to
-  issue a refresh token.
+  while the app runs.
+
+  Leave **Scopes** blank and Yarvis reads them from the server's
+  protected-resource metadata (`scopes_supported`) and requests those. Blank does
+  *not* mean "no scopes": a token issued for none is still a valid token, and a
+  server that needs one refuses each request instead of the authorization, which
+  surfaces as a confusing protocol error rather than "you lack a scope". Set the
+  field explicitly to request fewer than the server advertises — worth doing if
+  it lists identity scopes (`openid`, `profile`, `email`) the tools don't need.
+  Include `offline_access` if the server wants it before issuing a refresh token.
+
+  Changing the scopes re-registers the client, so you authorize once more.
 
   The redirect Yarvis registers is
   `http://127.0.0.1:<sidecar-port>/oauth/mcp/callback`. That port is picked fresh

@@ -58,6 +58,45 @@ export function oauthRedirectUri(config: Config): string {
   return `http://127.0.0.1:${config.port}${OAUTH_CALLBACK_PATH}`;
 }
 
+/**
+ * Asks the server which scopes its protected resource uses, so a flow can
+ * request them without the user having to know their names.
+ *
+ * Necessary because a token issued for no scopes is still a valid token: the
+ * authorization succeeds, and the server only refuses later, per request — as
+ * an error inside an otherwise-200 response, which surfaces as a schema
+ * mismatch rather than as "you lack a scope". Asking up front avoids the whole
+ * class.
+ *
+ * Two candidates, per RFC 9728: the path-scoped document first, then the
+ * origin-wide one. Returns undefined when neither answers, leaving the caller to
+ * proceed unscoped rather than fail — some servers need no scopes at all.
+ */
+export async function discoverProtectedResourceScopes(
+  serverUrl: string,
+  fetchFn: typeof globalThis.fetch,
+): Promise<string | undefined> {
+  const url = new URL(serverUrl);
+  const candidates = [
+    new URL(`/.well-known/oauth-protected-resource${url.pathname}`, url).href,
+    new URL("/.well-known/oauth-protected-resource", url).href,
+  ];
+  for (const candidate of candidates) {
+    try {
+      const response = await fetchFn(candidate, { headers: { Accept: "application/json" } });
+      if (!response.ok) continue;
+      const body: unknown = await response.json();
+      const supported = (body as { scopes_supported?: unknown })?.scopes_supported;
+      if (!Array.isArray(supported)) continue;
+      const scopes = supported.filter((s): s is string => typeof s === "string" && s.length > 0);
+      if (scopes.length) return scopes.join(" ");
+    } catch {
+      // A missing or malformed document is not fatal; try the next candidate.
+    }
+  }
+  return undefined;
+}
+
 /** Maps a callback's `state` back to the server whose flow issued it. */
 const statesToServerId = new Map<string, { serverId: string; issuedAt: number }>();
 
@@ -99,6 +138,7 @@ export interface McpOAuthStatus {
 
 export class McpOAuthProvider {
   private credentials: McpOAuthCredentials;
+  private discoveredScope: string | undefined;
   private codeVerifierValue: string | undefined;
   private stateValue: string | undefined;
   private pendingAuthorizationUrl: string | null = null;
@@ -124,7 +164,35 @@ export class McpOAuthProvider {
     return this.redirectUri;
   }
 
+  /**
+   * What to ask for: the scopes configured for this server, or failing that the
+   * ones the server itself advertises. Undefined only when neither exists, which
+   * means asking for nothing and hoping the server needs nothing.
+   */
+  private effectiveScope(): string | undefined {
+    return this.scope ?? this.discoveredScope;
+  }
+
+  /** Whether a discovery round trip would tell us anything we don't have. */
+  needsScopeDiscovery(): boolean {
+    return this.scope === undefined && this.discoveredScope === undefined;
+  }
+
+  /**
+   * Adopts scopes read from the server's protected-resource metadata. A
+   * registration made before we knew about them asked for the wrong thing, so it
+   * and the token it produced are dropped and the flow starts over.
+   */
+  setDiscoveredScope(scope: string | undefined): void {
+    if (!scope || scope === this.discoveredScope) return;
+    this.discoveredScope = scope;
+    if (this.credentials.clientId && this.credentials.scope !== this.effectiveScope()) {
+      this.credentials = {};
+    }
+  }
+
   get clientMetadata(): OAuthClientMetadata {
+    const scope = this.effectiveScope();
     return {
       client_name: CLIENT_NAME,
       redirect_uris: [this.redirectUri],
@@ -133,7 +201,7 @@ export class McpOAuthProvider {
       // Yarvis is a native app and cannot keep a client secret, so it registers
       // as a public client and leans on PKCE.
       token_endpoint_auth_method: "none",
-      ...(this.scope ? { scope: this.scope } : {}),
+      ...(scope ? { scope } : {}),
     };
   }
 
@@ -154,6 +222,7 @@ export class McpOAuthProvider {
       clientId: info.client_id,
       clientSecret: info.client_secret,
       redirectUri: this.redirectUri,
+      scope: this.effectiveScope(),
       authorizationServerUrl: info.authorization_server ?? this.credentials.authorizationServerUrl,
       tokenEndpoint: info.token_endpoint ?? this.credentials.tokenEndpoint,
     };

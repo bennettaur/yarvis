@@ -71,6 +71,13 @@ export interface McpOAuthCredentials {
   clientId?: string;
   clientSecret?: string;
   redirectUri?: string;
+  /**
+   * Scopes the registration was made with. Like `redirectUri`, a registration is
+   * only usable while this still matches what we would ask for now — a token
+   * issued for narrower scopes than the server needs is refused per request
+   * rather than at authorization time, so the mismatch has to be caught here.
+   */
+  scope?: string;
   authorizationServerUrl?: string;
   tokenEndpoint?: string;
   /** The raw OAuth token response, as the MCP client library models it. */
@@ -249,6 +256,7 @@ function parseMcpOAuth(value: unknown): McpOAuthCredentials | undefined {
     clientId: str(obj.clientId),
     clientSecret: str(obj.clientSecret),
     redirectUri: str(obj.redirectUri),
+    scope: str(obj.scope),
     authorizationServerUrl: str(obj.authorizationServerUrl),
     tokenEndpoint: str(obj.tokenEndpoint),
   };

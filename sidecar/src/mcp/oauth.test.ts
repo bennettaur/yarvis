@@ -4,6 +4,7 @@ import type { Config } from "../config.ts";
 import type { McpServerRow } from "../db/schema.ts";
 import {
   consumeOAuthState,
+  discoverProtectedResourceScopes,
   forgetOAuthProvider,
   getOAuthProvider,
   isUnauthorized,
@@ -148,6 +149,131 @@ describe("McpOAuthProvider", () => {
     });
     await provider.clear();
     expect(provider.status()).toEqual({ registered: false, authorized: false, scope: null });
+  });
+});
+
+describe("scope discovery", () => {
+  const prm = (scopes: unknown) =>
+    new Response(JSON.stringify({ scopes_supported: scopes }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  const fetchStub = (handler: (url: string) => Response): typeof globalThis.fetch =>
+    Object.assign(async (input: string | URL | Request) => handler(String(input)), {
+      preconnect: globalThis.fetch.preconnect,
+    }) as typeof globalThis.fetch;
+
+  it("prefers the path-scoped metadata document", async () => {
+    const seen: string[] = [];
+    const scope = await discoverProtectedResourceScopes(
+      "https://mcp.example.com/mcp",
+      fetchStub((url) => {
+        seen.push(url);
+        return prm(["api:read", "tools:execute"]);
+      }),
+    );
+    expect(seen[0]).toBe("https://mcp.example.com/.well-known/oauth-protected-resource/mcp");
+    expect(scope).toBe("api:read tools:execute");
+  });
+
+  it("falls back to the origin-wide document when the path-scoped one is missing", async () => {
+    const scope = await discoverProtectedResourceScopes(
+      "https://mcp.example.com/mcp",
+      fetchStub((url) =>
+        url.endsWith("/mcp") ? new Response("nope", { status: 404 }) : prm(["api:read"]),
+      ),
+    );
+    expect(scope).toBe("api:read");
+  });
+
+  it("returns nothing when neither document answers, rather than failing", async () => {
+    const scope = await discoverProtectedResourceScopes(
+      "https://mcp.example.com/mcp",
+      fetchStub(() => new Response("nope", { status: 404 })),
+    );
+    expect(scope).toBeUndefined();
+  });
+
+  it("survives a document that isn't JSON", async () => {
+    const scope = await discoverProtectedResourceScopes(
+      "https://mcp.example.com/mcp",
+      fetchStub(() => new Response("<html>", { status: 200 })),
+    );
+    expect(scope).toBeUndefined();
+  });
+
+  it("ignores a scopes_supported that isn't a list of strings", async () => {
+    const scope = await discoverProtectedResourceScopes(
+      "https://mcp.example.com/mcp",
+      fetchStub(() => prm("api:read")),
+    );
+    expect(scope).toBeUndefined();
+  });
+});
+
+describe("discovered scopes on the provider", () => {
+  it("asks for the discovered scopes when none are configured", () => {
+    const provider = new McpOAuthProvider("s1", REDIRECT, undefined, undefined);
+    expect(provider.needsScopeDiscovery()).toBe(true);
+    provider.setDiscoveredScope("api:read tools:execute");
+    expect(provider.clientMetadata.scope).toBe("api:read tools:execute");
+    expect(provider.needsScopeDiscovery()).toBe(false);
+  });
+
+  it("lets a configured scope win, and skips discovery entirely", () => {
+    const provider = new McpOAuthProvider("s1", REDIRECT, "api:read", undefined);
+    expect(provider.needsScopeDiscovery()).toBe(false);
+    provider.setDiscoveredScope("api:read api:write tools:execute");
+    expect(provider.clientMetadata.scope).toBe("api:read");
+  });
+
+  it("discards a registration made before the scopes were known", () => {
+    // The bug this exists for: registering with no scope yields a token the
+    // server accepts at authorization time and then refuses on every request.
+    const provider = new McpOAuthProvider("s1", REDIRECT, undefined, {
+      clientId: "cl_1",
+      redirectUri: REDIRECT,
+      tokens: { access_token: "at", token_type: "Bearer" },
+    });
+    expect(provider.clientInformation()?.client_id).toBe("cl_1");
+    provider.setDiscoveredScope("api:read");
+    expect(provider.clientInformation()).toBeUndefined();
+    expect(provider.tokens()).toBeUndefined();
+  });
+
+  it("keeps a registration that already asked for those scopes", () => {
+    const provider = new McpOAuthProvider("s1", REDIRECT, undefined, {
+      clientId: "cl_1",
+      redirectUri: REDIRECT,
+      scope: "api:read",
+      tokens: { access_token: "at", token_type: "Bearer" },
+    });
+    provider.setDiscoveredScope("api:read");
+    expect(provider.clientInformation()?.client_id).toBe("cl_1");
+    expect(provider.tokens()?.access_token).toBe("at");
+  });
+
+  it("keeps a registration when discovery turns up nothing", () => {
+    // Discovery failing must not look like a scope change and wipe a good token.
+    const provider = new McpOAuthProvider("s1", REDIRECT, undefined, {
+      clientId: "cl_1",
+      redirectUri: REDIRECT,
+      scope: "api:read",
+      tokens: { access_token: "at", token_type: "Bearer" },
+    });
+    provider.setDiscoveredScope(undefined);
+    expect(provider.clientInformation()?.client_id).toBe("cl_1");
+    expect(provider.tokens()?.access_token).toBe("at");
+  });
+
+  it("records the scopes it registered with", async () => {
+    const provider = new McpOAuthProvider("s1", REDIRECT, undefined, undefined);
+    provider.setDiscoveredScope("api:read");
+    await provider.saveClientInformation({ client_id: "cl_2" });
+    // Re-reading with the same discovered scope must not discard it.
+    provider.setDiscoveredScope("api:read");
+    expect(provider.clientInformation()?.client_id).toBe("cl_2");
   });
 });
 
