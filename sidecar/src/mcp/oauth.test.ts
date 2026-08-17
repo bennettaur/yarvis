@@ -1,11 +1,12 @@
 import { describe, expect, it } from "bun:test";
-import type { OAuthTokens } from "@ai-sdk/mcp";
+import { type OAuthTokens, UnauthorizedError } from "@ai-sdk/mcp";
 import type { Config } from "../config.ts";
 import type { McpServerRow } from "../db/schema.ts";
 import {
   consumeOAuthState,
   forgetOAuthProvider,
   getOAuthProvider,
+  isUnauthorized,
   McpOAuthProvider,
   oauthRedirectUri,
 } from "./oauth.ts";
@@ -147,6 +148,32 @@ describe("McpOAuthProvider", () => {
     });
     await provider.clear();
     expect(provider.status()).toEqual({ registered: false, authorized: false, scope: null });
+  });
+});
+
+describe("isUnauthorized", () => {
+  it("recognises the client library's own unauthorized error", () => {
+    expect(isUnauthorized(new UnauthorizedError())).toBe(true);
+  });
+
+  it("finds one the transport wrapped as a cause", () => {
+    // The transport rethrows whatever the failing request produced, so the
+    // needs-authorization signal arrives buried rather than at the top.
+    const wrapped = new Error("initialize failed", {
+      cause: new Error("POST failed", { cause: new UnauthorizedError() }),
+    });
+    expect(isUnauthorized(wrapped)).toBe(true);
+  });
+
+  it("does not mistake an ordinary failure for one", () => {
+    expect(isUnauthorized(new Error("connection refused"))).toBe(false);
+    expect(isUnauthorized(undefined)).toBe(false);
+  });
+
+  it("gives up rather than looping on a self-referencing cause chain", () => {
+    const a = new Error("a");
+    a.cause = a;
+    expect(isUnauthorized(a)).toBe(false);
   });
 });
 

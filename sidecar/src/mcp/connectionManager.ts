@@ -49,6 +49,12 @@ interface Connection {
   /** Executable AI SDK tools, keyed by the server's bare tool name. */
   tools: McpClientTools;
   serverName: string;
+  /**
+   * Call before closing. A transport reports errors asynchronously, and closing
+   * one aborts its in-flight inbound stream — which arrives as an `AbortError`
+   * we caused ourselves. Past this point nothing it says is news.
+   */
+  markClosing: () => void;
 }
 
 export interface ServerStatus {
@@ -77,6 +83,20 @@ export interface ServerStatus {
  * Requests to the server's own origin skip the check entirely: that URL was
  * validated when it was configured, and every tool call goes through this path.
  */
+/**
+ * Whether an error is a cancelled operation rather than a failed one.
+ *
+ * Closing a transport aborts its in-flight inbound stream, and the rejection
+ * that produces is reported through `onUncaughtError` — including when the
+ * client library closes the transport itself after a failed connect, which it
+ * does before we hold a client to mark. Nothing here ever aborts a request for
+ * any other reason, so an abort is always the shutdown we asked for and never
+ * news on its own; the failure that caused the shutdown is reported separately.
+ */
+function isAbort(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
 export function offServerFetchGuard(serverUrl: string): typeof globalThis.fetch {
   const serverOrigin = new URL(serverUrl).origin;
   const guarded = async (
@@ -109,13 +129,22 @@ export class McpConnectionManager {
   ): Promise<{ toolCount: number; descriptors: ListToolsResult["tools"] }> {
     await this.disconnect(server.id);
     const transport = this.buildTransport(server, secrets, authProvider);
+    let closing = false;
+    let saidUnauthorized = false;
+    const markClosing = () => {
+      closing = true;
+    };
     const client = await createMCPClient({
       transport,
       onUncaughtError: (error) => {
+        if (closing || isAbort(error)) return;
         // A server that wants OAuth answers 401 until the user has authorized,
-        // and the transport reports that here as well as throwing it. It is the
-        // normal first step of a flow, not a fault, so it doesn't get a trace.
+        // and the transport reports that here as well as throwing it — once per
+        // request in flight. It is the normal first step of a flow, not a fault,
+        // so it gets one line and no trace.
         if (isUnauthorized(error)) {
+          if (saidUnauthorized) return;
+          saidUnauthorized = true;
           console.warn(`[mcp] ${server.name} (${server.id}) needs authorization`);
           return;
         }
@@ -124,9 +153,10 @@ export class McpConnectionManager {
     });
     try {
       const [tools, list] = await Promise.all([client.tools(), client.listTools()]);
-      this.connections.set(server.id, { client, tools, serverName: server.name });
+      this.connections.set(server.id, { client, tools, serverName: server.name, markClosing });
       return { toolCount: list.tools.length, descriptors: list.tools };
     } catch (error) {
+      markClosing();
       await client.close().catch(() => {});
       throw error;
     }
@@ -167,6 +197,7 @@ export class McpConnectionManager {
     const conn = this.connections.get(serverId);
     if (!conn) return;
     this.connections.delete(serverId);
+    conn.markClosing();
     await conn.client
       .close()
       .catch((error) => console.error(`[mcp] closing ${serverId} failed:`, error));
