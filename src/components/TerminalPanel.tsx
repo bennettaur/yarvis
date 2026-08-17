@@ -11,6 +11,7 @@ import {
   resizePty,
   writePty,
 } from "../lib/pty";
+import { resolveTerminalKey } from "../lib/terminalKeys";
 
 /** Handle exposed via `panelRef` so a parent (e.g. TerminalTabs) can move keyboard focus into the xterm. */
 export interface TerminalPanelHandle {
@@ -97,15 +98,13 @@ export default function TerminalPanel({
     term.loadAddon(fit);
     term.open(container);
     term.attachCustomKeyEventHandler((e) => {
-      if (e.key === "Enter" && e.shiftKey && e.type === "keydown") {
-        // Claude Code's TUI treats a bare line feed the same as Enter
-        // (submit). It only inserts a newline for the Meta/Option+Enter
-        // sequence — ESC followed by carriage return — which is what its own
-        // /terminal-setup binds Shift+Enter to in iTerm2/VSCode.
-        void writePty(id, "\x1b\r");
-        return false;
-      }
-      return true;
+      const action = resolveTerminalKey(e);
+      if (action.passToXterm) return true;
+      // xterm doesn't cancel an event a custom handler rejects, so the browser
+      // would insert a line break into the hidden textarea and fire keypress.
+      e.preventDefault();
+      if (action.write) void writePty(id, action.write);
+      return false;
     });
     const focusSub = term.textarea
       ? (() => {
