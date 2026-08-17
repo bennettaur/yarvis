@@ -4,7 +4,7 @@ import { syncToolSet, type ToolDescriptor } from "../agentTools/store.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { type McpServerRow, mcpServers } from "../db/schema.ts";
-import { clientError } from "../llm/errors.ts";
+import { clientError, describeError, redactSecrets } from "../llm/errors.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { getMcpManager, offServerFetchGuard } from "./connectionManager.ts";
 import {
@@ -157,11 +157,32 @@ export async function refreshServer(
         toolCount: 0,
         needsAuthorization: true,
         ...(authorizationUrl ? { authorizationUrl } : {}),
-        error: authorizationUrl ? undefined : clientError(error),
+        error: authorizationUrl ? undefined : connectionError(error),
       };
     }
-    return { connected: false, toolCount: 0, error: clientError(error) };
+    // The returned string is trimmed for the UI; the log keeps the status, URL,
+    // and response body that say what the server actually sent.
+    console.error(`[mcp] connecting to ${server.name} (${serverId}) failed:`, describeError(error));
+    return { connected: false, toolCount: 0, error: connectionError(error) };
   }
+}
+
+/**
+ * The client-facing reason a connect failed.
+ *
+ * `clientError` alone is too thin here. The MCP client library reports a
+ * response the protocol schema rejects as a bare "Failed to parse server
+ * response" and puts the useful half — which field of which tool the server got
+ * wrong — in the cause. A configured MCP server's protocol complaint is not
+ * provider account data, so unlike a generation error it belongs in front of the
+ * user who has to go fix that server.
+ */
+export function connectionError(error: unknown): string {
+  const base = clientError(error);
+  const cause = error instanceof Error ? error.cause : undefined;
+  const detail = cause instanceof Error ? cause.message : undefined;
+  if (!detail) return base;
+  return `${base}: ${redactSecrets(detail).slice(0, 300)}`;
 }
 
 /**
