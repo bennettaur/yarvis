@@ -47,4 +47,41 @@ describe("mcp secrets parsing", () => {
     expect(config.mcpSecrets.s1?.headers).toEqual({ a: "b" });
     expect(config.mcpSecrets.s1?.env).toEqual({});
   });
+
+  it("parses the oauth subtree", () => {
+    process.env.YARVIS_MCP_SECRETS = JSON.stringify({
+      s1: {
+        oauth: {
+          clientId: "cl_1",
+          redirectUri: "http://127.0.0.1:5000/oauth/mcp/callback",
+          authorizationServerUrl: "https://as.example.com",
+          tokenEndpoint: "https://as.example.com/token",
+          tokens: { access_token: "at", token_type: "Bearer" },
+        },
+      },
+    });
+    const oauth = loadConfig().mcpSecrets.s1?.oauth;
+    expect(oauth?.clientId).toBe("cl_1");
+    expect(oauth?.redirectUri).toBe("http://127.0.0.1:5000/oauth/mcp/callback");
+    expect(oauth?.tokens).toEqual({ access_token: "at", token_type: "Bearer" });
+  });
+
+  it("leaves oauth undefined when absent, and drops a non-object one", () => {
+    process.env.YARVIS_MCP_SECRETS = JSON.stringify({
+      s1: { headers: {} },
+      s2: { oauth: "nope" },
+    });
+    const config = loadConfig();
+    expect(config.mcpSecrets.s1?.oauth).toBeUndefined();
+    expect(config.mcpSecrets.s2?.oauth).toBeUndefined();
+  });
+
+  it("drops non-string oauth fields rather than trusting them", () => {
+    process.env.YARVIS_MCP_SECRETS = JSON.stringify({
+      s1: { oauth: { clientId: 42, tokens: ["not", "an", "object"] } },
+    });
+    const oauth = loadConfig().mcpSecrets.s1?.oauth;
+    expect(oauth?.clientId).toBeUndefined();
+    expect(oauth?.tokens).toBeUndefined();
+  });
 });

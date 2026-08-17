@@ -2,12 +2,20 @@
 //!
 //! The structural data (name, transport, url/command, args, header names) lives
 //! in the sidecar's Postgres database. Only credential material lives here, in
-//! the macOS Keychain: HTTP auth header values (for `http` transports) and
-//! sensitive environment variables (for `stdio` transports). We nest under one
-//! key in the shared secrets blob owned by [`crate::keychain`], holding a JSON
-//! map: `{ "<server-id>": { "headers": { "<name>": string }, "env": { "<NAME>":
-//! string } } }`. That subtree is injected into the sidecar at spawn time as the
+//! the macOS Keychain: HTTP auth header values (for `http` transports),
+//! sensitive environment variables (for `stdio` transports), and the OAuth
+//! client registration and tokens for servers that authorize rather than carry a
+//! hand-entered token. We nest under one key in the shared secrets blob owned by
+//! [`crate::keychain`], holding a JSON map: `{ "<server-id>": { "headers": {
+//! "<name>": string }, "env": { "<NAME>": string }, "oauth": { … } } }`. That
+//! subtree is injected into the sidecar at spawn time as the
 //! `YARVIS_MCP_SECRETS` env var.
+//!
+//! The header and env values are written by the webview through Tauri commands.
+//! The `oauth` subtree is the exception: tokens refresh on the authorization
+//! server's schedule while the app runs, so the sidecar writes it through
+//! [`store_oauth`], reached over the control channel. That method can only
+//! address this one subtree — see `control.rs`.
 
 use std::collections::BTreeMap;
 
@@ -209,7 +217,52 @@ fn entry_is_empty(entry: &Map<String, Value>) -> bool {
             .map(|o| o.is_empty())
             .unwrap_or(true)
     };
-    empty_field("headers") && empty_field("env")
+    empty_field("headers") && empty_field("env") && empty_field("oauth")
+}
+
+/// Server ids are the sidecar's UUID primary keys. Reject anything else so a
+/// caller can't reach a sibling key in the secrets blob through this one method.
+fn validate_server_id(id: &str) -> Result<(), String> {
+    let ok = !id.is_empty()
+        && id.len() <= 64
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    if ok {
+        Ok(())
+    } else {
+        Err("invalid serverId".to_string())
+    }
+}
+
+/// Stores (or, given `None`, forgets) a server's OAuth client registration and
+/// tokens. Called by the sidecar over the control channel, which is why the id
+/// is validated here rather than trusted from the caller.
+pub fn store_oauth(server_id: &str, oauth: Option<Value>) -> Result<(), String> {
+    validate_server_id(server_id)?;
+    let mut blob = read_blob();
+    if !blob.is_object() {
+        blob = Value::Object(Map::new());
+    }
+    match oauth {
+        Some(value) => {
+            if !value.is_object() {
+                return Err("oauth must be a JSON object".to_string());
+            }
+            server_entry(&mut blob, server_id).insert("oauth".to_string(), value);
+        }
+        None => {
+            let Some(root) = blob.as_object_mut() else {
+                return Ok(());
+            };
+            let Some(server) = root.get_mut(server_id).and_then(|v| v.as_object_mut()) else {
+                return Ok(());
+            };
+            server.remove("oauth");
+            if entry_is_empty(server) {
+                root.remove(server_id);
+            }
+        }
+    }
+    write_blob(&blob)
 }
 
 #[tauri::command]
@@ -259,4 +312,37 @@ pub fn build_sidecar_env(root: &Value) -> Option<String> {
         return None;
     }
     serde_json::to_string(&blob).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_uuid_server_id_is_accepted() {
+        assert!(validate_server_id("11111111-1111-1111-1111-111111111111").is_ok());
+    }
+
+    #[test]
+    fn a_server_id_cannot_smuggle_a_path_or_separator() {
+        // The sidecar reaches `store_oauth` over the control channel, so this is
+        // what keeps it inside its own entry of the secrets blob.
+        for bad in ["", "../database_url", "a b", "id\"", "a.b", "a/b"] {
+            assert!(validate_server_id(bad).is_err(), "accepted {bad:?}");
+        }
+    }
+
+    #[test]
+    fn an_entry_holding_only_oauth_is_not_empty() {
+        let entry: Map<String, Value> =
+            serde_json::from_str(r#"{"oauth":{"clientId":"cl_1"}}"#).unwrap();
+        assert!(!entry_is_empty(&entry));
+    }
+
+    #[test]
+    fn an_entry_with_every_bucket_emptied_is_empty() {
+        let entry: Map<String, Value> =
+            serde_json::from_str(r#"{"headers":{},"env":{},"oauth":{}}"#).unwrap();
+        assert!(entry_is_empty(&entry));
+    }
 }

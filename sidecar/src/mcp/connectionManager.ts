@@ -3,6 +3,7 @@ import { Experimental_StdioMCPTransport } from "@ai-sdk/mcp/mcp-stdio";
 import type { McpServerSecrets } from "../config.ts";
 import type { McpServerRow } from "../db/schema.ts";
 import { validateOutboundUrl } from "../lib/urlSafety.ts";
+import type { McpOAuthProvider } from "./oauth.ts";
 
 /**
  * Maintains live connections to enabled MCP servers and exposes their tools.
@@ -55,6 +56,44 @@ export interface ServerStatus {
   toolCount: number;
 }
 
+/**
+ * Wraps `fetch` so requests the transport makes to hosts *other than* the
+ * configured MCP server are checked before they go out.
+ *
+ * OAuth is what makes this necessary: the authorization server, its registration
+ * endpoint, and its token endpoint are all discovered at runtime from documents
+ * the MCP server serves, so none of them passed the check done when the server
+ * was configured. Without this, a compromised server could name
+ * `http://169.254.169.254/` as its authorization server and have the sidecar
+ * fetch it.
+ *
+ * The check is the static half of the guard — scheme, embedded credentials,
+ * literal private IPs, loopback and `.local` hostnames — deliberately not the
+ * DNS-resolving half. MCP servers worth connecting to are routinely on a VPN,
+ * where the hostname resolves into CGNAT or unique-local space; refusing those
+ * would refuse the servers this feature exists for, and the MCP server's own URL
+ * is already accepted on the same terms.
+ *
+ * Requests to the server's own origin skip the check entirely: that URL was
+ * validated when it was configured, and every tool call goes through this path.
+ */
+export function offServerFetchGuard(serverUrl: string): typeof globalThis.fetch {
+  const serverOrigin = new URL(serverUrl).origin;
+  const guarded = async (
+    input: Parameters<typeof globalThis.fetch>[0],
+    init?: Parameters<typeof globalThis.fetch>[1],
+  ): Promise<Response> => {
+    const target = input instanceof Request ? input.url : input.toString();
+    if (new URL(target).origin !== serverOrigin) {
+      validateOutboundUrl(target);
+    }
+    return fetch(input, init);
+  };
+  // `fetch` carries a `preconnect` member the callers here never use; borrow the
+  // global's so the wrapper still satisfies the type.
+  return Object.assign(guarded, { preconnect: globalThis.fetch.preconnect });
+}
+
 export class McpConnectionManager {
   private readonly connections = new Map<string, Connection>();
 
@@ -66,9 +105,10 @@ export class McpConnectionManager {
   async connect(
     server: McpServerRow,
     secrets: McpServerSecrets | undefined,
+    authProvider?: McpOAuthProvider,
   ): Promise<{ toolCount: number; descriptors: ListToolsResult["tools"] }> {
     await this.disconnect(server.id);
-    const transport = this.buildTransport(server, secrets);
+    const transport = this.buildTransport(server, secrets, authProvider);
     const client = await createMCPClient({
       transport,
       onUncaughtError: (error) =>
@@ -84,7 +124,11 @@ export class McpConnectionManager {
     }
   }
 
-  private buildTransport(server: McpServerRow, secrets: McpServerSecrets | undefined) {
+  private buildTransport(
+    server: McpServerRow,
+    secrets: McpServerSecrets | undefined,
+    authProvider: McpOAuthProvider | undefined,
+  ) {
     if (server.transport === "stdio") {
       if (!server.command) throw new Error("stdio MCP server requires a command");
       const env: Record<string, string> = {};
@@ -102,7 +146,13 @@ export class McpConnectionManager {
     if (!server.url) throw new Error("http MCP server requires a url");
     // SSRF guard, matching the custom-provider outbound URL policy.
     validateOutboundUrl(server.url);
-    return { type: "http" as const, url: server.url, headers: secrets?.headers };
+    return {
+      type: "http" as const,
+      url: server.url,
+      headers: secrets?.headers,
+      authProvider,
+      fetch: offServerFetchGuard(server.url),
+    };
   }
 
   async disconnect(serverId: string): Promise<void> {

@@ -151,6 +151,42 @@ Console and register the loopback redirect
 for Desktop clients), then enter the client id/secret in Settings and connect
 from the Calendar tab. See `ROADMAP.md` for the full verification steps.
 
+### Connected MCP servers
+
+**Settings → Tools & MCP → MCP servers** is where you add the servers Yarvis
+connects *out* to (as opposed to the endpoint it serves — see "Yarvis as an MCP
+server"). A server is either **remote** (Streamable HTTP / SSE, given a URL) or
+**local** (a stdio subprocess, given a command and arguments). Its structure is
+stored in Postgres; its credentials go to the Keychain. Press **Connect** to
+attach and pull the server's tools into the tool registry, then decide per tool
+in the Tool Manager whether it is always mounted, discoverable by search, or off.
+
+A remote server authenticates one of two ways:
+
+- **Auth headers** — name the headers on the server (e.g. `Authorization`), save,
+  then fill in each value. Values are Keychain-backed and take effect after the
+  sidecar restarts, which Yarvis does for you.
+- **Sign in with OAuth** — tick the box on a remote server instead. Yarvis then
+  runs the MCP authorization flow: it discovers the server's authorization
+  server, registers itself as a public client (dynamic client registration,
+  PKCE), and **Authorize** opens your browser to consent. The tokens land back
+  on a loopback redirect, get stored in the Keychain, and refresh on their own
+  while the app runs. Leave **Scopes** blank to take the server's defaults, or
+  name them explicitly — include `offline_access` if the server needs it to
+  issue a refresh token.
+
+  The redirect Yarvis registers is
+  `http://127.0.0.1:<sidecar-port>/oauth/mcp/callback`. That port is picked fresh
+  each time the app launches, so the registration is remade — and you authorize
+  once more — after a restart. Nothing to configure; it just means the first
+  Connect of a session may ask you to sign in again.
+
+  **Sign out** forgets both the tokens and the registration.
+
+The two compose: an OAuth server can still carry extra headers (a tenant id, say)
+alongside its bearer token. `Authorization` itself is reserved and can't be set
+as a custom header on either kind.
+
 ### Workspaces
 
 Workspaces manage their own repo clones and git worktrees under a base
@@ -564,7 +600,7 @@ sidecar/        Bun + TS service (Hono)
   src/workspaces/ repo registry + git-worktree provisioning, bulk base-branch sync, and
                   teardown (/api/repos, /api/workspaces), plus local self-review
                   comments on a workspace's own diffs (reviewComments.ts)
-  src/mcp/      MCP client: connected servers, tool registry sync, approvals
+  src/mcp/      MCP client: connected servers, OAuth, tool registry sync, approvals
   src/mcpServer/  the MCP endpoint Yarvis serves (memory tools over /mcp)
   src/attention/  attention stream: hook ingest, SSE stream, scoped clearing
   src/chat/attentionTools.ts  request_attention tool (badge + OS notification)

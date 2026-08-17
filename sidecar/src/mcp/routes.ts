@@ -7,12 +7,15 @@ import { getDb } from "../db/client.ts";
 import { UrlSafetyError, validateOutboundUrl } from "../lib/urlSafety.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { getMcpManager } from "./connectionManager.ts";
+import { getOAuthProvider } from "./oauth.ts";
 import {
+  beginAuthorization,
   createMcpServer,
   deleteMcpServer,
   getMcpServer,
   listMcpServers,
   refreshServer,
+  revokeAuthorization,
   updateMcpServer,
 } from "./service.ts";
 
@@ -56,6 +59,18 @@ const httpUrl = z
 
 const transport = z.enum(["http", "stdio"]);
 
+/**
+ * Space-separated OAuth scope list (RFC 6749 §3.3). Constrained to the printable
+ * ASCII the grammar allows so a scope string can't smuggle a newline or a quote
+ * into the authorization request.
+ */
+const oauthScope = z
+  .string()
+  .max(512)
+  .refine((v) => /^[\x21\x23-\x5b\x5d-\x7e]+(?: [\x21\x23-\x5b\x5d-\x7e]+)*$/.test(v.trim()), {
+    message: "scope must be space-separated printable ASCII tokens",
+  });
+
 const createSchema = z
   .object({
     name: z.string().min(1),
@@ -64,6 +79,8 @@ const createSchema = z
     command: z.string().min(1).optional(),
     args: z.array(z.string()).default([]),
     headerNames: z.array(headerName).default([]),
+    oauth: z.boolean().default(false),
+    oauthScope: oauthScope.nullable().optional(),
     enabled: z.boolean().default(true),
   })
   .superRefine((v, ctx) => {
@@ -81,6 +98,13 @@ const createSchema = z
         message: "stdio transport requires a command",
       });
     }
+    if (v.oauth && v.transport !== "http") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["oauth"],
+        message: "oauth is only available for the http transport",
+      });
+    }
   });
 
 const updateSchema = z.object({
@@ -90,6 +114,8 @@ const updateSchema = z.object({
   command: z.string().min(1).nullable().optional(),
   args: z.array(z.string()).optional(),
   headerNames: z.array(headerName).optional(),
+  oauth: z.boolean().optional(),
+  oauthScope: oauthScope.nullable().optional(),
   enabled: z.boolean().optional(),
 });
 
@@ -161,7 +187,33 @@ export function createMcpRoutes(config: Config): Hono {
     return c.json(result);
   });
 
-  router.get("/servers/:id/status", async (c) => c.json(getMcpManager().status(c.req.param("id"))));
+  router.get("/servers/:id/status", async (c) => {
+    const id = c.req.param("id");
+    const server = await getMcpServer(db(), id);
+    const provider = server ? getOAuthProvider(config, server) : undefined;
+    return c.json({
+      ...getMcpManager().status(id),
+      oauth: provider?.status() ?? null,
+    });
+  });
+
+  // --- OAuth ------------------------------------------------------------------
+
+  router.post("/servers/:id/authorize", async (c) => {
+    try {
+      const result = await beginAuthorization(config, db(), c.req.param("id"));
+      if (!result) return c.json({ error: "not found, or not an oauth server" }, 404);
+      return c.json(result);
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 502);
+    }
+  });
+
+  router.post("/servers/:id/oauth/disconnect", async (c) => {
+    const ok = await revokeAuthorization(config, db(), c.req.param("id"));
+    if (!ok) return c.json({ error: "not found, or not an oauth server" }, 404);
+    return c.json({ ok: true });
+  });
 
   // --- Tool registry ---------------------------------------------------------
 

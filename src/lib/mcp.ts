@@ -6,8 +6,11 @@ import { sidecarFetch } from "./api";
  * out to, plus the unified tool registry. It mirrors the custom-providers split
  * — structural data goes through the sidecar HTTP API (Postgres-backed), while
  * credential values (HTTP auth headers, stdio env vars) are managed via Tauri
- * commands and live in the macOS Keychain. The last section is the other side:
- * where outside clients connect to the endpoint Yarvis itself serves.
+ * commands and live in the macOS Keychain. OAuth is the exception on both
+ * counts: the sidecar drives the flow and writes the resulting tokens to the
+ * Keychain itself, so the frontend only starts it and opens the browser. The
+ * last section is the other side: where outside clients connect to the endpoint
+ * Yarvis itself serves.
  */
 
 export type McpTransport = "http" | "stdio";
@@ -23,6 +26,8 @@ export interface McpServer {
   command: string | null;
   args: string[];
   headerNames: string[];
+  oauth: boolean;
+  oauthScope: string | null;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -35,6 +40,8 @@ export interface McpServerInput {
   command?: string | null;
   args?: string[];
   headerNames?: string[];
+  oauth?: boolean;
+  oauthScope?: string | null;
   enabled?: boolean;
 }
 
@@ -67,11 +74,23 @@ export interface RefreshResult {
   connected: boolean;
   toolCount: number;
   error?: string;
+  /** The server answered 401 and needs the user to authorize at the URL below. */
+  needsAuthorization?: boolean;
+  authorizationUrl?: string;
+}
+
+/** How far through the OAuth flow a server is. Null when it doesn't use OAuth. */
+export interface McpOAuthStatus {
+  registered: boolean;
+  authorized: boolean;
+  scope: string | null;
+  authorizationUrl: string | null;
 }
 
 export interface ServerStatus {
   connected: boolean;
   toolCount: number;
+  oauth: McpOAuthStatus | null;
 }
 
 export type McpSecretSlot = `header:${string}` | `env:${string}`;
@@ -129,6 +148,26 @@ export async function getMcpServerStatus(id: string): Promise<ServerStatus> {
   const res = await sidecarFetch(`/api/mcp/servers/${id}/status`);
   if (!res.ok) throw new Error(`mcp server status failed: ${res.status}`);
   return res.json();
+}
+
+/**
+ * Starts the MCP authorization flow and returns the URL the user must open in a
+ * browser. Safe to call again for a flow already in progress — the same URL
+ * comes back, since the PKCE verifier behind it is only valid for that one.
+ */
+export async function authorizeMcpServer(id: string): Promise<{ authorizationUrl: string }> {
+  const res = await sidecarFetch(`/api/mcp/servers/${id}/authorize`, { method: "POST" });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.error ?? `authorize mcp server failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+/** Forgets a server's OAuth tokens and client registration. */
+export async function disconnectMcpOAuth(id: string): Promise<void> {
+  const res = await sidecarFetch(`/api/mcp/servers/${id}/oauth/disconnect`, { method: "POST" });
+  if (!res.ok) throw new Error(`disconnect mcp oauth failed: ${res.status}`);
 }
 
 export async function listAgentTools(): Promise<RegistryTool[]> {
