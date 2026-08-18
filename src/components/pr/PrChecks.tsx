@@ -69,6 +69,7 @@ export default function PrChecks({ prRef }: { prRef: PrRef }) {
             <span className={checkColor(check)}>{checkGlyph(check)}</span>
             {check.url ? (
               <button
+                type="button"
                 onClick={() => openExternal(check.url)}
                 className="text-left text-zinc-300 hover:underline"
               >
