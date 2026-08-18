@@ -217,6 +217,7 @@ function FilesView({ workspaceId, repoId }: { workspaceId: string; repoId: strin
     <ul className="space-y-0.5 font-mono text-xs text-zinc-400">
       <FileTreeRows
         nodes={tree}
+        defaultOpen={false}
         renderFile={(node, depth) => (
           <div
             className="truncate px-2 py-0.5"
