@@ -3,12 +3,14 @@
  *
  * The core listens on a Unix domain socket whose path is injected as
  * `YARVIS_CORE_SOCK`; this is how the sidecar asks the core to do things only it
- * can — spawning/killing a Claude Code session in a workspace PTY. The wire
- * protocol is newline-delimited JSON: each request `{ id, method, params }` gets
- * one reply `{ id, ok, error? }`.
+ * can — spawning/killing a Claude Code session in a workspace PTY, and writing
+ * refreshed MCP OAuth credentials into the Keychain. The wire protocol is
+ * newline-delimited JSON: each request `{ id, method, params }` gets one reply
+ * `{ id, ok, error? }`.
  */
 
 import net from "node:net";
+import type { McpOAuthCredentials } from "../config.ts";
 
 interface Pending {
   resolve: () => void;
@@ -152,4 +154,17 @@ export async function sendClaudeInstruction(input: {
     workspaceId: input.workspaceId,
     instruction: input.instruction,
   });
+}
+
+/**
+ * Asks the core to store an MCP server's OAuth credentials in the Keychain, or
+ * to forget them when `credentials` is null. The sidecar can't reach the
+ * Keychain itself, and a token refresh must not wait for an app restart to be
+ * durable — see `sidecar/src/mcp/oauth.ts`.
+ */
+export async function saveMcpOAuth(
+  serverId: string,
+  credentials: McpOAuthCredentials | null,
+): Promise<void> {
+  await rpc("mcp.saveOAuth", { serverId, oauth: credentials });
 }

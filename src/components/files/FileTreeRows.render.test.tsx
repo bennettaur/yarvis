@@ -10,11 +10,12 @@ afterEach(() => {
   unmount = null;
 });
 
-const mount = async (paths: string[]) => {
+const mount = async (paths: string[], defaultOpen?: boolean) => {
   const mounted = await mountForInteraction(
     <ul>
       <FileTreeRows
         nodes={buildFileTree(paths, (path) => path)}
+        defaultOpen={defaultOpen}
         renderFile={(node, depth) => (
           <div data-path={node.path} style={{ paddingLeft: treeRowPaddingLeft(depth) }}>
             {node.name}
@@ -44,6 +45,11 @@ describe("FileTreeRows", () => {
   it("opens folders by default", async () => {
     const host = await mount(["src/a.ts"]);
     expect(host.querySelector("details")?.hasAttribute("open")).toBe(true);
+  });
+
+  it("leaves folders closed when the caller opts out", async () => {
+    const host = await mount(["src/a.ts"], false);
+    expect(host.querySelector("details")?.hasAttribute("open")).toBe(false);
   });
 
   it("indents each level deeper than the one above it", async () => {
