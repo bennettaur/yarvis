@@ -1,22 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { nativeInvoke } from "../../test/nativeInvoke";
+import { clipboardWrites, resetClipboardWrites } from "../../test/clipboard";
 
 /**
  * Only the path sanitizing lives here — the copy mechanics, feedback and
  * accessibility belong to `CopyButton` and are covered by its own test.
  */
-let written: string[] = [];
 
-mock.module("@tauri-apps/api/core", () => ({
-  invoke: async (command: string, args?: Record<string, unknown>) => {
-    if (command !== "clipboard_write") return nativeInvoke(command);
-    written.push(args?.text as string);
-  },
-}));
-
-// Imported after the mock so the stub is in place.
+// Imported after the shared clipboard stub so it is in place.
 const { default: CopyPathButton } = await import("./CopyPathButton");
 
 let root: Root | null = null;
@@ -33,9 +25,7 @@ async function mountButton(path: string): Promise<HTMLButtonElement> {
   return host.querySelector("button") as HTMLButtonElement;
 }
 
-beforeEach(() => {
-  written = [];
-});
+beforeEach(resetClipboardWrites);
 
 afterEach(() => {
   root?.unmount();
@@ -49,7 +39,7 @@ describe("CopyPathButton", () => {
     const button = await mountButton("src/components/pr/PrFileList.tsx");
     button.click();
     await settle();
-    expect(written).toEqual(["src/components/pr/PrFileList.tsx"]);
+    expect(clipboardWrites()).toEqual(["src/components/pr/PrFileList.tsx"]);
   });
 
   // A provider-supplied filename can legally carry a newline or a bidi override,
@@ -58,6 +48,6 @@ describe("CopyPathButton", () => {
     const button = await mountButton("src/a.ts\n\rrm -rf /‮");
     button.click();
     await settle();
-    expect(written).toEqual(["src/a.tsrm -rf /"]);
+    expect(clipboardWrites()).toEqual(["src/a.tsrm -rf /"]);
   });
 });

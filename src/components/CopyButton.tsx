@@ -12,9 +12,10 @@ type CopyState = "idle" | "copied" | "failed";
  * it rather than a bare "Copied".
  */
 function labelsFor(subject: string): Record<CopyState, string> {
+  const noun = subject.charAt(0).toUpperCase() + subject.slice(1);
   return {
     idle: `Copy ${subject}`,
-    copied: `${subject.charAt(0).toUpperCase()}${subject.slice(1)} copied`,
+    copied: `${noun} copied`,
     failed: "Copying failed",
   };
 }
@@ -66,7 +67,7 @@ export default function CopyButton({
       await writeClipboard(typeof value === "function" ? value() : value);
       setCopyState("copied");
     } catch (e) {
-      console.error(`[copy] copying the ${subject} failed:`, e);
+      console.error(`[clipboard] copying the ${subject} failed:`, e);
       setCopyState("failed");
     }
     if (resetTimer.current) clearTimeout(resetTimer.current);

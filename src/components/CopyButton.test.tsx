@@ -1,27 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { nativeInvoke } from "../test/nativeInvoke";
+import { clipboardWrites, failNextClipboardWrite, resetClipboardWrites } from "../test/clipboard";
 
-/**
- * The button copies through the Rust core's `clipboard_write`, so the test
- * stands in for that command and records what it was handed. A module mock
- * replaces `@tauri-apps/api/core` for the whole run, so every other command
- * delegates to the shared defaults rather than answering undefined to a suite
- * that runs after this one.
- */
-let written: string[] = [];
-let failNext = false;
-
-mock.module("@tauri-apps/api/core", () => ({
-  invoke: async (command: string, args?: Record<string, unknown>) => {
-    if (command !== "clipboard_write") return nativeInvoke(command);
-    if (failNext) throw new Error("clipboard unavailable");
-    written.push(args?.text as string);
-  },
-}));
-
-// Imported after the mock so the stub is in place.
+// Imported after the shared clipboard stub so it is in place.
 const { default: CopyButton, FEEDBACK_MS } = await import("./CopyButton");
 
 let root: Root | null = null;
@@ -52,10 +34,7 @@ async function mountButton(
 /** What a screen reader is told, i.e. the live region rather than the button. */
 const announcement = () => host?.querySelector("[role='status']")?.textContent;
 
-beforeEach(() => {
-  written = [];
-  failNext = false;
-});
+beforeEach(resetClipboardWrites);
 
 afterEach(() => {
   root?.unmount();
@@ -69,7 +48,7 @@ describe("CopyButton", () => {
     const button = await mountButton({ value: "https://example.test/pull/1", subject: "PR link" });
     button.click();
     await settle();
-    expect(written).toEqual(["https://example.test/pull/1"]);
+    expect(clipboardWrites()).toEqual(["https://example.test/pull/1"]);
   });
 
   // Hosts that would otherwise build a whole file list on every render pass a
@@ -86,7 +65,7 @@ describe("CopyButton", () => {
     expect(calls).toBe(0);
     button.click();
     await settle();
-    expect(written).toEqual(["a.ts\nb.ts"]);
+    expect(clipboardWrites()).toEqual(["a.ts\nb.ts"]);
     expect(calls).toBe(1);
   });
 
@@ -104,7 +83,7 @@ describe("CopyButton", () => {
   });
 
   it("says so when the copy fails", async () => {
-    failNext = true;
+    failNextClipboardWrite();
     const button = await mountButton({ value: "x", subject: "path" });
     const consoleError = console.error;
     // The component logs the failure by design; keep the expected noise out of
@@ -117,7 +96,7 @@ describe("CopyButton", () => {
       console.error = consoleError;
     }
     expect(announcement()).toBe("Copying failed");
-    expect(written).toEqual([]);
+    expect(clipboardWrites()).toEqual([]);
   });
 
   it("names the value in the accessible name when given a title", async () => {
@@ -140,7 +119,7 @@ describe("CopyButton", () => {
     button.click();
     await settle();
     expect(host?.querySelector("details")?.open).toBe(false);
-    expect(written).toEqual(["src/a.ts"]);
+    expect(clipboardWrites()).toEqual(["src/a.ts"]);
   });
 
   // The file list row's own click handler sits on a sibling button today, so

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { clipboardSafePath } from "../lib/clipboard";
+import { clipboardSafePath, clipboardSafeText, clipboardSafeUrl } from "../lib/clipboard";
 import { buildFileTree } from "../lib/fileTree";
 import { requestOpenPr } from "../lib/nav";
 import type { PrSummary } from "../lib/pr/types";
@@ -13,6 +13,7 @@ import {
   workspaceRepoFiles,
 } from "../lib/workspaces";
 import CopyButton from "./CopyButton";
+import CopyLinkButton from "./CopyLinkButton";
 import FileTreeRows, { treeRowPaddingLeft } from "./files/FileTreeRows";
 import CopyPathButton from "./pr/CopyPathButton";
 import WorkspaceReviewComments from "./workspaces/WorkspaceReviewComments";
@@ -206,10 +207,13 @@ const sameChangedFiles = (prev: ChangedFile[] | null, next: ChangedFile[]): bool
  * — the form these lists get pasted in, one path per line, sanitized the same
  * way a single path is.
  */
-function ListHeader({ label, paths }: { label: string; paths: string[] }) {
+function FileListHeader({ paths, noun }: { paths: string[]; noun: string }) {
   return (
     <div className="mb-1 flex items-center gap-1 px-2 text-xs text-zinc-500">
-      <span>{label}</span>
+      <span>
+        {paths.length} {noun}
+        {paths.length === 1 ? "" : "s"}
+      </span>
       <CopyButton
         value={() => paths.map(clipboardSafePath).join("\n")}
         subject="file list"
@@ -236,7 +240,7 @@ function FilesView({ workspaceId, repoId }: { workspaceId: string; repoId: strin
   if (data.length === 0) return <p className="text-xs text-zinc-500">No files.</p>;
   return (
     <>
-      <ListHeader label={`${data.length} ${data.length === 1 ? "file" : "files"}`} paths={data} />
+      <FileListHeader paths={data} noun="file" />
       <ul className="space-y-0.5 font-mono text-xs text-zinc-400">
         <FileTreeRows
           nodes={tree}
@@ -291,10 +295,7 @@ function ChangesView({
   if (data.length === 0) return <p className="text-xs text-zinc-500">No changes on this branch.</p>;
   return (
     <>
-      <ListHeader
-        label={`${data.length} changed ${data.length === 1 ? "file" : "files"}`}
-        paths={data.map((f) => f.path)}
-      />
+      <FileListHeader paths={data.map((f) => f.path)} noun="changed file" />
       <ul className="space-y-0.5 font-mono text-xs">
         <FileTreeRows
           nodes={tree}
@@ -394,15 +395,13 @@ function buildPrSummary(repo: WorkspaceRepoDetail): PrSummary | null {
  * The checks view as pasteable text: the PR, where its checks stand and its
  * link, which is what gets handed to someone in chat when CI goes red.
  */
-function checksClipboardText(repo: WorkspaceRepoDetail): string {
-  const pr = repo.pr;
-  if (!pr) return "";
+function checksClipboardText(repoName: string, pr: NonNullable<WorkspaceRepoDetail["pr"]>): string {
   const rollup = ROLLUP_LABEL[pr.checkRollup] ?? pr.checkRollup;
   const counts = pr.checks && pr.checks.total > 0 ? describeChecks(pr.checks) : "";
-  const headline = [`${repo.repo.name} #${pr.prNumber}`, rollup, counts]
+  const headline = [`${clipboardSafeText(repoName)} #${pr.prNumber}`, rollup, counts]
     .filter(Boolean)
     .join(" · ");
-  return [headline, pr.prUrl].filter(Boolean).join("\n");
+  return [headline, clipboardSafeUrl(pr.prUrl)].filter(Boolean).join("\n");
 }
 
 function ChecksView({ repo }: { repo: WorkspaceRepoDetail }) {
@@ -424,7 +423,7 @@ function ChecksView({ repo }: { repo: WorkspaceRepoDetail }) {
       <div className="flex items-center gap-2">
         <span className="font-mono">#{pr.prNumber}</span>
         <CopyButton
-          value={() => checksClipboardText(repo)}
+          value={() => checksClipboardText(repo.repo.name, pr)}
           subject="check summary"
           title="Copy the check summary and the PR link"
         />
@@ -454,7 +453,11 @@ function ChecksView({ repo }: { repo: WorkspaceRepoDetail }) {
             >
               Open externally ↗
             </button>
-            <CopyButton value={pr.prUrl} subject="PR link" />
+            <CopyLinkButton
+              url={pr.prUrl}
+              subject="PR link"
+              title={`Copy the link to ${repo.repo.name} #${pr.prNumber}`}
+            />
           </>
         )}
       </div>

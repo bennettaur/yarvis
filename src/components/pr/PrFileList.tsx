@@ -33,11 +33,7 @@ export default function PrFileList({
   onToggleViewed,
 }: {
   prRef: PrRef;
-  /**
-   * The PR's web URL, which the per-file provider links are derived from. Empty
-   * where the host doesn't know it (an Omni widget names a PR by owner/repo/number
-   * only), which drops those links rather than guessing a hostname.
-   */
+  /** The PR's web URL; empty drops the per-file links — see {@link CopyFileLinkButton}. */
   prUrl?: string;
   /** When set, renders a button in the header to collapse the whole panel. */
   onCollapse?: () => void;
@@ -46,9 +42,10 @@ export default function PrFileList({
   onToggleViewed: (path: string) => void;
 }) {
   const { data, error, loading } = usePrFiles(prRef);
-  // Shares the detail cache with the rest of the review, so naming it here is
-  // only for the head commit the file links are pinned to.
-  const detail = usePrDetail(prRef);
+  // Only for the head commit the file links are pinned to, so it is skipped
+  // where there are no links to pin (an Omni widget passes no PR URL). Where
+  // there are, the rest of the review already subscribes, so this costs no fetch.
+  const detail = usePrDetail(prUrl ? prRef : null);
   const [selected, setSelected] = useState<string | null>(null);
 
   // Hoisted above the early returns to keep hook order stable.

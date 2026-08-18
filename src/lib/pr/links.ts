@@ -8,18 +8,28 @@ import type { PrRef } from "./types";
  * than copying a guess.
  */
 
-const GITHUB_PR_PATH = /\/pull\/\d+(?:\/[^?#]*)?(?:[?#].*)?$/;
-const AZURE_PR_PATH = /\/pullrequest\/\d+(?:\/[^?#]*)?(?:[?#].*)?$/;
+const GITHUB_PR_URL_TAIL = /\/pull\/\d+(?:\/[^?#]*)?(?:[?#].*)?$/;
+const AZURE_PR_URL_TAIL = /\/pullrequest\/\d+(?:\/[^?#]*)?(?:[?#].*)?$/;
 
 /** The repo's web URL, i.e. the PR URL with its pull-request suffix removed. */
 function repoWebUrl(prUrl: string, provider: PrRef["provider"]): string | null {
-  const pattern = provider === "github" ? GITHUB_PR_PATH : AZURE_PR_PATH;
+  const pattern = provider === "github" ? GITHUB_PR_URL_TAIL : AZURE_PR_URL_TAIL;
   if (!pattern.test(prUrl)) return null;
   return prUrl.replace(pattern, "");
 }
 
-/** Percent-encodes a repo-relative path, keeping its separators readable. */
-const encodePath = (path: string): string => path.split("/").map(encodeURIComponent).join("/");
+/**
+ * Percent-encodes a repo-relative path, keeping its separators readable — or
+ * null when a segment is `.` or `..`. Git refuses to store those, so one
+ * arriving from a provider is hostile: `encodeURIComponent` leaves them intact
+ * and the browser resolves them away, landing the reader on a different repo
+ * than the link appears to name.
+ */
+function encodePath(path: string): string | null {
+  const segments = path.split("/");
+  if (segments.some((s) => s === "." || s === "..")) return null;
+  return segments.map(encodeURIComponent).join("/");
+}
 
 /**
  * Link to one file of a PR as it stands at `headSha` — the form that survives a
@@ -36,7 +46,9 @@ export function prFileUrl(
   if (!headSha) return null;
   const base = repoWebUrl(prUrl, provider);
   if (!base) return null;
+  const encoded = encodePath(path);
+  if (encoded === null) return null;
   return provider === "github"
-    ? `${base}/blob/${encodeURIComponent(headSha)}/${encodePath(path)}`
+    ? `${base}/blob/${encodeURIComponent(headSha)}/${encoded}`
     : `${base}?path=${encodeURIComponent(`/${path}`)}&version=GC${encodeURIComponent(headSha)}`;
 }

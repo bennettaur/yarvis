@@ -12,7 +12,7 @@ import type { JiraIssueDetail, JiraUser } from "../../lib/jira/types";
 import { useJiraStartWork } from "../../lib/jira/useJiraStartWork";
 import { formatRelativeTime } from "../../lib/time";
 import { openExternal } from "../../lib/url";
-import CopyButton from "../CopyButton";
+import CopyLinkButton from "../CopyLinkButton";
 import Markdown from "../Markdown";
 import JiraRepoPickerModal from "./JiraRepoPickerModal";
 import { StatusBadge } from "./jiraStatus";
@@ -277,8 +277,8 @@ export default function JiraIssueDetailView({
             >
               Open in JIRA ↗
             </button>
-            <CopyButton
-              value={() => detail?.url ?? summary.url}
+            <CopyLinkButton
+              url={detail?.url ?? summary.url}
               subject="issue link"
               title={`Copy the JIRA link to ${detail?.displayId ?? summary.displayId}`}
             />

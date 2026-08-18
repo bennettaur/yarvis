@@ -34,6 +34,52 @@ describe("prFileUrl", () => {
     ).toBe("https://dev.azure.com/acme/proj/_git/web?path=%2Fsrc%2Fa.ts&version=GCabc123");
   });
 
+  it("ignores a trailing query or fragment on an Azure PR URL", () => {
+    expect(
+      prFileUrl(
+        "https://dev.azure.com/acme/proj/_git/web/pullrequest/9?_a=files",
+        "azure",
+        "sha",
+        "src/a.ts",
+      ),
+    ).toBe("https://dev.azure.com/acme/proj/_git/web?path=%2Fsrc%2Fa.ts&version=GCsha");
+  });
+
+  // Azure carries the path as one query value, so its separators are encoded
+  // too — a different code path from GitHub's per-segment encoding.
+  it("encodes an Azure path as a single query value", () => {
+    expect(
+      prFileUrl(
+        "https://dev.azure.com/acme/proj/_git/web/pullrequest/9",
+        "azure",
+        "sha",
+        "a b/c.ts",
+      ),
+    ).toBe("https://dev.azure.com/acme/proj/_git/web?path=%2Fa%20b%2Fc.ts&version=GCsha");
+  });
+
+  // git refuses to store a `.` or `..` tree entry, so one arriving from a
+  // provider is hostile: the browser would resolve it away and land the reader
+  // on a repo other than the one the copied link appears to name.
+  it("refuses a path with dot segments on either provider", () => {
+    expect(
+      prFileUrl(
+        "https://github.com/acme/web/pull/1",
+        "github",
+        "sha",
+        "../../evil/repo/blob/main/README.md",
+      ),
+    ).toBeNull();
+    expect(
+      prFileUrl(
+        "https://dev.azure.com/acme/proj/_git/web/pullrequest/9",
+        "azure",
+        "sha",
+        "a/./b.ts",
+      ),
+    ).toBeNull();
+  });
+
   it("escapes path characters that would otherwise change the URL", () => {
     expect(prFileUrl("https://github.com/acme/web/pull/1", "github", "sha", "a b/c?d.ts")).toBe(
       "https://github.com/acme/web/blob/sha/a%20b/c%3Fd.ts",
