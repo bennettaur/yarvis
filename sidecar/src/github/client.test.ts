@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { encodeRepoPath, GitHubClient, summarizeChecks, toPrDetail } from "./client.ts";
+import {
+  encodeRepoPath,
+  GitHubClient,
+  summarizeChecks,
+  summarizeReviewDecision,
+  toPrDetail,
+} from "./client.ts";
 
 function fakeFetch(routes: Record<string, unknown>): typeof fetch {
   return (async (url: string) => {
@@ -19,6 +25,20 @@ describe("github client", () => {
       { status: "completed", conclusion: "skipped" },
     ]);
     expect(s).toEqual({ total: 4, success: 2, failure: 1, pending: 1 });
+  });
+
+  it("counts only each reviewer's latest verdict, blocking over approving", () => {
+    const reviews = [
+      { state: "APPROVED", user: { login: "ada" } },
+      { state: "COMMENTED", user: { login: "grace" } },
+      { state: "CHANGES_REQUESTED", user: { login: "grace" } },
+      { state: "APPROVED", user: { login: "grace" } },
+    ];
+    expect(summarizeReviewDecision(reviews)).toBe("approved");
+    expect(summarizeReviewDecision(reviews.slice(0, 3))).toBe("changes_requested");
+    expect(summarizeReviewDecision([{ state: "COMMENTED", user: { login: "ada" } }])).toBe(
+      "review_required",
+    );
   });
 
   it("maps PR search items and drops non-PR issues", async () => {

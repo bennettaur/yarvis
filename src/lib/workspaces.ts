@@ -31,8 +31,22 @@ export interface WorkspaceRepoPr {
   mergeable: string | null;
   checkRollup: CheckRollup;
   checks: { total: number; success: number; failure: number; pending: number } | null;
+  /** approved | changes_requested | review_required; null when unknown. */
+  reviewDecision: string | null;
   lastPolledAt: string | null;
   lastError: string | null;
+}
+
+/** The slice of a workspace repo's PR cache carried on a list row. */
+export interface WorkspaceSummaryPr {
+  repoName: string;
+  prNumber: number;
+  prUrl: string | null;
+  prState: string | null;
+  isDraft: boolean | null;
+  mergeable: string | null;
+  checkRollup: CheckRollup;
+  reviewDecision: string | null;
 }
 
 export interface WorkspaceRepoDetail {
@@ -63,6 +77,8 @@ export interface WorkspaceDetail extends Workspace {
 /** A workspace list row, with its repo names for sidebar grouping. */
 export interface WorkspaceSummary extends Workspace {
   repoNames: string[];
+  /** One entry per repo that has a PR; empty until the poller finds one. */
+  prs: WorkspaceSummaryPr[];
 }
 
 export interface ChangedFile {

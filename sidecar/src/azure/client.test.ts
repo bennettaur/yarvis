@@ -169,6 +169,7 @@ describe("azure client", () => {
       draft: true,
       state: "open",
       mergeable: "MERGEABLE",
+      reviewDecision: "review_required",
     });
   });
 

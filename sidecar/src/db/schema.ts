@@ -477,6 +477,9 @@ export const workspaceRepoPr = pgTable(
     prState: text("pr_state"), // open | closed | merged
     isDraft: boolean("is_draft"),
     mergeable: text("mergeable"), // MERGEABLE | CONFLICTING | UNKNOWN
+    // approved | changes_requested | review_required; null when unknown (no PR,
+    // not polled, or a provider that can't answer).
+    reviewDecision: text("review_decision"),
     checkRollup: checkRollup("check_rollup").notNull().default("none"),
     checks: jsonb("checks").$type<{
       total: number;

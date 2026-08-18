@@ -1,0 +1,1 @@
+ALTER TABLE "workspace_repo_pr" ADD COLUMN "review_decision" text;

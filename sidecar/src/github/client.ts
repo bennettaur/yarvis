@@ -14,6 +14,7 @@ import type {
   PrInvolvement,
   PrStatus,
   PrSummary,
+  ReviewDecision,
   Reviewer,
   ReviewerState,
 } from "../pr/types.ts";
@@ -31,6 +32,7 @@ export type {
   PrStatus,
   PrSummary,
   ReviewComment,
+  ReviewDecision,
   Reviewer,
   ReviewerState,
   ReviewThread,
@@ -152,6 +154,25 @@ export function summarizeChecks(runs: any[]): ChecksSummary {
     }
   }
   return { total: runs.length, success, failure, pending };
+}
+
+/**
+ * Collapses a PR's review list into one verdict. GitHub returns every review
+ * ever submitted, so only each reviewer's latest verdict counts, and a review
+ * that carries no verdict (a plain comment, or one dismissed by a later push)
+ * leaves the earlier one standing rather than clearing it.
+ */
+export function summarizeReviewDecision(reviews: any[]): ReviewDecision {
+  const latestByLogin = new Map<string, string>();
+  for (const review of reviews) {
+    const state = String(review?.state ?? "").toUpperCase();
+    if (state !== "APPROVED" && state !== "CHANGES_REQUESTED") continue;
+    latestByLogin.set(review?.user?.login ?? "", state);
+  }
+  const verdicts = [...latestByLogin.values()];
+  if (verdicts.includes("CHANGES_REQUESTED")) return "changes_requested";
+  if (verdicts.includes("APPROVED")) return "approved";
+  return "review_required";
 }
 
 /** Normalizes a GraphQL statusCheckRollup context into a flat CheckItem. */
@@ -529,6 +550,18 @@ export class GitHubClient {
       mergeableState: pr.mergeable_state ?? "unknown",
       checks: summarizeChecks(checks.check_runs ?? []),
     };
+  }
+
+  /**
+   * The reviewers' collective verdict on a PR. Kept off {@link prStatus} — that
+   * one is the cheap per-row call — so only the callers that need the verdict
+   * pay for the extra request.
+   */
+  async prReviewDecision(owner: string, repo: string, number: number): Promise<ReviewDecision> {
+    const reviews = await this.api<any[]>(
+      `/repos/${owner}/${repo}/pulls/${number}/reviews?per_page=100`,
+    );
+    return summarizeReviewDecision(reviews ?? []);
   }
 
   /**

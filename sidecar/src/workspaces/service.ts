@@ -438,6 +438,24 @@ export async function createWorkspace(
 export interface WorkspaceSummary extends Omit<Workspace, "pendingIssuePrompt"> {
   /** Names of the repos in this workspace, for grouping in the sidebar. */
   repoNames: string[];
+  /**
+   * Cached PR state per repo that has one, so the list can show at a glance
+   * which workspaces need attention. Repos with no PR are left out entirely —
+   * the row has nothing to say about them.
+   */
+  prs: WorkspaceSummaryPr[];
+}
+
+/** The slice of a workspace repo's PR cache the list rows render. */
+export interface WorkspaceSummaryPr {
+  repoName: string;
+  prNumber: number;
+  prUrl: string | null;
+  prState: string | null;
+  isDraft: boolean | null;
+  mergeable: string | null;
+  checkRollup: WorkspaceRepoPr["checkRollup"];
+  reviewDecision: string | null;
 }
 
 export async function listWorkspaces(db: Db): Promise<WorkspaceSummary[]> {
@@ -446,17 +464,36 @@ export async function listWorkspaces(db: Db): Promise<WorkspaceSummary[]> {
   if (!wsRows.length) return [];
 
   const memberships = await db
-    .select({ workspaceId: workspaceRepos.workspaceId, name: repos.name })
+    .select({ workspaceId: workspaceRepos.workspaceId, name: repos.name, pr: workspaceRepoPr })
     .from(workspaceRepos)
-    .innerJoin(repos, eq(workspaceRepos.repoId, repos.id));
+    .innerJoin(repos, eq(workspaceRepos.repoId, repos.id))
+    .leftJoin(workspaceRepoPr, eq(workspaceRepoPr.workspaceRepoId, workspaceRepos.id));
   const namesByWorkspace = new Map<string, string[]>();
+  const prsByWorkspace = new Map<string, WorkspaceSummaryPr[]>();
   for (const m of memberships) {
     const names = namesByWorkspace.get(m.workspaceId) ?? [];
     names.push(m.name);
     namesByWorkspace.set(m.workspaceId, names);
+    if (m.pr?.prNumber === null || m.pr?.prNumber === undefined) continue;
+    const prs = prsByWorkspace.get(m.workspaceId) ?? [];
+    prs.push({
+      repoName: m.name,
+      prNumber: m.pr.prNumber,
+      prUrl: m.pr.prUrl,
+      prState: m.pr.prState,
+      isDraft: m.pr.isDraft,
+      mergeable: m.pr.mergeable,
+      checkRollup: m.pr.checkRollup,
+      reviewDecision: m.pr.reviewDecision,
+    });
+    prsByWorkspace.set(m.workspaceId, prs);
   }
 
-  return wsRows.map((w) => ({ ...w, repoNames: namesByWorkspace.get(w.id) ?? [] }));
+  return wsRows.map((w) => ({
+    ...w,
+    repoNames: namesByWorkspace.get(w.id) ?? [],
+    prs: prsByWorkspace.get(w.id) ?? [],
+  }));
 }
 
 export async function getWorkspace(db: Db, id: string): Promise<WorkspaceDetail | null> {

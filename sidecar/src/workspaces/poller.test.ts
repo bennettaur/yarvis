@@ -96,11 +96,16 @@ function pullItem(number: number, state: string) {
 
 const CHECKS = (runs: { status: string; conclusion: string }[]) => ({ check_runs: runs });
 
+/** A `GET /pulls/:n/reviews` payload; the poller asks for it on every open PR. */
+const REVIEWS = (states: string[] = []) =>
+  states.map((state, i) => ({ state, user: { login: `r${i}` } }));
+
 describe("pollOnce", () => {
   it("caches the PR + failing-check rollup for a ready repo", async () => {
     const wrId = await seedReadyRepo();
     const gh = clientWith((path) => {
       if (path.includes("head=")) return [pullItem(7, "open")];
+      if (path.includes("/reviews")) return REVIEWS();
       if (path.includes("/pulls/7")) {
         return {
           state: "open",
@@ -133,6 +138,7 @@ describe("pollOnce", () => {
     const wrId = await seedReadyRepo();
     const gh = clientWith((path) => {
       if (path.includes("head=")) return [pullItem(7, "open")];
+      if (path.includes("/reviews")) return REVIEWS();
       if (path.includes("/pulls/7")) return { state: "open", merged: false, head: { sha: "abc" } };
       if (path.includes("/check-runs")) {
         return CHECKS([
@@ -157,6 +163,7 @@ describe("pollOnce", () => {
     const wrId = await seedReadyRepo();
     const gh = clientWith((path) => {
       if (path.includes("head=")) return [pullItem(7, "open")];
+      if (path.includes("/reviews")) return REVIEWS();
       if (path.includes("/pulls/7")) return { state: "open", merged: false, head: { sha: "abc" } };
       if (path.includes("/check-runs")) {
         return CHECKS([
@@ -209,6 +216,43 @@ describe("pollOnce", () => {
     expect(row?.checkRollup).toBe("none");
   });
 
+  it("caches the reviewers' verdict on an open PR", async () => {
+    const wrId = await seedReadyRepo();
+    const gh = clientWith((path) => {
+      if (path.includes("head=")) return [pullItem(7, "open")];
+      if (path.includes("/reviews")) return REVIEWS(["APPROVED", "COMMENTED"]);
+      if (path.includes("/pulls/7")) return { state: "open", merged: false, head: { sha: "abc" } };
+      if (path.includes("/check-runs")) return CHECKS([]);
+      return {};
+    });
+
+    await pollOnce(db, { github: gh });
+
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row?.reviewDecision).toBe("approved");
+  });
+
+  it("leaves the verdict unknown on a draft PR rather than asking for it", async () => {
+    const wrId = await seedReadyRepo();
+    let askedForReviews = false;
+    const gh = clientWith((path) => {
+      if (path.includes("head=")) return [{ ...pullItem(7, "open"), draft: true }];
+      if (path.includes("/reviews")) {
+        askedForReviews = true;
+        return REVIEWS(["APPROVED"]);
+      }
+      if (path.includes("/pulls/7")) return { state: "open", merged: false, head: { sha: "abc" } };
+      if (path.includes("/check-runs")) return CHECKS([]);
+      return {};
+    });
+
+    await pollOnce(db, { github: gh });
+
+    expect(askedForReviews).toBe(false);
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row?.reviewDecision).toBeNull();
+  });
+
   it("records a per-repo error and keeps polling the rest of the cycle", async () => {
     const a = await seedReadyRepo("a");
     const b = await seedReadyRepo("b");
@@ -216,6 +260,7 @@ describe("pollOnce", () => {
     const gh = clientWith((path) => {
       if (path.includes("/ra/") && path.includes("head=")) return { __status: 500 };
       if (path.includes("head=")) return [pullItem(3, "open")];
+      if (path.includes("/reviews")) return REVIEWS();
       if (path.includes("/pulls/3")) return { state: "open", merged: false, head: { sha: "s" } };
       if (path.includes("/check-runs")) return CHECKS([]);
       return {};
@@ -240,6 +285,7 @@ describe("pollOnce", () => {
                 status: "active",
                 isDraft: false,
                 mergeStatus: "succeeded",
+                reviewers: [{ displayName: "Ada", vote: 10 }],
                 repository: {
                   name: "web",
                   webUrl: "https://dev.azure.com/acme/Shop/_git/web",
@@ -258,6 +304,8 @@ describe("pollOnce", () => {
     expect(row?.prState).toBe("open");
     expect(row?.prUrl).toBe("https://dev.azure.com/acme/Shop/_git/web/pullrequest/55");
     expect(row?.checkRollup).toBe("none");
+    expect(row?.reviewDecision).toBe("approved"); // from the reviewers' votes
+
     expect(row?.lastError).toBeNull();
   });
 

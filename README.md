@@ -159,6 +159,16 @@ directory, `~/dev/yarvis-workspaces` by default and overridable with the
 secrets above). Add repos and edit their per-repo setup/run scripts in the
 Settings tab's Repositories section.
 
+Each row in the workspace list carries a glyph per repo that has a pull
+request, beside the workspace status, so a list of "active" workspaces still
+says which one wants you: `◇` open and awaiting review, `◌` draft, `●` checks
+running, `✗` checks failing, `⚠` merge conflicts, `✎` changes requested, `✓`
+approved and ready to merge, `◆` merged, `⊘` closed. Hovering names the repo,
+the PR number and the state. The glyph shows whatever needs acting on first, so
+a red build on an approved PR still reads as failing. It comes from the same
+background PR poll the workspace page uses, so it lags a change by up to a
+minute.
+
 Every provisioned workspace opens with an agent tab and nothing else — opening
 one starts a Claude Code session in it (or attaches to the one already running)
 and focuses that tab. No extra shell tab is opened alongside it; use `+` or

@@ -231,6 +231,58 @@ describe("workspace routes", () => {
     expect(list[0]?.repoNames).toEqual(["widget"]);
   });
 
+  it("lists each workspace's cached PR state so the sidebar can flag it", async () => {
+    const repo = await addRepo();
+    const created = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "with pr", repoIds: [repo.id] }),
+    });
+    const ws = (await created.json()) as { id: string };
+    const [wr] = await db
+      .select()
+      .from(workspaceRepos)
+      .where(eq(workspaceRepos.workspaceId, ws.id));
+    await db.insert(workspaceRepoPr).values({
+      workspaceRepoId: wr!.id,
+      prNumber: 12,
+      prUrl: "https://github.com/acme/widget/pull/12",
+      prState: "open",
+      isDraft: false,
+      mergeable: "clean",
+      checkRollup: "failure",
+      reviewDecision: "approved",
+    });
+
+    const res = await app.request("/api/workspaces", { headers: auth });
+    const list = (await res.json()) as { prs: Record<string, unknown>[] }[];
+    expect(list[0]?.prs).toEqual([
+      {
+        repoName: "widget",
+        prNumber: 12,
+        prUrl: "https://github.com/acme/widget/pull/12",
+        prState: "open",
+        isDraft: false,
+        mergeable: "clean",
+        checkRollup: "failure",
+        reviewDecision: "approved",
+      },
+    ]);
+  });
+
+  it("leaves a repo with no PR out of the list row's PR states", async () => {
+    const repo = await addRepo();
+    await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "no pr", repoIds: [repo.id] }),
+    });
+
+    const res = await app.request("/api/workspaces", { headers: auth });
+    const list = (await res.json()) as { prs: unknown[] }[];
+    expect(list[0]?.prs).toEqual([]);
+  });
+
   it("finds the workspace a cached PR was raised from, case-insensitively", async () => {
     const repo = await addRepo();
     const created = await app.request("/api/workspaces", {

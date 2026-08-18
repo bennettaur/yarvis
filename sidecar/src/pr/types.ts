@@ -128,6 +128,15 @@ export type ReviewerState =
   | "pending"
   | "dismissed";
 
+/**
+ * The reviewers' collective verdict on a PR, provider-neutral. A blocking
+ * review outranks an approval — one reviewer asking for changes gates the merge
+ * however many others approved. `review_required` means nobody has weighed in
+ * yet; `null` (where this type is nullable) means the verdict is unknown, not
+ * that it is empty.
+ */
+export type ReviewDecision = "approved" | "changes_requested" | "review_required";
+
 export interface Reviewer {
   login: string;
   state: ReviewerState;

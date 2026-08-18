@@ -38,6 +38,7 @@ import BranchCombobox from "./workspaces/BranchCombobox";
 import LinkWorkModal from "./workspaces/LinkWorkModal";
 import { consumeProvision } from "./workspaces/provisionStream";
 import WorkspaceFileDiff from "./workspaces/WorkspaceFileDiff";
+import WorkspacePrIcons from "./workspaces/WorkspacePrIcons";
 import WorkspacePrStatus from "./workspaces/WorkspacePrStatus";
 import WorkspaceSetupLog from "./workspaces/WorkspaceSetupLog";
 
@@ -103,6 +104,11 @@ const SHOW_ARCHIVED_KEY = "yarvis.workspaces.showArchived";
  *  sidecar's background, so both the list and the open workspace lean on
  *  polling to notice it landed. */
 const ARCHIVING_REFRESH_INTERVAL_MS = 2_000;
+
+/** Cadence for picking up the sidecar's PR cache, so the list's PR icons keep
+ *  up with a check going red or an approval landing. Matched to the poller's
+ *  own cycle — refreshing faster would only re-read the same rows. */
+const PR_REFRESH_INTERVAL_MS = 60_000;
 
 /** Where a workspace's agent session runs: always the workspace root, so the
  *  agent sees each repo's worktree as a subfolder and can read the
@@ -218,6 +224,22 @@ export default function WorkspacesPanel({
     return () => clearInterval(timer);
   }, [archivingCount, refresh]);
 
+  // Keeps the rows' PR icons current. Paused while the window is hidden: the
+  // poller keeps running server-side, so one refresh on the way back is enough.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (!document.hidden) void refresh();
+    }, PR_REFRESH_INTERVAL_MS);
+    const onVisibility = () => {
+      if (!document.hidden) void refresh();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [refresh]);
+
   // A selected workspace missing from the list is usually one created since the
   // last fetch — the create and "Start work" flows select it immediately, while
   // `items` still holds the pre-create list — so confirm it's really gone before
@@ -326,7 +348,10 @@ export default function WorkspacesPanel({
                           )}
                           <span className="truncate">{ws.name}</span>
                         </span>
-                        <StatusBadge status={ws.status} />
+                        <span className="flex shrink-0 items-center gap-1.5">
+                          <WorkspacePrIcons prs={ws.prs} />
+                          <StatusBadge status={ws.status} />
+                        </span>
                       </button>
                     </li>
                   );
