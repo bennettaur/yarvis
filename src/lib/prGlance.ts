@@ -15,11 +15,10 @@ export type PrGlance =
   | "checks_failing"
   | "changes_requested"
   | "checks_running"
-  | "ready"
+  | "approved"
   | "open";
 
 export interface PrGlanceBadge {
-  state: PrGlance;
   icon: string;
   /** Tooltip/screen-reader text, PR number included. */
   label: string;
@@ -44,6 +43,8 @@ function checksSettled(rollup: CheckRollup): boolean {
 }
 
 export function prGlance(pr: WorkspaceSummaryPr): PrGlance {
+  // A row only reaches here with a PR number, so an unset state is a provider
+  // that didn't say — which for a PR that exists means open.
   const state = (pr.prState ?? "open").toLowerCase();
   if (state === "merged") return "merged";
   if (state === "closed") return "closed";
@@ -54,11 +55,11 @@ export function prGlance(pr: WorkspaceSummaryPr): PrGlance {
   if (pr.checkRollup === "failure") return "checks_failing";
   if (pr.reviewDecision === "changes_requested") return "changes_requested";
   if (pr.checkRollup === "pending") return "checks_running";
-  if (pr.reviewDecision === "approved" && checksSettled(pr.checkRollup)) return "ready";
+  if (pr.reviewDecision === "approved" && checksSettled(pr.checkRollup)) return "approved";
   return "open";
 }
 
-const GLANCE_STYLES: Record<PrGlance, { icon: string; label: string; className: string }> = {
+const GLANCE_BADGES: Record<PrGlance, { icon: string; label: string; className: string }> = {
   merged: { icon: "◆", label: "merged", className: "text-violet-400" },
   closed: { icon: "⊘", label: "closed", className: "text-zinc-500" },
   draft: { icon: "◌", label: "draft", className: "text-zinc-400" },
@@ -66,16 +67,17 @@ const GLANCE_STYLES: Record<PrGlance, { icon: string; label: string; className: 
   checks_failing: { icon: "✗", label: "checks failing", className: "text-red-400" },
   changes_requested: { icon: "✎", label: "changes requested", className: "text-amber-400" },
   checks_running: { icon: "●", label: "checks running", className: "text-amber-400" },
-  ready: { icon: "✓", label: "approved — ready to merge", className: "text-emerald-400" },
+  // "approved", not "ready to merge": one approval is all the poller knows
+  // about, and a repo's own rules (required reviewers, CODEOWNERS) can still
+  // hold the merge.
+  approved: { icon: "✓", label: "approved", className: "text-emerald-400" },
   open: { icon: "◇", label: "open — awaiting review", className: "text-sky-400" },
 };
 
 /** The icon, color and tooltip text for one PR's list-row badge. */
 export function prGlanceBadge(pr: WorkspaceSummaryPr): PrGlanceBadge {
-  const state = prGlance(pr);
-  const style = GLANCE_STYLES[state];
+  const style = GLANCE_BADGES[prGlance(pr)];
   return {
-    state,
     icon: style.icon,
     label: `${pr.repoName} #${pr.prNumber} ${style.label}`,
     className: style.className,

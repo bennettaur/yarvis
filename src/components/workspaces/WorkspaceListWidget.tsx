@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { listWorkspaces, type WorkspaceStatus, type WorkspaceSummary } from "../../lib/workspaces";
-import WorkspacePrIcons from "./WorkspacePrIcons";
+import WorkspacePrBadges from "./WorkspacePrBadges";
 
 const STATUS_COLOR: Record<WorkspaceStatus, string> = {
   creating: "text-amber-400",
@@ -36,7 +36,7 @@ export default function WorkspaceListWidget() {
             )}
           </div>
           <span className="flex shrink-0 items-center gap-1.5">
-            <WorkspacePrIcons prs={ws.prs} />
+            <WorkspacePrBadges prs={ws.prs} />
             <span className={`text-xs ${STATUS_COLOR[ws.status]}`}>{ws.status}</span>
           </span>
         </li>

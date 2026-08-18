@@ -260,7 +260,6 @@ describe("workspace routes", () => {
       {
         repoName: "widget",
         prNumber: 12,
-        prUrl: "https://github.com/acme/widget/pull/12",
         prState: "open",
         isDraft: false,
         mergeable: "clean",
@@ -268,6 +267,49 @@ describe("workspace routes", () => {
         reviewDecision: "approved",
       },
     ]);
+  });
+
+  it("keeps a multi-repo workspace's names whole while listing only its PRs", async () => {
+    const widget = await addRepo();
+    const gadget = await addRepo("git@github.com:acme/gadget.git");
+    const created = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "two repos", repoIds: [widget.id, gadget.id] }),
+    });
+    const ws = (await created.json()) as { id: string };
+    const wrs = await db.select().from(workspaceRepos).where(eq(workspaceRepos.workspaceId, ws.id));
+    const withPr = wrs.find((wr) => wr.worktreePath.endsWith("gadget"));
+    await db
+      .insert(workspaceRepoPr)
+      .values({ workspaceRepoId: withPr!.id, prNumber: 3, prState: "open" });
+
+    const res = await app.request("/api/workspaces", { headers: auth });
+    const list = (await res.json()) as { repoNames: string[]; prs: { repoName: string }[] }[];
+    expect(list[0]?.repoNames.sort()).toEqual(["gadget", "widget"]);
+    expect(list[0]?.prs.map((pr) => pr.repoName)).toEqual(["gadget"]);
+  });
+
+  it("drops the PR of a repo torn down by an archive, whose cache is frozen", async () => {
+    const repo = await addRepo();
+    const created = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "archived", repoIds: [repo.id] }),
+    });
+    const ws = (await created.json()) as { id: string };
+    const [wr] = await db
+      .select()
+      .from(workspaceRepos)
+      .where(eq(workspaceRepos.workspaceId, ws.id));
+    await db
+      .insert(workspaceRepoPr)
+      .values({ workspaceRepoId: wr!.id, prNumber: 8, prState: "open", checkRollup: "failure" });
+    await db.update(workspaceRepos).set({ status: "removed" }).where(eq(workspaceRepos.id, wr!.id));
+
+    const res = await app.request("/api/workspaces", { headers: auth });
+    const list = (await res.json()) as { prs: unknown[] }[];
+    expect(list[0]?.prs).toEqual([]);
   });
 
   it("leaves a repo with no PR out of the list row's PR states", async () => {

@@ -4,6 +4,7 @@ import {
   isAllowedAzureOrgUrl,
   mapPolicyEvaluation,
   mapReviewer,
+  summarizeReviewDecision,
 } from "./client.ts";
 
 const ORG = "https://dev.azure.com/acme";
@@ -59,6 +60,33 @@ describe("mapReviewer", () => {
     expect(reviewer.state).toBe(state);
     expect(reviewer.isRequested).toBe(isRequested);
     expect(reviewer.login).toBe("Alex");
+  });
+});
+
+describe("summarizeReviewDecision", () => {
+  it("lets one blocking vote outrank any number of approvals", () => {
+    expect(
+      summarizeReviewDecision([
+        { displayName: "Ada", vote: 10 },
+        { displayName: "Grace", vote: 5 },
+        { displayName: "Alan", vote: -10 },
+      ]),
+    ).toBe("changes_requested");
+  });
+
+  it("treats waiting-for-author as blocking, matching mapReviewerVote", () => {
+    expect(summarizeReviewDecision([{ displayName: "Ada", vote: -5 }])).toBe("changes_requested");
+  });
+
+  it("counts approved-with-suggestions as an approval", () => {
+    expect(summarizeReviewDecision([{ displayName: "Ada", vote: 5 }])).toBe("approved");
+  });
+
+  it("reports reviewers who haven't voted, or none at all, as awaiting review", () => {
+    expect(summarizeReviewDecision([{ displayName: "Ada", vote: 0 }, { displayName: "Bo" }])).toBe(
+      "review_required",
+    );
+    expect(summarizeReviewDecision([])).toBe("review_required");
   });
 });
 

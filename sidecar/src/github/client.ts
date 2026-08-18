@@ -157,17 +157,28 @@ export function summarizeChecks(runs: any[]): ChecksSummary {
 }
 
 /**
+ * Only a reviewer who could merge the PR themselves gets a say. GitHub lets
+ * anyone who can see a repo approve one, and an approval is what turns the
+ * workspace list green, so a drive-by from outside the project must not.
+ */
+const DECIDING_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+
+/**
  * Collapses a PR's review list into one verdict. GitHub returns every review
- * ever submitted, so only each reviewer's latest verdict counts, and a review
- * that carries no verdict (a plain comment, or one dismissed by a later push)
- * leaves the earlier one standing rather than clearing it.
+ * ever submitted, in submission order, so only each reviewer's latest verdict
+ * counts: a comment leaves the previous one standing, while a dismissal (a
+ * later push invalidating an approval) clears it. Reads the first page only —
+ * a PR with more than 100 reviews falls back to an older picture rather than
+ * costing the poller a second request every cycle.
  */
 export function summarizeReviewDecision(reviews: any[]): ReviewDecision {
   const latestByLogin = new Map<string, string>();
   for (const review of reviews) {
+    const login = review?.user?.login;
+    if (!login || !DECIDING_ASSOCIATIONS.has(String(review?.author_association ?? ""))) continue;
     const state = String(review?.state ?? "").toUpperCase();
-    if (state !== "APPROVED" && state !== "CHANGES_REQUESTED") continue;
-    latestByLogin.set(review?.user?.login ?? "", state);
+    if (state === "DISMISSED") latestByLogin.delete(login);
+    else if (state === "APPROVED" || state === "CHANGES_REQUESTED") latestByLogin.set(login, state);
   }
   const verdicts = [...latestByLogin.values()];
   if (verdicts.includes("CHANGES_REQUESTED")) return "changes_requested";

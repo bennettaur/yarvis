@@ -28,16 +28,38 @@ describe("github client", () => {
   });
 
   it("counts only each reviewer's latest verdict, blocking over approving", () => {
+    const review = (state: string, login: string) => ({
+      state,
+      user: { login },
+      author_association: "MEMBER",
+    });
     const reviews = [
-      { state: "APPROVED", user: { login: "ada" } },
-      { state: "COMMENTED", user: { login: "grace" } },
-      { state: "CHANGES_REQUESTED", user: { login: "grace" } },
-      { state: "APPROVED", user: { login: "grace" } },
+      review("APPROVED", "ada"),
+      review("COMMENTED", "grace"),
+      review("CHANGES_REQUESTED", "grace"),
+      review("APPROVED", "grace"),
     ];
     expect(summarizeReviewDecision(reviews)).toBe("approved");
     expect(summarizeReviewDecision(reviews.slice(0, 3))).toBe("changes_requested");
-    expect(summarizeReviewDecision([{ state: "COMMENTED", user: { login: "ada" } }])).toBe(
+    expect(summarizeReviewDecision([review("COMMENTED", "ada")])).toBe("review_required");
+    // A push that dismisses the approval takes the verdict with it.
+    expect(summarizeReviewDecision([review("APPROVED", "ada"), review("DISMISSED", "ada")])).toBe(
       "review_required",
+    );
+  });
+
+  // Anyone who can see a repo can approve a PR there; only someone who could
+  // merge it themselves should be able to turn the workspace badge green.
+  it("ignores approvals from outside the project", () => {
+    const outsider = { state: "APPROVED", user: { login: "drive-by" } };
+    expect(summarizeReviewDecision([{ ...outsider, author_association: "NONE" }])).toBe(
+      "review_required",
+    );
+    expect(summarizeReviewDecision([{ ...outsider, author_association: "CONTRIBUTOR" }])).toBe(
+      "review_required",
+    );
+    expect(summarizeReviewDecision([{ ...outsider, author_association: "COLLABORATOR" }])).toBe(
+      "approved",
     );
   });
 

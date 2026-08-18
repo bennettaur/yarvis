@@ -1,11 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { prGlance, prGlanceBadge } from "./workspacePrStatus";
+import { prGlance, prGlanceBadge } from "./prGlance";
 import type { WorkspaceSummaryPr } from "./workspaces";
 
 const PR: WorkspaceSummaryPr = {
   repoName: "web",
   prNumber: 12,
-  prUrl: "https://github.com/acme/web/pull/12",
   prState: "open",
   isDraft: false,
   mergeable: "clean",
@@ -18,9 +17,16 @@ describe("prGlance", () => {
     expect(prGlance(PR)).toBe("open");
   });
 
-  it("reports an approved PR with settled checks as ready to merge", () => {
-    expect(prGlance({ ...PR, reviewDecision: "approved" })).toBe("ready");
-    expect(prGlance({ ...PR, reviewDecision: "approved", checkRollup: "none" })).toBe("ready");
+  it("reports an approved PR with settled checks as approved", () => {
+    expect(prGlance({ ...PR, reviewDecision: "approved" })).toBe("approved");
+    expect(prGlance({ ...PR, reviewDecision: "approved", checkRollup: "none" })).toBe("approved");
+  });
+
+  // Every Azure PR and every row written before the verdict was cached carries
+  // a null decision; it must read as open, not as approved.
+  it("reports an unknown verdict as awaiting review", () => {
+    expect(prGlance({ ...PR, reviewDecision: null })).toBe("open");
+    expect(prGlance({ ...PR, reviewDecision: null, prState: null })).toBe("open");
   });
 
   // Approved but red or still running is not ready — the CI state is what the
@@ -60,7 +66,7 @@ describe("prGlance", () => {
 describe("prGlanceBadge", () => {
   it("names the repo and PR number in the tooltip", () => {
     const badge = prGlanceBadge({ ...PR, reviewDecision: "approved" });
-    expect(badge.label).toBe("web #12 approved — ready to merge");
+    expect(badge.label).toBe("web #12 approved");
     expect(badge.icon).toBe("✓");
   });
 });

@@ -19,7 +19,6 @@ const EXISTING = {
     {
       repoName: "web",
       prNumber: 12,
-      prUrl: "https://github.com/acme/web/pull/12",
       prState: "open",
       isDraft: false,
       mergeable: "clean",

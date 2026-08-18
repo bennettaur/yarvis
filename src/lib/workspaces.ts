@@ -7,6 +7,8 @@ import type { Task } from "./tasks";
 export type WorkspaceStatus = "creating" | "active" | "archiving" | "archived" | "error";
 export type WorkspaceRepoStatus = "pending" | "provisioning" | "ready" | "removed" | "error";
 export type CheckRollup = "success" | "failure" | "pending" | "none";
+/** Mirrors the sidecar's provider-neutral reviewers' verdict on a PR. */
+export type ReviewDecision = "approved" | "changes_requested" | "review_required";
 
 export interface Workspace {
   id: string;
@@ -31,8 +33,8 @@ export interface WorkspaceRepoPr {
   mergeable: string | null;
   checkRollup: CheckRollup;
   checks: { total: number; success: number; failure: number; pending: number } | null;
-  /** approved | changes_requested | review_required; null when unknown. */
-  reviewDecision: string | null;
+  /** Null when unknown: no PR, not polled, or a provider that can't answer. */
+  reviewDecision: ReviewDecision | null;
   lastPolledAt: string | null;
   lastError: string | null;
 }
@@ -41,12 +43,11 @@ export interface WorkspaceRepoPr {
 export interface WorkspaceSummaryPr {
   repoName: string;
   prNumber: number;
-  prUrl: string | null;
   prState: string | null;
   isDraft: boolean | null;
   mergeable: string | null;
   checkRollup: CheckRollup;
-  reviewDecision: string | null;
+  reviewDecision: ReviewDecision | null;
 }
 
 export interface WorkspaceRepoDetail {

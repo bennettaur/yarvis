@@ -94,8 +94,14 @@ async function pollGithubRepo(
   const status = await gh.prStatus(owner, repo, pr.number);
   // The verdict costs an extra request, so only ask where it can change what
   // the user does next: a draft or an already-closed PR isn't waiting on review.
-  const open = !status.merged && status.state === "open" && !pr.draft;
-  const reviewDecision = open ? await gh.prReviewDecision(owner, repo, pr.number) : null;
+  // It is also the one enrichment here that a narrower token may not be allowed
+  // to make, so a failure drops the verdict rather than the whole refresh —
+  // otherwise a repo-scoped 403 would freeze that repo's check status and, read
+  // as a rate limit by the caller, abandon the rest of the cycle.
+  const awaitingReview = !status.merged && status.state === "open" && !pr.draft;
+  const reviewDecision = awaitingReview
+    ? await gh.prReviewDecision(owner, repo, pr.number).catch(() => null)
+    : null;
   await upsertPr(db, workspaceRepoId, {
     prNumber: pr.number,
     prUrl: pr.url,
@@ -126,6 +132,7 @@ async function pollAzureRepo(
     await upsertPr(db, workspaceRepoId, { ...NO_PR, lastPolledAt: new Date(), lastError: null });
     return;
   }
+  const awaitingReview = pr.state === "open" && !pr.draft;
   await upsertPr(db, workspaceRepoId, {
     prNumber: pr.number,
     prUrl: pr.url,
@@ -134,7 +141,7 @@ async function pollAzureRepo(
     mergeable: pr.mergeable,
     checkRollup: "none",
     checks: null,
-    reviewDecision: pr.state === "open" && !pr.draft ? pr.reviewDecision : null,
+    reviewDecision: awaitingReview ? pr.reviewDecision : null,
     lastPolledAt: new Date(),
     lastError: null,
   });

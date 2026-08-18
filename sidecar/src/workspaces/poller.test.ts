@@ -96,9 +96,10 @@ function pullItem(number: number, state: string) {
 
 const CHECKS = (runs: { status: string; conclusion: string }[]) => ({ check_runs: runs });
 
-/** A `GET /pulls/:n/reviews` payload; the poller asks for it on every open PR. */
+/** A `GET /pulls/:n/reviews` payload; the poller asks for it on every open PR.
+ *  Reviewers are project members, since only their verdicts count. */
 const REVIEWS = (states: string[] = []) =>
-  states.map((state, i) => ({ state, user: { login: `r${i}` } }));
+  states.map((state, i) => ({ state, user: { login: `r${i}` }, author_association: "MEMBER" }));
 
 describe("pollOnce", () => {
   it("caches the PR + failing-check rollup for a ready repo", async () => {
@@ -195,8 +196,13 @@ describe("pollOnce", () => {
 
   it("marks a merged PR's state as merged", async () => {
     const wrId = await seedReadyRepo();
+    let askedForReviews = false;
     const gh = clientWith((path) => {
       if (path.includes("head=")) return [pullItem(9, "closed")];
+      if (path.includes("/reviews")) {
+        askedForReviews = true;
+        return REVIEWS(["APPROVED"]);
+      }
       if (path.includes("/pulls/9")) {
         return {
           state: "closed",
@@ -212,6 +218,8 @@ describe("pollOnce", () => {
 
     await pollOnce(db, { github: gh });
     const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(askedForReviews).toBe(false); // nothing is waiting on review any more
+    expect(row?.reviewDecision).toBeNull();
     expect(row?.prState).toBe("merged");
     expect(row?.checkRollup).toBe("none");
   });
@@ -251,6 +259,41 @@ describe("pollOnce", () => {
     expect(askedForReviews).toBe(false);
     const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
     expect(row?.reviewDecision).toBeNull();
+  });
+
+  it("clears a cached verdict when the PR it belonged to is gone", async () => {
+    const wrId = await seedReadyRepo();
+    await db
+      .insert(workspaceRepoPr)
+      .values({ workspaceRepoId: wrId, prNumber: 4, prState: "open", reviewDecision: "approved" });
+    const gh = clientWith((path) => (path.includes("head=") ? [] : {}));
+
+    await pollOnce(db, { github: gh });
+
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row?.prNumber).toBeNull();
+    expect(row?.reviewDecision).toBeNull();
+  });
+
+  it("keeps polling the rest of a repo when the verdict can't be read", async () => {
+    // A token without pull-request read on this repo 403s the reviews call. The
+    // check rollup is the part the user is watching, so it must still land.
+    const wrId = await seedReadyRepo();
+    const gh = clientWith((path) => {
+      if (path.includes("head=")) return [pullItem(7, "open")];
+      if (path.includes("/reviews")) return { __status: 403 };
+      if (path.includes("/pulls/7")) return { state: "open", merged: false, head: { sha: "abc" } };
+      if (path.includes("/check-runs"))
+        return CHECKS([{ status: "completed", conclusion: "failure" }]);
+      return {};
+    });
+
+    await pollOnce(db, { github: gh });
+
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row?.checkRollup).toBe("failure");
+    expect(row?.reviewDecision).toBeNull();
+    expect(row?.lastError).toBeNull();
   });
 
   it("records a per-repo error and keeps polling the rest of the cycle", async () => {
@@ -304,9 +347,34 @@ describe("pollOnce", () => {
     expect(row?.prState).toBe("open");
     expect(row?.prUrl).toBe("https://dev.azure.com/acme/Shop/_git/web/pullrequest/55");
     expect(row?.checkRollup).toBe("none");
-    expect(row?.reviewDecision).toBe("approved"); // from the reviewers' votes
-
+    expect(row?.reviewDecision).toBe("approved");
     expect(row?.lastError).toBeNull();
+  });
+
+  it("leaves an approved Azure draft's verdict unknown, as GitHub's path does", async () => {
+    const wrId = await seedReadyRepo("z", "https://dev.azure.com/acme/Shop/_git/web");
+    const az = azureClientWith((url) =>
+      url.includes("/repositories/web/pullrequests")
+        ? {
+            value: [
+              {
+                pullRequestId: 56,
+                status: "active",
+                isDraft: true,
+                mergeStatus: "succeeded",
+                repository: { name: "web", project: { name: "Shop" } },
+                reviewers: [{ displayName: "Ada", vote: 10 }],
+              },
+            ],
+          }
+        : {},
+    );
+
+    await pollOnce(db, { azure: az });
+
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row?.isDraft).toBe(true);
+    expect(row?.reviewDecision).toBeNull();
   });
 
   it("records a no-PR state for an Azure branch with no open PR yet", async () => {

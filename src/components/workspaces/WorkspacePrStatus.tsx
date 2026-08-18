@@ -1,9 +1,9 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { requestOpenPr } from "../../lib/nav";
 import type { PrSummary } from "../../lib/pr/types";
+import { hasConflicts } from "../../lib/prGlance";
 import { repoPrRef } from "../../lib/repos";
 import { openExternal } from "../../lib/url";
-import { hasConflicts } from "../../lib/workspacePrStatus";
 import {
   type CheckRollup,
   type WorkspaceRepoDetail,
