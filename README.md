@@ -208,10 +208,34 @@ depends on the server:
   ```json
   {"ref_audio": "/Users/you/voice-samples/reference.wav"}
   ```
-  A few seconds of clean speech is enough. (Verified: MOSS-TTS-Nano-100M
-  produces cloned speech this way.)
+  (Verified: MOSS-TTS-Nano-100M produces cloned speech this way.)
 - **vLLM-Omni** wants the base64 data URI, which is what the Reference clip
   field sends. That is the path to use on an NVIDIA box.
+
+**What the clip has to be.** Nothing is transcribed, so it needs no script and
+no particular phrases — MOSS conditions on the audio alone, and passes a
+transcript through only to ignore it. Five to ten seconds of ordinary speech is
+plenty (upstream's own samples are around eight). Mono WAV.
+
+**Record it at 16, 24 or 48 kHz — not 44.1 kHz.** This one matters more than it
+should. The same clip, differing only in sample rate, asked for a two-and-a-half
+second sentence:
+
+| Reference rate | Generated |
+| --- | --- |
+| 44.1 kHz | **76 seconds** of rambling |
+| 48 kHz | 4.1s ✓ |
+| 24 kHz | 3.8s ✓ |
+| 16 kHz | 3.4s ✓ |
+
+44.1 kHz is the CD/consumer default, so a clip from Voice Memos or QuickTime is
+likely to be exactly the rate that breaks. It does not error — the request
+returns 200 and a minute of nonsense. If your recorder gives 44.1 kHz, resample
+before pointing at it:
+
+```bash
+say -o ref.wav --data-format=LEI16@16000 "any sentence at all"   # or resample yours
+```
 
 #### Running MOSS through vLLM instead (untested)
 
@@ -254,6 +278,8 @@ key from a cold server. Then:
 - **"the speech provider returned no audio"** — the server answered OK with an
   empty body, which means it failed after it started responding. Its own log has
   the real reason.
+- **A cloned voice rambles for a minute** — the reference clip is probably
+  44.1 kHz. See "What the clip has to be" above; resample it to 16 kHz.
 - **Kokoro fails with `espeakng_loader//phontab: No such file or directory`** —
   its grapheme-to-phoneme step looks for espeak-ng data one directory above
   where mlx-audio ships it. Installing espeak-ng system-wide does *not* help,
