@@ -93,6 +93,43 @@ describe("mcp server routes", () => {
     expect(res.status).toBe(201);
   });
 
+  it("accepts the form's payload, which nulls the unused transport's field", async () => {
+    // The Add-server form always sends both `url` and `command`, nulling
+    // whichever the chosen transport doesn't use. Declaring them merely
+    // optional rejected that null and made the form unable to create anything.
+    const http = await app.request("/api/mcp/servers", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        name: "locker",
+        transport: "http",
+        url: "https://mcp.example.com/mcp",
+        command: null,
+        args: [],
+        headerNames: [],
+        oauth: false,
+        oauthScope: null,
+      }),
+    });
+    expect(http.status).toBe(201);
+
+    const stdio = await app.request("/api/mcp/servers", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        name: "fs",
+        transport: "stdio",
+        url: null,
+        command: "npx",
+        args: ["-y", "server"],
+        headerNames: [],
+        oauth: false,
+        oauthScope: null,
+      }),
+    });
+    expect(stdio.status).toBe(201);
+  });
+
   it("rejects an http server without a url", async () => {
     const res = await app.request("/api/mcp/servers", {
       method: "POST",
@@ -122,6 +159,136 @@ describe("mcp server routes", () => {
       headers: jsonAuth,
     });
     expect(res.status).toBe(404);
+  });
+});
+
+describe("mcp oauth routes", () => {
+  const createOAuthServer = async (body: Record<string, unknown> = {}) =>
+    app.request("/api/mcp/servers", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        name: "locker",
+        transport: "http",
+        url: "https://mcp.example.com/mcp",
+        oauth: true,
+        ...body,
+      }),
+    });
+
+  it("stores the oauth flag and scope", async () => {
+    const res = await createOAuthServer({ oauthScope: "api:read offline_access" });
+    expect(res.status).toBe(201);
+    const created = (await res.json()) as { oauth: boolean; oauthScope: string };
+    expect(created.oauth).toBe(true);
+    expect(created.oauthScope).toBe("api:read offline_access");
+  });
+
+  it("defaults oauth off so existing servers keep their bearer headers", async () => {
+    const res = await app.request("/api/mcp/servers", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        name: "plain",
+        transport: "http",
+        url: "https://mcp.example.com/mcp",
+      }),
+    });
+    const created = (await res.json()) as { oauth: boolean; oauthScope: string | null };
+    expect(created.oauth).toBe(false);
+    expect(created.oauthScope).toBeNull();
+  });
+
+  it("rejects oauth on a stdio server", async () => {
+    const res = await app.request("/api/mcp/servers", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "fs", transport: "stdio", command: "npx", oauth: true }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a scope string that isn't space-separated tokens", async () => {
+    const res = await createOAuthServer({ oauthScope: 'api:read "injected"' });
+    expect(res.status).toBe(400);
+  });
+
+  it("reports oauth status alongside the connection status", async () => {
+    const created = (await (await createOAuthServer()).json()) as { id: string };
+    const res = await app.request(`/api/mcp/servers/${created.id}/status`, { headers: jsonAuth });
+    const status = (await res.json()) as { connected: boolean; oauth: unknown };
+    expect(status.connected).toBe(false);
+    expect(status.oauth).toEqual({ registered: false, authorized: false, scope: null });
+  });
+
+  it("reports no oauth status for a server that doesn't use it", async () => {
+    const res = await app.request("/api/mcp/servers", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        name: "plain",
+        transport: "http",
+        url: "https://mcp.example.com/mcp",
+      }),
+    });
+    const created = (await res.json()) as { id: string };
+    const status = (await (
+      await app.request(`/api/mcp/servers/${created.id}/status`, { headers: jsonAuth })
+    ).json()) as { oauth: unknown };
+    expect(status.oauth).toBeNull();
+  });
+
+  it("refuses to authorize a server that doesn't use oauth", async () => {
+    const res = await app.request("/api/mcp/servers", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        name: "plain",
+        transport: "http",
+        url: "https://mcp.example.com/mcp",
+      }),
+    });
+    const created = (await res.json()) as { id: string };
+    const authorize = await app.request(`/api/mcp/servers/${created.id}/authorize`, {
+      method: "POST",
+      headers: jsonAuth,
+    });
+    expect(authorize.status).toBe(404);
+  });
+
+  it("requires authentication to start a flow", async () => {
+    const res = await app.request(
+      "/api/mcp/servers/00000000-0000-0000-0000-000000000000/authorize",
+      { method: "POST" },
+    );
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("mcp oauth callback", () => {
+  it("is reachable without the bearer token", async () => {
+    // The browser redirect can't carry it; the state nonce is the gate instead.
+    const res = await app.request("/oauth/mcp/callback");
+    expect(res.status).not.toBe(401);
+  });
+
+  it("refuses a callback whose state it never issued", async () => {
+    const res = await app.request("/oauth/mcp/callback?code=abc&state=forged");
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("unknown or expired");
+  });
+
+  it("reports an authorization the user declined", async () => {
+    const res = await app.request(
+      "/oauth/mcp/callback?error=access_denied&error_description=User%20said%20no",
+    );
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("User said no");
+  });
+
+  it("refuses a callback with no code", async () => {
+    const res = await app.request("/oauth/mcp/callback?state=abc");
+    expect(res.status).toBe(400);
   });
 });
 
