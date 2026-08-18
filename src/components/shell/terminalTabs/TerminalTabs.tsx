@@ -771,6 +771,7 @@ function PaneTreeView({
   onPaneClose,
   onPaneResize,
   handles,
+  inSplit = false,
 }: {
   pane: Pane;
   /** This node's location in the tree, so a divider drag names its split. */
@@ -783,6 +784,9 @@ function PaneTreeView({
   onPaneClose: (p: PaneId) => void;
   onPaneResize: (path: PanePath, ratio: number) => void;
   handles: Map<string, TerminalPanelHandle | null>;
+  /** True below a split, where an unfocused pane is dimmed. A tab's only pane
+   * never is: there is nowhere else the keyboard could be going. */
+  inSplit?: boolean;
 }) {
   if (pane.kind === "leaf") {
     const active = pane.id === focusedPane;
@@ -805,6 +809,12 @@ function PaneTreeView({
             else handles.delete(pane.id);
           }}
         />
+        {inSplit && !active && (
+          // A wash rather than opacity on the pane: xterm renders its own
+          // background, and fading the whole element lets the surface behind it
+          // show through instead of just muting what the shell drew.
+          <div aria-hidden="true" className="pointer-events-none absolute inset-0 bg-zinc-950/40" />
+        )}
         <button
           type="button"
           onClick={(e) => {
@@ -840,6 +850,7 @@ function PaneTreeView({
           onPaneClose={onPaneClose}
           onPaneResize={onPaneResize}
           handles={handles}
+          inSplit
         />
       }
       second={
@@ -854,6 +865,7 @@ function PaneTreeView({
           onPaneClose={onPaneClose}
           onPaneResize={onPaneResize}
           handles={handles}
+          inSplit
         />
       }
     />
