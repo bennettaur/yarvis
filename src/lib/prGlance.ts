@@ -5,7 +5,7 @@
  * first rather than by how the provider models them.
  */
 
-import type { CheckRollup, WorkspaceSummaryPr } from "./workspaces";
+import type { WorkspaceSummaryPr } from "./workspaces";
 
 export type PrGlance =
   | "merged"
@@ -37,11 +37,6 @@ export function hasConflicts(mergeable: string | null): boolean {
   return m === "dirty" || m === "conflicting";
 }
 
-/** A check rollup that leaves nothing red or in flight. */
-function checksSettled(rollup: CheckRollup): boolean {
-  return rollup === "success" || rollup === "none";
-}
-
 export function prGlance(pr: WorkspaceSummaryPr): PrGlance {
   // A row only reaches here with a PR number, so an unset state is a provider
   // that didn't say — which for a PR that exists means open.
@@ -55,7 +50,8 @@ export function prGlance(pr: WorkspaceSummaryPr): PrGlance {
   if (pr.checkRollup === "failure") return "checks_failing";
   if (pr.reviewDecision === "changes_requested") return "changes_requested";
   if (pr.checkRollup === "pending") return "checks_running";
-  if (pr.reviewDecision === "approved" && checksSettled(pr.checkRollup)) return "approved";
+  // Whatever reaches here has settled checks — failure and pending returned above.
+  if (pr.reviewDecision === "approved") return "approved";
   return "open";
 }
 
