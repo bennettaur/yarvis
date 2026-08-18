@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
 import { buildFileTree, type FileTreeFile } from "../../lib/fileTree";
-import { usePrFiles } from "../../lib/pr/cache";
+import { usePrDetail, usePrFiles } from "../../lib/pr/cache";
 import type { PrFile, PrRef } from "../../lib/pr/types";
 import FileTreeRows, { treeRowPaddingLeft } from "../files/FileTreeRows";
+import CopyFileLinkButton from "./CopyFileLinkButton";
 import CopyPathButton from "./CopyPathButton";
 import { flashFile } from "./flashFile";
 import { prFileAnchorId } from "./shared";
@@ -26,11 +27,18 @@ const STATUS_LETTER: Record<string, { letter: string; color: string }> = {
  */
 export default function PrFileList({
   prRef,
+  prUrl = "",
   onCollapse,
   viewed,
   onToggleViewed,
 }: {
   prRef: PrRef;
+  /**
+   * The PR's web URL, which the per-file provider links are derived from. Empty
+   * where the host doesn't know it (an Omni widget names a PR by owner/repo/number
+   * only), which drops those links rather than guessing a hostname.
+   */
+  prUrl?: string;
   /** When set, renders a button in the header to collapse the whole panel. */
   onCollapse?: () => void;
   /** Paths the viewer has marked viewed. */
@@ -38,6 +46,9 @@ export default function PrFileList({
   onToggleViewed: (path: string) => void;
 }) {
   const { data, error, loading } = usePrFiles(prRef);
+  // Shares the detail cache with the rest of the review, so naming it here is
+  // only for the head commit the file links are pinned to.
+  const detail = usePrDetail(prRef);
   const [selected, setSelected] = useState<string | null>(null);
 
   // Hoisted above the early returns to keep hook order stable.
@@ -87,6 +98,9 @@ export default function PrFileList({
               viewed={viewed}
               onClick={onClick}
               onToggleViewed={onToggleViewed}
+              prRef={prRef}
+              prUrl={prUrl}
+              headSha={detail.data?.headSha ?? ""}
             />
           )}
         />
@@ -102,6 +116,9 @@ function FileRow({
   viewed,
   onClick,
   onToggleViewed,
+  prRef,
+  prUrl,
+  headSha,
 }: {
   node: FileTreeFile<PrFile>;
   depth: number;
@@ -109,6 +126,9 @@ function FileRow({
   viewed: Set<string>;
   onClick: (path: string) => void;
   onToggleViewed: (path: string) => void;
+  prRef: PrRef;
+  prUrl: string;
+  headSha: string;
 }) {
   const { file, name } = node;
   const status = STATUS_LETTER[file.status] ?? { letter: "•", color: "text-zinc-500" };
@@ -161,6 +181,13 @@ function FileRow({
           that `FileTreeRows` renders, so an unnamed `group-hover:` would reveal
           every file's button whenever any part of the folder is hovered. */}
       <CopyPathButton
+        path={file.filename}
+        className="opacity-0 transition-opacity focus:opacity-100 group-hover/row:opacity-100"
+      />
+      <CopyFileLinkButton
+        prRef={prRef}
+        prUrl={prUrl}
+        headSha={headSha}
         path={file.filename}
         className="opacity-0 transition-opacity focus:opacity-100 group-hover/row:opacity-100"
       />

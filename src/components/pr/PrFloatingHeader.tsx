@@ -10,6 +10,7 @@ import { invalidate, prDetailKey } from "../../lib/pr/cache";
 import { refDisplayRepo, refNumber, refProviderName } from "../../lib/pr/ref";
 import type { CheckItem, MergeMethod, PrDetail, PrRef, PrSummary } from "../../lib/pr/types";
 import { openExternal } from "../../lib/url";
+import CopyButton from "../CopyButton";
 import PrWorkspaceLink from "./PrWorkspaceLink";
 
 /**
@@ -457,6 +458,11 @@ export default function PrFloatingHeader({
               {mergePending ? "…" : "Cancel auto-merge"}
             </button>
           )}
+          <CopyButton
+            value={pr.url}
+            subject="PR link"
+            title={`Copy the ${refProviderName(prRef)} link to this PR`}
+          />
           <button
             onClick={() => openExternal(pr.url)}
             className="rounded-md border border-zinc-700 px-2 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"

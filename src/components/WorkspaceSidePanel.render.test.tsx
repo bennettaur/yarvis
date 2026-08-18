@@ -120,6 +120,20 @@ describe("WorkspaceSidePanel", () => {
     expect(host.textContent).toContain("No files.");
   });
 
+  // Both lists show basenames only, so a path leaves the panel through a copy
+  // button — and the whole list through the one in the header.
+  it("offers a copy of each path and of the whole list in both views", async () => {
+    const host = await mount();
+    expect(host.querySelector('[aria-label="Copy path src/components/a.tsx"]')).not.toBeNull();
+    expect(host.textContent).toContain("2 changed files");
+    expect(host.querySelector('[aria-label="Copy every path in this list"]')).not.toBeNull();
+
+    await clickTab(host, "All files");
+    expect(host.querySelector('[aria-label="Copy path src/components/b.tsx"]')).not.toBeNull();
+    expect(host.textContent).toContain("3 files");
+    expect(host.querySelector('[aria-label="Copy every path in this list"]')).not.toBeNull();
+  });
+
   it("reaches the self-review comments through their own tab", async () => {
     const host = await mount();
     await clickTab(host, "Comments");

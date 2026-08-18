@@ -18,6 +18,7 @@ import {
   type WorkspaceStatus,
   type WorkspaceSummary,
 } from "../lib/workspaces";
+import CopyButton from "./CopyButton";
 import SplitPane, { usePersistedRatio } from "./SplitPane";
 import TerminalTabs, {
   type OpenFileDiff,
@@ -996,6 +997,11 @@ function WorkspaceDetailView({
           <span className="ml-auto truncate font-mono text-xs text-zinc-500">
             {detail.rootPath}
           </span>
+          <CopyButton
+            value={detail.rootPath}
+            subject="folder path"
+            title={`Copy the workspace folder ${detail.rootPath}`}
+          />
           {agentError && <span className="shrink-0 text-xs text-red-400">{agentError}</span>}
           {provisioned && (!agentActive || agentDismissed) && (
             <button

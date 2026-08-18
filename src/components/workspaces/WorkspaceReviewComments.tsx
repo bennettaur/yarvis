@@ -7,7 +7,7 @@ import {
   useReviewComments,
 } from "../../lib/workspaceReview";
 import type { WorkspaceRepoDetail } from "../../lib/workspaces";
-import { FEEDBACK_MS } from "../pr/CopyPathButton";
+import { FEEDBACK_MS } from "../CopyButton";
 import ReviewCommentCard from "./ReviewCommentCard";
 
 type CopyState = "idle" | "copied" | "failed";
