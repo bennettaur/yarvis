@@ -16,6 +16,7 @@ function appWith(overrides: {
     token: "test-token",
     tokenGenerated: false,
     attentionToken: "test-attention-token",
+    mcpToken: "test-mcp-token",
     allowedOrigins: null,
     databaseUrl: overrides.databaseUrl,
     workspacesRoot: "/tmp/yarvis-test-workspaces",

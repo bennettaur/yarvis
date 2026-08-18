@@ -23,6 +23,7 @@ function app(databaseUrl: string | null = url): ReturnType<typeof createApp> {
     token: "test-token",
     tokenGenerated: false,
     attentionToken: "test-attention-token",
+    mcpToken: "test-mcp-token",
     allowedOrigins: null,
     databaseUrl: databaseUrl ?? undefined,
     workspacesRoot: "/tmp/yarvis-test-workspaces",

@@ -8,6 +8,7 @@ function app(secrets: Partial<Config["secrets"]> = {}): ReturnType<typeof create
     token: "test-token",
     tokenGenerated: false,
     attentionToken: "test-attention-token",
+    mcpToken: "test-mcp-token",
     allowedOrigins: null,
     // No database: the voice routes fall back to the built-in providers, which
     // is all these tests need and keeps them off Postgres.

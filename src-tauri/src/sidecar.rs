@@ -65,6 +65,13 @@ pub struct SidecarInfo {
 #[derive(Clone)]
 pub struct AttentionIngestToken(pub String);
 
+/// A scoped token authorizing only the sidecar's MCP endpoint. Injected into
+/// Yarvis-launched Claude Code session shells (see `pty.rs`) so a session can
+/// call the Yarvis memory tools without holding the full-access bearer. Kept in
+/// managed state so `build_command` and `pty.rs` share it.
+#[derive(Clone)]
+pub struct McpToken(pub String);
+
 /// Lets commands ask the supervisor to restart the sidecar (e.g. after a
 /// secret changes, so the new value is injected into a fresh process).
 #[derive(Clone)]
@@ -98,6 +105,10 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
     // A separate, narrowly-scoped token for the attention-ingest endpoint, handed
     // to Claude session shells rather than the full-access bearer above.
     app.manage(AttentionIngestToken(random_token()));
+
+    // Likewise for the MCP endpoint: an MCP client holding this can reach the
+    // memory tools and nothing else.
+    app.manage(McpToken(random_token()));
 
     let restart = Arc::new(Notify::new());
     app.manage(SidecarControl {
@@ -163,6 +174,12 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
     // injected into Claude session shells (pty.rs) so their hooks can post.
     if let Some(attn) = app.try_state::<AttentionIngestToken>() {
         cmd.env("YARVIS_ATTENTION_TOKEN", &attn.0);
+    }
+
+    // The scoped MCP token the sidecar validates on `/mcp`; the same value is
+    // injected into Claude session shells (pty.rs) so their `.mcp.json` resolves.
+    if let Some(mcp) = app.try_state::<McpToken>() {
+        cmd.env("YARVIS_MCP_TOKEN", &mcp.0);
     }
 
     // Forward the memory/embedding debug flag when the app was launched with it

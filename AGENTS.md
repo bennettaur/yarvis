@@ -151,6 +151,11 @@ back to ad-hoc.
   because a transcript can be misheard or picked up from the room. A surface
   that can't prompt gets those tools dropped rather than run unattended —
   silently doing the irreversible thing is the one unacceptable outcome.
+- `sidecar/src/mcp/` is the MCP *client* (servers Yarvis connects out to);
+  `sidecar/src/mcpServer/` is the MCP endpoint Yarvis *serves*. A tool exposed
+  over that endpoint is reached by outside clients holding only the scoped
+  `YARVIS_MCP_TOKEN`, so it must be one that token is meant to grant — the
+  endpoint deliberately sits outside the main bearer wall, like attention-ingest.
 - Anything an outside party can influence — file contents, diffs, PR titles,
   recalled memories — enters a prompt as data, not instruction: fenced in
   per-request nonce tags (see `sidecar/src/pr/ask.ts`) with the system prompt

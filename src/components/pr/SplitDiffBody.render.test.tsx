@@ -1,10 +1,10 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { parsePatch } from "../../lib/pr/diff";
 import { expandAllGaps } from "../../lib/pr/expand";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { fakeExpansion } from "../../test/expansion";
-import { renderToHtml, textOf } from "../../test/render";
+import { mountForInteraction, renderToHtml, textOf } from "../../test/render";
 import SplitDiffBody, { pairAroundGaps } from "./SplitDiffBody";
 
 const prRef: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 1 };
@@ -30,6 +30,42 @@ const render = (
       expansion: fakeExpansion(patch),
       highlight,
     }),
+  );
+
+let cleanup: (() => void) | null = null;
+afterEach(() => {
+  cleanup?.();
+  cleanup = null;
+});
+
+/** Renders live, for the assertions that have to read an element's classes. */
+async function mount(
+  patch: string,
+  options?: Parameters<typeof fakeExpansion>[1],
+): Promise<HTMLElement> {
+  const mounted = await mountForInteraction(
+    createElement(SplitDiffBody, {
+      prRef,
+      file: { ...file, patch },
+      threads: [],
+      expansion: fakeExpansion(patch, options),
+    }),
+  );
+  cleanup = mounted.unmount;
+  return mounted.host;
+}
+
+/**
+ * The code half of each pair. Picked out by what they are not — the gutters
+ * carry `group/line` and everything belonging to neither file spans all four
+ * columns — so the test doesn't select on the classes it goes on to assert.
+ */
+const codeCells = (host: HTMLElement) =>
+  [...(host.querySelector("div.grid")?.children ?? [])].filter(
+    (el) =>
+      el.tagName === "SPAN" &&
+      !el.classList.contains("group/line") &&
+      !el.classList.contains("col-span-4"),
   );
 
 describe("SplitDiffBody", () => {
@@ -115,6 +151,59 @@ describe("SplitDiffBody", () => {
   it("offers the composer only where there is a right-side line", async () => {
     const html = await render(["@@ -1,2 +1,1 @@", "-a", "-b"].join("\n"));
     expect(html).not.toContain("Comment on this line");
+  });
+
+  // A code column sized to its content grows to the longest line in the file,
+  // which pushes the new file off the right edge of the pane — the "after" side
+  // reads as if it had disappeared. These are structural assertions on Tailwind
+  // classes because the defect is layout and a static DOM has none to measure:
+  // what can be pinned is that the tracks are bounded by the pane and that the
+  // cells inside them are free to wrap.
+  it("bounds the two code columns to the pane's width", async () => {
+    const grid = (await mount(["@@ -1,1 +1,1 @@", "-a", "+b"].join("\n"))).querySelector(
+      "div.grid",
+    );
+    expect(grid?.className).toContain("grid-cols-[3rem_minmax(0,1fr)_3rem_minmax(0,1fr)]");
+    // Anything content-sized here — `w-max`, `w-fit` — is the defect itself.
+    expect(grid?.className).toContain("w-full");
+  });
+
+  it("wraps code lines rather than letting them run off sideways", async () => {
+    const cells = codeCells(await mount(["@@ -1,1 +1,1 @@", "-a", "+b"].join("\n")));
+    expect(cells.length).toBeGreaterThan(0);
+    for (const cell of cells) {
+      expect(cell.classList.contains("whitespace-pre-wrap")).toBe(true);
+      // Anywhere, not break-word: a line with no break opportunity at all —
+      // a minified bundle, a base64 blob — has to wrap too.
+      expect(cell.classList.contains("wrap-anywhere")).toBe(true);
+    }
+  });
+
+  // Whole-file mode is where the collapse was reported, because expanding pulls
+  // in lines the patch never showed — including whichever is longest.
+  it("wraps the context whole-file mode pulls in", async () => {
+    const long = `const x = "${"y".repeat(400)}";`;
+    const host = await mount("@@ -3,1 +3,1 @@\n+c", {
+      fileLines: [long, "b", "c"],
+      wholeFile: true,
+    });
+    const revealed = codeCells(host).filter((cell) => cell.textContent === long);
+    expect(revealed.length).toBeGreaterThan(0);
+    for (const cell of revealed) {
+      expect(cell.classList.contains("whitespace-pre-wrap")).toBe(true);
+      expect(cell.classList.contains("wrap-anywhere")).toBe(true);
+    }
+  });
+
+  // A wrapped line makes its row several lines tall, and the number belongs
+  // beside the line's first visual row rather than adrift in the middle.
+  it("top-aligns the line numbers", async () => {
+    const host = await mount(["@@ -1,1 +1,1 @@", "-a", "+b"].join("\n"));
+    const gutters = [...host.querySelectorAll("[class~='group/line']")];
+    expect(gutters.length).toBeGreaterThan(0);
+    for (const gutter of gutters) {
+      expect(gutter.classList.contains("items-start")).toBe(true);
+    }
   });
 });
 

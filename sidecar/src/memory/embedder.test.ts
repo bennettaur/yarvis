@@ -15,6 +15,7 @@ function configWith(secrets: Partial<Config["secrets"]> = {}): Config {
     token: "t",
     tokenGenerated: true,
     attentionToken: "test-attention-token",
+    mcpToken: "test-mcp-token",
     allowedOrigins: null,
     databaseUrl: undefined,
     workspacesRoot: "/tmp/yarvis-test-workspaces",

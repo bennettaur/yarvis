@@ -16,6 +16,7 @@ import { createIssueRoutes } from "./issues/routes.ts";
 import { createJiraRoutes } from "./jira/routes.ts";
 import { redactSecrets } from "./llm/errors.ts";
 import { createMcpRoutes } from "./mcp/routes.ts";
+import { createMcpEndpointInfoRoutes, createMcpEndpointRoutes } from "./mcpServer/routes.ts";
 import { createMemoryRoutes } from "./memory/routes.ts";
 import { createOmniRoutes } from "./omni/routes.ts";
 import { createPrRoutes } from "./pr/routes.ts";
@@ -85,6 +86,11 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   // raise an attention flag without holding the full-access bearer.
   app.route("/ingest", createAttentionIngestRoutes(config));
 
+  // The MCP endpoint sits outside the bearer wall for the same reason and with
+  // the same shape: its own scoped token, checked inside the router, so an MCP
+  // client reaches the memory tools and nothing else.
+  app.route("/mcp", createMcpEndpointRoutes(config));
+
   // Everything past this point requires the bearer token.
   app.use("/api/*", bearerAuth({ token: config.token }));
 
@@ -115,6 +121,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/clipboard", createClipboardRoutes(config));
   app.route("/api/custom-providers", createCustomProviderRoutes(config));
   app.route("/api/mcp", createMcpRoutes(config));
+  app.route("/api/mcp-endpoint", createMcpEndpointInfoRoutes(config));
   app.route("/api/cc", createCcRoutes());
   app.route("/api/github", createGithubRoutes(config));
   app.route("/api/issues", createIssueRoutes(config));

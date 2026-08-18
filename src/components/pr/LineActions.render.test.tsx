@@ -108,6 +108,17 @@ describe.each(bodies)("line actions in the %s diff", (_name, element) => {
     expect(cluster(ask)).toBe(floated);
   });
 
+  // Half a line box down, not half the row: in the split view a long line wraps
+  // and makes its row several lines tall, and centring on the row would leave
+  // the buttons stranded in the middle of the block instead of beside the
+  // number they act on.
+  it("anchors the cluster to the line's first visual row", async () => {
+    const host = await mount(element());
+    const floated = cluster(button(host, "Comment on this line"));
+    expect(floated?.classList.contains("top-[0.8em]")).toBe(true);
+    expect(floated?.classList.contains("top-1/2")).toBe(false);
+  });
+
   // The reveal is a `group-hover/line:` on the cluster, so it is inert unless
   // something above it carries the matching named group — and that element
   // lives in a different file from the classes that depend on it.

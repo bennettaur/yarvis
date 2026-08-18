@@ -2,10 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { sidecarFetch } from "./api";
 
 /**
- * Client for MCP servers + the unified tool registry. Mirrors the
- * custom-providers split: structural data goes through the sidecar HTTP API
- * (Postgres-backed); credential values (HTTP auth headers, stdio env vars) are
- * managed via Tauri commands and live in the macOS Keychain.
+ * Two sides of MCP. Most of this file is the client: the servers Yarvis connects
+ * out to, plus the unified tool registry. It mirrors the custom-providers split
+ * — structural data goes through the sidecar HTTP API (Postgres-backed), while
+ * credential values (HTTP auth headers, stdio env vars) are managed via Tauri
+ * commands and live in the macOS Keychain. The last section is the other side:
+ * where outside clients connect to the endpoint Yarvis itself serves.
  */
 
 export type McpTransport = "http" | "stdio";
@@ -152,6 +154,25 @@ export async function searchTools(query: string, limit?: number): Promise<ToolSe
     body: JSON.stringify({ query, limit }),
   });
   if (!res.ok) throw new Error(`tool search failed: ${res.status}`);
+  return res.json();
+}
+
+/* ---------- The endpoint Yarvis serves (process config, not stored) ---------- */
+
+/** Where an outside MCP client connects to Yarvis, and with what token. */
+export interface McpEndpoint {
+  url: string;
+  token: string;
+}
+
+/**
+ * Connection details for the MCP endpoint Yarvis *serves* (the memory tools), as
+ * opposed to the servers it connects out to above. Sessions Yarvis launches are
+ * wired up automatically; this is for a client it didn't spawn.
+ */
+export async function getMcpEndpoint(): Promise<McpEndpoint> {
+  const res = await sidecarFetch("/api/mcp-endpoint/connection");
+  if (!res.ok) throw new Error(`mcp endpoint failed: ${res.status}`);
   return res.json();
 }
 
