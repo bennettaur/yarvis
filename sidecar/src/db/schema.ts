@@ -667,6 +667,12 @@ export const embeddingsConfig = pgTable("embeddings_config", {
  *
  * `transport` is "http" (Streamable HTTP / SSE, using `url` + `headerNames`) or
  * "stdio" (a local subprocess, using `command` + `args`).
+ *
+ * `oauth` opts an http server into the MCP authorization flow (discovery →
+ * dynamic client registration → authorization code + PKCE) instead of a
+ * hand-entered bearer header. `oauthScope` overrides the scopes requested at
+ * registration and authorization; absent, the server's advertised scopes are
+ * used. Both are inert for stdio, which has no HTTP layer to authorize.
  */
 export const mcpServers = pgTable("mcp_servers", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -676,6 +682,8 @@ export const mcpServers = pgTable("mcp_servers", {
   command: text("command"),
   args: jsonb("args").$type<string[]>().notNull().default([]),
   headerNames: jsonb("header_names").$type<string[]>().notNull().default([]),
+  oauth: boolean("oauth").notNull().default(false),
+  oauthScope: text("oauth_scope"),
   enabled: boolean("enabled").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

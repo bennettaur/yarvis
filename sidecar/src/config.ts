@@ -61,6 +61,33 @@ export interface CustomProviderSecrets {
 }
 
 /**
+ * Everything the MCP authorization flow needs to survive a restart: the client
+ * this Yarvis instance registered with the authorization server, which
+ * authorization server that was, and the tokens it issued.
+ *
+ * `redirectUri` is stored alongside the registration because the sidecar's
+ * loopback port is chosen fresh each app launch. A registration is only usable
+ * while its redirect URI still matches the port we are listening on, so the
+ * mismatch is what triggers re-registration.
+ */
+export interface McpOAuthCredentials {
+  clientId?: string;
+  clientSecret?: string;
+  redirectUri?: string;
+  /**
+   * Scopes the registration was made with. Like `redirectUri`, a registration is
+   * only usable while this still matches what we would ask for now — a token
+   * issued for narrower scopes than the server needs is refused per request
+   * rather than at authorization time, so the mismatch has to be caught here.
+   */
+  scope?: string;
+  authorizationServerUrl?: string;
+  tokenEndpoint?: string;
+  /** The raw OAuth token response, as the MCP client library models it. */
+  tokens?: Record<string, unknown>;
+}
+
+/**
  * Secret bundle for a single configured MCP server. Like a custom provider, the
  * structural fields (name, transport, url/command, header names) live in
  * Postgres; this is just the matching credentials, pulled from the macOS
@@ -68,11 +95,15 @@ export interface CustomProviderSecrets {
  * keyed by the server's database id.
  *
  * `headers` are auth header values for HTTP transports; `env` are sensitive
- * environment variables for stdio (subprocess) transports.
+ * environment variables for stdio (subprocess) transports; `oauth` is the
+ * OAuth state for HTTP transports that authorize instead of carrying a
+ * hand-entered token. Unlike the other two, `oauth` is written back at runtime
+ * (see `mcp/oauth.ts`) because tokens refresh on their own schedule.
  */
 export interface McpServerSecrets {
   headers: Record<string, string>;
   env: Record<string, string>;
+  oauth?: McpOAuthCredentials;
 }
 
 /**
@@ -196,7 +227,7 @@ function parseCustomProviderSecrets(
   return out;
 }
 
-/** Parses a single `{ headers, env }` MCP secret bundle from untrusted JSON. */
+/** Parses a single `{ headers, env, oauth? }` MCP secret bundle from untrusted JSON. */
 function parseMcpSecretEntry(entry: unknown): McpServerSecrets {
   const empty: McpServerSecrets = { headers: {}, env: {} };
   if (!entry || typeof entry !== "object") return empty;
@@ -209,7 +240,33 @@ function parseMcpSecretEntry(entry: unknown): McpServerSecrets {
           ),
         )
       : {};
-  return { headers: stringMap(obj.headers), env: stringMap(obj.env) };
+  const parsed: McpServerSecrets = { headers: stringMap(obj.headers), env: stringMap(obj.env) };
+  const oauth = parseMcpOAuth(obj.oauth);
+  if (oauth) parsed.oauth = oauth;
+  return parsed;
+}
+
+/**
+ * Parses the OAuth subtree. Every field is optional because the flow fills them
+ * in stages — registration first, tokens only once the user has consented — so a
+ * half-populated entry is normal rather than corrupt.
+ */
+function parseMcpOAuth(value: unknown): McpOAuthCredentials | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const obj = value as Record<string, unknown>;
+  const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+  const out: McpOAuthCredentials = {
+    clientId: str(obj.clientId),
+    clientSecret: str(obj.clientSecret),
+    redirectUri: str(obj.redirectUri),
+    scope: str(obj.scope),
+    authorizationServerUrl: str(obj.authorizationServerUrl),
+    tokenEndpoint: str(obj.tokenEndpoint),
+  };
+  if (obj.tokens && typeof obj.tokens === "object" && !Array.isArray(obj.tokens)) {
+    out.tokens = obj.tokens as Record<string, unknown>;
+  }
+  return out;
 }
 
 function parseMcpSecrets(raw: string | undefined): Record<string, McpServerSecrets> {

@@ -4,7 +4,7 @@ import type { WorkspaceRepoDetail } from "../../lib/workspaces";
 import { mountForInteraction } from "../../test/render";
 
 /**
- * The clipboard itself is left alone here: `CopyPathButton.test.tsx` owns the
+ * The clipboard itself is left alone here: `src/test/clipboard.ts` owns the
  * `@tauri-apps/api/core` mock for the run, and a second suite claiming it would
  * take the command out from under that one. What the copy button hands over is
  * `formatReviewComments`, covered in `lib/workspaceReview.test.ts`; this suite

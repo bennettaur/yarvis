@@ -1,4 +1,4 @@
-import { asc, desc, eq } from "drizzle-orm";
+import { asc, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import {
   type ChatMessage,
@@ -55,10 +55,14 @@ export async function addMessage(db: Db, input: AddMessageInput): Promise<ChatMe
       metadata: input.metadata ?? null,
     })
     .returning();
-  // Keep the session's updatedAt fresh so recent chats sort first.
+  // Keep the session's updatedAt fresh so recent chats sort first. The database
+  // supplies the timestamp rather than JS: the column is filled by `now()` on
+  // insert, which keeps microseconds, while a `Date` truncates to milliseconds —
+  // so a JS bump within the same millisecond as another session's creation
+  // sorted the just-used session *below* it.
   await db
     .update(chatSessions)
-    .set({ updatedAt: new Date() })
+    .set({ updatedAt: sql`now()` })
     .where(eq(chatSessions.id, input.sessionId));
   return row!;
 }

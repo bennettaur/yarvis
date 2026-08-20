@@ -15,6 +15,7 @@ import { createCalendarRoutes, createGoogleCallbackRoutes } from "./google/route
 import { createIssueRoutes } from "./issues/routes.ts";
 import { createJiraRoutes } from "./jira/routes.ts";
 import { redactSecrets } from "./llm/errors.ts";
+import { createMcpOAuthCallbackRoutes } from "./mcp/callbackRoutes.ts";
 import { createMcpRoutes } from "./mcp/routes.ts";
 import { createMcpEndpointInfoRoutes, createMcpEndpointRoutes } from "./mcpServer/routes.ts";
 import { createMemoryRoutes } from "./memory/routes.ts";
@@ -80,6 +81,10 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   // redirect from Google can't carry our bearer token. It is CSRF-protected by
   // a state nonce and exposes nothing sensitive.
   app.route("/", createGoogleCallbackRoutes(config));
+
+  // The MCP authorization callback is the same shape: a browser redirect that
+  // can't carry the bearer, gated on a single-use state nonce instead.
+  app.route("/", createMcpOAuthCallbackRoutes(config));
 
   // Attention-ingest sits OUTSIDE the main bearer wall and authenticates with its
   // own scoped token (checked inside the router), so a Claude session shell can

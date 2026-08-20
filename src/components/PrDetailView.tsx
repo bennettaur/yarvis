@@ -197,6 +197,7 @@ export default function PrDetailView({
                 <div className="min-w-0 flex-1">
                   <PrFileDiffs
                     prRef={prRef}
+                    prUrl={pr.url}
                     viewed={viewedFiles.viewed}
                     onToggleViewed={viewedFiles.toggle}
                     focus={guide.focus}
@@ -213,6 +214,7 @@ export default function PrDetailView({
                   <div className="sticky top-0 max-h-[80vh] overflow-auto pr-2">
                     <PrFileList
                       prRef={prRef}
+                      prUrl={pr.url}
                       viewed={viewedFiles.viewed}
                       onToggleViewed={viewedFiles.toggle}
                       onCollapse={() => setFileListCollapsed(true)}
@@ -223,6 +225,7 @@ export default function PrDetailView({
                   <div className="min-w-0 pl-2">
                     <PrFileDiffs
                       prRef={prRef}
+                      prUrl={pr.url}
                       viewed={viewedFiles.viewed}
                       onToggleViewed={viewedFiles.toggle}
                       focus={guide.focus}

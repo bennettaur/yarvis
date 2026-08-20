@@ -189,6 +189,12 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
         cmd.env("YARVIS_DEBUG_MEMORY", value);
     }
 
+    // Same, for MCP: traces what a connected server actually sent, for when its
+    // replies don't match the protocol schema.
+    if let Ok(value) = std::env::var("YARVIS_DEBUG_MCP") {
+        cmd.env("YARVIS_DEBUG_MCP", value);
+    }
+
     // Read the single secrets item once; one Keychain access covers every
     // value injected below.
     let secrets = read_root();

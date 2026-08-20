@@ -44,4 +44,28 @@ describe("chat service", () => {
     expect(sessions[0]!.id).toBe(first.id);
     expect(sessions[1]!.id).toBe(second.id);
   });
+
+  it("bumps updatedAt at the same precision the column is created with", async () => {
+    // The ordering test above raced this and only caught it about one run in
+    // twelve. The defect is precision, not timing: the bump came from a JS
+    // `Date`, which truncates to milliseconds, while creation uses the
+    // database's `now()`, which keeps microseconds — so a bump could land
+    // *behind* a session created moments earlier and sort below it.
+    //
+    // Asserting on the sub-millisecond digits tests that directly. A truncated
+    // timestamp has none, ever; a real `now()` has them for all but roughly one
+    // microsecond in a thousand, so a few rounds make a false failure
+    // impossible in practice while a regression fails on the first run.
+    const session = await createSession(db, "Precision");
+    const subMilliseconds: number[] = [];
+    for (let round = 0; round < 5; round++) {
+      await addMessage(db, { sessionId: session.id, role: "user", content: "ping" });
+      const [row] = await sql<{ sub: number }[]>`
+        SELECT (extract(microseconds from updated_at)::int % 1000) AS sub
+        FROM chat_sessions WHERE id = ${session.id}
+      `;
+      subMilliseconds.push(row!.sub);
+    }
+    expect(subMilliseconds.some((sub) => sub !== 0)).toBe(true);
+  });
 });
