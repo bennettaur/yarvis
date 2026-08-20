@@ -239,25 +239,28 @@ function FilesView({ workspaceId, repoId }: { workspaceId: string; repoId: strin
   if (!data) return <p className="text-xs text-zinc-500">Loading…</p>;
   if (data.length === 0) return <p className="text-xs text-zinc-500">No files.</p>;
   return (
-    <ul className="space-y-0.5 font-mono text-xs text-zinc-400">
-      <FileTreeRows
-        nodes={tree}
-        defaultOpen={false}
-        renderFile={(node, depth) => (
-          <div
-            className="truncate px-2 py-0.5"
-            style={{ paddingLeft: treeRowPaddingLeft(depth) }}
-            title={node.path}
-          >
-            <span className="min-w-0 flex-1 truncate">{node.name}</span>
-            <CopyPathButton
-              path={node.path}
-              className="opacity-0 transition-opacity focus:opacity-100 group-hover/row:opacity-100"
-            />
-          </div>
-        )}
-      />
-    </ul>
+    <>
+      <FileListHeader paths={data} noun="file" />
+      <ul className="space-y-0.5 font-mono text-xs text-zinc-400">
+        <FileTreeRows
+          nodes={tree}
+          defaultOpen={false}
+          renderFile={(node, depth) => (
+            <div
+              className="group/row flex items-center gap-2 px-2 py-0.5"
+              style={{ paddingLeft: treeRowPaddingLeft(depth) }}
+              title={node.path}
+            >
+              <span className="min-w-0 flex-1 truncate">{node.name}</span>
+              <CopyPathButton
+                path={node.path}
+                className="opacity-0 transition-opacity focus:opacity-100 group-hover/row:opacity-100"
+              />
+            </div>
+          )}
+        />
+      </ul>
+    </>
   );
 }
 
