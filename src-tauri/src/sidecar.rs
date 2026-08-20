@@ -213,6 +213,9 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
     if let Some(key) = secret_from_root(&secrets, "cerebras_api_key") {
         cmd.env("CEREBRAS_API_KEY", key);
     }
+    if let Some(key) = secret_from_root(&secrets, "huggingface_api_key") {
+        cmd.env("HUGGINGFACE_API_KEY", key);
+    }
     if let Some(token) = secret_from_root(&secrets, "github_token") {
         cmd.env("GITHUB_TOKEN", token);
     }

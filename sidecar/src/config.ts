@@ -22,6 +22,9 @@ export interface ProviderSecrets {
   anthropicApiKey?: string;
   geminiApiKey?: string;
   cerebrasApiKey?: string;
+  // Hugging Face Inference token, used by the voice loop for speech-to-text and
+  // text-to-speech. Unrelated to the chat providers above.
+  huggingFaceApiKey?: string;
   githubToken?: string;
   // Azure DevOps personal access token + organization base URL (e.g.
   // https://dev.azure.com/your-org) for the PR dashboard. The org URL is
@@ -394,6 +397,7 @@ export function loadConfig(): Config {
       anthropicApiKey: env.ANTHROPIC_API_KEY,
       geminiApiKey: env.GEMINI_API_KEY,
       cerebrasApiKey: env.CEREBRAS_API_KEY,
+      huggingFaceApiKey: env.HUGGINGFACE_API_KEY,
       githubToken: env.GITHUB_TOKEN,
       azureDevopsToken: env.AZURE_DEVOPS_TOKEN,
       azureDevopsOrgUrl: env.AZURE_DEVOPS_ORG_URL,

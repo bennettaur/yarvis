@@ -5,9 +5,10 @@ Guidance for AI agents building features in this repo.
 ## What this is
 
 Yarvis is a personal-assistant desktop app for macOS, built with Tauri v2: an
-LLM chat interface with memory, work tracking, PR review, calendar, and
-workspace/git-worktree management. See `README.md` for the full user-facing
-setup and feature docs — this file is about working in the codebase.
+LLM chat interface with memory, a spoken (STT/TTS) front end to the same agent,
+work tracking, PR review, calendar, and workspace/git-worktree management. See
+`README.md` for the full user-facing setup and feature docs — this file is about
+working in the codebase.
 
 ## Architecture
 
@@ -127,6 +128,30 @@ back to ad-hoc.
   the tools in `codeTools.ts` are written once and GitHub/Azure each supply an
   implementation. A capability one provider lacks resolves to `null` so the
   caller can say so, rather than throwing.
+- Speech backends sit behind the `SpeechClient` interface in
+  `sidecar/src/voice/speech.ts`, resolved by `voice/providers.ts` the same way
+  `llm/providers.ts` resolves chat models — built-ins keep a bare id, user
+  providers keep the `custom:<id>` namespace.
+- Voice is a capability of the chat surfaces, not a surface of its own:
+  `src/lib/useVoice.ts` wraps speech around a thread the caller already owns,
+  taking that surface's `send` and watching the reply text it is already
+  accumulating. A spoken turn therefore uses whatever provider/model that chat
+  is set to. Which speech backends to use lives in Postgres
+  (`sidecar/src/voice/config.ts`), not in the frontend, because the Telegram bot
+  runs in the sidecar and needs the same settings (#226).
+- Outbound speech calls go through `guardedFetch` in that same file, never a
+  bare `fetch`: it re-runs the SSRF guard on every redirect hop rather than only
+  the first (`redirect: "manual"`, mirroring `memory/ingest.ts`) and puts a
+  deadline on the whole chain. `fetch` strips `Authorization` across origins but
+  not a custom provider's own auth headers, so following a redirect unchecked
+  would hand those to whatever host it named.
+- What a surface can do without asking depends on whether the user proof-read
+  the turn. `ChatMessageMetadata.source` records where it came from, and
+  `runAgentTurn` uses it: a `voice` turn puts the tools in
+  `chat/destructiveTools.ts` behind the same approval prompt MCP tools use,
+  because a transcript can be misheard or picked up from the room. A surface
+  that can't prompt gets those tools dropped rather than run unattended —
+  silently doing the irreversible thing is the one unacceptable outcome.
 - Secrets flow one way — the webview writes them to the Keychain, the core
   injects them into the sidecar at spawn. MCP OAuth tokens are the single
   exception, because an authorization server refreshes them on its own schedule

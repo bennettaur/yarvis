@@ -91,6 +91,10 @@ export default function Dashboard() {
           label="Cerebras key"
           value={<StatusDot state={status?.providers.cerebras ?? null} />}
         />
+        <Row
+          label="Hugging Face key"
+          value={<StatusDot state={status?.providers.huggingface ?? null} />}
+        />
       </section>
     </div>
   );

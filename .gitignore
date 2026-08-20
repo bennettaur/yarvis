@@ -20,6 +20,17 @@ dist-ssr
 # Sidecar binary compiled at packaging time
 src-tauri/binaries/
 
+# The Python environment for the local speech server (see README → Voice).
+# `pyproject.toml` and `uv.lock` are committed so `uv sync` reproduces it; the
+# environment itself never is.
+.venv/
+__pycache__/
+*.py[cod]
+.python-version
+# Anchored to the root so this only catches `uv init`'s scaffold, not a real
+# Python script somewhere under scripts/ later on.
+/main.py
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

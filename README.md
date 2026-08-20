@@ -63,6 +63,8 @@ changes.
   Tauri core)
 - Xcode Command Line Tools (`xcode-select --install`)
 - PostgreSQL with the `pgvector` extension available
+- [uv](https://docs.astral.sh/uv/) — only for the local speech server behind the
+  Voice feature; skip it if you are not using voice
 
 ## Setup
 
@@ -86,7 +88,8 @@ Gemini, Cerebras), a GitHub token and/or an Azure DevOps token + organization UR
 PR dashboard + embedded review — either provider can back it, selected with a
 toggle in the PRs tab), a JIRA base URL + account email + API token (for the JIRA
 issues integration on the Issues tab), a Google Cloud OAuth client id/secret (for the Calendar
-integration), an optional embeddings-provider secret (an API key and/or
+integration), an optional Hugging Face token (for speech-to-text; see
+Settings → Voice), an optional embeddings-provider secret (an API key and/or
 custom header values for an OpenAI-compatible embeddings endpoint), and an
 optional Telegram bot token + allowed chat-id list (and, when the optional second
 factor is enabled, a TOTP secret + re-auth window) for the remote-control bot,
@@ -112,6 +115,189 @@ Cerebras takes only an API key, created in the Cerebras Cloud console. Unlike a
 custom provider, its endpoint is fixed — Cerebras serves the OpenAI
 `/chat/completions` shape, so Yarvis talks to it through the OpenAI client
 rather than a separate SDK, and there is no base URL to configure.
+
+### Voice
+
+Talk to the assistant and hear it answer. The microphone lives on the Chat tab
+and in Omni Chat, so a spoken turn goes to whatever model that chat is already
+using, in the same session, and shows up in the transcript labelled `spoken`.
+
+#### Quick start
+
+Speech runs on your own machine — no key, no cloud. On Apple Silicon:
+
+```bash
+uv sync                                            # installs the speech server
+uv run mlx_audio.server --host 127.0.0.1 --port 8000
+```
+
+Leave that running, then in the app:
+
+1. **Settings → LLM Providers → Add** a provider named e.g. `local speech`, base
+   URL `http://127.0.0.1:8000/v1`, API kind `openai`. (Put anything in Models —
+   the field needs one entry to save; speech models are named separately.)
+2. **Settings → Voice** — set both halves to that provider:
+   - Speech to text · model `mlx-community/whisper-large-v3-turbo-asr-fp16`
+   - Text to speech · model `mlx-community/Soprano-1.1-80M-bf16`
+3. Press **Test voice**. You should hear a sentence. Weights download on first
+   use, so the first call takes a minute.
+4. Open the Chat tab and press the microphone.
+
+Prefer a different transcriber? If you already run **Ollama**, point Speech to
+text at `http://localhost:11434/v1` with an audio-capable model such as
+`gemma4:latest` — one provider entry can both answer and transcribe.
+
+#### Using it
+
+- **Speak replies** synthesizes each finished sentence as the answer streams, so
+  speech starts about a sentence behind the model rather than a whole answer
+  behind it. Code blocks are skipped rather than read out symbol by symbol.
+- **Hands-free** ends a turn after a stretch of silence and re-opens the
+  microphone once the reply finishes. It is **off by default on purpose**: with
+  it on, anything audible in the room can become a turn you never addressed to
+  the assistant.
+- **Stop** ends the turn outright — silences queued speech, discards the
+  recording, and cancels the model mid-generation.
+- A recording is capped at 60 seconds, and one the app never heard speech in is
+  discarded rather than uploaded.
+
+Because a transcript is never proof-read the way a typed message is, the agent's
+irreversible tools ask before they run on a spoken turn: deleting a task,
+archiving a workspace, starting work on an issue, filing a JIRA issue, syncing
+branches, instructing a running agent session, and launching one. Each raises
+the same approval prompt external MCP tools use, and is announced aloud when
+Speak replies is on. Everything else — reading, recalling, creating tasks — runs
+uninterrupted.
+
+#### Choosing models
+
+Model names are free text, because a local server's names are its own. The
+accepted shape is `namespace/name` with an optional `:tag`
+(`openai/whisper-large-v3`, `whisper:latest`), which is what stops a model name
+from addressing something other than the model endpoint.
+
+These are verified working on Apple Silicon through the server above:
+
+| Purpose | Model | Notes |
+| --- | --- | --- |
+| Speech out | `mlx-community/Soprano-1.1-80M-bf16` | Tiny, no phonemizer. The default worth starting with. |
+| Speech out | `mlx-community/Kokoro-82M-bf16` | Nicer voice; set **Voice** to `af_heart`. Needs espeak-ng — see below. |
+| Speech out | `mlx-community/MOSS-TTS-Nano-100M` | Clones a voice; see below. |
+| Speech in | `mlx-community/whisper-large-v3-turbo-asr-fp16` | Same server as speech out. |
+| Speech in | `gemma4:latest` (Ollama) | Audio-capable chat model; transcribes well. |
+
+**Hugging Face** is also available with a token from Settings, but in practice
+only for transcription (`openai/whisper-large-v3-turbo`). Its serverless router
+refuses the text-to-speech models with "Model not supported by provider
+hf-inference", so it is not offered under Text to speech at all.
+
+#### Voice cloning, and server-specific fields
+
+Settings → Voice has a collapsible section for models that need more than a
+model name. Two fields:
+
+- **Reference clip** — an audio file, sent as a base64 `ref_audio` data URI.
+- **Extra request fields** — arbitrary JSON merged into the synthesis request,
+  for whatever else a server wants. Neither can overwrite the model or the text.
+
+Servers disagree about how a reference clip arrives, so which field you use
+depends on the server:
+
+- **mlx-audio** wants a *path on disk*. For **MOSS-TTS-Nano**, leave Reference
+  clip empty and put the path in Extra request fields:
+  ```json
+  {"ref_audio": "/Users/you/voice-samples/reference.wav"}
+  ```
+  (Verified: MOSS-TTS-Nano-100M produces cloned speech this way.)
+- **vLLM-Omni** wants the base64 data URI, which is what the Reference clip
+  field sends. That is the path to use on an NVIDIA box.
+
+**What the clip has to be.** Nothing is transcribed, so it needs no script and
+no particular phrases — MOSS conditions on the audio alone, and passes a
+transcript through only to ignore it. Five to ten seconds of ordinary speech is
+plenty (upstream's own samples are around eight). Mono WAV.
+
+**Record it at 16, 24 or 48 kHz — not 44.1 kHz.** This one matters more than it
+should. The same clip, differing only in sample rate, asked for a two-and-a-half
+second sentence:
+
+| Reference rate | Generated |
+| --- | --- |
+| 44.1 kHz | **76 seconds** of rambling |
+| 48 kHz | 4.1s ✓ |
+| 24 kHz | 3.8s ✓ |
+| 16 kHz | 3.4s ✓ |
+
+44.1 kHz is the CD/consumer default, so a clip from Voice Memos or QuickTime is
+likely to be exactly the rate that breaks. It does not error — the request
+returns 200 and a minute of nonsense. If your recorder gives 44.1 kHz, resample
+before pointing at it:
+
+```bash
+say -o ref.wav --data-format=LEI16@16000 "any sentence at all"   # or resample yours
+```
+
+#### Running MOSS through vLLM instead (untested)
+
+On Linux/NVIDIA, vLLM-Omni serves MOSS-TTS-Nano over the same OpenAI endpoint:
+
+```bash
+vllm serve OpenMOSS-Team/MOSS-TTS-Nano --omni --port 8091
+```
+
+Point a provider at `http://localhost:8091/v1` and use the **Reference clip**
+field — it requires one on every request and ignores the Voice field entirely.
+
+On Apple Silicon this needs the community
+[vllm-metal](https://github.com/vllm-project/vllm-metal) plugin:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vllm-project/vllm-metal/main/install.sh | bash
+source ~/.venv-vllm-metal/bin/activate
+```
+
+**Untested here, and it may not work at all**: vllm-metal describes itself as a
+text-generation backend and documents no audio support or `--omni` flag, so the
+TTS serving path likely isn't covered. The mlx-audio route above runs the same
+MOSS model natively and is verified, so prefer it on a Mac.
+
+#### If something doesn't work
+
+Press **Test voice** in Settings → Voice first — it plays a fixed phrase and
+shows the backend's own error, which distinguishes a wrong model from a missing
+key from a cold server. Then:
+
+- **"Model not supported by provider hf-inference"** — Hugging Face does not
+  serve that TTS model. Use a local server.
+- **"Failed to load image or audio file"** (Ollama) — the audio format. The app
+  converts recordings to 16 kHz mono WAV before upload precisely because
+  backends disagree here, so this points at a hand-made request rather than the
+  app.
+- **"ffmpeg not found"** — only mp3 needs it. Yarvis asks for `wav`, so this
+  only appears if you override `response_format` yourself.
+- **"the speech provider returned no audio"** — the server answered OK with an
+  empty body, which means it failed after it started responding. Its own log has
+  the real reason.
+- **A cloned voice rambles for a minute** — the reference clip is probably
+  44.1 kHz. See "What the clip has to be" above; resample it to 16 kHz.
+- **Kokoro fails with `espeakng_loader//phontab: No such file or directory`** —
+  its grapheme-to-phoneme step looks for espeak-ng data one directory above
+  where mlx-audio ships it. Installing espeak-ng system-wide does *not* help,
+  because the path is hard-coded. Either use Soprano, which needs no phonemizer,
+  or link the data where it looks:
+  ```bash
+  cd .venv/lib/python3.12/site-packages/espeakng_loader && ln -sf espeak-ng-data/* .
+  ```
+- **No microphone prompt** — macOS gates it. The app bundle carries the usage
+  description and audio-input entitlement, but under `bun run tauri dev` the
+  binary is not bundled, so the prompt is attributed to the terminal that
+  launched it. Run a built app if permission looks stuck.
+
+Speech settings live in Postgres rather than this window, so every surface
+shares one setup — including the Telegram bot once it grows voice notes
+([#226](https://github.com/bennettaur/yarvis/issues/226)). Starting the speech
+server is still a manual step; having the app supervise it is
+[#228](https://github.com/bennettaur/yarvis/issues/228).
 
 ### Embeddings
 
@@ -593,12 +779,16 @@ render real components with the `renderToHtml` helper in `src/test/render.tsx`.
 
 ```
 src/            React frontend (Vite + TS + Tailwind)
-  lib/          sidecar API client, Keychain wrappers, Omni Chat context registry, notifications, cross-tab nav (nav.ts)
+  lib/          sidecar API client, Keychain wrappers, Omni Chat context registry, notifications, cross-tab nav (nav.ts),
+                voice loop pieces (useVoice.ts the turn hook, voice.ts + voiceConfig.ts clients,
+                useVoiceRecorder.ts mic capture, speechChunks.ts sentence splitting,
+                speechQueue.ts pipelined playback, audioEncoding.ts, audioPlayback.ts)
     pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs, per-file viewed state, remembered panel place, link/shorthand locator, diff parsing + context expansion, guide + insight clients)
     issues/     provider-neutral issue data layer (GitHub + JIRA) — types, api client, start-work flow (useGithubStartWork.ts)
     jira/       JIRA-specific data layer (issue detail, transitions, comments, create) — types, api client, start-work flow (useJiraStartWork.ts)
     find/       find-on-page engine — visible-text index, match offsets, CSS Custom Highlight painting, useFind controller
   components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, Terminal, Workspaces, …)
+    voice/      the mic button and the voice controls shared by the chat surfaces
     pr/         PR dashboard + embedded review: lists, file diffs (unified + split),
                 gap/context expansion, change minimap, guide panel, insight cards
     issue/      Issues tab views: GitHub + JIRA issue lists, detail, create/repo-picker modals
@@ -623,6 +813,9 @@ sidecar/        Bun + TS service (Hono)
   src/core/     client for the Rust core's control channel (spawn/kill/send to a session)
   src/db/       Drizzle schema, client, migrations (applied on startup)
   src/chat/     multi-provider streaming chat + tool-calls (agent.ts: shared agent turn)
+  src/voice/    speech-to-text + text-to-speech (/api/voice): Hugging Face Inference
+                and the OpenAI audio API, the latter reusing a custom provider's base URL;
+                config.ts holds the settings every surface shares
   src/clipboard/ saved clipboard entries + the credential screen (screening.ts)
   src/telegram/ Telegram remote-control bot (long-poll loop, slash commands, chat→session map)
   src/tasks/    daily/weekly work tracking

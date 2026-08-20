@@ -13,9 +13,11 @@ import {
   streamChat,
   type ThreadMessage,
 } from "../lib/chat";
+import { useVoice } from "../lib/useVoice";
 import ChatComposer from "./ChatComposer";
 import ChatMessages from "./ChatMessages";
 import { ToolApprovalPrompt } from "./ToolApprovalPrompt";
+import VoiceControls from "./voice/VoiceControls";
 
 const PROVIDER_KEY = "yarvis.chat.provider";
 const MODEL_KEY = "yarvis.chat.model";
@@ -101,53 +103,64 @@ export default function ChatPanel() {
     [providers],
   );
 
-  const send = useCallback(async () => {
-    const text = input.trim();
-    if (!text || !provider || !model || busy) return;
+  const sendText = useCallback(
+    async (raw: string, options: { source?: "voice" } = {}) => {
+      const text = raw.trim();
+      if (!text || !provider || !model || busy) return;
 
-    let activeId = sessionId;
-    if (!activeId) {
-      const session = await createSession();
-      setSessions((prev) => [session, ...prev]);
-      activeId = session.id;
-      setSessionId(activeId);
-    }
-
-    setInput("");
-    setMessages((prev) => [...prev, { role: "user", content: text }]);
-    setBusy(true);
-    setError(null);
-    let acc = "";
-    try {
-      for await (const evt of streamChat({
-        sessionId: activeId,
-        message: text,
-        provider,
-        model,
-      })) {
-        if (evt.type === "delta" && evt.text) {
-          acc += evt.text;
-          setStreaming(acc);
-        } else if (evt.type === "tool_approval_request" && evt.id) {
-          const id = evt.id;
-          setApprovals((prev) => [
-            ...prev,
-            { id, name: evt.name ?? id, server: evt.server ?? "", args: evt.args },
-          ]);
-        } else if (evt.type === "error") {
-          setError(evt.message ?? "stream error");
-        }
+      let activeId = sessionId;
+      if (!activeId) {
+        const session = await createSession();
+        setSessions((prev) => [session, ...prev]);
+        activeId = session.id;
+        setSessionId(activeId);
       }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      if (acc) setMessages((prev) => [...prev, { role: "assistant", content: acc }]);
-      setStreaming("");
-      setBusy(false);
-      // Any approvals not acted on are moot once the turn ends.
-      setApprovals([]);
-    }
-  }, [input, provider, model, busy, sessionId]);
+
+      setInput("");
+      setMessages((prev) => [
+        ...prev,
+        { role: "user", content: text, metadata: options.source ? { source: "voice" } : null },
+      ]);
+      setBusy(true);
+      setError(null);
+      let acc = "";
+      try {
+        for await (const evt of streamChat({
+          sessionId: activeId,
+          message: text,
+          provider,
+          model,
+          // Marks a turn the user spoke rather than typed, which is what puts
+          // the agent's irreversible tools behind a confirmation.
+          source: options.source,
+        })) {
+          if (evt.type === "delta" && evt.text) {
+            acc += evt.text;
+            setStreaming(acc);
+          } else if (evt.type === "tool_approval_request" && evt.id) {
+            const id = evt.id;
+            setApprovals((prev) => [
+              ...prev,
+              { id, name: evt.name ?? id, server: evt.server ?? "", args: evt.args },
+            ]);
+          } else if (evt.type === "error") {
+            setError(evt.message ?? "stream error");
+          }
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (acc) setMessages((prev) => [...prev, { role: "assistant", content: acc }]);
+        setStreaming("");
+        setBusy(false);
+        // Any approvals not acted on are moot once the turn ends.
+        setApprovals([]);
+      }
+    },
+    [provider, model, busy, sessionId],
+  );
+
+  const voice = useVoice({ send: sendText, streaming, busy });
 
   return (
     <div className="flex h-full flex-col gap-4 p-6">
@@ -225,12 +238,14 @@ export default function ChatPanel() {
       <ChatComposer
         value={input}
         onChange={setInput}
-        onSubmit={() => void send()}
+        onSubmit={() => void sendText(input)}
         busy={busy}
         placeholder="Message..."
         submitLabel="Send"
         maxHeight={360}
       />
+
+      <VoiceControls voice={voice} />
     </div>
   );
 }
