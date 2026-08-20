@@ -9,6 +9,7 @@ import {
   type WorkspaceRepoSync,
   workspaceRepoSync,
 } from "../../lib/workspaces";
+import CopyLinkButton from "../CopyLinkButton";
 
 const ROLLUP_LABEL: Record<CheckRollup, string> = {
   success: "✓ checks passing",
@@ -195,6 +196,11 @@ export default function WorkspacePrStatus({
           >
             Open ↗
           </button>
+          <CopyLinkButton
+            url={summary.url}
+            subject="PR link"
+            title={`Copy the link to ${repo.repo.name} #${pr?.prNumber}`}
+          />
         </span>
       )}
     </div>

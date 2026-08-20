@@ -312,6 +312,27 @@ reopenable, so its comments are left where they are.
 
 ### Clipboard
 
+#### Copy buttons
+
+Referencing something from Yarvis elsewhere — Slack, a ticket, an agent prompt —
+shouldn't mean opening a browser to fetch the link first, so the things worth
+quoting carry a copy button next to them. In a workspace: the workspace folder,
+each repo's worktree path, the PR link on the status line and in the PR checks
+view, that view's check summary, and both file lists — each row's full path, or
+the whole list one path per line. In a PR review: the provider's link to the PR,
+to each file (pinned to the commit the PR points at, so it still shows the code
+you meant after a later push), and to each check, plus every check at once as one
+line each. On an issue: its GitHub or JIRA link.
+
+Anything a provider supplies is sanitized on the way out. Control and formatting
+characters are stripped per field before lines are joined, so a filename or a
+check name carrying a newline can't forge a line of its own in what you paste. A
+link is copied only if it is one Yarvis would open — the same http(s) rule the
+"Open ↗" buttons use — and a file link whose path carries `.` or `..` segments,
+which git will not store, is refused rather than copied: a browser resolves those
+away, landing the reader somewhere other than the repo the link appears to name.
+Where a link can't be derived at all, no button appears.
+
 **Control + Shift + V** (or the clipboard icon in the nav rail) opens the
 clipboard palette: a search box over the things you copy again and again — an
 identity id, a CLI incantation, a link — plus the clipboard history from this run
@@ -373,12 +394,13 @@ sticks across PRs. Each `⋯ N lines` marker between hunks reveals the code the
 patch left out — twenty lines from either end, or the whole stretch by clicking
 the count — and a per-file **Whole file** shows the complete file with its
 changes still highlighted, plus a strip down the edge marking where in the file
-they fall. A file's full text is only fetched once you ask for context. A copy
-button puts a file's full repo-relative path on the clipboard, for pasting into
-an editor or a prompt — always shown in the diff header, and in the file list on
-hovering a row, where only the basename is visible. Clicking a row scrolls its
-diff into view and flashes the file's header, so a jump lands somewhere you can
-see it arrived.
+they fall. A file's full text is only fetched once you ask for context. Two
+copy buttons sit beside each filename — the repo-relative path, for an editor or
+a prompt, and the provider's link to that file at the commit the PR points at,
+for anyone you're pasting to (see "Copy buttons"). Both are always shown in the
+diff header, and appear in the file list on hovering a row, where only the
+basename is visible. Clicking a row scrolls its diff into view and flashes the
+file's header, so a jump lands somewhere you can see it arrived.
 
 #### Guided review and line insights
 

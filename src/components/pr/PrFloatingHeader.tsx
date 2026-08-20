@@ -10,6 +10,7 @@ import { invalidate, prDetailKey } from "../../lib/pr/cache";
 import { refDisplayRepo, refNumber, refProviderName } from "../../lib/pr/ref";
 import type { CheckItem, MergeMethod, PrDetail, PrRef, PrSummary } from "../../lib/pr/types";
 import { openExternal } from "../../lib/url";
+import CopyLinkButton from "../CopyLinkButton";
 import PrWorkspaceLink from "./PrWorkspaceLink";
 
 /**
@@ -464,6 +465,11 @@ export default function PrFloatingHeader({
           >
             ↗
           </button>
+          <CopyLinkButton
+            url={pr.url}
+            subject="PR link"
+            title={`Copy the ${refProviderName(prRef)} link to this PR`}
+          />
         </div>
       </div>
       {error && <p className="mt-2 text-xs text-red-400">{error}</p>}

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { clipboardSafePath, clipboardSafeText, clipboardSafeUrl } from "../lib/clipboard";
 import { buildFileTree } from "../lib/fileTree";
 import { requestOpenPr } from "../lib/nav";
 import type { PrSummary } from "../lib/pr/types";
@@ -11,7 +12,10 @@ import {
   workspaceRepoChanges,
   workspaceRepoFiles,
 } from "../lib/workspaces";
+import CopyButton from "./CopyButton";
+import CopyLinkButton from "./CopyLinkButton";
 import FileTreeRows, { treeRowPaddingLeft } from "./files/FileTreeRows";
+import CopyPathButton from "./pr/CopyPathButton";
 import WorkspaceReviewComments from "./workspaces/WorkspaceReviewComments";
 
 type View = "files" | "changes" | "comments" | "checks";
@@ -198,6 +202,27 @@ const sameChangedFiles = (prev: ChangedFile[] | null, next: ChangedFile[]): bool
   return true;
 };
 
+/**
+ * Row above a file list: how many files it holds, and a copy of the whole list
+ * — the form these lists get pasted in, one path per line, sanitized the same
+ * way a single path is.
+ */
+function FileListHeader({ paths, noun }: { paths: string[]; noun: string }) {
+  return (
+    <div className="mb-1 flex items-center gap-1 px-2 text-xs text-zinc-500">
+      <span>
+        {paths.length} {noun}
+        {paths.length === 1 ? "" : "s"}
+      </span>
+      <CopyButton
+        value={() => paths.map(clipboardSafePath).join("\n")}
+        subject="file list"
+        title="Copy every path in this list"
+      />
+    </div>
+  );
+}
+
 function FilesView({ workspaceId, repoId }: { workspaceId: string; repoId: string }) {
   const { data, error } = usePolledRepoList(
     workspaceId,
@@ -214,21 +239,28 @@ function FilesView({ workspaceId, repoId }: { workspaceId: string; repoId: strin
   if (!data) return <p className="text-xs text-zinc-500">Loading…</p>;
   if (data.length === 0) return <p className="text-xs text-zinc-500">No files.</p>;
   return (
-    <ul className="space-y-0.5 font-mono text-xs text-zinc-400">
-      <FileTreeRows
-        nodes={tree}
-        defaultOpen={false}
-        renderFile={(node, depth) => (
-          <div
-            className="truncate px-2 py-0.5"
-            style={{ paddingLeft: treeRowPaddingLeft(depth) }}
-            title={node.path}
-          >
-            {node.name}
-          </div>
-        )}
-      />
-    </ul>
+    <>
+      <FileListHeader paths={data} noun="file" />
+      <ul className="space-y-0.5 font-mono text-xs text-zinc-400">
+        <FileTreeRows
+          nodes={tree}
+          defaultOpen={false}
+          renderFile={(node, depth) => (
+            <div
+              className="group/row flex items-center gap-2 px-2 py-0.5"
+              style={{ paddingLeft: treeRowPaddingLeft(depth) }}
+              title={node.path}
+            >
+              <span className="min-w-0 flex-1 truncate">{node.name}</span>
+              <CopyPathButton
+                path={node.path}
+                className="opacity-0 transition-opacity focus:opacity-100 group-hover/row:opacity-100"
+              />
+            </div>
+          )}
+        />
+      </ul>
+    </>
   );
 }
 
@@ -263,37 +295,48 @@ function ChangesView({
   if (!data) return <p className="text-xs text-zinc-500">Loading…</p>;
   if (data.length === 0) return <p className="text-xs text-zinc-500">No changes on this branch.</p>;
   return (
-    <ul className="space-y-0.5 font-mono text-xs">
-      <FileTreeRows
-        nodes={tree}
-        renderFile={(node, depth) => {
-          const file = node.file;
-          return (
-            <button
-              type="button"
-              onClick={() => onOpenFile(file.path)}
-              title={`Open diff for ${file.path}`}
-              className="flex w-full items-center gap-2 rounded px-2 py-0.5 text-left hover:bg-zinc-800/60"
-              style={{ paddingLeft: treeRowPaddingLeft(depth) }}
-            >
-              <span
-                className={`shrink-0 ${CHANGE_COLORS[file.status] ?? "text-zinc-400"}`}
-                title={file.status}
+    <>
+      <FileListHeader paths={data.map((f) => f.path)} noun="changed file" />
+      <ul className="space-y-0.5 font-mono text-xs">
+        <FileTreeRows
+          nodes={tree}
+          renderFile={(node, depth) => {
+            const file = node.file;
+            return (
+              <div
+                className="group/row flex w-full items-center gap-2 rounded px-2 py-0.5 hover:bg-zinc-800/60"
+                style={{ paddingLeft: treeRowPaddingLeft(depth) }}
               >
-                {file.status[0]?.toUpperCase()}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-zinc-400">{node.name}</span>
-              {(file.additions > 0 || file.deletions > 0) && (
-                <span className="shrink-0 text-zinc-500">
-                  <span className="text-emerald-400">+{file.additions}</span>{" "}
-                  <span className="text-red-400">−{file.deletions}</span>
-                </span>
-              )}
-            </button>
-          );
-        }}
-      />
-    </ul>
+                <button
+                  type="button"
+                  onClick={() => onOpenFile(file.path)}
+                  title={`Open diff for ${file.path}`}
+                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                >
+                  <span
+                    className={`shrink-0 ${CHANGE_COLORS[file.status] ?? "text-zinc-400"}`}
+                    title={file.status}
+                  >
+                    {file.status[0]?.toUpperCase()}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-zinc-400">{node.name}</span>
+                  {(file.additions > 0 || file.deletions > 0) && (
+                    <span className="shrink-0 text-zinc-500">
+                      <span className="text-emerald-400">+{file.additions}</span>{" "}
+                      <span className="text-red-400">−{file.deletions}</span>
+                    </span>
+                  )}
+                </button>
+                <CopyPathButton
+                  path={file.path}
+                  className="opacity-0 transition-opacity focus:opacity-100 group-hover/row:opacity-100"
+                />
+              </div>
+            );
+          }}
+        />
+      </ul>
+    </>
   );
 }
 
@@ -349,6 +392,19 @@ function buildPrSummary(repo: WorkspaceRepoDetail): PrSummary | null {
   };
 }
 
+/**
+ * The checks view as pasteable text: the PR, where its checks stand and its
+ * link, which is what gets handed to someone in chat when CI goes red.
+ */
+function checksClipboardText(repoName: string, pr: NonNullable<WorkspaceRepoDetail["pr"]>): string {
+  const rollup = ROLLUP_LABEL[pr.checkRollup] ?? pr.checkRollup;
+  const counts = pr.checks && pr.checks.total > 0 ? describeChecks(pr.checks) : "";
+  const headline = [`${clipboardSafeText(repoName)} #${pr.prNumber}`, rollup, counts]
+    .filter(Boolean)
+    .join(" · ");
+  return [headline, clipboardSafeUrl(pr.prUrl)].filter(Boolean).join("\n");
+}
+
 function ChecksView({ repo }: { repo: WorkspaceRepoDetail }) {
   const pr = repo.pr;
   if (!pr || pr.lastPolledAt === null) {
@@ -367,6 +423,11 @@ function ChecksView({ repo }: { repo: WorkspaceRepoDetail }) {
     <div className="space-y-2 text-xs">
       <div className="flex items-center gap-2">
         <span className="font-mono">#{pr.prNumber}</span>
+        <CopyButton
+          value={() => checksClipboardText(repo.repo.name, pr)}
+          subject="check summary"
+          title="Copy the check summary and the PR link"
+        />
         {pr.prState && (
           <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-zinc-300">{pr.prState}</span>
         )}
@@ -385,13 +446,20 @@ function ChecksView({ repo }: { repo: WorkspaceRepoDetail }) {
           </button>
         )}
         {pr.prUrl && (
-          <button
-            type="button"
-            onClick={() => openExternal(pr.prUrl as string)}
-            className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
-          >
-            Open externally ↗
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={() => openExternal(pr.prUrl as string)}
+              className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+            >
+              Open externally ↗
+            </button>
+            <CopyLinkButton
+              url={pr.prUrl}
+              subject="PR link"
+              title={`Copy the link to ${repo.repo.name} #${pr.prNumber}`}
+            />
+          </>
         )}
       </div>
       <div className={ROLLUP_COLOR[pr.checkRollup] ?? "text-zinc-400"}>
