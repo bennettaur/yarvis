@@ -139,7 +139,8 @@ describe("split pane dimming", () => {
   it("washes one pane when the persisted focus names a pane that is gone", async () => {
     const host = await mountTabs(terminalTab(split(pane("pA"), pane("pB")), "stale"));
 
-    expect(dimmedPaneIds(host)).toHaveLength(1);
+    // Focus snaps back to the tree's first leaf, so the wash lands on the other.
+    expect(dimmedPaneIds(host)).toEqual(["pB"]);
   });
 
   it("clears the wash when closing a pane collapses the split", async () => {
