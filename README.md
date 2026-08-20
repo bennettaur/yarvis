@@ -229,6 +229,30 @@ for how many workspaces you can keep open. Leaving the field blank restores the
 default. The value applies to the next terminal opened, without a restart, and
 is stored in `settings.json` in the app data directory.
 
+#### Editing a file
+
+The right column's **All files** list opens a file in an editor tab, and the
+✎ that appears on hovering a changed file does the same — the diff is still
+what a click on the row gives you, since reading what changed is usually why
+you opened it. The
+editor is CodeMirror with the file's own grammar, loaded from the file's name;
+a file with no grammar we recognise opens uncoloured rather than not at all.
+Binary files, files that aren't valid UTF-8, and anything past 2 MB are
+described instead of opened: saving one back would rewrite bytes the editor
+never showed you.
+
+**⌘S** (or **Save**) writes the file back to the worktree. Edits live outside
+the tab, so switching to another tab and back keeps what you have typed, and
+the tab is marked while it is unsaved; closing it asks first. **Revert** throws
+the buffer away and re-reads the file. Unsaved text is held in memory only —
+the tab itself comes back when the app reopens, but anything unsaved in it does
+not, so save before quitting.
+
+A save carries the hash the file was read with, and is refused if the file has
+changed since — the agent session works in the same worktree, and a save that
+landed on top of its work would drop it silently. The refusal keeps your edits
+and offers both ways out: reload from disk, or overwrite with what you have.
+
 #### Reviewing your own work
 
 The right column's **Changed** list opens a file's diff in a tab, and that diff
@@ -517,7 +541,7 @@ render real components with the `renderToHtml` helper in `src/test/render.tsx`.
 
 ```
 src/            React frontend (Vite + TS + Tailwind)
-  lib/          sidecar API client, Keychain wrappers, Omni Chat context registry, notifications, cross-tab nav (nav.ts)
+  lib/          sidecar API client, Keychain wrappers, Omni Chat context registry, notifications, cross-tab nav (nav.ts), unsaved editor buffers (fileDrafts.ts)
     pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs, per-file viewed state, remembered panel place, link/shorthand locator, diff parsing + context expansion, guide + insight clients)
     issues/     provider-neutral issue data layer (GitHub + JIRA) — types, api client, start-work flow (useGithubStartWork.ts)
     jira/       JIRA-specific data layer (issue detail, transitions, comments, create) — types, api client, start-work flow (useJiraStartWork.ts)
@@ -527,8 +551,9 @@ src/            React frontend (Vite + TS + Tailwind)
                 gap/context expansion, change minimap, guide panel, insight cards
     issue/      Issues tab views: GitHub + JIRA issue lists, detail, create/repo-picker modals
     files/      shared file-tree rows (collapsible folders), used by PR review and workspaces
-    workspaces/  workspace detail subviews + Omni widgets, and the self-review
-                comment layer over a changed file's diff
+    editor/     CodeMirror 6 wrapper (lazy-loaded) behind the workspace file editor
+    workspaces/  workspace detail subviews + Omni widgets, the self-review
+                comment layer over a changed file's diff, and the file editor
     shell/      desktop shell: nav rail, top bar, boot loading screen, tab shortcuts
     omni/       Omni view — chat-driven dynamic-UI canvas
     omnichat/   Omni Chat — global summon-from-anywhere chat overlay
@@ -563,7 +588,8 @@ sidecar/        Bun + TS service (Hono)
   src/omni/     Omni UI generation (streaming) + saved layouts
   src/workspaces/ repo registry + git-worktree provisioning, bulk base-branch sync, and
                   teardown (/api/repos, /api/workspaces), plus local self-review
-                  comments on a workspace's own diffs (reviewComments.ts)
+                  comments on a workspace's own diffs (reviewComments.ts) and
+                  reading/writing a worktree file for the editor (files.ts)
   src/mcp/      MCP client: connected servers, tool registry sync, approvals
   src/mcpServer/  the MCP endpoint Yarvis serves (memory tools over /mcp)
   src/attention/  attention stream: hook ingest, SSE stream, scoped clearing

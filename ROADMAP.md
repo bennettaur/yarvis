@@ -196,7 +196,10 @@ Status of the build against the original vision. The full V1 plan lives at
   dragged down the line-number gutter — stored against the file, the lines, and
   the worktree's HEAD, and never sent to a PR provider. The Comments tab lists
   them across every repo in the workspace with a copy-for-the-agent button,
-  resolve/reopen, and delete; a completed archive deletes them all.
+  resolve/reopen, and delete; a completed archive deletes them all. Any file in
+  the worktree also opens in an editor tab (CodeMirror, grammar from the file's
+  name), whose save carries the hash it was read with so it cannot land on top
+  of what the agent session wrote in the meantime.
 - **Omni Chat + keyboard navigation** — a global `Control+Shift+Space` hotkey
   (registered in the Rust core) raises a centered chat overlay over any tab; Esc
   hides it while the session keeps streaming in the background, and re-summoning

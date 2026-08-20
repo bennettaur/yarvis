@@ -1,6 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { setViewedSessions } from "../../../lib/attentionScope";
 import { useAttentionSessionKeys } from "../../../lib/attentionStore";
+import { fileKey } from "../../../lib/fileDrafts";
 import { isPtyBusy, killPty } from "../../../lib/pty";
 import SplitPane from "../../SplitPane";
 import TerminalPanel, { type TerminalPanelHandle } from "../../TerminalPanel";
@@ -31,6 +32,7 @@ import {
   type SetupLogTab,
   type SurfaceState,
   stateAfterCloseTab,
+  stateAfterOpenEditor,
   type Tab,
   type TerminalTab,
   uid,
@@ -56,6 +58,12 @@ const fileTitle = (path: string) => path.split("/").pop() || path;
 
 /** A request to open (or re-focus) a diff tab for a changed file. */
 export interface OpenFileDiff {
+  repoId: string;
+  path: string;
+}
+
+/** A request to open (or re-focus) an editor tab for a file in a repo's worktree. */
+export interface OpenFileEditor {
   repoId: string;
   path: string;
 }
@@ -95,6 +103,11 @@ export default function TerminalTabs({
   openFileDiff = null,
   onFileDiffOpened,
   renderFileDiff,
+  openFileEditor = null,
+  onFileEditorOpened,
+  renderFileEditor,
+  dirtyEditorKeys,
+  onDiscardEditor,
   openSetupLog = null,
   onSetupLogOpened,
   renderSetupLog,
@@ -118,6 +131,25 @@ export default function TerminalTabs({
   onFileDiffOpened?: () => void;
   /** Supplies a diff tab's body. When omitted, diff tabs are not used. */
   renderFileDiff?: (file: OpenFileDiff) => ReactNode;
+  /**
+   * A file to open in an editor tab, using the same request/consume pattern as
+   * `openFileDiff`. The same file may be open as both a diff and an editor tab.
+   */
+  openFileEditor?: OpenFileEditor | null;
+  /** Called once an `openFileEditor` request has been handled. */
+  onFileEditorOpened?: () => void;
+  /** Supplies an editor tab's body. When omitted, editor tabs are not used. */
+  renderFileEditor?: (file: OpenFileEditor) => ReactNode;
+  /**
+   * Files with unsaved edits, keyed by `fileKey`. The buffer lives
+   * with the surface's owner (it has to outlive the tab, which unmounts when
+   * another is selected), so this is the only way the strip can mark a tab dirty
+   * and the only way closing one knows to ask first.
+   */
+  dirtyEditorKeys?: ReadonlySet<string>;
+  /** Called when an editor tab with unsaved edits is closed and the user
+   *  confirmed losing them, so the owner can drop the buffer it is holding. */
+  onDiscardEditor?: (file: OpenFileEditor) => void;
   /**
    * A workspace repo's setup log to open in a tab, using the same
    * request/consume pattern as `openFileDiff`. Setting this opens a new tab or
@@ -190,6 +222,19 @@ export default function TerminalTabs({
     }
     return flagged;
   }, [attentionSessions, state.tabs, pinnedTabs, storageKey]);
+
+  // Editor tabs whose file has unsaved edits, so the strip can mark them and
+  // closing one can ask first.
+  const dirtyTabIds = useMemo(() => {
+    const dirty = new Set<string>();
+    if (!dirtyEditorKeys?.size) return dirty;
+    for (const tab of state.tabs) {
+      if (tab.kind === "editor" && dirtyEditorKeys.has(fileKey(tab.repoId, tab.path))) {
+        dirty.add(tab.id);
+      }
+    }
+    return dirty;
+  }, [dirtyEditorKeys, state.tabs]);
 
   // The sessions actually on screen — only the active tab's, since the others
   // are unmounted. Publishing them is what lets attention items raised by a tab
@@ -294,6 +339,18 @@ export default function TerminalTabs({
     onFileDiffOpened?.();
   }, [openFileDiff, openDiff, onFileDiffOpened]);
 
+  // Open an editor tab for a file, or re-focus the tab already editing it.
+  const openEditor = useCallback((file: OpenFileEditor) => {
+    setState((prev) => stateAfterOpenEditor(prev, file, fileTitle(file.path)));
+  }, []);
+
+  // Consume an open-editor request, mirroring the open-diff flow above.
+  useEffect(() => {
+    if (!openFileEditor) return;
+    openEditor(openFileEditor);
+    onFileEditorOpened?.();
+  }, [openFileEditor, openEditor, onFileEditorOpened]);
+
   // Open a setup-log tab for a workspace repo, or re-focus the tab already
   // showing it (a repo has a single setup log, so dedupe on its id).
   const openSetup = useCallback((req: OpenSetupLog) => {
@@ -390,7 +447,14 @@ export default function TerminalTabs({
     async (tabId: string) => {
       const tab = state.tabs.find((t) => t.id === tabId);
       if (!tab) return;
-      // Diff tabs own no PTY, so they close with no busy check or kill.
+      // An editor tab's buffer belongs to the surface's owner and closing the tab
+      // is what drops it, so this is the last chance to keep the edits.
+      if (tab.kind === "editor" && dirtyTabIds.has(tabId)) {
+        const ok = window.confirm(`“${tab.title}” has unsaved changes. Close it and lose them?`);
+        if (!ok) return;
+        onDiscardEditor?.({ repoId: tab.repoId, path: tab.path });
+      }
+      // Only terminal tabs own PTYs; the rest close with no busy check or kill.
       const leafIds = tab.kind === "terminal" ? allLeafIds(tab.root) : [];
       // Heuristic: any pane busy → confirm. The user opted into "confirm if a
       // process is running"; idle shells close silently.
@@ -409,7 +473,7 @@ export default function TerminalTabs({
       );
       setState((prev) => stateAfterCloseTab(prev, tabId, initialTab, firstPinnedKey));
     },
-    [state.tabs, storageKey, initialTab, firstPinnedKey],
+    [state.tabs, storageKey, initialTab, firstPinnedKey, dirtyTabIds, onDiscardEditor],
   );
 
   const splitFocused = useCallback(
@@ -525,6 +589,7 @@ export default function TerminalTabs({
         pinnedTabs={pinnedTabs}
         activeId={state.activeTabId}
         flaggedTabIds={flaggedTabIds}
+        dirtyTabIds={dirtyTabIds}
         onSelect={selectTab}
         onSelectPinned={selectPinned}
         onClose={(id) => void closeTab(id)}
@@ -542,6 +607,8 @@ export default function TerminalTabs({
           />
         ) : activeTab?.kind === "diff" ? (
           (renderFileDiff?.({ repoId: activeTab.repoId, path: activeTab.path }) ?? null)
+        ) : activeTab?.kind === "editor" ? (
+          (renderFileEditor?.({ repoId: activeTab.repoId, path: activeTab.path }) ?? null)
         ) : activeTab?.kind === "setup" ? (
           (renderSetupLog?.({ workspaceRepoId: activeTab.workspaceRepoId }) ?? null)
         ) : activeTab ? (
@@ -572,6 +639,7 @@ function TabStrip({
   pinnedTabs,
   activeId,
   flaggedTabIds,
+  dirtyTabIds,
   onSelect,
   onSelectPinned,
   onClose,
@@ -584,6 +652,8 @@ function TabStrip({
   activeId: string;
   /** Tabs with a pending attention item, marked with a dot in the strip. */
   flaggedTabIds: ReadonlySet<string>;
+  /** Editor tabs holding unsaved edits, marked with a dot of their own. */
+  dirtyTabIds: ReadonlySet<string>;
   onSelect: (id: string) => void;
   onSelectPinned: (key: string) => void;
   onClose: (id: string) => void;
@@ -690,6 +760,7 @@ function TabStrip({
         {tabs.map((t) => {
           const active = t.id === activeId;
           const flagged = flaggedTabIds.has(t.id);
+          const dirty = dirtyTabIds.has(t.id);
           const dragging = drag?.dragId === t.id;
           const isOver = drag?.overId === t.id && drag.dragId !== t.id;
           const showBefore = isOver && drag?.side === "before";
@@ -727,10 +798,26 @@ function TabStrip({
                 type="button"
                 onClick={() => onSelect(t.id)}
                 className="flex max-w-40 items-center gap-1 truncate"
-                title={t.kind === "diff" ? t.path : flagged ? `${t.title} — needs you` : t.title}
+                title={
+                  t.kind === "diff" || t.kind === "editor"
+                    ? t.path
+                    : flagged
+                      ? `${t.title} — needs you`
+                      : t.title
+                }
               >
                 {flagged && <span className="text-amber-400">●</span>}
                 {t.kind === "diff" && <span className="text-sky-400">±</span>}
+                {/* One glyph either way, coloured when unsaved: an amber dot
+                    here would read as the attention marker above. */}
+                {t.kind === "editor" && (
+                  <span
+                    className={dirty ? "text-amber-400" : "text-zinc-500"}
+                    title={dirty ? "Unsaved changes" : undefined}
+                  >
+                    ✎
+                  </span>
+                )}
                 {t.kind === "setup" && <span className="text-red-400">⚠</span>}
                 {t.title}
               </button>

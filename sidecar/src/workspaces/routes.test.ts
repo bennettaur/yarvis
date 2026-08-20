@@ -309,6 +309,83 @@ describe("workspace routes", () => {
     expect(await res.json()).toBeNull();
   });
 
+  it("reads a file from a worktree, and writes an edit back", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "editing", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    const detail = await getWorkspace(db, ws.id);
+    const wr = detail?.repos[0];
+    writeFileSync(join(wr?.worktreePath ?? "", "a.ts"), "const a = 1;\n");
+
+    const read = await app.request(`/api/workspaces/${ws.id}/repos/${wr?.id}/file?path=a.ts`, {
+      headers: auth,
+    });
+    expect(read.status).toBe(200);
+    const file = (await read.json()) as { content: string; hash: string; unreadable: null };
+    expect(file.content).toBe("const a = 1;\n");
+
+    const saved = await app.request(`/api/workspaces/${ws.id}/repos/${wr?.id}/file`, {
+      method: "PUT",
+      headers: jsonAuth,
+      body: JSON.stringify({ path: "a.ts", content: "const a = 2;\n", expectedHash: file.hash }),
+    });
+    expect(saved.status).toBe(200);
+    expect(readFileSync(join(wr?.worktreePath ?? "", "a.ts"), "utf-8")).toBe("const a = 2;\n");
+  });
+
+  it("refuses a save whose base is no longer what is on disk", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "conflict", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    const detail = await getWorkspace(db, ws.id);
+    const wr = detail?.repos[0];
+    const path = join(wr?.worktreePath ?? "", "a.ts");
+    writeFileSync(path, "const a = 1;\n");
+    const read = await app.request(`/api/workspaces/${ws.id}/repos/${wr?.id}/file?path=a.ts`, {
+      headers: auth,
+    });
+    const { hash } = (await read.json()) as { hash: string };
+    // The agent working in this worktree gets there first.
+    writeFileSync(path, "const a = 3;\n");
+
+    const saved = await app.request(`/api/workspaces/${ws.id}/repos/${wr?.id}/file`, {
+      method: "PUT",
+      headers: jsonAuth,
+      body: JSON.stringify({ path: "a.ts", content: "const a = 2;\n", expectedHash: hash }),
+    });
+
+    expect(saved.status).toBe(409);
+    expect(readFileSync(path, "utf-8")).toBe("const a = 3;\n");
+  });
+
+  it("refuses a file path that leaves the worktree", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "traversal", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    const detail = await getWorkspace(db, ws.id);
+    const wr = detail?.repos[0];
+
+    const read = await app.request(
+      `/api/workspaces/${ws.id}/repos/${wr?.id}/file?path=${encodeURIComponent("../../etc/hosts")}`,
+      { headers: auth },
+    );
+    expect(read.status).toBe(400);
+
+    const saved = await app.request(`/api/workspaces/${ws.id}/repos/${wr?.id}/file`, {
+      method: "PUT",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        path: "../escape.txt",
+        content: "x",
+        expectedHash: "0".repeat(64),
+      }),
+    });
+    expect(saved.status).toBe(400);
+  });
+
   it("returns 404 for files of an unknown workspace repo", async () => {
     const res = await app.request(
       "/api/workspaces/x/repos/00000000-0000-0000-0000-000000000000/files",

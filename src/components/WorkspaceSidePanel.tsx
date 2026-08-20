@@ -35,11 +35,14 @@ export default function WorkspaceSidePanel({
   workspaceId,
   repos,
   onOpenFile,
+  onEditFile,
 }: {
   workspaceId: string;
   repos: WorkspaceRepoDetail[];
   /** Open a changed file's diff in a tab (the repo it belongs to, and its path). */
   onOpenFile: (repoId: string, path: string) => void;
+  /** Open a file in an editor tab, for the same repo/path pair. */
+  onEditFile: (repoId: string, path: string) => void;
 }) {
   const [repoId, setRepoId] = useState(repos[0]?.id ?? "");
   const [view, setView] = useState<View>("changes");
@@ -87,12 +90,19 @@ export default function WorkspaceSidePanel({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
-        {view === "files" && <FilesView workspaceId={workspaceId} repoId={repo.id} />}
+        {view === "files" && (
+          <FilesView
+            workspaceId={workspaceId}
+            repoId={repo.id}
+            onEditFile={(path) => onEditFile(repo.id, path)}
+          />
+        )}
         {view === "changes" && (
           <ChangesView
             workspaceId={workspaceId}
             repoId={repo.id}
             onOpenFile={(path) => onOpenFile(repo.id, path)}
+            onEditFile={(path) => onEditFile(repo.id, path)}
           />
         )}
         {view === "comments" && (
@@ -198,7 +208,15 @@ const sameChangedFiles = (prev: ChangedFile[] | null, next: ChangedFile[]): bool
   return true;
 };
 
-function FilesView({ workspaceId, repoId }: { workspaceId: string; repoId: string }) {
+function FilesView({
+  workspaceId,
+  repoId,
+  onEditFile,
+}: {
+  workspaceId: string;
+  repoId: string;
+  onEditFile: (path: string) => void;
+}) {
   const { data, error } = usePolledRepoList(
     workspaceId,
     repoId,
@@ -218,13 +236,15 @@ function FilesView({ workspaceId, repoId }: { workspaceId: string; repoId: strin
       <FileTreeRows
         nodes={tree}
         renderFile={(node, depth) => (
-          <div
-            className="truncate px-2 py-0.5"
+          <button
+            type="button"
+            onClick={() => onEditFile(node.path)}
+            title={`Edit ${node.path}`}
+            className="w-full truncate rounded px-2 py-0.5 text-left hover:bg-zinc-800/60"
             style={{ paddingLeft: treeRowPaddingLeft(depth) }}
-            title={node.path}
           >
             {node.name}
-          </div>
+          </button>
         )}
       />
     </ul>
@@ -243,10 +263,12 @@ function ChangesView({
   workspaceId,
   repoId,
   onOpenFile,
+  onEditFile,
 }: {
   workspaceId: string;
   repoId: string;
   onOpenFile: (path: string) => void;
+  onEditFile: (path: string) => void;
 }) {
   const { data, error } = usePolledRepoList(
     workspaceId,
@@ -268,27 +290,46 @@ function ChangesView({
         renderFile={(node, depth) => {
           const file = node.file;
           return (
-            <button
-              type="button"
-              onClick={() => onOpenFile(file.path)}
-              title={`Open diff for ${file.path}`}
-              className="flex w-full items-center gap-2 rounded px-2 py-0.5 text-left hover:bg-zinc-800/60"
+            <div
+              className="group/row flex items-center rounded hover:bg-zinc-800/60"
               style={{ paddingLeft: treeRowPaddingLeft(depth) }}
             >
-              <span
-                className={`shrink-0 ${CHANGE_COLORS[file.status] ?? "text-zinc-400"}`}
-                title={file.status}
+              <button
+                type="button"
+                onClick={() => onOpenFile(file.path)}
+                title={`Open diff for ${file.path}`}
+                className="flex min-w-0 flex-1 items-center gap-2 px-2 py-0.5 text-left"
               >
-                {file.status[0]?.toUpperCase()}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-zinc-400">{node.name}</span>
-              {(file.additions > 0 || file.deletions > 0) && (
-                <span className="shrink-0 text-zinc-500">
-                  <span className="text-emerald-400">+{file.additions}</span>{" "}
-                  <span className="text-red-400">−{file.deletions}</span>
+                <span
+                  className={`shrink-0 ${CHANGE_COLORS[file.status] ?? "text-zinc-400"}`}
+                  title={file.status}
+                >
+                  {file.status[0]?.toUpperCase()}
                 </span>
+                <span className="min-w-0 flex-1 truncate text-zinc-400">{node.name}</span>
+                {(file.additions > 0 || file.deletions > 0) && (
+                  <span className="shrink-0 text-zinc-500">
+                    <span className="text-emerald-400">+{file.additions}</span>{" "}
+                    <span className="text-red-400">−{file.deletions}</span>
+                  </span>
+                )}
+              </button>
+              {/* Kept beside the diff rather than replacing it: the reason to
+                  open a changed file is usually to read what changed. Shown on
+                  focus as well as hover, or it is a control a keyboard reaches
+                  but cannot see. A deleted file has nothing to open. */}
+              {file.status !== "deleted" && (
+                <button
+                  type="button"
+                  onClick={() => onEditFile(file.path)}
+                  title={`Edit ${file.path}`}
+                  aria-label={`Edit ${file.path}`}
+                  className="shrink-0 px-2 py-0.5 text-zinc-600 opacity-0 hover:text-zinc-200 focus-visible:opacity-100 group-hover/row:opacity-100"
+                >
+                  ✎
+                </button>
               )}
-            </button>
+            </div>
           );
         }}
       />

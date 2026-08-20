@@ -63,9 +63,17 @@ afterEach(() => {
   unmount = null;
 });
 
-const mount = async (onOpenFile: (repoId: string, path: string) => void = () => {}) => {
+const mount = async (
+  onOpenFile: (repoId: string, path: string) => void = () => {},
+  onEditFile: (repoId: string, path: string) => void = () => {},
+) => {
   const mounted = await mountForInteraction(
-    <WorkspaceSidePanel workspaceId="ws-1" repos={[REPO]} onOpenFile={onOpenFile} />,
+    <WorkspaceSidePanel
+      workspaceId="ws-1"
+      repos={[REPO]}
+      onOpenFile={onOpenFile}
+      onEditFile={onEditFile}
+    />,
   );
   unmount = mounted.unmount;
   return mounted.host;
@@ -107,8 +115,29 @@ describe("WorkspaceSidePanel", () => {
     const host = await mount();
     await clickTab(host, "All files");
     expect(folderNames(host)).toEqual(["src/components"]);
-    expect(host.querySelector('details ul [title="src/components/b.tsx"]')).not.toBeNull();
+    expect(host.querySelector('details ul [title="Edit src/components/b.tsx"]')).not.toBeNull();
     expect(host.innerHTML).not.toContain(">src/components/b.tsx<");
+  });
+
+  it("opens a tracked file in the editor from the all-files view", async () => {
+    const edited: string[] = [];
+    const host = await mount(
+      () => {},
+      (_repoId, path) => edited.push(path),
+    );
+    await clickTab(host, "All files");
+    host.querySelector<HTMLButtonElement>('[title="Edit src/components/b.tsx"]')?.click();
+    expect(edited).toEqual(["src/components/b.tsx"]);
+  });
+
+  it("offers an editor beside a changed file's diff", async () => {
+    const edited: string[] = [];
+    const host = await mount(
+      () => {},
+      (_repoId, path) => edited.push(path),
+    );
+    host.querySelector<HTMLButtonElement>('[title="Edit src/components/a.tsx"]')?.click();
+    expect(edited).toEqual(["src/components/a.tsx"]);
   });
 
   it("keeps the empty states of both views", async () => {
