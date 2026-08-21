@@ -29,7 +29,7 @@ const auth = { Authorization: "Bearer test-token" };
 const jsonAuth = { ...auth, "Content-Type": "application/json" };
 
 beforeEach(async () => {
-  await sql`TRUNCATE tasks, chat_messages, chat_sessions, custom_providers RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE tasks, chat_messages, chat_sessions, custom_providers, provider_models RESTART IDENTITY CASCADE`;
 });
 
 afterAll(async () => {
@@ -63,13 +63,33 @@ describe("chat routes", () => {
     const providers = (await res.json()) as {
       id: string;
       label: string;
-      models: string[];
+      models: { id: string; capabilities: string[] }[];
       custom?: boolean;
     }[];
     const custom = providers.find((p) => p.id === `custom:${row.id}`);
     expect(custom?.label).toBe("litellm");
-    expect(custom?.models).toEqual(["gpt-4o"]);
+    expect(custom?.models).toEqual([{ id: "gpt-4o", capabilities: ["chat"] }]);
     expect(custom?.custom).toBe(true);
+  });
+
+  it("offers only chat models by default and the named capability on request", async () => {
+    const chat = await app.request("/api/chat/providers", { headers: auth });
+    const gemini = ((await chat.json()) as { id: string; models: { id: string }[] }[]).find(
+      (p) => p.id === "gemini",
+    );
+    expect(gemini?.models.every((m) => !m.id.endsWith("-tts"))).toBe(true);
+
+    const tts = await app.request("/api/chat/providers?capability=tts", { headers: auth });
+    const geminiTts = ((await tts.json()) as { id: string; models: { id: string }[] }[]).find(
+      (p) => p.id === "gemini",
+    );
+    expect(geminiTts?.models.length).toBeGreaterThan(0);
+    expect(geminiTts?.models.every((m) => m.id.endsWith("-tts"))).toBe(true);
+  });
+
+  it("rejects an unknown capability", async () => {
+    const res = await app.request("/api/chat/providers?capability=telepathy", { headers: auth });
+    expect(res.status).toBe(400);
   });
 
   it("accepts a custom provider id in chat requests (schema-level)", async () => {

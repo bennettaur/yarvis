@@ -4,6 +4,12 @@ import type { Config } from "../config.ts";
 import { createCustomProvider } from "../customProviders/service.ts";
 import { getDb } from "../db/client.ts";
 import {
+  DEFAULT_MODELS,
+  listProviderModels,
+  resetProviderModels,
+  saveProviderModel,
+} from "./catalog.ts";
+import {
   availableProviders,
   CUSTOM_PROVIDER_PREFIX,
   defaultProviderModel,
@@ -34,6 +40,7 @@ function configWithSecrets(secrets: Config["customProviderSecrets"] = {}): Confi
 
 beforeEach(async () => {
   await sql`TRUNCATE custom_providers RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE provider_models RESTART IDENTITY CASCADE`;
 });
 
 afterAll(async () => {
@@ -71,7 +78,10 @@ describe("availableProviders", () => {
     const providers = await availableProviders(configWithSecrets(), db);
     const custom = providers.find((p) => p.id === `${CUSTOM_PROVIDER_PREFIX}${row.id}`);
     expect(custom?.label).toBe("litellm");
-    expect(custom?.models).toEqual(["gpt-4o", "claude-via-proxy"]);
+    expect(custom?.models).toEqual([
+      { id: "gpt-4o", capabilities: ["chat"] },
+      { id: "claude-via-proxy", capabilities: ["chat"] },
+    ]);
     expect(custom?.custom).toBe(true);
     expect(custom?.available).toBe(true);
   });
@@ -88,6 +98,87 @@ describe("availableProviders", () => {
     expect(providers.find((p) => p.id === `${CUSTOM_PROVIDER_PREFIX}${row.id}`)?.available).toBe(
       false,
     );
+  });
+});
+
+describe("the model catalogue", () => {
+  it("tags the bundled Gemini models so a TTS model is not a chat choice", async () => {
+    const providers = await availableProviders(configWithSecrets());
+    const gemini = providers.find((p) => p.id === "gemini");
+    const tts = gemini?.models.filter((m) => m.capabilities.includes("tts")) ?? [];
+    expect(tts.length).toBeGreaterThan(0);
+    expect(tts.every((m) => !m.capabilities.includes("chat"))).toBe(true);
+  });
+
+  it("narrows every provider to the requested capability", async () => {
+    const chatOnly = await availableProviders(configWithSecrets(), db, "chat");
+    const gemini = chatOnly.find((p) => p.id === "gemini");
+    expect(gemini?.models.length).toBeGreaterThan(0);
+    expect(gemini?.models.every((m) => m.capabilities.includes("chat"))).toBe(true);
+  });
+
+  it("lets configured rows replace a provider's bundled models", async () => {
+    await saveProviderModel(db, {
+      providerId: "gemini",
+      modelId: "gemini-9-flash",
+      capabilities: ["chat"],
+    });
+    const providers = await availableProviders(configWithSecrets(), db);
+    expect(providers.find((p) => p.id === "gemini")?.models).toEqual([
+      { id: "gemini-9-flash", capabilities: ["chat"] },
+    ]);
+  });
+
+  it("hides a disabled model without forgetting its tags", async () => {
+    await saveProviderModel(db, {
+      providerId: "gemini",
+      modelId: "gemini-9-flash",
+      capabilities: ["chat"],
+    });
+    await saveProviderModel(db, {
+      providerId: "gemini",
+      modelId: "gemini-9-flash-tts",
+      capabilities: ["tts"],
+      enabled: false,
+    });
+    const providers = await availableProviders(configWithSecrets(), db);
+    expect(providers.find((p) => p.id === "gemini")?.models.map((m) => m.id)).toEqual([
+      "gemini-9-flash",
+    ]);
+    expect((await listProviderModels(db)).length).toBe(2);
+  });
+
+  it("returns a provider to its defaults once its rows are cleared", async () => {
+    await saveProviderModel(db, {
+      providerId: "gemini",
+      modelId: "gemini-9-flash",
+      capabilities: ["chat"],
+    });
+    await resetProviderModels(db, "gemini");
+    const providers = await availableProviders(configWithSecrets(), db);
+    expect(providers.find((p) => p.id === "gemini")?.models.map((m) => m.id)).toEqual(
+      DEFAULT_MODELS.gemini!.map((m) => m.id),
+    );
+  });
+
+  it("never picks a speech model as the chat default", async () => {
+    await saveProviderModel(db, {
+      providerId: "gemini",
+      modelId: "gemini-9-flash-tts",
+      capabilities: ["tts"],
+      sortOrder: 0,
+    });
+    await saveProviderModel(db, {
+      providerId: "gemini",
+      modelId: "gemini-9-flash",
+      capabilities: ["chat"],
+      sortOrder: 1,
+    });
+    const config: Config = { ...configWithSecrets(), secrets: { geminiApiKey: "x" } };
+    expect(await defaultProviderModel(config, db)).toEqual({
+      provider: "gemini",
+      model: "gemini-9-flash",
+    });
   });
 });
 

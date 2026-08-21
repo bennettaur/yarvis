@@ -128,10 +128,19 @@ back to ad-hoc.
   the tools in `codeTools.ts` are written once and GitHub/Azure each supply an
   implementation. A capability one provider lacks resolves to `null` so the
   caller can say so, rather than throwing.
+- What models a provider offers is data, not code: `llm/catalog.ts` holds the
+  bundled defaults and the capability tags (`chat`, `stt`, `tts`, `vision`,
+  `embed`), and rows in `provider_models` take a provider's catalogue over the
+  moment the user saves one. Surfaces ask for the capability they need rather
+  than filtering names — `availableProviders(config, db, "chat")` — so a
+  text-to-speech model can be listed without becoming something to think with.
+  A new provider adds its defaults there, not a fresh array beside them.
 - Speech backends sit behind the `SpeechClient` interface in
   `sidecar/src/voice/speech.ts`, resolved by `voice/providers.ts` the same way
   `llm/providers.ts` resolves chat models — built-ins keep a bare id, user
-  providers keep the `custom:<id>` namespace.
+  providers keep the `custom:<id>` namespace. Gemini is the odd one: it has no
+  audio endpoints, so `GeminiSpeech` drives both halves through
+  `generateContent` and wraps the headerless PCM it gets back in a WAV header.
 - Voice is a capability of the chat surfaces, not a surface of its own:
   `src/lib/useVoice.ts` wraps speech around a thread the caller already owns,
   taking that surface's `send` and watching the reply text it is already

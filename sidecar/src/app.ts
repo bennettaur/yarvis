@@ -15,6 +15,7 @@ import { createCalendarRoutes, createGoogleCallbackRoutes } from "./google/route
 import { createIssueRoutes } from "./issues/routes.ts";
 import { createJiraRoutes } from "./jira/routes.ts";
 import { redactSecrets } from "./llm/errors.ts";
+import { createModelCatalogRoutes } from "./llm/routes.ts";
 import { createMcpOAuthCallbackRoutes } from "./mcp/callbackRoutes.ts";
 import { createMcpRoutes } from "./mcp/routes.ts";
 import { createMcpEndpointInfoRoutes, createMcpEndpointRoutes } from "./mcpServer/routes.ts";
@@ -125,6 +126,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/chat", createChatRoutes(config));
   app.route("/api/clipboard", createClipboardRoutes(config));
   app.route("/api/custom-providers", createCustomProviderRoutes(config));
+  app.route("/api/model-catalog", createModelCatalogRoutes(config));
   app.route("/api/mcp", createMcpRoutes(config));
   app.route("/api/mcp-endpoint", createMcpEndpointInfoRoutes(config));
   app.route("/api/cc", createCcRoutes());

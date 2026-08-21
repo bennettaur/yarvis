@@ -187,7 +187,7 @@ export function createPrRoutes(config: Config): Hono {
     providerId?: string,
     modelId?: string,
   ): Promise<{ model: Awaited<ReturnType<typeof resolveModel>> } | { error: string }> => {
-    const fallback = pickDefaultModel(await availableProviders(config, dbh));
+    const fallback = pickDefaultModel(await availableProviders(config, dbh, "chat"));
     const provider = providerId ?? fallback?.provider;
     const model = modelId ?? fallback?.model;
     if (!provider || !model) return { error: "no LLM provider is configured" };
