@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { execFileSync } from "node:child_process";
 import {
   linkSync,
   mkdirSync,
@@ -133,6 +134,13 @@ describe("readWorktreeFile", () => {
 
   it("404s on a missing file", () => {
     expect(statusOf(() => readWorktreeFile(worktree, "src/missing.ts"))).toBe(404);
+  });
+
+  it("refuses a named pipe rather than blocking on it", () => {
+    // Opening a FIFO for reading waits for a writer, which would wedge the
+    // request; the open is non-blocking and the descriptor is then rejected.
+    execFileSync("mkfifo", [join(worktree, "pipe")]);
+    expect(statusOf(() => readWorktreeFile(worktree, "pipe"))).toBe(400);
   });
 
   it("400s on a directory", () => {

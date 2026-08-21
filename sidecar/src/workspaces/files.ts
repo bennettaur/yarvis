@@ -7,15 +7,13 @@
 import { createHash } from "node:crypto";
 import {
   closeSync,
+  constants,
   existsSync,
   fstatSync,
   ftruncateSync,
   openSync,
-  readFileSync,
   readSync,
   realpathSync,
-  type Stats,
-  statSync,
   writeSync,
 } from "node:fs";
 import { isAbsolute, resolve, sep } from "node:path";
@@ -120,6 +118,23 @@ export function resolveInWorktree(worktreePath: string, path: string): string {
   return target;
 }
 
+/**
+ * Opens a path already resolved by `resolveInWorktree`, without following it
+ * anywhere new — the descriptor is what every later check reads, so nothing can
+ * be substituted after the path was vetted.
+ *
+ * `O_NONBLOCK` because a named pipe left in the worktree would otherwise hang
+ * the open until someone writes to it, wedging the request. It is a no-op for
+ * the regular files this is for, and `fstat` refuses anything else.
+ */
+function openInWorktree(full: string, flags: number): number {
+  try {
+    return openSync(full, flags | constants.O_NONBLOCK);
+  } catch {
+    throw new WorktreeFileError("file not found", 404);
+  }
+}
+
 const sha256 = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 
 const isBinary = (bytes: Buffer): boolean => bytes.subarray(0, BINARY_SNIFF_BYTES).includes(0x00);
@@ -129,45 +144,46 @@ const isBinary = (bytes: Buffer): boolean => bytes.subarray(0, BINARY_SNIFF_BYTE
  *  holding. */
 export function readWorktreeFile(worktreePath: string, path: string): WorktreeFile {
   const full = resolveInWorktree(worktreePath, path);
-  let stat: Stats;
+  const fd = openInWorktree(full, constants.O_RDONLY);
   try {
-    stat = statSync(full);
-  } catch {
-    throw new WorktreeFileError("file not found", 404);
+    // Everything is decided from the descriptor, never from a second lookup by
+    // path: `statSync` followed by `readFileSync` lets the leaf be swapped in
+    // between, which is how a size cap gets bypassed and how a read ends up
+    // following a symlink out of the worktree the path was checked against.
+    const stat = fstatSync(fd);
+    if (stat.isDirectory()) throw new WorktreeFileError("path is a directory", 400);
+    if (!stat.isFile()) throw new WorktreeFileError("path is not a regular file", 400);
+
+    if (stat.size > MAX_FILE_BYTES) {
+      // Reading an oversized file is the cost the cap exists to avoid, and
+      // nothing can be saved back over it, so no hash is owed.
+      return { path, content: null, unreadable: "too-large", hash: null, size: stat.size };
+    }
+
+    const bytes = Buffer.alloc(stat.size);
+    const read = readSync(fd, bytes, 0, stat.size, 0);
+    if (read !== stat.size) throw new WorktreeFileError("file could not be read in full", 400);
+
+    const hash = sha256(bytes);
+    const described = (unreadable: FileUnreadable): WorktreeFile => ({
+      path,
+      content: null,
+      unreadable,
+      hash,
+      size: bytes.length,
+    });
+    if (isBinary(bytes)) return described("binary");
+
+    // Decoding is lossy for anything that isn't UTF-8 — a Latin-1 byte becomes
+    // U+FFFD, and saving would write that replacement back over every such byte
+    // in the file. Re-encoding is how we tell an exact round-trip from a lossy one.
+    const content = bytes.toString("utf8");
+    if (!Buffer.from(content, "utf8").equals(bytes)) return described("encoding");
+
+    return { path, content, unreadable: null, hash, size: bytes.length };
+  } finally {
+    closeSync(fd);
   }
-  if (stat.isDirectory()) throw new WorktreeFileError("path is a directory", 400);
-  if (!stat.isFile()) throw new WorktreeFileError("path is not a regular file", 400);
-
-  if (stat.size > MAX_FILE_BYTES) {
-    // Hashing an oversized file would mean reading all of it — the cost the cap
-    // exists to avoid. Nothing can be saved back over it, so no hash is owed.
-    return { path, content: null, unreadable: "too-large", hash: null, size: stat.size };
-  }
-
-  let bytes: Buffer;
-  try {
-    bytes = readFileSync(full);
-  } catch {
-    // Deliberately not the underlying message: it carries the absolute path.
-    throw new WorktreeFileError("file could not be read", 400);
-  }
-  const hash = sha256(bytes);
-  const described = (unreadable: FileUnreadable): WorktreeFile => ({
-    path,
-    content: null,
-    unreadable,
-    hash,
-    size: bytes.length,
-  });
-  if (isBinary(bytes)) return described("binary");
-
-  // Decoding is lossy for anything that isn't UTF-8 — a Latin-1 byte becomes
-  // U+FFFD, and saving would write that replacement back over every such byte in
-  // the file. Re-encoding is how we tell an exact round-trip from a lossy one.
-  const content = bytes.toString("utf8");
-  if (!Buffer.from(content, "utf8").equals(bytes)) return described("encoding");
-
-  return { path, content, unreadable: null, hash, size: bytes.length };
 }
 
 /**
@@ -199,13 +215,8 @@ export function writeWorktreeFile(
     throw new WorktreeFileError("file is too large to save", 400);
   }
 
-  let fd: number;
-  try {
-    fd = openSync(full, "r+");
-  } catch {
-    // "r+" never creates: a missing file is a missing file, not a new one.
-    throw new WorktreeFileError("file not found", 404);
-  }
+  // O_RDWR without O_CREAT: a missing file is a missing file, not a new one.
+  const fd = openInWorktree(full, constants.O_RDWR);
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile()) throw new WorktreeFileError("path is not a regular file", 400);
