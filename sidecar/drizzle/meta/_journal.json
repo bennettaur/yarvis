@@ -169,6 +169,13 @@
       "when": 1786511212073,
       "tag": "0023_good_mister_sinister",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1786985502398,
+      "tag": "0024_jittery_justin_hammer",
+      "breakpoints": true
     }
   ]
 }

@@ -235,6 +235,7 @@ function FilesView({
     <ul className="space-y-0.5 font-mono text-xs text-zinc-400">
       <FileTreeRows
         nodes={tree}
+        defaultOpen={false}
         renderFile={(node, depth) => (
           <button
             type="button"

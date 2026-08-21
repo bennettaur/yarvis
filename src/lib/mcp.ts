@@ -1,13 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
-import { sidecarFetch } from "./api";
+import { ensureOk, sidecarFetch } from "./api";
 
 /**
  * Two sides of MCP. Most of this file is the client: the servers Yarvis connects
  * out to, plus the unified tool registry. It mirrors the custom-providers split
  * — structural data goes through the sidecar HTTP API (Postgres-backed), while
  * credential values (HTTP auth headers, stdio env vars) are managed via Tauri
- * commands and live in the macOS Keychain. The last section is the other side:
- * where outside clients connect to the endpoint Yarvis itself serves.
+ * commands and live in the macOS Keychain. OAuth is the exception on both
+ * counts: the sidecar drives the flow and writes the resulting tokens to the
+ * Keychain itself, so the frontend only starts it and opens the browser. The
+ * last section is the other side: where outside clients connect to the endpoint
+ * Yarvis itself serves.
  */
 
 export type McpTransport = "http" | "stdio";
@@ -23,6 +26,8 @@ export interface McpServer {
   command: string | null;
   args: string[];
   headerNames: string[];
+  oauth: boolean;
+  oauthScope: string | null;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -35,6 +40,8 @@ export interface McpServerInput {
   command?: string | null;
   args?: string[];
   headerNames?: string[];
+  oauth?: boolean;
+  oauthScope?: string | null;
   enabled?: boolean;
 }
 
@@ -67,11 +74,22 @@ export interface RefreshResult {
   connected: boolean;
   toolCount: number;
   error?: string;
+  /** The server answered 401 and needs the user to authorize at the URL below. */
+  needsAuthorization?: boolean;
+  authorizationUrl?: string;
+}
+
+/** How far through the OAuth flow a server is. Null when it doesn't use OAuth. */
+export interface McpOAuthStatus {
+  registered: boolean;
+  authorized: boolean;
+  scope: string | null;
 }
 
 export interface ServerStatus {
   connected: boolean;
   toolCount: number;
+  oauth: McpOAuthStatus | null;
 }
 
 export type McpSecretSlot = `header:${string}` | `env:${string}`;
@@ -88,7 +106,7 @@ export interface McpSecretStatus {
 
 export async function listMcpServers(): Promise<McpServer[]> {
   const res = await sidecarFetch("/api/mcp/servers");
-  if (!res.ok) throw new Error(`list mcp servers failed: ${res.status}`);
+  await ensureOk(res, "list mcp servers");
   return res.json();
 }
 
@@ -98,7 +116,7 @@ export async function createMcpServer(input: McpServerInput): Promise<McpServer>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
-  if (!res.ok) throw new Error(`create mcp server failed: ${res.status}`);
+  await ensureOk(res, "create mcp server");
   return res.json();
 }
 
@@ -108,32 +126,47 @@ export async function updateMcpServer(id: string, patch: McpServerUpdate): Promi
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   });
-  if (!res.ok) throw new Error(`update mcp server failed: ${res.status}`);
+  await ensureOk(res, "update mcp server");
   return res.json();
 }
 
 export async function deleteMcpServer(id: string): Promise<void> {
   const res = await sidecarFetch(`/api/mcp/servers/${id}`, { method: "DELETE" });
-  if (!res.ok && res.status !== 204) {
-    throw new Error(`delete mcp server failed: ${res.status}`);
-  }
+  if (res.status !== 204) await ensureOk(res, "delete mcp server");
 }
 
 export async function refreshMcpServer(id: string): Promise<RefreshResult> {
   const res = await sidecarFetch(`/api/mcp/servers/${id}/refresh`, { method: "POST" });
-  if (!res.ok) throw new Error(`refresh mcp server failed: ${res.status}`);
+  await ensureOk(res, "refresh mcp server");
   return res.json();
 }
 
 export async function getMcpServerStatus(id: string): Promise<ServerStatus> {
   const res = await sidecarFetch(`/api/mcp/servers/${id}/status`);
-  if (!res.ok) throw new Error(`mcp server status failed: ${res.status}`);
+  await ensureOk(res, "mcp server status");
   return res.json();
+}
+
+/**
+ * Starts the MCP authorization flow and returns the URL the user must open in a
+ * browser. Safe to call again for a flow already in progress — the same URL
+ * comes back, since the PKCE verifier behind it is only valid for that one.
+ */
+export async function authorizeMcpServer(id: string): Promise<{ authorizationUrl: string }> {
+  const res = await sidecarFetch(`/api/mcp/servers/${id}/authorize`, { method: "POST" });
+  await ensureOk(res, "authorize mcp server");
+  return res.json();
+}
+
+/** Forgets a server's OAuth tokens and client registration. */
+export async function disconnectMcpOAuth(id: string): Promise<void> {
+  const res = await sidecarFetch(`/api/mcp/servers/${id}/oauth/disconnect`, { method: "POST" });
+  await ensureOk(res, "disconnect mcp oauth");
 }
 
 export async function listAgentTools(): Promise<RegistryTool[]> {
   const res = await sidecarFetch("/api/mcp/tools");
-  if (!res.ok) throw new Error(`list agent tools failed: ${res.status}`);
+  await ensureOk(res, "list agent tools");
   return res.json();
 }
 
@@ -143,7 +176,7 @@ export async function setToolPolicy(id: string, policy: ToolPolicy): Promise<Reg
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ policy }),
   });
-  if (!res.ok) throw new Error(`set tool policy failed: ${res.status}`);
+  await ensureOk(res, "set tool policy");
   return res.json();
 }
 
@@ -153,7 +186,7 @@ export async function searchTools(query: string, limit?: number): Promise<ToolSe
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, limit }),
   });
-  if (!res.ok) throw new Error(`tool search failed: ${res.status}`);
+  await ensureOk(res, "tool search");
   return res.json();
 }
 
@@ -172,7 +205,7 @@ export interface McpEndpoint {
  */
 export async function getMcpEndpoint(): Promise<McpEndpoint> {
   const res = await sidecarFetch("/api/mcp-endpoint/connection");
-  if (!res.ok) throw new Error(`mcp endpoint failed: ${res.status}`);
+  await ensureOk(res, "mcp endpoint");
   return res.json();
 }
 

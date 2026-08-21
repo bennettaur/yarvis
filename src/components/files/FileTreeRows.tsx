@@ -20,25 +20,33 @@ export function treeRowPaddingLeft(depth: number): number {
  * children. The caller owns the enclosing `<ul>` and renders each file row
  * itself through `renderFile`, indenting it with `treeRowPaddingLeft`. Sharing
  * this keeps a PR's changed files and a workspace's file lists on one layout.
+ *
+ * `defaultOpen` starts every folder expanded, which suits a short list of
+ * changed files. A whole worktree is far too much to unfold at once, so those
+ * callers pass `false` and let the reader open what they need.
  */
 export default function FileTreeRows<T>({
   nodes,
   renderFile,
+  defaultOpen = true,
 }: {
   nodes: FileTreeNode<T>[];
   renderFile: (node: FileTreeFile<T>, depth: number) => ReactNode;
+  defaultOpen?: boolean;
 }) {
-  return <Rows nodes={nodes} renderFile={renderFile} depth={0} />;
+  return <Rows nodes={nodes} renderFile={renderFile} depth={0} defaultOpen={defaultOpen} />;
 }
 
 function Rows<T>({
   nodes,
   renderFile,
   depth,
+  defaultOpen,
 }: {
   nodes: FileTreeNode<T>[];
   renderFile: (node: FileTreeFile<T>, depth: number) => ReactNode;
   depth: number;
+  defaultOpen: boolean;
 }) {
   return (
     <>
@@ -49,7 +57,7 @@ function Rows<T>({
           <li key={`file:${node.path}`}>{renderFile(node, depth)}</li>
         ) : (
           <li key={`dir:${node.path}`}>
-            <details open className="group">
+            <details open={defaultOpen} className="group">
               <summary
                 className="flex cursor-pointer items-center gap-1 rounded px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
                 style={{ paddingLeft: treeRowPaddingLeft(depth) }}
@@ -63,7 +71,12 @@ function Rows<T>({
                 <span className="min-w-0 flex-1 truncate font-mono">{node.name}</span>
               </summary>
               <ul className="space-y-0.5">
-                <Rows nodes={node.children} renderFile={renderFile} depth={depth + 1} />
+                <Rows
+                  nodes={node.children}
+                  renderFile={renderFile}
+                  depth={depth + 1}
+                  defaultOpen={defaultOpen}
+                />
               </ul>
             </details>
           </li>
