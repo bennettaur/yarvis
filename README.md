@@ -807,7 +807,8 @@ src/            React frontend (Vite + TS + Tailwind)
     files/      shared file-tree rows (collapsible folders), used by PR review and workspaces
     workspaces/  workspace detail subviews + Omni widgets, and the self-review
                 comment layer over a changed file's diff
-    shell/      desktop shell: nav rail, top bar, boot loading screen, tab shortcuts
+    shell/      desktop shell: nav rail, top bar, boot loading screen, tab shortcuts,
+                keyboard cheat sheet (the catalogue every shortcut is listed from)
     omni/       Omni view — chat-driven dynamic-UI canvas
     omnichat/   Omni Chat — global summon-from-anywhere chat overlay
     clipboard/  clipboard palette — saved snippets + screened clipboard history
@@ -920,6 +921,10 @@ How the stream behaves:
 
 ## Keyboard shortcuts
 
+- **Cmd/Ctrl + /** — open the **cheat sheet**: every shortcut below, grouped by
+  where it applies, Esc to close. Also reachable from the keyboard icon in the nav
+  rail. Holding **Cmd** on its own for a moment labels each rail button with the key
+  that reaches it, so the digits are readable without opening anything.
 - **Cmd/Ctrl + 1–9** — jump to the Nth tab in the nav rail.
 - **Cmd/Ctrl + Shift + ] / [** — cycle to the next / previous tab (wraps around).
 - **Control + Shift + Space** — summon **Omni Chat** from anywhere: a centered chat
