@@ -21,7 +21,7 @@ import {
 import { azurePrSource, githubPrSource, type PrCodeSource } from "./source.ts";
 import { generateTour } from "./tour.ts";
 import { type PrRef, parseRefKey, refKey } from "./types.ts";
-import { startWorkspaceForPr } from "./workspace.ts";
+import { PrWorkspaceRefusal, startWorkspaceForPr } from "./workspace.ts";
 
 /**
  * Provider-neutral pull-request routes: the generated review guide and the
@@ -409,8 +409,9 @@ export function createPrRoutes(config: Config): Hono {
    * Opens a workspace on this pull request's branch, so the reviewer can edit
    * it or ask an agent about it rather than only reading the diff. Answers as
    * soon as the workspace row exists — provisioning runs in the background here
-   * — and reuses the workspace already attached to the PR if there is one, so
-   * clicking twice can't cut two worktrees on one branch.
+   * — and reuses a workspace already on that branch rather than creating a
+   * second one (see `startWorkspaceForPr`), which is what 200 rather than 201
+   * reports.
    */
   router.post("/workspace", async (c) => {
     const parsed = z.object({ ref: prRef }).safeParse(await c.req.json().catch(() => null));
@@ -423,10 +424,12 @@ export function createPrRoutes(config: Config): Hono {
       const result = await startWorkspaceForPr(db(), config, source);
       return c.json(result, result.existing ? 200 : 201);
     } catch (e) {
-      // Everything this can fail on — an unregistered repo, a fork, a provider
-      // read — is something the reviewer is told about beside the button.
       console.error("[pr] could not open a workspace for the pull request:", describeError(e));
-      return c.json({ error: clientError(e) }, 400);
+      // A refusal names something the reviewer can fix; anything else is the
+      // provider or the database failing, which the rest of this file answers
+      // 502 for.
+      const refused = e instanceof PrWorkspaceRefusal;
+      return c.json({ error: clientError(e) }, refused ? 400 : 502);
     }
   });
 

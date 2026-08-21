@@ -355,7 +355,6 @@ describe("azure client", () => {
       number: 7,
       baseRef: "main",
       headRef: "feature",
-      // Azure names a source repository only for a PR raised from a fork.
       fromFork: false,
       mergeable: "MERGEABLE",
       // Azure exposes no in-app merge controls, so the fields stay empty/off.
@@ -375,6 +374,30 @@ describe("azure client", () => {
       line: 12,
       isResolved: false,
     });
+  });
+
+  // `forkSource` is present only when the source branch lives in a fork, which
+  // is what tells a caller the branch is not on the target repo's remote.
+  it("reports a pull request raised from a fork", async () => {
+    const az = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([
+        {
+          match: (u) => /\/pullRequests\/8$/.test(u.split("?")[0]!),
+          body: {
+            pullRequestId: 8,
+            sourceRefName: "refs/heads/feature",
+            targetRefName: "refs/heads/main",
+            repository: { name: "web", project: { name: "Shop", id: "p1" } },
+            forkSource: { repository: { name: "web-fork" } },
+          },
+        },
+        { match: () => true, body: { value: [] } },
+      ]),
+    );
+    const detail = await az.prDetail({ project: "Shop", repo: "web", prId: 8 });
+    expect(detail.fromFork).toBe(true);
   });
 
   it("lists changed files without patches", async () => {

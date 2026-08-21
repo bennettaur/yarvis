@@ -279,6 +279,8 @@ export function toPrDetail(pr: any, repo?: any): PrDetail {
     author: pr.author?.login ?? "",
     baseRef: pr.baseRefName ?? "",
     headRef: pr.headRefName ?? "",
+    // "Cross repository" is GitHub's name for a head branch outside the repo the
+    // PR targets, which for a PR is a fork of it.
     fromFork: Boolean(pr.isCrossRepository),
     headSha: pr.headRefOid ?? "",
     additions: pr.additions ?? 0,

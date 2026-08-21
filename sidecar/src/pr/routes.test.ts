@@ -1,10 +1,14 @@
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
 import { listAttention } from "../attention/service.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { listEvents } from "../events/service.ts";
+import { createRepo } from "../workspaces/service.ts";
 import { saveGuide } from "./guides.ts";
 import type { PrRef } from "./types.ts";
 
@@ -220,6 +224,93 @@ describe("POST /api/pr/guide", () => {
 });
 
 describe("POST /api/pr/workspace", () => {
+  // A GitHub token and a workspaces root of its own, so the handler runs past
+  // `sourceFor` and can actually create a workspace. GitHub is stubbed at the
+  // global fetch the client picks up; the database is real.
+  const workspacesRoot = mkdtempSync(join(tmpdir(), "yarvis-pr-routes-root-"));
+  const withGithub = createApp({
+    ...config,
+    workspacesRoot,
+    secrets: { githubToken: "ghp_test" },
+  });
+  const realFetch = globalThis.fetch;
+
+  /** The one GraphQL call the flow makes: the PR's detail. */
+  const stubPrDetail = (pr: Record<string, unknown>) => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ data: { repository: { pullRequest: pr } } }), {
+        status: 200,
+      })) as unknown as typeof fetch;
+  };
+
+  const openPr = { number: 1, title: "Rename the API", headRefName: "topic" };
+
+  const start = (body: unknown = { ref }) =>
+    withGithub.request("/api/pr/workspace", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify(body),
+    });
+
+  beforeEach(async () => {
+    // CASCADE here, unlike the file-level reset above: these tables are what the
+    // route writes, and it is the same set `workspaces/routes.test.ts` clears.
+    await sql`TRUNCATE repos, workspaces, workspace_repos, workspace_repo_pr RESTART IDENTITY CASCADE`;
+    await createRepo(
+      getDb(url).db,
+      { ...config, workspacesRoot },
+      {
+        cloneUrl: "git@github.com:o/r.git",
+      },
+    );
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  afterAll(() => {
+    rmSync(workspacesRoot, { recursive: true, force: true });
+  });
+
+  it("creates the workspace and reports it as new", async () => {
+    stubPrDetail(openPr);
+    const res = await start();
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({ name: "PR #1 · Rename the API", existing: false });
+  });
+
+  it("answers 200 with the same workspace when started again", async () => {
+    stubPrDetail(openPr);
+    const first = (await (await start()).json()) as { workspaceId: string };
+    const res = await start();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ workspaceId: first.workspaceId, existing: true });
+  });
+
+  it("400s a branch name git would read as a flag", async () => {
+    stubPrDetail({ ...openPr, headRefName: "--upload-pack=x" });
+    const res = await start();
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error).toContain("unsupported branch name");
+  });
+
+  it("400s a fork with the message the reviewer is shown", async () => {
+    stubPrDetail({ ...openPr, isCrossRepository: true });
+    const res = await start();
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error).toContain("fork");
+  });
+
+  // A provider failure is upstream's, not the caller's — the rest of this file
+  // answers 502 for it.
+  it("502s when the provider read fails", async () => {
+    globalThis.fetch = (async () =>
+      new Response("rate limited", { status: 403 })) as unknown as typeof fetch;
+    const res = await start();
+    expect(res.status).toBe(502);
+  });
+
   it("reports a missing provider token rather than creating a workspace", async () => {
     const res = await app.request("/api/pr/workspace", {
       method: "POST",
@@ -231,11 +322,7 @@ describe("POST /api/pr/workspace", () => {
   });
 
   it("rejects a body with no pull request identity", async () => {
-    const res = await app.request("/api/pr/workspace", {
-      method: "POST",
-      headers: jsonAuth,
-      body: JSON.stringify({}),
-    });
+    const res = await start({});
     expect(res.status).toBe(400);
   });
 });

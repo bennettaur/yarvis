@@ -34,6 +34,7 @@ const config: Config = {
 };
 
 const ref: PrRef = { provider: "github", owner: "acme", repo: "widget", number: 7 };
+const azureRef: PrRef = { provider: "azure", org: "acme", project: "Shop", repo: "web", prId: 9 };
 
 /** A source answering only what the flow reads: the PR's identity and detail. */
 function fakeSource(detail: Partial<PrDetail>, prRef: PrRef = ref): PrCodeSource {
@@ -49,7 +50,8 @@ function recordingKickOff() {
   return { started, kickOff: (_db: unknown, id: string) => void started.push(id) };
 }
 
-const addRepo = () => createRepo(db, config, { cloneUrl: "git@github.com:acme/widget.git" });
+const addRepo = (cloneUrl = "git@github.com:acme/widget.git") =>
+  createRepo(db, config, { cloneUrl });
 
 beforeEach(async () => {
   await sql`TRUNCATE repos, workspaces, workspace_repos, workspace_repo_pr RESTART IDENTITY CASCADE`;
@@ -89,10 +91,7 @@ describe("startWorkspaceForPr", () => {
     expect((await getWorkspace(db, workspaceId))?.pendingIssuePrompt).toBeNull();
   });
 
-  // The PR view offers this only when it has no backlink, but that backlink
-  // reads the poller's cache and can be a minute behind — a second click must
-  // not cut a second worktree on the same branch.
-  it("reuses the workspace already attached to the pull request", async () => {
+  it("reuses the workspace the poller has already matched to the pull request", async () => {
     const repo = await addRepo();
     const workspace = await createWorkspace(db, config, {
       name: "Existing",
@@ -114,7 +113,7 @@ describe("startWorkspaceForPr", () => {
 
   it("refuses a pull request whose repository is not registered", async () => {
     const { kickOff } = recordingKickOff();
-    expect(startWorkspaceForPr(db, config, fakeSource({}), { kickOff })).rejects.toThrow(
+    await expect(startWorkspaceForPr(db, config, fakeSource({}), { kickOff })).rejects.toThrow(
       "not registered",
     );
   });
@@ -124,9 +123,63 @@ describe("startWorkspaceForPr", () => {
   it("refuses a pull request raised from a fork", async () => {
     await addRepo();
     const { kickOff } = recordingKickOff();
-    expect(
+    await expect(
       startWorkspaceForPr(db, config, fakeSource({ fromFork: true }), { kickOff }),
     ).rejects.toThrow("comes from a fork");
+  });
+
+  // The poller writes the PR cache only for workspaces that are already
+  // provisioned, so the cached lookup is blind for the whole of provisioning —
+  // the window a second click actually lands in. Git refuses a second worktree
+  // on a checked-out branch, so the duplicate would strand in `error`.
+  it("does not create a second workspace when started twice before the poller caches the PR", async () => {
+    await addRepo();
+    const { started, kickOff } = recordingKickOff();
+
+    const first = await startWorkspaceForPr(db, config, fakeSource({}), { kickOff });
+    const second = await startWorkspaceForPr(db, config, fakeSource({}), { kickOff });
+
+    expect(second).toEqual({ workspaceId: first.workspaceId, name: first.name, existing: true });
+    expect(started).toEqual([first.workspaceId]);
+    expect(await db.select().from(workspaceRepos)).toHaveLength(1);
+  });
+
+  it("checks out the branch of an Azure pull request, keyed by its id", async () => {
+    const repo = await addRepo("https://dev.azure.com/acme/Shop/_git/web");
+    const { kickOff } = recordingKickOff();
+
+    const result = await startWorkspaceForPr(db, config, fakeSource({}, azureRef), { kickOff });
+
+    expect(result.name).toBe("PR #9 · Rename the API");
+    const detail = await getWorkspace(db, result.workspaceId);
+    expect(detail?.repos[0]).toMatchObject({ repoId: repo.id, branch: "topic" });
+  });
+
+  it("picks the registered repo the pull request belongs to, not another", async () => {
+    await addRepo("git@github.com:acme/other.git");
+    const widget = await addRepo();
+    const { kickOff } = recordingKickOff();
+
+    const { workspaceId } = await startWorkspaceForPr(db, config, fakeSource({}), { kickOff });
+
+    expect((await getWorkspace(db, workspaceId))?.repos[0]?.repoId).toBe(widget.id);
+  });
+
+  it("refuses a pull request whose branch the provider did not report", async () => {
+    await addRepo();
+    const { kickOff } = recordingKickOff();
+    await expect(
+      startWorkspaceForPr(db, config, fakeSource({ headRef: "" }), { kickOff }),
+    ).rejects.toThrow("could not determine");
+  });
+
+  // The branch name comes from the provider and ends up as a git argument.
+  it("refuses a branch name git would read as a flag", async () => {
+    await addRepo();
+    const { kickOff } = recordingKickOff();
+    await expect(
+      startWorkspaceForPr(db, config, fakeSource({ headRef: "--upload-pack=x" }), { kickOff }),
+    ).rejects.toThrow("unsupported branch name");
   });
 
   it("names a workspace for a PR whose title is empty", async () => {

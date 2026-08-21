@@ -388,7 +388,7 @@ export default function PrFloatingHeader({
           {STATUS_LABEL[status]}
         </span>
         <div className="flex shrink-0 items-center gap-2">
-          <PrWorkspaceAction prRef={prRef} />
+          <PrWorkspaceAction prRef={prRef} fromFork={detail?.fromFork ?? false} />
           {actions.map((cfg) => {
             const isPending = pending === cfg.key;
             const isOpen = open === cfg.key;

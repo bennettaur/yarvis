@@ -19,12 +19,13 @@ export interface PrWorkspace {
  * provisioning, which the workspace view shows once the caller opens it.
  */
 export async function startWorkspaceForPr(ref: PrRef): Promise<PrWorkspace> {
-  const path = "/api/pr/workspace";
-  const res = await sidecarFetch(path, {
+  const res = await sidecarFetch("/api/pr/workspace", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ref }),
   });
-  await ensureOk(res, "open a workspace for the pull request");
+  // A short context: the sidecar's own message says what to do about it, and
+  // the header has room for one line beside the button.
+  await ensureOk(res, "start workspace");
   return res.json();
 }

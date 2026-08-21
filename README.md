@@ -585,20 +585,29 @@ progress again. GitHub only: Azure DevOps exposes neither half of that signal.
 
 #### Working on the PR
 
-The header carries one workspace control. For a PR you raised from a workspace
-it jumps back to it; for anyone else's, **Start workspace** creates one checked
-out on the PR's own branch, and opens it. That workspace starts nothing — no
-ticket, no prompt — so what comes up is an agent session at a blank prompt, to
-ask about the change or push a fix from. Provisioning (clone, worktree, setup
-script) runs in the sidecar, so it finishes whether or not you stay on the
-screen; the workspace shows its log while it does.
+The PR's floating header carries one workspace control. For a PR that already
+has a workspace it jumps back to it; for one that doesn't — someone else's PR,
+your own raised outside the app, one whose workspace you archived — **Start
+workspace** creates one checked out on the PR's own branch and opens it. That
+workspace starts nothing — no ticket, no prompt — so what comes up is an agent
+session at a blank prompt, to ask about the change or push a fix from. GitHub
+and Azure DevOps alike.
 
-The PR's repo has to be registered under **Settings → Repositories**, since that
-is where the clone comes from, and the branch has to live in it — a PR from a
-fork is refused rather than provisioned into a git error. Clicking twice is
-safe: the second click finds the workspace the first one made. The button
-becomes the backlink once the PR poll notices the workspace, up to a minute
-later.
+Note what provisioning means here, since the branch is someone else's: the
+repo's setup script runs against their code, and the agent session that opens
+runs in that worktree. The clone still comes from the repo *you* registered —
+the branch has to live in it, so a PR from a fork is refused rather than
+provisioned into a git error, which means its author needed push access to
+raise it. Treat "Start workspace" as the same trust decision as checking the
+branch out locally and running the setup script yourself.
+
+The PR's repo also has to be registered under **Settings → Repositories**, since
+that is where the clone comes from. Provisioning runs in the sidecar, so it
+finishes whether or not you stay on the screen; the workspace shows its log
+while it does. Starting twice reuses the first workspace rather than cutting a
+second worktree on the branch, and the control turns into the backlink as soon
+as the start returns — for a workspace made some other way, when the PR poll
+next picks it up.
 
 #### Reading a diff
 

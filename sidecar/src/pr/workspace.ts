@@ -1,9 +1,11 @@
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import {
+  assertSafeBranchName,
   createWorkspace,
   findRepoForPr,
   findWorkspaceForPr,
+  findWorkspaceOnBranch,
   type PrLocator,
   startKickOff,
 } from "../workspaces/service.ts";
@@ -21,8 +23,15 @@ import type { PrRef } from "./types.ts";
  * — the caller gets the workspace id and opens it.
  */
 
+/**
+ * A refusal the reviewer can act on — an unregistered repo, a fork — as opposed
+ * to a provider or database failure. The route answers 400 for these and 502
+ * for the rest, so a rate-limited GitHub isn't reported as a bad request.
+ */
+export class PrWorkspaceRefusal extends Error {}
+
 /** The locator shape the workspace lookups use, from a PR ref. */
-export function locatorForRef(ref: PrRef): PrLocator {
+function locatorForRef(ref: PrRef): PrLocator {
   return ref.provider === "github"
     ? { provider: "github", owner: ref.owner, repo: ref.repo, number: ref.number }
     : {
@@ -36,9 +45,9 @@ export function locatorForRef(ref: PrRef): PrLocator {
 
 export interface PrWorkspaceResult {
   workspaceId: string;
-  /** Name of the workspace, so a caller can say which one it opened. */
+  /** Name of the workspace, so the caller can label what it opened. */
   name: string;
-  /** True when a workspace for this PR already existed and was reused. */
+  /** True when a workspace for this branch already existed and was reused. */
   existing: boolean;
 }
 
@@ -47,8 +56,9 @@ export interface PrWorkspaceOptions {
   kickOff?: (db: Db, workspaceId: string) => void;
 }
 
-/** Workspace name for a PR, e.g. `PR #42 · Rename the API`. Titles can be long
- *  and the slug is derived from this, so the title is bounded here. */
+/** Workspace name for a PR, e.g. `PR #42 · Rename the API`. The title is bounded
+ *  so the name stays readable in the workspace list; the slug it feeds has its
+ *  own, shorter cap. */
 function workspaceName(number: number, title: string): string {
   const trimmed = title.trim().slice(0, 120);
   return trimmed ? `PR #${number} · ${trimmed}` : `PR #${number}`;
@@ -58,15 +68,17 @@ function workspaceName(number: number, title: string): string {
  * Creates (or finds) the workspace for a pull request and starts provisioning
  * it in the background.
  *
- * Reusing an existing workspace is the point of the lookup: the PR view offers
- * this only when it has no backlink, but the poller's cache is what that
- * backlink reads and it can be a minute behind, so a second click must not cut
- * a second worktree on the same branch.
+ * Two lookups, because neither alone covers the PR view's second click: the
+ * cached PR match is free but only exists once the poller has seen a
+ * provisioned workspace, and the branch match is the fact the create path
+ * writes itself, so it holds from the moment the row exists. Without the
+ * second, a click during provisioning cuts a second worktree on a branch git
+ * has already checked out, which fails and leaves a stranded workspace behind.
  *
- * Throws — with a message meant for the user — when the PR's repo isn't
- * registered or its branch isn't in that repo (a fork). Both are conditions no
- * amount of retrying fixes, so failing here beats a workspace that provisions
- * into a git error.
+ * Throws a {@link PrWorkspaceRefusal} when the PR's repo isn't registered or
+ * its branch isn't in that repo (a fork). Both are conditions no amount of
+ * retrying fixes, so failing here beats a workspace that provisions into a git
+ * error.
  */
 export async function startWorkspaceForPr(
   db: Db,
@@ -76,23 +88,37 @@ export async function startWorkspaceForPr(
 ): Promise<PrWorkspaceResult> {
   const locator = locatorForRef(source.ref);
 
-  const existing = await findWorkspaceForPr(db, locator);
-  if (existing) return { workspaceId: existing.id, name: existing.name, existing: true };
+  const cached = await findWorkspaceForPr(db, locator);
+  if (cached) return { workspaceId: cached.id, name: cached.name, existing: true };
 
   const repo = await findRepoForPr(db, locator);
   if (!repo) {
-    throw new Error(
+    throw new PrWorkspaceRefusal(
       "this pull request's repository is not registered — add it under Settings → Repositories first",
     );
   }
 
   const detail = await source.detail();
   if (detail.fromFork) {
-    throw new Error("this pull request comes from a fork, so its branch is not in the repository");
+    throw new PrWorkspaceRefusal(
+      "this pull request comes from a fork, so its branch is not in the repository",
+    );
   }
   if (!detail.headRef) {
-    throw new Error("could not determine the pull request's branch");
+    throw new PrWorkspaceRefusal("could not determine the pull request's branch");
   }
+
+  // `createWorkspace` checks this too, but as a plain error — checking here
+  // keeps a branch name git would refuse a 400 like the other refusals rather
+  // than a 502 blaming the provider that reported it.
+  try {
+    assertSafeBranchName(detail.headRef);
+  } catch (e) {
+    throw new PrWorkspaceRefusal(e instanceof Error ? e.message : String(e));
+  }
+
+  const onBranch = await findWorkspaceOnBranch(db, repo.id, detail.headRef);
+  if (onBranch) return { workspaceId: onBranch.id, name: onBranch.name, existing: true };
 
   const workspace = await createWorkspace(db, config, {
     name: workspaceName(locator.number, detail.title),
@@ -101,8 +127,11 @@ export async function startWorkspaceForPr(
   });
 
   // No pending prompt: the workspace opens on a session with nothing typed
-  // into it. Provisioning is what the kick-off does here, and the frontend
-  // starts the agent when it opens a provisioned workspace.
+  // into it. Provisioning is all the kick-off does here, and the frontend
+  // starts the agent when it opens a provisioned workspace. That also means
+  // `resumeKickOffs` won't re-drive this one after a sidecar restart — it
+  // selects on a pending prompt — so an interrupted provision is left to the
+  // poller's orphan sweep and the workspace view's retry button.
   kickOff(db, workspace.id);
 
   return { workspaceId: workspace.id, name: workspace.name, existing: false };
