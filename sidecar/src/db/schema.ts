@@ -371,6 +371,39 @@ export const customProviders = pgTable("custom_providers", {
 });
 
 /**
+ * The model catalogue for a provider, editable by the user.
+ *
+ * Every provider's models used to be a hardcoded list, which meant a model
+ * released after the last build was unreachable and a model the account has no
+ * access to still showed up. Rows here take over a provider's catalogue: while
+ * a provider has none, the bundled defaults in `llm/catalog.ts` stand in, and
+ * the first row saved for it replaces them wholesale.
+ *
+ * `capabilities` is what each surface filters on — chat pickers offer `chat`
+ * models, the voice settings offer `stt`/`tts` — so a speech model can be
+ * listed without becoming a choice for chat inference.
+ *
+ * `provider_id` matches `ProviderInfo.id`, so a `custom:<uuid>` provider can be
+ * tagged here too; those rows are keyed by the same string the picker uses.
+ */
+export const providerModels = pgTable(
+  "provider_models",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    providerId: text("provider_id").notNull(),
+    modelId: text("model_id").notNull(),
+    capabilities: jsonb("capabilities").$type<string[]>().notNull().default([]),
+    /** Cleared to hide a model from every picker without losing its tags. */
+    enabled: boolean("enabled").notNull().default(true),
+    /** Ascending; ties broken by model id so ordering is stable. */
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("provider_models_provider_model_idx").on(t.providerId, t.modelId)],
+);
+
+/**
  * Workspaces — one or many repo worktrees pulled together in a folder to
  * complete a contextual task (e.g. changing an API in service A that service B
  * calls). The sidecar owns the git/filesystem work; these tables are the
@@ -917,6 +950,9 @@ export type GithubPrConfigRow = typeof githubPrConfig.$inferSelect;
 
 export type CustomProviderRow = typeof customProviders.$inferSelect;
 export type NewCustomProviderRow = typeof customProviders.$inferInsert;
+
+export type ProviderModelRow = typeof providerModels.$inferSelect;
+export type NewProviderModelRow = typeof providerModels.$inferInsert;
 
 export type ChatSession = typeof chatSessions.$inferSelect;
 export type NewChatSession = typeof chatSessions.$inferInsert;

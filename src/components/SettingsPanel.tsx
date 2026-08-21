@@ -5,6 +5,7 @@ import EmbeddingsSection from "./EmbeddingsSection";
 import KeychainSection from "./KeychainSection";
 import McpEndpointSection from "./McpEndpointSection";
 import McpServerSection from "./McpServerSection";
+import ModelCatalogSection from "./ModelCatalogSection";
 import PrReviewSection from "./PrReviewSection";
 import ReposSection from "./ReposSection";
 import TelegramSection from "./TelegramSection";
@@ -74,7 +75,12 @@ export default function SettingsPanel() {
       </nav>
 
       {active === "credentials" && <KeychainSection />}
-      {active === "providers" && <CustomProviderSection />}
+      {active === "providers" && (
+        <div className="space-y-5">
+          <ModelCatalogSection />
+          <CustomProviderSection />
+        </div>
+      )}
       {active === "tools" && (
         <div className="space-y-5">
           <McpServerSection />

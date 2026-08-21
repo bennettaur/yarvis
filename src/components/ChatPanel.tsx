@@ -61,9 +61,9 @@ export default function ChatPanel() {
         if (chosen) {
           setProvider(chosen.id);
           setModel(
-            savedModel && chosen.models.includes(savedModel)
+            savedModel && chosen.models.some((m) => m.id === savedModel)
               ? savedModel
-              : (chosen.models[0] ?? ""),
+              : (chosen.models[0]?.id ?? ""),
           );
         }
         setSessions(await listSessions());
@@ -99,7 +99,7 @@ export default function ChatPanel() {
   }, []);
 
   const onModelsForProvider = useCallback(
-    (id: ProviderId) => providers.find((p) => p.id === id)?.models ?? [],
+    (id: ProviderId) => providers.find((p) => p.id === id)?.models.map((m) => m.id) ?? [],
     [providers],
   );
 

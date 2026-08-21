@@ -42,6 +42,28 @@ describe("availableVoiceProviders", () => {
     const [huggingface] = await availableVoiceProviders(configWith({ huggingFaceApiKey: "hf_x" }));
     expect(huggingface?.available).toBe(true);
   });
+
+  it("offers Gemini for both halves once its key is configured", async () => {
+    const unkeyed = (await availableVoiceProviders(configWith())).find((p) => p.id === "gemini");
+    expect(unkeyed?.available).toBe(false);
+
+    const gemini = (await availableVoiceProviders(configWith({ geminiApiKey: "g" }))).find(
+      (p) => p.id === "gemini",
+    );
+    expect(gemini?.available).toBe(true);
+    expect(gemini?.capabilities.sort()).toEqual(["stt", "tts"]);
+  });
+
+  it("suggests Gemini's chat models for speech in and its TTS models for speech out", async () => {
+    const gemini = (await availableVoiceProviders(configWith({ geminiApiKey: "g" }))).find(
+      (p) => p.id === "gemini",
+    );
+    // The same endpoint transcribes, so the chat models are the STT suggestions
+    // — and the TTS models, which cannot answer in text, appear only opposite.
+    expect(gemini?.sttModels.length).toBeGreaterThan(0);
+    expect(gemini?.ttsModels.every((m) => m.endsWith("-tts"))).toBe(true);
+    expect(gemini?.sttModels.some((m) => gemini.ttsModels.includes(m))).toBe(false);
+  });
 });
 
 describe("resolveSpeechClient", () => {
@@ -56,6 +78,19 @@ describe("resolveSpeechClient", () => {
       configWith({ huggingFaceApiKey: "hf_x" }),
       undefined,
       "huggingface",
+    );
+    expect(typeof client.transcribe).toBe("function");
+    expect(typeof client.synthesize).toBe("function");
+  });
+
+  it("refuses Gemini without a key and resolves it with one", async () => {
+    await expect(resolveSpeechClient(configWith(), undefined, "gemini")).rejects.toThrow(
+      /Gemini API key not configured/,
+    );
+    const client = await resolveSpeechClient(
+      configWith({ geminiApiKey: "g" }),
+      undefined,
+      "gemini",
     );
     expect(typeof client.transcribe).toBe("function");
     expect(typeof client.synthesize).toBe("function");

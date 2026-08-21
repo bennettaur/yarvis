@@ -89,7 +89,8 @@ PR dashboard + embedded review — either provider can back it, selected with a
 toggle in the PRs tab), a JIRA base URL + account email + API token (for the JIRA
 issues integration on the Issues tab), a Google Cloud OAuth client id/secret (for the Calendar
 integration), an optional Hugging Face token (for speech-to-text; see
-Settings → Voice), an optional embeddings-provider secret (an API key and/or
+Settings → Voice — the Gemini key covers both speech halves on its own), an
+optional embeddings-provider secret (an API key and/or
 custom header values for an OpenAI-compatible embeddings endpoint), and an
 optional Telegram bot token + allowed chat-id list (and, when the optional second
 factor is enabled, a TOTP secret + re-auth window) for the remote-control bot,
@@ -171,6 +172,14 @@ uninterrupted.
 
 #### Choosing models
 
+Which models a backend offers is set in **Settings → LLM Providers → Models**,
+where each model carries what it can do — `chat`, `stt`, `tts`, `vision`,
+`embed`. Those tags decide where it appears: only a `chat` model can answer a
+turn, only a `tts` model can speak one. A provider uses the built-in list until
+you edit it; the first edit copies that list into your settings, and **Reset to
+built-in list** hands it back. This is also how a model released since the last
+build gets used, and how one your account has no access to gets removed.
+
 Model names are free text, because a local server's names are its own. The
 accepted shape is `namespace/name` with an optional `:tag`
 (`openai/whisper-large-v3`, `whisper:latest`), which is what stops a model name
@@ -185,6 +194,15 @@ These are verified working on Apple Silicon through the server above:
 | Speech out | `mlx-community/MOSS-TTS-Nano-100M` | Clones a voice; see below. |
 | Speech in | `mlx-community/whisper-large-v3-turbo-asr-fp16` | Same server as speech out. |
 | Speech in | `gemma4:latest` (Ollama) | Audio-capable chat model; transcribes well. |
+
+**Gemini** serves both halves with the API key already used for chat. There is
+no audio endpoint: synthesis asks `generateContent` for the AUDIO modality and
+transcription attaches the clip to a normal text request, which is why its chat
+models appear under Speech to text and its `-tts` models under Text to speech.
+The **Voice** field takes one of Gemini's prebuilt voice names (`Kore`, `Puck`,
+`Zephyr`, …; the field suggests them) — unlike the OpenAI-shaped servers, it has
+no default voice of its own. Extra request fields become generation-config
+fields there rather than top-level ones.
 
 **Hugging Face** is also available with a token from Settings, but in practice
 only for transcription (`openai/whisper-large-v3-turbo`). Its serverless router
@@ -825,8 +843,12 @@ sidecar/        Bun + TS service (Hono)
   src/core/     client for the Rust core's control channel (spawn/kill/send to a session)
   src/db/       Drizzle schema, client, migrations (applied on startup)
   src/chat/     multi-provider streaming chat + tool-calls (agent.ts: shared agent turn)
-  src/voice/    speech-to-text + text-to-speech (/api/voice): Hugging Face Inference
-                and the OpenAI audio API, the latter reusing a custom provider's base URL;
+  src/llm/      provider resolution + the model catalogue (/api/model-catalog):
+                catalog.ts holds the capability tags and the bundled per-provider
+                defaults that a user's saved rows take over from
+  src/voice/    speech-to-text + text-to-speech (/api/voice): Hugging Face Inference,
+                the Gemini API (both halves over generateContent), and the OpenAI audio
+                API, the last reusing a custom provider's base URL;
                 config.ts holds the settings every surface shares
   src/clipboard/ saved clipboard entries + the credential screen (screening.ts)
   src/telegram/ Telegram remote-control bot (long-poll loop, slash commands, chat→session map)
