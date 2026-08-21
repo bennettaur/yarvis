@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { resolveTabShortcut, type ShortcutEvent } from "./useTabShortcuts";
+import { resolveTabShortcut, type ShortcutEvent, tabShortcutDigit } from "./useTabShortcuts";
 
 const ev = (over: Partial<ShortcutEvent>): ShortcutEvent => ({
   key: "1",
@@ -41,5 +41,17 @@ describe("resolveTabShortcut", () => {
     expect(resolveTabShortcut(ev({ metaKey: true, altKey: true, key: "1" }), "chat")).toBeNull();
     expect(resolveTabShortcut(ev({ metaKey: true, key: "0" }), "chat")).toBeNull();
     expect(resolveTabShortcut(ev({ metaKey: true, key: "a" }), "chat")).toBeNull();
+  });
+});
+
+describe("tabShortcutDigit", () => {
+  it("gives the digit that jumps to a top-level tab", () => {
+    expect(tabShortcutDigit("chat")).toBe("1");
+    expect(tabShortcutDigit("tasks")).toBe("5");
+  });
+
+  it("gives nothing for the pinned-bottom tabs, which have no digit", () => {
+    expect(tabShortcutDigit("dashboard")).toBeNull();
+    expect(tabShortcutDigit("settings")).toBeNull();
   });
 });
