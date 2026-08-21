@@ -15,6 +15,17 @@ const EXISTING = {
   updatedAt: "2026-06-01T09:00:00.000Z",
   archivedAt: null,
   repoNames: ["web"],
+  prs: [
+    {
+      repoName: "web",
+      prNumber: 12,
+      prState: "open",
+      isDraft: false,
+      mergeable: "clean",
+      checkRollup: "failure",
+      reviewDecision: "review_required",
+    },
+  ],
 };
 
 // A workspace created after the panel last fetched its list: reachable by id but
@@ -56,6 +67,12 @@ describe("WorkspacesPanel", () => {
     expect(html).not.toContain(EMPTY_STATE);
     // The detail view for the new workspace is on screen, not just its list row.
     expect(html).toContain(JUST_CREATED.name);
+  });
+
+  it("flags the PR state on the list row, beside the workspace status", async () => {
+    const html = await renderToHtml(<WorkspacesPanel />);
+
+    expect(html).toContain("web #12 checks failing");
   });
 
   it("drops the selection when the workspace really is gone", async () => {

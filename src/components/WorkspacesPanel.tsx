@@ -39,6 +39,7 @@ import BranchCombobox from "./workspaces/BranchCombobox";
 import LinkWorkModal from "./workspaces/LinkWorkModal";
 import { consumeProvision } from "./workspaces/provisionStream";
 import WorkspaceFileDiff from "./workspaces/WorkspaceFileDiff";
+import WorkspacePrBadges from "./workspaces/WorkspacePrBadges";
 import WorkspacePrStatus from "./workspaces/WorkspacePrStatus";
 import WorkspaceSetupLog from "./workspaces/WorkspaceSetupLog";
 
@@ -99,6 +100,12 @@ function groupWorkspaces(items: WorkspaceSummary[]): Group[] {
 
 const SELECTED_WORKSPACE_KEY = "yarvis.workspaces.selectedId";
 const SHOW_ARCHIVED_KEY = "yarvis.workspaces.showArchived";
+
+/** How often the list and the open workspace re-fetch, so PR / checks cache
+ *  freshness from the background poller surfaces without a manual reload. The
+ *  poller itself runs every 60s, so a slightly faster cadence ensures one fresh
+ *  poll lands per refresh while still being cheap (one local SQL read). */
+const CACHE_REFRESH_INTERVAL_MS = 20_000;
 
 /** Cadence used while a workspace is mid-archive: the teardown runs in the
  *  sidecar's background, so both the list and the open workspace lean on
@@ -219,6 +226,38 @@ export default function WorkspacesPanel({
     return () => clearInterval(timer);
   }, [archivingCount, refresh]);
 
+  // Keeps the rows' PR badges current. Chained rather than on an interval so a
+  // slow fetch can't overlap the next tick, and it re-reads only the list — the
+  // repos behind it don't change on the poller's account. A failed tick leaves
+  // the last-known rows and says nothing: the user didn't ask for this fetch,
+  // so a transient sidecar hiccup must not paint an error over the list.
+  useEffect(() => {
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      timer = null;
+      try {
+        const ws = await listWorkspaces();
+        if (live) setItems(ws);
+      } catch {
+        // Keep what's on screen; the next tick tries again.
+      }
+      if (live && !document.hidden) timer = setTimeout(tick, CACHE_REFRESH_INTERVAL_MS);
+    };
+    const onVisibility = () => {
+      if (!document.hidden && live && timer === null) void tick();
+    };
+
+    timer = setTimeout(tick, CACHE_REFRESH_INTERVAL_MS);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      live = false;
+      if (timer !== null) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
+
   // A selected workspace missing from the list is usually one created since the
   // last fetch — the create and "Start work" flows select it immediately, while
   // `items` still holds the pre-create list — so confirm it's really gone before
@@ -327,7 +366,10 @@ export default function WorkspacesPanel({
                           )}
                           <span className="truncate">{ws.name}</span>
                         </span>
-                        <StatusBadge status={ws.status} />
+                        <span className="flex shrink-0 items-center gap-1.5">
+                          <WorkspacePrBadges prs={ws.prs} />
+                          <StatusBadge status={ws.status} />
+                        </span>
                       </button>
                     </li>
                   );
@@ -701,12 +743,6 @@ function InlineRepoCreator({
   );
 }
 
-/** How often the open workspace re-fetches its detail so PR / checks cache
- *  freshness from the background poller surfaces without a manual reload. The
- *  poller itself runs every 60s, so a slightly faster cadence here ensures one
- *  fresh poll lands per refresh while still being cheap (one local SQL read). */
-const DETAIL_REFRESH_INTERVAL_MS = 20_000;
-
 function WorkspaceDetailView({
   id,
   onChanged,
@@ -812,7 +848,7 @@ function WorkspaceDetailView({
       if (live && !document.hidden) {
         timer = setTimeout(
           tick,
-          archiveRunning ? ARCHIVING_REFRESH_INTERVAL_MS : DETAIL_REFRESH_INTERVAL_MS,
+          archiveRunning ? ARCHIVING_REFRESH_INTERVAL_MS : CACHE_REFRESH_INTERVAL_MS,
         );
       }
     };

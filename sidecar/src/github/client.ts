@@ -14,6 +14,7 @@ import type {
   PrInvolvement,
   PrStatus,
   PrSummary,
+  ReviewDecision,
   Reviewer,
   ReviewerState,
 } from "../pr/types.ts";
@@ -31,6 +32,7 @@ export type {
   PrStatus,
   PrSummary,
   ReviewComment,
+  ReviewDecision,
   Reviewer,
   ReviewerState,
   ReviewThread,
@@ -152,6 +154,36 @@ export function summarizeChecks(runs: any[]): ChecksSummary {
     }
   }
   return { total: runs.length, success, failure, pending };
+}
+
+/**
+ * Only a reviewer who could merge the PR themselves gets a say. GitHub lets
+ * anyone who can see a repo approve one, and an approval is what turns the
+ * workspace list green, so a drive-by from outside the project must not.
+ */
+const DECIDING_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+
+/**
+ * Collapses a PR's review list into one verdict. GitHub returns every review
+ * ever submitted, in submission order, so only each reviewer's latest verdict
+ * counts: a comment leaves the previous one standing, while a dismissal (a
+ * later push invalidating an approval) clears it. Reads the first page only —
+ * a PR with more than 100 reviews falls back to an older picture rather than
+ * costing the poller a second request every cycle.
+ */
+export function summarizeReviewDecision(reviews: any[]): ReviewDecision {
+  const latestByLogin = new Map<string, string>();
+  for (const review of reviews) {
+    const login = review?.user?.login;
+    if (!login || !DECIDING_ASSOCIATIONS.has(String(review?.author_association ?? ""))) continue;
+    const state = String(review?.state ?? "").toUpperCase();
+    if (state === "DISMISSED") latestByLogin.delete(login);
+    else if (state === "APPROVED" || state === "CHANGES_REQUESTED") latestByLogin.set(login, state);
+  }
+  const verdicts = [...latestByLogin.values()];
+  if (verdicts.includes("CHANGES_REQUESTED")) return "changes_requested";
+  if (verdicts.includes("APPROVED")) return "approved";
+  return "review_required";
 }
 
 /** Normalizes a GraphQL statusCheckRollup context into a flat CheckItem. */
@@ -529,6 +561,18 @@ export class GitHubClient {
       mergeableState: pr.mergeable_state ?? "unknown",
       checks: summarizeChecks(checks.check_runs ?? []),
     };
+  }
+
+  /**
+   * The reviewers' collective verdict on a PR. Kept off {@link prStatus} — that
+   * one is the cheap per-row call — so only the callers that need the verdict
+   * pay for the extra request.
+   */
+  async prReviewDecision(owner: string, repo: string, number: number): Promise<ReviewDecision> {
+    const reviews = await this.api<any[]>(
+      `/repos/${owner}/${repo}/pulls/${number}/reviews?per_page=100`,
+    );
+    return summarizeReviewDecision(reviews ?? []);
   }
 
   /**
