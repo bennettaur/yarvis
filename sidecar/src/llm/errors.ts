@@ -14,6 +14,7 @@ const REDACT_PATTERNS: Array<[RegExp, string]> = [
   // The optional `c` covers Cerebras keys: `\b` won't fire between `c` and `sk-`,
   // so a bare `sk-` pattern silently misses them.
   [/\b(c?sk-(?:proj-|ant-|or-)?[A-Za-z0-9_-]{16,})\b/g, "[redacted-token]"],
+  [/\b(hf_[A-Za-z0-9]{16,})\b/g, "[redacted-token]"],
   [/\b(ghp_[A-Za-z0-9_]{16,})\b/g, "[redacted-token]"],
   [/\b(github_pat_[A-Za-z0-9_]{16,})\b/g, "[redacted-token]"],
 ];

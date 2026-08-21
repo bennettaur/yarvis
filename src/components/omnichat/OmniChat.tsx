@@ -3,9 +3,11 @@ import type { ProviderId } from "../../lib/chat";
 import { OMNI_CHAT_SESSION_KEY } from "../../lib/omniChat";
 import { collectContext, formatContext } from "../../lib/omniChatContext";
 import { useChatThread } from "../../lib/useChatThread";
+import { useVoice } from "../../lib/useVoice";
 import ChatComposer from "../ChatComposer";
 import ChatMessages from "../ChatMessages";
 import { ToolApprovalPrompt } from "../ToolApprovalPrompt";
+import VoiceControls from "../voice/VoiceControls";
 
 /**
  * A centered, summon-from-anywhere chat overlay. It stays mounted while hidden
@@ -46,6 +48,7 @@ export default function OmniChat({
   });
 
   const [input, setInput] = useState("");
+  const voice = useVoice({ send, streaming, busy });
   const panelRef = useRef<HTMLDivElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
 
@@ -171,7 +174,10 @@ export default function OmniChat({
           submitLabel="Send"
           textareaClassName="min-h-24"
         />
-        <p className="text-xs text-zinc-600">Esc to hide · keeps running in the background</p>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <VoiceControls voice={voice} compact />
+          <p className="text-xs text-zinc-600">Esc to hide · keeps running in the background</p>
+        </div>
       </div>
     </div>
   );

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import type { ChangedFile, WorkspaceRepoDetail } from "../lib/workspaces";
+import { clipboardWrites, resetClipboardWrites } from "../test/clipboard";
 import { mountForInteraction } from "../test/render";
 
 let files: string[] = [];
@@ -46,11 +47,25 @@ const REPO: WorkspaceRepoDetail = {
   pr: null,
 };
 
+/** What the background poller caches for a repo whose branch has a PR. */
+const POLLED_PR: NonNullable<WorkspaceRepoDetail["pr"]> = {
+  prNumber: 12,
+  prUrl: "https://github.com/octo/web/pull/12",
+  prState: "open",
+  isDraft: false,
+  mergeable: "clean",
+  checkRollup: "success",
+  checks: { total: 2, success: 2, failure: 0, pending: 0 },
+  lastPolledAt: "2026-06-01T10:00:00.000Z",
+  lastError: null,
+};
+
 const settle = () => new Promise((resolve) => setTimeout(resolve, 100));
 
 let unmount: (() => void) | null = null;
 
 beforeEach(() => {
+  resetClipboardWrites();
   files = ["src/components/a.tsx", "src/components/b.tsx", "README.md"];
   changes = [
     { path: "src/components/a.tsx", status: "modified", additions: 3, deletions: 1 },
@@ -66,17 +81,25 @@ afterEach(() => {
 const mount = async (
   onOpenFile: (repoId: string, path: string) => void = () => {},
   onEditFile: (repoId: string, path: string) => void = () => {},
+  repo: WorkspaceRepoDetail = REPO,
 ) => {
   const mounted = await mountForInteraction(
     <WorkspaceSidePanel
       workspaceId="ws-1"
-      repos={[REPO]}
+      repos={[repo]}
       onOpenFile={onOpenFile}
       onEditFile={onEditFile}
     />,
   );
   unmount = mounted.unmount;
   return mounted.host;
+};
+
+const clickCopy = async (host: HTMLElement, label: string) => {
+  const button = host.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`);
+  if (!button) throw new Error(`no "${label}" button`);
+  button.click();
+  await settle();
 };
 
 const clickTab = async (host: HTMLElement, label: string) => {
@@ -147,6 +170,56 @@ describe("WorkspaceSidePanel", () => {
     expect(host.textContent).toContain("No changes on this branch.");
     await clickTab(host, "All files");
     expect(host.textContent).toContain("No files.");
+  });
+
+  // Both lists show basenames only, so a path leaves the panel through a copy
+  // button — and the whole list through the one in the header.
+  it("copies each full path and the whole list in both views", async () => {
+    const host = await mount();
+    expect(host.querySelector('[aria-label="Copy path src/components/a.tsx"]')).not.toBeNull();
+    expect(host.textContent).toContain("2 changed files");
+    await clickCopy(host, "Copy every path in this list");
+    expect(clipboardWrites()).toEqual(["src/components/a.tsx\nREADME.md"]);
+
+    await clickTab(host, "All files");
+    expect(host.querySelector('[aria-label="Copy path src/components/b.tsx"]')).not.toBeNull();
+    expect(host.textContent).toContain("3 files");
+    resetClipboardWrites();
+    await clickCopy(host, "Copy every path in this list");
+    expect(clipboardWrites()).toEqual(["src/components/a.tsx\nsrc/components/b.tsx\nREADME.md"]);
+  });
+
+  it("counts a single file in the singular", async () => {
+    changes = [{ path: "README.md", status: "added", additions: 1, deletions: 0 }];
+    const host = await mount();
+    expect(host.textContent).toContain("1 changed file");
+    expect(host.textContent).not.toContain("1 changed files");
+  });
+
+  // The checks view is what gets handed to someone in chat when CI goes red, so
+  // the copy carries the rollup, the counts and the PR's link.
+  it("copies the check summary and the PR link", async () => {
+    const host = await mount(
+      () => {},
+      () => {},
+      {
+        ...REPO,
+        pr: {
+          ...POLLED_PR,
+          checkRollup: "failure",
+          checks: { total: 4, success: 3, failure: 1, pending: 0 },
+        },
+      },
+    );
+    await clickTab(host, "PR checks");
+    await clickCopy(host, "Copy the check summary and the PR link");
+    expect(clipboardWrites()).toEqual([
+      "web #12 · ✗ checks failing · 3 passing · 1 failing\nhttps://github.com/octo/web/pull/12",
+    ]);
+
+    resetClipboardWrites();
+    await clickCopy(host, "Copy the link to web #12");
+    expect(clipboardWrites()).toEqual(["https://github.com/octo/web/pull/12"]);
   });
 
   it("reaches the self-review comments through their own tab", async () => {

@@ -145,16 +145,42 @@ export async function scanClipboardTexts(
 export const writeClipboard = (text: string): Promise<void> => invoke("clipboard_write", { text });
 
 /**
- * Strips control and formatting characters from a file path bound for the
- * clipboard. Git allows every byte but NUL and `/` in a path component, so a
- * hostile branch can name a file with an embedded newline or a right-to-left
- * override (see AGENTS.md on outside-influenced data). Those survive the
- * clipboard intact and make the pasted text read as something other than what
- * was on screen, which matters most where these paths are pasted: a shell, or a
- * prompt. Strip rather than refuse — a path carrying control characters is not
- * one anyone can open by hand either way.
+ * Strips control and formatting characters from text bound for the clipboard.
+ * Anything a provider supplies — a file path, a check name, a repo name — can
+ * carry an embedded newline or a right-to-left override (see AGENTS.md on
+ * outside-influenced data). Those survive the clipboard intact and make the
+ * pasted text read as something other than what was on screen, which matters
+ * most where it lands: a shell, or a prompt. Sanitize each field before joining
+ * a multi-line block, never the joined result — the separators are the same
+ * characters this strips.
  */
-export const clipboardSafePath = (path: string): string => path.replace(/[\p{Cc}\p{Cf}]/gu, "");
+export const clipboardSafeText = (text: string): string => text.replace(/[\p{Cc}\p{Cf}]/gu, "");
+
+/**
+ * The same treatment for a file path, which is where it matters most: git
+ * allows every byte but NUL and `/` in a path component, so a hostile branch
+ * can name a file whatever it likes. Strip rather than refuse — a path carrying
+ * control characters is not one anyone can open by hand either way.
+ */
+export const clipboardSafePath = clipboardSafeText;
+
+/**
+ * A provider-supplied URL that is safe to hand to someone else, or null when it
+ * isn't. Mirrors `openExternal`'s scheme allowlist: a `javascript:` link the
+ * open path refuses shouldn't reach the clipboard through the copy path either,
+ * and the caller renders no button rather than a link that misleads.
+ */
+export function clipboardSafeUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const clean = clipboardSafeText(url);
+  let scheme: string;
+  try {
+    scheme = new URL(clean).protocol;
+  } catch {
+    return null;
+  }
+  return scheme === "http:" || scheme === "https:" ? clean : null;
+}
 
 /** The clips the Rust core has seen this run, newest first. */
 export const readClipboardHistory = (): Promise<ClipboardHistoryItem[]> =>

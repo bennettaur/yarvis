@@ -19,6 +19,14 @@ const chatSchema = z.object({
   provider: z.string().min(1),
   model: z.string().min(1),
   context: z.string().max(8000).optional(),
+  /**
+   * Which in-app surface sent this turn. Only "voice" is nameable: it marks a
+   * turn the user spoke instead of typing, which is what puts the destructive
+   * tools behind a confirmation. Absent means the chat composer, where the user
+   * read what they sent. ("telegram" is not accepted here — the bot writes its
+   * own metadata and never comes through this route.)
+   */
+  source: z.literal("voice").optional(),
 });
 
 const createSessionSchema = z.object({ title: z.string().nullish() });
@@ -61,7 +69,7 @@ export function createChatRoutes(config: Config): Hono {
     const body = await c.req.json().catch(() => null);
     const parsed = chatSchema.safeParse(body);
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const { sessionId, message, provider, model, context } = parsed.data;
+    const { sessionId, message, provider, model, context, source } = parsed.data;
 
     const dbh = db();
     let chatModel;
@@ -94,6 +102,7 @@ export function createChatRoutes(config: Config): Hono {
         sessionId,
         message,
         context,
+        userMetadata: source ? { source } : undefined,
         // Cancel the upstream call if the client disconnects.
         signal: c.req.raw.signal,
         // This surface holds a live channel to the user, so it can ask for MCP

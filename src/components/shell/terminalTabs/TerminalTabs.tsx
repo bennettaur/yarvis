@@ -858,6 +858,7 @@ function PaneTreeView({
   onPaneClose,
   onPaneResize,
   handles,
+  inSplit = false,
 }: {
   pane: Pane;
   /** This node's location in the tree, so a divider drag names its split. */
@@ -870,6 +871,9 @@ function PaneTreeView({
   onPaneClose: (p: PaneId) => void;
   onPaneResize: (path: PanePath, ratio: number) => void;
   handles: Map<string, TerminalPanelHandle | null>;
+  /** True below a split, where an unfocused pane is dimmed. A tab's only pane
+   * never is: there is nowhere else the keyboard could be going. */
+  inSplit?: boolean;
 }) {
   if (pane.kind === "leaf") {
     const active = pane.id === focusedPane;
@@ -877,6 +881,7 @@ function PaneTreeView({
     return (
       // biome-ignore lint/a11y/noStaticElementInteractions: focus tracker; xterm's textarea owns keyboard input
       <div
+        data-pane-id={pane.id}
         className={`group relative h-full min-h-0 w-full ${
           active ? "ring-1 ring-inset ring-indigo-500/40" : ""
         }`}
@@ -892,6 +897,14 @@ function PaneTreeView({
             else handles.delete(pane.id);
           }}
         />
+        {inSplit && !active && (
+          // A wash rather than opacity on the pane: xterm renders its own
+          // background, and fading the whole element lets the surface behind it
+          // show through instead of just muting what the shell drew. Above
+          // xterm's own layers (its scrollbar sits at z-index 11) and below the
+          // close button, which stays undimmed.
+          <div aria-hidden className="pointer-events-none absolute inset-0 z-20 bg-zinc-950/40" />
+        )}
         <button
           type="button"
           onClick={(e) => {
@@ -900,7 +913,7 @@ function PaneTreeView({
           }}
           title="Close pane"
           aria-label="Close pane"
-          className="absolute right-1 top-1 rounded bg-zinc-900/80 px-1.5 py-0.5 text-sm leading-none text-zinc-400 opacity-0 hover:bg-zinc-800 hover:text-zinc-100 group-hover:opacity-100"
+          className="absolute right-1 top-1 z-30 rounded bg-zinc-900/80 px-1.5 py-0.5 text-sm leading-none text-zinc-400 opacity-0 hover:bg-zinc-800 hover:text-zinc-100 group-hover:opacity-100"
         >
           ×
         </button>
@@ -927,6 +940,7 @@ function PaneTreeView({
           onPaneClose={onPaneClose}
           onPaneResize={onPaneResize}
           handles={handles}
+          inSplit
         />
       }
       second={
@@ -941,6 +955,7 @@ function PaneTreeView({
           onPaneClose={onPaneClose}
           onPaneResize={onPaneResize}
           handles={handles}
+          inSplit
         />
       }
     />

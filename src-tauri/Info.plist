@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Keys merged into the macOS bundle's Info.plist by Tauri. macOS refuses a
+  microphone request outright when the bundle carries no usage description, so
+  the Voice tab needs this entry to be able to prompt at all.
+-->
+<plist version="1.0">
+  <dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Yarvis uses the microphone to transcribe what you say on the Voice tab.</string>
+  </dict>
+</plist>
