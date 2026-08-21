@@ -165,6 +165,11 @@ export interface PrDetail {
   baseRef: string;
   headRef: string;
   /**
+   * True when `headRef` lives in a fork rather than in the repo the PR targets,
+   * so the branch cannot be fetched from that repo's remote.
+   */
+  fromFork: boolean;
+  /**
    * Commit the PR currently points at. Anchors anything derived from the code
    * as it stands right now — expanded file context, generated review material —
    * so a later push can be detected as having moved the ground underneath it.

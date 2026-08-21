@@ -450,6 +450,8 @@ export class AzureDevOpsClient {
       author: pr.createdBy?.displayName ?? "",
       baseRef: (pr.targetRefName ?? "").replace("refs/heads/", ""),
       headRef: (pr.sourceRefName ?? "").replace("refs/heads/", ""),
+      // Azure names the source repository only when it differs from the target.
+      fromFork: Boolean(pr.forkSource),
       headSha: pr.lastMergeSourceCommit?.commitId ?? "",
       additions: 0,
       deletions: 0,

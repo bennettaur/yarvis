@@ -947,6 +947,17 @@ export async function findWorkspaceForPr(
   return null;
 }
 
+/**
+ * The registered repo a PR belongs to, matched the same way as
+ * {@link findWorkspaceForPr}: by parsing each repo's clone URL, so the match
+ * stays provider-aware without a provider column on `repos`. Returns null when
+ * the repo isn't registered — nothing can be cloned or worktree'd for it.
+ */
+export async function findRepoForPr(db: Db, locator: PrLocator): Promise<Repo | null> {
+  const rows = await db.select().from(repos);
+  return rows.find((repo) => remoteMatchesLocator(parseRepoRemote(repo.cloneUrl), locator)) ?? null;
+}
+
 // ---------------------------------------------------------------------------
 // Provisioning
 // ---------------------------------------------------------------------------

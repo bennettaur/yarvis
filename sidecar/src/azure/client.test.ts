@@ -355,6 +355,8 @@ describe("azure client", () => {
       number: 7,
       baseRef: "main",
       headRef: "feature",
+      // Azure names a source repository only for a PR raised from a fork.
+      fromFork: false,
       mergeable: "MERGEABLE",
       // Azure exposes no in-app merge controls, so the fields stay empty/off.
       mergeMethods: [],

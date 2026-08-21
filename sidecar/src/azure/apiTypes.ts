@@ -59,6 +59,8 @@ export interface AzurePullRequest {
   repository?: AzureRepository;
   sourceRefName?: string;
   targetRefName?: string;
+  /** Present only when the source branch lives in a fork of the target repo. */
+  forkSource?: { repository?: AzureRepository };
   mergeStatus?: string;
   lastMergeSourceCommit?: AzureCommitRef;
   lastMergeTargetCommit?: AzureCommitRef;

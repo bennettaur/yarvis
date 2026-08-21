@@ -625,4 +625,9 @@ describe("github client", () => {
   it("reports an empty commit when the provider omits it", () => {
     expect(toPrDetail({ number: 7 }).headSha).toBe("");
   });
+
+  it("reports whether the head branch lives in a fork", () => {
+    expect(toPrDetail({ number: 7, isCrossRepository: true }).fromFork).toBe(true);
+    expect(toPrDetail({ number: 7 }).fromFork).toBe(false);
+  });
 });

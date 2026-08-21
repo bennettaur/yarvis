@@ -279,6 +279,7 @@ export function toPrDetail(pr: any, repo?: any): PrDetail {
     author: pr.author?.login ?? "",
     baseRef: pr.baseRefName ?? "",
     headRef: pr.headRefName ?? "",
+    fromFork: Boolean(pr.isCrossRepository),
     headSha: pr.headRefOid ?? "",
     additions: pr.additions ?? 0,
     deletions: pr.deletions ?? 0,
@@ -386,7 +387,7 @@ query($owner:String!,$repo:String!,$number:Int!){
       autoMergeRequest{ enabledAt }
       viewerCanEnableAutoMerge viewerCanDisableAutoMerge
       author{login}
-      baseRefName headRefName headRefOid
+      baseRefName headRefName headRefOid isCrossRepository
       reviewRequests(first:50){
         nodes{
           requestedReviewer{

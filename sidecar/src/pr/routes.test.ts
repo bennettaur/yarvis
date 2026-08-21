@@ -219,6 +219,27 @@ describe("POST /api/pr/guide", () => {
   });
 });
 
+describe("POST /api/pr/workspace", () => {
+  it("reports a missing provider token rather than creating a workspace", async () => {
+    const res = await app.request("/api/pr/workspace", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ ref }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error).toContain("github token");
+  });
+
+  it("rejects a body with no pull request identity", async () => {
+    const res = await app.request("/api/pr/workspace", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
 afterAll(async () => {
   await sql.end();
 });
