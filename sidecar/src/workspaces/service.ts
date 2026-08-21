@@ -947,6 +947,54 @@ export async function findWorkspaceForPr(
   return null;
 }
 
+/**
+ * A non-archived workspace already holding a worktree on a repo's branch.
+ *
+ * {@link findWorkspaceForPr} answers from the poller's PR cache, which is
+ * written only for workspaces that are already provisioned — so it cannot see
+ * one created moments ago, which is exactly the window a second click lands in.
+ * This reads what the create path itself writes, so it holds from the moment
+ * the workspace row exists. Branch names are compared as git compares them,
+ * case included.
+ */
+export async function findWorkspaceOnBranch(
+  db: Db,
+  repoId: string,
+  branch: string,
+): Promise<WorkspaceForPr | null> {
+  const [row] = await db
+    .select({
+      id: workspaces.id,
+      name: workspaces.name,
+      slug: workspaces.slug,
+      status: workspaces.status,
+    })
+    .from(workspaceRepos)
+    .innerJoin(workspaces, eq(workspaceRepos.workspaceId, workspaces.id))
+    .where(
+      and(
+        eq(workspaceRepos.repoId, repoId),
+        eq(workspaceRepos.branch, branch),
+        ne(workspaces.status, "archived"),
+      ),
+    );
+  return row ?? null;
+}
+
+/**
+ * The registered repo a PR belongs to, matched the same way as
+ * {@link findWorkspaceForPr}: by parsing each repo's clone URL, so the match
+ * stays provider-aware without a provider column on `repos`. Returns null when
+ * the repo isn't registered — nothing can be cloned or worktree'd for it.
+ */
+export async function findRepoForPr(db: Db, locator: PrLocator): Promise<Repo | null> {
+  // Every row, because the clone URL is the only field that carries the
+  // provider identity — `repos.owner`/`repo` are filled by the GitHub-shaped
+  // parser even for Azure rows, so there is nothing to narrow on in SQL.
+  const rows = await db.select().from(repos);
+  return rows.find((repo) => remoteMatchesLocator(parseRepoRemote(repo.cloneUrl), locator)) ?? null;
+}
+
 // ---------------------------------------------------------------------------
 // Provisioning
 // ---------------------------------------------------------------------------

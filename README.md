@@ -601,6 +601,32 @@ and **Complete** — merged, closed, or approved by you — with the latter
 collapsed. An approval superseded by a later change request counts as in
 progress again. GitHub only: Azure DevOps exposes neither half of that signal.
 
+#### Working on the PR
+
+The PR's floating header carries one workspace control. For a PR that already
+has a workspace it jumps back to it; for one that doesn't — someone else's PR,
+your own raised outside the app, one whose workspace you archived — **Start
+workspace** creates one checked out on the PR's own branch and opens it. That
+workspace starts nothing — no ticket, no prompt — so what comes up is an agent
+session at a blank prompt, to ask about the change or push a fix from. GitHub
+and Azure DevOps alike.
+
+Note what provisioning means here, since the branch is someone else's: the
+repo's setup script runs against their code, and the agent session that opens
+runs in that worktree. The clone still comes from the repo *you* registered —
+the branch has to live in it, so a PR from a fork is refused rather than
+provisioned into a git error, which means its author needed push access to
+raise it. Treat "Start workspace" as the same trust decision as checking the
+branch out locally and running the setup script yourself.
+
+The PR's repo also has to be registered under **Settings → Repositories**, since
+that is where the clone comes from. Provisioning runs in the sidecar, so it
+finishes whether or not you stay on the screen; the workspace shows its log
+while it does. Starting twice reuses the first workspace rather than cutting a
+second worktree on the branch, and the control turns into the backlink as soon
+as the start returns — for a workspace made some other way, when the PR poll
+next picks it up.
+
 #### Reading a diff
 
 Files open as you scroll toward them, and **Collapse all** / **Expand all**
@@ -860,7 +886,8 @@ sidecar/        Bun + TS service (Hono)
   src/azure/    Azure DevOps PR dashboard + embedded review (REST; diffs built with jsdiff)
   src/pr/       provider-neutral PR review subsystem (/api/pr): guide + insight storage,
                 the tour/ask agent runs, provider-agnostic code tools (read file, list dir,
-                search) over a GitHub/Azure source seam, and the chat agent's review tools
+                search) over a GitHub/Azure source seam, opening a workspace on a PR's
+                branch (workspace.ts), and the chat agent's review tools
   src/issues/   provider-neutral issue routes/service (stars, filters, workspace links, start-work, issue writes)
   src/jira/     JIRA Cloud REST client + routes + agent tools + ADF↔Markdown conversion
   src/google/   Google Calendar OAuth + events
