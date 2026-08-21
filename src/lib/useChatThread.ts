@@ -123,7 +123,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
   }, []);
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, sendOptions: { source?: "voice" } = {}) => {
       const trimmed = text.trim();
       if (!trimmed || !provider || !model || busy) return;
 
@@ -134,7 +134,14 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
         setSessionId(activeId);
       }
 
-      setMessages((prev) => [...prev, { role: "user", content: trimmed }]);
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "user",
+          content: trimmed,
+          metadata: sendOptions.source ? { source: "voice" } : null,
+        },
+      ]);
       setBusy(true);
       setError(null);
       const context = getContext?.();
@@ -146,6 +153,9 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
           provider,
           model,
           context,
+          // Marks a turn the user spoke rather than typed, which is what puts
+          // the agent's irreversible tools behind a confirmation.
+          source: sendOptions.source,
         })) {
           if (evt.type === "delta" && evt.text) {
             acc += evt.text;

@@ -189,6 +189,12 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
         cmd.env("YARVIS_DEBUG_MEMORY", value);
     }
 
+    // Same, for MCP: traces what a connected server actually sent, for when its
+    // replies don't match the protocol schema.
+    if let Ok(value) = std::env::var("YARVIS_DEBUG_MCP") {
+        cmd.env("YARVIS_DEBUG_MCP", value);
+    }
+
     // Read the single secrets item once; one Keychain access covers every
     // value injected below.
     let secrets = read_root();
@@ -206,6 +212,9 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
     }
     if let Some(key) = secret_from_root(&secrets, "cerebras_api_key") {
         cmd.env("CEREBRAS_API_KEY", key);
+    }
+    if let Some(key) = secret_from_root(&secrets, "huggingface_api_key") {
+        cmd.env("HUGGINGFACE_API_KEY", key);
     }
     if let Some(token) = secret_from_root(&secrets, "github_token") {
         cmd.env("GITHUB_TOKEN", token);

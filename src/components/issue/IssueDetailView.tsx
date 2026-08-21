@@ -9,6 +9,7 @@ import type {
 import { useGithubStartWork } from "../../lib/issues/useGithubStartWork";
 import { formatRelativeTime } from "../../lib/time";
 import { openExternal } from "../../lib/url";
+import CopyLinkButton from "../CopyLinkButton";
 import Markdown from "../Markdown";
 
 const fieldInput =
@@ -369,6 +370,11 @@ export default function IssueDetailView({
             >
               Open on GitHub ↗
             </button>
+            <CopyLinkButton
+              url={summary.url}
+              subject="issue link"
+              title={`Copy the GitHub link to ${summary.displayId}`}
+            />
             <button
               type="button"
               onClick={() => void toggleState()}

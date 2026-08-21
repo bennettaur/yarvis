@@ -18,6 +18,7 @@ import {
   type WorkspaceStatus,
   type WorkspaceSummary,
 } from "../lib/workspaces";
+import CopyPathButton from "./pr/CopyPathButton";
 import SplitPane, { usePersistedRatio } from "./SplitPane";
 import TerminalTabs, {
   type OpenFileDiff,
@@ -1032,6 +1033,7 @@ function WorkspaceDetailView({
           <span className="ml-auto truncate font-mono text-xs text-zinc-500">
             {detail.rootPath}
           </span>
+          <CopyPathButton path={detail.rootPath} />
           {agentError && <span className="shrink-0 text-xs text-red-400">{agentError}</span>}
           {provisioned && (!agentActive || agentDismissed) && (
             <button
@@ -1061,6 +1063,9 @@ function WorkspaceDetailView({
               <span className="text-zinc-200">{wr.repo.name}</span>
               <span className="font-mono text-zinc-500">{wr.branch}</span>
               <RepoStatusBadge status={wr.status} />
+              {/* The worktree, not the workspace root the header copies: in a
+                  multi-repo workspace that is the folder a command is run in. */}
+              <CopyPathButton path={wr.worktreePath} />
               {wr.repo.runScript && wr.status === "ready" && (
                 <button
                   type="button"

@@ -38,12 +38,18 @@ export const EMBED_DIM: number = 1536;
 export const messageRole = pgEnum("message_role", ["user", "assistant", "system", "tool"]);
 
 /**
- * Optional provenance for a chat message. The in-app UI leaves it null; the
+ * Optional provenance for a chat message. The in-app chat leaves it null; the
  * Telegram bot sets it on the user messages it persists so the chat history can
- * show that a message came from Telegram and which Telegram user sent it.
+ * show that a message came from Telegram and which Telegram user sent it, and
+ * the Voice tab sets it so a turn the user *spoke* is distinguishable from one
+ * they typed and read back.
+ *
+ * That distinction is load-bearing, not cosmetic: a spoken turn was never
+ * proof-read, so `runAgentTurn` puts the destructive tools behind an explicit
+ * confirmation for it.
  */
 export interface ChatMessageMetadata {
-  source?: "telegram";
+  source?: "telegram" | "voice";
   telegramUserId?: number;
   telegramUsername?: string;
   telegramFirstName?: string;
@@ -604,6 +610,47 @@ export const issueStars = pgTable(
  * error otherwise. `apiKind` is "openai" today — both the user's proxy and a
  * local Ollama server speak the OpenAI-compatible embeddings API.
  */
+/**
+ * The speech backends every surface uses — the Voice controls in chat, and the
+ * Telegram bot once it grows them (#226). It lives here rather than in the
+ * frontend precisely because the bot runs in this process and has no way to
+ * read a browser's localStorage. Single row, like `embeddings_config`.
+ *
+ * Credentials are not here: a Hugging Face token is a Keychain secret, and a
+ * custom provider's key rides its own entry. This is the structural half only.
+ */
+export const voiceConfig = pgTable("voice_config", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sttProvider: text("stt_provider").notNull().default(""),
+  sttModel: text("stt_model").notNull().default(""),
+  /** ISO-639-1 hint; blank lets the model detect the language. */
+  sttLanguage: text("stt_language").notNull().default(""),
+  ttsProvider: text("tts_provider").notNull().default(""),
+  ttsModel: text("tts_model").notNull().default(""),
+  ttsVoice: text("tts_voice").notNull().default(""),
+  /**
+   * Reference clip for a voice-cloning model, as a base64 audio data URI. Text
+   * rather than bytea: it goes out as a JSON string field, so storing it
+   * decoded would mean re-encoding on every request.
+   */
+  ttsRefAudio: text("tts_ref_audio").notNull().default(""),
+  /** Extra body fields for the synthesis request, keyed by field name. */
+  ttsExtras: jsonb("tts_extras")
+    .$type<Record<string, string | number | boolean>>()
+    .notNull()
+    .default({}),
+  /** Speak replies aloud by default on a surface that can. */
+  speakReplies: boolean("speak_replies").notNull().default(true),
+  /**
+   * End a turn on silence and re-open the mic after the reply. Off by default:
+   * with it on, anything audible in the room can become a turn the user never
+   * addressed to the assistant.
+   */
+  handsFree: boolean("hands_free").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const embeddingsConfig = pgTable("embeddings_config", {
   id: uuid("id").primaryKey().defaultRandom(),
   baseUrl: text("base_url").notNull(),
@@ -623,6 +670,12 @@ export const embeddingsConfig = pgTable("embeddings_config", {
  *
  * `transport` is "http" (Streamable HTTP / SSE, using `url` + `headerNames`) or
  * "stdio" (a local subprocess, using `command` + `args`).
+ *
+ * `oauth` opts an http server into the MCP authorization flow (discovery →
+ * dynamic client registration → authorization code + PKCE) instead of a
+ * hand-entered bearer header. `oauthScope` overrides the scopes requested at
+ * registration and authorization; absent, the server's advertised scopes are
+ * used. Both are inert for stdio, which has no HTTP layer to authorize.
  */
 export const mcpServers = pgTable("mcp_servers", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -632,6 +685,8 @@ export const mcpServers = pgTable("mcp_servers", {
   command: text("command"),
   args: jsonb("args").$type<string[]>().notNull().default([]),
   headerNames: jsonb("header_names").$type<string[]>().notNull().default([]),
+  oauth: boolean("oauth").notNull().default(false),
+  oauthScope: text("oauth_scope"),
   enabled: boolean("enabled").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -675,6 +730,9 @@ export type NewAgentToolRow = typeof agentTools.$inferInsert;
 
 export type EmbeddingsConfigRow = typeof embeddingsConfig.$inferSelect;
 export type NewEmbeddingsConfigRow = typeof embeddingsConfig.$inferInsert;
+
+export type VoiceConfigRow = typeof voiceConfig.$inferSelect;
+export type NewVoiceConfigRow = typeof voiceConfig.$inferInsert;
 
 /**
  * A local, on-device log of meaningful actions (tasks added/completed, a chat

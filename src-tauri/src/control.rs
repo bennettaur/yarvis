@@ -1,6 +1,7 @@
 //! Local control channel: a Unix-domain-socket RPC the Bun sidecar uses to ask
 //! the core to do things it can't do itself — spawning, killing, and typing an
-//! instruction into a Claude Code session in a workspace PTY.
+//! instruction into a Claude Code session in a workspace PTY, and writing an MCP
+//! server's OAuth credentials into the Keychain.
 //!
 //! Security model: the socket lives in the app's private data dir (mode 0700) as
 //! a mode-0600 file, so only the same user can connect, and a UDS is never
@@ -14,7 +15,10 @@
 //! instead, which `pty::send_session_instruction` sanitizes, refuses to send
 //! unless the configured agent itself is what reads that prompt, and refuses
 //! outright when it opens with a character the agent reads as a command rather
-//! than a request. Requests and responses are newline-delimited JSON.
+//! than a request. `mcp.saveOAuth` is the one method that writes a secret, and
+//! it can only reach the `oauth` subtree of one MCP server's entry — never a
+//! provider key, the database URL, or another server's headers. Requests and
+//! responses are newline-delimited JSON.
 
 /// Absolute path to the control socket, kept in managed state so `sidecar.rs`
 /// can pass it to the child process via env.
@@ -91,6 +95,15 @@ mod unix_impl {
         /// What to type at the running agent's prompt. Composed by the chat
         /// model, so `pty::send_session_instruction` sanitizes and bounds it.
         instruction: String,
+    }
+
+    #[derive(Deserialize)]
+    struct SaveOAuthParams {
+        #[serde(rename = "serverId")]
+        server_id: String,
+        /// The credential bundle to store; null forgets what is stored.
+        #[serde(default)]
+        oauth: Option<Value>,
     }
 
     fn socket_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -234,6 +247,11 @@ mod unix_impl {
                 let p: SendParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
                 validate_workspace_id(&p.workspace_id)?;
                 send_session_instruction(app, state.inner(), &p.workspace_id, &p.instruction)
+            }
+            "mcp.saveOAuth" => {
+                let p: SaveOAuthParams =
+                    serde_json::from_value(params).map_err(|e| e.to_string())?;
+                crate::mcp::store_oauth(&p.server_id, p.oauth)
             }
             other => Err(format!("unknown method: {other}")),
         }

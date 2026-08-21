@@ -15,6 +15,7 @@ import { createCalendarRoutes, createGoogleCallbackRoutes } from "./google/route
 import { createIssueRoutes } from "./issues/routes.ts";
 import { createJiraRoutes } from "./jira/routes.ts";
 import { redactSecrets } from "./llm/errors.ts";
+import { createMcpOAuthCallbackRoutes } from "./mcp/callbackRoutes.ts";
 import { createMcpRoutes } from "./mcp/routes.ts";
 import { createMcpEndpointInfoRoutes, createMcpEndpointRoutes } from "./mcpServer/routes.ts";
 import { createMemoryRoutes } from "./memory/routes.ts";
@@ -23,6 +24,7 @@ import { createPrRoutes } from "./pr/routes.ts";
 import { createReadiness, type Readiness } from "./readiness.ts";
 import { createTaskRoutes } from "./tasks/routes.ts";
 import { createTelegramRoutes } from "./telegram/routes.ts";
+import { createVoiceRoutes } from "./voice/routes.ts";
 import { createWipRoutes } from "./wip/routes.ts";
 import { createRepoRoutes, createWorkspaceRoutes } from "./workspaces/routes.ts";
 
@@ -80,6 +82,10 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   // a state nonce and exposes nothing sensitive.
   app.route("/", createGoogleCallbackRoutes(config));
 
+  // The MCP authorization callback is the same shape: a browser redirect that
+  // can't carry the bearer, gated on a single-use state nonce instead.
+  app.route("/", createMcpOAuthCallbackRoutes(config));
+
   // Attention-ingest sits OUTSIDE the main bearer wall and authenticates with its
   // own scoped token (checked inside the router), so a Claude session shell can
   // raise an attention flag without holding the full-access bearer.
@@ -101,6 +107,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
         anthropic: config.secrets.anthropicApiKey !== undefined,
         gemini: config.secrets.geminiApiKey !== undefined,
         cerebras: config.secrets.cerebrasApiKey !== undefined,
+        huggingface: config.secrets.huggingFaceApiKey !== undefined,
       },
     }),
   );
@@ -133,6 +140,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/omni", createOmniRoutes(config));
   app.route("/api/pr", createPrRoutes(config));
   app.route("/api/telegram", createTelegramRoutes());
+  app.route("/api/voice", createVoiceRoutes(config));
   app.route("/api/repos", createRepoRoutes(config));
   app.route("/api/workspaces", createWorkspaceRoutes(config));
 

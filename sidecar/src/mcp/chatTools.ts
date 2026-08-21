@@ -28,12 +28,20 @@ export interface ApprovalHooks {
 }
 
 /**
- * Wraps a live MCP tool so that calling it first requires explicit user
- * approval. On denial or timeout it returns a structured result the model can
- * read and move on from, rather than throwing.
+ * Wraps a tool so that calling it first requires explicit user approval. On
+ * denial or timeout it returns a structured result the model can read and move
+ * on from, rather than throwing.
+ *
+ * Every MCP tool goes through this because it is third-party code. A built-in
+ * goes through it only when the *turn* is one the user didn't proof-read — see
+ * `chat/destructiveTools.ts`.
  */
-export function wrapMcpToolWithApproval(id: string, t: McpClientTool, hooks: ApprovalHooks): Tool {
-  const original = t.execute;
+export function wrapToolWithApproval(
+  id: string,
+  t: Tool | McpClientTool,
+  hooks: ApprovalHooks,
+): Tool {
+  const original = (t as McpClientTool).execute;
   if (!original) return t as unknown as Tool;
   const wrapped = {
     ...t,
@@ -166,16 +174,30 @@ export async function assembleAgentToolset(opts: {
   sessionId: string;
   builtinTools: Record<string, Tool>;
   approval?: ApprovalHooks;
+  /**
+   * Built-ins that must be confirmed before they run on this turn. Empty for a
+   * surface where the user proof-read what they sent.
+   */
+  confirmBuiltins?: ReadonlySet<string>;
 }): Promise<AgentToolset> {
-  const { config, db, sessionId, builtinTools, approval } = opts;
+  const { config, db, sessionId, builtinTools, approval, confirmBuiltins } = opts;
   const registry = await listRegistryTools(db);
   const policyById = new Map(registry.map((r) => [r.id, r.policy]));
 
   const tools: Record<string, Tool> = {};
 
   // Built-ins: keyed by bare name; excluded only when explicitly disabled.
+  // A built-in this turn wants confirmed is wrapped like an MCP tool — but only
+  // when there is a channel to ask on. With no `approval` hooks nobody could
+  // answer the prompt, so it is dropped instead: on a surface that can't ask,
+  // silently running it is the one thing that must not happen.
   for (const [name, t] of Object.entries(builtinTools)) {
     if (policyById.get(`builtin:${name}`) === "disabled") continue;
+    if (confirmBuiltins?.has(name)) {
+      if (!approval) continue;
+      tools[name] = wrapToolWithApproval(name, t, approval);
+      continue;
+    }
     tools[name] = t;
   }
 
@@ -186,7 +208,7 @@ export async function assembleAgentToolset(opts: {
     const liveTools = getMcpManager().getLiveTools();
     for (const [id, t] of Object.entries(liveTools)) {
       if (policyById.get(id) === "disabled") continue;
-      tools[id] = wrapMcpToolWithApproval(id, t, approval);
+      tools[id] = wrapToolWithApproval(id, t, approval);
     }
   }
 

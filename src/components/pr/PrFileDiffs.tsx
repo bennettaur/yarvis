@@ -6,6 +6,7 @@ import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { CodeText, rowClass } from "../diff/DiffRow";
 import { usePersistedBoolean } from "../SplitPane";
 import ChangeMinimap from "./ChangeMinimap";
+import CopyFileLinkButton from "./CopyFileLinkButton";
 import CopyPathButton from "./CopyPathButton";
 import { flashFile } from "./flashFile";
 import GapMarker from "./GapMarker";
@@ -220,6 +221,7 @@ function WholeFileToggle({
 
 function FileDiff({
   prRef,
+  prUrl,
   file,
   index,
   threads,
@@ -232,6 +234,8 @@ function FileDiff({
   insights,
 }: {
   prRef: PrRef;
+  /** The PR's web URL, which the file's provider link is derived from. */
+  prUrl: string;
   file: PrFile;
   /** Position in the review, deciding whether this file is open on mount. */
   index: number;
@@ -362,6 +366,7 @@ function FileDiff({
           {file.filename}
         </span>
         <CopyPathButton path={file.filename} />
+        <CopyFileLinkButton prRef={prRef} prUrl={prUrl} headSha={headSha} path={file.filename} />
         {file.additions + file.deletions > 0 && (
           <>
             <span className="text-xs text-emerald-400">+{file.additions}</span>
@@ -420,11 +425,18 @@ function FileDiff({
 /** The changed files of a PR rendered as expandable, comment-able diffs. */
 export default function PrFileDiffs({
   prRef,
+  prUrl = "",
   viewed,
   onToggleViewed,
   focus = null,
 }: {
   prRef: PrRef;
+  /**
+   * The PR's web URL, which the per-file provider links are derived from. Empty
+   * where the host doesn't know it (an Omni widget names a PR by owner/repo/number
+   * only), which drops those links rather than guessing a hostname.
+   */
+  prUrl?: string;
   viewed: Set<string>;
   onToggleViewed: (path: string) => void;
   /** Where a guided review wants the reader looking, if one is running. */
@@ -498,6 +510,7 @@ export default function PrFileDiffs({
         <FileDiff
           key={f.filename}
           prRef={prRef}
+          prUrl={prUrl}
           file={f}
           index={i}
           threads={threads}

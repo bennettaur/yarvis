@@ -1,5 +1,5 @@
 {
-  "id": "54858be7-fa38-4b8b-806a-1b5bee3c7dd8",
+  "id": "bcbc3052-8588-4021-8076-2e77b1d2fff5",
   "prevId": "5c89558e-9412-4ace-b2c1-faa846f900c8",
   "version": "7",
   "dialect": "postgresql",
@@ -1374,6 +1374,19 @@
           "notNull": true,
           "default": "'[]'::jsonb"
         },
+        "oauth": {
+          "name": "oauth",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "oauth_scope": {
+          "name": "oauth_scope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "enabled": {
           "name": "enabled",
           "type": "boolean",
@@ -2062,12 +2075,6 @@
         },
         "mergeable": {
           "name": "mergeable",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "review_decision": {
-          "name": "review_decision",
           "type": "text",
           "primaryKey": false,
           "notNull": false

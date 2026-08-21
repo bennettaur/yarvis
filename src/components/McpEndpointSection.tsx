@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { writeClipboard } from "../lib/clipboard";
 import { getMcpEndpoint, type McpEndpoint } from "../lib/mcp";
-import { FEEDBACK_MS } from "./pr/CopyPathButton";
+import { FEEDBACK_MS } from "./CopyButton";
 
 /** Width of the mask standing in for the token; unrelated to its real length. */
 const MASK_WIDTH = 32;

@@ -5,6 +5,7 @@ export type SecretKey =
   | "anthropic_api_key"
   | "gemini_api_key"
   | "cerebras_api_key"
+  | "huggingface_api_key"
   | "github_token"
   | "azure_devops_token"
   | "azure_devops_org_url"
@@ -53,6 +54,12 @@ export const SECRETS: SecretMeta[] = [
     label: "Cerebras API key",
     placeholder: "csk-...",
     help: "Cerebras Cloud key for chat. The endpoint is fixed; no base URL to set.",
+  },
+  {
+    key: "huggingface_api_key",
+    label: "Hugging Face token",
+    placeholder: "hf_...",
+    help: "Hugging Face Inference token for the Voice tab's speech-to-text and text-to-speech.",
   },
   {
     key: "github_token",

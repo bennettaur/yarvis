@@ -5,9 +5,10 @@ Guidance for AI agents building features in this repo.
 ## What this is
 
 Yarvis is a personal-assistant desktop app for macOS, built with Tauri v2: an
-LLM chat interface with memory, work tracking, PR review, calendar, and
-workspace/git-worktree management. See `README.md` for the full user-facing
-setup and feature docs — this file is about working in the codebase.
+LLM chat interface with memory, a spoken (STT/TTS) front end to the same agent,
+work tracking, PR review, calendar, and workspace/git-worktree management. See
+`README.md` for the full user-facing setup and feature docs — this file is about
+working in the codebase.
 
 ## Architecture
 
@@ -19,9 +20,10 @@ Three processes, each with a clean ownership boundary:
   session: both the Terminal tab's shells and each workspace's agent session
   live in `pty.rs`, independent of the webview that renders them. The sidecar
   reaches them only through `control.rs`, a Unix-domain-socket RPC with a fixed
-  method list (`claude.spawn`, `claude.kill`, `claude.send`) driven from
-  `sidecar/src/core/controlClient.ts`. New ways to act on a session belong
-  there, as another narrow method — not as a sidecar route that writes to a PTY.
+  method list (`claude.spawn`, `claude.kill`, `claude.send`, `mcp.saveOAuth`)
+  driven from `sidecar/src/core/controlClient.ts`. New ways to act on a session
+  belong there, as another narrow method — not as a sidecar route that writes to
+  a PTY.
 - **React frontend** (`src/`) — Vite + TypeScript + Tailwind. Talks to the
   Rust core via `invoke` (native + secrets) and to the sidecar over
   authenticated loopback HTTP (data + AI).
@@ -126,6 +128,38 @@ back to ad-hoc.
   the tools in `codeTools.ts` are written once and GitHub/Azure each supply an
   implementation. A capability one provider lacks resolves to `null` so the
   caller can say so, rather than throwing.
+- Speech backends sit behind the `SpeechClient` interface in
+  `sidecar/src/voice/speech.ts`, resolved by `voice/providers.ts` the same way
+  `llm/providers.ts` resolves chat models — built-ins keep a bare id, user
+  providers keep the `custom:<id>` namespace.
+- Voice is a capability of the chat surfaces, not a surface of its own:
+  `src/lib/useVoice.ts` wraps speech around a thread the caller already owns,
+  taking that surface's `send` and watching the reply text it is already
+  accumulating. A spoken turn therefore uses whatever provider/model that chat
+  is set to. Which speech backends to use lives in Postgres
+  (`sidecar/src/voice/config.ts`), not in the frontend, because the Telegram bot
+  runs in the sidecar and needs the same settings (#226).
+- Outbound speech calls go through `guardedFetch` in that same file, never a
+  bare `fetch`: it re-runs the SSRF guard on every redirect hop rather than only
+  the first (`redirect: "manual"`, mirroring `memory/ingest.ts`) and puts a
+  deadline on the whole chain. `fetch` strips `Authorization` across origins but
+  not a custom provider's own auth headers, so following a redirect unchecked
+  would hand those to whatever host it named.
+- What a surface can do without asking depends on whether the user proof-read
+  the turn. `ChatMessageMetadata.source` records where it came from, and
+  `runAgentTurn` uses it: a `voice` turn puts the tools in
+  `chat/destructiveTools.ts` behind the same approval prompt MCP tools use,
+  because a transcript can be misheard or picked up from the room. A surface
+  that can't prompt gets those tools dropped rather than run unattended —
+  silently doing the irreversible thing is the one unacceptable outcome.
+- Secrets flow one way — the webview writes them to the Keychain, the core
+  injects them into the sidecar at spawn. MCP OAuth tokens are the single
+  exception, because an authorization server refreshes them on its own schedule
+  and a refresh must not need an app restart to be durable. They travel back the
+  other way through `mcp.saveOAuth` on the control channel, which is scoped so it
+  can only write the `oauth` subtree of one server's Keychain entry. Anything
+  else that wants to write a secret from the sidecar owes the same narrowing —
+  or, better, belongs in Postgres like the Google Calendar tokens.
 - `sidecar/src/mcp/` is the MCP *client* (servers Yarvis connects out to);
   `sidecar/src/mcpServer/` is the MCP endpoint Yarvis *serves*. A tool exposed
   over that endpoint is reached by outside clients holding only the scoped
