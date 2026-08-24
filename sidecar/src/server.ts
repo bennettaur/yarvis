@@ -1,4 +1,3 @@
-import { seedBuiltinSpecialists } from "./agents/specialists.ts";
 import { syncBuiltins } from "./agentTools/registry.ts";
 import { createApp } from "./app.ts";
 import { loadConfig, loadInstanceConfig } from "./config.ts";
@@ -77,16 +76,6 @@ if (config.databaseUrl) {
         await syncBuiltins(db, await chooseEmbedder(config, db));
       } catch (e) {
         console.error("[sidecar] built-in tool sync failed:", redactSecrets(String(e)));
-      }
-      // The specialists the orchestrator delegates to, and the jobs run
-      // headlessly. Seeded here for the same reason built-in tools are: a fresh
-      // database should come up with the shipped set present.
-      try {
-        const db = getDb(config.databaseUrl as string).db;
-        const { inserted } = await seedBuiltinSpecialists(db);
-        if (inserted > 0) console.log(`[sidecar] seeded ${inserted} built-in specialist(s)`);
-      } catch (e) {
-        console.error("[sidecar] specialist seed failed:", redactSecrets(String(e)));
       }
       // The Telegram bot drives the chat agent, which needs the database, so it
       // only starts once migrations have applied. It is a no-op without a token.

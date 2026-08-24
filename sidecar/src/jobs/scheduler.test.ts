@@ -1,7 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { seedBuiltinSpecialists } from "../agents/specialists.ts";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
 import { recordEvent } from "../events/service.ts";
@@ -38,8 +37,7 @@ const config = {
 } as Config;
 
 beforeEach(async () => {
-  await sql`TRUNCATE job_runs, events, memories, agent_specialists, job_config RESTART IDENTITY CASCADE`;
-  await seedBuiltinSpecialists(db);
+  await sql`TRUNCATE job_runs, events, memories, job_config RESTART IDENTITY CASCADE`;
 });
 
 afterAll(async () => {

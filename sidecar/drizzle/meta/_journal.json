@@ -225,6 +225,13 @@
       "when": 1787597640886,
       "tag": "0031_unknown_karnak",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1787603879328,
+      "tag": "0032_public_sugar_man",
+      "breakpoints": true
     }
   ]
 }

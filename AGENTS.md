@@ -206,19 +206,33 @@ back to ad-hoc.
   its input consumed only after its output is stored — `consolidate-events`
   claims a window of events after the summary memory exists, so a failed run
   leaves the window for the next one instead of losing it.
-- Delegation is data. A specialist (`sidecar/src/agents/`) is a prompt, a model
-  and a subset of the tool registry stored as a row, so retuning one is an edit
-  in Settings rather than a build. Built-ins are seeded if absent and never
-  overwritten — an edit survives every restart — with an explicit reset for when
-  an edit goes wrong. A delegated run gets no MCP tools, because it has no
-  channel to hold an approval prompt on (the same rule a surface that can't
-  prompt gets), and no delegation tools, because a specialist that could
-  delegate could delegate to itself. A tool that writes where other people can
-  see it sits between those two cases: available, but only to a specialist
-  granted it by name in `unattendedToolIds`, shown on the row in Settings as
-  "acts unattended". `project-manager` filing tickets is the one shipped grant —
-  turning a discussion into tickets is the job, and the alternative was a
-  specialist whose prompt promised something its tool list had quietly removed.
+- Delegation is files, not rows. A specialist (`sidecar/src/agents/`) is a
+  markdown file: frontmatter for its tools, model and step budget, body as its
+  system prompt. The shipped ones live in `agents/definitions/` and are imported
+  with `with { type: "text" }`, so they are reviewable in git *and* embedded in
+  the compiled binary; `~/.yarvis/agents/*.md` loads beside them and wins on a
+  name collision. That precedence is why this beat a table: a shipped prompt
+  improves with the app while a user's definition stays theirs, with no
+  seed-once rule and nothing to reset. Adding a specialist is writing a file,
+  which is what "let the agent reach for one it needs" requires.
+  - Definitions come from `~/.yarvis/agents` only — never a workspace or a
+    checked-out repo. A definition is a system prompt plus a tool list, so a repo
+    that could contribute one could hand the agent instructions and the means to
+    act on them.
+  - The frontmatter parser is a strict subset (`agents/frontmatter.ts`), not a
+    YAML dependency: an agent file needs scalars and flat lists, and a real
+    parser would accept nested structures this format has no meaning for.
+    Anything outside the subset is an error naming the file and line, because a
+    half-parsed definition is a prompt that isn't what its author wrote. Unknown
+    tool names are rejected at load for the same reason.
+  - A delegated run gets no MCP tools, because it has no channel to hold an
+    approval prompt on (the same rule a surface that can't prompt gets), and no
+    delegation tools, because a specialist that could delegate could delegate to
+    itself. A tool that writes where other people can see it sits between those
+    two cases: available, but only to a definition that also names it under
+    `unattended:`, which Settings flags on the row as "acts unattended".
+    `project-manager` filing tickets is the one shipped grant — turning a
+    discussion into tickets is the job.
 - Memory is typed. `memories.kind` is a column, not a metadata tag, because the
   jobs, the recap and the browser all filter on it. The kinds a *turn* may write
   exclude the ones the jobs author, so hand-written text can't masquerade as a

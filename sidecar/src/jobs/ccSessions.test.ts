@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { seedBuiltinSpecialists } from "../agents/specialists.ts";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
 import { ccSessionDigestJob, parseSessionDigest, transcriptMaterial } from "./ccSessions.ts";
@@ -47,8 +46,7 @@ function writeTranscript(sessionId: string, body: string): string {
 }
 
 beforeEach(async () => {
-  await sql`TRUNCATE cc_session_digests, job_config, job_runs, memories, events, agent_specialists RESTART IDENTITY CASCADE`;
-  await seedBuiltinSpecialists(db);
+  await sql`TRUNCATE cc_session_digests, job_config, job_runs, memories, events RESTART IDENTITY CASCADE`;
   claudeHome = mkdtempSync(join(tmpdir(), "yarvis-claude-"));
   mkdirSync(join(claudeHome, "projects", PROJECT_DIR), { recursive: true });
   process.env.CLAUDE_HOME = claudeHome;

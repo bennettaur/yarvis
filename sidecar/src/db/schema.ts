@@ -1209,54 +1209,6 @@ export const agentTodos = pgTable(
 );
 
 /**
- * A configured specialist the orchestrator can delegate to: a model, a tool
- * subset (registry ids), and a task prompt. Rows rather than code so a
- * specialist can be added or retuned from the UI; the built-ins are seeded on
- * startup — but unlike `agent_tools`, whose sync rewrites any row whose content
- * changed, an existing specialist is never overwritten: a prompt the user tuned
- * survives every restart. `builtin` marks the rows `resetSpecialist` can put back
- * to the shipped definition.
- */
-export const agentSpecialists = pgTable(
-  "agent_specialists",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    name: text("name").notNull(),
-    /** What this specialist is for — what the orchestrator reads when choosing. */
-    description: text("description").notNull(),
-    prompt: text("prompt").notNull(),
-    /** Registry tool ids the specialist may call; empty means no tools. */
-    toolIds: jsonb("tool_ids").$type<string[]>().notNull().default([]),
-    /**
-     * Tools this specialist may hold even though a delegated run cannot ask the
-     * user to approve them — the ones that write somewhere other people can see.
-     *
-     * Empty by default, and deliberately a second list rather than a flag on the
-     * first: granting one is a decision about *this* specialist acting on its own,
-     * and it should be visible as such in Settings and in review, not inferred
-     * from a tool id sitting in a list of ten. Delegation itself is never
-     * grantable, whatever is named here.
-     */
-    unattendedToolIds: jsonb("unattended_tool_ids").$type<string[]>().notNull().default([]),
-    /** Overrides the default chat provider/model when both are set. */
-    provider: text("provider"),
-    model: text("model"),
-    /** Cap on tool-call rounds for one delegated run. */
-    maxSteps: integer("max_steps").notNull().default(8),
-    builtin: boolean("builtin").notNull().default(false),
-    enabled: boolean("enabled").notNull().default(true),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    // Case-insensitive, matching how `findSpecialist` resolves a name: a
-    // case-sensitive index would let "Planner" and "planner" both exist, after
-    // which the lookup returns whichever row the plan happened to reach.
-    uniqueIndex("agent_specialists_name_unique_idx").on(sql`lower(${t.name})`),
-  ],
-);
-
-/**
  * Bookkeeping for the background job scheduler: one row per job name, holding
  * its last run and a lease. The lease is what makes a job safe when several app
  * instances share one database — a tick claims it with a conditional update, so
@@ -1343,8 +1295,6 @@ export type ProjectItem = typeof projectItems.$inferSelect;
 export type NewProjectItem = typeof projectItems.$inferInsert;
 export type AgentTodo = typeof agentTodos.$inferSelect;
 export type NewAgentTodo = typeof agentTodos.$inferInsert;
-export type AgentSpecialist = typeof agentSpecialists.$inferSelect;
-export type NewAgentSpecialist = typeof agentSpecialists.$inferInsert;
 export type JobRun = typeof jobRuns.$inferSelect;
 export type NewJobRun = typeof jobRuns.$inferInsert;
 export type CcSessionDigest = typeof ccSessionDigests.$inferSelect;

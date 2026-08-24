@@ -6,19 +6,35 @@ import { sidecarFetch } from "./api";
  * allowed to do, and whether the consolidation passes are actually running.
  */
 
+/** A specialist as loaded from its markdown definition. */
 export interface Specialist {
-  id: string;
   name: string;
   description: string;
   prompt: string;
-  toolIds: string[];
+  /** Bare built-in tool names, as the file lists them. */
+  tools: string[];
   /** Tools it may use without the user approving each call. */
-  unattendedToolIds: string[];
+  unattended: string[];
   provider: string | null;
   model: string | null;
   maxSteps: number;
-  builtin: boolean;
   enabled: boolean;
+  /** "builtin" ships with the app; "user" comes from the agents directory. */
+  source: "builtin" | "user";
+  path: string;
+}
+
+/** A definition file that failed to parse, reported rather than skipped. */
+export interface SpecialistProblem {
+  path: string;
+  message: string;
+}
+
+export interface SpecialistCatalog {
+  specialists: Specialist[];
+  problems: SpecialistProblem[];
+  /** Directory user definitions are read from. */
+  userDir: string;
 }
 
 export interface JobStatus {
@@ -54,15 +70,11 @@ async function request<T>(path: string, method = "GET", body?: unknown): Promise
   return res.json();
 }
 
-export const listSpecialists = () => request<Specialist[]>("/api/specialists");
+export const listSpecialists = () => request<SpecialistCatalog>("/api/specialists");
 
-export const updateSpecialist = (
-  id: string,
-  patch: { prompt?: string; enabled?: boolean; provider?: string | null; model?: string | null },
-) => request<Specialist>(`/api/specialists/${id}`, "PATCH", patch);
-
-export const resetSpecialist = (name: string) =>
-  request<Specialist>(`/api/specialists/${name}/reset`, "POST", {});
+/** Re-reads the definition files, for after an edit. */
+export const reloadSpecialists = () =>
+  request<SpecialistCatalog>("/api/specialists/reload", "POST", {});
 
 export const listJobs = () => request<{ jobs: JobStatus[] }>("/api/jobs").then((body) => body.jobs);
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { tool } from "ai";
 import { z } from "zod";
-import type { AgentSpecialist } from "../db/schema.ts";
+import type { SpecialistDefinition } from "./catalog.ts";
 import { materialBlock, selectTools, specialistSystemPrompt } from "./run.ts";
 
 const fake = (name: string) =>
@@ -23,7 +23,7 @@ const all = {
 const specialist = {
   name: "planner",
   prompt: "You advise on what to do next.",
-} as AgentSpecialist;
+} as SpecialistDefinition;
 
 describe("specialist tool selection", () => {
   it("keeps only the configured built-ins", () => {

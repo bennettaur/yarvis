@@ -3,8 +3,8 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { fence, untrustedWarning } from "../lib/fencing.ts";
+import { listSpecialists, searchSpecialists } from "./catalog.ts";
 import { runSpecialist } from "./run.ts";
-import { listSpecialists } from "./specialists.ts";
 
 /**
  * Delegation, from the orchestrator's side.
@@ -35,15 +35,27 @@ export function buildDelegationTools(db: Db, config: Config) {
   return {
     list_specialists: tool({
       description:
-        "The specialists you can delegate to, with what each is for. Read this before delegating if you are unsure which one fits.",
-      inputSchema: z.object({}),
-      execute: async () => {
-        const rows = await listSpecialists(db, { enabledOnly: true });
-        return rows.map((s) => ({
-          name: s.name,
-          description: s.description,
-          tools: s.toolIds.length,
-        }));
+        "The specialists you can delegate to, with what each is for. Read this before delegating if you are unsure which one fits. Pass `about` to rank them against the work at hand instead of listing everything.",
+      inputSchema: z.object({
+        about: z
+          .string()
+          .max(300)
+          .optional()
+          .describe("What you need done, to narrow the list by relevance"),
+      }),
+      execute: async ({ about }) => {
+        const matches = about?.trim()
+          ? (await searchSpecialists(about)).map((m) => m.specialist)
+          : await listSpecialists({ enabledOnly: true });
+        return {
+          specialists: matches.map((s) => ({
+            name: s.name,
+            description: s.description,
+            tools: s.tools.length,
+            unattended: s.unattended.length > 0,
+          })),
+          note: "A specialist runs in its own context with only the tools listed for it, and cannot see this conversation.",
+        };
       },
     }),
 

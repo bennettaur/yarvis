@@ -66,7 +66,14 @@ function builtinDescriptors(): ToolDescriptor[] {
   return descriptors;
 }
 
-/** Maps a built-in tool's registry id back to its name in the chat tool record. */
+/**
+ * Maps between a built-in tool's name — what an agent definition file writes —
+ * and its registry id.
+ */
+export function builtinIdForName(name: string): string {
+  return `builtin:${name}`;
+}
+
 export function nameForBuiltinId(id: string): string {
   return id.replace(/^builtin:/, "");
 }

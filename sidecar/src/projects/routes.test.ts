@@ -26,7 +26,9 @@ const auth = { Authorization: "Bearer test-token" };
 const jsonAuth = { ...auth, "Content-Type": "application/json" };
 
 beforeEach(async () => {
-  await sql`TRUNCATE projects, agent_todos, tasks, events RESTART IDENTITY CASCADE`;
+  // job_runs too: the scheduler tests claim leases, and "everything is due"
+  // below is only true against a clean table.
+  await sql`TRUNCATE projects, agent_todos, tasks, events, job_runs RESTART IDENTITY CASCADE`;
 });
 
 afterAll(async () => {

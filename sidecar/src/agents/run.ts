@@ -1,5 +1,5 @@
 import { generateText, stepCountIs, type Tool } from "ai";
-import { nameForBuiltinId } from "../agentTools/registry.ts";
+import { builtinIdForName, nameForBuiltinId } from "../agentTools/registry.ts";
 import { listDisabledToolIds } from "../agentTools/store.ts";
 import { newAttentionState } from "../chat/attentionTools.ts";
 import { buildBuiltinTools } from "../chat/builtinTools.ts";
@@ -9,12 +9,12 @@ import {
 } from "../chat/destructiveTools.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
-import type { AgentSpecialist } from "../db/schema.ts";
 import { describeError } from "../llm/errors.ts";
 import { defaultProviderModel, resolveModel } from "../llm/providers.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
-import { findSpecialist } from "./specialists.ts";
+import type { SpecialistDefinition } from "./catalog.ts";
+import { findSpecialist } from "./catalog.ts";
 
 /**
  * Running a specialist: one bounded, tool-limited turn that returns text.
@@ -148,7 +148,7 @@ export function selectTools(
 
 /** The system prompt: the specialist's own instructions plus the boundaries
  *  every delegated run has. */
-export function specialistSystemPrompt(specialist: AgentSpecialist, nonce: string): string {
+export function specialistSystemPrompt(specialist: SpecialistDefinition, nonce: string): string {
   return [
     specialist.prompt,
     `You are running as a delegated specialist called "${specialist.name}". You are not talking to the user directly: your final message is handed back to the assistant that delegated to you, so answer with the result itself and no conversational preamble.`,
@@ -171,7 +171,7 @@ export function materialBlock(material: string, nonce: string): string {
 
 export async function runSpecialist(input: RunSpecialistInput): Promise<SpecialistRun> {
   const { config, db, name, task, material, signal } = input;
-  const specialist = await findSpecialist(db, name);
+  const specialist = await findSpecialist(name);
   if (!specialist) throw new Error(`no specialist named "${name}"`);
   if (!specialist.enabled) throw new Error(`specialist "${specialist.name}" is disabled`);
 
@@ -198,9 +198,9 @@ export async function runSpecialist(input: RunSpecialistInput): Promise<Speciali
     remoteControl: false,
   });
   const disabled = new Set((await listDisabledToolIds(db)).map((t) => t.id));
-  const tools = selectTools(allTools, specialist.toolIds, {
+  const tools = selectTools(allTools, specialist.tools.map(builtinIdForName), {
     disabledIds: disabled,
-    grantedIds: specialist.unattendedToolIds,
+    grantedIds: specialist.unattended.map(builtinIdForName),
   });
 
   const nonce = crypto.randomUUID().replaceAll("-", "").slice(0, 12);

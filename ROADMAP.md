@@ -43,9 +43,10 @@ Status of the build against the original vision. The full V1 plan lives at
   and forgets nothing the user turned down; `work_summary` assembles the material
   for a weekly recap. Tasks stop duplicating, and completion evidence (an
   archived workspace, a merged PR whose title matches) is surfaced for
-  confirmation rather than applied. Multi-step work is delegated to configurable
-  specialists — a prompt, a model and a tool subset, editable under Settings →
-  Assistant — which the background jobs share. The calendar can now book an event
+  confirmation rather than applied. Multi-step work is delegated to specialists
+  defined as markdown files — frontmatter for tools, model and step budget, body
+  as the prompt — shipped in `agents/definitions/` and extended from
+  `~/.yarvis/agents/*.md`, which the background jobs share. The calendar can now book an event
   (create only; no update or delete exists).
 - **PR dashboard (GitHub + Azure DevOps)** — my PRs and review-requested, split
   into tabs and grouped by repo, newest-first; each row is clickable into the

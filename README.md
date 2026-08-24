@@ -781,15 +781,64 @@ material for "what did I get done this week" (activity counts, review verdicts
 given, your PRs and their current state, tasks completed, workspaces archived)
 and the model writes the prose.
 
-Multi-step work is delegated rather than done inline: a **specialist** is a
-prompt, a model and a subset of the tool registry, stored as a row you can retune
-under **Settings → Assistant**. A delegated run gets no MCP tools (it has no way
-to hold an approval prompt open) and cannot delegate further. It can write
-somewhere other people see — filing a JIRA ticket, say — only if that tool is
-granted to it by name; Settings marks such a specialist "acts unattended", and
-`project-manager` is the one that ships with a grant, because turning a
-discussion into tickets is its job. The same specialists back the background
-jobs, so a summary written at 3am reads like one written in conversation.
+Multi-step work is delegated rather than done inline, to a **specialist** that
+runs in its own context with only the tools its definition lists. See
+[Writing your own specialist](#writing-your-own-specialist) — they are markdown
+files. A delegated run gets no MCP tools (it has no way to hold an approval
+prompt open) and cannot delegate further. It can write somewhere other people
+see — filing a JIRA ticket, say — only if that tool is granted to it by name;
+Settings marks such a specialist "acts unattended", and `project-manager` is the
+one that ships with a grant, because turning a discussion into tickets is its
+job. The same specialists back the background jobs, so a summary written at 3am
+reads like one written in conversation.
+
+### Writing your own specialist
+
+A specialist is a markdown file: YAML frontmatter for its configuration, the body
+as its system prompt. The ones the app ships live in
+`sidecar/src/agents/definitions/` and are embedded in the build; yours go in
+`~/.yarvis/agents/*.md`, and a file named after one that ships **replaces** it —
+so a shipped prompt keeps improving with the app while anything you write stays
+yours. **Settings → Assistant** lists what loaded, names the directory, reports
+any file that failed to parse, and reloads without a restart.
+
+```markdown
+---
+name: release-notes
+description: >-
+  Turns a week of merged PRs into release notes. Use it when the user asks what
+  to tell people about what shipped.
+tools:
+  - work_summary
+  - search_events
+  - recall
+model: anthropic/claude-sonnet-5   # optional; omit for the default chat model
+maxSteps: 8                         # optional, default 8, hard cap 30
+---
+
+You write release notes from a developer's own activity.
+
+Group by theme rather than by pull request, and name each PR once…
+```
+
+`name` is the handle the assistant delegates by, and `description` is what it
+reads when choosing — write it as "what this is for, and when to reach for it".
+`tools` are bare built-in tool names (the Tool Manager lists them all); an
+unknown one is reported rather than silently dropped, and omitting the key gives
+a specialist with no tools, which is right for anything that works purely from
+material handed to it. `enabled: false` turns one off, including a built-in you
+would rather not have.
+
+Two things a definition deliberately cannot do. It cannot delegate — a specialist
+that could would eventually delegate to itself. And a tool that writes where other
+people can see it is withheld unless the file also names it under `unattended:`,
+because a delegated run has no way to stop and ask; that grant is what Settings
+flags on the row.
+
+Definitions are read from `~/.yarvis/agents` only, never from a workspace or a
+checked-out repo. A definition is a system prompt plus a tool list, so a repo that
+could contribute one would be a repo that hands the agent instructions and the
+means to act on them.
 
 Two boundaries worth knowing: the agent's todo tools are **not** on the MCP
 endpoint, so a Claude Code session can read and write memory but not edit the
