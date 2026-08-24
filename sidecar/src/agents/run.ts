@@ -85,36 +85,52 @@ export interface SpecialistRun {
 }
 
 /**
- * Tools a specialist may never hold, whatever its configuration says.
- *
- * Delegation is the orchestrator's job: a specialist that could delegate could
- * delegate to itself, and one bad prompt would become an unbounded chain of runs.
- *
- * The destructive set is excluded for the same reason MCP tools are — a
- * delegated run has no channel to hold an approval prompt on, and it works from
- * material (ticket bodies, transcripts, event payloads) that an outside party
- * can influence. Silently doing the irreversible thing unattended is the one
- * unacceptable outcome, so those tools go back through the orchestrator, where
- * the approval path exists.
+ * Tools no specialist may hold under any configuration. Delegation is the
+ * orchestrator's job: a specialist that could delegate could delegate to itself,
+ * and one bad prompt becomes an unbounded chain of runs.
  */
-const FORBIDDEN_SPECIALIST_TOOLS: ReadonlySet<string> = new Set([
-  "delegate",
-  "list_specialists",
+const NEVER_DELEGATABLE: ReadonlySet<string> = new Set(["delegate", "list_specialists"]);
+
+/**
+ * Tools a specialist holds only if it has been granted them explicitly.
+ *
+ * These write where other people can see it, and a delegated run has no channel
+ * to hold an approval prompt on — the same reason it gets no MCP tools. That
+ * makes them a deliberate grant rather than a default: a specialist that files
+ * tickets on the user's behalf is doing something the user wanted, but it should
+ * be something they turned on, listed on the specialist in Settings, and visible
+ * in the activity log afterwards.
+ */
+const NEEDS_EXPLICIT_GRANT: ReadonlySet<string> = new Set([
   ...ALWAYS_CONFIRM_BUILTIN_TOOLS,
   ...DESTRUCTIVE_BUILTIN_TOOLS,
 ]);
 
+export interface SelectToolsOptions {
+  /** Tools the user has turned off in the Tool Manager. */
+  disabledIds?: ReadonlySet<string>;
+  /**
+   * Registry ids from {@link NEEDS_EXPLICIT_GRANT} this specialist has been
+   * granted — its `unattendedToolIds`.
+   */
+  grantedIds?: readonly string[];
+}
+
 /**
- * Restricts the built-in tool set to what a specialist is configured to use,
- * minus anything the user has disabled in the Tool Manager. A specialist's tool
- * list is its own configuration, but "disabled" is the user's answer about the
- * tool itself, and it has to hold wherever the tool would otherwise be reachable.
+ * Restricts the built-in tool set to what a specialist is configured to use.
+ *
+ * Three filters, for three different reasons: "disabled" is the user's answer
+ * about the tool itself and holds everywhere; delegation is never available; and
+ * a tool that writes where others can see it needs an explicit grant, because
+ * nothing here can stop to ask.
  */
 export function selectTools(
   all: Record<string, Tool>,
   toolIds: readonly string[],
-  disabledIds: ReadonlySet<string> = new Set(),
+  options: SelectToolsOptions = {},
 ): Record<string, Tool> {
+  const disabledIds = options.disabledIds ?? new Set<string>();
+  const granted = new Set((options.grantedIds ?? []).map(nameForBuiltinId));
   const selected: Record<string, Tool> = {};
   for (const id of toolIds) {
     if (disabledIds.has(id)) continue;
@@ -122,7 +138,8 @@ export function selectTools(
     // hold an approval prompt open, so it gets no third-party tools.
     if (!id.startsWith("builtin:")) continue;
     const name = nameForBuiltinId(id);
-    if (FORBIDDEN_SPECIALIST_TOOLS.has(name)) continue;
+    if (NEVER_DELEGATABLE.has(name)) continue;
+    if (NEEDS_EXPLICIT_GRANT.has(name) && !granted.has(name)) continue;
     const t = all[name];
     if (t) selected[name] = t;
   }
@@ -181,7 +198,10 @@ export async function runSpecialist(input: RunSpecialistInput): Promise<Speciali
     remoteControl: false,
   });
   const disabled = new Set((await listDisabledToolIds(db)).map((t) => t.id));
-  const tools = selectTools(allTools, specialist.toolIds, disabled);
+  const tools = selectTools(allTools, specialist.toolIds, {
+    disabledIds: disabled,
+    grantedIds: specialist.unattendedToolIds,
+  });
 
   const nonce = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
   const prompt = material ? `${task}\n\n${materialBlock(material, nonce)}` : task;

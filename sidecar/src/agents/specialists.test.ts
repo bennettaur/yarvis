@@ -77,11 +77,32 @@ describe("built-in specialists", () => {
     const { builtinToolMetadata } = await import("../chat/builtinTools.ts");
     const all = builtinToolMetadata();
     for (const specialist of BUILTIN_SPECIALISTS) {
-      const kept = Object.keys(selectTools(all, specialist.toolIds));
+      const kept = Object.keys(
+        selectTools(all, specialist.toolIds, { grantedIds: specialist.unattendedToolIds }),
+      );
       expect(kept.length, `${specialist.name} lost a tool it asks for`).toBe(
         specialist.toolIds.length,
       );
     }
+  });
+
+  /**
+   * An unattended write is a decision about one specialist, so a grant that isn't
+   * also in `toolIds` is a mistake — and a grant nobody reviewed is the thing
+   * this list exists to make visible.
+   */
+  it("grants unattended tools only to specialists that also ask for them", () => {
+    for (const specialist of BUILTIN_SPECIALISTS) {
+      for (const granted of specialist.unattendedToolIds ?? []) {
+        expect(specialist.toolIds, `${specialist.name} grants a tool it never lists`).toContain(
+          granted,
+        );
+      }
+    }
+    // The shipped set keeps this to one deliberate case; a second should be a
+    // conscious change to this expectation, not a quiet addition.
+    const withGrants = BUILTIN_SPECIALISTS.filter((s) => (s.unattendedToolIds ?? []).length > 0);
+    expect(withGrants.map((s) => s.name)).toEqual(["project-manager"]);
   });
 
   it("only names tools that actually exist", async () => {

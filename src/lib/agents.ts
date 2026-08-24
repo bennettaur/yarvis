@@ -12,6 +12,8 @@ export interface Specialist {
   description: string;
   prompt: string;
   toolIds: string[];
+  /** Tools it may use without the user approving each call. */
+  unattendedToolIds: string[];
   provider: string | null;
   model: string | null;
   maxSteps: number;

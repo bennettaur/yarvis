@@ -16,6 +16,7 @@ const patchSchema = z.object({
   description: z.string().min(1).max(1000).optional(),
   prompt: z.string().min(1).max(8000).optional(),
   toolIds: z.array(z.string().min(1).max(200)).max(64).optional(),
+  unattendedToolIds: z.array(z.string().min(1).max(200)).max(16).optional(),
   provider: z.string().min(1).nullable().optional(),
   model: z.string().min(1).nullable().optional(),
   maxSteps: z.number().int().min(1).max(30).optional(),

@@ -784,9 +784,12 @@ and the model writes the prose.
 Multi-step work is delegated rather than done inline: a **specialist** is a
 prompt, a model and a subset of the tool registry, stored as a row you can retune
 under **Settings → Assistant**. A delegated run gets no MCP tools (it has no way
-to hold an approval prompt open) and cannot delegate further. The same
-specialists back the background jobs, so a summary written at 3am reads like one
-written in conversation.
+to hold an approval prompt open) and cannot delegate further. It can write
+somewhere other people see — filing a JIRA ticket, say — only if that tool is
+granted to it by name; Settings marks such a specialist "acts unattended", and
+`project-manager` is the one that ships with a grant, because turning a
+discussion into tickets is its job. The same specialists back the background
+jobs, so a summary written at 3am reads like one written in conversation.
 
 Two boundaries worth knowing: the agent's todo tools are **not** on the MCP
 endpoint, so a Claude Code session can read and write memory but not edit the

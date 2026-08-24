@@ -16,6 +16,8 @@ const all = {
   list_todos: fake("list_todos"),
   delegate: fake("delegate"),
   list_specialists: fake("list_specialists"),
+  jira_create_issue: fake("jira_create_issue"),
+  archive_workspace: fake("archive_workspace"),
 };
 
 const specialist = {
@@ -41,13 +43,33 @@ describe("specialist tool selection", () => {
     expect(selectTools(all, ["builtin:delegate", "builtin:list_specialists"])).toEqual({});
   });
 
-  it("honours a tool the user has disabled in the Tool Manager", () => {
-    const selected = selectTools(
-      all,
-      ["builtin:recall", "builtin:list_todos"],
-      new Set(["builtin:recall"]),
-    );
+  it("refuses delegation even when it has been granted", () => {
+    const selected = selectTools(all, ["builtin:delegate"], {
+      grantedIds: ["builtin:delegate"],
+    });
+    expect(selected).toEqual({});
+  });
+
+  it("withholds a tool that writes where others can see it, until it is granted", () => {
+    const asked = ["builtin:jira_create_issue", "builtin:archive_workspace"];
+    expect(Object.keys(selectTools(all, asked))).toEqual([]);
+
+    const granted = selectTools(all, asked, { grantedIds: ["builtin:jira_create_issue"] });
+    // Only the one granted — a grant is per tool, not a blanket unlock.
+    expect(Object.keys(granted)).toEqual(["jira_create_issue"]);
+  });
+
+  it("honours a tool the user has disabled in the Tool Manager, grant or not", () => {
+    const selected = selectTools(all, ["builtin:recall", "builtin:list_todos"], {
+      disabledIds: new Set(["builtin:recall"]),
+    });
     expect(Object.keys(selected)).toEqual(["list_todos"]);
+
+    const disabledButGranted = selectTools(all, ["builtin:jira_create_issue"], {
+      disabledIds: new Set(["builtin:jira_create_issue"]),
+      grantedIds: ["builtin:jira_create_issue"],
+    });
+    expect(disabledButGranted).toEqual({});
   });
 });
 

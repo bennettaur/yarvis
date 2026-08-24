@@ -1,0 +1,1 @@
+ALTER TABLE "agent_specialists" ADD COLUMN "unattended_tool_ids" jsonb DEFAULT '[]'::jsonb NOT NULL;

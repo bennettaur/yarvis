@@ -213,7 +213,12 @@ back to ad-hoc.
   an edit goes wrong. A delegated run gets no MCP tools, because it has no
   channel to hold an approval prompt on (the same rule a surface that can't
   prompt gets), and no delegation tools, because a specialist that could
-  delegate could delegate to itself.
+  delegate could delegate to itself. A tool that writes where other people can
+  see it sits between those two cases: available, but only to a specialist
+  granted it by name in `unattendedToolIds`, shown on the row in Settings as
+  "acts unattended". `project-manager` filing tickets is the one shipped grant —
+  turning a discussion into tickets is the job, and the alternative was a
+  specialist whose prompt promised something its tool list had quietly removed.
 - Memory is typed. `memories.kind` is a column, not a metadata tag, because the
   jobs, the recap and the browser all filter on it. The kinds a *turn* may write
   exclude the ones the jobs author, so hand-written text can't masquerade as a

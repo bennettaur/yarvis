@@ -7,6 +7,11 @@ import { listSpecialists, resetSpecialist, type Specialist, updateSpecialist } f
  * here rather than shipping a build. Built-ins are seeded once and never
  * overwritten, which is why "Reset" exists: without it, an edit that went wrong
  * would be permanent.
+ *
+ * The one thing surfaced beyond name and description is whether a specialist can
+ * write somewhere other people can see without the user approving the call. That
+ * is the only property here with consequences outside this machine, so it is on
+ * the row rather than inside a tool list.
  */
 export default function SpecialistSection() {
   const [specialists, setSpecialists] = useState<Specialist[]>([]);
@@ -59,6 +64,19 @@ export default function SpecialistSection() {
                 <span className="rounded bg-zinc-800 px-1 text-[10px] text-zinc-500">built-in</span>
               )}
               <span className="text-xs text-zinc-600">{specialist.toolIds.length} tool(s)</span>
+              {/* A delegated run can't stop to ask, so a specialist that writes
+                  where other people can see it is worth naming on the row rather
+                  than leaving in a tool list. */}
+              {specialist.unattendedToolIds.length > 0 && (
+                <span
+                  className="rounded bg-amber-900 px-1 text-[10px] text-amber-200"
+                  title={`Acts without asking: ${specialist.unattendedToolIds
+                    .map((id) => id.replace("builtin:", ""))
+                    .join(", ")}`}
+                >
+                  acts unattended
+                </span>
+              )}
               <span className="text-xs text-zinc-600">
                 {specialist.provider && specialist.model
                   ? `${specialist.provider}/${specialist.model}`
@@ -77,6 +95,13 @@ export default function SpecialistSection() {
               </label>
             </div>
             <p className="mt-1 text-sm text-zinc-400">{specialist.description}</p>
+            {specialist.unattendedToolIds.length > 0 && (
+              <p className="mt-0.5 text-xs text-amber-300/80">
+                Can{" "}
+                {specialist.unattendedToolIds.map((id) => id.replace("builtin:", "")).join(", ")} on
+                its own — a delegated run has no way to ask you first.
+              </p>
+            )}
 
             {editing === specialist.id ? (
               <div className="mt-2 space-y-2">

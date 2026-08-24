@@ -1227,6 +1227,17 @@ export const agentSpecialists = pgTable(
     prompt: text("prompt").notNull(),
     /** Registry tool ids the specialist may call; empty means no tools. */
     toolIds: jsonb("tool_ids").$type<string[]>().notNull().default([]),
+    /**
+     * Tools this specialist may hold even though a delegated run cannot ask the
+     * user to approve them — the ones that write somewhere other people can see.
+     *
+     * Empty by default, and deliberately a second list rather than a flag on the
+     * first: granting one is a decision about *this* specialist acting on its own,
+     * and it should be visible as such in Settings and in review, not inferred
+     * from a tool id sitting in a list of ten. Delegation itself is never
+     * grantable, whatever is named here.
+     */
+    unattendedToolIds: jsonb("unattended_tool_ids").$type<string[]>().notNull().default([]),
     /** Overrides the default chat provider/model when both are set. */
     provider: text("provider"),
     model: text("model"),
