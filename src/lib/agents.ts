@@ -1,0 +1,67 @@
+import { sidecarFetch } from "./api";
+
+/**
+ * Client for the specialists the assistant delegates to, and the background jobs
+ * that write memory. Both are configuration surfaces: what a specialist is
+ * allowed to do, and whether the consolidation passes are actually running.
+ */
+
+export interface Specialist {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+  toolIds: string[];
+  provider: string | null;
+  model: string | null;
+  maxSteps: number;
+  builtin: boolean;
+  enabled: boolean;
+}
+
+export interface JobStatus {
+  name: string;
+  description: string;
+  schedule: { kind: "interval"; everyMs: number } | { kind: "daily"; hour: number };
+  lastStartedAt: string | null;
+  lastFinishedAt: string | null;
+  lastStatus: string | null;
+  lastError: string | null;
+  running: boolean;
+  due: boolean;
+}
+
+export interface JobRunResult {
+  ran: boolean;
+  status: "ok" | "error" | "skipped" | "busy";
+  detail?: string;
+}
+
+async function request<T>(path: string, method = "GET", body?: unknown): Promise<T> {
+  const res = await sidecarFetch(path, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(
+      `${method} ${path} → ${res.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`,
+    );
+  }
+  return res.json();
+}
+
+export const listSpecialists = () => request<Specialist[]>("/api/specialists");
+
+export const updateSpecialist = (
+  id: string,
+  patch: { prompt?: string; enabled?: boolean; provider?: string | null; model?: string | null },
+) => request<Specialist>(`/api/specialists/${id}`, "PATCH", patch);
+
+export const resetSpecialist = (name: string) =>
+  request<Specialist>(`/api/specialists/${name}/reset`, "POST", {});
+
+export const listJobs = () => request<{ jobs: JobStatus[] }>("/api/jobs").then((body) => body.jobs);
+
+export const runJob = (name: string) => request<JobRunResult>(`/api/jobs/${name}/run`, "POST", {});
