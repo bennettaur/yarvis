@@ -219,12 +219,14 @@ back to ad-hoc.
     checked-out repo. A definition is a system prompt plus a tool list, so a repo
     that could contribute one could hand the agent instructions and the means to
     act on them.
-  - The frontmatter parser is a strict subset (`agents/frontmatter.ts`), not a
-    YAML dependency: an agent file needs scalars and flat lists, and a real
-    parser would accept nested structures this format has no meaning for.
-    Anything outside the subset is an error naming the file and line, because a
-    half-parsed definition is a prompt that isn't what its author wrote. Unknown
-    tool names are rejected at load for the same reason.
+  - Splitting the document is ours; parsing the frontmatter is the `yaml`
+    package's. A hand-rolled subset went in first and quietly turned every
+    description containing a comma into a list — an agent file is user-facing
+    config in a standard format, which is not a parser worth owning. What stays
+    ours is validation (`agents/frontmatter.ts`): YAML cannot know this schema,
+    so unknown keys and unknown tool names are rejected at load with the file
+    named. `tool:` instead of `tools:` is the mistake most worth catching,
+    because nothing downstream looks wrong.
   - A delegated run gets no MCP tools, because it has no channel to hold an
     approval prompt on (the same rule a surface that can't prompt gets), and no
     delegation tools, because a specialist that could delegate could delegate to

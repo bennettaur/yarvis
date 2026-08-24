@@ -1,27 +1,22 @@
+import { parse as parseYaml, YAMLParseError } from "yaml";
+
 /**
- * Parsing the YAML frontmatter of an agent definition file.
+ * Reading the YAML frontmatter of an agent definition file.
  *
- * Deliberately a strict, tiny subset rather than a YAML dependency: what an agent
- * file needs is scalars and flat lists, and a real YAML parser would silently
- * accept nested structures this format has no meaning for. Anything outside the
- * subset is an error naming the file and line, because a misparsed definition is
- * a prompt or a tool list that isn't what the author wrote.
+ * Splitting the document is ours; parsing the block is `yaml`'s. An earlier
+ * hand-rolled subset looked cheap and then quietly turned every description
+ * containing a comma into a list — the class of bug you get for owning a parser
+ * you didn't want to own.
  *
- * The parser records only what the syntax says — a scalar, or a list written as a
- * block or in brackets. It does *not* guess that a comma means a list: a
- * description is prose and prose has commas in it, and a `description` silently
- * becoming a two-element list is a definition that fails to load for a reason its
- * author cannot see. Splitting a comma-separated scalar is the reader's job, in
- * {@link asList}, where the caller already knows the key is list-shaped.
+ * What stays ours is *validation*: YAML will happily hand back a nested map or a
+ * misspelled key, and this format has no meaning for either. Every reader below
+ * fails loudly with the file named, because a half-understood definition is a
+ * prompt or a tool list that isn't what its author wrote.
  */
 
-export interface Frontmatter {
-  /** Scalars keep their raw string form; lists are always string arrays. */
-  values: Record<string, string>;
-  lists: Record<string, string[]>;
-}
-
-export interface ParsedDocument extends Frontmatter {
+export interface ParsedDocument {
+  /** The frontmatter mapping, keys unvalidated. */
+  data: Record<string, unknown>;
   /** Everything after the closing fence — the agent's system prompt. */
   body: string;
 }
@@ -29,32 +24,17 @@ export interface ParsedDocument extends Frontmatter {
 export class FrontmatterError extends Error {
   constructor(
     readonly file: string,
-    readonly line: number,
     message: string,
+    readonly line?: number,
   ) {
-    super(`${file}:${line}: ${message}`);
+    super(line === undefined ? `${file}: ${message}` : `${file}:${line}: ${message}`);
   }
 }
 
-/** Strips one layer of matching quotes, so `name: "work-scout"` reads as expected. */
-function unquote(value: string): string {
-  const trimmed = value.trim();
-  if (trimmed.length >= 2 && /^(".*"|'.*')$/s.test(trimmed)) return trimmed.slice(1, -1);
-  return trimmed;
-}
-
-/** Splits an inline `a, b, c` list, dropping empties so a trailing comma is fine. */
-function splitInline(value: string): string[] {
-  return value
-    .split(",")
-    .map((item) => unquote(item))
-    .filter((item) => item.length > 0);
-}
-
 /**
- * Splits a document into its frontmatter block and body. The opening `---` must
- * be the first line: a file without one is a definition missing its
- * configuration, and guessing that the whole file is a prompt would give an agent
+ * Splits a document at its `---` fences and parses the frontmatter. The opening
+ * fence must be the first line: a file without one is a definition missing its
+ * configuration, and treating the whole file as a prompt would produce an agent
  * with no name and no tools rather than an error.
  */
 export function parseDocument(file: string, content: string): ParsedDocument {
@@ -63,98 +43,39 @@ export function parseDocument(file: string, content: string): ParsedDocument {
   const normalized = content.replace(/^﻿/, "").replaceAll("\r\n", "\n");
   const lines = normalized.split("\n");
   if (lines[0]?.trim() !== "---") {
-    throw new FrontmatterError(file, 1, "expected a '---' frontmatter fence on the first line");
+    throw new FrontmatterError(file, "expected a '---' frontmatter fence on the first line", 1);
   }
   const closing = lines.findIndex((line, i) => i > 0 && line.trim() === "---");
   if (closing === -1) {
-    throw new FrontmatterError(file, lines.length, "frontmatter is never closed with '---'");
+    throw new FrontmatterError(file, "frontmatter is never closed with '---'", lines.length);
   }
 
-  const values: Record<string, string> = {};
-  const lists: Record<string, string[]> = {};
-  /** The key a `- item` line belongs to, or null outside a block list. */
-  let openList: string | null = null;
+  const block = lines.slice(1, closing).join("\n");
+  let parsed: unknown;
+  try {
+    // Merge keys off: `<<:` is a feature of YAML this format has no use for, and
+    // it is the one that lets a document pull in structure from elsewhere.
+    parsed = parseYaml(block, { merge: false });
+  } catch (e) {
+    if (e instanceof YAMLParseError) {
+      // The parser counts from the start of the block, which is the line after
+      // the opening fence — and it points at where the offending construct
+      // began, not necessarily where it went wrong.
+      const line = (e.linePos?.[0]?.line ?? 0) + 1;
+      throw new FrontmatterError(file, e.message.split("\n")[0] ?? "invalid YAML", line);
+    }
+    throw new FrontmatterError(file, e instanceof Error ? e.message : String(e));
+  }
 
-  for (let i = 1; i < closing; i++) {
-    const raw = lines[i]!;
-    const lineNumber = i + 1;
-    if (raw.trim() === "" || raw.trimStart().startsWith("#")) continue;
-    if (raw.includes("\t")) {
-      throw new FrontmatterError(file, lineNumber, "tabs are not valid indentation here");
-    }
-
-    const listItem = raw.match(/^\s+-\s*(.*)$/);
-    if (listItem) {
-      if (!openList) {
-        throw new FrontmatterError(file, lineNumber, "list item with no key above it");
-      }
-      const item = unquote(listItem[1] ?? "");
-      if (item) lists[openList]?.push(item);
-      continue;
-    }
-
-    const pair = raw.match(/^([A-Za-z][A-Za-z0-9_]*)\s*:\s*(.*)$/);
-    if (!pair) {
-      throw new FrontmatterError(
-        file,
-        lineNumber,
-        `expected 'key: value' or a '- item' list entry, got ${JSON.stringify(raw)}`,
-      );
-    }
-    const key = pair[1] as string;
-    const rest = pair[2] as string;
-    if (key in values || key in lists) {
-      throw new FrontmatterError(file, lineNumber, `duplicate key '${key}'`);
-    }
-
-    const inline = rest.trim();
-    // Block scalars: `>` folds the indented lines into one, `|` keeps their
-    // newlines, and a trailing `-` drops the final newline. Supported because a
-    // description worth reading is often two lines long, and an author writing
-    // ordinary YAML should not have to discover that this one place forbids it.
-    const blockScalar = inline.match(/^([>|])([-+]?)$/);
-    if (blockScalar) {
-      const [, style] = blockScalar as unknown as [string, string, string];
-      const collected: string[] = [];
-      let j = i + 1;
-      for (; j < closing; j++) {
-        const next = lines[j]!;
-        if (next.trim() === "") {
-          collected.push("");
-          continue;
-        }
-        if (!/^\s/.test(next)) break;
-        collected.push(next.trim());
-      }
-      i = j - 1;
-      values[key] =
-        style === ">"
-          ? collected.join(" ").replace(/\s+/g, " ").trim()
-          : collected.join("\n").trim();
-      openList = null;
-      continue;
-    }
-    if (inline === "") {
-      // A bare key opens a block list; an empty one stays an empty list rather
-      // than an empty string, so `tools:` with nothing under it means "no tools"
-      // instead of "one tool called ''".
-      lists[key] = [];
-      openList = key;
-      continue;
-    }
-    openList = null;
-    // Bracketed or comma-separated inline lists, e.g. `tools: [a, b]` / `a, b`.
-    const bracketed = inline.match(/^\[(.*)\]$/s);
-    if (bracketed) {
-      lists[key] = splitInline(bracketed[1] ?? "");
-      continue;
-    }
-    values[key] = unquote(inline);
+  if (parsed === null || parsed === undefined) {
+    throw new FrontmatterError(file, "frontmatter is empty", 1);
+  }
+  if (typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new FrontmatterError(file, "frontmatter must be a mapping of keys to values", 1);
   }
 
   return {
-    values,
-    lists,
+    data: parsed as Record<string, unknown>,
     body: lines
       .slice(closing + 1)
       .join("\n")
@@ -163,39 +84,111 @@ export function parseDocument(file: string, content: string): ParsedDocument {
 }
 
 /**
- * Reads a list-shaped key, however it was written: a block list, brackets, a
- * comma-separated scalar, or a single bare value. Only keys the caller knows are
- * lists come through here, which is what lets a comma stay ordinary punctuation
- * everywhere else.
+ * Rejects keys this format has no meaning for. YAML cannot know the schema, so a
+ * `tool:` where `tools:` was meant would otherwise be a specialist that silently
+ * has no tools — the mistake most worth catching, because nothing downstream
+ * looks wrong.
  */
-export function asList(parsed: Frontmatter, key: string): string[] | undefined {
-  if (key in parsed.lists) return parsed.lists[key];
-  const scalar = parsed.values[key];
-  if (scalar === undefined) return undefined;
-  if (!scalar.length) return [];
-  return splitInline(scalar);
-}
-
-/** Reads a boolean, rejecting anything that isn't obviously one. */
-export function asBoolean(parsed: Frontmatter, key: string, file: string): boolean | undefined {
-  const raw = parsed.values[key];
-  if (raw === undefined) return undefined;
-  if (/^(true|yes)$/i.test(raw)) return true;
-  if (/^(false|no)$/i.test(raw)) return false;
-  throw new FrontmatterError(file, 1, `'${key}' must be true or false, got ${JSON.stringify(raw)}`);
-}
-
-/** Reads a positive integer, rejecting anything else. */
-export function asInteger(parsed: Frontmatter, key: string, file: string): number | undefined {
-  const raw = parsed.values[key];
-  if (raw === undefined) return undefined;
-  const value = Number(raw);
-  if (!Number.isInteger(value) || value <= 0) {
+export function assertKnownKeys(
+  file: string,
+  data: Record<string, unknown>,
+  known: readonly string[],
+): void {
+  const unknown = Object.keys(data).filter((key) => !known.includes(key));
+  if (unknown.length) {
     throw new FrontmatterError(
       file,
+      `unknown key(s): ${unknown.join(", ")}. Known keys: ${known.join(", ")}`,
       1,
-      `'${key}' must be a positive whole number, got ${JSON.stringify(raw)}`,
     );
+  }
+}
+
+/** A required non-empty string. */
+export function asRequiredString(file: string, data: Record<string, unknown>, key: string): string {
+  const value = data[key];
+  if (typeof value !== "string" || !value.trim()) {
+    throw new FrontmatterError(file, `'${key}' is required and must be text`, 1);
+  }
+  return value.trim();
+}
+
+/** An optional string, rejecting a value of some other type. */
+export function asString(
+  file: string,
+  data: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = data[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new FrontmatterError(file, `'${key}' must be text`, 1);
+  }
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : undefined;
+}
+
+/**
+ * A list, however it was written: a YAML sequence, or a comma-separated scalar.
+ * The comma form isn't YAML — `tools: a, b` is one string — but it is how these
+ * files are written by hand elsewhere, so it is accepted rather than becoming a
+ * tool named "a, b".
+ */
+export function asList(
+  file: string,
+  data: Record<string, unknown>,
+  key: string,
+): string[] | undefined {
+  const value = data[key];
+  if (value === undefined || value === null) return undefined;
+  if (Array.isArray(value)) {
+    return value.map((item, i) => {
+      if (typeof item !== "string" || !item.trim()) {
+        throw new FrontmatterError(file, `'${key}' item ${i + 1} must be text`, 1);
+      }
+      return item.trim();
+    });
+  }
+  if (typeof value !== "string") {
+    throw new FrontmatterError(file, `'${key}' must be a list or a comma-separated string`, 1);
+  }
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+/**
+ * A boolean, plus the `yes`/`no` spellings a person reaches for. Those are not
+ * booleans in YAML 1.2 — the version this parser implements — so they arrive as
+ * strings; rejecting them would be technically right and useless, since
+ * `enabled: no` obviously means off.
+ */
+export function asBoolean(
+  file: string,
+  data: Record<string, unknown>,
+  key: string,
+): boolean | undefined {
+  const value = data[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    if (/^(true|yes|on)$/i.test(value.trim())) return true;
+    if (/^(false|no|off)$/i.test(value.trim())) return false;
+  }
+  throw new FrontmatterError(file, `'${key}' must be true or false`, 1);
+}
+
+/** A positive whole number. */
+export function asInteger(
+  file: string,
+  data: Record<string, unknown>,
+  key: string,
+): number | undefined {
+  const value = data[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    throw new FrontmatterError(file, `'${key}' must be a positive whole number`, 1);
   }
   return value;
 }

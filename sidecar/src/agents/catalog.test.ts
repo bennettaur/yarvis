@@ -97,11 +97,19 @@ describe("parsing one definition", () => {
   });
 
   it("rejects a name that isn't usable as a filename or an identifier", () => {
-    for (const name of ["Work Scout", "work_scout!", "-leading", ""]) {
+    for (const name of ['"Work Scout"', "work_scout", "-leading"]) {
       expect(() => parse(`---\nname: ${name}\ndescription: d\n---\np`)).toThrow(
-        "'name' is required",
+        "must be lowercase letters, digits and hyphens",
       );
     }
+    // An empty name is missing rather than malformed, and says so.
+    expect(() => parse('---\nname: ""\ndescription: d\n---\np')).toThrow("'name' is required");
+  });
+
+  it("rejects a misspelled key rather than ignoring it", () => {
+    expect(() => parse("---\nname: a\ndescription: d\ntool: recall\n---\np")).toThrow(
+      "unknown key(s): tool",
+    );
   });
 
   it("requires a model written as provider/model", () => {

@@ -7,7 +7,16 @@ import planner from "./definitions/planner.md" with { type: "text" };
 import projectManager from "./definitions/project-manager.md" with { type: "text" };
 import sessionSummarizer from "./definitions/session-summarizer.md" with { type: "text" };
 import workScout from "./definitions/work-scout.md" with { type: "text" };
-import { asBoolean, asInteger, asList, FrontmatterError, parseDocument } from "./frontmatter.ts";
+import {
+  asBoolean,
+  asInteger,
+  asList,
+  asRequiredString,
+  asString,
+  assertKnownKeys,
+  FrontmatterError,
+  parseDocument,
+} from "./frontmatter.ts";
 
 /**
  * The catalogue of specialists the orchestrator can delegate to.
@@ -87,9 +96,23 @@ export function agentsDir(): string {
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 /**
- * Turns one file into a definition. Tool names are checked against the built-in
- * set here rather than at call time: a typo in a file should be a problem the
- * user is shown, not a specialist that quietly runs with nine of its ten tools.
+ * Every key a definition may set. Checked because YAML cannot: `tool:` instead of
+ * `tools:` would otherwise load a specialist with no tools and no complaint.
+ */
+const KNOWN_KEYS = [
+  "name",
+  "description",
+  "tools",
+  "unattended",
+  "model",
+  "maxSteps",
+  "enabled",
+] as const;
+
+/**
+ * Turns one file into a definition. Tool names and keys are checked here rather
+ * than at call time: a typo in a file should be a problem the user is shown, not
+ * a specialist that quietly runs with nine of its ten tools.
  */
 export function parseSpecialist(
   path: string,
@@ -97,81 +120,83 @@ export function parseSpecialist(
   source: SpecialistSource,
   knownTools: ReadonlySet<string>,
 ): SpecialistDefinition {
-  const doc = parseDocument(path, content);
-  const name = doc.values.name?.trim() ?? "";
+  const { data, body } = parseDocument(path, content);
+  assertKnownKeys(path, data, KNOWN_KEYS);
+
+  const name = asRequiredString(path, data, "name");
   if (!NAME_PATTERN.test(name)) {
     throw new FrontmatterError(
       path,
+      "'name' must be lowercase letters, digits and hyphens — it is a filename and a handle",
       1,
-      "'name' is required and must be lowercase letters, digits and hyphens",
     );
   }
-  const description = doc.values.description?.trim() ?? "";
-  if (!description) {
-    throw new FrontmatterError(path, 1, "'description' is required — it is how the agent chooses");
-  }
-  if (!doc.body.trim()) {
-    throw new FrontmatterError(path, 1, "the body is the system prompt and cannot be empty");
+  const description = asRequiredString(path, data, "description");
+  if (!body.trim()) {
+    throw new FrontmatterError(path, "the body is the system prompt and cannot be empty", 1);
   }
 
-  const tools = asList(doc, "tools") ?? [];
+  const tools = asList(path, data, "tools") ?? [];
   const unknown = tools.filter((tool) => !knownTools.has(tool));
   if (unknown.length) {
-    throw new FrontmatterError(path, 1, `unknown tool(s): ${unknown.join(", ")}`);
+    throw new FrontmatterError(path, `unknown tool(s): ${unknown.join(", ")}`, 1);
   }
-  const unattended = asList(doc, "unattended") ?? [];
+  const unattended = asList(path, data, "unattended") ?? [];
   const ungranted = unattended.filter((tool) => !tools.includes(tool));
   if (ungranted.length) {
     throw new FrontmatterError(
       path,
-      1,
       `'unattended' names tool(s) missing from 'tools': ${ungranted.join(", ")}`,
+      1,
     );
   }
 
   // `model: anthropic/claude-sonnet-5` — one field, because a provider without a
   // model (or the reverse) can't resolve, so they are never usefully separate.
-  const modelRef = doc.values.model?.trim();
+  const modelRef = asString(path, data, "model");
   let provider: string | null = null;
   let model: string | null = null;
   if (modelRef) {
     const slash = modelRef.indexOf("/");
     if (slash <= 0 || slash === modelRef.length - 1) {
-      throw new FrontmatterError(path, 1, "'model' must be written as <provider>/<model>");
+      throw new FrontmatterError(path, "'model' must be written as <provider>/<model>", 1);
     }
     provider = modelRef.slice(0, slash);
     model = modelRef.slice(slash + 1);
   }
 
-  const maxSteps = asInteger(doc, "maxSteps", path) ?? DEFAULT_MAX_STEPS;
+  const maxSteps = asInteger(path, data, "maxSteps") ?? DEFAULT_MAX_STEPS;
   if (maxSteps > MAX_STEPS_CEILING) {
-    throw new FrontmatterError(path, 1, `'maxSteps' cannot exceed ${MAX_STEPS_CEILING}`);
+    throw new FrontmatterError(path, `'maxSteps' cannot exceed ${MAX_STEPS_CEILING}`, 1);
   }
 
   return {
     name,
     description,
-    prompt: doc.body,
+    prompt: body,
     tools,
     unattended,
     provider,
     model,
     maxSteps,
-    enabled: asBoolean(doc, "enabled", path) ?? true,
+    enabled: asBoolean(path, data, "enabled") ?? true,
     source,
     path,
   };
 }
 
+/** One file from the user's directory, or the reason it couldn't be read. */
+type UserFile = { path: string; content: string } | { path: string; error: string };
+
 /** Reads the user's directory, treating an absent one as simply empty. */
-async function readUserFiles(dir: string): Promise<{ path: string; content: string }[]> {
+async function readUserFiles(dir: string): Promise<UserFile[]> {
   let names: string[];
   try {
     names = (await readdir(dir)).filter((name) => name.endsWith(".md"));
   } catch {
     return [];
   }
-  const files: { path: string; content: string }[] = [];
+  const files: UserFile[] = [];
   for (const name of names.sort()) {
     const path = join(dir, name);
     try {
@@ -180,8 +205,9 @@ async function readUserFiles(dir: string): Promise<{ path: string; content: stri
       if (!(await stat(path)).isFile()) continue;
       files.push({ path, content: await readFile(path, "utf8") });
     } catch (e) {
-      files.push({ path, content: `` });
-      void e;
+      // A file that can't be read is reported, not silently skipped: the user
+      // put it there deliberately and would otherwise wonder where it went.
+      files.push({ path, error: e instanceof Error ? e.message : String(e) });
     }
   }
   return files;
@@ -208,7 +234,10 @@ export async function loadCatalog(): Promise<SpecialistCatalog> {
 
   for (const file of BUILTIN_FILES) add(file.path, file.content, "builtin");
   const dir = agentsDir();
-  for (const file of await readUserFiles(dir)) add(file.path, file.content, "user");
+  for (const file of await readUserFiles(dir)) {
+    if ("error" in file) problems.push({ path: file.path, message: file.error });
+    else add(file.path, file.content, "user");
+  }
 
   return {
     specialists: [...byName.values()].sort((a, b) => a.name.localeCompare(b.name)),

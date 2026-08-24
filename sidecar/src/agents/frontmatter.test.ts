@@ -1,10 +1,19 @@
 import { describe, expect, it } from "bun:test";
-import { asBoolean, asInteger, asList, FrontmatterError, parseDocument } from "./frontmatter.ts";
+import {
+  asBoolean,
+  asInteger,
+  asList,
+  asRequiredString,
+  asString,
+  assertKnownKeys,
+  FrontmatterError,
+  parseDocument,
+} from "./frontmatter.ts";
 
 const doc = (body: string) => parseDocument("agent.md", body);
 
-describe("frontmatter parsing", () => {
-  it("reads scalars, block lists and the body", () => {
+describe("splitting a definition", () => {
+  it("reads the frontmatter mapping and the body", () => {
     const parsed = doc(
       [
         "---",
@@ -20,109 +29,144 @@ describe("frontmatter parsing", () => {
         "Report plainly.",
       ].join("\n"),
     );
-    expect(parsed.values.name).toBe("work-scout");
-    expect(parsed.values.model).toBe("anthropic/claude-sonnet-5");
-    expect(parsed.lists.tools).toEqual(["find_dangling_work", "list_workspaces"]);
+    expect(parsed.data.name).toBe("work-scout");
+    expect(parsed.data.model).toBe("anthropic/claude-sonnet-5");
+    expect(parsed.data.tools).toEqual(["find_dangling_work", "list_workspaces"]);
     expect(parsed.body).toBe("You are a scout.\n\nReport plainly.");
   });
 
-  it("reads an inline list either bracketed or comma-separated", () => {
-    expect(doc("---\ntools: [a, b]\n---\nx").lists.tools).toEqual(["a", "b"]);
-    expect(asList(doc("---\ntools: a, b,\n---\nx"), "tools")).toEqual(["a", "b"]);
-    // A single value is still readable as a list, so `tools: search_events` works.
-    expect(asList(doc("---\ntools: search_events\n---\nx"), "tools")).toEqual(["search_events"]);
+  it("handles the YAML an author actually writes", () => {
+    // Folded and literal blocks, flow sequences, comments, quotes — all free now
+    // that a real parser owns this.
+    const parsed = doc(
+      [
+        "---",
+        "# what this is for",
+        'name: "release-notes"',
+        "description: >-",
+        "  Turns a week of merged PRs into release notes,",
+        "  grouped by theme.",
+        "tools: [work_summary, recall]",
+        "enabled: yes",
+        "maxSteps: 6",
+        "---",
+        "You write release notes.",
+      ].join("\n"),
+    );
+    expect(parsed.data.name).toBe("release-notes");
+    expect(parsed.data.description).toBe(
+      "Turns a week of merged PRs into release notes, grouped by theme.",
+    );
+    expect(parsed.data.tools).toEqual(["work_summary", "recall"]);
+    // `yes` is a string in YAML 1.2, not a boolean — `asBoolean` is what turns
+    // it into one.
+    expect(asBoolean("agent.md", parsed.data, "enabled")).toBe(true);
+    expect(parsed.data.maxSteps).toBe(6);
   });
 
   /**
-   * Prose has commas in it. Splitting on them at parse time turned every
-   * description with a clause in it into a list, and the definition then failed
-   * to load for "missing description" — with nothing in the file to point at.
+   * The bug that ended the hand-rolled parser: prose has commas in it, and a
+   * description that became a list failed to load for "missing description" with
+   * nothing in the file to point at.
    */
-  it("keeps a comma in a scalar as punctuation, not a list separator", () => {
+  it("keeps a comma in prose as punctuation", () => {
     const parsed = doc("---\ndescription: Reads the project, then the tickets.\n---\nbody");
-    expect(parsed.values.description).toBe("Reads the project, then the tickets.");
-    expect(parsed.lists.description).toBeUndefined();
+    expect(parsed.data.description).toBe("Reads the project, then the tickets.");
   });
 
-  it("treats a bare key as an empty list, not an empty string", () => {
-    const parsed = doc("---\nname: x\ntools:\n---\nbody");
-    expect(parsed.lists.tools).toEqual([]);
-    expect(asList(parsed, "tools")).toEqual([]);
-  });
-
-  it("folds a '>' block into one line and keeps '|' newlines", () => {
-    const folded = doc("---\ndescription: >-\n  first line\n  second line\n---\nbody");
-    expect(folded.values.description).toBe("first line second line");
-    const literal = doc("---\ndescription: |\n  first line\n  second line\n---\nbody");
-    expect(literal.values.description).toBe("first line\nsecond line");
-  });
-
-  it("keeps reading keys after a block scalar", () => {
-    const parsed = doc("---\ndescription: >-\n  wrapped text\nmaxSteps: 4\n---\nbody");
-    expect(parsed.values.description).toBe("wrapped text");
-    expect(parsed.values.maxSteps).toBe("4");
-  });
-
-  it("ignores comments and blank lines", () => {
-    const parsed = doc("---\n# a note\n\nname: x\n---\nbody");
-    expect(parsed.values.name).toBe("x");
-  });
-
-  it("strips quotes and a BOM, and tolerates CRLF", () => {
+  it("strips a BOM and tolerates CRLF", () => {
     const parsed = parseDocument("agent.md", '﻿---\r\nname: "x"\r\n---\r\nbody\r\n');
-    expect(parsed.values.name).toBe("x");
+    expect(parsed.data.name).toBe("x");
     expect(parsed.body).toBe("body");
   });
 
-  /**
-   * Failing loudly is the point: a definition that half-parses is a prompt or a
-   * tool list that isn't what the author wrote.
-   */
   it("rejects a file with no frontmatter fence", () => {
-    expect(() => doc("name: x\n---\nbody")).toThrow(FrontmatterError);
+    expect(() => doc("name: x\n---\nbody")).toThrow("frontmatter fence");
   });
 
   it("rejects unclosed frontmatter", () => {
     expect(() => doc("---\nname: x\nbody")).toThrow("never closed");
   });
 
-  it("rejects a line that is neither a pair nor a list item", () => {
-    expect(() => doc("---\nname: x\njust some prose\n---\nbody")).toThrow("expected 'key: value'");
+  it("rejects frontmatter that isn't a mapping", () => {
+    expect(() => doc("---\n- a\n- b\n---\nbody")).toThrow("must be a mapping");
+    expect(() => doc("---\n\n---\nbody")).toThrow("is empty");
   });
 
-  it("rejects a list item with no key above it", () => {
-    expect(() => doc("---\n  - orphan\n---\nbody")).toThrow("no key above it");
-  });
-
-  it("rejects duplicate keys and tabs", () => {
-    expect(() => doc("---\nname: a\nname: b\n---\nbody")).toThrow("duplicate key");
-    expect(() => doc("---\nname:\n\t- a\n---\nbody")).toThrow("tabs");
-  });
-
-  it("names the file and line in the error", () => {
+  it("reports a YAML syntax error against a line in the file, not the block", () => {
     try {
-      doc("---\nname: x\nbroken line here\n---\nbody");
+      doc("---\nname: x\n  bad: indent\n---\nbody");
       throw new Error("should have thrown");
     } catch (e) {
-      expect((e as FrontmatterError).message).toStartWith("agent.md:3:");
+      expect(e).toBeInstanceOf(FrontmatterError);
+      // The parser blames the line the construct started on — file line 2 here,
+      // which is block line 1. What matters is that it is a line in the file.
+      expect((e as FrontmatterError).message).toStartWith("agent.md:2:");
+      expect((e as FrontmatterError).message).toContain("Nested mappings");
     }
   });
 });
 
-describe("typed readers", () => {
-  it("reads booleans in the forms a person writes them", () => {
-    expect(asBoolean(doc("---\nenabled: false\n---\nx"), "enabled", "f")).toBe(false);
-    expect(asBoolean(doc("---\nenabled: YES\n---\nx"), "enabled", "f")).toBe(true);
-    expect(asBoolean(doc("---\nname: x\n---\nx"), "enabled", "f")).toBeUndefined();
-    expect(() => asBoolean(doc("---\nenabled: maybe\n---\nx"), "enabled", "f")).toThrow(
+describe("validating what came back", () => {
+  const data = { name: "x", tools: ["a"], maxSteps: 4, enabled: false };
+
+  it("rejects a key this format has no meaning for", () => {
+    // The mistake worth catching: nothing downstream would look wrong.
+    expect(() => assertKnownKeys("f.md", { tool: "recall" }, ["tools"])).toThrow(
+      "unknown key(s): tool",
+    );
+    expect(() =>
+      assertKnownKeys("f.md", data, ["name", "tools", "maxSteps", "enabled"]),
+    ).not.toThrow();
+  });
+
+  it("requires the strings that carry meaning", () => {
+    expect(asRequiredString("f.md", data, "name")).toBe("x");
+    expect(() => asRequiredString("f.md", {}, "name")).toThrow("'name' is required");
+    expect(() => asRequiredString("f.md", { name: "   " }, "name")).toThrow("'name' is required");
+    expect(() => asRequiredString("f.md", { name: 7 }, "name")).toThrow("must be text");
+  });
+
+  it("reads a list from a sequence or a comma-separated string", () => {
+    expect(asList("f.md", { tools: ["a", "b"] }, "tools")).toEqual(["a", "b"]);
+    expect(asList("f.md", { tools: "a, b," }, "tools")).toEqual(["a", "b"]);
+    expect(asList("f.md", { tools: "search_events" }, "tools")).toEqual(["search_events"]);
+    expect(asList("f.md", { tools: null }, "tools")).toBeUndefined();
+    expect(asList("f.md", {}, "tools")).toBeUndefined();
+  });
+
+  it("rejects a list that isn't made of text", () => {
+    expect(() => asList("f.md", { tools: [1, 2] }, "tools")).toThrow("item 1 must be text");
+    expect(() => asList("f.md", { tools: { a: 1 } }, "tools")).toThrow("must be a list");
+  });
+
+  it("reads optional text, treating blank as absent", () => {
+    expect(asString("f.md", { model: " a/b " }, "model")).toBe("a/b");
+    expect(asString("f.md", { model: "  " }, "model")).toBeUndefined();
+    expect(() => asString("f.md", { model: 3 }, "model")).toThrow("must be text");
+  });
+
+  it("reads booleans and the yes/no spellings, and rejects anything else", () => {
+    expect(asBoolean("f.md", data, "enabled")).toBe(false);
+    expect(asBoolean("f.md", {}, "enabled")).toBeUndefined();
+    for (const [written, expected] of [
+      ["yes", true],
+      ["NO", false],
+      ["true", true],
+      ["off", false],
+    ] as const) {
+      expect(asBoolean("f.md", { enabled: written }, "enabled")).toBe(expected);
+    }
+    expect(() => asBoolean("f.md", { enabled: "maybe" }, "enabled")).toThrow(
       "must be true or false",
     );
+    expect(() => asBoolean("f.md", { enabled: 1 }, "enabled")).toThrow("must be true or false");
   });
 
   it("rejects a step budget that isn't a positive whole number", () => {
-    expect(asInteger(doc("---\nmaxSteps: 12\n---\nx"), "maxSteps", "f")).toBe(12);
-    for (const bad of ["0", "-3", "2.5", "lots"]) {
-      expect(() => asInteger(doc(`---\nmaxSteps: ${bad}\n---\nx`), "maxSteps", "f")).toThrow(
+    expect(asInteger("f.md", data, "maxSteps")).toBe(4);
+    for (const bad of [0, -3, 2.5, "lots"]) {
+      expect(() => asInteger("f.md", { maxSteps: bad }, "maxSteps")).toThrow(
         "positive whole number",
       );
     }

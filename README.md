@@ -823,11 +823,13 @@ Group by theme rather than by pull request, and name each PR once…
 
 `name` is the handle the assistant delegates by, and `description` is what it
 reads when choosing — write it as "what this is for, and when to reach for it".
-`tools` are bare built-in tool names (the Tool Manager lists them all); an
-unknown one is reported rather than silently dropped, and omitting the key gives
-a specialist with no tools, which is right for anything that works purely from
-material handed to it. `enabled: false` turns one off, including a built-in you
-would rather not have.
+`tools` are bare built-in tool names (the Tool Manager lists them all), written
+as a YAML list or comma-separated; an unknown one is reported rather than
+silently dropped, and omitting the key gives a specialist with no tools, which is
+right for anything that works purely from material handed to it.
+`enabled: false` turns one off, including a built-in you would rather not have.
+A misspelled key is an error too — `tool:` where `tools:` was meant would
+otherwise be a specialist with no tools and no complaint.
 
 Two things a definition deliberately cannot do. It cannot delegate — a specialist
 that could would eventually delegate to itself. And a tool that writes where other
