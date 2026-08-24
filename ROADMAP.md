@@ -24,7 +24,29 @@ Status of the build against the original vision. The full V1 plan lives at
   a provider or dimension change is detected and surfaced as a "re-embed needed"
   health warning in Settings (with a re-embed action).
 - **Claude Code session introspection** — browse `~/.claude` projects, session
-  transcripts, and plans (Sessions tab).
+  transcripts, and plans (Sessions tab). A nightly job also digests new or
+  extended transcripts into `session-summary` memories, and pulls out any
+  guidance about how an agent should behave as a separate `agent-feedback`
+  memory.
+- **The assistant loop** — the event log covers the working day (review verdicts,
+  comments and merges on both providers, issue/JIRA writes, every workspace
+  lifecycle step) and is searchable and paginated, from the UI (Memory →
+  Activity) and from the agent. Background jobs consolidate it: four-hourly
+  windows into `activity-summary` memories, an overnight rollup into a
+  `day-summary`. Memory is typed by `kind`, and a fact that changed is superseded
+  rather than contradicted. Projects hold status, weekly focus and tracked
+  tickets with priorities; the assistant keeps its own todo list beside them,
+  with a progress log and `blocked`/`wont_do` outcomes (Memory → Projects /
+  Agent todos). Planning reads all of it: `suggest_next_work` ranks dangling work
+  (own PRs, reviews requested, reviews started and unfinished, live workspaces,
+  overdue tasks), promotes a review when the week has been light on reviewing,
+  and forgets nothing the user turned down; `work_summary` assembles the material
+  for a weekly recap. Tasks stop duplicating, and completion evidence (an
+  archived workspace, a merged PR whose title matches) is surfaced for
+  confirmation rather than applied. Multi-step work is delegated to configurable
+  specialists — a prompt, a model and a tool subset, editable under Settings →
+  Assistant — which the background jobs share. The calendar can now book an event
+  (create only; no update or delete exists).
 - **PR dashboard (GitHub + Azure DevOps)** — my PRs and review-requested, split
   into tabs and grouped by repo, newest-first; each row is clickable into the
   in-app review and shows a draft label, CI/merge status, and relative dates.

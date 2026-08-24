@@ -727,6 +727,65 @@ deleted so the code doesn't linger, and the app raises a desktop notification on
 each unlock/failed/lockout so you see access you didn't initiate. The code is
 verified in the sidecar; it never leaves your authenticator and laptop.
 
+### The assistant loop: activity, memory, projects, planning
+
+The chat agent tracks tasks and remembers facts, and on top of that it keeps a
+record of what you actually did and uses it to help you decide what to do next.
+Five pieces, all local:
+
+**The activity log.** Meaningful actions are recorded as events — a PR viewed,
+approved, commented on or merged (GitHub and Azure), an issue or JIRA ticket
+created or commented, work started on a ticket, a workspace created, its session
+started, synced, archived, tasks created and completed, calendar events booked.
+UI navigation is deliberately not an event. Browse and search it under
+**Memory → Activity**; the agent reads the same log with `search_events` and
+`activity_summary` when a question needs detail the summaries don't carry.
+
+**Consolidation.** Every four hours a background job folds the events nobody has
+summarized yet into one `activity-summary` memory. Overnight, those become a
+single `day-summary`, and a separate nightly pass reads the Claude Code
+transcripts under `~/.claude/projects` and writes a `session-summary` for each
+new or extended session — plus an `agent-feedback` memory when the session
+contained instructions about how an agent should behave, so that guidance is
+recallable in its own right rather than buried in one transcript. Events are only
+marked processed once a summary is stored, so a failed run loses nothing. Status
+and a manual trigger live under **Settings → Assistant**.
+
+**Typed memory.** Every memory carries a `kind` (`fact`, `preference`, `note`,
+`project`, `decision`, `agent-feedback`, the three summary kinds, `doc`,
+`dismissal`), and the agent narrows recall by it. When something you told it
+changes, it corrects the memory rather than storing a contradiction: the old row
+stays for the trail but drops out of recall, and the text is re-embedded so it is
+findable by what it now says.
+
+**Projects and todos.** Tell it about a project and it keeps the structured part
+— status, what this week is for, the tickets with the priority you gave them —
+while the narrative goes to memory. Its own commitments go on a separate todo
+list with a progress log, so "I'll check that PR before Thursday" survives the
+end of the conversation without landing in your daily plan. Both are visible
+under **Memory → Projects** and **Memory → Agent todos**.
+
+**Planning.** `suggest_next_work` ranks what you have left — your own open PRs,
+reviews requested of you, reviews you started and never signed off, live
+workspaces, overdue tasks — and reports how much reviewing you have actually done
+this week, promoting a review when that number is low. Turn something down and it
+is dismissed by key, so it stops coming back. `work_summary` assembles the
+material for "what did I get done this week" (activity counts, review verdicts
+given, your PRs and their current state, tasks completed, workspaces archived)
+and the model writes the prose.
+
+Multi-step work is delegated rather than done inline: a **specialist** is a
+prompt, a model and a subset of the tool registry, stored as a row you can retune
+under **Settings → Assistant**. A delegated run gets no MCP tools (it has no way
+to hold an approval prompt open) and cannot delegate further. The same
+specialists back the background jobs, so a summary written at 3am reads like one
+written in conversation.
+
+Two boundaries worth knowing: the agent's todo tools are **not** on the MCP
+endpoint, so a Claude Code session can read and write memory but not edit the
+assistant's plan; and the calendar integration can create an event but has no
+update or delete — moving or cancelling a meeting stays yours.
+
 ## Development
 
 ```bash
@@ -879,9 +938,19 @@ sidecar/        Bun + TS service (Hono)
                 config.ts holds the settings every surface shares
   src/clipboard/ saved clipboard entries + the credential screen (screening.ts)
   src/telegram/ Telegram remote-control bot (long-poll loop, slash commands, chat→session map)
-  src/tasks/    daily/weekly work tracking
-  src/events/   local on-device event log (action trail; reconciled to memory later)
-  src/memory/   pgvector memory, notes, ingestion, recaps
+  src/tasks/    daily/weekly work tracking, title-similarity dedupe, and the
+                completion-evidence pass (reconcile.ts) behind "did I already finish this?"
+  src/events/   local on-device event log (action trail, searchable + paginated;
+                consolidated into memory by the jobs)
+  src/memory/   pgvector memory (typed by `kind`, with corrections that supersede),
+                notes, ingestion, recaps
+  src/projects/ projects the work is for: status, focus, and tracked tickets with priorities
+  src/todos/    the assistant's own todo list (not exposed over the MCP endpoint)
+  src/agents/   delegation: the configured specialists and the bounded runs the
+                orchestrator and the jobs both go through
+  src/jobs/     background scheduler (lease + schedule) and the jobs themselves:
+                event consolidation, the nightly rollup, the Claude Code session digest
+  src/digest/   dangling work, next-work ranking, weekly summary material, dismissals
   src/github/   GitHub PR dashboard + embedded review (REST + GraphQL), dashboard config, in-progress review roll-up
   src/azure/    Azure DevOps PR dashboard + embedded review (REST; diffs built with jsdiff)
   src/pr/       provider-neutral PR review subsystem (/api/pr): guide + insight storage,
@@ -890,7 +959,7 @@ sidecar/        Bun + TS service (Hono)
                 branch (workspace.ts), and the chat agent's review tools
   src/issues/   provider-neutral issue routes/service (stars, filters, workspace links, start-work, issue writes)
   src/jira/     JIRA Cloud REST client + routes + agent tools + ADF↔Markdown conversion
-  src/google/   Google Calendar OAuth + events
+  src/google/   Google Calendar OAuth, event reads, and the one write (create)
   src/omni/     Omni UI generation (streaming) + saved layouts
   src/workspaces/ repo registry + git-worktree provisioning, bulk base-branch sync, and
                   teardown (/api/repos, /api/workspaces), plus local self-review

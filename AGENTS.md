@@ -192,5 +192,45 @@ back to ad-hoc.
   establish is *what the agent is showing*, so a send is reported as delivered,
   never as done. Anything new that forwards text into a session owes the same
   three.
+- Built-in agent tools come from one builder — `chat/builtinTools.ts` — which
+  both `runAgentTurn` and `agentTools/registry.ts` read. This is not tidiness:
+  the *active* tool set for a step is computed from registry policy, so a
+  built-in the registry doesn't know about is assembled into the turn and then
+  never offered to the model. A new family of tools is added there, not beside it.
+- Work that happens on a schedule is a `JobDefinition` in `sidecar/src/jobs/`,
+  not a `setInterval`. The scheduler holds a database lease per job, so two
+  instances sharing one database can both tick without doing the work twice, and
+  a crashed run's lease simply expires. `isDue` is pure and covers intervals and
+  a daily anchor; the anchor compares calendar days rather than elapsed time, so
+  a machine asleep at 03:00 still gets its nightly run once, late. A job marks
+  its input consumed only after its output is stored — `consolidate-events`
+  claims a window of events after the summary memory exists, so a failed run
+  leaves the window for the next one instead of losing it.
+- Delegation is data. A specialist (`sidecar/src/agents/`) is a prompt, a model
+  and a subset of the tool registry stored as a row, so retuning one is an edit
+  in Settings rather than a build. Built-ins are seeded if absent and never
+  overwritten — an edit survives every restart — with an explicit reset for when
+  an edit goes wrong. A delegated run gets no MCP tools, because it has no
+  channel to hold an approval prompt on (the same rule a surface that can't
+  prompt gets), and no delegation tools, because a specialist that could
+  delegate could delegate to itself.
+- Memory is typed. `memories.kind` is a column, not a metadata tag, because the
+  jobs, the recap and the browser all filter on it. The kinds a *turn* may write
+  exclude the ones the jobs author, so hand-written text can't masquerade as a
+  consolidated summary. A fact that changed is superseded — the old row stays for
+  the trail and drops out of recall — rather than contradicted by a second
+  memory, and an edit re-embeds, since a corrected fact findable only by its old
+  wording is worse than no correction.
+- The user's `tasks` and the assistant's `agent_todos` are different tables on
+  purpose: one is what the user intends to do, the other is what the assistant
+  has taken on. The todo tools are deliberately absent from the MCP endpoint — a
+  Claude Code session reads and writes memory, but editing the in-app agent's
+  plan would be one agent rewriting another's.
+- Anything that acts on the user's behalf outside this machine is narrowed at the
+  tool layer, not just at the scope. Google's `calendar.events` scope permits
+  update and delete; the client has no method for either and no tool exposes one,
+  so an agent can put a meeting on the calendar and only the user can move it. A
+  suggestion the user declines is recorded as a dismissal keyed by ref, because
+  "not that one" has to survive the next planning turn.
 - Follow the repo's existing comment style: comments explain *why*, not
   *what* — no restating what a well-named function already says.
