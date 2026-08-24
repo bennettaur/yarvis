@@ -154,9 +154,17 @@ export async function deleteTask(db: Db, id: string): Promise<Task | null> {
  * yesterday's unfinished work into today). Returns the updated tasks.
  */
 export async function rolloverTasks(db: Db, fromDate: string, toDate: string): Promise<Task[]> {
-  return db
+  const moved = await db
     .update(tasks)
     .set({ targetDate: toDate })
     .where(and(eq(tasks.status, "open"), eq(tasks.targetDate, fromDate)))
     .returning();
+  if (moved.length > 0) {
+    await emitEvent(db, {
+      type: "task.rolled_over",
+      source: "tasks",
+      payload: { fromDate, toDate, count: moved.length },
+    });
+  }
+  return moved;
 }

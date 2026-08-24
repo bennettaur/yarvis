@@ -119,17 +119,81 @@ export const tasks = pgTable("tasks", {
   workspaceId: uuid("workspace_id").references(() => workspaces.id, {
     onDelete: "set null",
   }),
+  // Which project this task serves, when the user has named one. Deleting the
+  // project leaves the task, since the work may still be worth doing.
+  projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   completedAt: timestamp("completed_at", { withTimezone: true }),
 });
 
-export const memories = pgTable("memories", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  content: text("content").notNull(),
-  metadata: jsonb("metadata"),
-  embedding: vector("embedding", { dimensions: EMBED_DIM }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+/**
+ * What a memory *is*, as a first-class column rather than a metadata tag: the
+ * consolidation jobs, the recap, and the memory UI all filter by it, and a
+ * jsonb probe can't be indexed for those reads. Kept as text with a TS union
+ * (like `EVENT_TYPES`) so adding a kind is a code change, not a migration.
+ *
+ * `fact`/`preference` come from the user directly, `note` from take_note, `doc`
+ * from an ingested document chunk, `activity-summary` and `day-summary` from the
+ * event-consolidation jobs, `session-summary` from a Claude Code transcript
+ * digest, `agent-feedback` from guidance about how an agent should behave,
+ * `project` from a project's narrative state, `decision` from a choice worth
+ * keeping, and `dismissal` from the user turning down a suggestion.
+ */
+export const MEMORY_KINDS = [
+  "fact",
+  "preference",
+  "note",
+  "doc",
+  "activity-summary",
+  "day-summary",
+  "session-summary",
+  "agent-feedback",
+  "project",
+  "decision",
+  "dismissal",
+] as const;
+
+export type MemoryKind = (typeof MEMORY_KINDS)[number];
+
+/**
+ * Where a memory came from, so a summary can be traced back to the material it
+ * was built from (and a re-run can tell an already-summarized session from a new
+ * one). A discriminated union stored as jsonb, like `AttentionNavTarget`.
+ */
+export type MemorySourceRef =
+  | { type: "events"; from: string; to: string; eventIds: string[] }
+  | { type: "cc-session"; projectDir: string; sessionId: string }
+  | { type: "chat"; sessionId: string }
+  | { type: "project"; projectId: string }
+  | { type: "pr"; provider: string; key: string }
+  | { type: "issue"; provider: string; key: string };
+
+export const memories = pgTable(
+  "memories",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    content: text("content").notNull(),
+    kind: text("kind").$type<MemoryKind>().notNull().default("fact"),
+    metadata: jsonb("metadata"),
+    sourceRef: jsonb("source_ref").$type<MemorySourceRef>(),
+    embedding: vector("embedding", { dimensions: EMBED_DIM }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * A memory the user has since corrected keeps its row (the correction is
+     * itself worth having a trail of) but drops out of recall, pointing at
+     * whatever replaced it.
+     */
+    supersededAt: timestamp("superseded_at", { withTimezone: true }),
+    supersededById: uuid("superseded_by_id"),
+  },
+  (t) => [
+    // The memory UI and the recap both read one kind, newest-first.
+    index("memories_kind_created_idx").on(t.kind, t.createdAt),
+    // Recall excludes superseded rows, so the vector scan is filtered on this.
+    index("memories_superseded_idx").on(t.supersededAt),
+  ],
+);
 
 export const githubFilters = pgTable("github_filters", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -791,6 +855,8 @@ export const events = pgTable(
     // Reconciliation scans unprocessed events oldest-first.
     index("events_processed_occurred_idx").on(t.processedAt, t.occurredAt),
     index("events_type_idx").on(t.type),
+    // The events browser pages the whole log newest-first, with no type filter.
+    index("events_occurred_idx").on(t.occurredAt),
   ],
 );
 
@@ -994,3 +1060,239 @@ export type PrGuideRow = typeof prGuides.$inferSelect;
 export type NewPrGuideRow = typeof prGuides.$inferInsert;
 export type PrInsightRow = typeof prInsights.$inferSelect;
 export type NewPrInsightRow = typeof prInsights.$inferInsert;
+
+/**
+ * Lifecycle of a project the user is working on. `active` is the default and
+ * what the weekly planning surfaces read; `paused` keeps it out of suggestions
+ * without losing its history; `shipped`/`abandoned` are terminal.
+ */
+export const projectStatus = pgEnum("project_status", ["active", "paused", "shipped", "abandoned"]);
+
+/**
+ * A named body of work the user tells the assistant about ("the events
+ * consolidation project"), so tickets, tasks, and memories can hang off one
+ * durable id instead of being matched by title every turn. The narrative — what
+ * was decided, what changed — lives in memory with a `project` source ref; this
+ * table holds only the structured state the planner has to query.
+ */
+export const projects = pgTable(
+  "projects",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(),
+    status: projectStatus("status").notNull().default("active"),
+    summary: text("summary"),
+    /** What the user is trying to get done next, in their words. */
+    focus: text("focus"),
+    /** Repos the work lands in, by `repos.id`, for resolving workspaces. */
+    repoIds: jsonb("repo_ids").$type<string[]>().notNull().default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // One project per name, matched case-insensitively: the agent resolves a
+    // project from what the user said, and "Events Consolidation" and "events
+    // consolidation" are the same project to them.
+    uniqueIndex("projects_name_unique_idx").on(sql`lower(${t.name})`),
+    index("projects_status_idx").on(t.status),
+  ],
+);
+
+/** Where a tracked project item lives. `note` is an item with no external home. */
+export const projectItemKind = pgEnum("project_item_kind", ["jira", "github", "pr", "note"]);
+
+/** How urgent the user said an item is. Ordered highest-first when listed. */
+export const projectItemPriority = pgEnum("project_item_priority", [
+  "urgent",
+  "high",
+  "medium",
+  "low",
+]);
+
+/**
+ * A ticket (or a bare note) the user has told the assistant is part of a
+ * project, with the priority they gave it. Deliberately a thin pointer: the
+ * ticket's own state stays in JIRA/GitHub and is fetched when needed, because a
+ * copy here would be stale the moment someone moves the card.
+ */
+export const projectItems = pgTable(
+  "project_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    kind: projectItemKind("kind").notNull(),
+    /** Provider-native identifier: a JIRA key, `owner/repo#123`, or null for a note. */
+    externalKey: text("external_key"),
+    title: text("title").notNull(),
+    priority: projectItemPriority("priority").notNull().default("medium"),
+    /** Free-text status the user gave ("blocked on review"), not the provider's. */
+    note: text("note"),
+    doneAt: timestamp("done_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("project_items_project_idx").on(t.projectId, t.priority),
+    // The same ticket is tracked once per project; re-adding it updates instead.
+    uniqueIndex("project_items_external_unique_idx")
+      .on(t.projectId, t.externalKey)
+      .where(sql`${t.externalKey} is not null`),
+  ],
+);
+
+/**
+ * Lifecycle of one of the assistant's *own* todos. Wider than `task_status`
+ * because these are the agent's working state, and "I tried and it's blocked" or
+ * "decided against" are outcomes it needs to record rather than silently drop.
+ */
+export const agentTodoStatus = pgEnum("agent_todo_status", [
+  "pending",
+  "in_progress",
+  "blocked",
+  "done",
+  "wont_do",
+]);
+
+/** One appended note on an agent todo, with the instant it was written. */
+export interface AgentTodoNote {
+  at: string;
+  text: string;
+}
+
+/**
+ * The assistant's shadow todo list — what *it* has taken on, as opposed to
+ * `tasks`, which is what the *user* intends to do. Separate because the two are
+ * read by different surfaces and mixing them would put the agent's bookkeeping
+ * into the user's daily list.
+ *
+ * These tools are deliberately not exposed over the MCP endpoint: this is the
+ * in-app agent's own state, and a Claude Code session writing to it would be
+ * one agent editing another's plan.
+ */
+export const agentTodos = pgTable(
+  "agent_todos",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    title: text("title").notNull(),
+    details: text("details"),
+    status: agentTodoStatus("status").notNull().default("pending"),
+    priority: projectItemPriority("priority").notNull().default("medium"),
+    projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
+    dueAt: timestamp("due_at", { withTimezone: true }),
+    /** Append-only progress log, so a todo carries why it stalled. */
+    notes: jsonb("notes").$type<AgentTodoNote[]>().notNull().default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+  },
+  (t) => [index("agent_todos_status_idx").on(t.status, t.priority)],
+);
+
+/**
+ * A configured specialist the orchestrator can delegate to: a model, a tool
+ * subset (registry ids), and a task prompt. Rows rather than code so a
+ * specialist can be added or retuned from the UI; the built-ins are seeded on
+ * startup the same way `agent_tools` seeds its built-ins, and keep `builtin`
+ * set so the seeder may update their prompt while leaving user rows alone.
+ */
+export const agentSpecialists = pgTable(
+  "agent_specialists",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(),
+    /** What this specialist is for — what the orchestrator reads when choosing. */
+    description: text("description").notNull(),
+    prompt: text("prompt").notNull(),
+    /** Registry tool ids the specialist may call; empty means no tools. */
+    toolIds: jsonb("tool_ids").$type<string[]>().notNull().default([]),
+    /** Overrides the default chat provider/model when both are set. */
+    provider: text("provider"),
+    model: text("model"),
+    /** Cap on tool-call rounds for one delegated run. */
+    maxSteps: integer("max_steps").notNull().default(8),
+    builtin: boolean("builtin").notNull().default(false),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("agent_specialists_name_unique_idx").on(t.name)],
+);
+
+/**
+ * Bookkeeping for the background job scheduler: one row per job name, holding
+ * its last run and a lease. The lease is what makes a job safe when several app
+ * instances share one database — a tick claims it with a conditional update, so
+ * only one process runs the job even though both are ticking.
+ */
+export const jobRuns = pgTable("job_runs", {
+  name: text("name").primaryKey(),
+  lastStartedAt: timestamp("last_started_at", { withTimezone: true }),
+  lastFinishedAt: timestamp("last_finished_at", { withTimezone: true }),
+  /** "ok" | "error" | "skipped" for the most recent completed run. */
+  lastStatus: text("last_status"),
+  lastError: text("last_error"),
+  /** Held while a run is in flight; a crashed run's lease simply expires. */
+  leaseUntil: timestamp("lease_until", { withTimezone: true }),
+  /** Job-defined progress marker (e.g. how far a transcript sweep got). */
+  cursor: jsonb("cursor"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Which Claude Code transcripts have already been summarized into memory, keyed
+ * by session id. `sourceMtimeMs` lets a session that was resumed and extended be
+ * re-summarized, while an untouched one is skipped — the sweep runs nightly over
+ * a directory that only grows.
+ */
+export const ccSessionDigests = pgTable(
+  "cc_session_digests",
+  {
+    sessionId: text("session_id").primaryKey(),
+    projectDir: text("project_dir").notNull(),
+    sourceMtimeMs: bigint("source_mtime_ms", { mode: "number" }).notNull(),
+    memoryId: uuid("memory_id").references(() => memories.id, { onDelete: "set null" }),
+    /** Message count at digest time, so a resumed session's delta is visible. */
+    entryCount: integer("entry_count").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("cc_session_digests_project_idx").on(t.projectDir)],
+);
+
+/**
+ * Suggestions the user has turned down, so "what should I work on next" stops
+ * offering them. A structured row rather than a memory because the suggester
+ * has to filter on it exactly, and a semantic match is the wrong instrument for
+ * "is this specific PR dismissed". The reason is kept for when the agent has to
+ * explain why something is absent, and `expiresAt` lets "not this week" differ
+ * from "never".
+ */
+export const suggestionDismissals = pgTable(
+  "suggestion_dismissals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** Stable key for the thing dismissed, e.g. `pr:owner/repo#12`, `todo:<id>`. */
+    refKey: text("ref_key").notNull(),
+    reason: text("reason"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("suggestion_dismissals_ref_unique_idx").on(t.refKey)],
+);
+
+export type Project = typeof projects.$inferSelect;
+export type NewProject = typeof projects.$inferInsert;
+export type ProjectItem = typeof projectItems.$inferSelect;
+export type NewProjectItem = typeof projectItems.$inferInsert;
+export type AgentTodo = typeof agentTodos.$inferSelect;
+export type NewAgentTodo = typeof agentTodos.$inferInsert;
+export type AgentSpecialist = typeof agentSpecialists.$inferSelect;
+export type NewAgentSpecialist = typeof agentSpecialists.$inferInsert;
+export type JobRun = typeof jobRuns.$inferSelect;
+export type NewJobRun = typeof jobRuns.$inferInsert;
+export type CcSessionDigest = typeof ccSessionDigests.$inferSelect;
+export type NewCcSessionDigest = typeof ccSessionDigests.$inferInsert;
+export type SuggestionDismissal = typeof suggestionDismissals.$inferSelect;
+export type NewSuggestionDismissal = typeof suggestionDismissals.$inferInsert;

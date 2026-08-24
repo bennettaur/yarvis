@@ -2,7 +2,9 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { emitEvent } from "../events/service.ts";
 import { retireGuide } from "../pr/guides.ts";
+import { refKey } from "../pr/types.ts";
 import { GitHubClient } from "./client.ts";
 import { getGithubPrConfig, saveGithubPrConfig } from "./config.ts";
 import { getReviewingList } from "./reviewing.ts";
@@ -14,6 +16,17 @@ import {
   listStars,
   removeStar,
 } from "./service.ts";
+
+/**
+ * Which event a submitted review is: an approval and a change request are the
+ * outcomes the weekly review-cadence read counts, so they are distinct types
+ * rather than one `pr.review_submitted` carrying the verdict in its payload.
+ */
+const REVIEW_EVENT_BY_VERDICT = {
+  APPROVE: "pr.approved",
+  REQUEST_CHANGES: "pr.changes_requested",
+  COMMENT: "pr.review_commented",
+} as const;
 
 /**
  * GitHub allows letters, numbers, hyphens, underscores, and dots in owner/repo
@@ -255,6 +268,11 @@ export function createGithubRoutes(config: Config): Hono {
     if ("error" in params) return c.json({ error: params.error }, 400);
     try {
       await gh.markReady(params.owner, params.repo, params.number);
+      void emitEvent(db(), {
+        type: "pr.marked_ready",
+        source: "github",
+        payload: { ref: refKey({ provider: "github", ...params }) },
+      });
       return c.json({ ok: true });
     } catch (e) {
       return c.json({ error: String(e) }, 502);
@@ -286,6 +304,14 @@ export function createGithubRoutes(config: Config): Hono {
       if (parsed.data.event !== "COMMENT") {
         await retireGuide(db(), { provider: "github", ...params });
       }
+      void emitEvent(db(), {
+        type: REVIEW_EVENT_BY_VERDICT[parsed.data.event],
+        source: "github",
+        payload: {
+          ref: refKey({ provider: "github", ...params }),
+          hasBody: Boolean(parsed.data.body?.trim()),
+        },
+      });
       return c.json({ ok: true }, 201);
     } catch (e) {
       return c.json({ error: String(e) }, 502);
@@ -308,6 +334,14 @@ export function createGithubRoutes(config: Config): Hono {
         parsed.data.method ?? "MERGE",
       );
       await retireGuide(db(), { provider: "github", ...params });
+      void emitEvent(db(), {
+        type: "pr.merged",
+        source: "github",
+        payload: {
+          ref: refKey({ provider: "github", ...params }),
+          method: parsed.data.method ?? "MERGE",
+        },
+      });
       return c.json({ ok: true });
     } catch (e) {
       return c.json({ error: String(e) }, 502);
@@ -394,6 +428,11 @@ export function createGithubRoutes(config: Config): Hono {
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
       await gh.postComment(params.owner, params.repo, params.number, parsed.data);
+      void emitEvent(db(), {
+        type: "pr.commented",
+        source: "github",
+        payload: { ref: refKey({ provider: "github", ...params }), path: parsed.data.path ?? null },
+      });
       return c.json({ ok: true }, 201);
     } catch (e) {
       return c.json({ error: String(e) }, 502);

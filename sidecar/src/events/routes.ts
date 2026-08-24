@@ -2,10 +2,13 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import { EVENT_TYPES, isEventType, listEvents, recordEvent } from "./service.ts";
+import { EVENT_TYPES, type EventType, isEventType, pageEvents, recordEvent } from "./service.ts";
 
 /** Upper bound on a single list response, so the log can't be read whole. */
 const MAX_LIMIT = 1000;
+
+/** Longest free-text filter accepted; a longer one is a paste, not a query. */
+const MAX_SEARCH_CHARS = 200;
 
 /**
  * Generic ingestion for frontend-sourced events (e.g. a PR viewed, an alarm
@@ -48,23 +51,43 @@ export function createEventRoutes(config: Config): Hono {
     return c.json(row, 201);
   });
 
-  // Supports ?type=, ?since=<ISO>, ?unprocessed=true, and ?limit= (clamped).
+  // The set of known types, so the events browser can offer them as filters
+  // without hardcoding a copy of the allowlist.
+  router.get("/types", (c) => c.json({ types: EVENT_TYPES }));
+
+  /**
+   * Supports ?type= (repeatable), ?since=/?until=<ISO>, ?q=<substring>,
+   * ?unprocessed=true, ?limit= (clamped) and ?offset=. Answers with the page
+   * plus the total match count, since the browser paginates.
+   */
   router.get("/", async (c) => {
-    const typeParam = c.req.query("type");
-    if (typeParam !== undefined && !isEventType(typeParam)) {
-      return c.json({ error: "unknown type" }, 400);
+    const typeParams = c.req.queries("type") ?? [];
+    const types: EventType[] = [];
+    for (const t of typeParams) {
+      if (!isEventType(t)) return c.json({ error: "unknown type" }, 400);
+      types.push(t);
     }
     const rawLimit = Number(c.req.query("limit") ?? "100");
     const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, MAX_LIMIT) : 100;
-    const sinceParam = c.req.query("since");
-    const since = sinceParam ? new Date(sinceParam) : undefined;
-    const records = await listEvents(db(), {
-      type: typeParam,
-      since: since && !Number.isNaN(since.getTime()) ? since : undefined,
+    const rawOffset = Number(c.req.query("offset") ?? "0");
+    const offset = Number.isInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+    const parseInstant = (raw: string | undefined): Date | undefined => {
+      if (!raw) return undefined;
+      const parsed = new Date(raw);
+      return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    };
+    const search = c.req.query("q")?.slice(0, MAX_SEARCH_CHARS);
+
+    const page = await pageEvents(db(), {
+      types,
+      since: parseInstant(c.req.query("since")),
+      until: parseInstant(c.req.query("until")),
+      search,
       unprocessedOnly: c.req.query("unprocessed") === "true",
       limit,
+      offset,
     });
-    return c.json(records);
+    return c.json({ ...page, limit, offset });
   });
 
   return router;

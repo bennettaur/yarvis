@@ -24,6 +24,7 @@ import {
   workspaceRepos,
   workspaces,
 } from "../db/schema.ts";
+import { emitEvent } from "../events/service.ts";
 import {
   deleteLinkForWorkspace,
   listLinksForWorkspace,
@@ -393,7 +394,7 @@ export async function createWorkspace(
     : null;
 
   // One transaction so a mid-create failure never leaves a half-built workspace.
-  return db.transaction(async (tx) => {
+  const created = await db.transaction(async (tx) => {
     const [workspace] = await tx
       .insert(workspaces)
       .values({ name: input.name.trim(), slug, rootPath, status: "creating", pendingIssuePrompt })
@@ -428,6 +429,21 @@ export async function createWorkspace(
 
     return workspace!;
   });
+
+  // Emitted after the transaction commits, so a rolled-back create leaves no
+  // event behind claiming a workspace that doesn't exist.
+  void emitEvent(db, {
+    type: "workspace.created",
+    source: "workspaces",
+    payload: {
+      workspaceId: created.id,
+      name: created.name,
+      repos: selected.map((r) => `${r.owner}/${r.name}`),
+      fromTicket: Boolean(input.issuePrompt),
+    },
+  });
+
+  return created;
 }
 
 /**
@@ -773,6 +789,19 @@ export async function syncWorkspaceWithBase(
       outcomes.push({ ...identity, ...skipped(sanitizeIssueText(errorText(e))) });
     }
   }
+
+  void emitEvent(db, {
+    type: "workspace.synced",
+    source: "workspaces",
+    payload: {
+      workspaceId: detail.id,
+      name: detail.name,
+      merged: outcomes.filter((o) => o.merge === "merged").length,
+      conflicted: outcomes.filter((o) => o.merge === "conflict").length,
+      skipped: outcomes.filter((o) => o.merge === "skipped").length,
+      pushed: outcomes.filter((o) => o.pushed).length,
+    },
+  });
 
   return { workspaceId: detail.id, name: detail.name, repos: outcomes };
 }
@@ -1429,6 +1458,11 @@ async function launchKickOffSession(
     console.error("[workspaces] could not start the kick-off session:", e);
     return;
   }
+  void emitEvent(db, {
+    type: "workspace.session_started",
+    source: "workspaces",
+    payload: { workspaceId: detail.id, name: detail.name, kickOff: true, remoteControl },
+  });
   await clearPendingIssuePrompt(db, detail.id).catch(() => undefined);
 }
 
@@ -1712,6 +1746,20 @@ async function removeWorktreesAndFinish(
     }
   } else {
     await raiseArchiveFailure(db, detail, errors);
+  }
+
+  if (fullyRemoved) {
+    void emitEvent(db, {
+      type: "workspace.archived",
+      source: "workspaces",
+      payload: {
+        workspaceId: id,
+        name: detail.name,
+        summary: input.summary ?? detail.summary,
+        mergedPrUrl: input.mergedPrUrl ?? detail.mergedPrUrl ?? linkedPrUrl(detail),
+        completedTasks: completedTasks.length,
+      },
+    });
   }
 
   return { status, errors, completedTasks: completedTasks.length };

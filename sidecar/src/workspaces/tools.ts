@@ -2,6 +2,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
+import { emitEvent } from "../events/service.ts";
 import { GitHubClient } from "../github/client.ts";
 import {
   applyStartWorkSideEffects,
@@ -150,6 +151,11 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         cwd,
         name: detail.name,
         remoteControl,
+      });
+      void emitEvent(db, {
+        type: "workspace.session_started",
+        source: "chat",
+        payload: { workspaceId: detail.id, name: detail.name, kickOff: false, remoteControl },
       });
       return {
         workspaceId: detail.id,
@@ -303,6 +309,16 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
             label: IN_PROGRESS_LABEL,
           },
         );
+
+        void emitEvent(db, {
+          type: "issue.work_started",
+          source: "chat",
+          payload: {
+            provider: "github",
+            key: `${repo.owner}/${repo.repo}#${issueNumber}`,
+            workspaceId: ws.id,
+          },
+        });
 
         // The prompt is dropped once the session has been launched on it, so a
         // prompt still sitting there is a launch that didn't happen.
@@ -528,6 +544,14 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         }
         try {
           await sendInstruction({ workspaceId, instruction });
+          // Logged with its length rather than its text: the instruction is
+          // model-composed from data an outside party can influence, and the
+          // event log is read back into later prompts.
+          void emitEvent(db, {
+            type: "workspace.instruction_sent",
+            source: "chat",
+            payload: { workspaceId, name: detail.name, chars: instruction.length },
+          });
           return {
             workspaceId,
             name: detail.name,

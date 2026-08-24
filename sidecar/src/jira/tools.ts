@@ -2,6 +2,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
+import { emitEvent } from "../events/service.ts";
 import { buildIssuePrompt, sanitizeIssueText, upsertLink } from "../issues/service.ts";
 import {
   type ClaudeSessionStarter,
@@ -69,6 +70,11 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
         cwd: detail.rootPath,
         name: detail.name,
         remoteControl,
+      });
+      void emitEvent(db, {
+        type: "workspace.session_started",
+        source: "jira",
+        payload: { workspaceId: detail.id, name: detail.name, kickOff: false, remoteControl },
       });
       return {
         workspaceId: detail.id,
@@ -179,6 +185,11 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
             issueTypeName,
             description,
           });
+          void emitEvent(db, {
+            type: "jira.issue.created",
+            source: "chat",
+            payload: { key: created.externalId, projectKey, issueTypeName },
+          });
           return {
             key: created.externalId,
             summary: sanitizeIssueText(created.title),
@@ -267,6 +278,12 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
         const warnings = await applyJiraStartWorkSideEffects(jira, key, {
           assignSelf,
           transitionToInProgress,
+        });
+
+        void emitEvent(db, {
+          type: "jira.work_started",
+          source: "chat",
+          payload: { key, workspaceId: ws.id, repos: detail.repos.map((r) => r.repo.name) },
         });
 
         // The prompt is dropped once the session has been launched on it, so a
