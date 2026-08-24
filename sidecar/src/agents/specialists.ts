@@ -171,36 +171,6 @@ export async function updateSpecialist(
   return row ?? null;
 }
 
-/** Creates a specialist of the user's own. */
-export async function createSpecialist(
-  db: Db,
-  input: SpecialistDefinition & { provider?: string | null; model?: string | null },
-): Promise<AgentSpecialist> {
-  const [row] = await db
-    .insert(agentSpecialists)
-    .values({
-      name: input.name.trim(),
-      description: input.description,
-      prompt: input.prompt,
-      toolIds: input.toolIds,
-      provider: input.provider ?? null,
-      model: input.model ?? null,
-      maxSteps: input.maxSteps,
-      builtin: false,
-    })
-    .returning();
-  return row!;
-}
-
-/** Removes a specialist. Built-ins come back on the next startup sync. */
-export async function deleteSpecialist(db: Db, id: string): Promise<boolean> {
-  const deleted = await db
-    .delete(agentSpecialists)
-    .where(eq(agentSpecialists.id, id))
-    .returning({ id: agentSpecialists.id });
-  return deleted.length > 0;
-}
-
 /**
  * Puts a built-in specialist back to its shipped definition, keeping the model
  * override the user chose. The escape hatch for having edited a prompt into a

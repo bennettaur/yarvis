@@ -46,11 +46,29 @@ export async function listEvents(query: EventQuery = {}): Promise<EventPage> {
   return res.json();
 }
 
-/** The event types the sidecar accepts, for the browser's filter. */
-export async function listEventTypes(): Promise<string[]> {
-  const res = await sidecarFetch("/api/events/types");
-  if (!res.ok) throw new Error(`GET /api/events/types → ${res.status}`);
-  return ((await res.json()) as { types: string[] }).types;
+/**
+ * The event types the sidecar accepts, for the browser's filter. Memoized: the
+ * response is a constant in the sidecar, and the tab it feeds is remounted every
+ * time the user switches to it.
+ */
+let cachedTypes: Promise<string[]> | null = null;
+
+export function listEventTypes(): Promise<string[]> {
+  if (!cachedTypes) {
+    cachedTypes = sidecarFetch("/api/events/types")
+      .then((res) => {
+        if (!res.ok) throw new Error(`GET /api/events/types → ${res.status}`);
+        return res.json() as Promise<{ types: string[] }>;
+      })
+      .then((body) => body.types)
+      .catch((e) => {
+        // Not cached on failure, so a transient error doesn't disable the filter
+        // for the rest of the session.
+        cachedTypes = null;
+        throw e;
+      });
+  }
+  return cachedTypes;
 }
 
 /**

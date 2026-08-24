@@ -4,7 +4,6 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import {
   addProjectItem,
-  deleteProject,
   listProjects,
   projectOverview,
   removeProjectItem,
@@ -12,6 +11,10 @@ import {
   updateProjectItem,
   upsertProject,
 } from "./service.ts";
+
+/** Shape check, matching `attention/routes.ts`: a non-uuid must be a 404, not a
+ *  Postgres error surfacing as a 500. */
+const UUID = /^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/;
 
 const priority = z.enum(["urgent", "high", "medium", "low"]);
 const status = z.enum(["active", "paused", "shipped", "abandoned"]);
@@ -78,6 +81,7 @@ export function createProjectRoutes(config: Config): Hono {
 
   // The project plus its items and open tasks — what the Projects tab renders.
   router.get("/:id", async (c) => {
+    if (!UUID.test(c.req.param("id"))) return c.json({ error: "not found" }, 404);
     const overview = await projectOverview(db(), c.req.param("id"));
     if (!overview) return c.json({ error: "not found" }, 404);
     return c.json(overview);
@@ -86,16 +90,14 @@ export function createProjectRoutes(config: Config): Hono {
   router.patch("/:id", async (c) => {
     const parsed = updateSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    if (!UUID.test(c.req.param("id"))) return c.json({ error: "not found" }, 404);
     const project = await updateProject(db(), c.req.param("id"), parsed.data);
     if (!project) return c.json({ error: "not found" }, 404);
     return c.json(project);
   });
 
-  router.delete("/:id", async (c) =>
-    c.json({ deleted: await deleteProject(db(), c.req.param("id")) }),
-  );
-
   router.post("/:id/items", async (c) => {
+    if (!UUID.test(c.req.param("id"))) return c.json({ error: "not found" }, 404);
     const parsed = itemSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     const item = await addProjectItem(db(), {
@@ -112,14 +114,17 @@ export function createProjectRoutes(config: Config): Hono {
   router.patch("/items/:itemId", async (c) => {
     const parsed = itemPatchSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    if (!UUID.test(c.req.param("itemId"))) return c.json({ error: "not found" }, 404);
     const item = await updateProjectItem(db(), c.req.param("itemId"), parsed.data);
     if (!item) return c.json({ error: "not found" }, 404);
     return c.json(item);
   });
 
-  router.delete("/items/:itemId", async (c) =>
-    c.json({ removed: await removeProjectItem(db(), c.req.param("itemId")) }),
-  );
+  router.delete("/items/:itemId", async (c) => {
+    const itemId = c.req.param("itemId");
+    if (!UUID.test(itemId)) return c.json({ removed: false });
+    return c.json({ removed: await removeProjectItem(db(), itemId) });
+  });
 
   return router;
 }

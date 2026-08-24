@@ -21,19 +21,24 @@ import { assembleRecapContext, dateRange, recapMaterial, recapSystemPrompt } fro
 /** Cap the recap LLM call so a hung provider can't block the request forever. */
 const RECAP_TIMEOUT_MS = 30_000;
 
+/**
+ * The kinds this endpoint may write. The summary kinds are excluded for the same
+ * reason the chat tools exclude them: they are the consolidation jobs' output,
+ * and hand-written text arriving as a `day-summary` would be read back as one.
+ */
+const WRITABLE_KINDS = [
+  "fact",
+  "preference",
+  "note",
+  "project",
+  "decision",
+  "agent-feedback",
+] as const satisfies readonly MemoryKind[];
+
 const addSchema = z.object({
   content: z.string().min(1),
-  kind: z.enum(MEMORY_KINDS).optional(),
+  kind: z.enum(WRITABLE_KINDS).optional(),
 });
-
-const patchSchema = z
-  .object({
-    content: z.string().min(1).optional(),
-    kind: z.enum(MEMORY_KINDS).optional(),
-  })
-  .refine((v) => v.content !== undefined || v.kind !== undefined, {
-    message: "provide content or kind",
-  });
 
 const ingestSchema = z
   .object({
@@ -102,9 +107,6 @@ export function createMemoryRoutes(config: Config): Hono {
     return c.json({ items, total, limit, offset });
   });
 
-  /** The kinds a memory can have, so the browser's filter isn't a hardcoded copy. */
-  router.get("/kinds", (c) => c.json({ kinds: MEMORY_KINDS }));
-
   router.get("/search", async (c) => {
     const q = c.req.query("q");
     if (!q) return c.json({ error: "missing q" }, 400);
@@ -123,16 +125,6 @@ export function createMemoryRoutes(config: Config): Hono {
     const parsed = addSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     return c.json(await (await store()).add(parsed.data.content, { kind: "note" }), 201);
-  });
-
-  // Editing a memory's text re-embeds it, so a corrected fact is findable by
-  // what it now says rather than what it used to.
-  router.patch("/:id", async (c) => {
-    const parsed = patchSchema.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const updated = await (await store()).update(c.req.param("id"), parsed.data);
-    if (!updated) return c.json({ error: "not found" }, 404);
-    return c.json(updated);
   });
 
   router.delete("/:id", async (c) =>

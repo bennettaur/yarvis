@@ -27,9 +27,14 @@ const JOBS = [
   },
 ];
 
+const CONFIG = {
+  config: { ccDigestEnabled: false, ccDigestProjectDirs: [] },
+  availableProjectDirs: [{ dir: "-Users-me-dev-app", path: "/Users/me/dev/app" }],
+};
+
 mock.module("../lib/api", () => ({
-  sidecarFetch: async () =>
-    new Response(JSON.stringify({ jobs: JOBS }), {
+  sidecarFetch: async (path: string) =>
+    new Response(JSON.stringify(path.includes("/config") ? CONFIG : { jobs: JOBS }), {
       status: 200,
       headers: { "content-type": "application/json" },
     }),
@@ -49,5 +54,15 @@ describe("JobsSection", () => {
     expect(text).toContain("ok");
     expect(text).toContain("never run");
     expect(text).toContain("due");
+  });
+
+  it("says the transcript digest is off and why, before offering projects", async () => {
+    const html = await renderToHtml(createElement(JobsSection));
+    const text = textOf(html);
+    expect(text).toContain("Summarize my Claude Code sessions each night");
+    expect(text).toContain("sent to your configured LLM provider");
+    // Off, so the project list stays hidden until it is enabled.
+    expect(text).not.toContain("/Users/me/dev/app");
+    expect(html).toContain("checkbox");
   });
 });

@@ -86,6 +86,9 @@ export async function upsertProject(
     return { project, created: false };
   }
 
+  // Atomic against the case-insensitive unique index rather than trusting the
+  // read above: two instances share one database, and the read-then-insert race
+  // is exactly the duplicate-name failure this function exists to avoid.
   const [row] = await db
     .insert(projects)
     .values({
@@ -94,13 +97,19 @@ export async function upsertProject(
       focus: input.focus ?? null,
       repoIds: input.repoIds ?? [],
     })
+    .onConflictDoNothing()
     .returning();
+  if (!row) {
+    const raced = await findProjectByName(db, name);
+    if (raced) return { project: raced, created: false };
+    throw new Error(`could not create project "${name}"`);
+  }
   await emitEvent(db, {
     type: "project.created",
     source: "projects",
-    payload: { projectId: row!.id, name: row!.name },
+    payload: { projectId: row.id, name: row.name },
   });
-  return { project: row!, created: true };
+  return { project: row, created: true };
 }
 
 export async function updateProject(
@@ -128,15 +137,6 @@ export async function updateProject(
     });
   }
   return row ?? null;
-}
-
-/** Removes a project. Its items go with it; its tasks and memories don't. */
-export async function deleteProject(db: Db, id: string): Promise<boolean> {
-  const deleted = await db
-    .delete(projects)
-    .where(eq(projects.id, id))
-    .returning({ id: projects.id });
-  return deleted.length > 0;
 }
 
 export interface AddProjectItemInput {

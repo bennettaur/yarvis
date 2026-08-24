@@ -1,4 +1,3 @@
-import { eq } from "drizzle-orm";
 import { runSpecialist } from "../agents/run.ts";
 import { getTranscript, listProjects, listSessionFiles } from "../cc/sessions.ts";
 import type { Db } from "../db/client.ts";
@@ -6,6 +5,7 @@ import { ccSessionDigests } from "../db/schema.ts";
 import { emitEvent } from "../events/service.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
+import { getJobConfig } from "./config.ts";
 import { dailyAt } from "./schedule.ts";
 import type { JobDefinition } from "./scheduler.ts";
 
@@ -21,10 +21,31 @@ import type { JobDefinition } from "./scheduler.ts";
  * future session, so it doesn't stay buried in one transcript).
  *
  * Runs before the day rollup so its summaries are part of the day's material.
+ * Off until the user opts in — see the consent gate in `run`.
  */
+
+/**
+ * Transcript modification times are fractional on APFS; the column they are
+ * stored in is an integer. Both the write and the "unchanged since last sweep"
+ * comparison go through this, because comparing a stored integer against a raw
+ * fractional mtime never holds — every session would look grown on every sweep
+ * and be re-summarized nightly, one duplicate memory at a time.
+ *
+ * Floor rather than round so the stamp is never *later* than the file: a stamp in
+ * the future would make a session that really did grow look unchanged.
+ */
+const mtimeStamp = (mtimeMs: number): number => Math.floor(mtimeMs);
 
 /** Sessions digested per run, so a first sweep over months of history is bounded. */
 const MAX_SESSIONS_PER_RUN = 12;
+
+/**
+ * Ceiling on a digested section. The summarizer's answer is model-composed from
+ * an untrusted transcript, and the `agent-feedback` section becomes a memory the
+ * chat agent reads as guidance about its own behaviour — so its size is bounded
+ * here rather than trusting the prompt to have been followed.
+ */
+const MAX_SECTION_CHARS = 2_000;
 
 /** A transcript shorter than this was an aborted session, not work. */
 const MIN_TRANSCRIPT_CHARS = 400;
@@ -75,11 +96,11 @@ export function parseSessionDigest(text: string): SessionDigest {
     );
     const body = match?.[1]?.trim();
     if (!body || /^none\.?$/i.test(body)) return null;
-    return body;
+    return body.slice(0, MAX_SECTION_CHARS);
   };
   const work = section("WORK");
   return {
-    work: work ?? trimmed,
+    work: work ?? trimmed.slice(0, MAX_SECTION_CHARS * 2),
     decisions: section("DECISIONS"),
     feedback: section("FEEDBACK"),
   };
@@ -94,6 +115,19 @@ export const ccSessionDigestJob: JobDefinition = {
   // A first sweep summarizes up to a dozen transcripts, each a model call.
   leaseMs: 30 * 60 * 1000,
   run: async ({ db, config }) => {
+    // Consent gate. This is the one job that sends local data to an LLM
+    // provider — transcripts hold whatever was pasted into a session — so it
+    // does nothing until the user turns it on and names the projects it may
+    // read. An empty allowlist means none, not all.
+    const { ccDigestEnabled, ccDigestProjectDirs } = await getJobConfig(db);
+    if (!ccDigestEnabled) {
+      return { skipped: true, detail: "transcript digest is off (Settings → Assistant)" };
+    }
+    if (ccDigestProjectDirs.length === 0) {
+      return { skipped: true, detail: "no project directories are allowed for the digest yet" };
+    }
+    const allowed = new Set(ccDigestProjectDirs);
+
     const digested = await db
       .select({
         sessionId: ccSessionDigests.sessionId,
@@ -106,11 +140,12 @@ export const ccSessionDigestJob: JobDefinition = {
     // yesterday before it works backwards through history.
     const candidates: { projectDir: string; sessionId: string; mtimeMs: number }[] = [];
     for (const project of await listProjects()) {
+      if (!allowed.has(project.dir)) continue;
       for (const file of await listSessionFiles(project.dir)) {
         const previous = seen.get(file.sessionId);
         // Re-summarize a session that grew: a resumed session's later half is
         // often where the work actually landed.
-        if (previous !== undefined && previous >= file.mtimeMs) continue;
+        if (previous !== undefined && previous >= mtimeStamp(file.mtimeMs)) continue;
         candidates.push({
           projectDir: project.dir,
           sessionId: file.sessionId,
@@ -127,65 +162,76 @@ export const ccSessionDigestJob: JobDefinition = {
     let skipped = 0;
 
     for (const candidate of batch) {
-      const entries = await getTranscript(candidate.projectDir, candidate.sessionId).catch(
-        () => [] as Awaited<ReturnType<typeof getTranscript>>,
-      );
-      const material = transcriptMaterial(entries);
-      if (material.length < MIN_TRANSCRIPT_CHARS) {
-        // Recorded as digested anyway: an abandoned transcript will not grow, and
-        // re-reading it every night costs a file read for nothing.
-        await recordDigest(db, candidate, entries.length, null);
-        skipped += 1;
-        continue;
-      }
+      try {
+        const entries = await getTranscript(candidate.projectDir, candidate.sessionId).catch(
+          () => [] as Awaited<ReturnType<typeof getTranscript>>,
+        );
+        const material = transcriptMaterial(entries);
+        if (material.length < MIN_TRANSCRIPT_CHARS) {
+          // Recorded as digested anyway: an abandoned transcript will not grow, and
+          // re-reading it every night costs a file read for nothing.
+          await recordDigest(db, candidate, entries.length, null);
+          skipped += 1;
+          continue;
+        }
 
-      const run = await runSpecialist({
-        config,
-        db,
-        name: "session-summarizer",
-        task: [
-          `Summarize this Claude Code session (project ${candidate.projectDir}).`,
-          "Answer with exactly three sections, each on its own line and labelled:",
-          "WORK: what the session worked on and where it got to.",
-          "DECISIONS: choices made and why, or 'none'.",
-          "FEEDBACK: instructions the user gave about how the agent should behave in future, or 'none'.",
-        ].join(" "),
-        material,
-      });
-      const digest = parseSessionDigest(run.text);
-      if (!digest.work.trim()) {
-        skipped += 1;
-        continue;
-      }
+        const run = await runSpecialist({
+          config,
+          db,
+          name: "session-summarizer",
+          task: [
+            `Summarize this Claude Code session (project ${candidate.projectDir}).`,
+            "Answer with exactly three sections, each on its own line and labelled:",
+            "WORK: what the session worked on and where it got to.",
+            "DECISIONS: choices made and why, or 'none'.",
+            "FEEDBACK: instructions the user gave about how the agent should behave in future, or 'none'.",
+          ].join(" "),
+          material,
+        });
+        const digest = parseSessionDigest(run.text);
+        if (!digest.work.trim()) {
+          skipped += 1;
+          continue;
+        }
 
-      const sourceRef = {
-        type: "cc-session" as const,
-        projectDir: candidate.projectDir,
-        sessionId: candidate.sessionId,
-      };
-      const summary = await memory.add(
-        [digest.work, digest.decisions ? `Decisions: ${digest.decisions}` : null]
-          .filter(Boolean)
-          .join("\n\n"),
-        { kind: "session-summary", sourceRef },
-      );
-      if (digest.feedback) {
-        // Stored separately so it can be recalled as guidance in its own right,
-        // rather than only as part of the story of one session.
-        await memory.add(digest.feedback, { kind: "agent-feedback", sourceRef });
-      }
-      await recordDigest(db, candidate, entries.length, summary.id);
-      await emitEvent(db, {
-        type: "cc.session_summarized",
-        source: "jobs",
-        payload: {
+        const sourceRef = {
+          type: "cc-session" as const,
           projectDir: candidate.projectDir,
           sessionId: candidate.sessionId,
-          memoryId: summary.id,
-          hadFeedback: digest.feedback !== null,
-        },
-      });
-      written += 1;
+        };
+        const summary = await memory.add(
+          [digest.work, digest.decisions ? `Decisions: ${digest.decisions}` : null]
+            .filter(Boolean)
+            .join("\n\n"),
+          { kind: "session-summary", sourceRef },
+        );
+        if (digest.feedback) {
+          // Stored separately so it can be recalled as guidance in its own right,
+          // rather than only as part of the story of one session.
+          await memory.add(digest.feedback, { kind: "agent-feedback", sourceRef });
+        }
+        await recordDigest(db, candidate, entries.length, summary.id);
+        await emitEvent(db, {
+          type: "cc.session_summarized",
+          source: "jobs",
+          payload: {
+            projectDir: candidate.projectDir,
+            sessionId: candidate.sessionId,
+            memoryId: summary.id,
+            hadFeedback: digest.feedback !== null,
+          },
+        });
+        written += 1;
+      } catch (e) {
+        // One unreadable transcript, or one summarizer failure, must not cost the
+        // rest of the night's batch. The digest row is not written, so it is
+        // retried tomorrow.
+        console.error(
+          `[jobs] could not digest session ${candidate.sessionId}:`,
+          e instanceof Error ? e.message : String(e),
+        );
+        skipped += 1;
+      }
     }
 
     const remaining = candidates.length - batch.length;
@@ -207,7 +253,7 @@ async function recordDigest(
   const values = {
     sessionId: candidate.sessionId,
     projectDir: candidate.projectDir,
-    sourceMtimeMs: Math.round(candidate.mtimeMs),
+    sourceMtimeMs: mtimeStamp(candidate.mtimeMs),
     entryCount,
     memoryId,
     updatedAt: new Date(),
@@ -216,13 +262,4 @@ async function recordDigest(
     .insert(ccSessionDigests)
     .values(values)
     .onConflictDoUpdate({ target: ccSessionDigests.sessionId, set: values });
-}
-
-/** Exposed so a route can clear one session's digest and have it re-summarized. */
-export async function forgetSessionDigest(db: Db, sessionId: string): Promise<boolean> {
-  const deleted = await db
-    .delete(ccSessionDigests)
-    .where(eq(ccSessionDigests.sessionId, sessionId))
-    .returning({ sessionId: ccSessionDigests.sessionId });
-  return deleted.length > 0;
 }

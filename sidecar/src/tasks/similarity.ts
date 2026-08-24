@@ -48,18 +48,25 @@ export function titleTokens(title: string): string[] {
 }
 
 /**
- * Overlap of two titles' content words, 0–1. Jaccard rather than a containment
+ * Overlap of two already-tokenized titles, 0–1. Jaccard rather than a containment
  * ratio so "fix login" doesn't score 1.0 against "fix login redirect after the
  * session expires" — a much larger task is not the same task.
+ *
+ * Takes sets rather than strings so a caller comparing many pairs can tokenize
+ * each string once; the nested loop in `reconcile.ts` would otherwise re-tokenize
+ * the same few hundred strings thousands of times.
  */
-export function titleSimilarity(a: string, b: string): number {
-  const left = new Set(titleTokens(a));
-  const right = new Set(titleTokens(b));
+export function tokenSimilarity(left: ReadonlySet<string>, right: ReadonlySet<string>): number {
   if (left.size === 0 || right.size === 0) return 0;
   let shared = 0;
   for (const word of left) if (right.has(word)) shared++;
   const union = left.size + right.size - shared;
   return union === 0 ? 0 : shared / union;
+}
+
+/** Overlap of two titles' content words. Convenience over {@link tokenSimilarity}. */
+export function titleSimilarity(a: string, b: string): number {
+  return tokenSimilarity(new Set(titleTokens(a)), new Set(titleTokens(b)));
 }
 
 /** Above this, two titles are treated as the same piece of work. */

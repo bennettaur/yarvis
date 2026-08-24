@@ -737,19 +737,26 @@ Five pieces, all local:
 approved, commented on or merged (GitHub and Azure), an issue or JIRA ticket
 created or commented, work started on a ticket, a workspace created, its session
 started, synced, archived, tasks created and completed, calendar events booked.
-UI navigation is deliberately not an event. Browse and search it under
-**Memory → Activity**; the agent reads the same log with `search_events` and
+UI navigation is deliberately not an event. Its own actions are logged too — todos it opens and closes, projects it starts
+tracking, each summary it writes — and this list is a sample rather than the
+whole set. Browse and search it under **Memory → Activity**; the agent reads the same log with `search_events` and
 `activity_summary` when a question needs detail the summaries don't carry.
 
 **Consolidation.** Every four hours a background job folds the events nobody has
-summarized yet into one `activity-summary` memory. Overnight, those become a
-single `day-summary`, and a separate nightly pass reads the Claude Code
-transcripts under `~/.claude/projects` and writes a `session-summary` for each
-new or extended session — plus an `agent-feedback` memory when the session
+summarized yet into one `activity-summary` memory. Overnight, a pass over the Claude Code
+transcripts under `~/.claude/projects` writes a `session-summary` for each new or
+extended session, and an hour later those and the window summaries are folded
+together into a single `day-summary` — plus an `agent-feedback` memory when the session
 contained instructions about how an agent should behave, so that guidance is
 recallable in its own right rather than buried in one transcript. Events are only
-marked processed once a summary is stored, so a failed run loses nothing. Status
-and a manual trigger live under **Settings → Assistant**.
+marked processed once a summary is stored, and only the ones that fit the
+summarizer's prompt, so a failed or oversized run loses nothing.
+
+The transcript pass is **off until you turn it on**: transcripts are local files
+that often hold pasted secrets and other people's data, and summarizing them
+means sending them to your configured LLM provider. Enable it under
+**Settings → Assistant** and choose which project directories it may read — an
+empty list digests nothing. Job status and a manual trigger live there too.
 
 **Typed memory.** Every memory carries a `kind` (`fact`, `preference`, `note`,
 `project`, `decision`, `agent-feedback`, the three summary kinds, `doc`,
@@ -857,6 +864,8 @@ primary one by default:
 | Workspace/PR poller | Doubles provider API traffic and writes the same rows twice | `YARVIS_BACKGROUND_WORKERS=1` |
 | Resuming interrupted kick-offs | Would launch two agent sessions in one workspace | `YARVIS_BACKGROUND_WORKERS=1` |
 | Stale PR-guide sweep | Deletes rows on a schedule; once is enough | `YARVIS_BACKGROUND_WORKERS=1` |
+| Background jobs (event consolidation, nightly rollup, transcript digest) | Write memories and call an LLM provider on a schedule; two processes duplicate both | `YARVIS_BACKGROUND_WORKERS=1` |
+| Seeding the built-in specialists | Inserts the shipped rows once into the shared table | `YARVIS_BACKGROUND_WORKERS=1` |
 | Global hotkeys (`Control + Shift + Space`, `Control + Shift + V`) | One process holds an accelerator machine-wide | `YARVIS_GLOBAL_SHORTCUTS=1` |
 
 Set an override to `1` on the instance that should take the work, or `0` on the
@@ -914,6 +923,8 @@ src/            React frontend (Vite + TS + Tailwind)
                 keyboard cheat sheet (the catalogue every shortcut is listed from)
     omni/       Omni view — chat-driven dynamic-UI canvas
     omnichat/   Omni Chat — global summon-from-anywhere chat overlay
+    memory/     memory screen tabs: the memory library, the activity log browser,
+                the assistant's todos, and projects
     clipboard/  clipboard palette — saved snippets + screened clipboard history
     find/       find-on-page bar (Cmd+F), hosted by the shell over the content region
   omni/         json-render component catalog, registry, layout primitives
@@ -979,6 +990,15 @@ reach into the app. Today it exposes the memory tools — `recall`, `remember`,
 `take_note`, `list_memories`, `forget` — over the same pgvector store the in-app
 chat uses, so a coding session can look up what you told Yarvis last week and
 write back what it learns.
+
+The assistant's **own** todo list is deliberately *not* exposed here. A coding
+session should be able to read and write the shared memory; editing the in-app
+agent's plan would be one agent rewriting another's. Projects are likewise
+in-app only.
+
+`list_memories` takes a `kind` (`fact`, `note`, `session-summary`, …) — it was
+`type` before memory kinds became a column, and a client still sending `type`
+gets an unfiltered list rather than an error.
 
 The endpoint is `POST http://127.0.0.1:<sidecar port>/mcp`, authenticated with a
 scoped token that grants access to those tools and nothing else — not the rest of

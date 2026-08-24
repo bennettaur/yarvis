@@ -4,6 +4,7 @@ import { countEventsByType, type EventType, listEvents } from "../events/service
 import { GitHubClient } from "../github/client.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
+import { refKey } from "../pr/types.ts";
 import { tasksCompletedBetween } from "../tasks/service.ts";
 
 /**
@@ -69,18 +70,45 @@ export interface WeeklySummaryMaterial {
   unavailable: string[];
 }
 
-/** A PR event's payload carries its ref as a `refKey` string; older
- *  `pr.viewed` rows carry a structured ref instead. */
+/**
+ * A PR event's payload carries its ref as a `refKey` string; `pr.viewed` rows,
+ * which the frontend writes, carry the structured ref instead. Both are turned
+ * into a key by `refKey` rather than by formatting one here, so this can't drift
+ * from the keys dismissals are matched on.
+ */
 function refFromPayload(payload: unknown): string | null {
   if (!payload || typeof payload !== "object") return null;
   const ref = (payload as { ref?: unknown }).ref;
   if (typeof ref === "string") return ref;
-  if (ref && typeof ref === "object") {
-    const parts = ref as Record<string, unknown>;
-    if (parts.provider === "github") return `gh:${parts.owner}/${parts.repo}/${parts.number}`;
-    if (parts.provider === "azure") {
-      return `az:${parts.org}/${parts.project}/${parts.repo}/${parts.prId}`;
-    }
+  if (!ref || typeof ref !== "object") return null;
+  const parts = ref as Record<string, unknown>;
+  if (
+    parts.provider === "github" &&
+    typeof parts.owner === "string" &&
+    typeof parts.repo === "string" &&
+    typeof parts.number === "number"
+  ) {
+    return refKey({
+      provider: "github",
+      owner: parts.owner,
+      repo: parts.repo,
+      number: parts.number,
+    });
+  }
+  if (
+    parts.provider === "azure" &&
+    typeof parts.org === "string" &&
+    typeof parts.project === "string" &&
+    typeof parts.repo === "string" &&
+    typeof parts.prId === "number"
+  ) {
+    return refKey({
+      provider: "azure",
+      org: parts.org,
+      project: parts.project,
+      repo: parts.repo,
+      prId: parts.prId,
+    });
   }
   return null;
 }
@@ -118,14 +146,15 @@ export async function weeklySummaryMaterial(
     tasksCompletedBetween(db, window.from, window.to),
     (async () => {
       const memory = new PgVectorMemoryStore(db, await chooseEmbedder(config, db));
-      // Bounded at both ends: a summary of *last* week must not pick up the day
-      // summaries written since.
-      const summaries = await memory.list({
+      // Bounded at both ends in the query: filtering the upper bound afterwards
+      // would return the newest 30 day summaries and then discard them all for
+      // any week but the current one.
+      return memory.list({
         kinds: ["day-summary"],
         since: window.from,
+        until: window.to,
         limit: 30,
       });
-      return summaries.filter((m) => m.createdAt <= window.to);
     })(),
   ]);
 

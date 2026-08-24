@@ -115,6 +115,8 @@ export default function MemoryLibrary() {
   const onDelete = useCallback(async (id: string) => {
     await memDelete(id);
     setItems((prev) => prev.filter((m) => m.id !== id));
+    // Kept in step with the list, or the pager's range drifts from what is shown.
+    setTotal((prev) => Math.max(0, prev - 1));
   }, []);
 
   const addNote = useCallback(async () => {

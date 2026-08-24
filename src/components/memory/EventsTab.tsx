@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { type EventRecord, listEvents, listEventTypes } from "../../lib/events";
 
 /**
@@ -44,17 +44,32 @@ export default function EventsTab() {
   useEffect(() => {
     listEventTypes()
       .then(setTypes)
-      .catch(() => setTypes([]));
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
 
+  /**
+   * A domain filter expands to every type under it, since the API filters by
+   * exact type — which keeps the sidecar's list the single source of truth. Null
+   * means "no filter"; an empty array would ask for nothing and get everything.
+   */
+  const selectedTypes = useMemo(
+    () => (domain ? types.filter((t) => domainOf(t) === domain) : null),
+    [domain, types],
+  );
+
   const load = useCallback(async () => {
+    // A domain is selected but its types haven't arrived yet: asking now would
+    // drop the filter and show everything under a filtered heading.
+    if (domain && !selectedTypes?.length) return;
     setLoading(true);
     try {
-      // A domain filter expands to every type under it, since the API filters by
-      // exact type — which keeps the type list the single source of truth.
-      const selected = domain ? types.filter((t) => domainOf(t) === domain) : undefined;
       setPage(
-        await listEvents({ types: selected, q: applied || undefined, limit: PAGE_SIZE, offset }),
+        await listEvents({
+          types: selectedTypes ?? undefined,
+          q: applied || undefined,
+          limit: PAGE_SIZE,
+          offset,
+        }),
       );
       setError(null);
     } catch (e) {
@@ -62,7 +77,7 @@ export default function EventsTab() {
     } finally {
       setLoading(false);
     }
-  }, [domain, types, applied, offset]);
+  }, [domain, selectedTypes, applied, offset]);
 
   useEffect(() => {
     void load();

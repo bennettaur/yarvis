@@ -180,8 +180,12 @@ Status of the build against the original vision. The full V1 plan lives at
 - **Memory & knowledge** — notes, daily/weekly recaps (tasks completed + notes,
   LLM-summarized or offline raw), document/URL ingestion (chunk → embed →
   store), and a management UI to search/delete (Memory tab). Reuses the
-  `memories` table with a `type` tag (note/doc/fact).
-- **Google Calendar** — desktop OAuth + a date-range events fetch backing a
+  `memories` table, typed by a `kind` column (fact, preference, note, doc, the
+  three summary kinds, agent-feedback, project, decision) with corrections that
+  supersede rather than contradict.
+- **Google Calendar** — desktop OAuth (`calendar.events`: read plus create, with
+  no update or delete anywhere in the client or the tools) + a date-range events
+  fetch backing a
   Calendar tab with a view switcher: agenda, a Sunday-start week grid, a month
   grid, and a scrolling day timeline (vertical/horizontal) with a current-time
   line. Every view arms meeting alarms just before start and shows whether one
@@ -306,7 +310,11 @@ The integration is built but unexercised.
 - **Needs from you:** create a Google Cloud OAuth app (Desktop client), register
   the loopback redirect `http://127.0.0.1:<sidecar-port>/oauth/google/callback`,
   and enter the client id/secret in Settings. Then connect from the Calendar tab
-  and confirm the auth → token-exchange → events → alarm flow end to end.
+  and confirm the auth → token-exchange → events → alarm flow end to end, plus
+  the create path: ask the assistant to book something and check the event lands
+  (it asks for approval first, every time). A grant made before the scope widened
+  to `calendar.events` reads but cannot create — Settings reports that, and
+  reconnecting is the fix, so verify that path too.
 - **Possible follow-ups:** background auto-sync of alarms (today arming is
   manual per event or "set alarms for all"); a "joined" signal beyond
   acknowledging the alarm; per-event lead-time configuration.
@@ -323,14 +331,18 @@ The core is shipped; optional extensions remain.
   otherwise. (The current embedder path is OpenAI-compatible or Gemini; Bedrock
   embeddings are not wired up.)
 
-### 4. Event reconciliation (Phase 3)
-The event log (Phase 2) records actions but nothing yet folds them into memory.
-- **Approach:** a periodic reconciliation pass scans unprocessed events
-  (`processed_at IS NULL`, oldest-first via `events_processed_occurred_idx`),
-  derives layered memories (e.g. a short summary referencing a PR or chat, plus
-  a daily rollup), and stamps `processed_at`. Plus a PR created/reviewed poller
-  that emits events, and a default summarization model setting.
-- **Builds on:** the shipped event log and the existing `MemoryService`.
+### 4. Event reconciliation follow-ups
+The reconciliation pass itself is shipped — four-hourly window summaries, an
+overnight day rollup, and the nightly transcript digest, all under
+`sidecar/src/jobs/`. What remains is around the edges:
+- **A PR created/reviewed poller that emits events.** Today an event is recorded
+  when the user acts *in the app*; a PR reviewed on github.com leaves no trace,
+  so the activity log undercounts. The workspace poller already walks the
+  provider on a timer and is the natural place for it.
+- **Per-job model selection.** Each specialist can name a provider/model and
+  otherwise falls back to the default chat model, so a cheap model for the
+  summarizers is configuration rather than code — but there is no UI for
+  choosing one per job yet.
 
 ## Cross-cutting / polish / tech debt
 

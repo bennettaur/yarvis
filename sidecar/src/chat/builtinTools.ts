@@ -37,22 +37,34 @@ export interface BuiltinToolDeps {
   remoteControl: boolean;
 }
 
-export function buildBuiltinTools(deps: BuiltinToolDeps): Record<string, Tool> {
+/**
+ * The built-ins grouped by the family that produced them.
+ *
+ * The grouping is derived from the factories rather than written down as name
+ * lists, so it cannot drift from the tools themselves — which matters because
+ * the registry seeds a *policy* per family, and a name in the wrong list would
+ * silently make a tool unreachable or always-on.
+ */
+export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Record<string, Tool>> {
   const { db, config, sessionId, memory, attention, remoteControl } = deps;
   return {
-    ...buildTaskTools(db, sessionId),
-    ...buildMemoryTools(memory, sessionId),
-    ...buildAttentionTool(attention),
-    ...buildWorkspaceTools(db, config, { remoteControl }),
-    ...buildJiraTools(db, config, { remoteControl }),
-    ...buildPrReviewTools(db),
-    ...buildProjectTools(db),
-    ...buildTodoTools(db),
-    ...buildEventTools(db),
-    ...buildDigestTools(db, config),
-    ...buildCalendarTools(db, config),
-    ...buildDelegationTools(db, config),
+    tasks: buildTaskTools(db, sessionId),
+    memory: buildMemoryTools(memory, sessionId),
+    attention: buildAttentionTool(attention),
+    projects: buildProjectTools(db),
+    todos: buildTodoTools(db),
+    events: buildEventTools(db),
+    digest: buildDigestTools(db, config),
+    delegation: buildDelegationTools(db, config),
+    workspaces: buildWorkspaceTools(db, config, { remoteControl }),
+    jira: buildJiraTools(db, config, { remoteControl }),
+    prReview: buildPrReviewTools(db),
+    calendar: buildCalendarTools(db, config),
   };
+}
+
+export function buildBuiltinTools(deps: BuiltinToolDeps): Record<string, Tool> {
+  return Object.assign({}, ...Object.values(builtinToolFamilies(deps)));
 }
 
 /**
@@ -63,12 +75,23 @@ export function buildBuiltinTools(deps: BuiltinToolDeps): Record<string, Tool> {
  * and JIRA factories do read `config.secrets` while building.
  */
 export function builtinToolMetadata(): Record<string, Tool> {
-  return buildBuiltinTools({
+  return buildBuiltinTools(inertDeps());
+}
+
+/** The same grouping, built inert, for the registry's per-family policy seeding. */
+export function builtinToolMetadataByFamily(): Record<string, Record<string, Tool>> {
+  return builtinToolFamilies(inertDeps());
+}
+
+function inertDeps(): BuiltinToolDeps {
+  return {
     db: undefined as unknown as Db,
     config: { secrets: {} } as unknown as Config,
     sessionId: "",
     memory: undefined as unknown as MemoryService,
     attention: newAttentionState(),
+    // A metadata read starts no sessions, so remote control is irrelevant here —
+    // it only shapes wording in two tool descriptions.
     remoteControl: false,
-  });
+  };
 }

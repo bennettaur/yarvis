@@ -136,8 +136,9 @@ export const tasks = pgTable("tasks", {
  * from an ingested document chunk, `activity-summary` and `day-summary` from the
  * event-consolidation jobs, `session-summary` from a Claude Code transcript
  * digest, `agent-feedback` from guidance about how an agent should behave,
- * `project` from a project's narrative state, `decision` from a choice worth
- * keeping, and `dismissal` from the user turning down a suggestion.
+ * `project` from a project's narrative state, and `decision` from a choice worth
+ * keeping. A declined suggestion is not among them — those live in
+ * `suggestion_dismissals`, because the suggester filters on an exact key.
  */
 export const MEMORY_KINDS = [
   "fact",
@@ -150,7 +151,6 @@ export const MEMORY_KINDS = [
   "agent-feedback",
   "project",
   "decision",
-  "dismissal",
 ] as const;
 
 export type MemoryKind = (typeof MEMORY_KINDS)[number];
@@ -188,10 +188,28 @@ export const memories = pgTable(
     supersededById: uuid("superseded_by_id"),
   },
   (t) => [
-    // The memory UI and the recap both read one kind, newest-first.
-    index("memories_kind_created_idx").on(t.kind, t.createdAt),
-    // Recall excludes superseded rows, so the vector scan is filtered on this.
-    index("memories_superseded_idx").on(t.supersededAt),
+    // The memory UI and the recap read one kind, newest-first, and both exclude
+    // superseded rows — so this is partial on that condition rather than carrying
+    // a separate index on `superseded_at`, which would never be chosen (the
+    // column is null for almost every row).
+    index("memories_live_kind_created_idx")
+      .on(t.kind, t.createdAt)
+      .where(sql`${t.supersededAt} is null`),
+    /**
+     * Approximate-nearest-neighbour index for recall. Without it every search is
+     * a sequential scan that detoasts a 6KB vector per row, and the
+     * consolidation jobs add a summary per window per day — so the table grows
+     * without a natural ceiling while the system prompt asks the agent to recall
+     * before answering.
+     *
+     * Partial on the same condition as the read above, which keeps the candidate
+     * set to the rows recall can actually return. Note the consequence of any ANN
+     * index: a `kind` filter is applied *after* the candidate set is chosen, so a
+     * narrow filter can return fewer rows than the limit asks for.
+     */
+    index("memories_embedding_hnsw_idx")
+      .using("hnsw", t.embedding.op("vector_cosine_ops"))
+      .where(sql`${t.supersededAt} is null`),
   ],
 );
 
@@ -1194,8 +1212,10 @@ export const agentTodos = pgTable(
  * A configured specialist the orchestrator can delegate to: a model, a tool
  * subset (registry ids), and a task prompt. Rows rather than code so a
  * specialist can be added or retuned from the UI; the built-ins are seeded on
- * startup the same way `agent_tools` seeds its built-ins, and keep `builtin`
- * set so the seeder may update their prompt while leaving user rows alone.
+ * startup — but unlike `agent_tools`, whose sync rewrites any row whose content
+ * changed, an existing specialist is never overwritten: a prompt the user tuned
+ * survives every restart. `builtin` marks the rows `resetSpecialist` can put back
+ * to the shipped definition.
  */
 export const agentSpecialists = pgTable(
   "agent_specialists",
@@ -1217,7 +1237,12 @@ export const agentSpecialists = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("agent_specialists_name_unique_idx").on(t.name)],
+  (t) => [
+    // Case-insensitive, matching how `findSpecialist` resolves a name: a
+    // case-sensitive index would let "Planner" and "planner" both exist, after
+    // which the lookup returns whichever row the plan happened to reach.
+    uniqueIndex("agent_specialists_name_unique_idx").on(sql`lower(${t.name})`),
+  ],
 );
 
 /**
@@ -1262,6 +1287,25 @@ export const ccSessionDigests = pgTable(
 );
 
 /**
+ * Configuration for the background jobs the user has to consent to.
+ *
+ * Singleton, like `wip_config`. The transcript digest is the only job that sends
+ * data off the machine — it reads `~/.claude` transcripts, which routinely hold
+ * pasted secrets, customer data and work for other clients, and hands them to
+ * whichever LLM provider is configured. For a local-first app that is not
+ * something to switch on by default, so it stays off until the user enables it
+ * and names the project directories it may read.
+ */
+export const jobConfig = pgTable("job_config", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  ccDigestEnabled: boolean("cc_digest_enabled").notNull().default(false),
+  /** Project directory names under `~/.claude/projects` the digest may read. */
+  ccDigestProjectDirs: jsonb("cc_digest_project_dirs").$type<string[]>().notNull().default([]),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
  * Suggestions the user has turned down, so "what should I work on next" stops
  * offering them. A structured row rather than a memory because the suggester
  * has to filter on it exactly, and a semantic match is the wrong instrument for
@@ -1273,7 +1317,7 @@ export const suggestionDismissals = pgTable(
   "suggestion_dismissals",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    /** Stable key for the thing dismissed, e.g. `pr:owner/repo#12`, `todo:<id>`. */
+    /** Stable key for the thing dismissed, e.g. `gh:owner/repo/12`, `todo:<id>`. */
     refKey: text("ref_key").notNull(),
     reason: text("reason"),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
@@ -1294,5 +1338,6 @@ export type JobRun = typeof jobRuns.$inferSelect;
 export type NewJobRun = typeof jobRuns.$inferInsert;
 export type CcSessionDigest = typeof ccSessionDigests.$inferSelect;
 export type NewCcSessionDigest = typeof ccSessionDigests.$inferInsert;
+export type JobConfigRow = typeof jobConfig.$inferSelect;
 export type SuggestionDismissal = typeof suggestionDismissals.$inferSelect;
 export type NewSuggestionDismissal = typeof suggestionDismissals.$inferInsert;

@@ -3,7 +3,7 @@ import type { Db } from "../db/client.ts";
 import { type Task, tasks, workspaces } from "../db/schema.ts";
 import { type EventType, emitEvent, listEvents } from "../events/service.ts";
 import { listTasks } from "./service.ts";
-import { titleSimilarity } from "./similarity.ts";
+import { titleTokens, tokenSimilarity } from "./similarity.ts";
 
 /**
  * Noticing that an open task is probably done.
@@ -23,6 +23,12 @@ const EVIDENCE_THRESHOLD = 0.45;
 export interface CompletionEvidence {
   /** What suggests the task is done, in words the agent can relay. */
   reason: string;
+  /**
+   * The third-party text the match was made against (a PR title, a workspace
+   * name), separate from the sentence around it so a caller can mark it as data
+   * rather than passing off someone else's words as the system's reasoning.
+   */
+  subject?: string;
   /** Where the signal came from, for the agent to name. */
   source: "workspace" | "event";
   occurredAt: Date;
@@ -84,6 +90,7 @@ export async function completionCandidates(
       if (!workspace) continue;
       addEvidence(task.id, {
         reason: `the workspace "${workspace.name}" it was linked to has been archived`,
+        subject: workspace.name,
         source: "workspace",
         occurredAt: workspace.archivedAt ?? since,
       });
@@ -95,13 +102,21 @@ export async function completionCandidates(
     since,
     limit: options.eventLimit ?? 200,
   });
+  // Tokenized once each: this is a nested loop over every open task × every
+  // event in the window.
+  const tokenizedTasks = openTasks.map((task) => ({
+    task,
+    tokens: new Set(titleTokens(task.title)),
+  }));
   for (const event of events) {
     const subject = eventSubject(event.payload);
     if (!subject) continue;
-    for (const task of openTasks) {
-      if (titleSimilarity(task.title, subject) < EVIDENCE_THRESHOLD) continue;
+    const subjectTokens = new Set(titleTokens(subject));
+    for (const { task, tokens } of tokenizedTasks) {
+      if (tokenSimilarity(tokens, subjectTokens) < EVIDENCE_THRESHOLD) continue;
       addEvidence(task.id, {
         reason: `${event.type} on "${subject}", which reads like this task`,
+        subject,
         source: "event",
         occurredAt: event.occurredAt,
       });

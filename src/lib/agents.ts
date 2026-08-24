@@ -64,4 +64,34 @@ export const resetSpecialist = (name: string) =>
 
 export const listJobs = () => request<{ jobs: JobStatus[] }>("/api/jobs").then((body) => body.jobs);
 
-export const runJob = (name: string) => request<JobRunResult>(`/api/jobs/${name}/run`, "POST", {});
+/**
+ * Triggers a job. A 409 is the lease refusing a second copy of a run already in
+ * flight — an outcome to report, not an error, so it is read from the body
+ * rather than thrown.
+ */
+export async function runJob(name: string): Promise<JobRunResult> {
+  const res = await sidecarFetch(`/api/jobs/${name}/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  if (res.status === 409) return (await res.json()) as JobRunResult;
+  if (!res.ok) throw new Error(`POST /api/jobs/${name}/run → ${res.status}`);
+  return res.json();
+}
+
+export interface JobConfig {
+  ccDigestEnabled: boolean;
+  ccDigestProjectDirs: string[];
+}
+
+export interface JobConfigResult {
+  config: JobConfig;
+  /** Claude Code project directories on this machine, to choose from. */
+  availableProjectDirs: { dir: string; path: string | null }[];
+}
+
+export const getJobConfig = () => request<JobConfigResult>("/api/jobs/config");
+
+export const saveJobConfig = (config: JobConfig) =>
+  request<{ config: JobConfig }>("/api/jobs/config", "PUT", config).then((b) => b.config);

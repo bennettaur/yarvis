@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { builtinToolMetadata } from "../chat/builtinTools.ts";
-import { builtinIdForName, nameForBuiltinId } from "./registry.ts";
+import { builtinToolMetadata, builtinToolMetadataByFamily } from "../chat/builtinTools.ts";
+import { nameForBuiltinId } from "./registry.ts";
 
 describe("built-in tool registry", () => {
   /**
@@ -33,6 +33,14 @@ describe("built-in tool registry", () => {
   });
 
   it("round-trips a built-in id", () => {
-    expect(nameForBuiltinId(builtinIdForName("create_todo"))).toBe("create_todo");
+    expect(nameForBuiltinId("builtin:create_todo")).toBe("create_todo");
+  });
+
+  it("puts every tool in exactly one family, and every family in the flat set", () => {
+    const families = builtinToolMetadataByFamily();
+    const flat = Object.keys(builtinToolMetadata());
+    const grouped = Object.values(families).flatMap((tools) => Object.keys(tools));
+    expect(grouped.sort()).toEqual([...flat].sort());
+    expect(new Set(grouped).size).toBe(grouped.length);
   });
 });

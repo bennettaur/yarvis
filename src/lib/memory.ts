@@ -13,8 +13,7 @@ export type MemoryKind =
   | "session-summary"
   | "agent-feedback"
   | "project"
-  | "decision"
-  | "dismissal";
+  | "decision";
 
 export interface MemoryRecord {
   id: string;

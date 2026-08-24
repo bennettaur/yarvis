@@ -4,6 +4,13 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { createTodo, deleteTodo, getTodo, listTodos, updateTodo } from "./service.ts";
 
+/**
+ * Matched by shape rather than with zod's `.uuid()`, which additionally enforces
+ * RFC version/variant bits that Postgres itself does not — the same check
+ * `attention/routes.ts` and the MCP memory tools apply.
+ */
+const UUID = /^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/;
+
 const priority = z.enum(["urgent", "high", "medium", "low"]);
 const status = z.enum(["pending", "in_progress", "blocked", "done", "wont_do"]);
 
@@ -48,10 +55,16 @@ export function createTodoRoutes(config: Config): Hono {
       if (!parsed.success) return c.json({ error: `unknown status: ${raw}` }, 400);
       statuses.push(parsed.data);
     }
+    // Validated like the bodies in this file: an unparseable id would otherwise
+    // reach a uuid column and surface as a 500 rather than a bad request.
+    const projectId = c.req.query("projectId");
+    if (projectId !== undefined && !UUID.test(projectId)) {
+      return c.json({ error: "projectId must be a uuid" }, 400);
+    }
     return c.json(
       await listTodos(db(), {
         statuses: statuses.length ? statuses : undefined,
-        projectId: c.req.query("projectId"),
+        projectId,
       }),
     );
   });
@@ -69,7 +82,9 @@ export function createTodoRoutes(config: Config): Hono {
   });
 
   router.get("/:id", async (c) => {
-    const todo = await getTodo(db(), c.req.param("id"));
+    const id = c.req.param("id");
+    if (!UUID.test(id)) return c.json({ error: "not found" }, 404);
+    const todo = await getTodo(db(), id);
     if (!todo) return c.json({ error: "not found" }, 404);
     return c.json(todo);
   });
@@ -78,6 +93,7 @@ export function createTodoRoutes(config: Config): Hono {
     const parsed = patchSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     const { dueAt, ...rest } = parsed.data;
+    if (!UUID.test(c.req.param("id"))) return c.json({ error: "not found" }, 404);
     const todo = await updateTodo(db(), c.req.param("id"), {
       ...rest,
       ...(dueAt !== undefined ? { dueAt: dueAt ? new Date(dueAt) : null } : {}),

@@ -1,8 +1,12 @@
 import { generateText, stepCountIs, type Tool } from "ai";
 import { nameForBuiltinId } from "../agentTools/registry.ts";
-import { listRegistryTools } from "../agentTools/store.ts";
+import { listDisabledToolIds } from "../agentTools/store.ts";
 import { newAttentionState } from "../chat/attentionTools.ts";
 import { buildBuiltinTools } from "../chat/builtinTools.ts";
+import {
+  ALWAYS_CONFIRM_BUILTIN_TOOLS,
+  DESTRUCTIVE_BUILTIN_TOOLS,
+} from "../chat/destructiveTools.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import type { AgentSpecialist } from "../db/schema.ts";
@@ -26,9 +30,17 @@ import { findSpecialist } from "./specialists.ts";
  * chat agent applies to a surface that can't prompt.
  */
 
-/** Ceiling on the material handed to a specialist, so one giant transcript
- *  can't blow up the prompt. */
-const MAX_MATERIAL_CHARS = 24_000;
+/**
+ * Ceiling on the material handed to a specialist, so one giant transcript can't
+ * blow up the prompt. Exported because a caller that assembles material from
+ * many rows has to fit it *before* claiming those rows as summarized —
+ * truncation here is silent, and a caller that ignores the budget would mark
+ * work processed that the model never saw.
+ */
+export const MAX_MATERIAL_CHARS = 24_000;
+
+/** Wall clock for a run whose caller supplied no signal of its own. */
+const DEFAULT_RUN_TIMEOUT_MS = 120_000;
 
 export interface RunSpecialistInput {
   config: Config;
@@ -44,6 +56,14 @@ export interface RunSpecialistInput {
    * instruction.
    */
   material?: string;
+  /**
+   * Cancels the run. Callers that have a request to tie it to pass their own; a
+   * caller without one (the background jobs) gets {@link DEFAULT_RUN_TIMEOUT_MS},
+   * because a provider that accepts the connection and then stalls would
+   * otherwise outlive the job's lease and leave the row reading "running"
+   * forever — after which the manual trigger only ever answers "already
+   * running".
+   */
   signal?: AbortSignal;
   /** Overrides the specialist's configured model, for a caller that has one. */
   provider?: string;
@@ -55,14 +75,34 @@ export interface SpecialistRun {
   text: string;
   /** Tool calls made, for the caller to report or log. */
   toolCalls: number;
+  /**
+   * The nonce this run's material was fenced with. Callers that feed the report
+   * back into another prompt fence it with the same one — the specialist read
+   * ticket bodies and PR titles to compose that text, so on the way out it is
+   * untrusted for the same reason it was on the way in.
+   */
+  nonce: string;
 }
 
 /**
- * Tools a specialist may never hold, whatever its configuration says. Delegation
- * is the orchestrator's job: a specialist that could delegate could delegate to
- * itself, and one bad prompt would become an unbounded chain of runs.
+ * Tools a specialist may never hold, whatever its configuration says.
+ *
+ * Delegation is the orchestrator's job: a specialist that could delegate could
+ * delegate to itself, and one bad prompt would become an unbounded chain of runs.
+ *
+ * The destructive set is excluded for the same reason MCP tools are — a
+ * delegated run has no channel to hold an approval prompt on, and it works from
+ * material (ticket bodies, transcripts, event payloads) that an outside party
+ * can influence. Silently doing the irreversible thing unattended is the one
+ * unacceptable outcome, so those tools go back through the orchestrator, where
+ * the approval path exists.
  */
-const FORBIDDEN_SPECIALIST_TOOLS = new Set(["delegate", "list_specialists"]);
+const FORBIDDEN_SPECIALIST_TOOLS: ReadonlySet<string> = new Set([
+  "delegate",
+  "list_specialists",
+  ...ALWAYS_CONFIRM_BUILTIN_TOOLS,
+  ...DESTRUCTIVE_BUILTIN_TOOLS,
+]);
 
 /**
  * Restricts the built-in tool set to what a specialist is configured to use,
@@ -140,9 +180,7 @@ export async function runSpecialist(input: RunSpecialistInput): Promise<Speciali
     // is made remotely controllable.
     remoteControl: false,
   });
-  const disabled = new Set(
-    (await listRegistryTools(db)).filter((t) => t.policy === "disabled").map((t) => t.id),
-  );
+  const disabled = new Set((await listDisabledToolIds(db)).map((t) => t.id));
   const tools = selectTools(allTools, specialist.toolIds, disabled);
 
   const nonce = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
@@ -155,12 +193,13 @@ export async function runSpecialist(input: RunSpecialistInput): Promise<Speciali
       messages: [{ role: "user", content: prompt }],
       tools,
       stopWhen: stepCountIs(specialist.maxSteps),
-      abortSignal: signal,
+      abortSignal: signal ?? AbortSignal.timeout(DEFAULT_RUN_TIMEOUT_MS),
     });
     return {
       specialist: specialist.name,
       text: result.text,
       toolCalls: result.steps.reduce((sum, step) => sum + step.toolCalls.length, 0),
+      nonce,
     };
   } catch (e) {
     // The provider error carries the request and often the key; log the

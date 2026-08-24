@@ -7,6 +7,7 @@ import {
   inArray,
   isNotNull,
   isNull,
+  lte,
   type SQL,
   sql,
 } from "drizzle-orm";
@@ -34,6 +35,13 @@ export interface MemoryListOptions {
   kinds?: readonly MemoryKind[];
   /** Only memories created at or after this instant. */
   since?: Date;
+  /**
+   * Only memories created at or before this instant. Load-bearing for a windowed
+   * read: `limit` is applied by the query, so a caller that filters an upper
+   * bound in JS afterwards gets the newest rows *then* discards them — which
+   * silently returns nothing for any window that isn't the most recent one.
+   */
+  until?: Date;
   limit?: number;
   offset?: number;
   /** Include memories the user has since corrected. Off by default. */
@@ -62,11 +70,15 @@ export interface MemoryInput extends MemoryWriteInput {
   content: string;
 }
 
-/** Fields an edit may change. Content changes trigger a re-embed. */
+/**
+ * Fields an edit may change. Content changes trigger a re-embed. Metadata is
+ * deliberately not editable: it holds provenance the writer set (an ingested
+ * chunk's source URL and position, the embedder identity), and a patch that
+ * replaced it wholesale would quietly drop that.
+ */
 export interface MemoryPatch {
   content?: string;
   kind?: MemoryKind;
-  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -209,6 +221,7 @@ export class PgVectorMemoryStore implements MemoryService {
     const conditions: SQL[] = [];
     if (options.kinds?.length) conditions.push(inArray(memories.kind, [...options.kinds]));
     if (options.since) conditions.push(gte(memories.createdAt, options.since));
+    if (options.until) conditions.push(lte(memories.createdAt, options.until));
     if (!options.includeSuperseded) conditions.push(isNull(memories.supersededAt));
     return conditions.length ? and(...conditions) : undefined;
   }
@@ -251,12 +264,15 @@ export class PgVectorMemoryStore implements MemoryService {
       .set({
         ...(patch.content !== undefined ? { content: patch.content } : {}),
         ...(patch.kind !== undefined ? { kind: patch.kind } : {}),
-        ...(patch.metadata !== undefined
-          ? { metadata: this.stamp(patch.metadata) }
-          : embedding
-            ? { metadata: this.stamp(existing.metadata as Record<string, unknown> | null) }
-            : {}),
-        ...(embedding ? { embedding } : {}),
+        // A re-embed has to re-stamp the embedder identity beside the new vector,
+        // or `embedderHealth` reports the memory as produced by whatever model
+        // last touched it. Existing metadata is carried through, not replaced.
+        ...(embedding
+          ? {
+              embedding,
+              metadata: this.stamp(existing.metadata as Record<string, unknown> | null),
+            }
+          : {}),
         updatedAt: new Date(),
       })
       .where(eq(memories.id, id))

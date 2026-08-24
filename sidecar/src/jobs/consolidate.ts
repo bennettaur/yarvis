@@ -1,4 +1,4 @@
-import { runSpecialist } from "../agents/run.ts";
+import { MAX_MATERIAL_CHARS, runSpecialist } from "../agents/run.ts";
 import type { EventRow } from "../db/schema.ts";
 import { emitEvent, listEvents, markEventsProcessed } from "../events/service.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
@@ -20,7 +20,10 @@ import type { JobDefinition } from "./scheduler.ts";
  * by the next one rather than losing it.
  */
 
-/** Ceiling on events folded into one window, so a busy day can't blow the prompt. */
+/**
+ * Ceiling on events *read* per run. What is actually summarized is bounded by
+ * the material budget below, which is the smaller limit in practice.
+ */
 const MAX_EVENTS_PER_RUN = 400;
 
 /** A window with fewer events than this isn't worth a model call. */
@@ -35,6 +38,41 @@ const MIN_EVENTS_TO_SUMMARIZE = 3;
  */
 const BOOKKEEPING_TYPES: readonly string[] = ["memory.consolidated", "cc.session_summarized"];
 
+export interface EventBatch {
+  /** The events that fit the budget, oldest-first. */
+  events: EventRow[];
+  material: string;
+  /** How many of the candidates did not fit. */
+  dropped: number;
+}
+
+/**
+ * Takes as many events as fit the specialist's material budget, oldest-first.
+ *
+ * This exists because `materialBlock` truncates silently: without it a run would
+ * hand the model the first ~24k characters, then mark every event it *read*
+ * processed — quietly losing the newest events in the window, which are the ones
+ * the user is most likely to ask about. Only the events in `events` are claimed.
+ */
+export function eventsWithinBudget(
+  events: EventRow[],
+  budget: number = MAX_MATERIAL_CHARS,
+): EventBatch {
+  const lines: string[] = [];
+  const taken: EventRow[] = [];
+  let used = 0;
+  for (const event of events) {
+    const line = eventLine(event);
+    // +1 for the newline each line but the first costs.
+    const cost = line.length + (lines.length === 0 ? 0 : 1);
+    if (used + cost > budget) break;
+    lines.push(line);
+    taken.push(event);
+    used += cost;
+  }
+  return { events: taken, material: lines.join("\n"), dropped: events.length - taken.length };
+}
+
 /** Renders one event as a line of material. */
 function eventLine(event: EventRow): string {
   const at = event.occurredAt.toISOString().slice(0, 16).replace("T", " ");
@@ -42,7 +80,7 @@ function eventLine(event: EventRow): string {
   return `${at} ${event.type}${event.source ? ` (${event.source})` : ""} ${detail}`.trim();
 }
 
-/** Chronological material for a window of events. */
+/** Chronological material for a window of events, unbounded. */
 export function eventMaterial(events: EventRow[]): string {
   return events.map(eventLine).join("\n");
 }
@@ -59,11 +97,24 @@ export const consolidateEventsJob: JobDefinition = {
       limit: MAX_EVENTS_PER_RUN,
       oldestFirst: true,
     });
-    const events = claimed.filter((event) => !BOOKKEEPING_TYPES.includes(event.type));
-    if (events.length < MIN_EVENTS_TO_SUMMARIZE) {
-      return { skipped: true, detail: `only ${events.length} unprocessed event(s); leaving them` };
+    const bookkeeping = claimed.filter((event) => BOOKKEEPING_TYPES.includes(event.type));
+    const candidates = claimed.filter((event) => !BOOKKEEPING_TYPES.includes(event.type));
+    if (candidates.length < MIN_EVENTS_TO_SUMMARIZE) {
+      // The bookkeeping rows are consumed even on a skip: left unprocessed they
+      // collect at the head of this oldest-first window until they fill it, at
+      // which point the job skips forever with real activity queued behind them.
+      await markEventsProcessed(
+        db,
+        bookkeeping.map((e) => e.id),
+      );
+      return {
+        skipped: true,
+        detail: `only ${candidates.length} unprocessed event(s); leaving them`,
+      };
     }
 
+    const batch = eventsWithinBudget(candidates);
+    const events = batch.events;
     const from = events[0]!.occurredAt;
     const to = events[events.length - 1]!.occurredAt;
     const run = await runSpecialist({
@@ -71,7 +122,7 @@ export const consolidateEventsJob: JobDefinition = {
       db,
       name: "activity-consolidator",
       task: `Summarize what the user did between ${from.toISOString()} and ${to.toISOString()}, from the ${events.length} activity events below.`,
-      material: eventMaterial(events),
+      material: batch.material,
     });
     if (!run.text.trim()) {
       return { skipped: true, detail: "the summarizer returned nothing; window left unprocessed" };
@@ -87,16 +138,23 @@ export const consolidateEventsJob: JobDefinition = {
         eventIds: events.map((e) => e.id),
       },
     });
+    // Only what the model actually saw, plus the bookkeeping rows that were
+    // never candidates. Anything the budget dropped stays unprocessed for the
+    // next run rather than being summarized by nobody.
     await markEventsProcessed(
       db,
-      claimed.map((e) => e.id),
+      [...events, ...bookkeeping].map((e) => e.id),
     );
     await emitEvent(db, {
       type: "memory.consolidated",
       source: "jobs",
       payload: { memoryId: record.id, kind: "activity-summary", events: events.length },
     });
-    return { detail: `summarized ${events.length} event(s) into memory ${record.id}` };
+    return {
+      detail:
+        `summarized ${events.length} event(s) into memory ${record.id}` +
+        (batch.dropped > 0 ? `; ${batch.dropped} did not fit and stay unprocessed` : ""),
+    };
   },
 };
 
@@ -120,13 +178,12 @@ export const dailyRollupJob: JobDefinition = {
 
     // Both halves of the day's record: the four-hourly windows, and whatever the
     // Claude Code sweep digested. A day with neither had no work in it.
-    const pieces = (
-      await memory.list({
-        kinds: ["activity-summary", "session-summary"],
-        since: from,
-        limit: 50,
-      })
-    ).filter((m) => m.createdAt < to);
+    const pieces = await memory.list({
+      kinds: ["activity-summary", "session-summary"],
+      since: from,
+      until: to,
+      limit: 50,
+    });
     if (pieces.length === 0) {
       return { skipped: true, detail: `nothing recorded for ${label}` };
     }

@@ -5,7 +5,7 @@ import { countEventsByType, REVIEW_EVENT_TYPES } from "../events/service.ts";
 import { GitHubClient } from "../github/client.ts";
 import { getGithubPrConfig } from "../github/config.ts";
 import { getReviewingList, isReviewComplete } from "../github/reviewing.ts";
-import type { PrInvolvement, PrSummary } from "../pr/types.ts";
+import { type PrInvolvement, type PrSummary, refKey } from "../pr/types.ts";
 import { listTasks } from "../tasks/service.ts";
 import { listTodos } from "../todos/service.ts";
 import { listWorkspaces } from "../workspaces/service.ts";
@@ -49,9 +49,13 @@ export interface DanglingWork {
   unavailable: string[];
 }
 
-/** GitHub PR key in the same shape as `pr/types.ts`'s `refKey`. */
+/**
+ * The key a dismissal is matched on, from `pr/types.ts` — the one definition, not
+ * a copy: a second implementation that drifted would silently stop "not that
+ * one" from sticking.
+ */
 function prKey(pr: Pick<PrSummary, "owner" | "repo" | "number">): string {
-  return `gh:${pr.owner}/${pr.repo}/${pr.number}`;
+  return refKey({ provider: "github", ...pr });
 }
 
 function prNav(pr: Pick<PrSummary, "owner" | "repo" | "number">): AttentionNavTarget {
@@ -94,6 +98,16 @@ export async function findDanglingWork(
   const unavailable: string[] = [];
   const today = new Date().toISOString().slice(0, 10);
 
+  // Started before the provider work below, not after it: these four reads are
+  // independent of GitHub and of each other, so they cost nothing once the
+  // network latency is already being paid.
+  const localReads = Promise.all([
+    listWorkspaces(db),
+    listTasks(db, { status: "open" }),
+    listTodos(db),
+    options.includeDismissed ? Promise.resolve(new Set<string>()) : dismissedKeys(db),
+  ]);
+
   const token = config.secrets?.githubToken;
   if (!token) {
     unavailable.push("github (no token configured)");
@@ -102,11 +116,14 @@ export async function findDanglingWork(
     const prConfig = await getGithubPrConfig(db);
     const lookbackDays = options.lookbackDays ?? prConfig.reviewingLookbackDays;
     try {
-      const viewer = await gh.viewer();
-      const [mine, requested, reviewing] = await Promise.all([
+      // Only the reviewing list needs the viewer's login, so the two searches
+      // don't wait on that round-trip.
+      const viewerPromise = gh.viewer();
+      const [mine, requested, reviewing, viewer] = await Promise.all([
         gh.search("is:pr is:open author:@me"),
         gh.search(prConfig.reviewQuery),
-        getReviewingList(db, gh, viewer.login, lookbackDays),
+        viewerPromise.then((v) => getReviewingList(db, gh, v.login, lookbackDays)),
+        viewerPromise,
       ]);
 
       // Ordered strongest claim first, because the dedupe below keeps the first
@@ -159,7 +176,9 @@ export async function findDanglingWork(
     }
   }
 
-  for (const workspace of await listWorkspaces(db)) {
+  const [workspaces, openTasks, todos, dismissed] = await localReads;
+
+  for (const workspace of workspaces) {
     if (workspace.status !== "active") continue;
     const pr = workspace.prs[0];
     items.push({
@@ -176,7 +195,7 @@ export async function findDanglingWork(
     });
   }
 
-  for (const task of await listTasks(db, { status: "open" })) {
+  for (const task of openTasks) {
     // Only tasks that have slipped: today's list is not dangling work, it's the
     // plan. A task with no date can't be judged, so it is left out.
     if (!task.targetDate || task.targetDate >= today) continue;
@@ -190,7 +209,7 @@ export async function findDanglingWork(
     });
   }
 
-  for (const todo of await listTodos(db)) {
+  for (const todo of todos) {
     items.push({
       key: `todo:${todo.id}`,
       kind: "todo",
@@ -208,11 +227,7 @@ export async function findDanglingWork(
     if (!deduped.has(item.key)) deduped.set(item.key, item);
   }
 
-  let result = [...deduped.values()];
-  if (!options.includeDismissed) {
-    const dismissed = await dismissedKeys(db);
-    result = result.filter((item) => !dismissed.has(item.key));
-  }
+  const result = [...deduped.values()].filter((item) => !dismissed.has(item.key));
   return { items: result, unavailable };
 }
 
@@ -227,8 +242,12 @@ const KIND_WEIGHT: Record<DanglingKind, number> = {
   task: 1,
 };
 
-/** Days without a review event before the planner starts pushing reviews. */
-const REVIEW_DROUGHT_DAYS = 3;
+/**
+ * Review events in a week below which the planner starts promoting reviews. A
+ * count, not a cadence: what is compared against it is the number of review
+ * touches in the last seven days.
+ */
+const MIN_WEEKLY_REVIEW_EVENTS = 3;
 
 export interface ReviewCadence {
   /** Review-flavoured events in the last week. */
@@ -242,9 +261,7 @@ export async function reviewCadence(db: Db, now: Date = new Date()): Promise<Rev
   const since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
   const counts = await countEventsByType(db, { since, types: REVIEW_EVENT_TYPES });
   const lastWeek = counts.reduce((sum, c) => sum + c.count, 0);
-  // Fewer than one review touch per working day is the threshold; below that a
-  // week has gone by with the user only shipping their own work.
-  return { lastWeek, lowActivity: lastWeek < REVIEW_DROUGHT_DAYS };
+  return { lastWeek, lowActivity: lastWeek < MIN_WEEKLY_REVIEW_EVENTS };
 }
 
 export interface Suggestion extends DanglingItem {
