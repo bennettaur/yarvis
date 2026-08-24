@@ -88,8 +88,8 @@ export async function ingestDocument(
   await memory.addMany(
     chunks.map((content, i) => ({
       content,
+      kind: "doc" as const,
       metadata: {
-        type: "doc",
         source: input.source,
         title: input.title ?? input.source,
         chunk: i,

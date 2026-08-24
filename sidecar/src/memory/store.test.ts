@@ -41,7 +41,10 @@ afterAll(async () => {
 
 describe("pgvector memory store", () => {
   it("adds and retrieves a memory by id", async () => {
-    const rec = await store.add("the user prefers dark mode", { tag: "pref" });
+    const rec = await store.add("the user prefers dark mode", {
+      kind: "preference",
+      metadata: { tag: "pref" },
+    });
     const got = await store.get(rec.id);
     expect(got?.content).toBe("the user prefers dark mode");
   });
@@ -64,22 +67,64 @@ describe("pgvector memory store", () => {
 
   it("adds many memories in one batch", async () => {
     const records = await store.addMany([
-      { content: "chunk one", metadata: { type: "doc" } },
-      { content: "chunk two", metadata: { type: "doc" } },
+      { content: "chunk one", kind: "doc" },
+      { content: "chunk two", kind: "doc" },
     ]);
     expect(records.length).toBe(2);
-    expect((await store.list({ type: "doc" })).length).toBe(2);
+    expect((await store.list({ kinds: ["doc"] })).length).toBe(2);
   });
 
-  it("lists memories and filters by metadata type", async () => {
-    await store.add("a fact", { type: "fact" });
-    await store.add("note one", { type: "note" });
-    await store.add("note two", { type: "note" });
+  it("lists memories and filters by kind", async () => {
+    await store.add("a fact");
+    await store.add("note one", { kind: "note" });
+    await store.add("note two", { kind: "note" });
 
     expect((await store.list()).length).toBe(3);
-    const notes = await store.list({ type: "note" });
+    expect(await store.count()).toBe(3);
+    const notes = await store.list({ kinds: ["note"] });
     expect(notes.length).toBe(2);
-    expect(notes.every((n) => (n.metadata as any).type === "note")).toBe(true);
+    expect(notes.every((n) => n.kind === "note")).toBe(true);
+    expect(await store.count({ kinds: ["note"] })).toBe(2);
+  });
+
+  it("pages a list with an offset", async () => {
+    await store.addMany([{ content: "first" }, { content: "second" }, { content: "third" }]);
+    const page = await store.list({ limit: 2, offset: 2 });
+    expect(page.length).toBe(1);
+  });
+
+  it("re-embeds an edited memory so it is found by what it now says", async () => {
+    const rec = await store.add("the user is working on the calendar integration");
+    await store.update(rec.id, { content: "the user is working on the telegram bot" });
+
+    const hits = await store.search("telegram bot", 1);
+    expect(hits[0]?.id).toBe(rec.id);
+    expect(hits[0]?.content).toContain("telegram");
+  });
+
+  it("keeps a superseded memory but leaves it out of recall", async () => {
+    const original = await store.add("the events project is in design", { kind: "project" });
+    const replacement = await store.supersede(original.id, "the events project is shipped");
+
+    expect(replacement?.kind).toBe("project");
+    // Both rows still exist, but only the replacement is reachable by default.
+    expect((await store.list()).map((m) => m.id)).toEqual([replacement!.id]);
+    expect((await store.list({ includeSuperseded: true })).length).toBe(2);
+    expect((await store.get(original.id))?.supersededAt).not.toBeNull();
+
+    const hits = await store.search("events project", 10);
+    expect(hits.map((h) => h.id)).not.toContain(original.id);
+    const withOld = await store.search("events project", 10, { includeSuperseded: true });
+    expect(withOld.map((h) => h.id)).toContain(original.id);
+  });
+
+  it("narrows a search to the kinds asked for", async () => {
+    await store.add("the calendar work is blocked on OAuth scopes", { kind: "project" });
+    await store.add("calendar OAuth scopes need re-consent", { kind: "note" });
+
+    const hits = await store.search("calendar oauth", 5, { kinds: ["note"] });
+    expect(hits.length).toBe(1);
+    expect(hits[0]!.kind).toBe("note");
   });
 
   it("stamps the producing embedder onto each memory", async () => {

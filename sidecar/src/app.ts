@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { cors } from "hono/cors";
+import { createSpecialistRoutes } from "./agents/routes.ts";
 import { createAttentionIngestRoutes, createAttentionRoutes } from "./attention/routes.ts";
 import { createAzureRoutes } from "./azure/routes.ts";
 import { createCcRoutes } from "./cc/routes.ts";
@@ -14,6 +15,7 @@ import { createGithubRoutes } from "./github/routes.ts";
 import { createCalendarRoutes, createGoogleCallbackRoutes } from "./google/routes.ts";
 import { createIssueRoutes } from "./issues/routes.ts";
 import { createJiraRoutes } from "./jira/routes.ts";
+import { createJobRoutes } from "./jobs/routes.ts";
 import { redactSecrets } from "./llm/errors.ts";
 import { createModelCatalogRoutes } from "./llm/routes.ts";
 import { createMcpOAuthCallbackRoutes } from "./mcp/callbackRoutes.ts";
@@ -22,9 +24,11 @@ import { createMcpEndpointInfoRoutes, createMcpEndpointRoutes } from "./mcpServe
 import { createMemoryRoutes } from "./memory/routes.ts";
 import { createOmniRoutes } from "./omni/routes.ts";
 import { createPrRoutes } from "./pr/routes.ts";
+import { createProjectRoutes } from "./projects/routes.ts";
 import { createReadiness, type Readiness } from "./readiness.ts";
 import { createTaskRoutes } from "./tasks/routes.ts";
 import { createTelegramRoutes } from "./telegram/routes.ts";
+import { createTodoRoutes } from "./todos/routes.ts";
 import { createVoiceRoutes } from "./voice/routes.ts";
 import { createWipRoutes } from "./wip/routes.ts";
 import { createRepoRoutes, createWorkspaceRoutes } from "./workspaces/routes.ts";
@@ -136,6 +140,10 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/azure", createAzureRoutes(config));
   app.route("/api/memory", createMemoryRoutes(config));
   app.route("/api/events", createEventRoutes(config));
+  app.route("/api/projects", createProjectRoutes(config));
+  app.route("/api/todos", createTodoRoutes(config));
+  app.route("/api/specialists", createSpecialistRoutes(config));
+  app.route("/api/jobs", createJobRoutes(config));
   app.route("/api/attention", createAttentionRoutes(config));
   app.route("/api/wip", createWipRoutes(config));
   app.route("/api/calendar", createCalendarRoutes(config));

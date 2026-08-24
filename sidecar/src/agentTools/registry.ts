@@ -1,29 +1,21 @@
-import { buildAttentionTool, newAttentionState } from "../chat/attentionTools.ts";
-import { buildTaskTools } from "../chat/tools.ts";
+import { builtinToolMetadata } from "../chat/builtinTools.ts";
 import type { Db } from "../db/client.ts";
 import type { Embedder } from "../memory/embedder.ts";
-import type { MemoryService } from "../memory/index.ts";
-import { buildMemoryTools } from "../memory/tools.ts";
 import { syncToolSet, type ToolDescriptor } from "./store.ts";
 
 /**
  * Built-in tools the agent always has access to (subject to per-tool policy).
- * Their descriptors are read straight from the tool factories so the registry
- * can never drift from the actual tool definitions. The factories don't touch
- * their dependencies at construction time (only inside each tool's `execute`),
- * so inert placeholders are safe for reading metadata.
+ * Their descriptors are read straight from the shared tool builder in
+ * `chat/builtinTools.ts`, so the registry can never drift from what a turn
+ * actually gets — and a built-in can't end up assembled-but-never-active,
+ * which is what happens to one the registry doesn't know about (the active set
+ * is computed from registry policy).
  *
  * The meta tools (search_tools / mount_tools / unmount_tools) are intentionally
  * excluded — they are always present and not user-configurable.
  */
 function builtinDescriptors(): ToolDescriptor[] {
-  const placeholderDb = undefined as unknown as Db;
-  const placeholderMemory = undefined as unknown as MemoryService;
-  const sets: Record<string, { description?: unknown }> = {
-    ...buildTaskTools(placeholderDb, ""),
-    ...buildMemoryTools(placeholderMemory, ""),
-    ...buildAttentionTool(newAttentionState()),
-  };
+  const sets: Record<string, { description?: unknown }> = builtinToolMetadata();
   return Object.entries(sets).map(([name, t]) => ({
     id: `builtin:${name}`,
     source: "builtin" as const,

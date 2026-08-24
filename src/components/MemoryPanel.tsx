@@ -17,23 +17,19 @@ import Markdown from "./Markdown";
 const PROVIDER_KEY = "yarvis.chat.provider";
 const MODEL_KEY = "yarvis.chat.model";
 
-function memoryType(m: MemoryRecord): string {
-  const t = (m.metadata as { type?: string } | null)?.type;
-  return t ?? "memory";
-}
-
-function typeColor(type: string): string {
-  if (type === "note") return "bg-sky-900 text-sky-200";
-  if (type === "doc") return "bg-purple-900 text-purple-200";
+function kindColor(kind: string): string {
+  if (kind === "note") return "bg-sky-900 text-sky-200";
+  if (kind === "doc") return "bg-purple-900 text-purple-200";
+  if (kind.endsWith("summary")) return "bg-emerald-900 text-emerald-200";
+  if (kind === "project") return "bg-amber-900 text-amber-200";
   return "bg-zinc-700 text-zinc-300";
 }
 
 function MemoryItem({ m, onDelete }: { m: MemoryRecord; onDelete: (id: string) => void }) {
-  const type = memoryType(m);
   const source = (m.metadata as { source?: string } | null)?.source;
   return (
     <li className="flex items-start gap-3 px-4 py-3">
-      <span className={`rounded px-1.5 py-0.5 text-xs ${typeColor(type)}`}>{type}</span>
+      <span className={`rounded px-1.5 py-0.5 text-xs ${kindColor(m.kind)}`}>{m.kind}</span>
       <div className="min-w-0 flex-1">
         <p className="text-sm text-zinc-200">{m.content}</p>
         <div className="mt-0.5 text-xs text-zinc-600">
@@ -68,7 +64,7 @@ export default function MemoryPanel() {
   const reload = useCallback(async () => {
     try {
       setSearching(false);
-      setItems(await memList());
+      setItems((await memList()).items);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }

@@ -2,6 +2,7 @@ import { and, asc, eq, gte, isNotNull, lte } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { type Task, tasks } from "../db/schema.ts";
 import { emitEvent } from "../events/service.ts";
+import { DUPLICATE_THRESHOLD, SIMILAR_THRESHOLD, titleSimilarity } from "./similarity.ts";
 
 /** Payload shared by task.created / task.completed events. */
 function taskEventPayload(task: Task): Record<string, unknown> {
@@ -21,6 +22,8 @@ export interface CreateTaskInput {
   targetDate?: string | null;
   notes?: string | null;
   sourceSessionId?: string | null;
+  /** Project the task serves, when the user named one. */
+  projectId?: string | null;
 }
 
 export interface TaskFilter {
@@ -28,6 +31,7 @@ export interface TaskFilter {
   scope?: "daily" | "weekly";
   /** Exact ISO date match "YYYY-MM-DD". */
   targetDate?: string;
+  projectId?: string;
 }
 
 export interface UpdateTaskInput {
@@ -36,6 +40,7 @@ export interface UpdateTaskInput {
   status?: "open" | "done";
   targetDate?: string | null;
   notes?: string | null;
+  projectId?: string | null;
 }
 
 export async function createTask(db: Db, input: CreateTaskInput): Promise<Task> {
@@ -47,6 +52,7 @@ export async function createTask(db: Db, input: CreateTaskInput): Promise<Task> 
       targetDate: input.targetDate ?? null,
       notes: input.notes ?? null,
       sourceSessionId: input.sourceSessionId ?? null,
+      projectId: input.projectId ?? null,
     })
     .returning();
   await emitEvent(db, {
@@ -62,6 +68,7 @@ export async function listTasks(db: Db, filter: TaskFilter = {}): Promise<Task[]
   if (filter.status) conditions.push(eq(tasks.status, filter.status));
   if (filter.scope) conditions.push(eq(tasks.scope, filter.scope));
   if (filter.targetDate) conditions.push(eq(tasks.targetDate, filter.targetDate));
+  if (filter.projectId) conditions.push(eq(tasks.projectId, filter.projectId));
 
   return db
     .select()
@@ -167,4 +174,59 @@ export async function rolloverTasks(db: Db, fromDate: string, toDate: string): P
     });
   }
   return moved;
+}
+
+export interface SimilarTask {
+  task: Task;
+  /** Title overlap, 0–1. */
+  score: number;
+}
+
+/**
+ * Open tasks whose titles resemble `title`, most alike first. The agent calls
+ * this before capturing an intention so a restated plan updates the task it
+ * already has instead of stacking a second one.
+ *
+ * Ranking happens in memory over the user's open tasks — a personal list, tens
+ * of rows, not thousands — which keeps the comparison out of SQL and makes the
+ * threshold behaviour testable without a database.
+ */
+export async function findSimilarTasks(
+  db: Db,
+  title: string,
+  options: { threshold?: number; limit?: number; includeDone?: boolean } = {},
+): Promise<SimilarTask[]> {
+  const candidates = await listTasks(db, options.includeDone ? {} : { status: "open" });
+  return candidates
+    .map((task) => ({ task, score: titleSimilarity(title, task.title) }))
+    .filter((match) => match.score >= (options.threshold ?? SIMILAR_THRESHOLD))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, options.limit ?? 5);
+}
+
+export interface CreateTaskResult {
+  task: Task;
+  /** Set when an existing task matched closely enough to reuse instead. */
+  duplicateOf?: Task;
+  /** Near-misses worth mentioning even when a task was created. */
+  similar: SimilarTask[];
+}
+
+/**
+ * Captures an intention, reusing an existing open task when one says the same
+ * thing. Returning the near-misses either way is deliberate: the agent can tell
+ * the user "you already have that" without a second round-trip, and a match that
+ * was close but under the bar is still worth mentioning.
+ */
+export async function createTaskDeduped(
+  db: Db,
+  input: CreateTaskInput,
+  threshold: number = DUPLICATE_THRESHOLD,
+): Promise<CreateTaskResult> {
+  const similar = await findSimilarTasks(db, input.title);
+  const duplicate = similar.find((match) => match.score >= threshold);
+  if (duplicate) {
+    return { task: duplicate.task, duplicateOf: duplicate.task, similar };
+  }
+  return { task: await createTask(db, input), similar };
 }

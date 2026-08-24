@@ -34,4 +34,12 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // session may have been showing a dialog that the text answers instead — so a
   // misheard instruction is both unreviewable and unrecoverable.
   "send_workspace_instruction",
+  // Puts a meeting on the calendar and mails everyone invited. Nothing here can
+  // take it back: there is deliberately no tool to move or cancel an event.
+  "create_calendar_event",
+  // Deletes a memory outright, where correcting one keeps the trail.
+  "forget_memory",
+  // Runs a whole specialist with its own tools; a misheard task becomes a
+  // multi-step run nobody reviewed.
+  "delegate",
 ]);

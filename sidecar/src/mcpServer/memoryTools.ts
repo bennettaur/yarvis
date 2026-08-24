@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { MEMORY_KINDS } from "../db/schema.ts";
 import { describeError } from "../llm/errors.ts";
 import type { MemoryRecord, MemoryService } from "../memory/index.ts";
 
@@ -82,13 +83,6 @@ function toolError(label: string, error: unknown) {
 }
 
 /** The `type` tag a caller set on a memory, when it carries one. */
-function memoryTypeTag(record: MemoryRecord): string | undefined {
-  const metadata = record.metadata;
-  if (!metadata || typeof metadata !== "object") return undefined;
-  const type = (metadata as Record<string, unknown>).type;
-  return typeof type === "string" ? type : undefined;
-}
-
 /** Where a memory came from, so a reading agent can weigh what it wrote itself. */
 function memorySource(record: MemoryRecord): string | undefined {
   const metadata = record.metadata;
@@ -119,7 +113,7 @@ export function registerMemoryTools(server: McpServer, memory: () => Promise<Mem
           results: results.map((r) => ({
             id: r.id,
             score: r.score,
-            type: memoryTypeTag(r),
+            kind: r.kind,
             source: memorySource(r),
             content: fence(r.content, nonce),
           })),
@@ -147,7 +141,7 @@ export function registerMemoryTools(server: McpServer, memory: () => Promise<Mem
     },
     async ({ content }) => {
       try {
-        const record = await (await memory()).add(content, { source: MCP_SOURCE });
+        const record = await (await memory()).add(content, { metadata: { source: MCP_SOURCE } });
         return jsonResult({ id: record.id });
       } catch (e) {
         return toolError("remember", e);
@@ -172,7 +166,10 @@ export function registerMemoryTools(server: McpServer, memory: () => Promise<Mem
     },
     async ({ content }) => {
       try {
-        const record = await (await memory()).add(content, { type: "note", source: MCP_SOURCE });
+        const record = await (await memory()).add(content, {
+          kind: "note",
+          metadata: { source: MCP_SOURCE },
+        });
         return jsonResult({ id: record.id });
       } catch (e) {
         return toolError("take_note", e);
@@ -185,22 +182,25 @@ export function registerMemoryTools(server: McpServer, memory: () => Promise<Mem
     {
       title: "List memories",
       description:
-        "Browse stored memories newest-first, optionally filtered to one type tag (e.g. 'note', 'doc'). Use recall instead when looking for something by meaning.",
+        "Browse stored memories newest-first, optionally filtered to one kind (e.g. 'note', 'session-summary'). Use recall instead when looking for something by meaning.",
       inputSchema: {
-        type: z.string().min(1).max(64).optional().describe("Only memories tagged with this type"),
+        kind: z.enum(MEMORY_KINDS).optional().describe("Only memories of this kind"),
         limit: z.number().int().min(1).max(100).optional().describe("How many to return"),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ type, limit }) => {
+    async ({ kind, limit }) => {
       try {
-        const records = await (await memory()).list({ type, limit: limit ?? 20 });
+        const records = await (await memory()).list({
+          kinds: kind ? [kind] : undefined,
+          limit: limit ?? 20,
+        });
         const nonce = newNonce();
         return jsonResult({
           warning: untrustedWarning(nonce),
           memories: records.map((r) => ({
             id: r.id,
-            type: memoryTypeTag(r),
+            kind: r.kind,
             source: memorySource(r),
             createdAt: r.createdAt.toISOString(),
             content: fence(r.content, nonce),
