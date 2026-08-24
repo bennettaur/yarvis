@@ -67,6 +67,23 @@ describe("built-in specialists", () => {
     expect(enabled.map((s) => s.name)).not.toContain("work-scout");
   });
 
+  /**
+   * A specialist naming a tool the run then strips is a description that
+   * over-promises: the model reads a prompt telling it to do something it has no
+   * tool for. Either the tool belongs in the list or the prompt shouldn't claim it.
+   */
+  it("names no tool that a delegated run would strip", async () => {
+    const { selectTools } = await import("./run.ts");
+    const { builtinToolMetadata } = await import("../chat/builtinTools.ts");
+    const all = builtinToolMetadata();
+    for (const specialist of BUILTIN_SPECIALISTS) {
+      const kept = Object.keys(selectTools(all, specialist.toolIds));
+      expect(kept.length, `${specialist.name} lost a tool it asks for`).toBe(
+        specialist.toolIds.length,
+      );
+    }
+  });
+
   it("only names tools that actually exist", async () => {
     const { builtinToolMetadata } = await import("../chat/builtinTools.ts");
     const names = new Set(Object.keys(builtinToolMetadata()));
