@@ -109,20 +109,9 @@ export async function findDanglingWork(
         getReviewingList(db, gh, viewer.login, lookbackDays),
       ]);
 
-      for (const pr of mine) {
-        items.push({
-          key: prKey(pr),
-          kind: "my-pr",
-          title: `${pr.owner}/${pr.repo}#${pr.number} ${pr.title}`,
-          reason: pr.draft
-            ? "your own PR, still a draft"
-            : "your own PR, open and waiting on review or merge",
-          url: pr.url,
-          navTarget: prNav(pr),
-          updatedAt: pr.updatedAt,
-        });
-      }
-
+      // Ordered strongest claim first, because the dedupe below keeps the first
+      // entry for a key: a PR someone is waiting on the user to review matters
+      // more than the same PR also being one of theirs.
       for (const pr of requested) {
         items.push({
           key: prKey(pr),
@@ -136,15 +125,34 @@ export async function findDanglingWork(
       }
 
       // The in-progress half of the reviewing list is exactly "started and not
-      // finished": viewed or commented on, with no verdict submitted yet.
+      // finished": viewed or commented on, with no verdict submitted yet. It is
+      // partly fed by the local `pr.viewed` log, which does not exclude the
+      // user's own pull requests — and opening your own PR is not a review you
+      // owe anyone, so those are dropped rather than reported as unfinished
+      // review work.
       for (const item of reviewing.inProgress) {
         if (isReviewComplete(item)) continue;
+        if (item.summary.author === viewer.login) continue;
         items.push(
           danglingFromInvolvement(
             item,
             "you looked at or commented on this but never signed it off",
           ),
         );
+      }
+
+      for (const pr of mine) {
+        items.push({
+          key: prKey(pr),
+          kind: "my-pr",
+          title: `${pr.owner}/${pr.repo}#${pr.number} ${pr.title}`,
+          reason: pr.draft
+            ? "your own PR, still a draft"
+            : "your own PR, open and waiting on review or merge",
+          url: pr.url,
+          navTarget: prNav(pr),
+          updatedAt: pr.updatedAt,
+        });
       }
     } catch (e) {
       unavailable.push(`github (${e instanceof Error ? e.message : String(e)})`);
@@ -197,8 +205,6 @@ export async function findDanglingWork(
 
   const deduped = new Map<string, DanglingItem>();
   for (const item of items) {
-    // First writer wins, and the loops above run in priority order, so a PR that
-    // is both mine and review-requested keeps the stronger claim.
     if (!deduped.has(item.key)) deduped.set(item.key, item);
   }
 

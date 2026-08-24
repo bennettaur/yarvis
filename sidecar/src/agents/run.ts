@@ -1,5 +1,6 @@
 import { generateText, stepCountIs, type Tool } from "ai";
 import { nameForBuiltinId } from "../agentTools/registry.ts";
+import { listRegistryTools } from "../agentTools/store.ts";
 import { newAttentionState } from "../chat/attentionTools.ts";
 import { buildBuiltinTools } from "../chat/builtinTools.ts";
 import type { Config } from "../config.ts";
@@ -63,13 +64,20 @@ export interface SpecialistRun {
  */
 const FORBIDDEN_SPECIALIST_TOOLS = new Set(["delegate", "list_specialists"]);
 
-/** Restricts the built-in tool set to what a specialist is configured to use. */
+/**
+ * Restricts the built-in tool set to what a specialist is configured to use,
+ * minus anything the user has disabled in the Tool Manager. A specialist's tool
+ * list is its own configuration, but "disabled" is the user's answer about the
+ * tool itself, and it has to hold wherever the tool would otherwise be reachable.
+ */
 export function selectTools(
   all: Record<string, Tool>,
   toolIds: readonly string[],
+  disabledIds: ReadonlySet<string> = new Set(),
 ): Record<string, Tool> {
   const selected: Record<string, Tool> = {};
   for (const id of toolIds) {
+    if (disabledIds.has(id)) continue;
     // MCP ids don't map to a built-in name and are skipped: a specialist can't
     // hold an approval prompt open, so it gets no third-party tools.
     if (!id.startsWith("builtin:")) continue;
@@ -132,7 +140,10 @@ export async function runSpecialist(input: RunSpecialistInput): Promise<Speciali
     // is made remotely controllable.
     remoteControl: false,
   });
-  const tools = selectTools(allTools, specialist.toolIds);
+  const disabled = new Set(
+    (await listRegistryTools(db)).filter((t) => t.policy === "disabled").map((t) => t.id),
+  );
+  const tools = selectTools(allTools, specialist.toolIds, disabled);
 
   const nonce = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
   const prompt = material ? `${task}\n\n${materialBlock(material, nonce)}` : task;

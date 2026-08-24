@@ -1,4 +1,4 @@
-import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { eq, isNull, lt, or } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { type JobRun, jobRuns } from "../db/schema.ts";
 
@@ -72,16 +72,4 @@ export async function finishJob(db: Db, name: string, input: FinishJobInput): Pr
       ...(input.cursor !== undefined ? { cursor: input.cursor as JobRun["cursor"] } : {}),
     })
     .where(eq(jobRuns.name, name));
-}
-
-/**
- * Clears a lease without recording an outcome. For the tick that claimed a job
- * and then found nothing to do — the claim itself already moved
- * `lastStartedAt`, which is what the schedule reads.
- */
-export async function releaseJob(db: Db, name: string): Promise<void> {
-  await db
-    .update(jobRuns)
-    .set({ leaseUntil: null, updatedAt: new Date() })
-    .where(and(eq(jobRuns.name, name), sql`true`));
 }

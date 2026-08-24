@@ -40,6 +40,15 @@ describe("specialist tool selection", () => {
   it("refuses delegation, so a specialist cannot spawn another", () => {
     expect(selectTools(all, ["builtin:delegate", "builtin:list_specialists"])).toEqual({});
   });
+
+  it("honours a tool the user has disabled in the Tool Manager", () => {
+    const selected = selectTools(
+      all,
+      ["builtin:recall", "builtin:list_todos"],
+      new Set(["builtin:recall"]),
+    );
+    expect(Object.keys(selected)).toEqual(["list_todos"]);
+  });
 });
 
 describe("specialist prompting", () => {

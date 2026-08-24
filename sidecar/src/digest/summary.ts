@@ -118,11 +118,14 @@ export async function weeklySummaryMaterial(
     tasksCompletedBetween(db, window.from, window.to),
     (async () => {
       const memory = new PgVectorMemoryStore(db, await chooseEmbedder(config, db));
-      return memory.list({
+      // Bounded at both ends: a summary of *last* week must not pick up the day
+      // summaries written since.
+      const summaries = await memory.list({
         kinds: ["day-summary"],
         since: window.from,
-        limit: 14,
+        limit: 30,
       });
+      return summaries.filter((m) => m.createdAt <= window.to);
     })(),
   ]);
 

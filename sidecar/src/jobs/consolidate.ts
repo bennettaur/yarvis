@@ -26,6 +26,15 @@ const MAX_EVENTS_PER_RUN = 400;
 /** A window with fewer events than this isn't worth a model call. */
 const MIN_EVENTS_TO_SUMMARIZE = 3;
 
+/**
+ * The jobs' own bookkeeping. Consolidation emits `memory.consolidated`, and the
+ * transcript sweep emits `cc.session_summarized` — folding those into the next
+ * window would have the summarizer describing the act of summarizing. They are
+ * still marked processed, so they don't accumulate as a permanently unprocessed
+ * tail that keeps tripping the minimum above.
+ */
+const BOOKKEEPING_TYPES: readonly string[] = ["memory.consolidated", "cc.session_summarized"];
+
 /** Renders one event as a line of material. */
 function eventLine(event: EventRow): string {
   const at = event.occurredAt.toISOString().slice(0, 16).replace("T", " ");
@@ -44,12 +53,13 @@ export const consolidateEventsJob: JobDefinition = {
     "Every four hours, summarize the activity events that haven't been folded into memory yet.",
   schedule: everyHours(4),
   run: async ({ db, config, now }) => {
-    const events = await listEvents(db, {
+    const claimed = await listEvents(db, {
       unprocessedOnly: true,
       until: now,
       limit: MAX_EVENTS_PER_RUN,
       oldestFirst: true,
     });
+    const events = claimed.filter((event) => !BOOKKEEPING_TYPES.includes(event.type));
     if (events.length < MIN_EVENTS_TO_SUMMARIZE) {
       return { skipped: true, detail: `only ${events.length} unprocessed event(s); leaving them` };
     }
@@ -79,7 +89,7 @@ export const consolidateEventsJob: JobDefinition = {
     });
     await markEventsProcessed(
       db,
-      events.map((e) => e.id),
+      claimed.map((e) => e.id),
     );
     await emitEvent(db, {
       type: "memory.consolidated",

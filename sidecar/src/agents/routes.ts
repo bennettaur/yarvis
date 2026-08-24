@@ -67,9 +67,15 @@ export function createSpecialistRoutes(config: Config): Hono {
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
       return c.json(await createSpecialist(db(), parsed.data), 201);
-    } catch {
-      // The only constraint here is the unique name.
-      return c.json({ error: "a specialist with that name already exists" }, 409);
+    } catch (e) {
+      // Only the unique-name violation is the caller's fault; anything else is
+      // ours and must not be reported as "that name is taken".
+      const message = e instanceof Error ? e.message : String(e);
+      if (message.includes("agent_specialists_name_unique_idx")) {
+        return c.json({ error: "a specialist with that name already exists" }, 409);
+      }
+      console.error("[agents] could not create specialist:", message);
+      return c.json({ error: "could not create the specialist" }, 500);
     }
   });
 
