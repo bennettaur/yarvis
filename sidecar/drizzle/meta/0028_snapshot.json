@@ -1,117 +1,9 @@
 {
-  "id": "ae4bb1a5-ec11-4513-b6ac-b9f1c84ed199",
+  "id": "63ec4586-c042-4cf1-9427-921e34bbfe40",
   "prevId": "f2de7280-64f0-4470-8129-ed486ce2ff31",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
-    "public.agent_specialists": {
-      "name": "agent_specialists",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "description": {
-          "name": "description",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "prompt": {
-          "name": "prompt",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "tool_ids": {
-          "name": "tool_ids",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "provider": {
-          "name": "provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "model": {
-          "name": "model",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "max_steps": {
-          "name": "max_steps",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 8
-        },
-        "builtin": {
-          "name": "builtin",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "enabled": {
-          "name": "enabled",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "agent_specialists_name_unique_idx": {
-          "name": "agent_specialists_name_unique_idx",
-          "columns": [
-            {
-              "expression": "name",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.agent_todos": {
       "name": "agent_todos",
       "schema": "",
@@ -1659,6 +1551,54 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.job_config": {
+      "name": "job_config",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "cc_digest_enabled": {
+          "name": "cc_digest_enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "cc_digest_project_dirs": {
+          "name": "cc_digest_project_dirs",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.job_runs": {
       "name": "job_runs",
       "schema": "",
@@ -1883,8 +1823,8 @@
         }
       },
       "indexes": {
-        "memories_kind_created_idx": {
-          "name": "memories_kind_created_idx",
+        "memories_live_kind_created_idx": {
+          "name": "memories_live_kind_created_idx",
           "columns": [
             {
               "expression": "kind",
@@ -1900,23 +1840,26 @@
             }
           ],
           "isUnique": false,
+          "where": "\"memories\".\"superseded_at\" is null",
           "concurrently": false,
           "method": "btree",
           "with": {}
         },
-        "memories_superseded_idx": {
-          "name": "memories_superseded_idx",
+        "memories_embedding_hnsw_idx": {
+          "name": "memories_embedding_hnsw_idx",
           "columns": [
             {
-              "expression": "superseded_at",
+              "expression": "embedding",
               "isExpression": false,
               "asc": true,
-              "nulls": "last"
+              "nulls": "last",
+              "opclass": "vector_cosine_ops"
             }
           ],
           "isUnique": false,
+          "where": "\"memories\".\"superseded_at\" is null",
           "concurrently": false,
-          "method": "btree",
+          "method": "hnsw",
           "with": {}
         }
       },

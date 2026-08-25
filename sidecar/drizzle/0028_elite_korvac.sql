@@ -2,21 +2,6 @@ CREATE TYPE "public"."agent_todo_status" AS ENUM('pending', 'in_progress', 'bloc
 CREATE TYPE "public"."project_item_kind" AS ENUM('jira', 'github', 'pr', 'note');--> statement-breakpoint
 CREATE TYPE "public"."project_item_priority" AS ENUM('urgent', 'high', 'medium', 'low');--> statement-breakpoint
 CREATE TYPE "public"."project_status" AS ENUM('active', 'paused', 'shipped', 'abandoned');--> statement-breakpoint
-CREATE TABLE "agent_specialists" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"name" text NOT NULL,
-	"description" text NOT NULL,
-	"prompt" text NOT NULL,
-	"tool_ids" jsonb DEFAULT '[]'::jsonb NOT NULL,
-	"provider" text,
-	"model" text,
-	"max_steps" integer DEFAULT 8 NOT NULL,
-	"builtin" boolean DEFAULT false NOT NULL,
-	"enabled" boolean DEFAULT true NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
-);
---> statement-breakpoint
 CREATE TABLE "agent_todos" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"title" text NOT NULL,
@@ -37,6 +22,14 @@ CREATE TABLE "cc_session_digests" (
 	"source_mtime_ms" bigint NOT NULL,
 	"memory_id" uuid,
 	"entry_count" integer DEFAULT 0 NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "job_config" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"cc_digest_enabled" boolean DEFAULT false NOT NULL,
+	"cc_digest_project_dirs" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
@@ -93,7 +86,6 @@ ALTER TABLE "tasks" ADD COLUMN "project_id" uuid;--> statement-breakpoint
 ALTER TABLE "agent_todos" ADD CONSTRAINT "agent_todos_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cc_session_digests" ADD CONSTRAINT "cc_session_digests_memory_id_memories_id_fk" FOREIGN KEY ("memory_id") REFERENCES "public"."memories"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_items" ADD CONSTRAINT "project_items_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "agent_specialists_name_unique_idx" ON "agent_specialists" USING btree ("name");--> statement-breakpoint
 CREATE INDEX "agent_todos_status_idx" ON "agent_todos" USING btree ("status","priority");--> statement-breakpoint
 CREATE INDEX "cc_session_digests_project_idx" ON "cc_session_digests" USING btree ("project_dir");--> statement-breakpoint
 CREATE INDEX "project_items_project_idx" ON "project_items" USING btree ("project_id","priority");--> statement-breakpoint
@@ -103,8 +95,8 @@ CREATE INDEX "projects_status_idx" ON "projects" USING btree ("status");--> stat
 CREATE UNIQUE INDEX "suggestion_dismissals_ref_unique_idx" ON "suggestion_dismissals" USING btree ("ref_key");--> statement-breakpoint
 ALTER TABLE "tasks" ADD CONSTRAINT "tasks_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "events_occurred_idx" ON "events" USING btree ("occurred_at");--> statement-breakpoint
-CREATE INDEX "memories_kind_created_idx" ON "memories" USING btree ("kind","created_at");--> statement-breakpoint
-CREATE INDEX "memories_superseded_idx" ON "memories" USING btree ("superseded_at");--> statement-breakpoint
+CREATE INDEX "memories_live_kind_created_idx" ON "memories" USING btree ("kind","created_at") WHERE "memories"."superseded_at" is null;--> statement-breakpoint
+CREATE INDEX "memories_embedding_hnsw_idx" ON "memories" USING hnsw ("embedding" vector_cosine_ops) WHERE "memories"."superseded_at" is null;--> statement-breakpoint
 -- Memory kind used to live in the metadata blob; move the existing tags onto
 -- the column so the new indexed reads see rows written before this migration.
 UPDATE "memories" SET "kind" = "metadata"->>'type'
