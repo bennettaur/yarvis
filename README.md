@@ -526,6 +526,35 @@ it once the worktrees are actually gone: they were scaffolding for work that is
 done. An archive that stops partway (a worktree that won't remove) is still
 reopenable, so its comments are left where they are.
 
+#### Stacked pull requests
+
+The **Stack** tab in the right column shows the chain of pull requests this
+repo's branch belongs to — each layer targeting the one below it, rooted on the
+trunk — drawn top-down with the trunk at the bottom. Every layer carries the
+same one-glyph state the workspace list uses (merged, queued, draft, checks
+failing, changes requested, approved), so the one holding the rest up is visible
+without opening any of them; clicking a layer opens it in the PRs tab for
+review.
+
+GitHub ships stacks through the [`gh stack`][gh-stack] CLI and exposes no API
+for them, so the tab reads two sources and reconciles them. Each layer's status
+comes from the ordinary pull-request API. Membership and order come from
+`gh stack view --json` run in the worktree, which also reports which branches
+have drifted off the layer below and need `gh stack rebase` — those are flagged
+**needs restack**. Without `gh` or the extension installed the tab still works:
+it falls back to walking base/head branch names through the API, which finds
+hand-built stacks too, and says so.
+
+**Merge stack** merges every layer from the trunk up to and including this
+repo's own PR — the layers above it, being furthest from done, are left alone.
+It takes a second press with the count spelled out, because the layers it merges
+aren't all on screen. The merge is all-or-nothing on GitHub's side: if any pull
+request in range can't merge, none do, and the reason is shown as `gh` reported
+it. It runs `gh stack merge`, so it needs the CLI — `gh pr merge` does not work
+on a stack.
+
+[gh-stack]: https://docs.github.com/en/pull-requests/reference/stacked-prs-cli-commands
+
 ### Clipboard
 
 #### Copy buttons
@@ -643,6 +672,19 @@ for anyone you're pasting to (see "Copy buttons"). Both are always shown in the
 diff header, and appear in the file list on hovering a row, where only the
 basename is visible. Clicking a row scrolls its diff into view and flashes the
 file's header, so a jump lands somewhere you can see it arrived.
+
+#### Where a PR sits in its stack
+
+A pull request that is part of a stack gets a **Stack** section above Checks,
+listing every layer with its state and marking where you are. It is derived
+from base/head branch names through the API rather than from `gh stack`, which
+needs a checkout — so it works for anyone's PR, and picks up stacks built by
+hand as well as by the CLI. Layers GitHub reports as behind the one below them
+are flagged **needs restack**. Clicking a layer opens it. A PR that isn't
+stacked gets no section, and Azure DevOps has no stacks at all.
+
+Merging a stack needs the CLI and so lives in the workspace's Stack tab (see
+"Stacked pull requests" under Workspaces).
 
 #### Guided review and line insights
 
@@ -839,14 +881,15 @@ src/            React frontend (Vite + TS + Tailwind)
                 voice loop pieces (useVoice.ts the turn hook, voice.ts + voiceConfig.ts clients,
                 useVoiceRecorder.ts mic capture, speechChunks.ts sentence splitting,
                 speechQueue.ts pipelined playback, audioEncoding.ts, audioPlayback.ts)
-    pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs, per-file viewed state, remembered panel place, link/shorthand locator, diff parsing + context expansion, guide + insight clients)
+    pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs, per-file viewed state, remembered panel place, link/shorthand locator, diff parsing + context expansion, guide + insight + stack clients)
     issues/     provider-neutral issue data layer (GitHub + JIRA) — types, api client, start-work flow (useGithubStartWork.ts)
     jira/       JIRA-specific data layer (issue detail, transitions, comments, create) — types, api client, start-work flow (useJiraStartWork.ts)
     find/       find-on-page engine — visible-text index, match offsets, CSS Custom Highlight painting, useFind controller
   components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, Terminal, Workspaces, …)
     voice/      the mic button and the voice controls shared by the chat surfaces
     pr/         PR dashboard + embedded review: lists, file diffs (unified + split),
-                gap/context expansion, change minimap, guide panel, insight cards
+                gap/context expansion, change minimap, guide panel, insight cards,
+                stack list (PrStackList.tsx, shared with the workspace Stack tab)
     issue/      Issues tab views: GitHub + JIRA issue lists, detail, create/repo-picker modals
     files/      shared file-tree rows (collapsible folders), used by PR review and workspaces
     workspaces/  workspace detail subviews + Omni widgets, and the self-review
@@ -887,14 +930,16 @@ sidecar/        Bun + TS service (Hono)
   src/pr/       provider-neutral PR review subsystem (/api/pr): guide + insight storage,
                 the tour/ask agent runs, provider-agnostic code tools (read file, list dir,
                 search) over a GitHub/Azure source seam, opening a workspace on a PR's
-                branch (workspace.ts), and the chat agent's review tools
+                branch (workspace.ts), the stack a PR sits in (/api/pr/stack), and the
+                chat agent's review tools
   src/issues/   provider-neutral issue routes/service (stars, filters, workspace links, start-work, issue writes)
   src/jira/     JIRA Cloud REST client + routes + agent tools + ADF↔Markdown conversion
   src/google/   Google Calendar OAuth + events
   src/omni/     Omni UI generation (streaming) + saved layouts
   src/workspaces/ repo registry + git-worktree provisioning, bulk base-branch sync, and
                   teardown (/api/repos, /api/workspaces), plus local self-review
-                  comments on a workspace's own diffs (reviewComments.ts)
+                  comments on a workspace's own diffs (reviewComments.ts) and the
+                  `gh stack` bridge that reads and merges a stack in a worktree (stack.ts)
   src/mcp/      MCP client: connected servers, OAuth, tool registry sync, approvals
   src/mcpServer/  the MCP endpoint Yarvis serves (memory tools over /mcp)
   src/attention/  attention stream: hook ingest, SSE stream, scoped clearing

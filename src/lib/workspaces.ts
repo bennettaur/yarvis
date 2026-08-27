@@ -1,6 +1,6 @@
 import { sidecarFetch, streamSSE } from "./api";
 import type { IssueLink } from "./issues/types";
-import type { PrRef } from "./pr/types";
+import type { MergeMethod, PrRef, PrStack } from "./pr/types";
 import type { Repo } from "./repos";
 import type { Task } from "./tasks";
 
@@ -237,6 +237,56 @@ export async function workspaceRepoSync(
 ): Promise<WorkspaceRepoSync> {
   const res = await sidecarFetch(`/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/sync`);
   if (!res.ok) return readError(res, "load sync status");
+  return res.json();
+}
+
+export interface WorkspaceStack {
+  stack: PrStack | null;
+  /** Why `gh stack` didn't contribute, when it didn't. Null when it did. */
+  ghStackError: string | null;
+}
+
+/**
+ * The stacked pull requests this repo's branch belongs to. The sidecar reads
+ * GitHub for each layer's status and `gh stack` in the worktree for the real
+ * grouping; `ghStackError` names what stopped the second half, so the tab can
+ * say the stack is derived rather than silently showing a lesser one.
+ */
+export async function workspaceRepoStack(
+  workspaceId: string,
+  workspaceRepoId: string,
+): Promise<WorkspaceStack> {
+  const res = await sidecarFetch(`/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/stack`);
+  if (!res.ok) return readError(res, "load stack");
+  return res.json();
+}
+
+export interface StackMergeResult {
+  merged: boolean;
+  /** What `gh` said, so a refusal reaches the user with its reason intact. */
+  output: string;
+}
+
+/**
+ * Merges the stack up to and including one of its pull requests — every layer
+ * below it goes too. All-or-nothing on GitHub's side: if any layer in range
+ * can't merge, none do.
+ */
+export async function mergeWorkspaceRepoStack(
+  workspaceId: string,
+  workspaceRepoId: string,
+  upTo: number,
+  method?: MergeMethod,
+): Promise<StackMergeResult> {
+  const res = await sidecarFetch(
+    `/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/stack/merge`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ upTo, method }),
+    },
+  );
+  if (!res.ok) return readError(res, "merge stack");
   return res.json();
 }
 

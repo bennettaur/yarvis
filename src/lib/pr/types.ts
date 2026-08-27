@@ -172,3 +172,44 @@ export interface StarredPr {
   title: string | null;
   url: string | null;
 }
+
+/**
+ * One pull request's place in a stack — a chain of PRs where each targets the
+ * one below it, so each layer's diff is only its own change. Mirrors the
+ * sidecar's `StackEntry`.
+ */
+export interface StackEntry {
+  ref: PrRef;
+  number: number;
+  title: string;
+  url: string;
+  /** Branch this layer targets — the head of the layer below, or the trunk. */
+  baseRef: string;
+  headRef: string;
+  /** "open" | "closed" | "merged", or "none" for a branch with no PR yet. */
+  state: string;
+  merged: boolean;
+  draft: boolean;
+  queued: boolean;
+  checks: { total: number; success: number; failure: number; pending: number };
+  reviewDecision: "approved" | "changes_requested" | "review_required" | null;
+  /** True for the pull request the stack was looked up from. */
+  isCurrent: boolean;
+  /** The layer below has moved; this branch needs restacking onto it. */
+  needsUpdate: boolean;
+}
+
+/** A pull request's stack, bottom (closest to the trunk) first. */
+export interface PrStack {
+  trunk: string;
+  entries: StackEntry[];
+  /** GitHub's repository-scoped stack number, when `gh stack` reported one. */
+  stackNumber: number | null;
+  /**
+   * `refs` stacks are derived from base/head branch names through the ordinary
+   * pull-request API — GitHub exposes no stack API — so they need no checkout
+   * and also find hand-built stacks. `gh-stack` stacks come from the CLI in a
+   * workspace's worktree and are GitHub's own grouping.
+   */
+  source: "refs" | "gh-stack";
+}

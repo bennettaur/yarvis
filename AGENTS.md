@@ -128,6 +128,15 @@ back to ad-hoc.
   the tools in `codeTools.ts` are written once and GitHub/Azure each supply an
   implementation. A capability one provider lacks resolves to `null` so the
   caller can say so, rather than throwing.
+- Stacked pull requests have two sources and neither is optional. GitHub ships
+  stacks through the `gh stack` CLI and exposes no API for them, so
+  `github/client.ts`'s `prStack` reconstructs one by walking base/head branch
+  names — which needs no checkout, so the review view can show a stack for any
+  PR — while `workspaces/stack.ts` runs `gh stack view --json` in a worktree for
+  the real grouping and rebase verdict and reconciles the two. The CLI decides
+  membership, the API decides each layer's status, and either being absent
+  degrades rather than fails. Merging is CLI-only (`gh pr merge` does not work
+  on a stack), so it exists only where a worktree does.
 - What models a provider offers is data, not code: `llm/catalog.ts` holds the
   bundled defaults and the capability tags (`chat`, `stt`, `tts`, `vision`,
   `embed`), and rows in `provider_models` take a provider's catalogue over the

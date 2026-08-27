@@ -12,11 +12,14 @@ import type {
   PrDetail,
   PrFile,
   PrInvolvement,
+  PrRef,
+  PrStack,
   PrStatus,
   PrSummary,
   ReviewDecision,
   Reviewer,
   ReviewerState,
+  StackEntry,
 } from "../pr/types.ts";
 
 // Re-exported so existing `from "./client.ts"` imports keep resolving the
@@ -29,6 +32,7 @@ export type {
   PrDetail,
   PrFile,
   PrInvolvement,
+  PrStack,
   PrStatus,
   PrSummary,
   ReviewComment,
@@ -36,6 +40,7 @@ export type {
   Reviewer,
   ReviewerState,
   ReviewThread,
+  StackEntry,
 } from "../pr/types.ts";
 
 type FetchFn = typeof fetch;
@@ -304,6 +309,126 @@ export function toPrDetail(pr: any, repo?: any): PrDetail {
     })),
   };
 }
+
+/**
+ * Aggregates already-normalized checks into the same buckets
+ * {@link summarizeChecks} produces from REST check runs. The GraphQL rollup
+ * speaks a different vocabulary — uppercase enums, and a legacy StatusContext
+ * whose "still running" shows up as a `PENDING` conclusion rather than an
+ * incomplete status — so the two cannot share one pass over the raw nodes.
+ */
+export function summarizeCheckItems(items: CheckItem[]): ChecksSummary {
+  let success = 0;
+  let failure = 0;
+  let pending = 0;
+  for (const item of items) {
+    const conclusion = (item.conclusion ?? "").toUpperCase();
+    if (item.status.toUpperCase() !== "COMPLETED" || ["PENDING", "EXPECTED"].includes(conclusion)) {
+      pending++;
+    } else if (["SUCCESS", "NEUTRAL", "SKIPPED"].includes(conclusion)) {
+      success++;
+    } else {
+      failure++;
+    }
+  }
+  return { total: items.length, success, failure, pending };
+}
+
+/** Maps GitHub's PullRequestReviewDecision enum onto the shared verdict. */
+function toReviewDecision(value: unknown): ReviewDecision | null {
+  switch (String(value ?? "").toUpperCase()) {
+    case "APPROVED":
+      return "approved";
+    case "CHANGES_REQUESTED":
+      return "changes_requested";
+    case "REVIEW_REQUIRED":
+      return "review_required";
+    default:
+      return null;
+  }
+}
+
+/**
+ * Shapes a PullRequest node selected with {@link STACK_NODE_FIELDS} into one
+ * layer of a stack.
+ *
+ * `needsUpdate` reads GitHub's `mergeStateStatus`: `BEHIND` means the head
+ * branch no longer contains the tip of the branch it targets, which for a
+ * stacked PR is exactly "the layer below moved and this one has not been
+ * restacked yet". GitHub computes the status lazily and reports `UNKNOWN`
+ * until it has, so a false here means "not known to be behind".
+ */
+export function toStackEntry(node: any, ref: PrRef, isCurrent: boolean): StackEntry {
+  const rollupNodes = node.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
+  const state = String(node.state ?? "OPEN").toLowerCase();
+  return {
+    ref,
+    number: node.number,
+    title: node.title ?? "",
+    url: node.url ?? "",
+    baseRef: node.baseRefName ?? "",
+    headRef: node.headRefName ?? "",
+    state,
+    merged: state === "merged",
+    draft: Boolean(node.isDraft),
+    queued: Boolean(node.isInMergeQueue),
+    checks: summarizeCheckItems(rollupNodes.map(toCheckItem)),
+    reviewDecision: toReviewDecision(node.reviewDecision),
+    isCurrent,
+    needsUpdate: String(node.mergeStateStatus ?? "").toUpperCase() === "BEHIND",
+  };
+}
+
+/** The fields {@link toStackEntry} reads. Shared by all three stack queries. */
+const STACK_NODE_FIELDS = `
+  number title url state isDraft isInMergeQueue
+  baseRefName headRefName mergeStateStatus reviewDecision
+  commits(last:1){ nodes{ commit{ statusCheckRollup{ contexts(first:100){ nodes{
+    __typename
+    ... on CheckRun { name status conclusion detailsUrl }
+    ... on StatusContext { context state targetUrl }
+  }}}}}}
+`;
+
+const STACK_SEED_QUERY = `
+query($owner:String!,$repo:String!,$number:Int!){
+  repository(owner:$owner,name:$repo){
+    defaultBranchRef{ name }
+    pullRequest(number:$number){ ${STACK_NODE_FIELDS} }
+  }
+}`;
+
+/**
+ * The layer below: the pull request whose head branch this one targets. Merged
+ * PRs count, because a stack whose bottom just landed is precisely when the
+ * reviewer needs to see that it did — GitHub retargets the layer above only
+ * once the merged branch is deleted.
+ */
+const STACK_DOWN_QUERY = `
+query($owner:String!,$repo:String!,$branch:String!){
+  repository(owner:$owner,name:$repo){
+    pullRequests(headRefName:$branch, states:[OPEN,MERGED], first:1, orderBy:{field:CREATED_AT,direction:DESC}){
+      nodes{ ${STACK_NODE_FIELDS} }
+    }
+  }
+}`;
+
+/** The layer above: the pull request based on this one's head branch. */
+const STACK_UP_QUERY = `
+query($owner:String!,$repo:String!,$branch:String!){
+  repository(owner:$owner,name:$repo){
+    pullRequests(baseRefName:$branch, states:[OPEN], first:1, orderBy:{field:CREATED_AT,direction:ASC}){
+      nodes{ ${STACK_NODE_FIELDS} }
+    }
+  }
+}`;
+
+/**
+ * How far {@link GitHubClient.prStack} walks in each direction. Each layer costs
+ * a round trip, so this is what bounds the price of the lookup — stacks deeper
+ * than this are reported truncated rather than paid for.
+ */
+const STACK_MAX_DEPTH = 10;
 
 /**
  * The fields the "Reviewing" list needs off a PullRequest node. `reviews` is
@@ -694,6 +819,74 @@ export class GitHubClient {
       path: item.path,
       fragments: (item.text_matches ?? []).map((m: any) => m.fragment).filter(Boolean),
     }));
+  }
+
+  /**
+   * The stack a pull request sits in, bottom first.
+   *
+   * GitHub's stacked pull requests are a `gh stack` CLI feature with no REST or
+   * GraphQL surface of their own, so the stack is reconstructed from what the
+   * ordinary API does expose: a stacked PR is one whose base branch is another
+   * PR's head branch. Walking that relation both ways needs no local clone —
+   * which is what lets the review view show a stack for any pull request — and
+   * it finds hand-built stacks too, which predate the feature by years.
+   *
+   * The walk is linear: where several open PRs target the same branch, the
+   * oldest is followed. A stack is a chain by construction, so a fork in it is
+   * two pieces of unrelated work sharing a base, not a layer of this stack.
+   */
+  async prStack(owner: string, repo: string, number: number): Promise<PrStack> {
+    const seed = await this.graphql<{
+      repository?: { defaultBranchRef?: { name?: string }; pullRequest?: any };
+    }>(STACK_SEED_QUERY, { owner, repo, number });
+    const pr = seed.repository?.pullRequest;
+    if (!pr) throw new Error(`pull request ${owner}/${repo}#${number} not found`);
+    const trunk = seed.repository?.defaultBranchRef?.name ?? pr.baseRefName ?? "";
+
+    // A PR reached twice is a cycle (GitHub permits two PRs to target each
+    // other's head branch); dropping the repeat ends the walk on that side.
+    const seen = new Set<number>([pr.number]);
+    const step = async (query: string, branch: string): Promise<any | null> => {
+      const data = await this.graphql<{ repository?: { pullRequests?: { nodes?: any[] } } }>(
+        query,
+        { owner, repo, branch },
+      );
+      const node = data.repository?.pullRequests?.nodes?.[0];
+      if (!node?.number || seen.has(node.number)) return null;
+      seen.add(node.number);
+      return node;
+    };
+
+    const below: any[] = [];
+    let cursor = pr;
+    while (below.length < STACK_MAX_DEPTH && cursor.baseRefName && cursor.baseRefName !== trunk) {
+      const next = await step(STACK_DOWN_QUERY, cursor.baseRefName);
+      if (!next) break;
+      below.unshift(next);
+      cursor = next;
+    }
+
+    const above: any[] = [];
+    cursor = pr;
+    while (above.length < STACK_MAX_DEPTH) {
+      const next = await step(STACK_UP_QUERY, cursor.headRefName);
+      if (!next) break;
+      above.push(next);
+      cursor = next;
+    }
+
+    return {
+      trunk,
+      stackNumber: null,
+      source: "refs",
+      entries: [...below, pr, ...above].map((node) =>
+        toStackEntry(
+          node,
+          { provider: "github", owner, repo, number: node.number },
+          node.number === number,
+        ),
+      ),
+    };
   }
 
   async prFiles(owner: string, repo: string, number: number): Promise<PrFile[]> {

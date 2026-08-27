@@ -17,23 +17,27 @@ import CopyLinkButton from "./CopyLinkButton";
 import FileTreeRows, { treeRowPaddingLeft } from "./files/FileTreeRows";
 import CopyPathButton from "./pr/CopyPathButton";
 import WorkspaceReviewComments from "./workspaces/WorkspaceReviewComments";
+import WorkspaceStackView from "./workspaces/WorkspaceStackView";
 
-type View = "files" | "changes" | "comments" | "checks";
+type View = "files" | "changes" | "comments" | "checks" | "stack";
 
 const VIEWS: { key: View; label: string }[] = [
   { key: "files", label: "All files" },
   { key: "changes", label: "Changed" },
   { key: "comments", label: "Comments" },
   { key: "checks", label: "PR checks" },
+  { key: "stack", label: "Stack" },
 ];
 
 /**
  * The workspace detail's right column: per-repo views of all tracked files,
- * changed files (with line counts), and the cached PR checks, plus the
- * self-review comments left on the diffs. Files/changes are read live from the
- * worktree; PR checks come from the background poller's cache. The comments
- * view spans the whole workspace rather than the selected repo — a review is
- * read as one list, and each entry names the repo it belongs to.
+ * changed files (with line counts), the cached PR checks, and the stack of pull
+ * requests the branch belongs to, plus the self-review comments left on the
+ * diffs. Files/changes are read live from the worktree; PR checks come from the
+ * background poller's cache; the stack is read on demand, since it costs a
+ * provider call per layer. The comments view spans the whole workspace rather
+ * than the selected repo — a review is read as one list, and each entry names
+ * the repo it belongs to.
  */
 export default function WorkspaceSidePanel({
   workspaceId,
@@ -107,6 +111,7 @@ export default function WorkspaceSidePanel({
           />
         )}
         {view === "checks" && <ChecksView repo={repo} />}
+        {view === "stack" && <WorkspaceStackView workspaceId={workspaceId} repo={repo} />}
       </div>
     </div>
   );

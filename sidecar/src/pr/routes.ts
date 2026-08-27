@@ -263,6 +263,32 @@ export function createPrRoutes(config: Config): Hono {
     return c.json({ guide: toGuideResponse(guide, headSha) });
   });
 
+  /**
+   * The stack this pull request sits in, or null when the provider has no
+   * notion of one. Azure DevOps doesn't, so it answers null rather than an
+   * error — the review view hides the section instead of showing a failure for
+   * something that was never going to work.
+   *
+   * A lone pull request comes back as a one-entry stack, not null: "this PR is
+   * not stacked" is an answer, and the caller decides whether to render it.
+   */
+  router.get("/stack", async (c) => {
+    const parsed = prRef.safeParse(parseRefQuery(c.req.query()));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const ref = parsed.data;
+    if (ref.provider !== "github") return c.json({ stack: null });
+
+    const token = config.secrets.githubToken;
+    if (!token) return c.json({ error: "github token not configured" }, 400);
+    try {
+      const stack = await new GitHubClient(token).prStack(ref.owner, ref.repo, ref.number);
+      return c.json({ stack });
+    } catch (e) {
+      console.error("[pr] could not read the stack:", describeError(e));
+      return c.json({ error: clientError(e) }, 502);
+    }
+  });
+
   // Record how far the reviewer has read.
   router.patch("/guide/progress", async (c) => {
     const parsed = progressSchema.safeParse(await c.req.json().catch(() => null));

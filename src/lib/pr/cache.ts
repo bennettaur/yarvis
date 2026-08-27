@@ -7,7 +7,8 @@ import {
   fetchPrStatus,
 } from "./api";
 import { refKey } from "./ref";
-import type { PrDetail, PrFile, PrRef, PrStatus } from "./types";
+import { fetchPrStack } from "./stack";
+import type { PrDetail, PrFile, PrRef, PrStack, PrStatus } from "./types";
 
 /**
  * A tiny request cache for PR data, keyed by a string derived from the resource
@@ -197,6 +198,15 @@ export function usePrFiles(ref: PrRef | null): Resource<PrFile[]> {
 
 export function usePrStatus(ref: PrRef | null): Resource<PrStatus> {
   return useCachedResource(ref ? `status:${refKey(ref)}` : null, () => fetchPrStatus(ref!));
+}
+
+/**
+ * The stack a pull request belongs to. Walking it costs a provider round trip
+ * per layer, so it sits behind the same cache as everything else here rather
+ * than being refetched by each surface that shows it.
+ */
+export function usePrStack(ref: PrRef | null): Resource<PrStack | null> {
+  return useCachedResource(ref ? `stack:${refKey(ref)}` : null, () => fetchPrStack(ref!));
 }
 
 /**

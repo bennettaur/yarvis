@@ -220,3 +220,56 @@ export interface Viewer {
   /** Provider user id, when the provider needs one for search (Azure). */
   id?: string;
 }
+
+/**
+ * One pull request's place in a stack: a chain of PRs where each targets the
+ * one below it, so each layer's diff is only its own change.
+ *
+ * The status fields are the reason the stack is worth rendering at all — the
+ * question a reviewer asks of a stack is "what is holding it up", which needs
+ * every layer's draft/merged state, checks and review verdict side by side.
+ */
+export interface StackEntry {
+  ref: PrRef;
+  number: number;
+  title: string;
+  url: string;
+  /** Branch this layer targets — the head of the layer below, or the trunk. */
+  baseRef: string;
+  headRef: string;
+  /** "open" | "closed" | "merged", lowercased from the provider's enum. */
+  state: string;
+  merged: boolean;
+  draft: boolean;
+  /** True while the pull request is queued to merge rather than merged. */
+  queued: boolean;
+  checks: ChecksSummary;
+  reviewDecision: ReviewDecision | null;
+  /** True for the pull request the stack was looked up from. */
+  isCurrent: boolean;
+  /**
+   * The layer below has moved since this branch was last rebased onto it, so
+   * the stack needs restacking before this layer's diff reads as only its own
+   * change.
+   */
+  needsUpdate: boolean;
+}
+
+/**
+ * A pull request's stack, bottom (closest to the trunk) first.
+ *
+ * GitHub ships stacks through the `gh stack` CLI and exposes no API for them,
+ * so `refs` stacks are derived by walking base/head branch names through the
+ * ordinary pull-request API — which needs no local clone, and also finds the
+ * stacks people built by hand long before the feature existed. A workspace with
+ * a worktree can run the CLI, and those stacks come back as `gh-stack`: GitHub's
+ * own grouping, with its stack number and its rebase verdict.
+ */
+export interface PrStack {
+  /** The branch the bottom of the stack targets. */
+  trunk: string;
+  entries: StackEntry[];
+  /** GitHub's repository-scoped stack number; null unless `gh stack` reported one. */
+  stackNumber: number | null;
+  source: "refs" | "gh-stack";
+}

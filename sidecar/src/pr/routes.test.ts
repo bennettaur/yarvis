@@ -327,6 +327,31 @@ describe("POST /api/pr/workspace", () => {
   });
 });
 
+describe("GET /api/pr/stack", () => {
+  // Stacks are a GitHub feature. Answering null rather than an error is what
+  // lets the review view hide the section instead of showing a failure for
+  // something that was never going to work.
+  it("reports no stack for a provider that has none", async () => {
+    const res = await app.request(
+      "/api/pr/stack?provider=azure&org=contoso&project=p&repo=r&prId=3",
+      { headers: auth },
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ stack: null });
+  });
+
+  it("says what is missing when GitHub isn't configured", async () => {
+    const res = await app.request(`/api/pr/stack?${refQuery}`, { headers: auth });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error).toContain("github token");
+  });
+
+  it("rejects a query with no pull request identity", async () => {
+    const res = await app.request("/api/pr/stack?provider=github", { headers: auth });
+    expect(res.status).toBe(400);
+  });
+});
+
 afterAll(async () => {
   await sql.end();
 });

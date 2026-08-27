@@ -32,6 +32,7 @@ import {
   workspaceRepoFiles,
   workspaceRepoSync,
 } from "./service.ts";
+import { mergeWorkspaceRepoStack, workspaceRepoStack } from "./stack.ts";
 
 const createRepoSchema = z.object({
   cloneUrl: z.string().min(1),
@@ -61,6 +62,14 @@ const createWorkspaceSchema = z.object({
   // composed from (see `createIssueSchema`), now that it is persisted rather
   // than passed straight through.
   issuePrompt: z.string().max(65536).nullish(),
+});
+
+// Which layers of a stack to merge, and how. `upTo` is checked against the
+// stack the sidecar reads for itself before anything is merged, so a number the
+// caller invents is refused rather than handed to `gh stack merge`.
+const stackMergeSchema = z.object({
+  upTo: z.number().int().min(1),
+  method: z.enum(["MERGE", "SQUASH", "REBASE"]).optional(),
 });
 
 const archiveSchema = z.object({
@@ -296,6 +305,36 @@ export function createWorkspaceRoutes(config: Config): Hono {
   router.get("/:id/repos/:wrId/sync", async (c) => {
     try {
       return c.json(await workspaceRepoSync(db(), c.req.param("wrId")));
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
+    }
+  });
+
+  // The stacked pull requests this repo's branch belongs to (right-column
+  // Stack tab). Reads GitHub for each layer's status and `gh stack` in the
+  // worktree for the real grouping; either half missing is reported, not fatal.
+  router.get("/:id/repos/:wrId/stack", async (c) => {
+    try {
+      return c.json(await workspaceRepoStack(db(), config, c.req.param("wrId")));
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
+    }
+  });
+
+  // Merge the stack up to one of its pull requests. All-or-nothing on GitHub's
+  // side: if any layer in range can't merge, none do.
+  router.post("/:id/repos/:wrId/stack/merge", async (c) => {
+    const parsed = stackMergeSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    try {
+      const result = await mergeWorkspaceRepoStack(
+        db(),
+        config,
+        c.req.param("wrId"),
+        parsed.data.upTo,
+        parsed.data.method,
+      );
+      return c.json(result);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
     }
