@@ -17,6 +17,7 @@ const entry = (number: number, extra: Partial<StackEntry> = {}): StackEntry => (
   reviewDecision: null,
   isCurrent: false,
   needsUpdate: false,
+  statusKnown: true,
   ...extra,
 });
 
@@ -24,7 +25,7 @@ const stack = (entries: StackEntry[]): PrStack => ({
   trunk: "main",
   entries,
   stackNumber: null,
-  source: "refs",
+  truncated: false,
 });
 
 describe("isStacked", () => {

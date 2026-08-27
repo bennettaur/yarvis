@@ -46,9 +46,12 @@ function checksSummary(checks: CheckItem[]): string {
   let failing = 0;
   let pending = 0;
   for (const c of checks) {
-    if (c.status !== "COMPLETED") pending++;
-    else if (["SUCCESS", "NEUTRAL", "SKIPPED"].includes((c.conclusion ?? "").toUpperCase()))
-      passing++;
+    const conclusion = (c.conclusion ?? "").toUpperCase();
+    // A legacy commit status reports "still running" as a PENDING conclusion on
+    // a context that is otherwise complete; counting it as failing would have
+    // this header contradict the Stack row for the same pull request.
+    if (c.status !== "COMPLETED" || ["PENDING", "EXPECTED"].includes(conclusion)) pending++;
+    else if (["SUCCESS", "NEUTRAL", "SKIPPED"].includes(conclusion)) passing++;
     else failing++;
   }
   const parts: string[] = [];
@@ -82,9 +85,9 @@ function reviewersSummary(reviewers: Reviewer[]): string {
 function stackSummary(stack: PrStack): string {
   const position = stack.entries.findIndex((e) => e.isCurrent) + 1;
   const stale = needsUpdateCount(stack);
-  const parts = [`${stack.entries.length} PRs`];
-  if (position) parts.push(`you are ${position} of ${stack.entries.length} from the trunk`);
-  if (stale) parts.push(`${stale} needs restack`);
+  const parts = [`${stack.entries.length}${stack.truncated ? "+" : ""} PRs`];
+  if (position > 0) parts.push(`you are ${position} of ${stack.entries.length} from the trunk`);
+  if (stale > 0) parts.push(`${stale} need${stale === 1 ? "s" : ""} restack`);
   return parts.join(" · ");
 }
 

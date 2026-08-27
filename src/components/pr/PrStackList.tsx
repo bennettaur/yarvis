@@ -1,17 +1,9 @@
 import { requestOpenPr } from "../../lib/nav";
 import { refKey } from "../../lib/pr/ref";
+import { hasPullRequest } from "../../lib/pr/stack";
 import type { PrStack, PrSummary, StackEntry } from "../../lib/pr/types";
 import { stackEntryBadge } from "../../lib/prGlance";
 import { openExternal } from "../../lib/url";
-
-/**
- * A stack of pull requests, top (furthest from the trunk) first.
- *
- * Drawn top-down rather than bottom-up because that is how the stack is drawn
- * everywhere else — GitHub's own view, `gh stack view`, the diagrams people
- * sketch — even though the trunk is the anchor and the sidecar hands the list
- * over bottom-first. The trunk is pinned underneath as the floor.
- */
 
 /**
  * Builds the summary the PRs tab needs to open a layer. The fields the stack
@@ -42,7 +34,7 @@ function StackRow({
   onOpen?: (entry: StackEntry) => void;
 }) {
   const badge = stackEntryBadge(entry);
-  const openable = entry.number > 0;
+  const openable = hasPullRequest(entry);
   return (
     <li className="flex items-start gap-2">
       {/* The connector: a stub of the line down to the layer below, so the
@@ -94,6 +86,14 @@ function StackRow({
   );
 }
 
+/**
+ * A stack of pull requests, top (furthest from the trunk) first.
+ *
+ * Drawn top-down rather than bottom-up because that is how a stack is drawn
+ * everywhere else — GitHub's own view, `gh stack view`, the diagrams people
+ * sketch — even though the trunk is the anchor and the sidecar hands the list
+ * over bottom-first. The trunk is pinned underneath as the floor.
+ */
 export default function PrStackList({
   stack,
   onOpen = (entry) => requestOpenPr(toSummary(entry)),
@@ -103,12 +103,15 @@ export default function PrStackList({
   onOpen?: (entry: StackEntry) => void;
 }) {
   const topDown = [...stack.entries].reverse();
+  // The branch the bottom layer actually targets, which for a stack rooted
+  // somewhere other than the default branch is not `trunk`.
+  const floor = stack.entries[0]?.baseRef || stack.trunk;
   return (
     <div className="space-y-1">
       <ul className="space-y-0.5">
         {topDown.map((entry, i) => (
           <StackRow
-            key={entry.number > 0 ? refKey(entry.ref) : `branch:${entry.headRef}`}
+            key={hasPullRequest(entry) ? refKey(entry.ref) : `branch:${entry.headRef}`}
             entry={entry}
             isLast={i === topDown.length - 1}
             onOpen={onOpen}
@@ -117,7 +120,7 @@ export default function PrStackList({
       </ul>
       <div className="flex items-center gap-2 pl-1 text-[11px] text-zinc-500">
         <span className="w-3 text-center">└</span>
-        <span className="font-mono">{stack.trunk}</span>
+        <span className="font-mono">{floor}</span>
       </div>
     </div>
   );

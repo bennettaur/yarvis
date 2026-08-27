@@ -15,6 +15,7 @@ import {
   workspaceRepos,
 } from "../db/schema.ts";
 import type { StartClaudeSessionInput } from "./claudeSession.ts";
+import type { RunResult } from "./exec.ts";
 import type { GitRunner } from "./git.ts";
 import {
   archiveWorkspace,
@@ -28,6 +29,7 @@ import {
   startArchiveWorkspace,
   unlinkTask,
 } from "./service.ts";
+import { type GhRunner, mergeWorkspaceRepoStack, workspaceRepoStack } from "./stack.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -83,6 +85,154 @@ const skillsGit: GitRunner = async (args, opts) => {
 
 beforeEach(async () => {
   await sql`TRUNCATE repos, workspaces, workspace_repos, workspace_repo_pr, tasks, issue_links RESTART IDENTITY CASCADE`;
+});
+
+/**
+ * The stack merge is the one irreversible thing in this file: `gh stack merge N`
+ * takes every layer below N with it. These exercise the guards through the real
+ * database rows, with `gh` faked — a route-level test would shell out to the
+ * user's actual CLI.
+ */
+describe("workspace stack", () => {
+  const ok = (stdout: string): RunResult => ({ stdout, stderr: "", exitCode: 0 });
+
+  const view = {
+    trunk: "main",
+    currentBranch: "api",
+    branches: [
+      { name: "auth", pr: { number: 1, state: "OPEN" } },
+      { name: "api", isCurrent: true, pr: { number: 2, state: "OPEN" } },
+    ],
+  };
+
+  function fakeGh(stdout = JSON.stringify(view)): { gh: GhRunner; calls: string[][] } {
+    const calls: string[][] = [];
+    return {
+      calls,
+      gh: async (args) => {
+        calls.push(args);
+        return ok(args[1] === "merge" ? "merged" : stdout);
+      },
+    };
+  }
+
+  /** A provisioned workspace repo, which is what the stack functions address. */
+  async function workspaceRepo(cloneUrl = "git@github.com:acme/widget.git") {
+    const repo = await addRepo(cloneUrl);
+    const created = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "stacked", repoIds: [repo.id] }),
+    });
+    const ws = (await created.json()) as { id: string };
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    const [wr] = await db
+      .select()
+      .from(workspaceRepos)
+      .where(eq(workspaceRepos.workspaceId, ws.id));
+    return { workspaceId: ws.id, workspaceRepoId: wr!.id };
+  }
+
+  it("reads the stack for a workspace repo", async () => {
+    const { workspaceId, workspaceRepoId } = await workspaceRepo();
+    const { gh, calls } = fakeGh();
+
+    const result = await workspaceRepoStack(db, config, workspaceId, workspaceRepoId, gh);
+
+    expect(calls[0]).toEqual(["stack", "view", "--json"]);
+    expect(result.stack?.entries.map((e) => e.number)).toEqual([1, 2]);
+    // No token is configured in this suite, so nothing was asked of GitHub and
+    // the layers carry only what the CLI knows.
+    expect(result.stack?.entries.every((e) => e.statusKnown)).toBe(false);
+  });
+
+  it("refuses a pull request that is not a layer of the stack", async () => {
+    const { workspaceId, workspaceRepoId } = await workspaceRepo();
+    const { gh, calls } = fakeGh();
+
+    await expect(
+      mergeWorkspaceRepoStack(db, config, workspaceId, workspaceRepoId, 99, [99], undefined, gh),
+    ).rejects.toThrow("#99 is not part of this stack");
+    // The safety property: it never reached the merge.
+    expect(calls.map((c) => c[1])).not.toContain("merge");
+  });
+
+  // `gh stack merge` widens downward, so confirming "2 PRs" and merging five is
+  // the failure that matters. An agent restacking in this same worktree between
+  // the click and the call is ordinary use, not an exotic race.
+  it("refuses when the stack no longer matches what the user confirmed", async () => {
+    const { workspaceId, workspaceRepoId } = await workspaceRepo();
+    const { gh, calls } = fakeGh();
+
+    await expect(
+      mergeWorkspaceRepoStack(db, config, workspaceId, workspaceRepoId, 2, [2], undefined, gh),
+    ).rejects.toThrow("the stack changed since you looked");
+    expect(calls.map((c) => c[1])).not.toContain("merge");
+  });
+
+  it("merges once the plan matches what was confirmed", async () => {
+    const { workspaceId, workspaceRepoId } = await workspaceRepo();
+    const { gh, calls } = fakeGh();
+
+    const result = await mergeWorkspaceRepoStack(
+      db,
+      config,
+      workspaceId,
+      workspaceRepoId,
+      2,
+      [1, 2],
+      "SQUASH",
+      gh,
+    );
+
+    expect(result.merged).toBe(true);
+    expect(calls.at(-1)).toEqual(["stack", "merge", "2", "--yes", "--squash"]);
+  });
+
+  it("refuses to merge a stack gh could not read", async () => {
+    const { workspaceId, workspaceRepoId } = await workspaceRepo();
+    const gh: GhRunner = async () => ({ stdout: "", stderr: "no stack here", exitCode: 1 });
+
+    await expect(
+      mergeWorkspaceRepoStack(db, config, workspaceId, workspaceRepoId, 2, [1, 2], undefined, gh),
+    ).rejects.toThrow("gh stack is not available here");
+  });
+
+  // A repo can only be merged through the workspace that holds its worktree.
+  it("refuses a repo addressed through the wrong workspace", async () => {
+    const { workspaceRepoId } = await workspaceRepo();
+    const other = await workspaceRepo("git@github.com:acme/other.git");
+    const { gh } = fakeGh();
+
+    await expect(
+      workspaceRepoStack(db, config, other.workspaceId, workspaceRepoId, gh),
+    ).rejects.toThrow("workspace repo not found");
+  });
+
+  it("refuses a repo that isn't on GitHub", async () => {
+    const { workspaceId, workspaceRepoId } = await workspaceRepo(
+      "https://acme@dev.azure.com/acme/Shop/_git/widget",
+    );
+    const { gh } = fakeGh();
+
+    await expect(workspaceRepoStack(db, config, workspaceId, workspaceRepoId, gh)).rejects.toThrow(
+      "stacked pull requests are a GitHub feature",
+    );
+  });
+
+  it("rejects a merge body with no plan to check against", async () => {
+    const { workspaceId, workspaceRepoId } = await workspaceRepo();
+    const res = await app.request(
+      `/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/stack/merge`,
+      { method: "POST", headers: jsonAuth, body: JSON.stringify({ upTo: 2 }) },
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects ids that are not uuids before they reach a query", async () => {
+    const res = await app.request("/api/workspaces/x/repos/not-a-uuid/stack", { headers: auth });
+    expect(res.status).toBe(400);
+  });
 });
 
 afterAll(async () => {

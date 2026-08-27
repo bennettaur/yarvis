@@ -5,6 +5,7 @@
  * first rather than by how the provider models them.
  */
 
+import { hasPullRequest } from "./pr/stack";
 import type { StackEntry } from "./pr/types";
 import type { WorkspaceSummaryPr } from "./workspaces";
 
@@ -19,7 +20,8 @@ export type PrGlance =
   | "checks_running"
   | "approved"
   | "open"
-  | "no_pr";
+  | "no_pr"
+  | "unknown";
 
 export interface PrGlanceBadge {
   icon: string;
@@ -74,9 +76,12 @@ const GLANCE_BADGES: Record<PrGlance, { icon: string; label: string; className: 
   // hold the merge.
   approved: { icon: "✓", label: "approved", className: "text-emerald-400" },
   open: { icon: "◇", label: "open — awaiting review", className: "text-sky-400" },
-  // Only a stack layer reaches this: `gh stack` tracks a branch from the moment
-  // it is created, well before it is pushed and given a pull request.
+  // Only a stack layer reaches these two. `gh stack` tracks a branch from the
+  // moment it is created, well before it is pushed and given a pull request;
+  // and a stack read while GitHub is unreachable knows its layers exist but
+  // nothing about them, which must not read as a clean PR awaiting review.
   no_pr: { icon: "·", label: "no pull request yet", className: "text-zinc-600" },
+  unknown: { icon: "?", label: "status unavailable", className: "text-zinc-500" },
 };
 
 /** The icon, color and tooltip text for one PR's list-row badge. */
@@ -103,9 +108,13 @@ export function prGlanceBadge(pr: WorkspaceSummaryPr): PrGlanceBadge {
 export function stackEntryGlance(entry: StackEntry): PrGlance {
   if (entry.merged) return "merged";
   if (entry.queued) return "queued";
-  if (entry.number === 0) return "no_pr";
+  if (!hasPullRequest(entry)) return "no_pr";
   if (entry.state === "closed") return "closed";
   if (entry.draft) return "draft";
+  // Below here every verdict is read off checks and reviews, which a layer
+  // nobody could fetch simply doesn't have — "open, awaiting review" would be
+  // an answer we don't hold.
+  if (!entry.statusKnown) return "unknown";
   if (entry.checks.failure > 0) return "checks_failing";
   if (entry.reviewDecision === "changes_requested") return "changes_requested";
   if (entry.checks.pending > 0) return "checks_running";
@@ -118,7 +127,9 @@ export function stackEntryBadge(entry: StackEntry): PrGlanceBadge {
   const style = GLANCE_BADGES[stackEntryGlance(entry)];
   return {
     icon: style.icon,
-    label: entry.number ? `#${entry.number} ${style.label}` : `${entry.headRef} ${style.label}`,
+    label: hasPullRequest(entry)
+      ? `#${entry.number} ${style.label}`
+      : `${entry.headRef} ${style.label}`,
     status: style.label,
     className: style.className,
   };

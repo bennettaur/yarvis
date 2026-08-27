@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
+import type { GitHubClient } from "../github/client.ts";
 import type { PrStack, StackEntry } from "../pr/types.ts";
 import type { RunResult } from "./exec.ts";
-import { applyGhStack, type GhRunner, loadWorkspaceStack, mergeStack } from "./stack.ts";
+import { applyGhStack, type GhRunner, loadWorkspaceStack, mergePlan, mergeStack } from "./stack.ts";
 
 const ok = (stdout: string): RunResult => ({ stdout, stderr: "", exitCode: 0 });
 
@@ -35,13 +36,14 @@ const entry = (number: number, headRef: string, extra: Partial<StackEntry> = {})
   reviewDecision: "approved",
   isCurrent: false,
   needsUpdate: false,
+  statusKnown: true,
   ...extra,
 });
 
 const derived: PrStack = {
   trunk: "main",
   stackNumber: null,
-  source: "refs",
+  truncated: false,
   entries: [entry(1, "auth"), entry(2, "api", { isCurrent: true })],
 };
 
@@ -59,7 +61,6 @@ describe("applyGhStack", () => {
   it("keeps the API's per-layer status while taking the CLI's grouping", () => {
     const stack = applyGhStack(derived, view, "o", "r");
 
-    expect(stack.source).toBe("gh-stack");
     expect(stack.stackNumber).toBe(7);
     expect(stack.entries.map((e) => e.number)).toEqual([1, 2]);
     expect(stack.entries[1]?.reviewDecision).toBe("approved");
@@ -168,5 +169,75 @@ describe("mergeStack", () => {
   it("returns gh's refusal rather than throwing it away", async () => {
     const { gh } = fakeGh({ stdout: "", stderr: "#3 is a draft", exitCode: 1 });
     expect(await mergeStack(gh, "/w/api", 3)).toEqual({ merged: false, output: "#3 is a draft" });
+  });
+});
+
+describe("loadWorkspaceStack with a provider", () => {
+  const client = (stack: PrStack | Error) =>
+    ({
+      prStack: async () => {
+        if (stack instanceof Error) throw stack;
+        return stack;
+      },
+    }) as unknown as GitHubClient;
+
+  const load = (gh: GhRunner, c: GitHubClient | null) =>
+    loadWorkspaceStack({
+      gh,
+      client: c,
+      worktreePath: "/w/api",
+      owner: "o",
+      repo: "r",
+      prNumber: 2,
+    });
+
+  // A layer nobody could fetch must not read as a clean PR awaiting review, so
+  // the reason travels with the stack rather than being swallowed.
+  it("reports an unreachable GitHub and still shows the CLI's branches", async () => {
+    const { gh } = fakeGh(ok(JSON.stringify(view)));
+    const result = await load(gh, client(new Error("github graphql -> 502")));
+
+    expect(result.prStackError).toBe("github graphql -> 502");
+    expect(result.ghStackError).toBeNull();
+    expect(result.stack?.entries.map((e) => e.headRef)).toEqual(["auth", "api"]);
+    expect(result.stack?.entries.every((e) => e.statusKnown)).toBe(false);
+  });
+
+  // `gh` missing entirely throws out of the spawn rather than exiting non-zero.
+  it("survives gh not being installed at all", async () => {
+    const gh: GhRunner = async () => {
+      throw new Error("spawn gh ENOENT");
+    };
+    const result = await load(gh, client({ ...derived }));
+
+    expect(result.ghStackError).toBe("spawn gh ENOENT");
+    expect(result.stack?.entries.map((e) => e.number)).toEqual([1, 2]);
+  });
+});
+
+describe("mergePlan", () => {
+  const stack = (entries: StackEntry[]): PrStack => ({
+    trunk: "main",
+    entries,
+    stackNumber: null,
+    truncated: false,
+  });
+
+  // The count the confirm button shows comes from here, so a stack whose bottom
+  // has already landed must not promise to merge it again.
+  it("lists the target and every unmerged layer below it", () => {
+    const s = stack([entry(1, "auth", { merged: true }), entry(2, "api"), entry(3, "ui")]);
+    expect(mergePlan(s, 3)).toEqual([2, 3]);
+    expect(mergePlan(s, 2)).toEqual([2]);
+  });
+
+  it("skips a branch that has no pull request to merge", () => {
+    const s = stack([entry(0, "wip"), entry(2, "api")]);
+    expect(mergePlan(s, 2)).toEqual([2]);
+    expect(mergePlan(s, 0)).toEqual([]);
+  });
+
+  it("plans nothing for a pull request outside the stack", () => {
+    expect(mergePlan(stack([entry(1, "auth")]), 99)).toEqual([]);
   });
 });

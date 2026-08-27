@@ -244,6 +244,8 @@ export interface WorkspaceStack {
   stack: PrStack | null;
   /** Why `gh stack` didn't contribute, when it didn't. Null when it did. */
   ghStackError: string | null;
+  /** Why GitHub didn't, when it didn't — the reason each layer's status is blank. */
+  prStackError: string | null;
 }
 
 /**
@@ -271,11 +273,16 @@ export interface StackMergeResult {
  * Merges the stack up to and including one of its pull requests — every layer
  * below it goes too. All-or-nothing on GitHub's side: if any layer in range
  * can't merge, none do.
+ *
+ * `expect` is the plan the user confirmed (see `mergePlan`). The sidecar
+ * re-reads the stack and refuses if it no longer matches, so a restack landing
+ * between the confirmation and this call can't quietly widen what merges.
  */
 export async function mergeWorkspaceRepoStack(
   workspaceId: string,
   workspaceRepoId: string,
   upTo: number,
+  expect: number[],
   method?: MergeMethod,
 ): Promise<StackMergeResult> {
   const res = await sidecarFetch(
@@ -283,7 +290,7 @@ export async function mergeWorkspaceRepoStack(
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ upTo, method }),
+      body: JSON.stringify({ upTo, expect, method }),
     },
   );
   if (!res.ok) return readError(res, "merge stack");

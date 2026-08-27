@@ -1,6 +1,6 @@
 import { ensureOk, sidecarFetch } from "../api";
 import { prRefQuery } from "./guide";
-import type { PrRef, PrStack } from "./types";
+import type { PrRef, PrStack, StackEntry } from "./types";
 
 /**
  * Client for a pull request's stack. Like the guide routes and unlike the rest
@@ -37,4 +37,39 @@ export function isStacked(stack: PrStack | null): stack is PrStack {
  */
 export function needsUpdateCount(stack: PrStack | null): number {
   return (stack?.entries ?? []).filter((e) => e.needsUpdate).length;
+}
+
+/**
+ * Whether a layer has a pull request at all. `gh stack` tracks a branch from
+ * the moment it is created, so a stack can hold a layer with nothing to open,
+ * merge or link to.
+ */
+export const hasPullRequest = (entry: StackEntry): boolean => entry.number > 0;
+
+/**
+ * The layer a "merge the stack" action should stop at: the one the workspace is
+ * on. Null when that layer has already merged, or has no pull request to name.
+ */
+export function currentLayer(stack: PrStack | null): StackEntry | null {
+  return (stack?.entries ?? []).find((e) => e.isCurrent && !e.merged && hasPullRequest(e)) ?? null;
+}
+
+/**
+ * The layers `gh stack merge <upToPrNumber>` would actually land: that pull
+ * request and everything below it not already merged, bottom-first.
+ *
+ * This is what the confirm button counts, and it travels with the merge so the
+ * sidecar can recompute it and refuse if the stack moved in between — see
+ * `mergeWorkspaceRepoStack`. Counting entries up to the target instead would
+ * over-promise, since a stack whose bottom has already landed merges fewer
+ * layers than it holds.
+ */
+export function mergePlan(stack: PrStack, upToPrNumber: number): number[] {
+  if (upToPrNumber <= 0) return [];
+  const top = stack.entries.findIndex((e) => e.number === upToPrNumber);
+  if (top === -1) return [];
+  return stack.entries
+    .slice(0, top + 1)
+    .filter((e) => hasPullRequest(e) && !e.merged)
+    .map((e) => e.number);
 }

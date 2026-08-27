@@ -32,7 +32,6 @@ export type {
   PrDetail,
   PrFile,
   PrInvolvement,
-  PrStack,
   PrStatus,
   PrSummary,
   ReviewComment,
@@ -40,7 +39,6 @@ export type {
   Reviewer,
   ReviewerState,
   ReviewThread,
-  StackEntry,
 } from "../pr/types.ts";
 
 type FetchFn = typeof fetch;
@@ -311,11 +309,10 @@ export function toPrDetail(pr: any, repo?: any): PrDetail {
 }
 
 /**
- * Aggregates already-normalized checks into the same buckets
- * {@link summarizeChecks} produces from REST check runs. The GraphQL rollup
- * speaks a different vocabulary — uppercase enums, and a legacy StatusContext
- * whose "still running" shows up as a `PENDING` conclusion rather than an
- * incomplete status — so the two cannot share one pass over the raw nodes.
+ * Aggregates already-normalized checks into the buckets a summary needs. Reads
+ * the GraphQL rollup's vocabulary: uppercase enums, and a legacy StatusContext
+ * whose "still running" arrives as a `PENDING` conclusion rather than as an
+ * incomplete status.
  */
 export function summarizeCheckItems(items: CheckItem[]): ChecksSummary {
   let success = 0;
@@ -352,11 +349,12 @@ function toReviewDecision(value: unknown): ReviewDecision | null {
  * Shapes a PullRequest node selected with {@link STACK_NODE_FIELDS} into one
  * layer of a stack.
  *
- * `needsUpdate` reads GitHub's `mergeStateStatus`: `BEHIND` means the head
- * branch no longer contains the tip of the branch it targets, which for a
- * stacked PR is exactly "the layer below moved and this one has not been
- * restacked yet". GitHub computes the status lazily and reports `UNKNOWN`
- * until it has, so a false here means "not known to be behind".
+ * `needsUpdate` starts from GitHub's `mergeStateStatus`, which is only worth a
+ * little: `BEHIND` is reported solely where the base branch requires branches
+ * to be up to date before merging, so on an unprotected repo a badly-behind
+ * layer still reads `CLEAN`. {@link GitHubClient.prStack} therefore settles the
+ * question itself by comparing each pair of adjacent branches; this is the
+ * cheap signal it starts from, not the answer.
  */
 export function toStackEntry(node: any, ref: PrRef, isCurrent: boolean): StackEntry {
   const rollupNodes = node.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
@@ -376,6 +374,7 @@ export function toStackEntry(node: any, ref: PrRef, isCurrent: boolean): StackEn
     reviewDecision: toReviewDecision(node.reviewDecision),
     isCurrent,
     needsUpdate: String(node.mergeStateStatus ?? "").toUpperCase() === "BEHIND",
+    statusKnown: true,
   };
 }
 
@@ -425,10 +424,29 @@ query($owner:String!,$repo:String!,$branch:String!){
 
 /**
  * How far {@link GitHubClient.prStack} walks in each direction. Each layer costs
- * a round trip, so this is what bounds the price of the lookup — stacks deeper
- * than this are reported truncated rather than paid for.
+ * a round trip, so this is what bounds the price of the lookup; hitting it sets
+ * `truncated` on the stack rather than silently presenting a partial chain as
+ * the whole thing.
  */
 const STACK_MAX_DEPTH = 10;
+
+/**
+ * Asks, for each adjacent pair of branches in the stack, how many commits the
+ * upper one is missing from the lower — which is the whole of "does this layer
+ * need restacking". Every pair goes in one request as an aliased field, the
+ * same batching {@link buildPrLookupQuery} uses, so settling it for the entire
+ * stack costs one round trip rather than one per layer.
+ */
+function buildBehindQuery(count: number): string {
+  const varDecls = Array.from({ length: count }, (_, i) => `$b${i}:String!,$h${i}:String!`).join(
+    ",",
+  );
+  const fields = Array.from(
+    { length: count },
+    (_, i) => `  c${i}: ref(qualifiedName:$b${i}){ compare(headRef:$h${i}){ behindBy } }`,
+  ).join("\n");
+  return `query($owner:String!,$repo:String!,${varDecls}){\n repository(owner:$owner,name:$repo){\n${fields}\n }\n}`;
+}
 
 /**
  * The fields the "Reviewing" list needs off a PullRequest node. `reviews` is
@@ -875,18 +893,67 @@ export class GitHubClient {
       cursor = next;
     }
 
+    const entries = [...below, pr, ...above].map((node) =>
+      toStackEntry(
+        node,
+        { provider: "github", owner, repo, number: node.number },
+        node.number === number,
+      ),
+    );
+    await this.markBehindLayers(owner, repo, trunk, entries);
+
     return {
       trunk,
       stackNumber: null,
-      source: "refs",
-      entries: [...below, pr, ...above].map((node) =>
-        toStackEntry(
-          node,
-          { provider: "github", owner, repo, number: node.number },
-          node.number === number,
-        ),
-      ),
+      truncated: below.length >= STACK_MAX_DEPTH || above.length >= STACK_MAX_DEPTH,
+      entries,
     };
+  }
+
+  /**
+   * Sets `needsUpdate` on every layer that no longer contains the tip of the
+   * branch beneath it. Mutates in place: it is the second half of building the
+   * entries, split out only because it is one batched request rather than part
+   * of the walk.
+   *
+   * A merged layer is skipped — its branch is usually deleted, and restacking
+   * something already landed means nothing. A failure leaves whatever
+   * `mergeStateStatus` said standing, since a stack that can't answer this is
+   * still worth showing.
+   */
+  private async markBehindLayers(
+    owner: string,
+    repo: string,
+    trunk: string,
+    entries: StackEntry[],
+  ): Promise<void> {
+    const pairs = entries.flatMap((entry, i) => {
+      const below = i === 0 ? trunk : entries[i - 1]?.headRef;
+      if (entry.merged || !below || !entry.headRef) return [];
+      return [{ entry, below }];
+    });
+    if (pairs.length === 0) return;
+
+    const variables: Record<string, unknown> = { owner, repo };
+    pairs.forEach((pair, i) => {
+      variables[`b${i}`] = `refs/heads/${pair.below}`;
+      variables[`h${i}`] = pair.entry.headRef;
+    });
+    try {
+      const data = await this.graphql<{ repository?: Record<string, any> }>(
+        buildBehindQuery(pairs.length),
+        variables,
+        // One deleted or renamed branch nulls its own field; the rest of the
+        // stack still gets a real answer.
+        { allowPartial: true },
+      );
+      pairs.forEach((pair, i) => {
+        const behindBy = data.repository?.[`c${i}`]?.compare?.behindBy;
+        if (typeof behindBy === "number" && behindBy > 0) pair.entry.needsUpdate = true;
+      });
+    } catch (e) {
+      console.error("[github] could not compare stack layers:", e);
+    }
   }
 
   async prFiles(owner: string, repo: string, number: number): Promise<PrFile[]> {

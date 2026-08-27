@@ -231,17 +231,17 @@ export interface Viewer {
  */
 export interface StackEntry {
   ref: PrRef;
+  /** {@link NO_PULL_REQUEST} for a branch `gh stack` tracks that has no PR yet. */
   number: number;
   title: string;
   url: string;
   /** Branch this layer targets — the head of the layer below, or the trunk. */
   baseRef: string;
   headRef: string;
-  /** "open" | "closed" | "merged", lowercased from the provider's enum. */
+  /** "open" | "closed" | "merged", or "none" for a branch with no pull request. */
   state: string;
   merged: boolean;
   draft: boolean;
-  /** True while the pull request is queued to merge rather than merged. */
   queued: boolean;
   checks: ChecksSummary;
   reviewDecision: ReviewDecision | null;
@@ -253,17 +253,30 @@ export interface StackEntry {
    * change.
    */
   needsUpdate: boolean;
+  /**
+   * False when nothing is known about this layer beyond its existence, because
+   * the provider couldn't be reached. Distinguishes a layer with no checks and
+   * no reviews from one whose checks and reviews were never fetched — both
+   * would otherwise render as a clean pull request awaiting review.
+   */
+  statusKnown: boolean;
 }
+
+/**
+ * The number a layer carries when it has no pull request. Pull request numbers
+ * start at 1, so zero cannot collide with a real one.
+ */
+export const NO_PULL_REQUEST = 0;
 
 /**
  * A pull request's stack, bottom (closest to the trunk) first.
  *
  * GitHub ships stacks through the `gh stack` CLI and exposes no API for them,
- * so `refs` stacks are derived by walking base/head branch names through the
+ * so a stack is reconstructed by walking base/head branch names through the
  * ordinary pull-request API — which needs no local clone, and also finds the
  * stacks people built by hand long before the feature existed. A workspace with
- * a worktree can run the CLI, and those stacks come back as `gh-stack`: GitHub's
- * own grouping, with its stack number and its rebase verdict.
+ * a worktree can additionally run the CLI; `sidecar/src/workspaces/stack.ts`
+ * explains how the two are reconciled.
  */
 export interface PrStack {
   /** The branch the bottom of the stack targets. */
@@ -271,5 +284,6 @@ export interface PrStack {
   entries: StackEntry[];
   /** GitHub's repository-scoped stack number; null unless `gh stack` reported one. */
   stackNumber: number | null;
-  source: "refs" | "gh-stack";
+  /** True when the walk hit its depth cap, so layers below or above are missing. */
+  truncated: boolean;
 }

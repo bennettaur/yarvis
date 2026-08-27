@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
-import { needsUpdateCount } from "../../lib/pr/stack";
-import type { MergeMethod, StackEntry } from "../../lib/pr/types";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { currentLayer, mergePlan, needsUpdateCount } from "../../lib/pr/stack";
+import type { MergeMethod } from "../../lib/pr/types";
 import {
   mergeWorkspaceRepoStack,
   type WorkspaceRepoDetail,
@@ -15,27 +15,23 @@ import PrStackList from "../pr/PrStackList";
  * merging the whole thing up to a chosen layer.
  *
  * Unlike the other right-column views this one isn't polled. Reading it costs a
- * `gh stack view` plus a provider round trip per layer, and a stack changes on
- * the user's own actions rather than on its own, so it loads on open and offers
- * a refresh.
+ * `gh stack view` subprocess plus provider round trips, where those views cost
+ * one git command, and a stack changes on the user's own actions rather than on
+ * its own — so it loads on open and offers a refresh.
  */
 
-const MERGE_METHODS: { value: MergeMethod; label: string }[] = [
+/**
+ * The strategies `gh stack merge` takes, plus the empty default. A repo can
+ * disallow any of the three and the stack read carries no per-repo merge
+ * settings, so the default sends none and leaves `gh` on whatever the repo last
+ * used — the same thing that happens when someone runs the command by hand.
+ */
+const MERGE_METHODS: { value: MergeMethod | ""; label: string }[] = [
+  { value: "", label: "Last-used method" },
   { value: "SQUASH", label: "Squash" },
   { value: "MERGE", label: "Merge commit" },
   { value: "REBASE", label: "Rebase" },
 ];
-
-/**
- * Which layer a "merge the stack" action should stop at: the one the workspace
- * is on. Everything below it merges too; everything above is likelier to be
- * unfinished, and `gh stack merge <pr>` is scoped exactly this way.
- */
-function mergeTarget(stack: WorkspaceStack["stack"]): StackEntry | null {
-  const entries = stack?.entries ?? [];
-  const current = entries.find((e) => e.isCurrent && !e.merged && e.number > 0);
-  return current ?? null;
-}
 
 export default function WorkspaceStackView({
   workspaceId,
@@ -46,19 +42,27 @@ export default function WorkspaceStackView({
 }) {
   const [data, setData] = useState<WorkspaceStack | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [method, setMethod] = useState<MergeMethod>("SQUASH");
-  // The merge is irreversible and merges layers the user can't see from the
-  // button, so it takes a second press with the range spelled out.
+  const [method, setMethod] = useState<MergeMethod | "">("");
+  // The merge is irreversible and takes layers the button alone doesn't show,
+  // so it needs a second press with the count spelled out.
   const [confirming, setConfirming] = useState(false);
   const [merging, setMerging] = useState(false);
   const [mergeOutput, setMergeOutput] = useState<string | null>(null);
 
+  // Switching repos, or pressing Refresh twice, can leave an older read still
+  // in flight; only the newest one may write back. The sibling views in
+  // `WorkspaceSidePanel` and the PR cache both guard this the same way.
+  const latest = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++latest.current;
     setError(null);
     try {
-      setData(await workspaceRepoStack(workspaceId, repo.id));
+      const next = await workspaceRepoStack(workspaceId, repo.id);
+      if (seq === latest.current) setData(next);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      // Whatever is on screen stays: a failed refresh is a reason to say so,
+      // not to take away the stack the reader was looking at.
+      if (seq === latest.current) setError(e instanceof Error ? e.message : String(e));
     }
   }, [workspaceId, repo.id]);
 
@@ -70,16 +74,24 @@ export default function WorkspaceStackView({
   }, [load]);
 
   const stack = data?.stack ?? null;
-  const target = mergeTarget(stack);
-  const below = target ? stack!.entries.indexOf(target) + 1 : 0;
-  const stale = needsUpdateCount(stack);
+  const target = currentLayer(stack);
+  // What the confirm button promises, and what the sidecar recomputes before it
+  // merges anything.
+  const plan = stack && target ? mergePlan(stack, target.number) : [];
+  const staleCount = needsUpdateCount(stack);
 
   const merge = async () => {
     if (!target) return;
     setMerging(true);
     setMergeOutput(null);
     try {
-      const result = await mergeWorkspaceRepoStack(workspaceId, repo.id, target.number, method);
+      const result = await mergeWorkspaceRepoStack(
+        workspaceId,
+        repo.id,
+        target.number,
+        plan,
+        method || undefined,
+      );
       setMergeOutput(result.output || (result.merged ? "Merged." : "Nothing was merged."));
       await load();
     } catch (e) {
@@ -90,8 +102,13 @@ export default function WorkspaceStackView({
     }
   };
 
-  if (error) return <p className="text-xs text-red-400">{error}</p>;
-  if (!data) return <p className="text-xs text-zinc-500">Loading…</p>;
+  if (!data) {
+    return error ? (
+      <p className="text-xs text-red-400">{error}</p>
+    ) : (
+      <p className="text-xs text-zinc-500">Loading…</p>
+    );
+  }
   if (!stack || stack.entries.length === 0) {
     return (
       <div className="space-y-2 text-xs text-zinc-500">
@@ -99,12 +116,15 @@ export default function WorkspaceStackView({
           No stack for <span className="font-mono">{repo.branch}</span>.
         </p>
         {data.ghStackError && <p className="text-zinc-600">gh stack: {data.ghStackError}</p>}
+        {data.prStackError && <p className="text-zinc-600">GitHub: {data.prStackError}</p>}
       </div>
     );
   }
 
   return (
     <div className="space-y-3 text-xs">
+      {error && <p className="text-red-400">Couldn't refresh: {error}</p>}
+
       <div className="flex items-center gap-2 text-zinc-500">
         <span>
           {stack.entries.length} PR{stack.entries.length === 1 ? "" : "s"}
@@ -121,9 +141,16 @@ export default function WorkspaceStackView({
 
       <PrStackList stack={stack} />
 
-      {stale > 0 && (
+      {data.prStackError && (
+        <p className="text-zinc-600">
+          Checks and reviews are unavailable ({data.prStackError}), so each layer shows only what{" "}
+          <span className="font-mono">gh stack</span> knows.
+        </p>
+      )}
+
+      {staleCount > 0 && (
         <p className="text-amber-400">
-          {stale} branch{stale === 1 ? "" : "es"} need restacking — run{" "}
+          {staleCount} branch{staleCount === 1 ? " needs" : "es need"} restacking — run{" "}
           <span className="font-mono">gh stack rebase</span> in this workspace.
         </p>
       )}
@@ -142,7 +169,7 @@ export default function WorkspaceStackView({
             <div className="flex items-center gap-2">
               <select
                 value={method}
-                onChange={(e) => setMethod(e.target.value as MergeMethod)}
+                onChange={(e) => setMethod(e.target.value as MergeMethod | "")}
                 className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs outline-none"
               >
                 {MERGE_METHODS.map((m) => (
@@ -160,7 +187,7 @@ export default function WorkspaceStackView({
                 {merging
                   ? "Merging…"
                   : confirming
-                    ? `Merge ${below} PR${below === 1 ? "" : "s"} — confirm`
+                    ? `Merge ${plan.length} PR${plan.length === 1 ? "" : "s"} — confirm`
                     : `Merge stack up to #${target.number}`}
               </button>
               {confirming && !merging && (
@@ -174,8 +201,7 @@ export default function WorkspaceStackView({
               )}
             </div>
             <p className="text-zinc-600">
-              Merges every layer from <span className="font-mono">{stack.trunk}</span> up to #
-              {target.number}, or none of them.
+              Merges {plan.map((n) => `#${n}`).join(", ")} — all of them or none.
             </p>
           </div>
         )

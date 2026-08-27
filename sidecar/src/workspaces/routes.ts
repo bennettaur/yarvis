@@ -64,11 +64,13 @@ const createWorkspaceSchema = z.object({
   issuePrompt: z.string().max(65536).nullish(),
 });
 
-// Which layers of a stack to merge, and how. `upTo` is checked against the
-// stack the sidecar reads for itself before anything is merged, so a number the
-// caller invents is refused rather than handed to `gh stack merge`.
+// Which layers of a stack to merge, and how. `expect` is the plan the user was
+// shown; the sidecar recomputes it from a fresh read and refuses a mismatch, so
+// a stack that moved between the confirmation and the call is never merged to a
+// depth nobody agreed to. Capped at the walk's own depth.
 const stackMergeSchema = z.object({
   upTo: z.number().int().min(1),
+  expect: z.array(z.number().int().min(1)).max(64),
   method: z.enum(["MERGE", "SQUASH", "REBASE"]).optional(),
 });
 
@@ -310,12 +312,33 @@ export function createWorkspaceRoutes(config: Config): Hono {
     }
   });
 
+  /**
+   * Both ids for a stack route, or null if either is malformed. They land in
+   * uuid columns, so an unchecked one surfaces as a Postgres type error — a 400
+   * carrying internal detail, for what is a bad request. The workspace id is
+   * load-bearing here rather than decorative: `stackContext` matches on the
+   * pair, so a repo can only be merged through the workspace holding it.
+   */
+  const stackIds = (c: {
+    req: { param: (name: string) => string };
+  }): { workspaceId: string; workspaceRepoId: string } | null => {
+    const workspaceId = c.req.param("id");
+    const workspaceRepoId = c.req.param("wrId");
+    const uuid = z.string().uuid();
+    if (!uuid.safeParse(workspaceId).success || !uuid.safeParse(workspaceRepoId).success) {
+      return null;
+    }
+    return { workspaceId, workspaceRepoId };
+  };
+
   // The stacked pull requests this repo's branch belongs to (right-column
   // Stack tab). Reads GitHub for each layer's status and `gh stack` in the
   // worktree for the real grouping; either half missing is reported, not fatal.
   router.get("/:id/repos/:wrId/stack", async (c) => {
+    const ids = stackIds(c);
+    if (!ids) return c.json({ error: "invalid workspace or repo id" }, 400);
     try {
-      return c.json(await workspaceRepoStack(db(), config, c.req.param("wrId")));
+      return c.json(await workspaceRepoStack(db(), config, ids.workspaceId, ids.workspaceRepoId));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
     }
@@ -324,14 +347,18 @@ export function createWorkspaceRoutes(config: Config): Hono {
   // Merge the stack up to one of its pull requests. All-or-nothing on GitHub's
   // side: if any layer in range can't merge, none do.
   router.post("/:id/repos/:wrId/stack/merge", async (c) => {
+    const ids = stackIds(c);
+    if (!ids) return c.json({ error: "invalid workspace or repo id" }, 400);
     const parsed = stackMergeSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
       const result = await mergeWorkspaceRepoStack(
         db(),
         config,
-        c.req.param("wrId"),
+        ids.workspaceId,
+        ids.workspaceRepoId,
         parsed.data.upTo,
+        parsed.data.expect,
         parsed.data.method,
       );
       return c.json(result);

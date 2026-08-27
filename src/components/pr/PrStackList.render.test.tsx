@@ -18,13 +18,14 @@ const entry = (number: number, headRef: string, extra: Partial<StackEntry> = {})
   reviewDecision: null,
   isCurrent: false,
   needsUpdate: false,
+  statusKnown: true,
   ...extra,
 });
 
 const stack: PrStack = {
   trunk: "main",
   stackNumber: 7,
-  source: "gh-stack",
+  truncated: false,
   entries: [
     entry(1, "auth", { merged: true }),
     entry(2, "api", { isCurrent: true, needsUpdate: true }),
@@ -40,7 +41,8 @@ describe("PrStackList", () => {
     const order = [text.indexOf("layer 3"), text.indexOf("layer 2"), text.indexOf("layer 1")];
 
     expect(order).toEqual([...order].sort((a, b) => a - b));
-    expect(text.lastIndexOf("main")).toBeGreaterThan(text.indexOf("layer 1"));
+    // The trunk is the floor, below every layer including the bottom one.
+    expect(text.indexOf("auth")).toBeLessThan(text.lastIndexOf("main"));
   });
 
   it("shows each layer's state so the one holding the stack up is visible", async () => {

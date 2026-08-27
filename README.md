@@ -65,6 +65,9 @@ changes.
 - PostgreSQL with the `pgvector` extension available
 - [uv](https://docs.astral.sh/uv/) — only for the local speech server behind the
   Voice feature; skip it if you are not using voice
+- [GitHub CLI](https://cli.github.com) plus `gh extension install github/gh-stack`
+  — only for the workspace Stack tab's grouping and its merge action; the stack
+  itself is still derived from the API without them
 
 ## Setup
 
@@ -530,28 +533,43 @@ reopenable, so its comments are left where they are.
 
 The **Stack** tab in the right column shows the chain of pull requests this
 repo's branch belongs to — each layer targeting the one below it, rooted on the
-trunk — drawn top-down with the trunk at the bottom. Every layer carries the
-same one-glyph state the workspace list uses (merged, queued, draft, checks
-failing, changes requested, approved), so the one holding the rest up is visible
-without opening any of them; clicking a layer opens it in the PRs tab for
-review.
+trunk — drawn top-down with the trunk at the bottom. Every layer carries a
+one-glyph state, the same vocabulary the workspace list uses: merged, queued,
+draft, checks failing, changes requested, approved, plus two only a stack has —
+a branch `gh stack` is tracking that has no pull request yet, and a layer whose
+status couldn't be read. So the one holding the rest up is visible without
+opening any of them. Clicking a layer opens it in the PRs tab for review; a
+branch with no pull request has nothing to open.
 
 GitHub ships stacks through the [`gh stack`][gh-stack] CLI and exposes no API
 for them, so the tab reads two sources and reconciles them. Each layer's status
 comes from the ordinary pull-request API. Membership and order come from
 `gh stack view --json` run in the worktree, which also reports which branches
 have drifted off the layer below and need `gh stack rebase` — those are flagged
-**needs restack**. Without `gh` or the extension installed the tab still works:
-it falls back to walking base/head branch names through the API, which finds
-hand-built stacks too, and says so.
+**needs restack**. Without `gh` or the extension installed the tab still works
+once the branch has a pull request of its own: it falls back to walking
+base/head branch names through the API, which finds hand-built stacks too, and
+says why the CLI half is missing. `gh` uses the GitHub token from Settings when
+there is one and its own `gh auth login` otherwise — and merging needs a token
+that may write to the repo, which the read-only scopes above don't grant.
 
-**Merge stack** merges every layer from the trunk up to and including this
-repo's own PR — the layers above it, being furthest from done, are left alone.
-It takes a second press with the count spelled out, because the layers it merges
-aren't all on screen. The merge is all-or-nothing on GitHub's side: if any pull
-request in range can't merge, none do, and the reason is shown as `gh` reported
-it. It runs `gh stack merge`, so it needs the CLI — `gh pr merge` does not work
-on a stack.
+Unlike its sibling views the tab isn't polled: a `gh stack view` subprocess plus
+a provider round trip is a lot more than the single git command those cost, and
+a stack changes on your own actions. It loads when you open it and offers
+**Refresh** — worth pressing after a `gh stack rebase` in the terminal.
+
+**Merge stack up to #N** merges every layer from the trunk up to and including
+this repo's own pull request — the layers above it, being furthest from done,
+are left alone. It takes a second press, which spells out how many pull requests
+that is, because they aren't all on screen. The strategy dropdown defaults to
+whatever the repo last used, as running the command by hand would; squash, merge
+commit and rebase are the alternatives. The merge is all-or-nothing on GitHub's
+side: if any pull request in range can't merge, none do, and the reason is shown
+as `gh` reported it. If the stack changes between the confirmation and the merge
+— an agent restacking in the same worktree, say — the merge is refused rather
+than quietly landing a different set than the one you agreed to. It runs
+`gh stack merge`, so without the CLI the button is replaced by a line saying so;
+`gh pr merge` does not work on a stack.
 
 [gh-stack]: https://docs.github.com/en/pull-requests/reference/stacked-prs-cli-commands
 
@@ -679,9 +697,11 @@ A pull request that is part of a stack gets a **Stack** section above Checks,
 listing every layer with its state and marking where you are. It is derived
 from base/head branch names through the API rather than from `gh stack`, which
 needs a checkout — so it works for anyone's PR, and picks up stacks built by
-hand as well as by the CLI. Layers GitHub reports as behind the one below them
-are flagged **needs restack**. Clicking a layer opens it. A PR that isn't
-stacked gets no section, and Azure DevOps has no stacks at all.
+hand as well as by the CLI. A layer whose branch no longer contains the tip of
+the one below it is flagged **needs restack**. Clicking a layer opens it. A PR
+that isn't stacked gets no section, and Azure DevOps has no stacks at all. The
+walk stops after ten layers in each direction, and says so with a `+` on the
+count when it does.
 
 Merging a stack needs the CLI and so lives in the workspace's Stack tab (see
 "Stacked pull requests" under Workspaces).

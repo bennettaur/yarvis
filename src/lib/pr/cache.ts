@@ -188,6 +188,13 @@ function useCachedResource<T>(key: string | null, loader: () => Promise<T>): Res
 
 export const prDetailKey = (ref: PrRef) => `detail:${refKey(ref)}`;
 
+/**
+ * Named alongside {@link prDetailKey} because the two go stale together: a
+ * merge or a review verdict changes how this pull request reads *and* how its
+ * layer reads in the stack, so anything invalidating one invalidates both.
+ */
+export const prStackKey = (ref: PrRef) => `stack:${refKey(ref)}`;
+
 export function usePrDetail(ref: PrRef | null): Resource<PrDetail> {
   return useCachedResource(ref ? prDetailKey(ref) : null, () => fetchPrDetail(ref!));
 }
@@ -206,7 +213,7 @@ export function usePrStatus(ref: PrRef | null): Resource<PrStatus> {
  * than being refetched by each surface that shows it.
  */
 export function usePrStack(ref: PrRef | null): Resource<PrStack | null> {
-  return useCachedResource(ref ? `stack:${refKey(ref)}` : null, () => fetchPrStack(ref!));
+  return useCachedResource(ref ? prStackKey(ref) : null, () => fetchPrStack(ref!));
 }
 
 /**
