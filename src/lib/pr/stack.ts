@@ -40,11 +40,18 @@ export function needsUpdateCount(stack: PrStack | null): number {
 }
 
 /**
+ * The number a layer carries when it has no pull request. Mirrors the sidecar's
+ * constant of the same name; pull request numbers start at 1, so zero cannot
+ * collide with a real one.
+ */
+const NO_PULL_REQUEST = 0;
+
+/**
  * Whether a layer has a pull request at all. `gh stack` tracks a branch from
  * the moment it is created, so a stack can hold a layer with nothing to open,
  * merge or link to.
  */
-export const hasPullRequest = (entry: StackEntry): boolean => entry.number > 0;
+export const hasPullRequest = (entry: StackEntry): boolean => entry.number !== NO_PULL_REQUEST;
 
 /**
  * The layer a "merge the stack" action should stop at: the one the workspace is
@@ -65,7 +72,7 @@ export function currentLayer(stack: PrStack | null): StackEntry | null {
  * layers than it holds.
  */
 export function mergePlan(stack: PrStack, upToPrNumber: number): number[] {
-  if (upToPrNumber <= 0) return [];
+  if (upToPrNumber === NO_PULL_REQUEST) return [];
   const top = stack.entries.findIndex((e) => e.number === upToPrNumber);
   if (top === -1) return [];
   return stack.entries

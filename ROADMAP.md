@@ -189,7 +189,8 @@ Status of the build against the original vision. The full V1 plan lives at
   setup scripts; metadata in Postgres); a Workspaces sidebar tab with a
   per-workspace terminal at the parent folder + per-repo run-script terminals; a
   right-hand All files / Changed / Comments / PR-checks / Stack column, the
-  first four backed by a background PR poller and the last read on demand; task linkage that auto-completes a linked task on archive
+  first four backed by a background PR poller and the last read on demand; task
+  linkage that auto-completes a linked task on archive
   (recording a summary + merged-PR URL); and `WorkspaceList` / `Workspace` Omni
   widgets. The
   worktree engine also answers the working-directory question in "Claude Code
