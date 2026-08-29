@@ -1,4 +1,4 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { builtinToolMetadata } from "../chat/builtinTools.ts";
@@ -200,11 +200,11 @@ async function readUserFiles(dir: string): Promise<UserFile[]> {
   for (const name of names.sort()) {
     const path = join(dir, name);
     try {
-      // Skip anything that isn't a plain file, so a directory named `x.md`
-      // doesn't surface as a read error.
-      if (!(await stat(path)).isFile()) continue;
       files.push({ path, content: await readFile(path, "utf8") });
     } catch (e) {
+      // Let the read decide what the path is rather than stat-ing first: a
+      // directory named `x.md` is skipped, as it was never a definition.
+      if ((e as NodeJS.ErrnoException).code === "EISDIR") continue;
       // A file that can't be read is reported, not silently skipped: the user
       // put it there deliberately and would otherwise wonder where it went.
       files.push({ path, error: e instanceof Error ? e.message : String(e) });
