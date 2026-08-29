@@ -3,6 +3,8 @@ import { createApp } from "./app.ts";
 import { loadConfig, loadInstanceConfig } from "./config.ts";
 import { getDb } from "./db/client.ts";
 import { runMigrations } from "./db/migrate.ts";
+import { allJobs } from "./jobs/registry.ts";
+import { startJobScheduler } from "./jobs/scheduler.ts";
 import { watchParentProcess } from "./lib/parentWatch.ts";
 import { redactSecrets } from "./llm/errors.ts";
 import { chooseEmbedder } from "./memory/embedder.ts";
@@ -78,6 +80,11 @@ if (config.databaseUrl) {
       // The Telegram bot drives the chat agent, which needs the database, so it
       // only starts once migrations have applied. It is a no-op without a token.
       startTelegramBot(config);
+      // Consolidation, the nightly rollup, and the Claude Code session digest.
+      // Behind the same instance gate as the poller: these write rows and call
+      // providers on a schedule, and two processes doing that against one
+      // database would duplicate both.
+      startJobScheduler(config, allJobs());
       // Background PR/checks poller. No-op without a GitHub token; reconciles
       // interrupted runs on its first tick.
       startWorkspacePoller(config);

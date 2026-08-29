@@ -192,5 +192,66 @@ back to ad-hoc.
   establish is *what the agent is showing*, so a send is reported as delivered,
   never as done. Anything new that forwards text into a session owes the same
   three.
+- Built-in agent tools come from one builder — `chat/builtinTools.ts` — which
+  both `runAgentTurn` and `agentTools/registry.ts` read. This is not tidiness:
+  the *active* tool set for a step is computed from registry policy, so a
+  built-in the registry doesn't know about is assembled into the turn and then
+  never offered to the model. A new family of tools is added there, not beside it.
+- Work that happens on a schedule is a `JobDefinition` in `sidecar/src/jobs/`,
+  not a `setInterval`. The scheduler holds a database lease per job, so two
+  instances sharing one database can both tick without doing the work twice, and
+  a crashed run's lease simply expires. `isDue` is pure and covers intervals and
+  a daily anchor; the anchor compares calendar days rather than elapsed time, so
+  a machine asleep at 03:00 still gets its nightly run once, late. A job marks
+  its input consumed only after its output is stored — `consolidate-events`
+  claims a window of events after the summary memory exists, so a failed run
+  leaves the window for the next one instead of losing it.
+- Delegation is files, not rows. A specialist (`sidecar/src/agents/`) is a
+  markdown file: frontmatter for its tools, model and step budget, body as its
+  system prompt. The shipped ones live in `agents/definitions/` and are imported
+  with `with { type: "text" }`, so they are reviewable in git *and* embedded in
+  the compiled binary; `~/.yarvis/agents/*.md` loads beside them and wins on a
+  name collision. That precedence is why this beat a table: a shipped prompt
+  improves with the app while a user's definition stays theirs, with no
+  seed-once rule and nothing to reset. Adding a specialist is writing a file,
+  which is what "let the agent reach for one it needs" requires.
+  - Definitions come from `~/.yarvis/agents` only — never a workspace or a
+    checked-out repo. A definition is a system prompt plus a tool list, so a repo
+    that could contribute one could hand the agent instructions and the means to
+    act on them.
+  - Splitting the document is ours; parsing the frontmatter is the `yaml`
+    package's. A hand-rolled subset went in first and quietly turned every
+    description containing a comma into a list — an agent file is user-facing
+    config in a standard format, which is not a parser worth owning. What stays
+    ours is validation (`agents/frontmatter.ts`): YAML cannot know this schema,
+    so unknown keys and unknown tool names are rejected at load with the file
+    named. `tool:` instead of `tools:` is the mistake most worth catching,
+    because nothing downstream looks wrong.
+  - A delegated run gets no MCP tools, because it has no channel to hold an
+    approval prompt on (the same rule a surface that can't prompt gets), and no
+    delegation tools, because a specialist that could delegate could delegate to
+    itself. A tool that writes where other people can see it sits between those
+    two cases: available, but only to a definition that also names it under
+    `unattended:`, which Settings flags on the row as "acts unattended".
+    `project-manager` filing tickets is the one shipped grant — turning a
+    discussion into tickets is the job.
+- Memory is typed. `memories.kind` is a column, not a metadata tag, because the
+  jobs, the recap and the browser all filter on it. The kinds a *turn* may write
+  exclude the ones the jobs author, so hand-written text can't masquerade as a
+  consolidated summary. A fact that changed is superseded — the old row stays for
+  the trail and drops out of recall — rather than contradicted by a second
+  memory, and an edit re-embeds, since a corrected fact findable only by its old
+  wording is worse than no correction.
+- The user's `tasks` and the assistant's `agent_todos` are different tables on
+  purpose: one is what the user intends to do, the other is what the assistant
+  has taken on. The todo tools are deliberately absent from the MCP endpoint — a
+  Claude Code session reads and writes memory, but editing the in-app agent's
+  plan would be one agent rewriting another's.
+- Anything that acts on the user's behalf outside this machine is narrowed at the
+  tool layer, not just at the scope. Google's `calendar.events` scope permits
+  update and delete; the client has no method for either and no tool exposes one,
+  so an agent can put a meeting on the calendar and only the user can move it. A
+  suggestion the user declines is recorded as a dismissal keyed by ref, because
+  "not that one" has to survive the next planning turn.
 - Follow the repo's existing comment style: comments explain *why*, not
   *what* — no restating what a well-named function already says.

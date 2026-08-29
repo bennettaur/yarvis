@@ -2,12 +2,14 @@ import { useState } from "react";
 import AgentSection from "./AgentSection";
 import CustomProviderSection from "./CustomProviderSection";
 import EmbeddingsSection from "./EmbeddingsSection";
+import JobsSection from "./JobsSection";
 import KeychainSection from "./KeychainSection";
 import McpEndpointSection from "./McpEndpointSection";
 import McpServerSection from "./McpServerSection";
 import ModelCatalogSection from "./ModelCatalogSection";
 import PrReviewSection from "./PrReviewSection";
 import ReposSection from "./ReposSection";
+import SpecialistSection from "./SpecialistSection";
 import TelegramSection from "./TelegramSection";
 import TerminalSection from "./TerminalSection";
 import ToolManagerSection from "./ToolManagerSection";
@@ -23,7 +25,8 @@ type TabKey =
   | "voice"
   | "embeddings"
   | "telegram"
-  | "wip";
+  | "wip"
+  | "assistant";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "credentials", label: "Credentials" },
@@ -35,6 +38,7 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "embeddings", label: "Embeddings" },
   { key: "telegram", label: "Telegram" },
   { key: "wip", label: "Work in progress" },
+  { key: "assistant", label: "Assistant" },
 ];
 
 const TAB_STORAGE_KEY = "yarvis.settings.activeTab";
@@ -93,6 +97,12 @@ export default function SettingsPanel() {
           <ReposSection />
           <AgentSection />
           <TerminalSection />
+        </div>
+      )}
+      {active === "assistant" && (
+        <div className="space-y-5">
+          <SpecialistSection />
+          <JobsSection />
         </div>
       )}
       {active === "prs" && <PrReviewSection />}

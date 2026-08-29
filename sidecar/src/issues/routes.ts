@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { emitEvent } from "../events/service.ts";
 import { GitHubClient } from "../github/client.ts";
 import { noTraversal } from "../pr/codeTools.ts";
 import { createWorkspace, startKickOff } from "../workspaces/service.ts";
@@ -269,7 +270,13 @@ export function createIssueRoutes(config: Config): Hono {
       return c.json({ error: `repo ${owner}/${repo} is not set to pull issues` }, 400);
     }
     try {
-      return c.json(await gh.createIssue(owner, repo, parsed.data), 201);
+      const created = await gh.createIssue(owner, repo, parsed.data);
+      void emitEvent(db(), {
+        type: "issue.created",
+        source: "github",
+        payload: { key: `${owner}/${repo}#${created.externalId}`, title: created.title },
+      });
+      return c.json(created, 201);
     } catch (e) {
       return c.json({ error: String(e) }, 502);
     }
@@ -328,6 +335,11 @@ export function createIssueRoutes(config: Config): Hono {
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
       await gh.addIssueComment(params.owner, params.repo, params.number, parsed.data.body);
+      void emitEvent(db(), {
+        type: "issue.commented",
+        source: "github",
+        payload: { key: `${params.owner}/${params.repo}#${params.number}` },
+      });
       return c.json(await gh.issueDetail(params.owner, params.repo, params.number), 201);
     } catch (e) {
       return c.json({ error: String(e) }, 502);
@@ -469,6 +481,12 @@ export function createIssueRoutes(config: Config): Hono {
       : [];
 
     startKickOff(db(), workspaceId);
+
+    void emitEvent(db(), {
+      type: "issue.work_started",
+      source: provider,
+      payload: { provider, key: `${input.sourceKey}#${number}`, workspaceId },
+    });
 
     return c.json({ workspaceId, warnings }, 201);
   });

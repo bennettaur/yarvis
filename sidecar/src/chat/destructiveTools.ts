@@ -13,6 +13,21 @@
  * same approval prompt that MCP tools already use, so the user sees the exact
  * operation before it happens.
  */
+/**
+ * Built-in tools that need approval on *every* turn, typed or spoken.
+ *
+ * The set below is about whether the words reaching the model are the words the
+ * user chose. This one is about reach: a tool here acts on people outside this
+ * machine and cannot be taken back, so the question "did the user actually ask
+ * for this" has to be answered by the user rather than inferred from a turn they
+ * may have composed after reading an injected PR title or event payload.
+ */
+export const ALWAYS_CONFIRM_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
+  // Puts a meeting on someone else's calendar and mails everyone invited, and
+  // there is deliberately no tool to move or cancel it afterwards.
+  "create_calendar_event",
+]);
+
 export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // Irreversible, and the system prompt describes it as permanent and unlogged.
   "delete_task",
@@ -34,4 +49,9 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // session may have been showing a dialog that the text answers instead — so a
   // misheard instruction is both unreviewable and unrecoverable.
   "send_workspace_instruction",
+  // Deletes a memory outright, where correcting one keeps the trail.
+  "forget_memory",
+  // Runs a whole specialist with its own tools; a misheard task becomes a
+  // multi-step run nobody reviewed.
+  "delegate",
 ]);

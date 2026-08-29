@@ -15,6 +15,7 @@ import {
   workspaceRepos,
   workspaceReviewComments,
 } from "../db/schema.ts";
+import { emitEvent } from "../events/service.ts";
 import { defaultGitRunner, type GitRunner, headCommit } from "./git.ts";
 
 export interface CreateReviewCommentInput {
@@ -96,6 +97,16 @@ export async function createReviewComment(
       body: input.body,
     })
     .returning();
+  if (row) {
+    // The body is the reviewer's own words about their in-flight work, so unlike
+    // a session instruction it is safe to keep — it is what makes "what was I
+    // worried about in this workspace" answerable later.
+    void emitEvent(db, {
+      type: "workspace.comment_added",
+      source: "workspaces",
+      payload: { workspaceId, path: input.path, body: input.body },
+    });
+  }
   return row ?? null;
 }
 

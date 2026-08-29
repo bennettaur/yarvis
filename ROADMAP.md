@@ -24,7 +24,30 @@ Status of the build against the original vision. The full V1 plan lives at
   a provider or dimension change is detected and surfaced as a "re-embed needed"
   health warning in Settings (with a re-embed action).
 - **Claude Code session introspection** — browse `~/.claude` projects, session
-  transcripts, and plans (Sessions tab).
+  transcripts, and plans (Sessions tab). A nightly job also digests new or
+  extended transcripts into `session-summary` memories, and pulls out any
+  guidance about how an agent should behave as a separate `agent-feedback`
+  memory.
+- **The assistant loop** — the event log covers the working day (review verdicts,
+  comments and merges on both providers, issue/JIRA writes, every workspace
+  lifecycle step) and is searchable and paginated, from the UI (Memory →
+  Activity) and from the agent. Background jobs consolidate it: four-hourly
+  windows into `activity-summary` memories, an overnight rollup into a
+  `day-summary`. Memory is typed by `kind`, and a fact that changed is superseded
+  rather than contradicted. Projects hold status, weekly focus and tracked
+  tickets with priorities; the assistant keeps its own todo list beside them,
+  with a progress log and `blocked`/`wont_do` outcomes (Memory → Projects /
+  Agent todos). Planning reads all of it: `suggest_next_work` ranks dangling work
+  (own PRs, reviews requested, reviews started and unfinished, live workspaces,
+  overdue tasks), promotes a review when the week has been light on reviewing,
+  and forgets nothing the user turned down; `work_summary` assembles the material
+  for a weekly recap. Tasks stop duplicating, and completion evidence (an
+  archived workspace, a merged PR whose title matches) is surfaced for
+  confirmation rather than applied. Multi-step work is delegated to specialists
+  defined as markdown files — frontmatter for tools, model and step budget, body
+  as the prompt — shipped in `agents/definitions/` and extended from
+  `~/.yarvis/agents/*.md`, which the background jobs share. The calendar can now book an event
+  (create only; no update or delete exists).
 - **PR dashboard (GitHub + Azure DevOps)** — my PRs and review-requested, split
   into tabs and grouped by repo, newest-first; each row is clickable into the
   in-app review and shows a draft label, CI/merge status, and relative dates.
@@ -158,8 +181,12 @@ Status of the build against the original vision. The full V1 plan lives at
 - **Memory & knowledge** — notes, daily/weekly recaps (tasks completed + notes,
   LLM-summarized or offline raw), document/URL ingestion (chunk → embed →
   store), and a management UI to search/delete (Memory tab). Reuses the
-  `memories` table with a `type` tag (note/doc/fact).
-- **Google Calendar** — desktop OAuth + a date-range events fetch backing a
+  `memories` table, typed by a `kind` column (fact, preference, note, doc, the
+  three summary kinds, agent-feedback, project, decision) with corrections that
+  supersede rather than contradict.
+- **Google Calendar** — desktop OAuth (`calendar.events`: read plus create, with
+  no update or delete anywhere in the client or the tools) + a date-range events
+  fetch backing a
   Calendar tab with a view switcher: agenda, a Sunday-start week grid, a month
   grid, and a scrolling day timeline (vertical/horizontal) with a current-time
   line. Every view arms meeting alarms just before start and shows whether one
@@ -284,7 +311,11 @@ The integration is built but unexercised.
 - **Needs from you:** create a Google Cloud OAuth app (Desktop client), register
   the loopback redirect `http://127.0.0.1:<sidecar-port>/oauth/google/callback`,
   and enter the client id/secret in Settings. Then connect from the Calendar tab
-  and confirm the auth → token-exchange → events → alarm flow end to end.
+  and confirm the auth → token-exchange → events → alarm flow end to end, plus
+  the create path: ask the assistant to book something and check the event lands
+  (it asks for approval first, every time). A grant made before the scope widened
+  to `calendar.events` reads but cannot create — Settings reports that, and
+  reconnecting is the fix, so verify that path too.
 - **Possible follow-ups:** background auto-sync of alarms (today arming is
   manual per event or "set alarms for all"); a "joined" signal beyond
   acknowledging the alarm; per-event lead-time configuration.
@@ -301,14 +332,18 @@ The core is shipped; optional extensions remain.
   otherwise. (The current embedder path is OpenAI-compatible or Gemini; Bedrock
   embeddings are not wired up.)
 
-### 4. Event reconciliation (Phase 3)
-The event log (Phase 2) records actions but nothing yet folds them into memory.
-- **Approach:** a periodic reconciliation pass scans unprocessed events
-  (`processed_at IS NULL`, oldest-first via `events_processed_occurred_idx`),
-  derives layered memories (e.g. a short summary referencing a PR or chat, plus
-  a daily rollup), and stamps `processed_at`. Plus a PR created/reviewed poller
-  that emits events, and a default summarization model setting.
-- **Builds on:** the shipped event log and the existing `MemoryService`.
+### 4. Event reconciliation follow-ups
+The reconciliation pass itself is shipped — four-hourly window summaries, an
+overnight day rollup, and the nightly transcript digest, all under
+`sidecar/src/jobs/`. What remains is around the edges:
+- **A PR created/reviewed poller that emits events.** Today an event is recorded
+  when the user acts *in the app*; a PR reviewed on github.com leaves no trace,
+  so the activity log undercounts. The workspace poller already walks the
+  provider on a timer and is the natural place for it.
+- **Per-job model selection.** Each specialist can name a provider/model and
+  otherwise falls back to the default chat model, so a cheap model for the
+  summarizers is configuration rather than code — but there is no UI for
+  choosing one per job yet.
 
 ## Cross-cutting / polish / tech debt
 
