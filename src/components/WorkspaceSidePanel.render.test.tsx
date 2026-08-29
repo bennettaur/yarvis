@@ -55,6 +55,7 @@ const POLLED_PR: NonNullable<WorkspaceRepoDetail["pr"]> = {
   isDraft: false,
   mergeable: "clean",
   checkRollup: "success",
+  reviewDecision: "approved",
   checks: { total: 2, success: 2, failure: 0, pending: 0 },
   lastPolledAt: "2026-06-01T10:00:00.000Z",
   lastError: null,

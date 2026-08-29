@@ -40,7 +40,7 @@ describe("memory routes", () => {
     expect((await app.request("/api/memory")).status).toBe(401);
   });
 
-  it("adds a note and lists it filtered by type", async () => {
+  it("adds a note and lists it filtered by kind", async () => {
     const add = await app.request("/api/memory/notes", {
       method: "POST",
       headers: jsonAuth,
@@ -49,9 +49,9 @@ describe("memory routes", () => {
     expect(add.status).toBe(201);
 
     const notes = (await (
-      await app.request("/api/memory?type=note", { headers: auth })
-    ).json()) as unknown[];
-    expect(notes.length).toBe(1);
+      await app.request("/api/memory?kind=note", { headers: auth })
+    ).json()) as { items: unknown[]; total: number };
+    expect(notes.total).toBe(1);
   });
 
   it("ingests pasted text into retrievable doc chunks", async () => {
@@ -64,10 +64,11 @@ describe("memory routes", () => {
     const result = (await res.json()) as { chunks: number; source: string };
     expect(result.chunks).toBeGreaterThanOrEqual(1);
 
-    const docs = (await (
-      await app.request("/api/memory?type=doc", { headers: auth })
-    ).json()) as unknown[];
-    expect(docs.length).toBe(result.chunks);
+    const docs = (await (await app.request("/api/memory?kind=doc", { headers: auth })).json()) as {
+      items: unknown[];
+      total: number;
+    };
+    expect(docs.total).toBe(result.chunks);
   });
 
   it("rejects ingest with neither url nor text", async () => {

@@ -21,6 +21,7 @@ export type IconName =
   | "sessions"
   | "dashboard"
   | "settings"
+  | "shortcuts"
   | "bell";
 
 const PATHS: Record<IconName, React.ReactNode> = {
@@ -139,6 +140,16 @@ const PATHS: Record<IconName, React.ReactNode> = {
     <>
       <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
       <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+    </>
+  ),
+  shortcuts: (
+    <>
+      <rect width="20" height="14" x="2" y="5" rx="2" />
+      <path d="M6 9h.01" />
+      <path d="M10 9h.01" />
+      <path d="M14 9h.01" />
+      <path d="M18 9h.01" />
+      <path d="M8 14h8" />
     </>
   ),
   settings: (

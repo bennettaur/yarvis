@@ -6,8 +6,15 @@ import type { LanguageModel } from "ai";
 import type { Config } from "../config.ts";
 import { listCustomProviders } from "../customProviders/service.ts";
 import type { Db } from "../db/client.ts";
-import type { CustomProviderRow } from "../db/schema.ts";
+import type { CustomProviderRow, ProviderModelRow } from "../db/schema.ts";
 import { validateOutboundUrl } from "../lib/urlSafety.ts";
+import {
+  catalogFor,
+  listProviderModels,
+  type ModelCapability,
+  type ModelInfo,
+  withCapability,
+} from "./catalog.ts";
 
 /**
  * Provider identifiers.
@@ -24,32 +31,26 @@ export const CUSTOM_PROVIDER_PREFIX = "custom:";
 export interface ProviderInfo {
   id: ProviderId;
   label: string;
-  models: string[];
+  /**
+   * What this provider serves, each entry tagged with what it can do. Not every
+   * model is a chat model — a TTS model belongs to the same provider but has no
+   * completion to give — so callers narrow this by capability rather than
+   * offering it whole.
+   */
+  models: ModelInfo[];
   available: boolean;
   /** True for user-configured providers; helps the UI render them distinctly. */
   custom?: boolean;
 }
 
-// Default model lists. These IDs may need adjusting per account / region /
-// model availability; the chat request can specify any model string.
-const ANTHROPIC_MODELS = ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"];
-const BEDROCK_MODELS = ["anthropic.claude-sonnet-4-6-v1:0"];
-const GEMINI_MODELS = [
-  "gemini-3.5-flash",
-  "gemini-3-flash-preview",
-  "gemini-3.1-flash-lite",
-  "gemini-3.1-pro-preview",
-];
-const CEREBRAS_MODELS = ["zai-glm-4.6", "qwen-3-coder-480b", "gpt-oss-120b", "llama-3.3-70b"];
-
 const CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1";
 
-function builtInProviders(config: Config): ProviderInfo[] {
+function builtInProviders(config: Config, rows: ProviderModelRow[]): ProviderInfo[] {
   return [
     {
       id: "anthropic",
       label: "Anthropic",
-      models: ANTHROPIC_MODELS,
+      models: catalogFor("anthropic", rows),
       available: config.secrets.anthropicApiKey !== undefined,
     },
     {
@@ -57,45 +58,77 @@ function builtInProviders(config: Config): ProviderInfo[] {
       // detect availability here; assume reachable and surface errors at call time.
       id: "bedrock",
       label: "AWS Bedrock",
-      models: BEDROCK_MODELS,
+      models: catalogFor("bedrock", rows),
       available: true,
     },
     {
       id: "gemini",
       label: "Gemini",
-      models: GEMINI_MODELS,
+      models: catalogFor("gemini", rows),
       available: config.secrets.geminiApiKey !== undefined,
     },
     {
       id: "cerebras",
       label: "Cerebras",
-      models: CEREBRAS_MODELS,
+      models: catalogFor("cerebras", rows),
       available: config.secrets.cerebrasApiKey !== undefined,
     },
   ];
 }
 
-function customProviderInfo(row: CustomProviderRow): ProviderInfo {
+/**
+ * A custom provider's own `models` column is its default catalogue. Those ids
+ * were entered as chat models — that is the only thing the provider form asks
+ * for — so they are tagged as such, and a `provider_models` row is how a
+ * speech model on the same proxy gets named.
+ */
+function customProviderInfo(row: CustomProviderRow, rows: ProviderModelRow[]): ProviderInfo {
+  const id = `${CUSTOM_PROVIDER_PREFIX}${row.id}`;
+  const models = catalogFor(
+    id,
+    rows,
+    row.models.map((m) => ({ id: m, capabilities: ["chat" as const] })),
+  );
   return {
-    id: `${CUSTOM_PROVIDER_PREFIX}${row.id}`,
+    id,
     label: row.name,
-    models: row.models,
+    models,
     // A custom provider is usable once it has at least one configured model.
     // The proxy may or may not require an api key, so we don't gate on secrets.
-    available: row.models.length > 0,
+    available: models.length > 0,
     custom: true,
   };
 }
 
 /**
  * Lists providers and whether each is usable. When a `db` is provided, the
- * user's configured custom providers are appended.
+ * user's configured custom providers are appended and their saved catalogues
+ * take over from the bundled defaults.
+ *
+ * Passing a `capability` narrows every provider's models to the ones that serve
+ * it — what a chat picker wants, so a TTS model never shows up as something to
+ * think with. Providers are still returned when nothing of theirs matches, so
+ * the caller can tell "no models for this" from "no such provider".
  */
-export async function availableProviders(config: Config, db?: Db): Promise<ProviderInfo[]> {
-  const built = builtInProviders(config);
-  if (!db) return built;
-  const rows = await listCustomProviders(db);
-  return [...built, ...rows.map(customProviderInfo)];
+export async function availableProviders(
+  config: Config,
+  db?: Db,
+  capability?: ModelCapability,
+): Promise<ProviderInfo[]> {
+  const narrow = (providers: ProviderInfo[]): ProviderInfo[] =>
+    capability
+      ? providers.map((p) => ({ ...p, models: withCapability(p.models, capability) }))
+      : providers;
+
+  if (!db) return narrow(builtInProviders(config, []));
+  const [modelRows, customRows] = await Promise.all([
+    listProviderModels(db),
+    listCustomProviders(db),
+  ]);
+  return narrow([
+    ...builtInProviders(config, modelRows),
+    ...customRows.map((row) => customProviderInfo(row, modelRows)),
+  ]);
 }
 
 /**
@@ -109,7 +142,7 @@ export async function defaultProviderModel(
   config: Config,
   db?: Db,
 ): Promise<{ provider: ProviderId; model: string } | null> {
-  return pickDefaultModel(await availableProviders(config, db));
+  return pickDefaultModel(await availableProviders(config, db, "chat"));
 }
 
 /**
@@ -123,10 +156,15 @@ export async function defaultProviderModel(
 export function pickDefaultModel(
   providers: ProviderInfo[],
 ): { provider: ProviderId; model: string } | null {
-  const usable = providers.filter((p) => p.available && p.models.length > 0);
+  const usable = providers.filter(
+    (p) => p.available && p.models.some((m) => m.capabilities.includes("chat")),
+  );
   if (usable.length === 0) return null;
   const preferred = usable.find((p) => p.id !== "bedrock") ?? usable[0]!;
-  return { provider: preferred.id, model: preferred.models[0]! };
+  return {
+    provider: preferred.id,
+    model: preferred.models.find((m) => m.capabilities.includes("chat"))!.id,
+  };
 }
 
 function resolveCustom(row: CustomProviderRow, config: Config, modelId: string): LanguageModel {

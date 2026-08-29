@@ -1,9 +1,15 @@
 import type { Config } from "../config.ts";
 import { listCustomProviders } from "../customProviders/service.ts";
 import type { Db } from "../db/client.ts";
-import type { CustomProviderRow } from "../db/schema.ts";
+import type { CustomProviderRow, ProviderModelRow } from "../db/schema.ts";
+import { catalogFor, listProviderModels, withCapability } from "../llm/catalog.ts";
 import { CUSTOM_PROVIDER_PREFIX } from "../llm/providers.ts";
-import { HuggingFaceSpeech, OpenAICompatibleSpeech, type SpeechClient } from "./speech.ts";
+import {
+  GeminiSpeech,
+  HuggingFaceSpeech,
+  OpenAICompatibleSpeech,
+  type SpeechClient,
+} from "./speech.ts";
 
 /**
  * Which backends can carry the speech halves of the voice loop.
@@ -46,22 +52,6 @@ export interface VoiceProviderInfo {
   custom?: boolean;
 }
 
-const HUGGINGFACE_STT_MODELS = [
-  "openai/whisper-large-v3-turbo",
-  "openai/whisper-large-v3",
-  "distil-whisper/distil-large-v3",
-];
-
-/**
- * Deliberately empty. The obvious candidates — `hexgrad/Kokoro-82M`,
- * `facebook/mms-tts-eng`, `espnet/kan-bayashi_ljspeech_vits` — are all refused
- * by the serverless router with "Model not supported by provider hf-inference";
- * text-to-speech is largely not served there. Offering them as suggestions made
- * a dead configuration look like the default. Transcription is unaffected, and
- * a local server (see the README) is the working path for speech out.
- */
-const HUGGINGFACE_TTS_MODELS: string[] = [];
-
 /**
  * A custom provider can serve speech only if it speaks the OpenAI audio API;
  * the Anthropic wire protocol has no audio endpoints.
@@ -70,18 +60,39 @@ function servesSpeech(row: CustomProviderRow): boolean {
   return row.apiKind === "openai" || row.apiKind === "openai-chat";
 }
 
-function customVoiceProviderInfo(row: CustomProviderRow): VoiceProviderInfo {
+/**
+ * Model suggestions for one provider, read from the same catalogue the chat
+ * pickers use. Capability tags are what separate the two halves: a `-tts` model
+ * has no transcript to give and a Whisper checkpoint has nothing to say, so
+ * offering either under the wrong heading only leads somewhere that 400s.
+ */
+function speechModels(
+  providerId: string,
+  rows: ProviderModelRow[],
+): { sttModels: string[]; ttsModels: string[] } {
+  const catalog = catalogFor(providerId, rows);
   return {
-    id: `${CUSTOM_PROVIDER_PREFIX}${row.id}`,
+    sttModels: withCapability(catalog, "stt").map((m) => m.id),
+    ttsModels: withCapability(catalog, "tts").map((m) => m.id),
+  };
+}
+
+function customVoiceProviderInfo(
+  row: CustomProviderRow,
+  rows: ProviderModelRow[],
+): VoiceProviderInfo {
+  const id = `${CUSTOM_PROVIDER_PREFIX}${row.id}`;
+  return {
+    id,
     label: row.name,
     available: true,
     // An OpenAI-audio server may serve either endpoint or both; which one it
     // implements is only discoverable by asking it, so both are offered.
     capabilities: ["stt", "tts"],
-    // Its configured models are chat models; audio model names are the
-    // server's own, so the user names them per request.
-    sttModels: [],
-    ttsModels: [],
+    // Its `models` column holds chat models, so nothing is suggested until the
+    // user tags a speech model for it in the catalogue; audio model names are
+    // the server's own either way.
+    ...speechModels(id, rows),
     custom: true,
   };
 }
@@ -91,20 +102,34 @@ export async function availableVoiceProviders(
   config: Config,
   db?: Db,
 ): Promise<VoiceProviderInfo[]> {
+  const [modelRows, customRows] = db
+    ? await Promise.all([listProviderModels(db), listCustomProviders(db)])
+    : [[] as ProviderModelRow[], [] as CustomProviderRow[]];
+
   const built: VoiceProviderInfo[] = [
     {
       id: "huggingface",
       label: "Hugging Face",
       available: config.secrets.huggingFaceApiKey !== undefined,
-      // Transcription only: see HUGGINGFACE_TTS_MODELS.
+      // Transcription only: the serverless router refuses every TTS model with
+      // "Model not supported by provider hf-inference", so offering it here
+      // would only make a dead configuration look like the default.
       capabilities: ["stt"],
-      sttModels: HUGGINGFACE_STT_MODELS,
-      ttsModels: HUGGINGFACE_TTS_MODELS,
+      ...speechModels("huggingface", modelRows),
+    },
+    {
+      id: "gemini",
+      label: "Gemini",
+      available: config.secrets.geminiApiKey !== undefined,
+      // Both halves are `generateContent` calls; see `GeminiSpeech`.
+      capabilities: ["stt", "tts"],
+      ...speechModels("gemini", modelRows),
     },
   ];
-  if (!db) return built;
-  const rows = await listCustomProviders(db);
-  return [...built, ...rows.filter(servesSpeech).map(customVoiceProviderInfo)];
+  return [
+    ...built,
+    ...customRows.filter(servesSpeech).map((row) => customVoiceProviderInfo(row, modelRows)),
+  ];
 }
 
 /** Resolves the client that talks to a speech provider, or throws if it can't. */
@@ -135,6 +160,12 @@ export async function resolveSpeechClient(
     const apiKey = config.secrets.huggingFaceApiKey;
     if (!apiKey) throw new Error("Hugging Face API key not configured");
     return new HuggingFaceSpeech(apiKey);
+  }
+
+  if (providerId === "gemini") {
+    const apiKey = config.secrets.geminiApiKey;
+    if (!apiKey) throw new Error("Gemini API key not configured");
+    return new GeminiSpeech(apiKey);
   }
 
   throw new Error(`unknown voice provider: ${providerId}`);

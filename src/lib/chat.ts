@@ -6,10 +6,23 @@ import { ensureOk, sidecarFetch, streamSSE } from "./api";
  */
 export type ProviderId = string;
 
+/** What a model can be asked to do; mirrors the sidecar's `ModelCapability`. */
+export type ModelCapability = "chat" | "stt" | "tts" | "vision" | "embed";
+
+export interface ModelInfo {
+  id: string;
+  capabilities: ModelCapability[];
+}
+
 export interface ProviderInfo {
   id: ProviderId;
   label: string;
-  models: string[];
+  /**
+   * Narrowed to the capability that was asked for. A provider can serve models
+   * that are no use to the caller — a TTS model has no completion to give — so
+   * a picker never sees the whole catalogue.
+   */
+  models: ModelInfo[];
   available: boolean;
   /** Present (and true) when the entry was contributed by a custom provider. */
   custom?: boolean;
@@ -91,8 +104,12 @@ export interface PendingApproval {
   args: unknown;
 }
 
-export async function listProviders(): Promise<ProviderInfo[]> {
-  const res = await sidecarFetch("/api/chat/providers");
+/**
+ * Providers and the models they serve. Defaults to chat-capable models, which
+ * is what every caller of this function is picking between.
+ */
+export async function listProviders(capability: ModelCapability = "chat"): Promise<ProviderInfo[]> {
+  const res = await sidecarFetch(`/api/chat/providers?capability=${capability}`);
   await ensureOk(res, "providers");
   return res.json();
 }

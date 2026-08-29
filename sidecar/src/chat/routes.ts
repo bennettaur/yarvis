@@ -3,6 +3,7 @@ import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { isModelCapability } from "../llm/catalog.ts";
 import { availableProviders, resolveModel } from "../llm/providers.ts";
 import { resolveApproval } from "../mcp/approvals.ts";
 import { listMcpServers } from "../mcp/service.ts";
@@ -37,9 +38,19 @@ const approvalSchema = z.object({ approved: z.boolean() });
 export function createChatRoutes(config: Config): Hono {
   const router = new Hono();
 
+  /**
+   * Defaults to chat-capable models only: everything reaching this route is
+   * choosing a model to think with, and a provider's catalogue can also hold
+   * speech models that have no completion to give. `?capability=` overrides it
+   * for a caller that wants a different half.
+   */
   router.get("/providers", async (c) => {
     const db = config.databaseUrl ? getDb(config.databaseUrl).db : undefined;
-    return c.json(await availableProviders(config, db));
+    const requested = c.req.query("capability");
+    if (requested !== undefined && !isModelCapability(requested)) {
+      return c.json({ error: `unknown capability: ${requested}` }, 400);
+    }
+    return c.json(await availableProviders(config, db, requested ?? "chat"));
   });
 
   // Routes below need a database.

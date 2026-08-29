@@ -15,6 +15,7 @@ import type {
   PrDetail,
   PrFile,
   PrStatus,
+  ReviewDecision,
   Reviewer,
   ReviewerState,
   ReviewThread,
@@ -163,6 +164,18 @@ export function mapReviewer(reviewer: AzureReviewer): Reviewer {
   };
 }
 
+/**
+ * Collapses a PR's reviewer votes into one verdict. A blocking vote outranks an
+ * approval, matching how {@link mapReviewerVote} folds "rejected" and
+ * "waiting for author" together.
+ */
+export function summarizeReviewDecision(reviewers: AzureReviewer[]): ReviewDecision {
+  const states = reviewers.map((r) => mapReviewerVote(r.vote));
+  if (states.includes("changes_requested")) return "changes_requested";
+  if (states.includes("approved")) return "approved";
+  return "review_required";
+}
+
 /** Maps an Azure policy evaluation status onto the shared CheckItem shape. */
 export function mapPolicyEvaluation(evaluation: AzurePolicyEvaluation): CheckItem | null {
   const status = String(evaluation.status ?? "");
@@ -197,6 +210,8 @@ export interface AzureBranchPr {
   state: "open" | "closed" | "merged";
   /** Azure mergeStatus mapped onto the shared mergeable enum. */
   mergeable: MergeableEnum;
+  /** Collective verdict from the reviewers' votes carried on the PR payload. */
+  reviewDecision: ReviewDecision;
 }
 
 /**
@@ -359,6 +374,7 @@ export class AzureDevOpsClient {
       draft: Boolean(pr.isDraft),
       state: pr.status === "completed" ? "merged" : pr.status === "abandoned" ? "closed" : "open",
       mergeable: mapMergeStatus(pr.mergeStatus).enum,
+      reviewDecision: summarizeReviewDecision(pr.reviewers ?? []),
     };
   }
 
@@ -434,6 +450,8 @@ export class AzureDevOpsClient {
       author: pr.createdBy?.displayName ?? "",
       baseRef: (pr.targetRefName ?? "").replace("refs/heads/", ""),
       headRef: (pr.sourceRefName ?? "").replace("refs/heads/", ""),
+      // Azure names the source repository only when it differs from the target.
+      fromFork: Boolean(pr.forkSource),
       headSha: pr.lastMergeSourceCommit?.commitId ?? "",
       additions: 0,
       deletions: 0,

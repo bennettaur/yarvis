@@ -7,6 +7,8 @@ import type { Task } from "./tasks";
 export type WorkspaceStatus = "creating" | "active" | "archiving" | "archived" | "error";
 export type WorkspaceRepoStatus = "pending" | "provisioning" | "ready" | "removed" | "error";
 export type CheckRollup = "success" | "failure" | "pending" | "none";
+/** Mirrors the sidecar's provider-neutral reviewers' verdict on a PR. */
+export type ReviewDecision = "approved" | "changes_requested" | "review_required";
 
 export interface Workspace {
   id: string;
@@ -31,8 +33,21 @@ export interface WorkspaceRepoPr {
   mergeable: string | null;
   checkRollup: CheckRollup;
   checks: { total: number; success: number; failure: number; pending: number } | null;
+  /** Null when unknown: no PR, not polled, or a provider that can't answer. */
+  reviewDecision: ReviewDecision | null;
   lastPolledAt: string | null;
   lastError: string | null;
+}
+
+/** The slice of a workspace repo's PR cache carried on a list row. */
+export interface WorkspaceSummaryPr {
+  repoName: string;
+  prNumber: number;
+  prState: string | null;
+  isDraft: boolean | null;
+  mergeable: string | null;
+  checkRollup: CheckRollup;
+  reviewDecision: ReviewDecision | null;
 }
 
 export interface WorkspaceRepoDetail {
@@ -63,6 +78,8 @@ export interface WorkspaceDetail extends Workspace {
 /** A workspace list row, with its repo names for sidebar grouping. */
 export interface WorkspaceSummary extends Workspace {
   repoNames: string[];
+  /** One entry per repo that has a PR; empty until the poller finds one. */
+  prs: WorkspaceSummaryPr[];
 }
 
 export interface ChangedFile {

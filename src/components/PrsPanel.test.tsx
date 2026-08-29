@@ -71,6 +71,7 @@ mock.module("../lib/api", () => ({
         author: MY_PR.author,
         baseRef: "main",
         headRef: "topic",
+        fromFork: false,
         headSha: "abc123",
         additions: 0,
         deletions: 0,

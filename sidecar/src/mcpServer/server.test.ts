@@ -1,7 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import type { MemoryInput, MemoryRecord, MemoryService } from "../memory/index.ts";
+import type {
+  MemoryInput,
+  MemoryListOptions,
+  MemoryPatch,
+  MemoryRecord,
+  MemorySearchOptions,
+  MemoryService,
+  MemoryWriteInput,
+} from "../memory/index.ts";
 import { createYarvisMcpServer } from "./server.ts";
 
 /** Minimal in-process stand-in so the tool contract is testable without Postgres. */
@@ -15,35 +23,60 @@ class FakeMemory implements MemoryService {
     return `00000000-0000-4000-8000-${String(this.nextId++).padStart(12, "0")}`;
   }
 
-  async add(content: string, metadata?: Record<string, unknown>): Promise<MemoryRecord> {
+  async add(content: string, input: MemoryWriteInput = {}): Promise<MemoryRecord> {
     const record: MemoryRecord = {
       id: this.newId(),
       content,
-      metadata: metadata ?? null,
+      kind: input.kind ?? "fact",
+      sourceRef: input.sourceRef ?? null,
+      metadata: input.metadata ?? null,
       createdAt: new Date("2026-01-01T00:00:00Z"),
+      supersededAt: null,
     };
     this.records.push(record);
     return record;
   }
 
   async addMany(items: MemoryInput[]): Promise<MemoryRecord[]> {
-    return Promise.all(items.map((i) => this.add(i.content, i.metadata)));
+    return Promise.all(items.map((i) => this.add(i.content, i)));
   }
 
-  async search(query: string, limit?: number): Promise<MemoryRecord[]> {
+  async search(
+    query: string,
+    limit?: number,
+    _options?: MemorySearchOptions,
+  ): Promise<MemoryRecord[]> {
     this.searches.push({ query, limit });
     return this.records.map((r) => ({ ...r, score: 0.9 }));
   }
 
-  async list(options: { type?: string; limit?: number } = {}): Promise<MemoryRecord[]> {
-    const matching = options.type
-      ? this.records.filter((r) => (r.metadata as { type?: string } | null)?.type === options.type)
+  async list(options: MemoryListOptions = {}): Promise<MemoryRecord[]> {
+    const matching = options.kinds?.length
+      ? this.records.filter((r) => options.kinds!.includes(r.kind))
       : this.records;
     return matching.slice(0, options.limit ?? 100);
   }
 
+  async count(options: MemoryListOptions = {}): Promise<number> {
+    return (await this.list({ ...options, limit: 1000 })).length;
+  }
+
   async get(id: string): Promise<MemoryRecord | null> {
     return this.records.find((r) => r.id === id) ?? null;
+  }
+
+  async update(id: string, patch: MemoryPatch): Promise<MemoryRecord | null> {
+    const record = this.records.find((r) => r.id === id);
+    if (!record) return null;
+    Object.assign(record, patch);
+    return record;
+  }
+
+  async supersede(id: string, content: string): Promise<MemoryRecord | null> {
+    const record = this.records.find((r) => r.id === id);
+    if (!record) return null;
+    record.supersededAt = new Date("2026-01-02T00:00:00Z");
+    return this.add(content, { kind: record.kind });
   }
 
   async delete(id: string): Promise<boolean> {
@@ -92,9 +125,14 @@ describe("yarvis mcp server", () => {
     await client.callTool({ name: "remember", arguments: { content: "a fact" } });
     await client.callTool({ name: "take_note", arguments: { content: "a note" } });
 
-    expect(memory.records.map((r) => r.metadata)).toEqual([
-      { source: "mcp" },
-      { type: "note", source: "mcp" },
+    expect(
+      memory.records.map((r) => ({
+        kind: r.kind,
+        metadata: r.metadata as Record<string, unknown>,
+      })),
+    ).toEqual([
+      { kind: "fact", metadata: { source: "mcp" } },
+      { kind: "note", metadata: { source: "mcp" } },
     ]);
   });
 
@@ -109,10 +147,8 @@ describe("yarvis mcp server", () => {
 
     await client.callTool({ name: "take_note", arguments: { content: "ship the MCP server" } });
 
-    expect(
-      memory.records.map((r) => [r.content, (r.metadata as { type?: string } | null)?.type]),
-    ).toEqual([
-      ["Mike drinks oat milk", undefined],
+    expect(memory.records.map((r) => [r.content, r.kind])).toEqual([
+      ["Mike drinks oat milk", "fact"],
       ["ship the MCP server", "note"],
     ]);
   });
@@ -136,16 +172,16 @@ describe("yarvis mcp server", () => {
 
   it("fences list_memories the same way, and strips a nonce the content carries", async () => {
     const memory = new FakeMemory();
-    await memory.add("a note", { type: "note" });
+    await memory.add("a note", { kind: "note" });
     const client = await connect(memory);
 
     const body = payload(await client.callTool({ name: "list_memories", arguments: {} }));
     const nonce = String(body.warning).match(/<recalled-content-([0-9a-f]{12})>/)?.[1] ?? "";
-    const listed = body.memories as { content: string; type?: string }[];
+    const listed = body.memories as { content: string; kind?: string }[];
     expect(listed[0]?.content).toBe(
       `<recalled-content-${nonce}>\na note\n</recalled-content-${nonce}>`,
     );
-    expect(listed[0]?.type).toBe("note");
+    expect(listed[0]?.kind).toBe("note");
   });
 
   it("gives a nonce a memory cannot forge back to the caller", async () => {
@@ -165,14 +201,14 @@ describe("yarvis mcp server", () => {
     );
   });
 
-  it("lists memories filtered by type", async () => {
+  it("lists memories filtered by kind", async () => {
     const memory = new FakeMemory();
     await memory.add("a fact");
-    await memory.add("a note", { type: "note" });
+    await memory.add("a note", { kind: "note" });
     const client = await connect(memory);
 
     const body = payload(
-      await client.callTool({ name: "list_memories", arguments: { type: "note" } }),
+      await client.callTool({ name: "list_memories", arguments: { kind: "note" } }),
     );
     const nonce = String(body.warning).match(/<recalled-content-([0-9a-f]{12})>/)?.[1] ?? "";
     const listed = body.memories as Record<string, unknown>[];
@@ -180,7 +216,7 @@ describe("yarvis mcp server", () => {
       {
         id: SECOND_ID,
         content: `<recalled-content-${nonce}>\na note\n</recalled-content-${nonce}>`,
-        type: "note",
+        kind: "note",
         createdAt: "2026-01-01T00:00:00.000Z",
       },
     ]);

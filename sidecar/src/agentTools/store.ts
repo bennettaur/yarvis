@@ -16,6 +16,12 @@ export type ToolSource = "builtin" | "mcp";
 
 /** A tool to upsert into the registry, before policy/embedding are applied. */
 export interface ToolDescriptor {
+  /**
+   * Policy for this tool when it is first inserted, overriding the scope's
+   * default. Lets one sync seed some tools always-on and the rest behind search;
+   * an existing row's policy is preserved either way.
+   */
+  defaultPolicy?: ToolPolicy;
   /** "builtin:<name>" or "mcp:<serverId>:<toolName>". */
   id: string;
   source: ToolSource;
@@ -115,7 +121,7 @@ export async function syncToolSet(
         id: d.id,
         source: d.source,
         serverId: d.serverId,
-        policy: scope.defaultPolicy,
+        policy: d.defaultPolicy ?? scope.defaultPolicy,
         ...fields,
       });
     }),
@@ -206,4 +212,13 @@ export async function searchRegistry(
     description: r.description,
     score: 1 - Number(r.distance),
   }));
+}
+
+/**
+ * Ids of the tools the user has turned off. A narrow read on purpose: the
+ * callers that need it run per delegated turn, and `listRegistryTools` pulls
+ * every description and JSON schema in the registry to answer the same question.
+ */
+export async function listDisabledToolIds(db: Db): Promise<{ id: string }[]> {
+  return db.select({ id: agentTools.id }).from(agentTools).where(eq(agentTools.policy, "disabled"));
 }

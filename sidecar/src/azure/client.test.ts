@@ -4,6 +4,7 @@ import {
   isAllowedAzureOrgUrl,
   mapPolicyEvaluation,
   mapReviewer,
+  summarizeReviewDecision,
 } from "./client.ts";
 
 const ORG = "https://dev.azure.com/acme";
@@ -59,6 +60,33 @@ describe("mapReviewer", () => {
     expect(reviewer.state).toBe(state);
     expect(reviewer.isRequested).toBe(isRequested);
     expect(reviewer.login).toBe("Alex");
+  });
+});
+
+describe("summarizeReviewDecision", () => {
+  it("lets one blocking vote outrank any number of approvals", () => {
+    expect(
+      summarizeReviewDecision([
+        { displayName: "Ada", vote: 10 },
+        { displayName: "Grace", vote: 5 },
+        { displayName: "Alan", vote: -10 },
+      ]),
+    ).toBe("changes_requested");
+  });
+
+  it("treats waiting-for-author as blocking, matching mapReviewerVote", () => {
+    expect(summarizeReviewDecision([{ displayName: "Ada", vote: -5 }])).toBe("changes_requested");
+  });
+
+  it("counts approved-with-suggestions as an approval", () => {
+    expect(summarizeReviewDecision([{ displayName: "Ada", vote: 5 }])).toBe("approved");
+  });
+
+  it("reports reviewers who haven't voted, or none at all, as awaiting review", () => {
+    expect(summarizeReviewDecision([{ displayName: "Ada", vote: 0 }, { displayName: "Bo" }])).toBe(
+      "review_required",
+    );
+    expect(summarizeReviewDecision([])).toBe("review_required");
   });
 });
 
@@ -169,6 +197,7 @@ describe("azure client", () => {
       draft: true,
       state: "open",
       mergeable: "MERGEABLE",
+      reviewDecision: "review_required",
     });
   });
 
@@ -326,6 +355,7 @@ describe("azure client", () => {
       number: 7,
       baseRef: "main",
       headRef: "feature",
+      fromFork: false,
       mergeable: "MERGEABLE",
       // Azure exposes no in-app merge controls, so the fields stay empty/off.
       mergeMethods: [],
@@ -344,6 +374,30 @@ describe("azure client", () => {
       line: 12,
       isResolved: false,
     });
+  });
+
+  // `forkSource` is present only when the source branch lives in a fork, which
+  // is what tells a caller the branch is not on the target repo's remote.
+  it("reports a pull request raised from a fork", async () => {
+    const az = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([
+        {
+          match: (u) => /\/pullRequests\/8$/.test(u.split("?")[0]!),
+          body: {
+            pullRequestId: 8,
+            sourceRefName: "refs/heads/feature",
+            targetRefName: "refs/heads/main",
+            repository: { name: "web", project: { name: "Shop", id: "p1" } },
+            forkSource: { repository: { name: "web-fork" } },
+          },
+        },
+        { match: () => true, body: { value: [] } },
+      ]),
+    );
+    const detail = await az.prDetail({ project: "Shop", repo: "web", prId: 8 });
+    expect(detail.fromFork).toBe(true);
   });
 
   it("lists changed files without patches", async () => {

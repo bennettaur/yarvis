@@ -1,9 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import {
   assertModelId,
+  GeminiSpeech,
   HuggingFaceSpeech,
   MAX_TRANSCRIPT_CHARS,
   OpenAICompatibleSpeech,
+  pcmSampleRate,
+  pcmToWav,
   SpeechValidationError,
 } from "./speech.ts";
 
@@ -476,5 +479,174 @@ describe("empty synthesis responses", () => {
     await expect(client.synthesize({ text: "hello", model: "some/model" })).rejects.toThrow(
       /returned no audio/,
     );
+  });
+});
+
+/**
+ * A public literal IP, like the Hugging Face tests use: the outbound guard
+ * refuses loopback for a hosted provider, and an IP skips the DNS lookup, so
+ * these stay offline while the real request path runs.
+ */
+const GEMINI_BASE_URL = "https://93.184.216.34/v1beta";
+
+function geminiText(text: string): Response {
+  return jsonResponse({ candidates: [{ content: { parts: [{ text }] } }] });
+}
+
+function geminiAudio(data: string, mimeType: string): Response {
+  return jsonResponse({
+    candidates: [{ content: { parts: [{ inlineData: { mimeType, data } }] } }],
+  });
+}
+
+/** Two samples of silence; enough to prove the header is written around them. */
+const PCM_BYTES = new Uint8Array([0, 0, 1, 0]);
+
+describe("pcmToWav", () => {
+  it("writes a RIFF header describing 16-bit mono at the given rate", () => {
+    const wav = pcmToWav(PCM_BYTES, 24_000);
+    const view = new DataView(wav.buffer);
+    expect(new TextDecoder().decode(wav.slice(0, 4))).toBe("RIFF");
+    expect(new TextDecoder().decode(wav.slice(8, 12))).toBe("WAVE");
+    expect(view.getUint16(22, true)).toBe(1); // mono
+    expect(view.getUint32(24, true)).toBe(24_000);
+    expect(view.getUint16(34, true)).toBe(16); // bits per sample
+    expect(view.getUint32(40, true)).toBe(PCM_BYTES.byteLength);
+    expect(wav.slice(44)).toEqual(PCM_BYTES);
+  });
+});
+
+describe("pcmSampleRate", () => {
+  it("reads the rate parameter", () => {
+    expect(pcmSampleRate("audio/L16;codec=pcm;rate=16000")).toBe(16_000);
+  });
+
+  it("falls back to Gemini's own rate when the type carries none", () => {
+    expect(pcmSampleRate("audio/L16")).toBe(24_000);
+  });
+});
+
+describe("GeminiSpeech.transcribe", () => {
+  it("sends the clip as an inline part and returns the text", async () => {
+    const { calls, fetchImpl } = captureFetch(geminiText("  hello there  "));
+    const client = new GeminiSpeech("k", GEMINI_BASE_URL, fetchImpl);
+    const text = await client.transcribe({
+      audio: new Uint8Array([1, 2, 3]),
+      contentType: "audio/wav",
+      model: "gemini-3.5-flash",
+      language: "en",
+    });
+
+    expect(text).toBe("hello there");
+    expect(calls[0]?.url).toBe(`${GEMINI_BASE_URL}/models/gemini-3.5-flash:generateContent`);
+    const headers = (calls[0]?.init.headers ?? {}) as Record<string, string>;
+    expect(headers["x-goog-api-key"]).toBe("k");
+    const body = JSON.parse(String(calls[0]?.init.body)) as {
+      contents: { parts: { text?: string; inlineData?: { mimeType: string; data: string } }[] }[];
+    };
+    const parts = body.contents[0]!.parts;
+    expect(parts[0]?.text).toContain("en");
+    expect(parts[1]?.inlineData?.mimeType).toBe("audio/wav");
+    expect(parts[1]?.inlineData?.data).toBe(Buffer.from([1, 2, 3]).toString("base64"));
+  });
+
+  it("drops codec parameters, which Gemini matches on exactly", async () => {
+    const { calls, fetchImpl } = captureFetch(geminiText("hi"));
+    await new GeminiSpeech("k", GEMINI_BASE_URL, fetchImpl).transcribe({
+      audio: new Uint8Array([1]),
+      contentType: "audio/webm;codecs=opus",
+      model: "gemini-3.5-flash",
+    });
+    const body = JSON.parse(String(calls[0]?.init.body)) as {
+      contents: { parts: { inlineData?: { mimeType: string } }[] }[];
+    };
+    expect(body.contents[0]!.parts[1]?.inlineData?.mimeType).toBe("audio/webm");
+  });
+
+  it("reports a safety block as the user's to fix, not a bad gateway", async () => {
+    const { fetchImpl } = captureFetch(jsonResponse({ promptFeedback: { blockReason: "SAFETY" } }));
+    await expect(
+      new GeminiSpeech("k", GEMINI_BASE_URL, fetchImpl).transcribe({
+        audio: new Uint8Array([1]),
+        contentType: "audio/wav",
+        model: "gemini-3.5-flash",
+      }),
+    ).rejects.toThrow(/Gemini blocked the request: SAFETY/);
+  });
+
+  it("refuses a transcript past the cap", async () => {
+    const { fetchImpl } = captureFetch(geminiText("x".repeat(MAX_TRANSCRIPT_CHARS + 1)));
+    await expect(
+      new GeminiSpeech("k", GEMINI_BASE_URL, fetchImpl).transcribe({
+        audio: new Uint8Array([1]),
+        contentType: "audio/wav",
+        model: "gemini-3.5-flash",
+      }),
+    ).rejects.toThrow(/exceeds/);
+  });
+});
+
+describe("GeminiSpeech.synthesize", () => {
+  it("asks for the audio modality and wraps the PCM it gets back", async () => {
+    const { calls, fetchImpl } = captureFetch(
+      geminiAudio(Buffer.from(PCM_BYTES).toString("base64"), "audio/L16;codec=pcm;rate=24000"),
+    );
+    const { audio, contentType } = await new GeminiSpeech(
+      "k",
+      GEMINI_BASE_URL,
+      fetchImpl,
+    ).synthesize({ text: "hello", model: "gemini-2.5-flash-preview-tts", voice: "Puck" });
+
+    expect(contentType).toBe("audio/wav");
+    expect(audio.byteLength).toBe(44 + PCM_BYTES.byteLength);
+    const body = JSON.parse(String(calls[0]?.init.body)) as {
+      generationConfig: {
+        responseModalities: string[];
+        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: string } } };
+      };
+    };
+    expect(body.generationConfig.responseModalities).toEqual(["AUDIO"]);
+    expect(body.generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName).toBe(
+      "Puck",
+    );
+  });
+
+  it("passes extras through as generation config but keeps the audio modality", async () => {
+    const { calls, fetchImpl } = captureFetch(
+      geminiAudio(Buffer.from(PCM_BYTES).toString("base64"), "audio/L16;rate=24000"),
+    );
+    await new GeminiSpeech("k", GEMINI_BASE_URL, fetchImpl).synthesize({
+      text: "hello",
+      model: "gemini-2.5-flash-preview-tts",
+      extras: { temperature: 0.4, responseModalities: "TEXT" },
+    });
+    const body = JSON.parse(String(calls[0]?.init.body)) as {
+      generationConfig: { responseModalities: string[]; temperature: number };
+    };
+    expect(body.generationConfig.temperature).toBe(0.4);
+    expect(body.generationConfig.responseModalities).toEqual(["AUDIO"]);
+  });
+
+  it("leaves an already-containered format alone", async () => {
+    const { fetchImpl } = captureFetch(
+      geminiAudio(Buffer.from([1, 2, 3]).toString("base64"), "audio/mpeg"),
+    );
+    const { audio, contentType } = await new GeminiSpeech(
+      "k",
+      GEMINI_BASE_URL,
+      fetchImpl,
+    ).synthesize({ text: "hello", model: "gemini-2.5-flash-preview-tts" });
+    expect(contentType).toBe("audio/mpeg");
+    expect(audio.byteLength).toBe(3);
+  });
+
+  it("says which mistake was made when a chat model answers in text", async () => {
+    const { fetchImpl } = captureFetch(geminiText("Sure! Here is what I would say."));
+    await expect(
+      new GeminiSpeech("k", GEMINI_BASE_URL, fetchImpl).synthesize({
+        text: "hello",
+        model: "gemini-3.5-flash",
+      }),
+    ).rejects.toThrow(/returned no audio/);
   });
 });

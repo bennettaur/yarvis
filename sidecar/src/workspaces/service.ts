@@ -24,6 +24,7 @@ import {
   workspaceRepos,
   workspaces,
 } from "../db/schema.ts";
+import { emitEvent } from "../events/service.ts";
 import {
   deleteLinkForWorkspace,
   listLinksForWorkspace,
@@ -399,7 +400,7 @@ export async function createWorkspace(
     : null;
 
   // One transaction so a mid-create failure never leaves a half-built workspace.
-  return db.transaction(async (tx) => {
+  const created = await db.transaction(async (tx) => {
     const [workspace] = await tx
       .insert(workspaces)
       .values({ name: input.name.trim(), slug, rootPath, status: "creating", pendingIssuePrompt })
@@ -434,6 +435,21 @@ export async function createWorkspace(
 
     return workspace!;
   });
+
+  // Emitted after the transaction commits, so a rolled-back create leaves no
+  // event behind claiming a workspace that doesn't exist.
+  void emitEvent(db, {
+    type: "workspace.created",
+    source: "workspaces",
+    payload: {
+      workspaceId: created.id,
+      name: created.name,
+      repos: selected.map((r) => `${r.owner}/${r.name}`),
+      fromTicket: Boolean(input.issuePrompt),
+    },
+  });
+
+  return created;
 }
 
 /**
@@ -444,6 +460,23 @@ export async function createWorkspace(
 export interface WorkspaceSummary extends Omit<Workspace, "pendingIssuePrompt"> {
   /** Names of the repos in this workspace, for grouping in the sidebar. */
   repoNames: string[];
+  /**
+   * Cached PR state per repo that has one, so the list can show at a glance
+   * which workspaces need attention. Repos with no PR are left out entirely —
+   * the row has nothing to say about them.
+   */
+  prs: WorkspaceSummaryPr[];
+}
+
+/** The slice of a workspace repo's PR cache the list rows render. */
+export interface WorkspaceSummaryPr {
+  repoName: string;
+  prNumber: number;
+  prState: string | null;
+  isDraft: boolean | null;
+  mergeable: string | null;
+  checkRollup: WorkspaceRepoPr["checkRollup"];
+  reviewDecision: WorkspaceRepoPr["reviewDecision"];
 }
 
 export async function listWorkspaces(db: Db): Promise<WorkspaceSummary[]> {
@@ -452,17 +485,51 @@ export async function listWorkspaces(db: Db): Promise<WorkspaceSummary[]> {
   if (!wsRows.length) return [];
 
   const memberships = await db
-    .select({ workspaceId: workspaceRepos.workspaceId, name: repos.name })
+    .select({
+      workspaceId: workspaceRepos.workspaceId,
+      repoStatus: workspaceRepos.status,
+      name: repos.name,
+      prNumber: workspaceRepoPr.prNumber,
+      prState: workspaceRepoPr.prState,
+      isDraft: workspaceRepoPr.isDraft,
+      mergeable: workspaceRepoPr.mergeable,
+      checkRollup: workspaceRepoPr.checkRollup,
+      reviewDecision: workspaceRepoPr.reviewDecision,
+    })
     .from(workspaceRepos)
-    .innerJoin(repos, eq(workspaceRepos.repoId, repos.id));
+    .innerJoin(repos, eq(workspaceRepos.repoId, repos.id))
+    .leftJoin(workspaceRepoPr, eq(workspaceRepoPr.workspaceRepoId, workspaceRepos.id))
+    // Ordered so a multi-repo workspace's names and PR badges keep the same
+    // order between refreshes rather than shuffling with the join.
+    .orderBy(repos.name);
   const namesByWorkspace = new Map<string, string[]>();
+  const prsByWorkspace = new Map<string, WorkspaceSummaryPr[]>();
   for (const m of memberships) {
     const names = namesByWorkspace.get(m.workspaceId) ?? [];
     names.push(m.name);
     namesByWorkspace.set(m.workspaceId, names);
+    if (m.prNumber === null) continue;
+    // A torn-down worktree stops being polled, so whatever its cache last held
+    // is frozen — an archived workspace must not keep flashing a live PR badge.
+    if (m.repoStatus === "removed") continue;
+    const prs = prsByWorkspace.get(m.workspaceId) ?? [];
+    prs.push({
+      repoName: m.name,
+      prNumber: m.prNumber,
+      prState: m.prState,
+      isDraft: m.isDraft,
+      mergeable: m.mergeable,
+      checkRollup: m.checkRollup ?? "none",
+      reviewDecision: m.reviewDecision,
+    });
+    prsByWorkspace.set(m.workspaceId, prs);
   }
 
-  return wsRows.map((w) => ({ ...w, repoNames: namesByWorkspace.get(w.id) ?? [] }));
+  return wsRows.map((w) => ({
+    ...w,
+    repoNames: namesByWorkspace.get(w.id) ?? [],
+    prs: prsByWorkspace.get(w.id) ?? [],
+  }));
 }
 
 export async function getWorkspace(db: Db, id: string): Promise<WorkspaceDetail | null> {
@@ -756,6 +823,19 @@ export async function syncWorkspaceWithBase(
     }
   }
 
+  void emitEvent(db, {
+    type: "workspace.synced",
+    source: "workspaces",
+    payload: {
+      workspaceId: detail.id,
+      name: detail.name,
+      merged: outcomes.filter((o) => o.merge === "merged").length,
+      conflicted: outcomes.filter((o) => o.merge === "conflict").length,
+      skipped: outcomes.filter((o) => o.merge === "skipped").length,
+      pushed: outcomes.filter((o) => o.pushed).length,
+    },
+  });
+
   return { workspaceId: detail.id, name: detail.name, repos: outcomes };
 }
 
@@ -927,6 +1007,54 @@ export async function findWorkspaceForPr(
     if (remoteMatchesLocator(parseRepoRemote(cloneUrl), locator)) return ws;
   }
   return null;
+}
+
+/**
+ * A non-archived workspace already holding a worktree on a repo's branch.
+ *
+ * {@link findWorkspaceForPr} answers from the poller's PR cache, which is
+ * written only for workspaces that are already provisioned — so it cannot see
+ * one created moments ago, which is exactly the window a second click lands in.
+ * This reads what the create path itself writes, so it holds from the moment
+ * the workspace row exists. Branch names are compared as git compares them,
+ * case included.
+ */
+export async function findWorkspaceOnBranch(
+  db: Db,
+  repoId: string,
+  branch: string,
+): Promise<WorkspaceForPr | null> {
+  const [row] = await db
+    .select({
+      id: workspaces.id,
+      name: workspaces.name,
+      slug: workspaces.slug,
+      status: workspaces.status,
+    })
+    .from(workspaceRepos)
+    .innerJoin(workspaces, eq(workspaceRepos.workspaceId, workspaces.id))
+    .where(
+      and(
+        eq(workspaceRepos.repoId, repoId),
+        eq(workspaceRepos.branch, branch),
+        ne(workspaces.status, "archived"),
+      ),
+    );
+  return row ?? null;
+}
+
+/**
+ * The registered repo a PR belongs to, matched the same way as
+ * {@link findWorkspaceForPr}: by parsing each repo's clone URL, so the match
+ * stays provider-aware without a provider column on `repos`. Returns null when
+ * the repo isn't registered — nothing can be cloned or worktree'd for it.
+ */
+export async function findRepoForPr(db: Db, locator: PrLocator): Promise<Repo | null> {
+  // Every row, because the clone URL is the only field that carries the
+  // provider identity — `repos.owner`/`repo` are filled by the GitHub-shaped
+  // parser even for Azure rows, so there is nothing to narrow on in SQL.
+  const rows = await db.select().from(repos);
+  return rows.find((repo) => remoteMatchesLocator(parseRepoRemote(repo.cloneUrl), locator)) ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1363,6 +1491,11 @@ async function launchKickOffSession(
     console.error("[workspaces] could not start the kick-off session:", e);
     return;
   }
+  void emitEvent(db, {
+    type: "workspace.session_started",
+    source: "workspaces",
+    payload: { workspaceId: detail.id, name: detail.name, kickOff: true, remoteControl },
+  });
   await clearPendingIssuePrompt(db, detail.id).catch(() => undefined);
 }
 
@@ -1646,6 +1779,20 @@ async function removeWorktreesAndFinish(
     }
   } else {
     await raiseArchiveFailure(db, detail, errors);
+  }
+
+  if (fullyRemoved) {
+    void emitEvent(db, {
+      type: "workspace.archived",
+      source: "workspaces",
+      payload: {
+        workspaceId: id,
+        name: detail.name,
+        summary: input.summary ?? detail.summary,
+        mergedPrUrl: input.mergedPrUrl ?? detail.mergedPrUrl ?? linkedPrUrl(detail),
+        completedTasks: completedTasks.length,
+      },
+    });
   }
 
   return { status, errors, completedTasks: completedTasks.length };

@@ -6,6 +6,15 @@ const ORDERED: Tab[] = NAV_ITEMS.map((i) => i.id);
 /** Top (non-pinned) tabs — the Cmd+1..9 targets. */
 const TOP: Tab[] = NAV_ITEMS.filter((i) => !i.pinBottom).map((i) => i.id);
 
+/**
+ * The digit that jumps to `tab`, or null when it has no digit shortcut — the
+ * pinned-bottom tabs, and anything past the ninth.
+ */
+export function tabShortcutDigit(tab: Tab): string | null {
+  const idx = TOP.indexOf(tab);
+  return idx >= 0 && idx < 9 ? String(idx + 1) : null;
+}
+
 /** The subset of a keyboard event {@link resolveTabShortcut} needs. */
 export interface ShortcutEvent {
   key: string;

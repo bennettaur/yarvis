@@ -36,6 +36,19 @@ interface SentRequest {
 }
 
 const sent: SentRequest[] = [];
+
+/**
+ * The last request the view under test sent. Scoped to the issues routes rather
+ * than reading the tail of `sent` directly: bun runs every test file in one
+ * process behind one module mock, so a fetch another file's component left in
+ * flight when its 100ms settle unmounted it lands here afterwards, and whichever
+ * assertion is mid-flight sees that stray GET instead of its own write.
+ */
+function lastIssueRequest(): SentRequest | undefined {
+  const ours = sent.filter((r) => r.path.startsWith("/api/issues/"));
+  return ours[ours.length - 1];
+}
+
 /** Issue state the fake sidecar serves, mutated by the writes it receives. */
 let stored: IssueDetail = detail();
 /** The label and assignee sets the fake repo offers its pickers. */
@@ -96,11 +109,11 @@ function servedFor(path: string): IssueDetail {
 mock.module("../../lib/api", () => ({
   sidecarFetch: async (path: string, init: RequestInit = {}) => {
     const method = init.method ?? "GET";
-    sent.push({ path, method, body: init.body ? JSON.parse(String(init.body)) : null });
-    const body = sent[sent.length - 1]?.body ?? {};
+    const body = init.body ? JSON.parse(String(init.body)) : null;
+    sent.push({ path, method, body });
     if (method === "PATCH") {
       if (patchFails) return new Response("nope", { status: patchFails });
-      stored = applyPatch(body);
+      stored = applyPatch(body ?? {});
     }
     if (path.includes("/repo-meta/")) {
       if (repoMetaFails) return new Response("nope", { status: repoMetaFails });
@@ -221,7 +234,7 @@ describe("IssueDetailView", () => {
     const { host, cleanup } = await mount("closed");
     button(host, "Reopen issue")?.click();
     await settle();
-    expect(sent[sent.length - 1]).toMatchObject({ method: "PATCH", body: { state: "open" } });
+    expect(lastIssueRequest()).toMatchObject({ method: "PATCH", body: { state: "open" } });
     cleanup();
   });
 
@@ -235,7 +248,7 @@ describe("IssueDetailView", () => {
     await settle();
     button(host, "Save")?.click();
     await settle();
-    expect(sent[sent.length - 1]).toMatchObject({
+    expect(lastIssueRequest()).toMatchObject({
       method: "PATCH",
       body: { title: "Login is broken" },
     });
@@ -252,7 +265,7 @@ describe("IssueDetailView", () => {
     await settle();
     button(host, "Save")?.click();
     await settle();
-    expect(sent[sent.length - 1]).toMatchObject({ method: "PATCH", body: { body: "" } });
+    expect(lastIssueRequest()).toMatchObject({ method: "PATCH", body: { body: "" } });
     cleanup();
   });
 
@@ -303,7 +316,7 @@ describe("IssueDetailView", () => {
     await settle();
     button(host, "Save")?.click();
     await settle();
-    expect(sent[sent.length - 1]).toMatchObject({
+    expect(lastIssueRequest()).toMatchObject({
       method: "PATCH",
       body: { labels: ["bug", "chore"] },
     });
@@ -321,7 +334,7 @@ describe("IssueDetailView", () => {
     await settle();
     button(host, "Save")?.click();
     await settle();
-    expect(sent[sent.length - 1]).toMatchObject({ method: "PATCH", body: { assignees: [] } });
+    expect(lastIssueRequest()).toMatchObject({ method: "PATCH", body: { assignees: [] } });
     expect(host.textContent).toContain("Unassigned.");
     cleanup();
   });
@@ -348,7 +361,7 @@ describe("IssueDetailView", () => {
     await settle();
     button(host, "Comment")?.click();
     await settle();
-    expect(sent[sent.length - 1]).toEqual({
+    expect(lastIssueRequest()).toEqual({
       path: "/api/issues/github/detail/octo/web/7/comments",
       method: "POST",
       body: { body: "looking into it" },
@@ -392,7 +405,7 @@ describe("IssueDetailView", () => {
     await settle();
     button(host, "Save")?.click();
     await settle();
-    expect(sent[sent.length - 1]).toMatchObject({ method: "PATCH", body: { labels: ["bug"] } });
+    expect(lastIssueRequest()).toMatchObject({ method: "PATCH", body: { labels: ["bug"] } });
     cleanup();
   });
 
@@ -424,7 +437,7 @@ describe("IssueDetailView", () => {
     await settle();
     button(host, "Save")?.click();
     await settle();
-    expect(sent[sent.length - 1]).toMatchObject({ body: { assignees: ["alice", "bob"] } });
+    expect(lastIssueRequest()).toMatchObject({ body: { assignees: ["alice", "bob"] } });
     expect(host.textContent).toContain("alice");
     expect(host.textContent).not.toContain("bob");
     cleanup();
@@ -527,7 +540,7 @@ describe("IssueDetailView", () => {
     button(host, "Start work")?.click();
     await settle();
     // The body is already on screen, so it must not be re-fetched.
-    expect(sent.filter((r) => r.method === "GET")).toEqual([]);
+    expect(sent.filter((r) => r.method === "GET" && r.path.startsWith("/api/issues/"))).toEqual([]);
     expect(sent).toContainEqual({
       path: "/api/issues/github/start-work",
       method: "POST",

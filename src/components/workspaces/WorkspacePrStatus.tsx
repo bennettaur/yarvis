@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { requestOpenPr } from "../../lib/nav";
 import type { PrSummary } from "../../lib/pr/types";
+import { hasConflicts } from "../../lib/prGlance";
 import { repoPrRef } from "../../lib/repos";
 import { openExternal } from "../../lib/url";
 import {
@@ -29,17 +30,6 @@ const PR_STATE_STYLES: Record<string, string> = {
   merged: "bg-violet-900/60 text-violet-200",
   closed: "bg-zinc-800 text-zinc-400",
 };
-
-/**
- * True when the cached mergeable value signals conflicts against the base.
- * GitHub reports "dirty" (its `mergeable_state`); Azure reports "CONFLICTING"
- * (the shared enum the poller stores), which older GitHub GraphQL rows also
- * used — so match either, case-insensitively.
- */
-function hasConflicts(mergeable: string | null): boolean {
-  const m = (mergeable ?? "").toLowerCase();
-  return m === "dirty" || m === "conflicting";
-}
 
 /** Builds the minimal PrSummary the in-app review needs from the poller cache. */
 function buildPrSummary(repo: WorkspaceRepoDetail): PrSummary | null {

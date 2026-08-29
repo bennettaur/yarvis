@@ -1,5 +1,7 @@
 import { Icon, type IconName } from "./icons";
 import { NAV_ITEMS, type Tab } from "./nav";
+import { formatChord } from "./shortcuts";
+import { tabShortcutDigit } from "./useTabShortcuts";
 
 function RailButton({
   label,
@@ -7,6 +9,8 @@ function RailButton({
   active,
   onClick,
   badge = false,
+  shortcutKey = null,
+  showHint = false,
 }: {
   label: string;
   icon: IconName;
@@ -14,11 +18,17 @@ function RailButton({
   onClick: () => void;
   /** Shows an attention dot over the icon (e.g. Omni Chat needs the user). */
   badge?: boolean;
+  /** The key this button answers to with Cmd held, if it has one. */
+  shortcutKey?: string | null;
+  /** Label the button with {@link shortcutKey} — the user is holding Cmd. */
+  showHint?: boolean;
 }) {
+  const chord = shortcutKey ? formatChord(["Mod", shortcutKey]) : null;
+
   return (
     <button
       type="button"
-      title={label}
+      title={chord ? `${label} (${chord})` : label}
       aria-label={label}
       aria-current={active ? "page" : undefined}
       onClick={onClick}
@@ -33,6 +43,11 @@ function RailButton({
       {badge && (
         <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-amber-400 ring-2 ring-zinc-950" />
       )}
+      {showHint && shortcutKey && (
+        <span className="absolute -bottom-0.5 right-0 rounded bg-zinc-800 px-1 font-mono text-[9px] font-semibold leading-4 text-zinc-300 ring-1 ring-zinc-700">
+          {shortcutKey}
+        </span>
+      )}
     </button>
   );
 }
@@ -43,14 +58,19 @@ export default function NavRail({
   onTabChange,
   onOpenOmniChat,
   onOpenClipboard,
+  onOpenShortcuts,
   attentionPending,
+  showHints = false,
 }: {
   tab: Tab;
   onTabChange: (tab: Tab) => void;
   onOpenOmniChat: () => void;
   onOpenClipboard: () => void;
+  onOpenShortcuts: () => void;
   /** When true, the Omni Chat launcher shows an attention dot. */
   attentionPending: boolean;
+  /** Labels each button with the key that reaches it (the modifier is held). */
+  showHints?: boolean;
 }) {
   const top = NAV_ITEMS.filter((i) => !i.pinBottom);
   const bottom = NAV_ITEMS.filter((i) => i.pinBottom);
@@ -64,10 +84,20 @@ export default function NavRail({
           icon={item.icon}
           active={tab === item.id}
           onClick={() => onTabChange(item.id)}
+          shortcutKey={tabShortcutDigit(item.id)}
+          showHint={showHints}
         />
       ))}
       <div className="mt-auto flex flex-col gap-1">
         <RailButton label="Clipboard" icon="clipboard" active={false} onClick={onOpenClipboard} />
+        <RailButton
+          label="Keyboard shortcuts"
+          icon="shortcuts"
+          active={false}
+          onClick={onOpenShortcuts}
+          shortcutKey="/"
+          showHint={showHints}
+        />
         <RailButton
           label="Omni Chat"
           icon="omnichat"

@@ -109,14 +109,17 @@ export async function handleCommand(ctx: CommandContext, command: ParsedCommand)
 function availableModelsText(providers: ProviderInfo[]): string {
   const usable = providers.filter((p) => p.available && p.models.length > 0);
   if (usable.length === 0) return "No providers are configured.";
-  return ["Available:", ...usable.map((p) => `• ${p.id}: ${p.models.join(", ")}`)].join("\n");
+  return [
+    "Available:",
+    ...usable.map((p) => `• ${p.id}: ${p.models.map((m) => m.id).join(", ")}`),
+  ].join("\n");
 }
 
 /** Shows the provider/model this chat replies with (set or default). */
 async function showModel(config: Config, db: Db, chatId: number): Promise<string> {
   const [state, providers] = await Promise.all([
     getChatState(db, chatId),
-    availableProviders(config, db),
+    availableProviders(config, db, "chat"),
   ]);
   const list = availableModelsText(providers);
   if (state?.provider && state.model) {
@@ -131,7 +134,9 @@ async function showModel(config: Config, db: Db, chatId: number): Promise<string
 
 /** Sets the provider/model for this chat after validating the provider. */
 async function setModel(config: Config, db: Db, chatId: number, args: string): Promise<string> {
-  const providers = await availableProviders(config, db);
+  // Chat-capable only: the bot has nowhere to play audio, so a speech model is
+  // never a valid answer to /setmodel.
+  const providers = await availableProviders(config, db, "chat");
   const [provider, model] = args.split(/\s+/).filter(Boolean);
   if (!provider || !model) {
     return `Usage: /setmodel <provider> <model>\n\n${availableModelsText(providers)}`;
@@ -139,6 +144,9 @@ async function setModel(config: Config, db: Db, chatId: number, args: string): P
   const match = providers.find((p) => p.id === provider);
   if (!match || !match.available) {
     return `Unknown or unavailable provider: ${provider}\n\n${availableModelsText(providers)}`;
+  }
+  if (match.models.length > 0 && !match.models.some((m) => m.id === model)) {
+    return `${provider} has no chat model called ${model}.\n\n${availableModelsText(providers)}`;
   }
   await setProviderModel(db, chatId, provider, model);
   return `✅ Replies will use ${provider} / ${model}.`;

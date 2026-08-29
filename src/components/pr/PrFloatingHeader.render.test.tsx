@@ -4,9 +4,9 @@ import type { PrDetail, PrSummary } from "../../lib/pr/types";
 import { renderToHtml } from "../../test/render";
 import PrFloatingHeader from "./PrFloatingHeader";
 
-// The header renders PrWorkspaceLink, which calls sidecarFetch to look up a
-// linked workspace. Stub it to report "no workspace" so the link renders
-// nothing and the merge controls are the only variable under test.
+// The header renders PrWorkspaceAction, which calls sidecarFetch to look up a
+// linked workspace. Stub it to report "no workspace" so it falls back to the
+// start-workspace button and the merge controls are the only variable under test.
 mock.module("../../lib/api", () => ({
   sidecarFetch: async () => new Response("null", { status: 200 }),
   streamSSE: () => () => {},
@@ -33,6 +33,7 @@ const detail = (overrides: Partial<PrDetail> = {}): PrDetail => ({
   author: "me",
   baseRef: "main",
   headRef: "feat",
+  fromFork: false,
   headSha: "",
   additions: 0,
   deletions: 0,

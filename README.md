@@ -89,7 +89,8 @@ PR dashboard + embedded review — either provider can back it, selected with a
 toggle in the PRs tab), a JIRA base URL + account email + API token (for the JIRA
 issues integration on the Issues tab), a Google Cloud OAuth client id/secret (for the Calendar
 integration), an optional Hugging Face token (for speech-to-text; see
-Settings → Voice), an optional embeddings-provider secret (an API key and/or
+Settings → Voice — the Gemini key covers both speech halves on its own), an
+optional embeddings-provider secret (an API key and/or
 custom header values for an OpenAI-compatible embeddings endpoint), and an
 optional Telegram bot token + allowed chat-id list (and, when the optional second
 factor is enabled, a TOTP secret + re-auth window) for the remote-control bot,
@@ -171,6 +172,14 @@ uninterrupted.
 
 #### Choosing models
 
+Which models a backend offers is set in **Settings → LLM Providers → Models**,
+where each model carries what it can do — `chat`, `stt`, `tts`, `vision`,
+`embed`. Those tags decide where it appears: only a `chat` model can answer a
+turn, only a `tts` model can speak one. A provider uses the built-in list until
+you edit it; the first edit copies that list into your settings, and **Reset to
+built-in list** hands it back. This is also how a model released since the last
+build gets used, and how one your account has no access to gets removed.
+
 Model names are free text, because a local server's names are its own. The
 accepted shape is `namespace/name` with an optional `:tag`
 (`openai/whisper-large-v3`, `whisper:latest`), which is what stops a model name
@@ -185,6 +194,15 @@ These are verified working on Apple Silicon through the server above:
 | Speech out | `mlx-community/MOSS-TTS-Nano-100M` | Clones a voice; see below. |
 | Speech in | `mlx-community/whisper-large-v3-turbo-asr-fp16` | Same server as speech out. |
 | Speech in | `gemma4:latest` (Ollama) | Audio-capable chat model; transcribes well. |
+
+**Gemini** serves both halves with the API key already used for chat. There is
+no audio endpoint: synthesis asks `generateContent` for the AUDIO modality and
+transcription attaches the clip to a normal text request, which is why its chat
+models appear under Speech to text and its `-tts` models under Text to speech.
+The **Voice** field takes one of Gemini's prebuilt voice names (`Kore`, `Puck`,
+`Zephyr`, …; the field suggests them) — unlike the OpenAI-shaped servers, it has
+no default voice of its own. Extra request fields become generation-config
+fields there rather than top-level ones.
 
 **Hugging Face** is also available with a token from Settings, but in practice
 only for transcription (`openai/whisper-large-v3-turbo`). Its serverless router
@@ -399,6 +417,18 @@ directory, `~/dev/yarvis-workspaces` by default and overridable with the
 secrets above). Add repos and edit their per-repo setup/run scripts in the
 Settings tab's Repositories section.
 
+Each row in the workspace list carries a badge per repo that has a pull
+request, beside the workspace status, so a list of "active" workspaces still
+says which one wants you: `◇` open and awaiting review, `◌` draft, `●` checks
+running, `✗` checks failing, `⚠` merge conflicts, `✎` changes requested, `✓`
+approved, `◆` merged, `⊘` closed. Hovering names the repo, the PR number and
+the state. The badge shows whatever needs acting on first, so a red build on an
+approved PR still reads as failing, and `✓` means someone with write access
+signed off — the repo's own rules (required reviewers, CODEOWNERS) can still
+hold the merge. Azure DevOps PRs report no check state here, so theirs reflects
+the review only. The badges come from the same background PR poll the workspace
+page uses, so they lag a change by up to a minute.
+
 Every provisioned workspace opens with an agent tab and nothing else — opening
 one starts a Claude Code session in it (or attaches to the one already running)
 and focuses that tab. No extra shell tab is opened alongside it; use `+` or
@@ -595,6 +625,32 @@ and **Complete** — merged, closed, or approved by you — with the latter
 collapsed. An approval superseded by a later change request counts as in
 progress again. GitHub only: Azure DevOps exposes neither half of that signal.
 
+#### Working on the PR
+
+The PR's floating header carries one workspace control. For a PR that already
+has a workspace it jumps back to it; for one that doesn't — someone else's PR,
+your own raised outside the app, one whose workspace you archived — **Start
+workspace** creates one checked out on the PR's own branch and opens it. That
+workspace starts nothing — no ticket, no prompt — so what comes up is an agent
+session at a blank prompt, to ask about the change or push a fix from. GitHub
+and Azure DevOps alike.
+
+Note what provisioning means here, since the branch is someone else's: the
+repo's setup script runs against their code, and the agent session that opens
+runs in that worktree. The clone still comes from the repo *you* registered —
+the branch has to live in it, so a PR from a fork is refused rather than
+provisioned into a git error, which means its author needed push access to
+raise it. Treat "Start workspace" as the same trust decision as checking the
+branch out locally and running the setup script yourself.
+
+The PR's repo also has to be registered under **Settings → Repositories**, since
+that is where the clone comes from. Provisioning runs in the sidecar, so it
+finishes whether or not you stay on the screen; the workspace shows its log
+while it does. Starting twice reuses the first workspace rather than cutting a
+second worktree on the branch, and the control turns into the backlink as soon
+as the start returns — for a workspace made some other way, when the PR poll
+next picks it up.
+
 #### Reading a diff
 
 Files open as you scroll toward them, and **Collapse all** / **Expand all**
@@ -695,6 +751,126 @@ deleted so the code doesn't linger, and the app raises a desktop notification on
 each unlock/failed/lockout so you see access you didn't initiate. The code is
 verified in the sidecar; it never leaves your authenticator and laptop.
 
+### The assistant loop: activity, memory, projects, planning
+
+The chat agent tracks tasks and remembers facts, and on top of that it keeps a
+record of what you actually did and uses it to help you decide what to do next.
+Five pieces, all local:
+
+**The activity log.** Meaningful actions are recorded as events — a PR viewed,
+approved, commented on or merged (GitHub and Azure), an issue or JIRA ticket
+created or commented, work started on a ticket, a workspace created, its session
+started, synced, archived, tasks created and completed, calendar events booked.
+UI navigation is deliberately not an event. Its own actions are logged too — todos it opens and closes, projects it starts
+tracking, each summary it writes — and this list is a sample rather than the
+whole set. Browse and search it under **Memory → Activity**; the agent reads the same log with `search_events` and
+`activity_summary` when a question needs detail the summaries don't carry.
+
+**Consolidation.** Every four hours a background job folds the events nobody has
+summarized yet into one `activity-summary` memory. Overnight, a pass over the Claude Code
+transcripts under `~/.claude/projects` writes a `session-summary` for each new or
+extended session, and an hour later those and the window summaries are folded
+together into a single `day-summary` — plus an `agent-feedback` memory when the session
+contained instructions about how an agent should behave, so that guidance is
+recallable in its own right rather than buried in one transcript. Events are only
+marked processed once a summary is stored, and only the ones that fit the
+summarizer's prompt, so a failed or oversized run loses nothing.
+
+The transcript pass is **off until you turn it on**: transcripts are local files
+that often hold pasted secrets and other people's data, and summarizing them
+means sending them to your configured LLM provider. Enable it under
+**Settings → Assistant** and choose which project directories it may read — an
+empty list digests nothing. Job status and a manual trigger live there too.
+
+**Typed memory.** Every memory carries a `kind` (`fact`, `preference`, `note`,
+`project`, `decision`, `agent-feedback`, the three summary kinds, `doc`,
+`dismissal`), and the agent narrows recall by it. When something you told it
+changes, it corrects the memory rather than storing a contradiction: the old row
+stays for the trail but drops out of recall, and the text is re-embedded so it is
+findable by what it now says.
+
+**Projects and todos.** Tell it about a project and it keeps the structured part
+— status, what this week is for, the tickets with the priority you gave them —
+while the narrative goes to memory. Its own commitments go on a separate todo
+list with a progress log, so "I'll check that PR before Thursday" survives the
+end of the conversation without landing in your daily plan. Both are visible
+under **Memory → Projects** and **Memory → Agent todos**.
+
+**Planning.** `suggest_next_work` ranks what you have left — your own open PRs,
+reviews requested of you, reviews you started and never signed off, live
+workspaces, overdue tasks — and reports how much reviewing you have actually done
+this week, promoting a review when that number is low. Turn something down and it
+is dismissed by key, so it stops coming back. `work_summary` assembles the
+material for "what did I get done this week" (activity counts, review verdicts
+given, your PRs and their current state, tasks completed, workspaces archived)
+and the model writes the prose.
+
+Multi-step work is delegated rather than done inline, to a **specialist** that
+runs in its own context with only the tools its definition lists. See
+[Writing your own specialist](#writing-your-own-specialist) — they are markdown
+files. A delegated run gets no MCP tools (it has no way to hold an approval
+prompt open) and cannot delegate further. It can write somewhere other people
+see — filing a JIRA ticket, say — only if that tool is granted to it by name;
+Settings marks such a specialist "acts unattended", and `project-manager` is the
+one that ships with a grant, because turning a discussion into tickets is its
+job. The same specialists back the background jobs, so a summary written at 3am
+reads like one written in conversation.
+
+### Writing your own specialist
+
+A specialist is a markdown file: YAML frontmatter for its configuration, the body
+as its system prompt. The ones the app ships live in
+`sidecar/src/agents/definitions/` and are embedded in the build; yours go in
+`~/.yarvis/agents/*.md`, and a file named after one that ships **replaces** it —
+so a shipped prompt keeps improving with the app while anything you write stays
+yours. **Settings → Assistant** lists what loaded, names the directory, reports
+any file that failed to parse, and reloads without a restart.
+
+```markdown
+---
+name: release-notes
+description: >-
+  Turns a week of merged PRs into release notes. Use it when the user asks what
+  to tell people about what shipped.
+tools:
+  - work_summary
+  - search_events
+  - recall
+model: anthropic/claude-sonnet-5   # optional; omit for the default chat model
+maxSteps: 8                         # optional, default 8, hard cap 30
+---
+
+You write release notes from a developer's own activity.
+
+Group by theme rather than by pull request, and name each PR once…
+```
+
+`name` is the handle the assistant delegates by, and `description` is what it
+reads when choosing — write it as "what this is for, and when to reach for it".
+`tools` are bare built-in tool names (the Tool Manager lists them all), written
+as a YAML list or comma-separated; an unknown one is reported rather than
+silently dropped, and omitting the key gives a specialist with no tools, which is
+right for anything that works purely from material handed to it.
+`enabled: false` turns one off, including a built-in you would rather not have.
+A misspelled key is an error too — `tool:` where `tools:` was meant would
+otherwise be a specialist with no tools and no complaint.
+
+Two things a definition deliberately cannot do. It cannot delegate — a specialist
+that could would eventually delegate to itself. And a tool that writes where other
+people can see it is withheld unless the file also names it under `unattended:`,
+because a delegated run has no way to stop and ask; that grant is what Settings
+flags on the row.
+
+Definitions are read from `~/.yarvis/agents` only, never from a workspace or a
+checked-out repo. A definition is a system prompt plus a tool list, so a repo that
+could contribute one would be a repo that hands the agent instructions and the
+means to act on them.
+
+Two boundaries worth knowing: the agent's todo tools are **not** on the MCP
+endpoint, so a Claude Code session can read and write memory but not edit the
+assistant's plan; and the calendar integration can create an event but has no
+update or delete — moving or cancelling a meeting stays yours.
+
 ## Development
 
 ```bash
@@ -766,6 +942,8 @@ primary one by default:
 | Workspace/PR poller | Doubles provider API traffic and writes the same rows twice | `YARVIS_BACKGROUND_WORKERS=1` |
 | Resuming interrupted kick-offs | Would launch two agent sessions in one workspace | `YARVIS_BACKGROUND_WORKERS=1` |
 | Stale PR-guide sweep | Deletes rows on a schedule; once is enough | `YARVIS_BACKGROUND_WORKERS=1` |
+| Background jobs (event consolidation, nightly rollup, transcript digest) | Write memories and call an LLM provider on a schedule; two processes duplicate both | `YARVIS_BACKGROUND_WORKERS=1` |
+| Seeding the built-in specialists | Inserts the shipped rows once into the shared table | `YARVIS_BACKGROUND_WORKERS=1` |
 | Global hotkeys (`Control + Shift + Space`, `Control + Shift + V`) | One process holds an accelerator machine-wide | `YARVIS_GLOBAL_SHORTCUTS=1` |
 
 Set an override to `1` on the instance that should take the work, or `0` on the
@@ -821,9 +999,12 @@ src/            React frontend (Vite + TS + Tailwind)
     editor/     CodeMirror 6 wrapper (lazy-loaded) behind the workspace file editor
     workspaces/  workspace detail subviews + Omni widgets, the self-review
                 comment layer over a changed file's diff, and the file editor
-    shell/      desktop shell: nav rail, top bar, boot loading screen, tab shortcuts
+    shell/      desktop shell: nav rail, top bar, boot loading screen, tab shortcuts,
+                keyboard cheat sheet (the catalogue every shortcut is listed from)
     omni/       Omni view — chat-driven dynamic-UI canvas
     omnichat/   Omni Chat — global summon-from-anywhere chat overlay
+    memory/     memory screen tabs: the memory library, the activity log browser,
+                the assistant's todos, and projects
     clipboard/  clipboard palette — saved snippets + screened clipboard history
     find/       find-on-page bar (Cmd+F), hosted by the shell over the content region
   omni/         json-render component catalog, registry, layout primitives
@@ -839,22 +1020,37 @@ sidecar/        Bun + TS service (Hono)
   src/core/     client for the Rust core's control channel (spawn/kill/send to a session)
   src/db/       Drizzle schema, client, migrations (applied on startup)
   src/chat/     multi-provider streaming chat + tool-calls (agent.ts: shared agent turn)
-  src/voice/    speech-to-text + text-to-speech (/api/voice): Hugging Face Inference
-                and the OpenAI audio API, the latter reusing a custom provider's base URL;
+  src/llm/      provider resolution + the model catalogue (/api/model-catalog):
+                catalog.ts holds the capability tags and the bundled per-provider
+                defaults that a user's saved rows take over from
+  src/voice/    speech-to-text + text-to-speech (/api/voice): Hugging Face Inference,
+                the Gemini API (both halves over generateContent), and the OpenAI audio
+                API, the last reusing a custom provider's base URL;
                 config.ts holds the settings every surface shares
   src/clipboard/ saved clipboard entries + the credential screen (screening.ts)
   src/telegram/ Telegram remote-control bot (long-poll loop, slash commands, chat→session map)
-  src/tasks/    daily/weekly work tracking
-  src/events/   local on-device event log (action trail; reconciled to memory later)
-  src/memory/   pgvector memory, notes, ingestion, recaps
+  src/tasks/    daily/weekly work tracking, title-similarity dedupe, and the
+                completion-evidence pass (reconcile.ts) behind "did I already finish this?"
+  src/events/   local on-device event log (action trail, searchable + paginated;
+                consolidated into memory by the jobs)
+  src/memory/   pgvector memory (typed by `kind`, with corrections that supersede),
+                notes, ingestion, recaps
+  src/projects/ projects the work is for: status, focus, and tracked tickets with priorities
+  src/todos/    the assistant's own todo list (not exposed over the MCP endpoint)
+  src/agents/   delegation: the configured specialists and the bounded runs the
+                orchestrator and the jobs both go through
+  src/jobs/     background scheduler (lease + schedule) and the jobs themselves:
+                event consolidation, the nightly rollup, the Claude Code session digest
+  src/digest/   dangling work, next-work ranking, weekly summary material, dismissals
   src/github/   GitHub PR dashboard + embedded review (REST + GraphQL), dashboard config, in-progress review roll-up
   src/azure/    Azure DevOps PR dashboard + embedded review (REST; diffs built with jsdiff)
   src/pr/       provider-neutral PR review subsystem (/api/pr): guide + insight storage,
                 the tour/ask agent runs, provider-agnostic code tools (read file, list dir,
-                search) over a GitHub/Azure source seam, and the chat agent's review tools
+                search) over a GitHub/Azure source seam, opening a workspace on a PR's
+                branch (workspace.ts), and the chat agent's review tools
   src/issues/   provider-neutral issue routes/service (stars, filters, workspace links, start-work, issue writes)
   src/jira/     JIRA Cloud REST client + routes + agent tools + ADF↔Markdown conversion
-  src/google/   Google Calendar OAuth + events
+  src/google/   Google Calendar OAuth, event reads, and the one write (create)
   src/omni/     Omni UI generation (streaming) + saved layouts
   src/workspaces/ repo registry + git-worktree provisioning, bulk base-branch sync, and
                   teardown (/api/repos, /api/workspaces), plus local self-review
@@ -875,6 +1071,15 @@ reach into the app. Today it exposes the memory tools — `recall`, `remember`,
 `take_note`, `list_memories`, `forget` — over the same pgvector store the in-app
 chat uses, so a coding session can look up what you told Yarvis last week and
 write back what it learns.
+
+The assistant's **own** todo list is deliberately *not* exposed here. A coding
+session should be able to read and write the shared memory; editing the in-app
+agent's plan would be one agent rewriting another's. Projects are likewise
+in-app only.
+
+`list_memories` takes a `kind` (`fact`, `note`, `session-summary`, …) — it was
+`type` before memory kinds became a column, and a client still sending `type`
+gets an unfiltered list rather than an error.
 
 The endpoint is `POST http://127.0.0.1:<sidecar port>/mcp`, authenticated with a
 scoped token that grants access to those tools and nothing else — not the rest of
@@ -935,6 +1140,10 @@ How the stream behaves:
 
 ## Keyboard shortcuts
 
+- **Cmd/Ctrl + /** — open the **cheat sheet**: every shortcut below, grouped by
+  where it applies, Esc to close. Also reachable from the keyboard icon in the nav
+  rail. Holding **Cmd** on its own for a moment labels each rail button with the key
+  that reaches it, so the digits are readable without opening anything.
 - **Cmd/Ctrl + 1–9** — jump to the Nth tab in the nav rail.
 - **Cmd/Ctrl + Shift + ] / [** — cycle to the next / previous tab (wraps around).
 - **Control + Shift + Space** — summon **Omni Chat** from anywhere: a centered chat

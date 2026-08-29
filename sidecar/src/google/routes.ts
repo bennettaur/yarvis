@@ -1,7 +1,9 @@
 import { Hono } from "hono";
+import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import { buildAuthUrl, GoogleCalendarClient } from "./client.ts";
+import { emitEvent } from "../events/service.ts";
+import { buildAuthUrl, GoogleCalendarClient, scopeSatisfied } from "./client.ts";
 import {
   clearToken,
   consumeState,
@@ -21,6 +23,22 @@ function makeClient(config: Config): GoogleCalendarClient | null {
   if (!googleClientId || !googleClientSecret) return null;
   return new GoogleCalendarClient(googleClientId, googleClientSecret);
 }
+
+/**
+ * A new event. Attendees are capped and validated as addresses because this is
+ * the one route that sends mail on the user's behalf — Google notifies everyone
+ * invited.
+ */
+const createEventSchema = z.object({
+  title: z.string().min(1).max(300),
+  start: z.string().refine((v) => !Number.isNaN(Date.parse(v)), "must be a timestamp or date"),
+  end: z.string().refine((v) => !Number.isNaN(Date.parse(v)), "must be a timestamp or date"),
+  allDay: z.boolean().optional(),
+  description: z.string().max(4000).optional(),
+  location: z.string().max(500).optional(),
+  attendees: z.array(z.string().email()).max(25).optional(),
+  conferenceLink: z.boolean().optional(),
+});
 
 /** True when the value is absent or a parseable timestamp (rejects garbage). */
 function isIsoOrAbsent(value: string | undefined): boolean {
@@ -47,6 +65,9 @@ export function createCalendarRoutes(config: Config): Hono {
       configured,
       connected: token !== null,
       scope: token?.scope ?? null,
+      // A grant made before the scope widened can read but not create, and the
+      // only fix is re-consent — so the UI needs to know before an attempt fails.
+      canCreateEvents: token !== null && scopeSatisfied(token.scope),
     });
   });
 
@@ -78,6 +99,40 @@ export function createCalendarRoutes(config: Config): Hono {
         ? Math.min(250, Math.max(1, Math.trunc(requested)))
         : 20;
       return c.json(await client.listEvents(accessToken, { timeMin, timeMax, maxResults }));
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 502);
+    }
+  });
+
+  /**
+   * Creates an event on the primary calendar. There is deliberately no update or
+   * delete counterpart: the agent can put something on the calendar, and only
+   * the user can move or cancel it.
+   */
+  router.post("/events", async (c) => {
+    const client = makeClient(config);
+    if (!client) return c.json({ error: "google oauth not configured" }, 400);
+    const parsed = createEventSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+
+    const token = await getStoredToken(db());
+    if (!token) return c.json({ error: "calendar not connected" }, 400);
+    if (!scopeSatisfied(token.scope)) {
+      return c.json(
+        { error: "calendar is connected read-only; reconnect to allow creating events" },
+        403,
+      );
+    }
+
+    try {
+      const accessToken = await getValidAccessToken(db(), client);
+      const event = await client.createEvent(accessToken, parsed.data);
+      await emitEvent(db(), {
+        type: "calendar.event_created",
+        source: "calendar",
+        payload: { eventId: event.id, title: event.title, start: event.start },
+      });
+      return c.json(event, 201);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 502);
     }

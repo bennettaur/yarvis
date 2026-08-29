@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { encodeRepoPath, GitHubClient, summarizeChecks, toPrDetail } from "./client.ts";
+import {
+  encodeRepoPath,
+  GitHubClient,
+  summarizeChecks,
+  summarizeReviewDecision,
+  toPrDetail,
+} from "./client.ts";
 
 function fakeFetch(routes: Record<string, unknown>): typeof fetch {
   return (async (url: string) => {
@@ -19,6 +25,42 @@ describe("github client", () => {
       { status: "completed", conclusion: "skipped" },
     ]);
     expect(s).toEqual({ total: 4, success: 2, failure: 1, pending: 1 });
+  });
+
+  it("counts only each reviewer's latest verdict, blocking over approving", () => {
+    const review = (state: string, login: string) => ({
+      state,
+      user: { login },
+      author_association: "MEMBER",
+    });
+    const reviews = [
+      review("APPROVED", "ada"),
+      review("COMMENTED", "grace"),
+      review("CHANGES_REQUESTED", "grace"),
+      review("APPROVED", "grace"),
+    ];
+    expect(summarizeReviewDecision(reviews)).toBe("approved");
+    expect(summarizeReviewDecision(reviews.slice(0, 3))).toBe("changes_requested");
+    expect(summarizeReviewDecision([review("COMMENTED", "ada")])).toBe("review_required");
+    // A push that dismisses the approval takes the verdict with it.
+    expect(summarizeReviewDecision([review("APPROVED", "ada"), review("DISMISSED", "ada")])).toBe(
+      "review_required",
+    );
+  });
+
+  // Anyone who can see a repo can approve a PR there; only someone who could
+  // merge it themselves should be able to turn the workspace badge green.
+  it("ignores approvals from outside the project", () => {
+    const outsider = { state: "APPROVED", user: { login: "drive-by" } };
+    expect(summarizeReviewDecision([{ ...outsider, author_association: "NONE" }])).toBe(
+      "review_required",
+    );
+    expect(summarizeReviewDecision([{ ...outsider, author_association: "CONTRIBUTOR" }])).toBe(
+      "review_required",
+    );
+    expect(summarizeReviewDecision([{ ...outsider, author_association: "COLLABORATOR" }])).toBe(
+      "approved",
+    );
   });
 
   it("maps PR search items and drops non-PR issues", async () => {
@@ -582,5 +624,10 @@ describe("github client", () => {
 
   it("reports an empty commit when the provider omits it", () => {
     expect(toPrDetail({ number: 7 }).headSha).toBe("");
+  });
+
+  it("reports whether the head branch lives in a fork", () => {
+    expect(toPrDetail({ number: 7, isCrossRepository: true }).fromFork).toBe(true);
+    expect(toPrDetail({ number: 7 }).fromFork).toBe(false);
   });
 });

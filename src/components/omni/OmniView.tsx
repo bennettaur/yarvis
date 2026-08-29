@@ -101,9 +101,9 @@ export default function OmniView() {
         if (chosen) {
           setProvider(chosen.id);
           setModel(
-            savedModel && chosen.models.includes(savedModel)
+            savedModel && chosen.models.some((m) => m.id === savedModel)
               ? savedModel
-              : (chosen.models[0] ?? ""),
+              : (chosen.models[0]?.id ?? ""),
           );
         }
       } catch (e) {
@@ -150,7 +150,7 @@ export default function OmniView() {
   }, [refreshLayouts]);
 
   const modelsFor = useCallback(
-    (id: ProviderId) => providers.find((p) => p.id === id)?.models ?? [],
+    (id: ProviderId) => providers.find((p) => p.id === id)?.models.map((m) => m.id) ?? [],
     [providers],
   );
 

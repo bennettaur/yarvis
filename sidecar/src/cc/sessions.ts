@@ -118,6 +118,45 @@ export async function listSessions(projectDir: string): Promise<SessionSummary[]
   return sessions;
 }
 
+export interface SessionFileInfo {
+  sessionId: string;
+  mtimeMs: number;
+  bytes: number;
+}
+
+/**
+ * The transcript files in a project with their modification times, so a nightly
+ * digest can tell an untouched session from one that was resumed and extended.
+ * Cheaper than `listSessions`, which parses every file to summarize it.
+ */
+export async function listSessionFiles(projectDir: string): Promise<SessionFileInfo[]> {
+  if (!safeName(projectDir)) throw new Error("invalid project");
+  const full = join(projectsDir(), projectDir);
+  if (!within(projectsDir(), full)) throw new Error("invalid project");
+
+  let files: string[];
+  try {
+    files = (await readdir(full)).filter((f) => f.endsWith(".jsonl"));
+  } catch {
+    return [];
+  }
+
+  const infos: SessionFileInfo[] = [];
+  for (const f of files) {
+    try {
+      const s = await stat(join(full, f));
+      infos.push({
+        sessionId: f.replace(/\.jsonl$/, ""),
+        mtimeMs: s.mtimeMs,
+        bytes: s.size,
+      });
+    } catch {
+      // A file that vanished between listing and stat-ing is simply skipped.
+    }
+  }
+  return infos.sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
 export async function getTranscript(
   projectDir: string,
   sessionId: string,

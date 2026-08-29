@@ -22,6 +22,14 @@ import {
 /** Phrase the test button speaks. Long enough to judge the voice by. */
 const TEST_PHRASE = "Voice output is working. This is how I will read replies back to you.";
 
+/**
+ * Gemini's prebuilt voice names, offered as suggestions when it is the chosen
+ * backend. Unlike the OpenAI-shaped servers, Gemini has no default voice: a
+ * request with no `voiceConfig` is rejected, so `GeminiSpeech` falls back to
+ * Kore and naming one here is how the user picks something else.
+ */
+const GEMINI_VOICES = ["Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede"];
+
 /** Largest reference clip accepted, before base64 inflates it by a third. */
 const MAX_REF_AUDIO_BYTES = 3 * 1024 * 1024;
 
@@ -162,7 +170,8 @@ export default function VoiceSection() {
         <h2 className="text-sm font-medium text-zinc-200">Voice</h2>
         <p className="text-xs text-zinc-500">
           Speech in and out, shared by every surface that uses it. The model that answers is
-          whichever one the chat you spoke into is set to.
+          whichever one the chat you spoke into is set to. Which models each backend offers here is
+          set under LLM Providers — only models tagged for speech appear.
         </p>
       </header>
 
@@ -233,9 +242,15 @@ export default function VoiceSection() {
             value={config.ttsVoice}
             onChange={(e) => setConfig((prev) => ({ ...prev, ttsVoice: e.target.value }))}
             onBlur={(e) => void save({ ttsVoice: e.target.value })}
-            placeholder="provider default"
+            list="yarvis-tts-voices"
+            placeholder={config.ttsProvider === "gemini" ? "Kore" : "provider default"}
             className={FIELD}
           />
+          <datalist id="yarvis-tts-voices">
+            {(config.ttsProvider === "gemini" ? GEMINI_VOICES : []).map((v) => (
+              <option key={v} value={v} />
+            ))}
+          </datalist>
         </Field>
       </div>
 
