@@ -39,11 +39,14 @@ export default function WorkspaceSidePanel({
   workspaceId,
   repos,
   onOpenFile,
+  onEditFile,
 }: {
   workspaceId: string;
   repos: WorkspaceRepoDetail[];
   /** Open a changed file's diff in a tab (the repo it belongs to, and its path). */
   onOpenFile: (repoId: string, path: string) => void;
+  /** Open a file in an editor tab, for the same repo/path pair. */
+  onEditFile: (repoId: string, path: string) => void;
 }) {
   const [repoId, setRepoId] = useState(repos[0]?.id ?? "");
   const [view, setView] = useState<View>("changes");
@@ -91,12 +94,19 @@ export default function WorkspaceSidePanel({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
-        {view === "files" && <FilesView workspaceId={workspaceId} repoId={repo.id} />}
+        {view === "files" && (
+          <FilesView
+            workspaceId={workspaceId}
+            repoId={repo.id}
+            onEditFile={(path) => onEditFile(repo.id, path)}
+          />
+        )}
         {view === "changes" && (
           <ChangesView
             workspaceId={workspaceId}
             repoId={repo.id}
             onOpenFile={(path) => onOpenFile(repo.id, path)}
+            onEditFile={(path) => onEditFile(repo.id, path)}
           />
         )}
         {view === "comments" && (
@@ -223,7 +233,15 @@ function FileListHeader({ paths, noun }: { paths: string[]; noun: string }) {
   );
 }
 
-function FilesView({ workspaceId, repoId }: { workspaceId: string; repoId: string }) {
+function FilesView({
+  workspaceId,
+  repoId,
+  onEditFile,
+}: {
+  workspaceId: string;
+  repoId: string;
+  onEditFile: (path: string) => void;
+}) {
   const { data, error } = usePolledRepoList(
     workspaceId,
     repoId,
@@ -247,14 +265,20 @@ function FilesView({ workspaceId, repoId }: { workspaceId: string; repoId: strin
           defaultOpen={false}
           renderFile={(node, depth) => (
             <div
-              className="group/row flex items-center gap-2 px-2 py-0.5"
+              className="group/row flex items-center gap-2 rounded hover:bg-zinc-800/60"
               style={{ paddingLeft: treeRowPaddingLeft(depth) }}
-              title={node.path}
             >
-              <span className="min-w-0 flex-1 truncate">{node.name}</span>
+              <button
+                type="button"
+                onClick={() => onEditFile(node.path)}
+                title={`Edit ${node.path}`}
+                className="min-w-0 flex-1 truncate px-2 py-0.5 text-left"
+              >
+                {node.name}
+              </button>
               <CopyPathButton
                 path={node.path}
-                className="opacity-0 transition-opacity focus:opacity-100 group-hover/row:opacity-100"
+                className="mr-2 opacity-0 transition-opacity focus:opacity-100 group-hover/row:opacity-100"
               />
             </div>
           )}
@@ -276,10 +300,12 @@ function ChangesView({
   workspaceId,
   repoId,
   onOpenFile,
+  onEditFile,
 }: {
   workspaceId: string;
   repoId: string;
   onOpenFile: (path: string) => void;
+  onEditFile: (path: string) => void;
 }) {
   const { data, error } = usePolledRepoList(
     workspaceId,
@@ -327,6 +353,20 @@ function ChangesView({
                     </span>
                   )}
                 </button>
+                {/* Kept beside the diff rather than replacing it: the reason to
+                    open a changed file is usually to read what changed. A
+                    deleted file has nothing to open. */}
+                {file.status !== "deleted" && (
+                  <button
+                    type="button"
+                    onClick={() => onEditFile(file.path)}
+                    title={`Edit ${file.path}`}
+                    aria-label={`Edit ${file.path}`}
+                    className="shrink-0 text-zinc-600 opacity-0 transition-opacity hover:text-zinc-200 focus:opacity-100 group-hover/row:opacity-100"
+                  >
+                    ✎
+                  </button>
+                )}
                 <CopyPathButton
                   path={file.path}
                   className="opacity-0 transition-opacity focus:opacity-100 group-hover/row:opacity-100"

@@ -81,10 +81,16 @@ afterEach(() => {
 
 const mount = async (
   onOpenFile: (repoId: string, path: string) => void = () => {},
+  onEditFile: (repoId: string, path: string) => void = () => {},
   repo: WorkspaceRepoDetail = REPO,
 ) => {
   const mounted = await mountForInteraction(
-    <WorkspaceSidePanel workspaceId="ws-1" repos={[repo]} onOpenFile={onOpenFile} />,
+    <WorkspaceSidePanel
+      workspaceId="ws-1"
+      repos={[repo]}
+      onOpenFile={onOpenFile}
+      onEditFile={onEditFile}
+    />,
   );
   unmount = mounted.unmount;
   return mounted.host;
@@ -133,8 +139,29 @@ describe("WorkspaceSidePanel", () => {
     const host = await mount();
     await clickTab(host, "All files");
     expect(folderNames(host)).toEqual(["src/components"]);
-    expect(host.querySelector('details ul [title="src/components/b.tsx"]')).not.toBeNull();
+    expect(host.querySelector('details ul [title="Edit src/components/b.tsx"]')).not.toBeNull();
     expect(host.innerHTML).not.toContain(">src/components/b.tsx<");
+  });
+
+  it("opens a tracked file in the editor from the all-files view", async () => {
+    const edited: string[] = [];
+    const host = await mount(
+      () => {},
+      (_repoId, path) => edited.push(path),
+    );
+    await clickTab(host, "All files");
+    host.querySelector<HTMLButtonElement>('[title="Edit src/components/b.tsx"]')?.click();
+    expect(edited).toEqual(["src/components/b.tsx"]);
+  });
+
+  it("offers an editor beside a changed file's diff", async () => {
+    const edited: string[] = [];
+    const host = await mount(
+      () => {},
+      (_repoId, path) => edited.push(path),
+    );
+    host.querySelector<HTMLButtonElement>('[title="Edit src/components/a.tsx"]')?.click();
+    expect(edited).toEqual(["src/components/a.tsx"]);
   });
 
   it("keeps the empty states of both views", async () => {
@@ -173,14 +200,18 @@ describe("WorkspaceSidePanel", () => {
   // The checks view is what gets handed to someone in chat when CI goes red, so
   // the copy carries the rollup, the counts and the PR's link.
   it("copies the check summary and the PR link", async () => {
-    const host = await mount(() => {}, {
-      ...REPO,
-      pr: {
-        ...POLLED_PR,
-        checkRollup: "failure",
-        checks: { total: 4, success: 3, failure: 1, pending: 0 },
+    const host = await mount(
+      () => {},
+      () => {},
+      {
+        ...REPO,
+        pr: {
+          ...POLLED_PR,
+          checkRollup: "failure",
+          checks: { total: 4, success: 3, failure: 1, pending: 0 },
+        },
       },
-    });
+    );
     await clickTab(host, "PR checks");
     await clickCopy(host, "Copy the check summary and the PR link");
     expect(clipboardWrites()).toEqual([

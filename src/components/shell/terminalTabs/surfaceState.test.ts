@@ -6,6 +6,7 @@ import {
   pinnedTabId,
   type SurfaceState,
   stateAfterCloseTab,
+  stateAfterOpenEditor,
 } from "./surfaceState";
 
 /** A surface holding `count` terminal tabs, with the first one active. */
@@ -99,5 +100,46 @@ describe("stateAfterCloseTab", () => {
     const next = stateAfterCloseTab(withTabs(1), "t0", "none", null);
     expect(next.tabs).toHaveLength(0);
     expect(next.activeTabId).toBe("");
+  });
+});
+
+describe("stateAfterOpenEditor", () => {
+  const FILE = { repoId: "wr-1", path: "src/a.ts" };
+
+  it("opens a tab for a file nothing is editing yet, and selects it", () => {
+    const next = stateAfterOpenEditor(withTabs(1), FILE, "a.ts");
+    expect(next.tabs).toHaveLength(2);
+    expect(next.tabs[1]).toMatchObject({ kind: "editor", ...FILE, title: "a.ts" });
+    expect(next.activeTabId).toBe(next.tabs[1]?.id);
+  });
+
+  it("re-selects the tab already editing that file instead of opening a second", () => {
+    const opened = stateAfterOpenEditor(withTabs(2), FILE, "a.ts");
+    const elsewhere = { ...opened, activeTabId: "t0" };
+
+    const next = stateAfterOpenEditor(elsewhere, FILE, "a.ts");
+
+    expect(next.tabs).toHaveLength(3);
+    expect(next.activeTabId).toBe(opened.activeTabId);
+  });
+
+  it("opens its own tab beside a diff tab for the same file", () => {
+    // The diff and the editor answer different questions; both stay open.
+    const withDiff: SurfaceState = {
+      ...withTabs(1),
+      tabs: [...withTabs(1).tabs, { id: "d0", title: "a.ts", kind: "diff", ...FILE }],
+    };
+
+    const next = stateAfterOpenEditor(withDiff, FILE, "a.ts");
+
+    expect(next.tabs).toHaveLength(3);
+    expect(next.activeTabId).not.toBe("d0");
+  });
+
+  it("returns the same state when that file's tab is already active", () => {
+    const opened = stateAfterOpenEditor(withTabs(1), FILE, "a.ts");
+    // Identity, not equality: a new object here re-fires the request effect that
+    // asked for the tab, which asks for it again.
+    expect(stateAfterOpenEditor(opened, FILE, "a.ts")).toBe(opened);
   });
 });

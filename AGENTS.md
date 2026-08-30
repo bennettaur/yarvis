@@ -180,6 +180,20 @@ back to ad-hoc.
   telling the model to treat it as reference material. A path or query a *model*
   chooses is untrusted input too: `sidecar/src/pr/codeTools.ts` refuses `..`
   segments and search qualifiers before they reach a provider client.
+- A path naming a file *inside a worktree* becomes a filesystem path only through
+  `resolveInWorktree` in `sidecar/src/workspaces/files.ts`, never through a bare
+  `resolve(worktreePath, path)`. Refusing `..` is not enough there: a symlink
+  inside the worktree leaves it just as effectively, so containment is checked
+  against the realpath, and any resolved path with a `.git` segment is refused
+  — a worktree's `.git` is a regular file whose `gitdir:` line decides which
+  hooks and config the next git command runs, and a submodule's is the same.
+  That test belongs on the resolved path and on every segment, case-insensitively:
+  a symlink to `.git`, a nested one, and `.GIT` on a case-insensitive filesystem
+  all reach the same file. A *write* additionally carries the hash the caller
+  read, is refused on a mismatch, and goes through a single file descriptor — the
+  worktree is shared with a live agent session, so an unconditional write drops
+  whatever it did, and re-opening by path invites the leaf to be swapped
+  underneath. Anything new that reaches into a worktree owes all of this.
 - Text a *model* composes that will be typed into another agent's prompt is the
   sharpest form of that, since the receiving agent acts on it with its own
   permissions. `claude.send` is the only such path and it is guarded on both

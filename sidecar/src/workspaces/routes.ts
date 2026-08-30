@@ -3,6 +3,7 @@ import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { CONTROL_CHARACTERS, MAX_FILE_BYTES, WorktreeFileError } from "./files.ts";
 import {
   createReviewComment,
   deleteReviewComment,
@@ -23,11 +24,13 @@ import {
   listWorkspaces,
   type ProvisionEvent,
   provisionWorkspace,
+  saveWorkspaceRepoFile,
   startArchiveWorkspace,
   unlinkIssue,
   unlinkTask,
   updateRepo,
   workspaceRepoChanges,
+  workspaceRepoFile,
   workspaceRepoFileDiff,
   workspaceRepoFiles,
   workspaceRepoSync,
@@ -99,8 +102,18 @@ const worktreePath = z
   .max(1024)
   .refine((p) => !p.startsWith("/"), "path must be relative to the worktree")
   .refine((p) => !p.split("/").includes(".."), "path must not escape the worktree")
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting control characters is the point
-  .refine((p) => !/[\u0000-\u001f\u007f]/.test(p), "path must not contain control characters");
+  .refine((p) => !CONTROL_CHARACTERS.test(p), "path must not contain control characters");
+
+// An edited file on its way back into a worktree. The length cap is a cheap
+// upper bound in characters, not the limit that decides what lands: the body is
+// already buffered by the time zod sees it, and `writeWorktreeFile` is what
+// measures the encoded bytes. `expectedHash` is what the editor was handed when
+// it opened the file — see `saveWorkspaceRepoFile`.
+const saveFileSchema = z.object({
+  path: worktreePath,
+  content: z.string().max(MAX_FILE_BYTES),
+  expectedHash: z.string().length(64),
+});
 
 // A self-review note on a diff line range. The body is capped like the other
 // free text we persist; the range is validated as an ordered pair of 1-based
@@ -309,6 +322,38 @@ export function createWorkspaceRoutes(config: Config): Hono {
       return c.json(await workspaceRepoFileDiff(db(), c.req.param("wrId"), path));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
+    }
+  });
+
+  // One file's contents, and saving an edit back. The editor reads the worktree
+  // as it is on disk rather than through git: it is the same view the agent
+  // session working in that worktree has.
+  const fileErrorStatus = (e: unknown): 400 | 404 | 409 =>
+    e instanceof WorktreeFileError ? e.status : errorStatus(e);
+
+  router.get("/:id/repos/:wrId/file", async (c) => {
+    // Held to the same shape the save side is, so the two routes can't disagree
+    // about what a path is. `resolveInWorktree` is still the boundary.
+    const path = worktreePath.safeParse(c.req.query("path"));
+    if (!path.success) return c.json({ error: path.error.flatten() }, 400);
+    try {
+      return c.json(await workspaceRepoFile(db(), c.req.param("wrId"), path.data));
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, fileErrorStatus(e));
+    }
+  });
+
+  router.put("/:id/repos/:wrId/file", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const parsed = saveFileSchema.safeParse(body);
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const { path, content, expectedHash } = parsed.data;
+    try {
+      return c.json(
+        await saveWorkspaceRepoFile(db(), c.req.param("wrId"), path, content, expectedHash),
+      );
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, fileErrorStatus(e));
     }
   });
 

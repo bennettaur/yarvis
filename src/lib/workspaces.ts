@@ -230,6 +230,71 @@ export async function workspaceRepoFileDiff(
   return res.json();
 }
 
+/** Why a file came back without its contents. Null when it is editable text. */
+export type FileUnreadable = "binary" | "too-large" | "encoding";
+
+/** One file in a workspace repo's worktree, as the editor opens it. */
+export interface WorkspaceFile {
+  path: string;
+  /** UTF-8 text, or null when `unreadable` says why there is none. */
+  content: string | null;
+  unreadable: FileUnreadable | null;
+  /** Hash of the bytes on disk, handed back on save to prove the edit was
+   *  written against what is still there. Null for a file too large to have been
+   *  read, and so one nothing can be saved over. */
+  hash: string | null;
+  size: number;
+}
+
+export interface SaveFileResult {
+  hash: string;
+  size: number;
+}
+
+/** A save refused because the file changed on disk after it was opened — the
+ *  agent session shares the worktree, so this is an ordinary outcome the editor
+ *  offers to resolve, not a failure to report as one. */
+export class FileConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FileConflictError";
+  }
+}
+
+/** One file's current contents in a workspace repo's worktree. */
+export async function workspaceRepoFile(
+  workspaceId: string,
+  workspaceRepoId: string,
+  path: string,
+): Promise<WorkspaceFile> {
+  const res = await sidecarFetch(
+    `/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/file?path=${encodeURIComponent(path)}`,
+  );
+  if (!res.ok) return readError(res, "load file");
+  return res.json();
+}
+
+/** Writes an edited file back. `expectedHash` is the hash the file was opened
+ *  with; a stale one comes back as a `FileConflictError`. */
+export async function saveWorkspaceRepoFile(
+  workspaceId: string,
+  workspaceRepoId: string,
+  path: string,
+  content: string,
+  expectedHash: string,
+): Promise<SaveFileResult> {
+  const res = await sidecarFetch(`/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/file`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, content, expectedHash }),
+  });
+  if (res.status === 409) {
+    throw new FileConflictError("This file changed on disk since you opened it.");
+  }
+  if (!res.ok) return readError(res, "save file");
+  return res.json();
+}
+
 /** Push/pull divergence for a workspace repo's branch (fetches remote first). */
 export async function workspaceRepoSync(
   workspaceId: string,

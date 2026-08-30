@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { setViewedWorkspace } from "../lib/attentionScope";
 import { useAttentionWorkspaceIds } from "../lib/attentionStore";
+import { clearDraft, draftKey, fileKey, useWorkspaceDraftKeys } from "../lib/fileDrafts";
 import type { NewWorkspaceRequest, OpenWorkspaceRequest } from "../lib/nav";
 import { type AgentConfig, getAgentConfig, ptyExists, startClaudeSession } from "../lib/pty";
 import { createRepo, listRepoBranches, listRepos, type Repo } from "../lib/repos";
@@ -22,6 +23,7 @@ import CopyPathButton from "./pr/CopyPathButton";
 import SplitPane, { usePersistedRatio } from "./SplitPane";
 import TerminalTabs, {
   type OpenFileDiff,
+  type OpenFileEditor,
   type OpenSetupLog,
 } from "./shell/terminalTabs/TerminalTabs";
 import TerminalPanel from "./TerminalPanel";
@@ -42,6 +44,11 @@ import WorkspaceFileDiff from "./workspaces/WorkspaceFileDiff";
 import WorkspacePrBadges from "./workspaces/WorkspacePrBadges";
 import WorkspacePrStatus from "./workspaces/WorkspacePrStatus";
 import WorkspaceSetupLog from "./workspaces/WorkspaceSetupLog";
+
+// The editor tab pulls CodeMirror in with it — a few hundred kilobytes that a
+// session which never opens a file has no use for, so it is fetched when the
+// first editor tab is.
+const WorkspaceFileEditor = lazy(() => import("./workspaces/WorkspaceFileEditor"));
 
 const STATUS_STYLES: Record<WorkspaceStatus, string> = {
   creating: "bg-amber-900/40 text-amber-200",
@@ -773,6 +780,11 @@ function WorkspaceDetailView({
   // A changed file the side panel asked to open in a diff tab; consumed by
   // TerminalTabs, which either opens a new tab or re-focuses the existing one.
   const [diffRequest, setDiffRequest] = useState<OpenFileDiff | null>(null);
+  // A file the side panel asked to open for editing, consumed the same way.
+  const [editorRequest, setEditorRequest] = useState<OpenFileEditor | null>(null);
+  // This workspace's unsaved editor buffers. They live outside the tabs because
+  // a tab is unmounted whenever another one is selected.
+  const dirtyEditorKeys = useWorkspaceDraftKeys(id);
   // A failed repo's setup log to open in a tab (same request/consume shape as
   // diffRequest). Set by the auto-open effect below and the per-repo button.
   const [setupLogRequest, setSetupLogRequest] = useState<OpenSetupLog | null>(null);
@@ -1269,6 +1281,27 @@ function WorkspaceDetailView({
                   renderFileDiff={({ repoId, path }) => (
                     <WorkspaceFileDiff workspaceId={detail.id} repoId={repoId} path={path} />
                   )}
+                  openFileEditor={editorRequest}
+                  onFileEditorOpened={() => setEditorRequest(null)}
+                  // Keyed by the file: without it React reuses one editor
+                  // across editor tabs, leaving the previous file's contents and
+                  // conflict state on screen under the new file's name — and
+                  // "Overwrite with mine" would then write those contents to
+                  // this file, with a hash fresh enough to pass the guard.
+                  renderFileEditor={({ repoId, path }) => (
+                    <Suspense fallback={<p className="p-3 text-xs text-zinc-500">Loading…</p>}>
+                      <WorkspaceFileEditor
+                        key={fileKey(repoId, path)}
+                        workspaceId={detail.id}
+                        repoId={repoId}
+                        path={path}
+                      />
+                    </Suspense>
+                  )}
+                  dirtyEditorKeys={dirtyEditorKeys}
+                  onDiscardEditor={({ repoId, path }) =>
+                    clearDraft(draftKey(detail.id, repoId, path))
+                  }
                   openSetupLog={setupLogRequest}
                   onSetupLogOpened={() => setSetupLogRequest(null)}
                   renderSetupLog={({ workspaceRepoId }) => {
@@ -1329,6 +1362,7 @@ function WorkspaceDetailView({
               workspaceId={detail.id}
               repos={detail.repos}
               onOpenFile={(repoId, path) => setDiffRequest({ repoId, path })}
+              onEditFile={(repoId, path) => setEditorRequest({ repoId, path })}
             />
           }
         />

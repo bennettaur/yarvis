@@ -41,6 +41,12 @@ import {
 import { writeClaudeSettings } from "./claudeSettings.ts";
 import { runStreaming } from "./exec.ts";
 import {
+  readWorktreeFile,
+  type WorktreeFile,
+  type WriteResult,
+  writeWorktreeFile,
+} from "./files.ts";
+import {
   addExistingBranchWorktree,
   type BranchSync,
   branchExists,
@@ -646,6 +652,33 @@ export async function workspaceRepoChanges(
 ): Promise<ChangedFile[]> {
   const wr = await getWorkspaceRepo(db, workspaceRepoId);
   return listChangedFiles(runner, wr.worktreePath, wr.baseBranch);
+}
+
+/** One file's current contents in a workspace repo's worktree, for the editor. */
+export async function workspaceRepoFile(
+  db: Db,
+  workspaceRepoId: string,
+  path: string,
+): Promise<WorktreeFile> {
+  const wr = await getWorkspaceRepo(db, workspaceRepoId);
+  return readWorktreeFile(wr.worktreePath, path);
+}
+
+/**
+ * Saves an edited file back into a workspace repo's worktree. `expectedHash` is
+ * the hash the editor was handed when it opened the file; a mismatch means the
+ * agent (or anything else sharing the worktree) has written since, and the save
+ * is refused rather than applied over it.
+ */
+export async function saveWorkspaceRepoFile(
+  db: Db,
+  workspaceRepoId: string,
+  path: string,
+  content: string,
+  expectedHash: string,
+): Promise<WriteResult> {
+  const wr = await getWorkspaceRepo(db, workspaceRepoId);
+  return writeWorktreeFile(wr.worktreePath, path, content, expectedHash);
 }
 
 /** The unified-diff patch for one changed file in a workspace repo's worktree. */
