@@ -56,6 +56,7 @@ import {
   defaultGitRunner,
   detectDefaultBranch,
   ensurePrimaryClone,
+  existingWorktree,
   fetchBranch,
   fetchRemote,
   fileDiff,
@@ -1188,14 +1189,16 @@ function aborted(signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * (Re)writes AGENTS.md and CLAUDE.md at the workspace root. Claude is started
- * in the workspace root rather than inside a single repo — so it can work
- * across every repo checked out there — but that's not its usual layout, and
- * without help it can assume the workspace root itself is the project. These
- * files spell out which repos are present, where, and on what branch.
- * Best-effort: a write failure is logged but must not fail provisioning.
+ * (Re)writes the files a workspace root needs before an agent runs there: the
+ * AGENTS.md/CLAUDE.md pair, the Claude settings, and the MCP config. Claude is
+ * started in the workspace root rather than inside a single repo — so it can
+ * work across every repo checked out there — but that's not its usual layout,
+ * and without help it can assume the workspace root itself is the project. The
+ * context files spell out which repos are present, where, and on what branch.
+ * Best-effort throughout: a write failure is logged but must not fail
+ * provisioning.
  */
-function writeContextFiles(detail: WorkspaceDetail): void {
+function writeWorkspaceFiles(detail: WorkspaceDetail): void {
   const lines = [
     `# Workspace: ${detail.name}`,
     "",
@@ -1227,13 +1230,70 @@ function writeContextFiles(detail: WorkspaceDetail): void {
   } catch (e) {
     console.error("[workspaces] failed to write AGENTS.md/CLAUDE.md:", e);
   }
+
+  writeClaudeSettings(
+    detail.rootPath,
+    detail.id,
+    detail.repos.map((wr) => wr.worktreePath),
+  );
+  writeMcpConfig(detail.rootPath);
+}
+
+/**
+ * Puts a worktree at the row's path and answers with the branch it ends up on.
+ * Everything a provision run does after this point can fail — the setup script
+ * most often — so a retry has to expect the worktree to be there already and
+ * adopt it. Cutting it again is what used to make a failed provision
+ * unrecoverable: `worktree add` refuses the path, and every retry failed on the
+ * one step that had actually worked.
+ */
+async function ensureWorktree(
+  runner: GitRunner,
+  wr: WorkspaceRepoDetail,
+  base: string,
+  workspaceId: string,
+  retry: boolean,
+): Promise<string> {
+  const clone = wr.repo.primaryClonePath;
+
+  // What is checked out there wins over the row: the worktree is a real
+  // checkout, and its branch is where any work already done actually is.
+  const existing = await existingWorktree(runner, clone, wr.worktreePath);
+  if (existing) return existing.branch ?? wr.branch;
+
+  if (wr.existingBranch) {
+    // Check out the branch the user chose as-is; `base` still stands as the diff
+    // base so changes show against the default branch.
+    await fetchBranch(runner, clone, wr.branch);
+    await addExistingBranchWorktree(runner, clone, wr.worktreePath, wr.branch);
+    return wr.branch;
+  }
+
+  if (await branchExists(runner, clone, wr.branch)) {
+    // On a retry the branch is this row's own — the attempt that failed cut it —
+    // so check it back out rather than stranding whatever it carries. A first
+    // attempt finding the name taken has collided with a prior workspace's
+    // branch, and cuts a distinct one beside it.
+    if (retry) {
+      await addExistingBranchWorktree(runner, clone, wr.worktreePath, wr.branch);
+      return wr.branch;
+    }
+    const branch = `${wr.branch}-${workspaceId.slice(0, 8)}`;
+    await createWorktree(runner, clone, wr.worktreePath, branch, base);
+    return branch;
+  }
+
+  await createWorktree(runner, clone, wr.worktreePath, wr.branch, base);
+  return wr.branch;
 }
 
 /**
  * Drives provisioning for a workspace: per repo, ensure the primary clone,
  * refresh its default branch, cut a worktree, and run the setup script —
  * emitting progress events (setup output streams through `emit`). Idempotent
- * enough to retry: a repo already `ready`/`removed` is skipped. A call made
+ * enough to retry: a repo already `ready`/`removed` is skipped, and one that
+ * stopped part-way adopts the worktree its attempt did manage to cut rather
+ * than failing on it a second time (see `ensureWorktree`). A call made
  * while a run is already in flight follows that run instead of starting a
  * second one, and `signal` detaches that follower without disturbing the run.
  */
@@ -1295,6 +1355,11 @@ export async function provisionWorkspace(
 
     const provisionRepo = async (wr: WorkspaceRepoDetail): Promise<void> => {
       if (wr.status === "ready" || wr.status === "removed") return;
+      // Read before the row is set to `provisioning`: a repo that has been
+      // through provisioning already may have work on disk from that attempt,
+      // and what `ensureWorktree` may reuse turns on it. `provisioning` counts
+      // as well — that is an attempt a sidecar restart cut short.
+      const retry = wr.status === "error" || wr.status === "provisioning";
       await safeEmit({ type: "repo-start", workspaceRepoId: wr.id, repo: wr.repo.name });
       await db
         .update(workspaceRepos)
@@ -1317,32 +1382,11 @@ export async function provisionWorkspace(
 
           await updateDefaultBranch(runner, repo.primaryClonePath, base);
 
-          if (wr.existingBranch) {
-            // Check out the branch the user chose as-is; `base` still stands as
-            // the diff base so changes show against the default branch.
-            await fetchBranch(runner, repo.primaryClonePath, wr.branch);
-            await addExistingBranchWorktree(
-              runner,
-              repo.primaryClonePath,
-              wr.worktreePath,
-              wr.branch,
-            );
-            await db
-              .update(workspaceRepos)
-              .set({ baseBranch: base })
-              .where(eq(workspaceRepos.id, wr.id));
-          } else {
-            // Avoid colliding with a branch left behind by a prior workspace.
-            let branch = wr.branch;
-            if (await branchExists(runner, repo.primaryClonePath, branch)) {
-              branch = `${wr.branch}-${id.slice(0, 8)}`;
-            }
-            await createWorktree(runner, repo.primaryClonePath, wr.worktreePath, branch, base);
-            await db
-              .update(workspaceRepos)
-              .set({ branch, baseBranch: base })
-              .where(eq(workspaceRepos.id, wr.id));
-          }
+          const branch = await ensureWorktree(runner, wr, base, id, retry);
+          await db
+            .update(workspaceRepos)
+            .set({ branch, baseBranch: base })
+            .where(eq(workspaceRepos.id, wr.id));
         });
 
         let exitCode = 0;
@@ -1394,15 +1438,7 @@ export async function provisionWorkspace(
 
     // The workspace is active only if every repo provisioned cleanly.
     const after = await getWorkspace(db, id);
-    if (after) {
-      writeContextFiles(after);
-      writeClaudeSettings(
-        after.rootPath,
-        after.id,
-        after.repos.map((wr) => wr.worktreePath),
-      );
-      writeMcpConfig(after.rootPath);
-    }
+    if (after) writeWorkspaceFiles(after);
     const allReady = after?.repos.every((r) => r.status === "ready" || r.status === "removed");
     let status: Workspace["status"] = allReady ? "active" : "error";
     let error = allReady ? null : "one or more repos failed";
@@ -1545,6 +1581,52 @@ export async function resumeKickOffs(db: Db, options: ProvisionOptions = {}): Pr
       console.error(`[workspaces] could not resume kick-off for ${id}:`, e),
     );
   }
+}
+
+/**
+ * Accepts a workspace's failed provisioning and puts it back in service. The
+ * worktrees a failed run did cut are real, and a setup script that exited
+ * non-zero usually leaves a space that is perfectly workable — so rather than
+ * every visit to the workspace leading with its error page, this flips it
+ * `active` and leaves the per-repo failures and their setup logs on the rows,
+ * where they still read as failed and a retry is still offered.
+ *
+ * A kick-off still owed a session is finished here, for the same reason
+ * provisioning finishes it before flipping the status: nothing else will now,
+ * and a prompt left pending would have `resumeKickOffs` re-drive provisioning on
+ * the next start and put the workspace straight back into `error`.
+ */
+export async function ignoreWorkspaceError(
+  db: Db,
+  id: string,
+  { startSession = startClaudeSession }: { startSession?: ClaudeSessionStarter } = {},
+): Promise<WorkspaceDetail | null> {
+  const detail = await getWorkspace(db, id);
+  if (!detail) return null;
+  if (detail.status !== "error") {
+    throw new Error("only a workspace whose provisioning failed can be ignored");
+  }
+
+  try {
+    // A run that failed outright may never have got this far, and the workspace
+    // is about to have an agent session started in it.
+    mkdirSync(detail.rootPath, { recursive: true });
+    writeWorkspaceFiles(detail);
+    if (detail.pendingIssuePrompt) {
+      await writeIssuePrompt(detail.rootPath, detail.pendingIssuePrompt);
+      await launchKickOffSession(db, detail, startSession, false);
+    }
+  } catch (e) {
+    // Best-effort, like the kick-off launch itself: the point of ignoring the
+    // error is to get into the space, so nothing here may stand in the way.
+    console.error("[workspaces] could not prepare the workspace it was told to ignore:", e);
+  }
+
+  await db
+    .update(workspaces)
+    .set({ status: "active", error: null, updatedAt: new Date() })
+    .where(eq(workspaces.id, id));
+  return getWorkspace(db, id);
 }
 
 // ---------------------------------------------------------------------------

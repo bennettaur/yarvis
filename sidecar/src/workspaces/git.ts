@@ -11,7 +11,7 @@
  * (merge, push) likewise run in a worktree, never in the primary clone.
  */
 
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { run } from "./exec.ts";
 
@@ -337,6 +337,62 @@ export async function branchExists(
     cwd: primaryClonePath,
   });
   return result.exitCode === 0;
+}
+
+/** A worktree already registered at the path a workspace repo wants. */
+export interface ExistingWorktree {
+  /** The branch it has checked out, or null on a detached HEAD. */
+  branch: string | null;
+}
+
+/**
+ * Resolves symlinks so two spellings of one directory compare equal — the
+ * workspaces root can sit behind one (`/var` on macOS) and git reports what it
+ * resolved. Falls back to the path itself when there is nothing on disk yet.
+ */
+function canonicalPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/**
+ * The worktree already registered at `worktreePath`, or null when the path is
+ * free. Provisioning is retried after failures that happen once the worktree is
+ * cut — a setup script exiting non-zero is the everyday one — so it has to be
+ * able to tell "already done" from "not done yet" rather than failing the retry
+ * on `worktree add`. Prunes first, so a folder deleted out of band reads as free.
+ *
+ * A directory with contents that git doesn't know as a worktree throws instead:
+ * `worktree add` would refuse it anyway, and naming it is what tells the user
+ * what to clear.
+ */
+export async function existingWorktree(
+  runner: GitRunner,
+  primaryClonePath: string,
+  worktreePath: string,
+): Promise<ExistingWorktree | null> {
+  await git(runner, ["worktree", "prune"], primaryClonePath);
+  const listed = await git(runner, ["worktree", "list", "--porcelain"], primaryClonePath);
+  const target = canonicalPath(worktreePath);
+  // Porcelain records are blank-line separated: "worktree <path>", "HEAD <sha>",
+  // then "branch <ref>" or "detached".
+  for (const record of listed.split("\n\n")) {
+    const lines = record.split("\n");
+    const path = lines.find((l) => l.startsWith("worktree "))?.slice("worktree ".length);
+    if (!path || canonicalPath(path) !== target) continue;
+    const ref = lines.find((l) => l.startsWith("branch "))?.slice("branch ".length);
+    return { branch: ref?.replace(/^refs\/heads\//, "") ?? null };
+  }
+
+  if (existsSync(worktreePath) && readdirSync(worktreePath).length > 0) {
+    throw new Error(
+      `${worktreePath} already exists and is not a worktree of ${primaryClonePath} — remove it to provision again`,
+    );
+  }
+  return null;
 }
 
 /**

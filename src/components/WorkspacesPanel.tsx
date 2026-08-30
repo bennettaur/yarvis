@@ -10,6 +10,7 @@ import { openExternal } from "../lib/url";
 import {
   createWorkspace,
   getWorkspace,
+  ignoreWorkspaceError,
   listWorkspaces,
   unlinkWorkspaceIssue,
   unlinkWorkspaceTask,
@@ -908,10 +909,13 @@ function WorkspaceDetailView({
 
   // When a workspace with a failed repo loads — whether provisioning just failed
   // here, or the user reopened an errored workspace — auto-open that repo's
-  // setup-log tab so the failure is visible without hunting for it. Fires once
-  // per mount; the per-repo "Setup log" button below reopens it after a close.
+  // setup-log tab so the failure is visible without hunting for it. Gated on the
+  // workspace's own status, so a failure the user chose to ignore — which is
+  // what puts it back to `active` — stops leading with the error page on every
+  // visit. Fires once per mount; the per-repo "Setup log" button below reopens
+  // it after a close.
   useEffect(() => {
-    if (setupAutoOpenedRef.current || !detail) return;
+    if (setupAutoOpenedRef.current || detail?.status !== "error") return;
     const failed = detail.repos.find((wr) => wr.status === "error");
     if (!failed) return;
     setupAutoOpenedRef.current = true;
@@ -937,6 +941,21 @@ function WorkspaceDetailView({
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [id, load, onChanged]);
+
+  // Take the provisioning failure as read and use the workspace anyway. The
+  // sidecar flips it back to `active`, which is what lets the agent session and
+  // the rest of the workspace's surfaces come up; the repos that failed keep
+  // their badges and setup logs, and the retry button below stays offered.
+  const ignoreError = useCallback(async () => {
+    try {
+      const next = await ignoreWorkspaceError(id);
+      setDetail(next);
+      statusRef.current = next.status;
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [id, onChanged]);
 
   // Auto-provision a workspace whose kick-off is still running. The sidecar
   // drives it whether or not anyone is here, so this only joins the run already
@@ -1026,6 +1045,12 @@ function WorkspaceDetailView({
   if (!detail) return <p className="p-6 text-sm text-zinc-500">Loading…</p>;
 
   const provisioned = detail.status === "active";
+  // A repo that failed has no worktree to work in, so the retry stays on offer
+  // after the workspace-level error has been ignored. A teardown that failed
+  // leaves repos in `error` too, and that one is the archive's to retry.
+  const archiving = detail.status === "archiving" || detail.status === "archived";
+  const provisionFailed =
+    !archiving && (detail.status === "error" || detail.repos.some((wr) => wr.status === "error"));
   const agentCwd = agentCwdForWorkspace(detail);
   // A background teardown that couldn't remove a worktree parks the workspace
   // in `archiving` with the failure recorded, so the button becomes the retry.
@@ -1228,19 +1253,29 @@ function WorkspaceDetailView({
         />
       )}
 
-      {!provisioned && provisionLog === null && (
-        <div className="shrink-0 border-b border-zinc-800 px-4 py-2">
+      {(!provisioned || provisionFailed) && provisionLog === null && (
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-zinc-800 px-4 py-2">
           <button
             type="button"
             onClick={() => void provision()}
             className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500"
           >
-            {detail.status === "error"
+            {provisionFailed
               ? "Retry provisioning"
               : detail.repos.length === 0
                 ? "Create folder"
                 : "Provision worktrees"}
           </button>
+          {detail.status === "error" && (
+            <button
+              type="button"
+              onClick={() => void ignoreError()}
+              className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
+            >
+              Ignore and use anyway
+            </button>
+          )}
+          {detail.error && <span className="text-xs text-red-400">{detail.error}</span>}
         </div>
       )}
 
