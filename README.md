@@ -438,11 +438,12 @@ switching workspaces (or leaving the Workspaces tab) and coming back counts as
 opening the workspace again and starts a fresh session. The header's start-session
 button brings one back on the spot.
 
-An issue's "Start work" is held by the sidecar on the workspace itself, not by
-the screen you started it from, so navigating away mid-kick-off doesn't strand
-it. Reopening the workspace rejoins the provisioning run already in flight and
-picks its log back up, then launches the agent on the ticket once it lands. If
-provisioning failed, the ticket is still waiting behind "Retry provisioning".
+A kick-off — an issue's "Start work", a task's, or one the in-app agent
+started — is held by the sidecar on the workspace itself, not by the screen you
+started it from, so navigating away mid-kick-off doesn't strand it. Reopening
+the workspace rejoins the provisioning run already in flight and picks its log
+back up, then launches the agent on the work once it lands. If provisioning
+failed, the work is still waiting behind "Retry provisioning".
 
 The agent's tab title and launch command are set under Settings → Repositories →
 Agent, defaulting to `Claude` and `claude --permission-mode auto`, so you can

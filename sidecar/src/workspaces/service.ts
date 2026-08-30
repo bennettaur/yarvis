@@ -30,10 +30,9 @@ import {
   listLinksForWorkspace,
   sanitizeIssueText,
   upsertLink,
-  WORKSPACE_BRIEF_FILE,
-  writeWorkspaceBrief,
 } from "../issues/service.ts";
 import { completeTasksByWorkspace, tasksForWorkspace } from "../tasks/service.ts";
+import { WORKSPACE_BRIEF_FILE, writeWorkspaceBrief } from "./brief.ts";
 import {
   type ClaudeSessionStarter,
   startClaudeSession,
@@ -1463,7 +1462,7 @@ export async function provisionWorkspace(
  * under the workspace root, so one fixed instruction covers every producer and
  * a body of any size stays off the command line.
  */
-export const AGENT_KICKOFF_INSTRUCTION = `Read the work details in ${WORKSPACE_BRIEF_FILE} and make a first pass at them, following the repository's conventions.`;
+export const AGENT_KICKOFF_INSTRUCTION = `Read the work described in ${WORKSPACE_BRIEF_FILE} and make a first pass at it, following the conventions of whichever repository you are working in.`;
 
 /**
  * Launches the session a kick-off has been waiting for and drops the brief that

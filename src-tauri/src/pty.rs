@@ -1303,9 +1303,9 @@ mod tests {
                 "claude --permission-mode auto",
                 "Fix bug",
                 false,
-                Some("Read .yarvis/issue-prompt.md")
+                Some("Read .yarvis/brief.md")
             ),
-            "claude --permission-mode auto 'Read .yarvis/issue-prompt.md'"
+            "claude --permission-mode auto 'Read .yarvis/brief.md'"
         );
         // Remote Control and an instruction compose; the name and the
         // instruction are quoted independently.

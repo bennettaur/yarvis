@@ -510,7 +510,7 @@ function NewWorkspaceForm({
         taskId: taskId || undefined,
         // A "Start work" handoff (Tasks) seeds the agent session; the sidecar
         // holds the brief so the launch doesn't depend on this form staying mounted.
-        brief: prefill?.claudePrompt,
+        brief: prefill?.brief,
       });
       setPhase("provisioning");
       const result = await consumeProvision(ws.id, (text) => setLog((prev) => prev + text));

@@ -78,14 +78,14 @@ const NEW_WORKSPACE_EVENT = "yarvis:new-workspace";
 /**
  * A request to open the New Workspace form on the Workspaces tab, pre-filled
  * from another view. `taskId` links the new workspace to an existing task on
- * create. `claudePrompt`, when set (the task "Start work" flow), is handed to
- * the sidecar at create time as the workspace's brief, so it seeds the agent
- * session once the workspace is provisioned.
+ * create. `brief`, when set (the task "Start work" flow), is handed to the
+ * sidecar at create time, which seeds it into the workspace's brief file and
+ * launches the agent session on it once the workspace is provisioned.
  */
 export interface NewWorkspaceRequest {
   name?: string;
   taskId?: string;
-  claudePrompt?: string;
+  brief?: string;
 }
 
 interface NewWorkspaceEvent extends Event {

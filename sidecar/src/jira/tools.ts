@@ -3,12 +3,8 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { emitEvent } from "../events/service.ts";
-import {
-  buildIssuePrompt,
-  sanitizeIssueText,
-  upsertLink,
-  WORKSPACE_BRIEF_FILE,
-} from "../issues/service.ts";
+import { buildIssuePrompt, sanitizeIssueText, upsertLink } from "../issues/service.ts";
+import { kickOffResult, WORKSPACE_BRIEF_FILE } from "../workspaces/brief.ts";
 import {
   type ClaudeSessionStarter,
   startClaudeSession as defaultStartClaudeSession,
@@ -291,30 +287,10 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
           payload: { key, workspaceId: ws.id, repos: detail.repos.map((r) => r.repo.name) },
         });
 
-        // The brief is dropped once the session has been launched on it, so a
-        // brief still sitting there is a launch that didn't happen.
-        if (detail.pendingBrief) {
-          return {
-            error: "workspace is ready, but the agent session failed to start",
-            workspaceId: ws.id,
-            name: detail.name,
-            status: detail.status,
-            warnings,
-            note: `Open the workspace locally and start the agent there; the ticket is already seeded in ${WORKSPACE_BRIEF_FILE}.`,
-          };
-        }
-
         return {
-          workspaceId: ws.id,
-          name: detail.name,
-          status: detail.status,
-          repos: detail.repos.map((r) => r.repo.name),
-          sessionName: detail.name,
-          sessionKey: `ws-claude:${ws.id}`,
-          message: sessionStartedMessage(detail.name, remoteControl),
+          ...kickOffResult(detail, remoteControl),
           issue: { key, summary: sanitizeIssueText(issue.title), url: issue.url },
           warnings,
-          briefFile: WORKSPACE_BRIEF_FILE,
         };
       },
     }),

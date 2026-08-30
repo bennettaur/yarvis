@@ -9,7 +9,7 @@ import { completeTask, createTask, deleteTask, listTasks, type Task } from "../l
  * every entry point. Kept in step with `buildTaskBrief` in the sidecar's
  * `tasks/service.ts`, which produces the same document for the chat agent.
  */
-export function buildTaskPrompt(task: Task): string {
+export function buildTaskBrief(task: Task): string {
   const lines = [
     "Work on the following task from the Yarvis task list.",
     "",
@@ -130,7 +130,7 @@ function TaskRow({
               requestNewWorkspace({
                 name: task.title,
                 taskId: task.id,
-                claudePrompt: buildTaskPrompt(task),
+                brief: buildTaskBrief(task),
               })
             }
             aria-label="Start work on this task"

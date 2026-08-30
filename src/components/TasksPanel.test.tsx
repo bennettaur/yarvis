@@ -2,7 +2,7 @@ import { describe, expect, it, mock, setSystemTime } from "bun:test";
 import { createElement } from "react";
 import type { Task } from "../lib/tasks";
 import { renderToHtml } from "../test/render";
-import TasksPanel, { buildTaskPrompt } from "./TasksPanel";
+import TasksPanel, { buildTaskBrief } from "./TasksPanel";
 
 setSystemTime(new Date("2026-06-17T12:00:00"));
 
@@ -62,7 +62,7 @@ describe("TasksPanel", () => {
   });
 });
 
-describe("buildTaskPrompt", () => {
+describe("buildTaskBrief", () => {
   const base: Task = {
     id: "t1",
     title: "Do the thing",
@@ -76,16 +76,16 @@ describe("buildTaskPrompt", () => {
   };
 
   it("includes the title as a markdown heading", () => {
-    expect(buildTaskPrompt(base)).toContain("# Do the thing");
+    expect(buildTaskBrief(base)).toContain("# Do the thing");
   });
 
   it("falls back to a placeholder when notes are null or whitespace-only", () => {
-    expect(buildTaskPrompt(base)).toContain("_(no notes)_");
-    expect(buildTaskPrompt({ ...base, notes: "   \n  " })).toContain("_(no notes)_");
+    expect(buildTaskBrief(base)).toContain("_(no notes)_");
+    expect(buildTaskBrief({ ...base, notes: "   \n  " })).toContain("_(no notes)_");
   });
 
   it("inlines notes verbatim when present", () => {
-    expect(buildTaskPrompt({ ...base, notes: "check the auth path" })).toContain(
+    expect(buildTaskBrief({ ...base, notes: "check the auth path" })).toContain(
       "check the auth path",
     );
   });
