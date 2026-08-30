@@ -63,7 +63,7 @@ const createWorkspaceSchema = z.object({
   // the row until the launch line goes out. Capped like the issue bodies it is
   // composed from (see `createIssueSchema`), now that it is persisted rather
   // than passed straight through.
-  issuePrompt: z.string().max(65536).nullish(),
+  brief: z.string().max(65536).nullish(),
 });
 
 const archiveSchema = z.object({
@@ -255,10 +255,10 @@ export function createWorkspaceRoutes(config: Config): Hono {
   router.get("/:id", async (c) => {
     const workspace = await getWorkspace(db(), c.req.param("id"));
     if (!workspace) return c.json({ error: "not found" }, 404);
-    // `pendingIssuePrompt` stays server-side: it is how provisioning remembers a
+    // `pendingBrief` stays server-side: it is how provisioning remembers a
     // kick-off it still owes a session, and nothing outside the sidecar acts on
     // it. Clients open the workspace and attach to whatever session is there.
-    const { pendingIssuePrompt: _internal, ...body } = workspace;
+    const { pendingBrief: _internal, ...body } = workspace;
     return c.json(body);
   });
 

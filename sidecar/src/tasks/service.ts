@@ -91,6 +91,31 @@ export async function tasksCompletedBetween(db: Db, from: Date, to: Date): Promi
     .orderBy(asc(tasks.completedAt));
 }
 
+/** One task by id, or null when it doesn't exist. */
+export async function getTask(db: Db, id: string): Promise<Task | null> {
+  const [row] = await db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
+  return row ?? null;
+}
+
+/**
+ * Builds the kick-off brief for a task, in the shape `buildIssuePrompt` gives an
+ * issue, so a session started on a task reads the same kind of file as one
+ * started on a ticket. `extra` carries anything the caller knows that the task
+ * row doesn't — the chat agent's own framing of what it wants done.
+ */
+export function buildTaskBrief(task: Task, extra?: string | null): string {
+  const lines = [
+    "Work on the following task from the Yarvis task list.",
+    "",
+    `# ${task.title}`,
+    "",
+    (task.notes ?? "").trim() || "_(no notes)_",
+  ];
+  const trimmedExtra = extra?.trim();
+  if (trimmedExtra) lines.push("", "## Additional context", "", trimmedExtra);
+  return `${lines.join("\n")}\n`;
+}
+
 /** Tasks linked to a workspace (oldest first), for the workspace detail view. */
 export async function tasksForWorkspace(db: Db, workspaceId: string): Promise<Task[]> {
   return db

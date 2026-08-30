@@ -120,7 +120,7 @@ back to ad-hoc.
 - Work that must finish regardless of what the UI is doing belongs in the
   sidecar, not in a React effect. An issue's "Start work" is the worked example:
   the route answers as soon as the workspace exists and the rest — provisioning,
-  seeding `.yarvis/issue-prompt.md`, launching the agent session on the ticket —
+  seeding `.yarvis/brief.md`, launching the agent session on the ticket —
   runs in the background there. The frontend starts nothing and resumes nothing;
   it opens a workspace and attaches to whatever session is present.
 - Agent tools that read a pull request's code go through the `PrCodeSource`

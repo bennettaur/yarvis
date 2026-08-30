@@ -88,7 +88,7 @@ describe("startWorkspaceForPr", () => {
     await addRepo();
     const { kickOff } = recordingKickOff();
     const { workspaceId } = await startWorkspaceForPr(db, config, fakeSource({}), { kickOff });
-    expect((await getWorkspace(db, workspaceId))?.pendingIssuePrompt).toBeNull();
+    expect((await getWorkspace(db, workspaceId))?.pendingBrief).toBeNull();
   });
 
   it("reuses the workspace the poller has already matched to the pull request", async () => {

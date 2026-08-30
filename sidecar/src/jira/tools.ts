@@ -3,7 +3,12 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { emitEvent } from "../events/service.ts";
-import { buildIssuePrompt, sanitizeIssueText, upsertLink } from "../issues/service.ts";
+import {
+  buildIssuePrompt,
+  sanitizeIssueText,
+  upsertLink,
+  WORKSPACE_BRIEF_FILE,
+} from "../issues/service.ts";
 import {
   type ClaudeSessionStarter,
   startClaudeSession as defaultStartClaudeSession,
@@ -203,7 +208,7 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
     }),
 
     jira_start_work_on_issue: tool({
-      description: `Start work on a JIRA issue like the 'Start work' button on the issue view: create a workspace, provision it, seed the issue details into .yarvis/issue-prompt.md, assign the issue to the user and transition it to in-progress (best-effort), and start ${sessionDescription(remoteControl)} in it. Because a JIRA ticket isn't tied to a repo, pass the repo ids to include (resolve them with list_repos); pass an empty list for a scratch workspace with no repo. Requires JIRA to be configured.`,
+      description: `Start work on a JIRA issue like the 'Start work' button on the issue view: create a workspace, provision it, seed the issue details into ${WORKSPACE_BRIEF_FILE}, assign the issue to the user and transition it to in-progress (best-effort), and start ${sessionDescription(remoteControl)} in it. Because a JIRA ticket isn't tied to a repo, pass the repo ids to include (resolve them with list_repos); pass an empty list for a scratch workspace with no repo. Requires JIRA to be configured.`,
       inputSchema: z.object({
         key: issueKeyArg.describe("Issue key, e.g. PROJ-45"),
         repoIds: z
@@ -235,7 +240,7 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
         const ws = await createWorkspace(db, config, {
           name: issue.title,
           repoIds,
-          issuePrompt: buildIssuePrompt({
+          brief: buildIssuePrompt({
             displayId: issue.displayId,
             title: issue.title,
             url: issue.url,
@@ -286,16 +291,16 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
           payload: { key, workspaceId: ws.id, repos: detail.repos.map((r) => r.repo.name) },
         });
 
-        // The prompt is dropped once the session has been launched on it, so a
-        // prompt still sitting there is a launch that didn't happen.
-        if (detail.pendingIssuePrompt) {
+        // The brief is dropped once the session has been launched on it, so a
+        // brief still sitting there is a launch that didn't happen.
+        if (detail.pendingBrief) {
           return {
             error: "workspace is ready, but the agent session failed to start",
             workspaceId: ws.id,
             name: detail.name,
             status: detail.status,
             warnings,
-            note: "Open the workspace locally and start the agent there; the ticket is already seeded in .yarvis/issue-prompt.md.",
+            note: `Open the workspace locally and start the agent there; the ticket is already seeded in ${WORKSPACE_BRIEF_FILE}.`,
           };
         }
 
@@ -309,7 +314,7 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
           message: sessionStartedMessage(detail.name, remoteControl),
           issue: { key, summary: sanitizeIssueText(issue.title), url: issue.url },
           warnings,
-          promptFile: ".yarvis/issue-prompt.md",
+          briefFile: WORKSPACE_BRIEF_FILE,
         };
       },
     }),

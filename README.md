@@ -468,9 +468,10 @@ even though Claude runs one directory above the repos. It also writes a
 `.mcp.json` pointing the session at Yarvis's own MCP endpoint (see "Yarvis as an
 MCP server"). Both files are merged, not overwritten, so any other keys — or
 other MCP servers — already present are left intact. A
-workspace opened from an issue's "Start work" also gets the ticket itself, in
-`.yarvis/issue-prompt.md` — the file its agent session is launched to read, as
-the last step of provisioning.
+workspace started on something — an issue's "Start work", a task, or a brief
+handed to the in-app agent — also gets that work written to `.yarvis/brief.md`,
+the file its agent session is launched to read, as the last step of
+provisioning.
 
 When several workspaces need the same upstream fix, ask the in-app agent (or
 Telegram) to merge main into them — "merge main into all my open PRs" — and it

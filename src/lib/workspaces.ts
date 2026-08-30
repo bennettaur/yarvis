@@ -122,12 +122,12 @@ export interface CreateWorkspaceInput {
   existingBranches?: Record<string, string>;
   taskId?: string | null;
   /**
-   * A "Start work" prompt to seed the workspace's agent session with. The
-   * sidecar seeds `.yarvis/issue-prompt.md` and launches the session on it as
-   * the last steps of provisioning, so the kick-off completes whether or not
-   * this view is still around.
+   * What to start the workspace's agent session on. The sidecar seeds
+   * `.yarvis/brief.md` and launches the session on it as the last steps of
+   * provisioning, so the kick-off completes whether or not this view is still
+   * around.
    */
-  issuePrompt?: string;
+  brief?: string;
 }
 
 export interface ArchiveWorkspaceInput {

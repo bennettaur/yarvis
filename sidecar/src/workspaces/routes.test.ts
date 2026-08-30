@@ -1270,11 +1270,11 @@ describe("resumable start-work kick-off", () => {
       repoIds: [repo.id],
       // A zero-width joiner is the kind of hidden character sanitizing strips
       // before the prompt can reach an auto-approved agent session.
-      issuePrompt: "implement‍ the ticket",
+      brief: "implement‍ the ticket",
     });
 
     const detail = await getWorkspace(db, ws.id);
-    expect(detail?.pendingIssuePrompt).toBe("implement the ticket");
+    expect(detail?.pendingBrief).toBe("implement the ticket");
   });
 
   it("writes the prompt file itself, so an absent caller can't lose the ticket", async () => {
@@ -1283,7 +1283,7 @@ describe("resumable start-work kick-off", () => {
     const ws = await createWorkspace(db, config, {
       name: "writes prompt",
       repoIds: [repo.id],
-      issuePrompt: "# Ticket\n\nimplement the ticket",
+      brief: "# Ticket\n\nimplement the ticket",
     });
 
     // No emit callback at all: the client that started this has gone away.
@@ -1291,11 +1291,11 @@ describe("resumable start-work kick-off", () => {
 
     const detail = await getWorkspace(db, ws.id);
     expect(detail?.status).toBe("active");
-    expect(readFileSync(join(detail?.rootPath ?? "", ".yarvis", "issue-prompt.md"), "utf-8")).toBe(
+    expect(readFileSync(join(detail?.rootPath ?? "", ".yarvis", "brief.md"), "utf-8")).toBe(
       "# Ticket\n\nimplement the ticket",
     );
     // Still pending: the prompt is dropped only once a session has it.
-    expect(detail?.pendingIssuePrompt).toBe("# Ticket\n\nimplement the ticket");
+    expect(detail?.pendingBrief).toBe("# Ticket\n\nimplement the ticket");
   });
 
   it("leaves no prompt file for a workspace that wasn't kicked off from a ticket", async () => {
@@ -1305,7 +1305,7 @@ describe("resumable start-work kick-off", () => {
     await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const detail = await getWorkspace(db, ws.id);
-    expect(existsSync(join(detail?.rootPath ?? "", ".yarvis", "issue-prompt.md"))).toBe(false);
+    expect(existsSync(join(detail?.rootPath ?? "", ".yarvis", "brief.md"))).toBe(false);
   });
 
   it("a second drive follows the run in flight instead of failing", async () => {
@@ -1358,7 +1358,7 @@ describe("resumable start-work kick-off", () => {
     const ws = await createWorkspace(db, config, {
       name: "stream closed",
       repoIds: [repo.id],
-      issuePrompt: "implement the ticket",
+      brief: "implement the ticket",
     });
 
     await provisionWorkspace(
@@ -1372,7 +1372,7 @@ describe("resumable start-work kick-off", () => {
 
     const detail = await getWorkspace(db, ws.id);
     expect(detail?.status).toBe("active");
-    expect(existsSync(join(detail?.rootPath ?? "", ".yarvis", "issue-prompt.md"))).toBe(true);
+    expect(existsSync(join(detail?.rootPath ?? "", ".yarvis", "brief.md"))).toBe(true);
   });
 
   it("keeps the prompt and offers a retry when the prompt file can't be written", async () => {
@@ -1381,7 +1381,7 @@ describe("resumable start-work kick-off", () => {
     const ws = await createWorkspace(db, config, {
       name: "unwritable prompt",
       repoIds: [repo.id],
-      issuePrompt: "implement the ticket",
+      brief: "implement the ticket",
     });
     const created = await getWorkspace(db, ws.id);
     // A file where the `.yarvis` directory needs to go, so the mkdir fails.
@@ -1393,8 +1393,8 @@ describe("resumable start-work kick-off", () => {
     const detail = await getWorkspace(db, ws.id);
     // Never `active` without the file the agent is launched to read.
     expect(detail?.status).toBe("error");
-    expect(detail?.error).toContain("issue prompt file");
-    expect(detail?.pendingIssuePrompt).toBe("implement the ticket");
+    expect(detail?.error).toContain("brief file");
+    expect(detail?.pendingBrief).toBe("implement the ticket");
   });
 
   it("rewrites the prompt file when a failed provision is retried", async () => {
@@ -1411,14 +1411,14 @@ describe("resumable start-work kick-off", () => {
     const ws = await createWorkspace(db, config, {
       name: "retried kickoff",
       repoIds: [repo.id],
-      issuePrompt: "implement the ticket",
+      brief: "implement the ticket",
     });
 
     await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     const failed = await getWorkspace(db, ws.id);
     expect(failed?.status).toBe("error");
-    expect(existsSync(join(failed?.rootPath ?? "", ".yarvis", "issue-prompt.md"))).toBe(false);
-    expect(failed?.pendingIssuePrompt).toBe("implement the ticket");
+    expect(existsSync(join(failed?.rootPath ?? "", ".yarvis", "brief.md"))).toBe(false);
+    expect(failed?.pendingBrief).toBe("implement the ticket");
 
     // Fix what failed, then retry the way the workspace's button does.
     await app.request(`/api/repos/${repo.id}`, {
@@ -1434,7 +1434,7 @@ describe("resumable start-work kick-off", () => {
 
     const detail = await getWorkspace(db, ws.id);
     expect(detail?.status).toBe("active");
-    expect(readFileSync(join(detail?.rootPath ?? "", ".yarvis", "issue-prompt.md"), "utf-8")).toBe(
+    expect(readFileSync(join(detail?.rootPath ?? "", ".yarvis", "brief.md"), "utf-8")).toBe(
       "implement the ticket",
     );
   });
@@ -1481,7 +1481,7 @@ describe("resumable start-work kick-off", () => {
     const ws = await createWorkspace(db, config, {
       name: "launched",
       repoIds: [repo.id],
-      issuePrompt: "implement the ticket",
+      brief: "implement the ticket",
     });
 
     const started: StartClaudeSessionInput[] = [];
@@ -1499,11 +1499,11 @@ describe("resumable start-work kick-off", () => {
     // and starts on the ticket rather than waiting to be told.
     expect(started).toHaveLength(1);
     expect(started[0]?.cwd).toBe(detail?.rootPath ?? "");
-    expect(started[0]?.instruction ?? "").toContain(".yarvis/issue-prompt.md");
+    expect(started[0]?.instruction ?? "").toContain(".yarvis/brief.md");
     // Started at the machine, so not remotely controllable.
     expect(started[0]?.remoteControl).toBe(false);
     // Nothing owed any more.
-    expect(detail?.pendingIssuePrompt).toBeNull();
+    expect(detail?.pendingBrief).toBeNull();
   });
 
   it("keeps the prompt when the session fails to start, so a restart retries", async () => {
@@ -1512,7 +1512,7 @@ describe("resumable start-work kick-off", () => {
     const ws = await createWorkspace(db, config, {
       name: "launch failed",
       repoIds: [repo.id],
-      issuePrompt: "implement the ticket",
+      brief: "implement the ticket",
     });
 
     await provisionWorkspace(db, ws.id, () => {}, {
@@ -1525,7 +1525,7 @@ describe("resumable start-work kick-off", () => {
     const detail = await getWorkspace(db, ws.id);
     // The workspace provisioned fine and stays usable; only the launch failed.
     expect(detail?.status).toBe("active");
-    expect(detail?.pendingIssuePrompt).toBe("implement the ticket");
+    expect(detail?.pendingBrief).toBe("implement the ticket");
 
     // Which is exactly what the startup sweep picks up.
     const started: string[] = [];
@@ -1537,7 +1537,7 @@ describe("resumable start-work kick-off", () => {
       runner: fakeGit,
     });
     expect(started).toEqual([ws.id]);
-    expect((await getWorkspace(db, ws.id))?.pendingIssuePrompt).toBeNull();
+    expect((await getWorkspace(db, ws.id))?.pendingBrief).toBeNull();
   });
 
   it("does not launch a session for a workspace with no ticket", async () => {
@@ -1569,23 +1569,23 @@ describe("pending kick-off prompt retention", () => {
     await createWorkspace(db, config, {
       name: "listed",
       repoIds: [repo.id],
-      issuePrompt: "implement the ticket",
+      brief: "implement the ticket",
     });
 
     const res = await app.request("/api/workspaces", { headers: auth });
     const rows = (await res.json()) as Record<string, unknown>[];
     expect(rows).toHaveLength(1);
-    expect(rows[0]).not.toHaveProperty("pendingIssuePrompt");
+    expect(rows[0]).not.toHaveProperty("pendingBrief");
     // Nor does the detail route — it is the sidecar's own bookkeeping.
     const one = await app.request(`/api/workspaces/${(rows[0] as { id: string }).id}`, {
       headers: auth,
     });
-    expect(await one.json()).not.toHaveProperty("pendingIssuePrompt");
+    expect(await one.json()).not.toHaveProperty("pendingBrief");
     // The projection is explicit, so assert the sidebar's fields survive it.
     expect(rows[0]).toMatchObject({ name: "listed", status: "creating", repoNames: ["widget"] });
     expect(rows[0]).toHaveProperty("archivedAt");
     // The open workspace is where it's wanted, and it's still there.
-    expect((await getWorkspace(db, rows[0]!.id as string))?.pendingIssuePrompt).toBe(
+    expect((await getWorkspace(db, rows[0]!.id as string))?.pendingBrief).toBe(
       "implement the ticket",
     );
   });
@@ -1596,13 +1596,13 @@ describe("pending kick-off prompt retention", () => {
     const ws = await createWorkspace(db, config, {
       name: "archived with prompt",
       repoIds: [repo.id],
-      issuePrompt: "implement the ticket",
+      brief: "implement the ticket",
     });
     await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const result = await archiveWorkspace(db, ws.id, {}, fakeGit);
     expect(result.status).toBe("archived");
-    expect((await getWorkspace(db, ws.id))?.pendingIssuePrompt).toBeNull();
+    expect((await getWorkspace(db, ws.id))?.pendingBrief).toBeNull();
   });
 
   it("rejects a kick-off prompt too large to be a ticket", async () => {
@@ -1615,7 +1615,7 @@ describe("pending kick-off prompt retention", () => {
       body: JSON.stringify({
         name: "oversized",
         repoIds: [repo.id],
-        issuePrompt: "x".repeat(70000),
+        brief: "x".repeat(70000),
       }),
     });
     expect(res.status).toBe(400);

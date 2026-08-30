@@ -6,7 +6,7 @@ import {
   applyStartWorkSideEffects,
   mergeIssues,
   type StartWorkSideEffectClient,
-  writeIssuePrompt,
+  writeWorkspaceBrief,
 } from "./service.ts";
 import type { IssueSummary } from "./types.ts";
 
@@ -45,12 +45,12 @@ describe("mergeIssues", () => {
   });
 });
 
-describe("writeIssuePrompt", () => {
+describe("writeWorkspaceBrief", () => {
   it("writes the prompt under .yarvis/ and returns the absolute path", async () => {
     const root = mkdtempSync(join(tmpdir(), "yarvis-issue-"));
     try {
-      const path = await writeIssuePrompt(root, "the prompt body");
-      expect(path).toBe(join(root, ".yarvis", "issue-prompt.md"));
+      const path = await writeWorkspaceBrief(root, "the prompt body");
+      expect(path).toBe(join(root, ".yarvis", "brief.md"));
       expect(readFileSync(path, "utf8")).toBe("the prompt body");
     } finally {
       rmSync(root, { recursive: true, force: true });

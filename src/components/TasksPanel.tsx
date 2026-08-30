@@ -3,10 +3,11 @@ import { requestNewWorkspace } from "../lib/nav";
 import { completeTask, createTask, deleteTask, listTasks, type Task } from "../lib/tasks";
 
 /**
- * Prompt handed to Claude when the user clicks "Start work" on a task. Mirrors
- * the issue "Start work" prompt in shape (a single markdown file written into
- * the workspace's `.yarvis/issue-prompt.md`) so the same Claude launch line
- * ("Read the ticket details…") drives both entry points.
+ * Brief handed to Claude when the user clicks "Start work" on a task. Mirrors
+ * the issue "Start work" brief in shape (a single markdown file written into
+ * the workspace's `.yarvis/brief.md`) so one fixed Claude launch line drives
+ * every entry point. Kept in step with `buildTaskBrief` in the sidecar's
+ * `tasks/service.ts`, which produces the same document for the chat agent.
  */
 export function buildTaskPrompt(task: Task): string {
   const lines = [

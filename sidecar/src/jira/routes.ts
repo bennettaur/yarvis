@@ -313,7 +313,7 @@ export function createJiraRoutes(config: Config): Hono {
    * the repos (an empty list yields a scratch workspace). Best-effort JIRA side
    * effects (assign to viewer + transition to in-progress) become warnings on
    * failure — the workspace + link are the source of truth. The rest of the
-   * kick-off — provisioning, seeding `.yarvis/issue-prompt.md`, launching the
+   * kick-off — provisioning, seeding `.yarvis/brief.md`, launching the
    * agent on the ticket — runs in the background here, so nothing about it
    * depends on the caller sticking around.
    */
@@ -337,7 +337,7 @@ export function createJiraRoutes(config: Config): Hono {
       const ws = await createWorkspace(db(), config, {
         name: input.title,
         repoIds: input.repoIds,
-        issuePrompt: prompt,
+        brief: prompt,
       });
       workspaceId = ws.id;
     } catch (e) {

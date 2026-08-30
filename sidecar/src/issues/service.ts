@@ -241,15 +241,22 @@ export async function applyStartWorkSideEffects(
 }
 
 /**
- * Writes the issue prompt into the workspace's `.yarvis/` folder (under the
+ * Path, relative to the workspace root, of the file a kick-off session is told
+ * to read. One name for every producer — a GitHub issue, a JIRA ticket, a task,
+ * or a brief the chat agent composed — so the launch instruction is fixed.
+ */
+export const WORKSPACE_BRIEF_FILE = ".yarvis/brief.md";
+
+/**
+ * Writes the kick-off brief into the workspace's `.yarvis/` folder (under the
  * workspace root, outside any repo worktree so it never dirties git status) and
  * returns the absolute path. The terminal launches Claude with this file.
  */
-export async function writeIssuePrompt(rootPath: string, prompt: string): Promise<string> {
+export async function writeWorkspaceBrief(rootPath: string, brief: string): Promise<string> {
   const dir = join(rootPath, ".yarvis");
   await mkdir(dir, { recursive: true });
-  const file = join(dir, "issue-prompt.md");
-  await writeFile(file, prompt, "utf8");
+  const file = join(rootPath, WORKSPACE_BRIEF_FILE);
+  await writeFile(file, brief, "utf8");
   return file;
 }
 

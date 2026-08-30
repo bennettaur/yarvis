@@ -121,7 +121,7 @@ const ARCHIVING_REFRESH_INTERVAL_MS = 2_000;
 
 /** Where a workspace's agent session runs: always the workspace root, so the
  *  agent sees each repo's worktree as a subfolder and can read the
- *  `.yarvis/issue-prompt.md` seeded there for an issue "Start work" session. */
+ *  `.yarvis/brief.md` seeded there when the workspace was started on something. */
 function agentCwdForWorkspace(detail: WorkspaceDetail): string {
   return detail.rootPath;
 }
@@ -509,8 +509,8 @@ function NewWorkspaceForm({
         existingBranches: Object.keys(existingBranches).length ? existingBranches : undefined,
         taskId: taskId || undefined,
         // A "Start work" handoff (Tasks) seeds the agent session; the sidecar
-        // holds it so the launch doesn't depend on this form staying mounted.
-        issuePrompt: prefill?.claudePrompt,
+        // holds the brief so the launch doesn't depend on this form staying mounted.
+        brief: prefill?.claudePrompt,
       });
       setPhase("provisioning");
       const result = await consumeProvision(ws.id, (text) => setLog((prev) => prev + text));

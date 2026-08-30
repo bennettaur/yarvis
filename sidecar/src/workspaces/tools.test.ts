@@ -9,8 +9,9 @@ import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
 import { workspaceRepos } from "../db/schema.ts";
 import type { IssueDetail, IssueSummary } from "../issues/types.ts";
+import { createTask } from "../tasks/service.ts";
 import type { GitRunner } from "./git.ts";
-import { createRepo, getWorkspace } from "./service.ts";
+import { AGENT_KICKOFF_INSTRUCTION, createRepo, getWorkspace } from "./service.ts";
 import { buildWorkspaceTools, type WorkspaceGitHubClient } from "./tools.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -291,6 +292,116 @@ describe("workspace tools", () => {
     expect(startedCwd).not.toContain("widget");
   });
 
+  it("create_workspace_session starts the session on a linked task's details", async () => {
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
+    const task = await createTask(db, {
+      title: "Rename the API",
+      scope: "daily",
+      notes: "Drop the v1 prefix everywhere.",
+    });
+    let startedCwd = "";
+    let startedInstruction: string | undefined;
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => {
+        startedCwd = input.cwd;
+        startedInstruction = input.instruction;
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+
+    const result = (await tools.create_workspace_session.execute!(
+      { name: task.title, repoIds: [repo.id], taskId: task.id },
+      opts,
+    )) as { error?: string; status?: string; briefFile?: string; workspaceId?: string };
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe("active");
+    expect(result.briefFile).toBe(".yarvis/brief.md");
+    expect(startedInstruction).toBe(AGENT_KICKOFF_INSTRUCTION);
+    const brief = readFileSync(join(startedCwd, ".yarvis", "brief.md"), "utf8");
+    expect(brief).toContain("Rename the API");
+    expect(brief).toContain("Drop the v1 prefix everywhere.");
+    // Dropped once the session has been launched on it, so a resume sweep
+    // doesn't start a second one.
+    const detail = await getWorkspace(db, result.workspaceId ?? "");
+    expect(detail?.pendingBrief).toBeNull();
+  });
+
+  it("create_workspace_session appends its own brief to the task's details", async () => {
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
+    const task = await createTask(db, { title: "Rename the API", scope: "daily", notes: "v1" });
+    let startedCwd = "";
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => {
+        startedCwd = input.cwd;
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+
+    const result = (await tools.create_workspace_session.execute!(
+      {
+        name: task.title,
+        repoIds: [repo.id],
+        taskId: task.id,
+        brief: "Start with the public routes.",
+      },
+      opts,
+    )) as { error?: string };
+
+    expect(result.error).toBeUndefined();
+    const brief = readFileSync(join(startedCwd, ".yarvis", "brief.md"), "utf8");
+    expect(brief).toContain("v1");
+    expect(brief).toContain("Start with the public routes.");
+  });
+
+  it("create_scratch_workspace_session starts the session on a brief with no task", async () => {
+    let startedCwd = "";
+    let startedInstruction: string | undefined;
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => {
+        startedCwd = input.cwd;
+        startedInstruction = input.instruction;
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+
+    const result = (await tools.create_scratch_workspace_session.execute!(
+      { name: "Scratchpad", brief: "Compare the two parsers and write up which is faster." },
+      opts,
+    )) as { error?: string; briefFile?: string };
+
+    expect(result.error).toBeUndefined();
+    expect(result.briefFile).toBe(".yarvis/brief.md");
+    expect(startedInstruction).toBe(AGENT_KICKOFF_INSTRUCTION);
+    expect(readFileSync(join(startedCwd, ".yarvis", "brief.md"), "utf8")).toContain(
+      "Compare the two parsers",
+    );
+  });
+
+  it("leaves the session at a bare prompt when given neither a task nor a brief", async () => {
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
+    let startedInstruction: string | undefined = "unset";
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => {
+        startedInstruction = input.instruction;
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+
+    const result = (await tools.create_workspace_session.execute!(
+      { name: "Poke around", repoIds: [repo.id] },
+      opts,
+    )) as { error?: string; briefFile?: string };
+
+    expect(result.error).toBeUndefined();
+    expect(result.briefFile).toBeUndefined();
+    expect(startedInstruction).toBeUndefined();
+  });
+
   it("does not start a session when provisioning fails", async () => {
     const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
     let started = false;
@@ -433,7 +544,7 @@ describe("workspace tools", () => {
     expect(result.sessionKey).toBe(`ws-claude:${startedWorkspaceId}`);
     expect(result.issue?.number).toBe(99);
     expect(result.warnings).toEqual([]);
-    // The session launches at the workspace root, where .yarvis/issue-prompt.md
+    // The session launches at the workspace root, where .yarvis/brief.md
     // is seeded — not inside the lone repo's worktree.
     const [ws] = await db
       .select({ rootPath: schema.workspaces.rootPath })
@@ -442,7 +553,7 @@ describe("workspace tools", () => {
     expect(startedCwd).toBe(ws!.rootPath);
     // The whole point of launching there: the seeded prompt is readable by the
     // relative path the session is told to open.
-    const promptPath = join(startedCwd, ".yarvis", "issue-prompt.md");
+    const promptPath = join(startedCwd, ".yarvis", "brief.md");
     expect(readFileSync(promptPath, "utf8")).toContain("The widget is broken.");
     // GitHub side effects ran.
     expect(calls.assigned).toEqual([["octocat"]]);

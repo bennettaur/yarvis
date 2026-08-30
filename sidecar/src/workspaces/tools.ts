@@ -11,8 +11,10 @@ import {
   type StartWorkSideEffectClient,
   sanitizeIssueText,
   upsertLink,
+  WORKSPACE_BRIEF_FILE,
 } from "../issues/service.ts";
 import type { IssueDetail, IssueSummary } from "../issues/types.ts";
+import { buildTaskBrief, getTask } from "../tasks/service.ts";
 import {
   type ClaudeSessionMessenger,
   type ClaudeSessionStarter,
@@ -93,6 +95,20 @@ export interface WorkspaceGitHubClient extends StartWorkSideEffectClient {
 }
 
 /**
+ * What the model may hand a new workspace's session to start on. Bounded well
+ * below what the workspace row accepts: this is a hand-off the model writes, not
+ * a ticket body pasted in — an issue or a JIRA ticket has its own tool, which
+ * fetches the text rather than relaying it through the model.
+ */
+const briefSchema = z
+  .string()
+  .max(8000)
+  .optional()
+  .describe(
+    "What the session should start working on, composed from what the user asked for in this conversation. Written to the workspace's brief file, which the agent is told to read and act on.",
+  );
+
+/**
  * Injectable collaborators, overridden in tests to avoid real git/claude/github,
  * plus the one piece of per-turn context the tools need.
  */
@@ -141,7 +157,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
    * result. Shared by create_workspace_session (after provisioning) and
    * start_workspace_session (existing workspace). Always launches at the
    * workspace root so Claude sees each repo's worktree as a subfolder and can
-   * read the `.yarvis/issue-prompt.md` that start_work_on_issue seeds there.
+   * read the brief seeded there by whatever the workspace was started on.
    */
   const launchClaude = async (detail: WorkspaceDetail) => {
     const cwd = detail.rootPath;
@@ -177,6 +193,58 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         note: "Workspace is ready; the Claude session failed to start. You can open the workspace locally and start Claude there.",
       };
     }
+  };
+
+  /**
+   * Frames a free-text brief the way `buildIssuePrompt` and `buildTaskBrief`
+   * frame theirs, so a kick-off file opens the same way whatever produced it.
+   */
+  const briefDocument = (name: string, brief: string): string =>
+    `Work on the following in the "${name}" workspace.\n\n${brief.trim()}\n`;
+
+  /**
+   * What a new workspace's first session should be told to work on: a linked
+   * task's title and notes, a brief the caller wrote, or both. Null when there
+   * is neither, which leaves the session at a bare prompt for the user to drive.
+   *
+   * Sanitized on the way into the workspace row by `createWorkspace`, since this
+   * text ends up in front of an auto-approved agent.
+   */
+  const resolveBrief = async (
+    name: string,
+    taskId: string | undefined,
+    brief: string | undefined,
+  ): Promise<string | null> => {
+    const task = taskId ? await getTask(db, taskId) : null;
+    if (task) return buildTaskBrief(task, brief);
+    return brief?.trim() ? briefDocument(name, brief) : null;
+  };
+
+  /**
+   * Shapes the result of a workspace whose session provisioning launched on a
+   * brief. The brief is dropped once the session has been launched on it, so a
+   * brief still sitting on the row is a launch that didn't happen.
+   */
+  const kickOffResult = (detail: WorkspaceDetail) => {
+    if (detail.pendingBrief) {
+      return {
+        error: "workspace is ready, but the agent session failed to start",
+        workspaceId: detail.id,
+        name: detail.name,
+        status: detail.status,
+        note: `Open the workspace locally and start the agent there; the work is already seeded in ${WORKSPACE_BRIEF_FILE}.`,
+      };
+    }
+    return {
+      workspaceId: detail.id,
+      name: detail.name,
+      status: detail.status,
+      repos: detail.repos.map((r) => r.repo.name),
+      sessionName: detail.name,
+      sessionKey: `ws-claude:${detail.id}`,
+      message: sessionStartedMessage(detail.name, remoteControl),
+      briefFile: WORKSPACE_BRIEF_FILE,
+    };
   };
 
   return {
@@ -225,7 +293,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
     }),
 
     start_work_on_issue: tool({
-      description: `Start work on a repo issue exactly like the 'Start work' button on the issue view: create a workspace with a worktree cut from the repo's default branch, provision it, seed the issue details into .yarvis/issue-prompt.md, assign the issue to the user and label it in-progress on GitHub (best-effort), and start ${sessionDescription(remoteControl)} in it. Resolve the repo id with list_repos and pick an issue number with list_repo_issues first. Requires a configured GitHub token.`,
+      description: `Start work on a repo issue exactly like the 'Start work' button on the issue view: create a workspace with a worktree cut from the repo's default branch, provision it, seed the issue details into ${WORKSPACE_BRIEF_FILE}, assign the issue to the user and label it in-progress on GitHub (best-effort), and start ${sessionDescription(remoteControl)} in it. Resolve the repo id with list_repos and pick an issue number with list_repo_issues first. Requires a configured GitHub token.`,
       inputSchema: z.object({
         repoId: z.string().uuid().describe("Id of the registered repo the issue belongs to"),
         issueNumber: z.number().int().positive().describe("The issue number, e.g. 99"),
@@ -251,14 +319,14 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         }
 
         const sourceKey = `${repo.owner}/${repo.repo}`;
-        // Same route the "Start work" button takes: the prompt rides on the
-        // workspace, and provisioning seeds the prompt file and launches the
+        // Same route the "Start work" button takes: the brief rides on the
+        // workspace, and provisioning seeds the brief file and launches the
         // session on the ticket. Awaited rather than backgrounded here, because
         // the model is reporting the outcome back to the user.
         const ws = await createWorkspace(db, config, {
           name: issue.title,
           repoIds: [repo.id],
-          issuePrompt: buildIssuePrompt({
+          brief: buildIssuePrompt({
             displayId: `#${issueNumber}`,
             title: issue.title,
             url: issue.url,
@@ -320,36 +388,16 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           },
         });
 
-        // The prompt is dropped once the session has been launched on it, so a
-        // prompt still sitting there is a launch that didn't happen.
-        if (detail.pendingIssuePrompt) {
-          return {
-            error: "workspace is ready, but the agent session failed to start",
-            workspaceId: ws.id,
-            name: detail.name,
-            status: detail.status,
-            warnings,
-            note: "Open the workspace locally and start the agent there; the ticket is already seeded in .yarvis/issue-prompt.md.",
-          };
-        }
-
         return {
-          workspaceId: ws.id,
-          name: detail.name,
-          status: detail.status,
-          repos: detail.repos.map((r) => r.repo.name),
-          sessionName: detail.name,
-          sessionKey: `ws-claude:${ws.id}`,
-          message: sessionStartedMessage(detail.name, remoteControl),
+          ...kickOffResult(detail),
           issue: { number: issueNumber, title: issue.title, url: issue.url },
           warnings,
-          promptFile: ".yarvis/issue-prompt.md",
         };
       },
     }),
 
     create_workspace_session: tool({
-      description: `Create a new workspace from one or more registered repos (a git worktree per repo, cut from the default branch), provision it, and start ${sessionDescription(remoteControl)} in it. Resolve repo ids with list_repos first.`,
+      description: `Create a new workspace from one or more registered repos (a git worktree per repo, cut from the default branch), provision it, and start ${sessionDescription(remoteControl)} in it. Resolve repo ids with list_repos first. Pass taskId and/or brief to have the session start work on its own: the details are written to ${WORKSPACE_BRIEF_FILE} in the workspace and the session is launched on them. With neither, the session opens at an empty prompt for the user to drive.`,
       inputSchema: z.object({
         name: z.string().describe("Human-readable workspace name, e.g. 'Rename the API'"),
         repoIds: z
@@ -360,13 +408,22 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           .string()
           .uuid()
           .optional()
-          .describe("Optional task to link; archiving the workspace completes it"),
+          .describe(
+            "Task to link; archiving the workspace completes it, and its title and notes seed the session's brief",
+          ),
+        brief: briefSchema,
       }),
-      execute: async ({ name, repoIds, taskId }) => {
-        const ws = await createWorkspace(db, config, { name, repoIds, taskId });
+      execute: async ({ name, repoIds, taskId, brief }) => {
+        const kickOff = await resolveBrief(name, taskId, brief);
+        const ws = await createWorkspace(db, config, { name, repoIds, taskId, brief: kickOff });
         // Provisioning streams progress over SSE in the route; here we just drive
-        // it to completion and inspect the resulting status.
-        await provisionWorkspace(db, ws.id, () => undefined, { runner: gitRunner });
+        // it to completion and inspect the resulting status. Given a brief, it
+        // also seeds the brief file and launches the session on it.
+        await provisionWorkspace(db, ws.id, () => undefined, {
+          runner: gitRunner,
+          startSession: startClaude,
+          remoteControl,
+        });
 
         const detail = await getWorkspace(db, ws.id);
         if (!detail) return { error: "workspace vanished after creation" };
@@ -382,23 +439,36 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           };
         }
 
-        return launchClaude(detail);
+        return kickOff ? kickOffResult(detail) : launchClaude(detail);
       },
     }),
 
     create_scratch_workspace_session: tool({
-      description: `Create a scratch workspace — just a folder, no repo or git worktree — provision it, and start ${sessionDescription(remoteControl)} in it. Use this for experimentation and exploration when the user doesn't need a specific repo checked out.`,
+      description: `Create a scratch workspace — just a folder, no repo or git worktree — provision it, and start ${sessionDescription(remoteControl)} in it. Use this for experimentation and exploration when the user doesn't need a specific repo checked out. Pass taskId and/or brief to have the session start work on its own: the details are written to ${WORKSPACE_BRIEF_FILE} in the workspace and the session is launched on them. With neither, the session opens at an empty prompt for the user to drive.`,
       inputSchema: z.object({
         name: z.string().describe("Human-readable workspace name, e.g. 'Scratchpad'"),
         taskId: z
           .string()
           .uuid()
           .optional()
-          .describe("Optional task to link; archiving the workspace completes it"),
+          .describe(
+            "Task to link; archiving the workspace completes it, and its title and notes seed the session's brief",
+          ),
+        brief: briefSchema,
       }),
-      execute: async ({ name, taskId }) => {
-        const ws = await createWorkspace(db, config, { name, repoIds: [], taskId });
-        await provisionWorkspace(db, ws.id, () => undefined, { runner: gitRunner });
+      execute: async ({ name, taskId, brief }) => {
+        const kickOff = await resolveBrief(name, taskId, brief);
+        const ws = await createWorkspace(db, config, {
+          name,
+          repoIds: [],
+          taskId,
+          brief: kickOff,
+        });
+        await provisionWorkspace(db, ws.id, () => undefined, {
+          runner: gitRunner,
+          startSession: startClaude,
+          remoteControl,
+        });
 
         const detail = await getWorkspace(db, ws.id);
         if (!detail) return { error: "workspace vanished after creation" };
@@ -410,7 +480,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           };
         }
 
-        return launchClaude(detail);
+        return kickOff ? kickOffResult(detail) : launchClaude(detail);
       },
     }),
 

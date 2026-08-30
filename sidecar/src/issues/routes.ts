@@ -420,7 +420,7 @@ export function createIssueRoutes(config: Config): Hono {
    * GitHub. The workspace + link are the source of truth: a failed GitHub write
    * (e.g. a read-only token) is reported as a warning, not an error, so work
    * still starts. The response is only the receipt: the rest of the kick-off —
-   * provisioning, seeding `.yarvis/issue-prompt.md`, launching the agent on the
+   * provisioning, seeding `.yarvis/brief.md`, launching the agent on the
    * ticket — runs in the background here, so nothing about it depends on the
    * caller sticking around. Clients just open the workspace and attach to the
    * session that is or will be there.
@@ -452,7 +452,7 @@ export function createIssueRoutes(config: Config): Hono {
       const ws = await createWorkspace(db(), config, {
         name: input.title,
         repoIds: [repo.id],
-        issuePrompt: prompt,
+        brief: prompt,
       });
       workspaceId = ws.id;
     } catch (e) {
