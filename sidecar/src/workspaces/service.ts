@@ -1637,6 +1637,14 @@ export async function ignoreWorkspaceError(
     await clearPendingIssuePrompt(db, id);
   }
 
+  // Checked again on the way out: a run that started while the kick-off was
+  // being discharged ends by writing the status itself, and whichever of the two
+  // lands last wins. Better to leave the workspace to that run than to paint
+  // `active` over its verdict.
+  if (provisioning.has(id)) {
+    throw new Error("provisioning is still running for this workspace");
+  }
+
   await db
     .update(workspaces)
     .set({ status: "active", error: null, updatedAt: new Date() })

@@ -295,7 +295,9 @@ export function createWorkspaceRoutes(config: Config): Hono {
       const { pendingIssuePrompt: _internal, ...body } = detail;
       return c.json(body);
     } catch (e) {
-      return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+      // A run in flight is a "come back in a moment", not a malformed request.
+      const running = e instanceof Error && e.message.includes("still running");
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, running ? 409 : 400);
     }
   });
 

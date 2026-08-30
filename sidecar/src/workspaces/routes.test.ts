@@ -1403,6 +1403,14 @@ describe("provision + archive (injected git runner)", () => {
     await waitFor(ws.id, (d) => d.repos[0]?.status === "provisioning", "started provisioning");
 
     await expect(ignoreWorkspaceError(db, ws.id)).rejects.toThrow("still running");
+    // 409 over the wire: a run in flight is a "come back in a moment", not a
+    // malformed request.
+    const res = await app.request(`/api/workspaces/${ws.id}/ignore-error`, {
+      method: "POST",
+      headers: auth,
+    });
+    expect(res.status).toBe(409);
+
     releaseRun();
     await run;
   });
