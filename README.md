@@ -446,12 +446,13 @@ provisioning failed, the ticket is still waiting behind "Retry provisioning".
 
 A failed provision opens on the failed repo's setup log, and leaves two buttons.
 "Retry provisioning" picks up where the run stopped: the worktrees it did manage
-to cut are adopted rather than cut again, and a branch it cut but whose folder
-has since gone is checked back out, so the retry recovers the workspace instead
-of failing on the steps that worked. "Ignore and use anyway" takes the failure as
-read and puts the workspace back in service — the agent session starts, the repos
-that failed keep their badges and setup logs, and the retry stays on offer — so
-the workspace stops opening on its error page every time you come back to it.
+to cut are adopted rather than cut again, so the retry recovers the workspace
+instead of failing on the one step that worked. "Ignore and use anyway" takes the
+failure as read and puts the workspace back in service — the agent session
+starts, the repos that failed keep their badges and setup logs, and the retry
+stays on offer — so the workspace stops opening on its error page every time you
+come back to it. A workspace started from a ticket has its session launched on
+that ticket when you ignore the error, the same as a clean provision would.
 
 The agent's tab title and launch command are set under Settings → Repositories →
 Agent, defaulting to `Claude` and `claude --permission-mode auto`, so you can

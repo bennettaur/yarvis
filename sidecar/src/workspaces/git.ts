@@ -11,7 +11,7 @@
  * (merge, push) likewise run in a worktree, never in the primary clone.
  */
 
-import { existsSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { run } from "./exec.ts";
 
@@ -365,9 +365,8 @@ function canonicalPath(path: string): string {
  * able to tell "already done" from "not done yet" rather than failing the retry
  * on `worktree add`. Prunes first, so a folder deleted out of band reads as free.
  *
- * A directory with contents that git doesn't know as a worktree throws instead:
- * `worktree add` would refuse it anyway, and naming it is what tells the user
- * what to clear.
+ * Anything else occupying the path throws: `worktree add` would refuse it
+ * anyway, and naming it is what tells the user what to clear.
  */
 export async function existingWorktree(
   runner: GitRunner,
@@ -375,22 +374,37 @@ export async function existingWorktree(
   worktreePath: string,
 ): Promise<ExistingWorktree | null> {
   await git(runner, ["worktree", "prune"], primaryClonePath);
-  const listed = await git(runner, ["worktree", "list", "--porcelain"], primaryClonePath);
+  // `-z` NUL-terminates every field and closes a record with a second NUL, so a
+  // worktree path containing a newline can't be misread as a record boundary.
+  // Fields are matched by prefix rather than position, since a record can carry
+  // `bare`, `locked` or `prunable` lines as well.
+  const out = await git(runner, ["worktree", "list", "--porcelain", "-z"], primaryClonePath);
   const target = canonicalPath(worktreePath);
-  // Porcelain records are blank-line separated: "worktree <path>", "HEAD <sha>",
-  // then "branch <ref>" or "detached".
-  for (const record of listed.split("\n\n")) {
-    const lines = record.split("\n");
-    const path = lines.find((l) => l.startsWith("worktree "))?.slice("worktree ".length);
-    if (!path || canonicalPath(path) !== target) continue;
-    const ref = lines.find((l) => l.startsWith("branch "))?.slice("branch ".length);
-    return { branch: ref?.replace(/^refs\/heads\//, "") ?? null };
+  let path: string | null = null;
+  let ref: string | null = null;
+  for (const field of out.split("\0")) {
+    if (field === "") {
+      if (path && canonicalPath(path) === target) {
+        return { branch: ref?.replace(/^refs\/heads\//, "") ?? null };
+      }
+      path = null;
+      ref = null;
+    } else if (field.startsWith("worktree ")) {
+      path = field.slice("worktree ".length);
+    } else if (field.startsWith("branch ")) {
+      ref = field.slice("branch ".length);
+    }
   }
 
-  if (existsSync(worktreePath) && readdirSync(worktreePath).length > 0) {
-    throw new Error(
-      `${worktreePath} already exists and is not a worktree of ${primaryClonePath} — remove it to provision again`,
-    );
+  // `statSync` rather than a bare `readdirSync`: a plain file on the path would
+  // otherwise raise ENOTDIR in place of the message this block exists to give.
+  if (existsSync(worktreePath)) {
+    const occupied = !statSync(worktreePath).isDirectory() || readdirSync(worktreePath).length > 0;
+    if (occupied) {
+      throw new Error(
+        `${worktreePath} already exists and is not a worktree of ${primaryClonePath} — remove it to provision again`,
+      );
+    }
   }
   return null;
 }

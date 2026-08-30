@@ -103,21 +103,27 @@ describe("createWorktree", () => {
 });
 
 describe("existingWorktree", () => {
-  /** A runner answering `worktree list` with the given porcelain output. */
-  const listing = (stdout: string) =>
-    fakeRunner((args) => (args[0] === "worktree" && args[1] === "list" ? { stdout } : {}));
+  /** A runner answering `worktree list` with the given NUL-separated records. */
+  const listing = (...records: string[]) => {
+    const stdout = records.map((r) => `${r}\0`).join("");
+    return fakeRunner((args) => (args[0] === "worktree" && args[1] === "list" ? { stdout } : {}));
+  };
+
+  /** One porcelain record: fields NUL-terminated, closed by an empty field. */
+  const record = (...fields: string[]) => fields.join("\0");
 
   it("prunes before listing, so a folder deleted out of band reads as free", async () => {
-    const { runner, calls } = listing("");
+    const { runner, calls } = listing();
     expect(await existingWorktree(runner, "/repo", "/ws/service-a")).toBeNull();
     expect(calls[0]).toEqual(["worktree", "prune"]);
-    expect(calls[1]).toEqual(["worktree", "list", "--porcelain"]);
+    // `-z`, so a path containing a newline can't be read as a record boundary.
+    expect(calls[1]).toEqual(["worktree", "list", "--porcelain", "-z"]);
   });
 
   it("answers with the branch checked out at the path", async () => {
     const { runner } = listing(
-      "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\n" +
-        "worktree /ws/service-a\nHEAD def\nbranch refs/heads/yarvis/task\n\n",
+      record("worktree /repo", "HEAD abc", "branch refs/heads/main"),
+      record("worktree /ws/service-a", "HEAD def", "branch refs/heads/yarvis/task"),
     );
     expect(await existingWorktree(runner, "/repo", "/ws/service-a")).toEqual({
       branch: "yarvis/task",
@@ -125,12 +131,33 @@ describe("existingWorktree", () => {
   });
 
   it("reports a detached worktree as having no branch", async () => {
-    const { runner } = listing("worktree /ws/service-a\nHEAD def\ndetached\n\n");
+    const { runner } = listing(record("worktree /ws/service-a", "HEAD def", "detached"));
     expect(await existingWorktree(runner, "/repo", "/ws/service-a")).toEqual({ branch: null });
   });
 
+  it("reads a record carrying extra attribute lines", async () => {
+    // `locked`/`prunable` sit alongside the fields we want, so matching by
+    // prefix rather than by position is what keeps the parse honest.
+    const { runner } = listing(
+      record("worktree /ws/service-a", "HEAD def", "branch refs/heads/yarvis/task", "locked"),
+    );
+    expect(await existingWorktree(runner, "/repo", "/ws/service-a")).toEqual({
+      branch: "yarvis/task",
+    });
+  });
+
+  it("reads a path containing a newline, which is why -z is asked for", async () => {
+    const { runner } = listing(
+      record("worktree /ws/odd\nworktree /ws/service-a", "HEAD def", "branch refs/heads/decoy"),
+      record("worktree /ws/service-a", "HEAD abc", "branch refs/heads/yarvis/task"),
+    );
+    expect(await existingWorktree(runner, "/repo", "/ws/service-a")).toEqual({
+      branch: "yarvis/task",
+    });
+  });
+
   it("returns null for a path no worktree is registered at", async () => {
-    const { runner } = listing("worktree /ws/other\nHEAD def\nbranch refs/heads/other\n\n");
+    const { runner } = listing(record("worktree /ws/other", "HEAD def", "branch refs/heads/other"));
     expect(await existingWorktree(runner, "/repo", "/ws/service-a")).toBeNull();
   });
 
@@ -143,7 +170,7 @@ describe("existingWorktree", () => {
     const worktreePath = join(parent, "service-a");
     mkdirSync(worktreePath);
     const { runner } = listing(
-      `worktree ${realpathSync(worktreePath)}\nHEAD def\nbranch refs/heads/yarvis/task\n\n`,
+      record(`worktree ${realpathSync(worktreePath)}`, "HEAD def", "branch refs/heads/yarvis/task"),
     );
     expect(await existingWorktree(runner, "/repo", worktreePath)).toEqual({
       branch: "yarvis/task",
@@ -156,8 +183,21 @@ describe("existingWorktree", () => {
     const worktreePath = join(parent, "service-a");
     mkdirSync(worktreePath);
     writeFileSync(join(worktreePath, "stray"), "");
-    const { runner } = listing("");
-    expect(existingWorktree(runner, "/repo", worktreePath)).rejects.toThrow("remove it");
+    const { runner } = listing();
+    await expect(existingWorktree(runner, "/repo", worktreePath)).rejects.toThrow(
+      "remove it to provision again",
+    );
+  });
+
+  it("names a file on the path too, rather than raising ENOTDIR", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "yarvis-wt-"));
+    tmpDirs.push(parent);
+    const worktreePath = join(parent, "service-a");
+    writeFileSync(worktreePath, "");
+    const { runner } = listing();
+    await expect(existingWorktree(runner, "/repo", worktreePath)).rejects.toThrow(
+      "remove it to provision again",
+    );
   });
 
   it("treats an empty leftover folder as free, which git accepts", async () => {
@@ -165,7 +205,7 @@ describe("existingWorktree", () => {
     tmpDirs.push(parent);
     const worktreePath = join(parent, "service-a");
     mkdirSync(worktreePath);
-    const { runner } = listing("");
+    const { runner } = listing();
     expect(await existingWorktree(runner, "/repo", worktreePath)).toBeNull();
   });
 });
