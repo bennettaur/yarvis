@@ -11,7 +11,7 @@
  * (merge, push) likewise run in a worktree, never in the primary clone.
  */
 
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { run } from "./exec.ts";
 
@@ -337,6 +337,76 @@ export async function branchExists(
     cwd: primaryClonePath,
   });
   return result.exitCode === 0;
+}
+
+/** A worktree already registered at the path a workspace repo wants. */
+export interface ExistingWorktree {
+  /** The branch it has checked out, or null on a detached HEAD. */
+  branch: string | null;
+}
+
+/**
+ * Resolves symlinks so two spellings of one directory compare equal — the
+ * workspaces root can sit behind one (`/var` on macOS) and git reports what it
+ * resolved. Falls back to the path itself when there is nothing on disk yet.
+ */
+function canonicalPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/**
+ * The worktree already registered at `worktreePath`, or null when the path is
+ * free. Provisioning is retried after failures that happen once the worktree is
+ * cut — a setup script exiting non-zero is the everyday one — so it has to be
+ * able to tell "already done" from "not done yet" rather than failing the retry
+ * on `worktree add`. Prunes first, so a folder deleted out of band reads as free.
+ *
+ * Anything else occupying the path throws: `worktree add` would refuse it
+ * anyway, and naming it is what tells the user what to clear.
+ */
+export async function existingWorktree(
+  runner: GitRunner,
+  primaryClonePath: string,
+  worktreePath: string,
+): Promise<ExistingWorktree | null> {
+  await git(runner, ["worktree", "prune"], primaryClonePath);
+  // `-z` NUL-terminates every field and closes a record with a second NUL, so a
+  // worktree path containing a newline can't be misread as a record boundary.
+  // Fields are matched by prefix rather than position, since a record can carry
+  // `bare`, `locked` or `prunable` lines as well.
+  const out = await git(runner, ["worktree", "list", "--porcelain", "-z"], primaryClonePath);
+  const target = canonicalPath(worktreePath);
+  let path: string | null = null;
+  let ref: string | null = null;
+  for (const field of out.split("\0")) {
+    if (field === "") {
+      if (path && canonicalPath(path) === target) {
+        return { branch: ref?.replace(/^refs\/heads\//, "") ?? null };
+      }
+      path = null;
+      ref = null;
+    } else if (field.startsWith("worktree ")) {
+      path = field.slice("worktree ".length);
+    } else if (field.startsWith("branch ")) {
+      ref = field.slice("branch ".length);
+    }
+  }
+
+  // `statSync` rather than a bare `readdirSync`: a plain file on the path would
+  // otherwise raise ENOTDIR in place of the message this block exists to give.
+  if (existsSync(worktreePath)) {
+    const occupied = !statSync(worktreePath).isDirectory() || readdirSync(worktreePath).length > 0;
+    if (occupied) {
+      throw new Error(
+        `${worktreePath} already exists and is not a worktree of ${primaryClonePath} — remove it to provision again`,
+      );
+    }
+  }
+  return null;
 }
 
 /**

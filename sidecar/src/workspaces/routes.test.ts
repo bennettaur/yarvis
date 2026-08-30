@@ -21,6 +21,7 @@ import {
   assertSafeBranchName,
   createWorkspace,
   getWorkspace,
+  ignoreWorkspaceError,
   listRepoBranches,
   type ProvisionEvent,
   provisionWorkspace,
@@ -1233,6 +1234,277 @@ describe("provision + archive (injected git runner)", () => {
     expect(result.completedTasks).toBe(0);
     const [after] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
     expect(after?.status).toBe("open");
+  });
+
+  /** Reports a worktree registered at `worktreePath` on `branch`, and refuses to
+   *  add another, the way git does once the path is taken. */
+  const adoptedGit =
+    (worktreePath: string, branch: string | null): GitRunner =>
+    async (args, opts) => {
+      if (args[0] === "worktree" && args[1] === "list") {
+        const head = branch ? `branch refs/heads/${branch}` : "detached";
+        return {
+          stdout: `worktree ${worktreePath}\0HEAD abc\0${head}\0\0`,
+          stderr: "",
+          exitCode: 0,
+        };
+      }
+      if (args[0] === "worktree" && args[1] === "add") {
+        return { stdout: "", stderr: `fatal: '${worktreePath}' already exists`, exitCode: 128 };
+      }
+      return fakeGit(args, opts);
+    };
+
+  /** A repo whose setup script fails, provisioned once so its workspace is
+   *  parked in `error` with the worktree already cut. */
+  async function failedProvision(name: string, issuePrompt?: string) {
+    const db = getDb(url).db;
+    const created = await app.request("/api/repos", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ cloneUrl: `git@github.com:acme/${name}.git`, setupScript: "exit 3" }),
+    });
+    const repo = (await created.json()) as { id: string };
+    const ws = await createWorkspace(db, config, { name, repoIds: [repo.id], issuePrompt });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.status).toBe("error");
+    if (!detail) throw new Error("the failed provision left no workspace");
+    return { db, repo, ws, detail };
+  }
+
+  /** Points the repo's setup script at something that succeeds, so a retry has
+   *  a reason to land differently from the run that failed. */
+  const fixSetupScript = (repoId: string) =>
+    app.request(`/api/repos/${repoId}`, {
+      method: "PATCH",
+      headers: jsonAuth,
+      body: JSON.stringify({ setupScript: "true" }),
+    });
+
+  it("adopts the worktree the failed attempt cut, so the retry can recover it", async () => {
+    // The reported bug: everything after `worktree add` can fail, and the retry
+    // then died on the one step that had actually worked, stranding the space.
+    const { db, repo, ws, detail } = await failedProvision("adopt-worktree");
+    const worktreePath = detail.repos[0]?.worktreePath ?? "";
+    // The branch git reports is deliberately not the one on the row: whatever is
+    // checked out there is where the work is, and the row has to follow it.
+    const checkedOut = "yarvis/adopt-worktree-abcd1234";
+    expect(detail.repos[0]?.branch).not.toBe(checkedOut);
+
+    await fixSetupScript(repo.id);
+    await provisionWorkspace(db, ws.id, () => {}, {
+      runner: adoptedGit(worktreePath, checkedOut),
+    });
+
+    const after = await getWorkspace(db, ws.id);
+    expect(after?.status).toBe("active");
+    expect(after?.repos[0]?.status).toBe("ready");
+    expect(after?.repos[0]?.branch).toBe(checkedOut);
+    // Recovered in place rather than cut a second time beside it.
+    expect(after?.repos[0]?.worktreePath).toBe(worktreePath);
+  });
+
+  it("refuses to adopt a detached worktree rather than record a branch it isn't on", async () => {
+    // The branch column is what every later merge, push and diff reads, so
+    // recording the row's branch for a detached checkout would push a ref that
+    // isn't the work sitting there.
+    const { db, repo, ws, detail } = await failedProvision("detached");
+    await fixSetupScript(repo.id);
+    await provisionWorkspace(db, ws.id, () => {}, {
+      runner: adoptedGit(detail.repos[0]?.worktreePath ?? "", null),
+    });
+
+    const after = await getWorkspace(db, ws.id);
+    expect(after?.status).toBe("error");
+    expect(after?.repos[0]?.error).toContain("detached HEAD");
+  });
+
+  it("cuts a distinct branch on a retry rather than adopting one it didn't create", async () => {
+    // `error` says a previous attempt happened, not that this row is what cut the
+    // branch — an attempt that failed while cloning never got that far, and an
+    // archived workspace frees its slug while leaving its branch behind. Reusing
+    // on that evidence would start a new workspace on an old one's commits.
+    const { db, repo, ws, detail } = await failedProvision("collide-on-retry");
+    const worktreePath = detail.repos[0]?.worktreePath ?? "";
+    rmSync(worktreePath, { recursive: true, force: true });
+    await fixSetupScript(repo.id);
+
+    // show-ref exit 0 => a local branch of that name is already there.
+    let added: string[] = [];
+    const branchLeftBehind: GitRunner = async (args, opts) => {
+      if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 0 };
+      if (args[0] === "worktree" && args[1] === "add") added = args;
+      return fakeGit(args, opts);
+    };
+    await provisionWorkspace(db, ws.id, () => {}, { runner: branchLeftBehind });
+
+    const expected = `yarvis/collide-on-retry-${ws.id.slice(0, 8)}`;
+    expect(added).toEqual(["worktree", "add", "-b", expected, worktreePath, "origin/main"]);
+    expect((await getWorkspace(db, ws.id))?.repos[0]?.branch).toBe(expected);
+  });
+
+  it("names what is occupying the worktree path on the repo that failed", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo("git@github.com:acme/occupied.git");
+    const ws = await createWorkspace(db, config, { name: "occupied", repoIds: [repo.id] });
+    const detail = await getWorkspace(db, ws.id);
+    const worktreePath = detail?.repos[0]?.worktreePath ?? "";
+    mkdirSync(worktreePath, { recursive: true });
+    writeFileSync(join(worktreePath, "stray"), "");
+
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+
+    const after = await getWorkspace(db, ws.id);
+    expect(after?.repos[0]?.status).toBe("error");
+    // Actionable, rather than git's own "already exists" with nothing to do.
+    expect(after?.repos[0]?.error).toContain("remove it to provision again");
+  });
+
+  it("puts an ignored failure back in service, failed repos and all", async () => {
+    const { db, ws } = await failedProvision("ignored");
+
+    const after = await ignoreWorkspaceError(db, ws.id);
+    // Usable again — which is what the agent session and the run buttons wait on.
+    expect(after?.status).toBe("active");
+    expect(after?.error).toBeNull();
+    // The repo still reads as failed, so its badge, setup log and the retry
+    // button all still say what happened.
+    expect(after?.repos[0]?.status).toBe("error");
+    expect(after?.repos[0]?.setupExitCode).toBe(3);
+  });
+
+  it("refuses to ignore anything but a failed provision", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "healthy", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+
+    await expect(ignoreWorkspaceError(db, ws.id)).rejects.toThrow(
+      "provisioning failed can be ignored",
+    );
+  });
+
+  it("refuses to ignore while a run is still going, which would overwrite it", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo("git@github.com:acme/mid-run.git");
+    const ws = await createWorkspace(db, config, { name: "mid run", repoIds: [repo.id] });
+
+    let releaseRun = () => {};
+    const held = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    const slowGit: GitRunner = async (args, opts) => {
+      const res = await fakeGit(args, opts);
+      if (args[0] === "worktree" && args[1] === "add") await held;
+      return res;
+    };
+    const run = provisionWorkspace(db, ws.id, () => {}, { runner: slowGit });
+    await waitFor(ws.id, (d) => d.repos[0]?.status === "provisioning", "started provisioning");
+
+    await expect(ignoreWorkspaceError(db, ws.id)).rejects.toThrow("still running");
+    // 409 over the wire: a run in flight is a "come back in a moment", not a
+    // malformed request.
+    const res = await app.request(`/api/workspaces/${ws.id}/ignore-error`, {
+      method: "POST",
+      headers: auth,
+    });
+    expect(res.status).toBe(409);
+
+    releaseRun();
+    await run;
+  });
+
+  it("finishes a kick-off the failed provision left owed when its error is ignored", async () => {
+    // Otherwise the prompt outlives the ignore, and the startup sweep re-drives
+    // provisioning and puts the workspace straight back into `error`.
+    const { db, ws, detail } = await failedProvision("ignored kickoff", "implement the ticket");
+    expect(detail.pendingIssuePrompt).toBe("implement the ticket");
+
+    const started: StartClaudeSessionInput[] = [];
+    const after = await ignoreWorkspaceError(db, ws.id, {
+      startSession: async (input) => {
+        started.push(input);
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+
+    expect(after?.status).toBe("active");
+    expect(after?.pendingIssuePrompt).toBeNull();
+    expect(started).toHaveLength(1);
+    expect(started[0]?.instruction ?? "").toContain(".yarvis/issue-prompt.md");
+    expect(readFileSync(join(detail.rootPath, ".yarvis", "issue-prompt.md"), "utf-8")).toBe(
+      "implement the ticket",
+    );
+  });
+
+  it("drops the prompt even when the session won't start, so the ignore sticks", async () => {
+    // A launch failure is the common one (the agent isn't logged in) and is
+    // swallowed by design. Leaving the prompt set would have `resumeKickOffs`
+    // re-provision on the next start and undo the ignore; the ticket is still on
+    // disk for a session started by hand.
+    const { db, ws, detail } = await failedProvision("launch fails", "implement the ticket");
+
+    const after = await ignoreWorkspaceError(db, ws.id, {
+      startSession: async () => {
+        throw new Error("agent not logged in");
+      },
+    });
+
+    expect(after?.status).toBe("active");
+    expect(after?.pendingIssuePrompt).toBeNull();
+    expect(readFileSync(join(detail.rootPath, ".yarvis", "issue-prompt.md"), "utf-8")).toBe(
+      "implement the ticket",
+    );
+  });
+
+  it("lays down the workspace root files a failed run never reached", async () => {
+    // A run that threw outright never wrote them, and the ignore is about to
+    // start an agent session in that root.
+    const db = getDb(url).db;
+    const repo = await addRepo("git@github.com:acme/never-cloned.git");
+    const ws = await createWorkspace(db, config, { name: "never cloned", repoIds: [repo.id] });
+    const failingGit: GitRunner = async (args) => {
+      if (args[0] === "clone") return { stdout: "", stderr: "network is down", exitCode: 128 };
+      return fakeGit(args, {});
+    };
+    await provisionWorkspace(db, ws.id, () => {}, { runner: failingGit });
+
+    const after = await ignoreWorkspaceError(db, ws.id);
+    const root = after?.rootPath ?? "";
+    expect(existsSync(join(root, "AGENTS.md"))).toBe(true);
+    expect(existsSync(join(root, "CLAUDE.md"))).toBe(true);
+    expect(existsSync(join(root, ".claude", "settings.json"))).toBe(true);
+  });
+
+  it("ignores over HTTP without leaking the pending prompt", async () => {
+    const { ws } = await failedProvision("ignored over http", "implement the ticket");
+
+    const res = await app.request(`/api/workspaces/${ws.id}/ignore-error`, {
+      method: "POST",
+      headers: auth,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.status).toBe("active");
+    // The sidecar's own bookkeeping, kept off every workspace response.
+    expect(body).not.toHaveProperty("pendingIssuePrompt");
+
+    // And a second click, on a workspace already recovered, is refused rather
+    // than taking the view down with a 500.
+    const again = await app.request(`/api/workspaces/${ws.id}/ignore-error`, {
+      method: "POST",
+      headers: auth,
+    });
+    expect(again.status).toBe(400);
+  });
+
+  it("answers 404 for a workspace that isn't there", async () => {
+    const res = await app.request(
+      "/api/workspaces/00000000-0000-4000-8000-000000000000/ignore-error",
+      { method: "POST", headers: auth },
+    );
+    expect(res.status).toBe(404);
   });
 
   it("completes provisioning even when a setup script fails (repo -> error)", async () => {

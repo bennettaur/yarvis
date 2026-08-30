@@ -17,6 +17,7 @@ import {
   findWorkspaceForPr,
   getRepo,
   getWorkspace,
+  ignoreWorkspaceError,
   linkIssue,
   linkTask,
   listRepoBranches,
@@ -283,6 +284,21 @@ export function createWorkspaceRoutes(config: Config): Hono {
         await emit({ type: "error", message: e instanceof Error ? e.message : String(e) });
       }
     });
+  });
+
+  // Accepts a failed provision: the workspace goes back to `active` so it can be
+  // worked in, while the repos that failed keep their status and setup logs.
+  router.post("/:id/ignore-error", async (c) => {
+    try {
+      const detail = await ignoreWorkspaceError(db(), c.req.param("id"));
+      if (!detail) return c.json({ error: "not found" }, 404);
+      const { pendingIssuePrompt: _internal, ...body } = detail;
+      return c.json(body);
+    } catch (e) {
+      // A run in flight is a "come back in a moment", not a malformed request.
+      const running = e instanceof Error && e.message.includes("still running");
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, running ? 409 : 400);
+    }
   });
 
   // Files / changed-files for a workspace repo's worktree (right-column views).

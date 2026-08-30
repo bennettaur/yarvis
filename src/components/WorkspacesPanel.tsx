@@ -10,6 +10,7 @@ import { openExternal } from "../lib/url";
 import {
   createWorkspace,
   getWorkspace,
+  ignoreWorkspaceError,
   listWorkspaces,
   unlinkWorkspaceIssue,
   unlinkWorkspaceTask,
@@ -39,6 +40,7 @@ import {
 } from "./workspaces/agentTab";
 import BranchCombobox from "./workspaces/BranchCombobox";
 import LinkWorkModal from "./workspaces/LinkWorkModal";
+import { provisionActions, setupLogToAutoOpen } from "./workspaces/provisionActions";
 import { consumeProvision } from "./workspaces/provisionStream";
 import WorkspaceFileDiff from "./workspaces/WorkspaceFileDiff";
 import WorkspacePrBadges from "./workspaces/WorkspacePrBadges";
@@ -807,6 +809,8 @@ function WorkspaceDetailView({
   // Why the last agent launch failed, shown in the header. Non-fatal; see
   // `startAgent`.
   const [agentError, setAgentError] = useState<string | null>(null);
+  // Why the last "ignore the error" click was refused, shown beside that button.
+  const [ignoreFailure, setIgnoreFailure] = useState<string | null>(null);
   // Bumped when the active id changes (or this view unmounts) so an in-flight
   // load() from a previous selection won't overwrite the new one's detail.
   // Capture the current value at call time; compare on resolve.
@@ -906,16 +910,16 @@ function WorkspaceDetailView({
     };
   }, [id, detail?.status]);
 
-  // When a workspace with a failed repo loads — whether provisioning just failed
-  // here, or the user reopened an errored workspace — auto-open that repo's
-  // setup-log tab so the failure is visible without hunting for it. Fires once
-  // per mount; the per-repo "Setup log" button below reopens it after a close.
+  // When a workspace whose provisioning failed loads — whether it just failed
+  // here, or the user reopened it — auto-open the failed repo's setup-log tab so
+  // the failure is visible without hunting for it. Fires once per mount; the
+  // per-repo "Setup log" button below reopens it after a close. See
+  // `setupLogToAutoOpen` for what has to hold first.
   useEffect(() => {
-    if (setupAutoOpenedRef.current || !detail) return;
-    const failed = detail.repos.find((wr) => wr.status === "error");
-    if (!failed) return;
+    const request = setupLogToAutoOpen(detail, setupAutoOpenedRef.current);
+    if (!request) return;
     setupAutoOpenedRef.current = true;
-    setSetupLogRequest({ workspaceRepoId: failed.id, title: failed.repo.name });
+    setSetupLogRequest(request);
   }, [detail]);
 
   const provision = useCallback(async () => {
@@ -935,6 +939,25 @@ function WorkspaceDetailView({
       if (result.error) setError(result.error);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [id, load, onChanged]);
+
+  // Take the provisioning failure as read and use the workspace anyway. The
+  // sidecar flips it back to `active`, which is what lets the agent session and
+  // the rest of the workspace's surfaces come up; the repos that failed keep
+  // their badges and setup logs, and the retry button below stays offered.
+  // Reported beside the button rather than as the view's `error`, which replaces
+  // the whole workspace: a refused ignore (a retry started meanwhile, or a
+  // second click on a workspace already recovered) must not take down the view
+  // it was clicked to repair.
+  const ignoreError = useCallback(async () => {
+    setIgnoreFailure(null);
+    try {
+      await ignoreWorkspaceError(id);
+      await load();
+      onChanged();
+    } catch (e) {
+      setIgnoreFailure(e instanceof Error ? e.message : String(e));
     }
   }, [id, load, onChanged]);
 
@@ -1026,6 +1049,7 @@ function WorkspaceDetailView({
   if (!detail) return <p className="p-6 text-sm text-zinc-500">Loading…</p>;
 
   const provisioned = detail.status === "active";
+  const actions = provisionActions(detail);
   const agentCwd = agentCwdForWorkspace(detail);
   // A background teardown that couldn't remove a worktree parks the workspace
   // in `archiving` with the failure recorded, so the button becomes the retry.
@@ -1228,19 +1252,28 @@ function WorkspaceDetailView({
         />
       )}
 
-      {!provisioned && provisionLog === null && (
-        <div className="shrink-0 border-b border-zinc-800 px-4 py-2">
+      {actions.show && provisionLog === null && (
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-zinc-800 px-4 py-2">
           <button
             type="button"
             onClick={() => void provision()}
             className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500"
           >
-            {detail.status === "error"
-              ? "Retry provisioning"
-              : detail.repos.length === 0
-                ? "Create folder"
-                : "Provision worktrees"}
+            {actions.label}
           </button>
+          {actions.showIgnore && (
+            <button
+              type="button"
+              onClick={() => void ignoreError()}
+              className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
+            >
+              Ignore and use anyway
+            </button>
+          )}
+          {actions.showIgnore && detail.error && (
+            <span className="text-xs text-red-400">{detail.error}</span>
+          )}
+          {ignoreFailure && <span className="text-xs text-red-400">{ignoreFailure}</span>}
         </div>
       )}
 

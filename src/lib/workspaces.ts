@@ -193,6 +193,17 @@ export async function* provisionWorkspace(id: string): AsyncGenerator<ProvisionE
   }
 }
 
+/**
+ * Accepts a failed provision: the workspace reads `active` again so it can be
+ * worked in, while the repos that failed keep their status and setup logs. What
+ * this buys is a workspace that stops opening on its error page.
+ */
+export async function ignoreWorkspaceError(id: string): Promise<WorkspaceDetail> {
+  const res = await sidecarFetch(`/api/workspaces/${id}/ignore-error`, { method: "POST" });
+  if (!res.ok) return readError(res, "ignore provisioning error");
+  return res.json();
+}
+
 export async function workspaceRepoFiles(
   workspaceId: string,
   workspaceRepoId: string,
