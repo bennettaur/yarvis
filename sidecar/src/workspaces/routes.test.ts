@@ -14,6 +14,7 @@ import {
   workspaceRepoPr,
   workspaceRepos,
 } from "../db/schema.ts";
+import { createTask } from "../tasks/service.ts";
 import type { StartClaudeSessionInput } from "./claudeSession.ts";
 import type { GitRunner } from "./git.ts";
 import {
@@ -1605,17 +1606,63 @@ describe("pending kick-off prompt retention", () => {
     expect((await getWorkspace(db, ws.id))?.pendingBrief).toBeNull();
   });
 
-  it("rejects a kick-off prompt too large to be a ticket", async () => {
-    // The bound is on the client-supplied field, not on start-work, which
-    // composes its prompt from an issue GitHub has already capped.
+  it("composes a linked task's brief itself when the client asks to start work", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const task = await createTask(db, {
+      title: "Ship the delete button",
+      scope: "daily",
+      notes: "Behind the existing confirm dialog.",
+    });
+
+    const res = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        name: task.title,
+        repoIds: [repo.id],
+        taskId: task.id,
+        startWork: true,
+      }),
+    });
+    expect(res.status).toBe(201);
+
+    // The brief is composed here, not sent: a client can't put arbitrary text
+    // in front of an auto-approved session.
+    const created = (await res.json()) as { id: string };
+    const detail = await getWorkspace(db, created.id);
+    expect(detail?.pendingBrief).toContain("Ship the delete button");
+    expect(detail?.pendingBrief).toContain("Behind the existing confirm dialog.");
+  });
+
+  it("links a task without a kick-off when the client doesn't ask to start work", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const task = await createTask(db, { title: "Poke at it", scope: "daily", notes: "later" });
+
+    const res = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: task.title, repoIds: [repo.id], taskId: task.id }),
+    });
+    expect(res.status).toBe(201);
+
+    const created = (await res.json()) as { id: string };
+    const detail = await getWorkspace(db, created.id);
+    expect(detail?.pendingBrief).toBeNull();
+    expect(detail?.tasks.map((t) => t.id)).toEqual([task.id]);
+  });
+
+  it("refuses a taskId that resolves to nothing", async () => {
     const repo = await addRepo();
     const res = await app.request("/api/workspaces", {
       method: "POST",
       headers: jsonAuth,
       body: JSON.stringify({
-        name: "oversized",
+        name: "ghost",
         repoIds: [repo.id],
-        brief: "x".repeat(70000),
+        taskId: "00000000-0000-0000-0000-000000000000",
+        startWork: true,
       }),
     });
     expect(res.status).toBe(400);

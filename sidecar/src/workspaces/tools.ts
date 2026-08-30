@@ -13,8 +13,7 @@ import {
   upsertLink,
 } from "../issues/service.ts";
 import type { IssueDetail, IssueSummary } from "../issues/types.ts";
-import { buildTaskBrief, getTask } from "../tasks/service.ts";
-import { buildBriefDocument, kickOffResult, WORKSPACE_BRIEF_FILE } from "./brief.ts";
+import { kickOffResult, resolveWorkspaceBrief, WORKSPACE_BRIEF_FILE } from "./brief.ts";
 import {
   type ClaudeSessionMessenger,
   type ClaudeSessionStarter,
@@ -109,6 +108,19 @@ const briefSchema = z
   );
 
 /**
+ * Whether a linked task starts the session working. Defaults to on: a user who
+ * asks for a workspace for a task wants the work under way, and a session left
+ * at an empty prompt is the failure this parameter exists to avoid. Turning it
+ * off is for "set one up, I'll drive it myself".
+ */
+const startWorkSchema = z
+  .boolean()
+  .default(true)
+  .describe(
+    "Start the session working on the linked task's details. Set false only when the user said they want to drive the session themselves; has no effect without taskId, and a brief is always worked on.",
+  );
+
+/**
  * Injectable collaborators, overridden in tests to avoid real git/claude/github,
  * plus the one piece of per-turn context the tools need.
  */
@@ -193,32 +205,6 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         note: "Workspace is ready; the Claude session failed to start. You can open the workspace locally and start Claude there.",
       };
     }
-  };
-
-  /**
-   * What a new workspace's first session should be told to work on: a linked
-   * task's title and notes, a brief the caller wrote, or both. A null brief —
-   * neither given — leaves the session at a bare prompt for the user to drive.
-   *
-   * A `taskId` that resolves to nothing is an error rather than a fall-through:
-   * the model chose that id, and silently starting a bare session would report
-   * work under way that nobody described. The same miss also leaves the task
-   * unlinked, so the workspace would never complete it on archive.
-   *
-   * The text is sanitized on the way into the workspace row by `createWorkspace`,
-   * since it ends up in front of an auto-approved agent.
-   */
-  const resolveBrief = async (
-    name: string,
-    taskId: string | undefined,
-    brief: string | undefined,
-  ): Promise<{ brief: string | null } | { error: string }> => {
-    if (taskId) {
-      const task = await getTask(db, taskId);
-      if (!task) return { error: "task not found; call list_tasks to get a valid id" };
-      return { brief: buildTaskBrief(task, brief) };
-    }
-    return { brief: brief?.trim() ? buildBriefDocument(name, brief) : null };
   };
 
   return {
@@ -383,12 +369,18 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           .uuid()
           .optional()
           .describe(
-            "Task to link; archiving the workspace completes it. Its title and notes become the session's instructions, so tell the user what the task says rather than only that work started",
+            "Task to link; archiving the workspace completes it. Unless startWork is false, its title and notes become the session's instructions, so tell the user what the task says rather than only that work started",
           ),
         brief: briefSchema,
+        startWork: startWorkSchema,
       }),
-      execute: async ({ name, repoIds, taskId, brief }) => {
-        const resolved = await resolveBrief(name, taskId, brief);
+      execute: async ({ name, repoIds, taskId, brief, startWork }) => {
+        const resolved = await resolveWorkspaceBrief(db, {
+          workspaceName: name,
+          taskId,
+          brief,
+          startWork,
+        });
         if ("error" in resolved) return resolved;
         const kickOffBrief = resolved.brief;
         const ws = await createWorkspace(db, config, {
@@ -433,12 +425,18 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           .uuid()
           .optional()
           .describe(
-            "Task to link; archiving the workspace completes it. Its title and notes become the session's instructions, so tell the user what the task says rather than only that work started",
+            "Task to link; archiving the workspace completes it. Unless startWork is false, its title and notes become the session's instructions, so tell the user what the task says rather than only that work started",
           ),
         brief: briefSchema,
+        startWork: startWorkSchema,
       }),
-      execute: async ({ name, taskId, brief }) => {
-        const resolved = await resolveBrief(name, taskId, brief);
+      execute: async ({ name, taskId, brief, startWork }) => {
+        const resolved = await resolveWorkspaceBrief(db, {
+          workspaceName: name,
+          taskId,
+          brief,
+          startWork,
+        });
         if ("error" in resolved) return resolved;
         const kickOffBrief = resolved.brief;
         const ws = await createWorkspace(db, config, {

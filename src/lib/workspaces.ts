@@ -122,12 +122,12 @@ export interface CreateWorkspaceInput {
   existingBranches?: Record<string, string>;
   taskId?: string | null;
   /**
-   * What to start the workspace's agent session on. The sidecar seeds
-   * `.yarvis/brief.md` and launches the session on it as the last steps of
-   * provisioning, so the kick-off completes whether or not this view is still
-   * around.
+   * Whether a linked task starts the session working on it. The sidecar
+   * composes the brief from the task, seeds `.yarvis/brief.md` and launches the
+   * session on it as the last steps of provisioning, so the kick-off completes
+   * whether or not this view is still around.
    */
-  brief?: string;
+  startWork?: boolean;
 }
 
 export interface ArchiveWorkspaceInput {

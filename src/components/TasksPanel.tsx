@@ -2,24 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { requestNewWorkspace } from "../lib/nav";
 import { completeTask, createTask, deleteTask, listTasks, type Task } from "../lib/tasks";
 
-/**
- * Brief handed to Claude when the user clicks "Start work" on a task. Mirrors
- * the issue "Start work" brief in shape (a single markdown file written into
- * the workspace's `.yarvis/brief.md`) so one fixed Claude launch line drives
- * every entry point. Kept in step with `buildTaskBrief` in the sidecar's
- * `tasks/service.ts`, which produces the same document for the chat agent.
- */
-export function buildTaskBrief(task: Task): string {
-  const lines = [
-    "Work on the following task from the Yarvis task list.",
-    "",
-    `# ${task.title}`,
-    "",
-    (task.notes ?? "").trim() || "_(no notes)_",
-  ];
-  return `${lines.join("\n")}\n`;
-}
-
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -127,11 +109,7 @@ function TaskRow({
           <button
             type="button"
             onClick={() =>
-              requestNewWorkspace({
-                name: task.title,
-                taskId: task.id,
-                brief: buildTaskBrief(task),
-              })
+              requestNewWorkspace({ name: task.title, taskId: task.id, startWork: true })
             }
             aria-label="Start work on this task"
             title="Start work"

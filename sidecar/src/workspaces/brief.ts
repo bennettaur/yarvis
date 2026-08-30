@@ -8,6 +8,8 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { Db } from "../db/client.ts";
+import { buildTaskBrief, getTask } from "../tasks/service.ts";
 import { sessionStartedMessage } from "./claudeSession.ts";
 import type { WorkspaceDetail } from "./service.ts";
 
@@ -65,4 +67,48 @@ export function kickOffResult(detail: WorkspaceDetail, remoteControl: boolean) {
     message: sessionStartedMessage(detail.name, remoteControl),
     briefFile: WORKSPACE_BRIEF_FILE,
   };
+}
+
+export interface ResolveBriefInput {
+  /** Workspace name, which heads a brief that has no task or ticket behind it. */
+  workspaceName: string;
+  /** Task to work from, if any. Its title and notes become the brief. */
+  taskId?: string | null;
+  /** Free text to work from, on its own or as extra context beside a task. */
+  brief?: string | null;
+  /**
+   * Whether a linked task should start the session working. False links the
+   * task and leaves the session at an empty prompt for the user to drive — the
+   * New Workspace form's "create" button, as against its "start work" one.
+   * A `brief` is worked on either way: text written to be worked on has no
+   * other purpose.
+   */
+  startWork: boolean;
+}
+
+/**
+ * Works out what a new workspace's first session should be told to do, for
+ * every caller that creates one — the chat agent's tools and the create route
+ * alike, so the document a task produces doesn't depend on who asked. A null
+ * brief means no kick-off: the session opens at a bare prompt.
+ *
+ * A `taskId` that resolves to nothing is an error rather than a fall-through.
+ * The caller chose that id, the task also never gets linked (so the workspace
+ * would never complete it on archive), and reporting work under way that nobody
+ * described is worse than refusing.
+ *
+ * The text is sanitized on the way into the workspace row by `createWorkspace`,
+ * since it ends up in front of an auto-approved agent.
+ */
+export async function resolveWorkspaceBrief(
+  db: Db,
+  input: ResolveBriefInput,
+): Promise<{ brief: string | null } | { error: string }> {
+  const free = input.brief?.trim() ? input.brief : null;
+  if (input.taskId) {
+    const task = await getTask(db, input.taskId);
+    if (!task) return { error: "task not found; call list_tasks to get a valid id" };
+    if (input.startWork) return { brief: buildTaskBrief(task, free) };
+  }
+  return { brief: free ? buildBriefDocument(input.workspaceName, free) : null };
 }

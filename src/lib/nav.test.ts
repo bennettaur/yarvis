@@ -27,17 +27,17 @@ describe("open-workspace cross-tab bus", () => {
 });
 
 describe("new-workspace cross-tab bus", () => {
-  it("delivers the task pre-fill (name, taskId, brief) to a subscriber", () => {
+  it("delivers the task pre-fill (name, taskId, startWork) to a subscriber", () => {
     const received: NewWorkspaceRequest[] = [];
     const off = onNewWorkspace((r) => received.push(r));
     requestNewWorkspace({
       name: "Ship the delete button",
       taskId: "task-1",
-      brief: "work on the task",
+      startWork: true,
     });
     off();
     expect(received).toEqual([
-      { name: "Ship the delete button", taskId: "task-1", brief: "work on the task" },
+      { name: "Ship the delete button", taskId: "task-1", startWork: true },
     ]);
   });
 

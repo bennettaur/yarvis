@@ -3,6 +3,7 @@ import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { resolveWorkspaceBrief } from "./brief.ts";
 import { CONTROL_CHARACTERS, MAX_FILE_BYTES, WorktreeFileError } from "./files.ts";
 import {
   createReviewComment,
@@ -59,11 +60,11 @@ const createWorkspaceSchema = z.object({
   // repo id -> existing branch to check out instead of a fresh branch.
   existingBranches: z.record(z.string().uuid(), z.string()).optional(),
   taskId: z.string().uuid().nullish(),
-  // A "Start work" prompt to seed the workspace's agent session with, held on
-  // the row until the launch line goes out. Capped like the issue bodies it is
-  // composed from (see `createIssueSchema`), now that it is persisted rather
-  // than passed straight through.
-  brief: z.string().max(65536).nullish(),
+  // Whether a linked task starts the session working on it. The brief itself is
+  // composed here rather than sent, so the document a task produces is the same
+  // one the chat agent's tools produce, and a client can't put arbitrary text
+  // in front of an auto-approved session.
+  startWork: z.boolean().optional().default(false),
 });
 
 const archiveSchema = z.object({
@@ -245,8 +246,17 @@ export function createWorkspaceRoutes(config: Config): Hono {
     const body = await c.req.json().catch(() => null);
     const parsed = createWorkspaceSchema.safeParse(body);
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const resolved = await resolveWorkspaceBrief(db(), {
+      workspaceName: parsed.data.name,
+      taskId: parsed.data.taskId,
+      startWork: parsed.data.startWork,
+    });
+    if ("error" in resolved) return c.json({ error: resolved.error }, 400);
     try {
-      return c.json(await createWorkspace(db(), config, parsed.data), 201);
+      return c.json(
+        await createWorkspace(db(), config, { ...parsed.data, brief: resolved.brief }),
+        201,
+      );
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
     }

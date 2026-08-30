@@ -508,9 +508,10 @@ function NewWorkspaceForm({
         repoIds: [...selected],
         existingBranches: Object.keys(existingBranches).length ? existingBranches : undefined,
         taskId: taskId || undefined,
-        // A "Start work" handoff (Tasks) seeds the agent session; the sidecar
-        // holds the brief so the launch doesn't depend on this form staying mounted.
-        brief: prefill?.brief,
+        // A "Start work" handoff (Tasks) has the sidecar compose the task's
+        // brief and launch on it, so the kick-off doesn't depend on this form
+        // staying mounted.
+        startWork: prefill?.startWork,
       });
       setPhase("provisioning");
       const result = await consumeProvision(ws.id, (text) => setLog((prev) => prev + text));
