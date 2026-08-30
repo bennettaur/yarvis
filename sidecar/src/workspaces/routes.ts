@@ -246,17 +246,16 @@ export function createWorkspaceRoutes(config: Config): Hono {
     const body = await c.req.json().catch(() => null);
     const parsed = createWorkspaceSchema.safeParse(body);
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    // `startWork` decides what the brief is, and doesn't travel any further.
+    const { startWork, ...input } = parsed.data;
     const resolved = await resolveWorkspaceBrief(db(), {
-      workspaceName: parsed.data.name,
-      taskId: parsed.data.taskId,
-      startWork: parsed.data.startWork,
+      workspaceName: input.name,
+      taskId: input.taskId,
+      startWork,
     });
     if ("error" in resolved) return c.json({ error: resolved.error }, 400);
     try {
-      return c.json(
-        await createWorkspace(db(), config, { ...parsed.data, brief: resolved.brief }),
-        201,
-      );
+      return c.json(await createWorkspace(db(), config, { ...input, brief: resolved.brief }), 201);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
     }
