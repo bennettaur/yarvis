@@ -168,7 +168,7 @@ Status of the build against the original vision. The full V1 plan lives at
   "Start work" action that creates a workspace for the issue, links it,
   best-effort assigns the issue to the viewer and labels it in-progress on
   GitHub, then provisions the worktree and launches a Claude session seeded with
-  the issue title + description (written to `.yarvis/issue-prompt.md` by
+  the issue title + description (written to `.yarvis/brief.md` by
   provisioning). Every issue list row — GitHub and JIRA alike — carries that
   same action, so an issue you already know you want can be started without
   opening it. The whole sequence runs in the sidecar, which launches the session
@@ -250,7 +250,10 @@ Status of the build against the original vision. The full V1 plan lives at
   tool lets the agent raise a nav-rail badge + an OS notification when it finishes
   background work or needs a decision. The agent also holds workspace tools: it
   can list repos and their open issues, spin up workspaces (from repos, from an
-  issue like the "Start work" button, or scratch) and start agent sessions
+  issue like the "Start work" button, or scratch) and start agent sessions —
+  started on a brief, from a linked task's title and notes, text the agent
+  composes, or both, so the session begins work instead of waiting at an empty
+  prompt; with neither it opens bare for you to drive
   (remote-controllable only when the request came in over Telegram, where there
   is no local tab to drive), report a workspace's PR / CI-check / mergeable
   status, and archive workspaces — all from natural language, and reachable from

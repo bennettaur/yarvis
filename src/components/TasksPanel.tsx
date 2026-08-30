@@ -2,23 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { requestNewWorkspace } from "../lib/nav";
 import { completeTask, createTask, deleteTask, listTasks, type Task } from "../lib/tasks";
 
-/**
- * Prompt handed to Claude when the user clicks "Start work" on a task. Mirrors
- * the issue "Start work" prompt in shape (a single markdown file written into
- * the workspace's `.yarvis/issue-prompt.md`) so the same Claude launch line
- * ("Read the ticket details…") drives both entry points.
- */
-export function buildTaskPrompt(task: Task): string {
-  const lines = [
-    "Work on the following task from the Yarvis task list.",
-    "",
-    `# ${task.title}`,
-    "",
-    (task.notes ?? "").trim() || "_(no notes)_",
-  ];
-  return `${lines.join("\n")}\n`;
-}
-
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -126,11 +109,7 @@ function TaskRow({
           <button
             type="button"
             onClick={() =>
-              requestNewWorkspace({
-                name: task.title,
-                taskId: task.id,
-                claudePrompt: buildTaskPrompt(task),
-              })
+              requestNewWorkspace({ name: task.title, taskId: task.id, startWork: true })
             }
             aria-label="Start work on this task"
             title="Start work"

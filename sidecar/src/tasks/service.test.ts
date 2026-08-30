@@ -4,9 +4,11 @@ import postgres from "postgres";
 import * as schema from "../db/schema.ts";
 import { listEvents } from "../events/service.ts";
 import {
+  buildTaskBrief,
   completeTask,
   createTask,
   deleteTask,
+  getTask,
   listTasks,
   rolloverTasks,
   tasksCompletedBetween,
@@ -151,5 +153,41 @@ describe("task service", () => {
     // Exactly one completion (from completeTask); the rename and reopen emit none.
     const completed = await listEvents(db, { type: "task.completed" });
     expect(completed.length).toBe(1);
+  });
+
+  it("reads a single task by id, and null for an unknown one", async () => {
+    const task = await createTask(db, { title: "find me", scope: "daily" });
+
+    expect((await getTask(db, task.id))?.title).toBe("find me");
+    expect(await getTask(db, "00000000-0000-0000-0000-000000000000")).toBeNull();
+  });
+});
+
+describe("buildTaskBrief", () => {
+  const task = {
+    title: "Rename the API",
+    notes: "Drop the v1 prefix.",
+  } as Parameters<typeof buildTaskBrief>[0];
+
+  it("puts the title and notes in the brief", () => {
+    const brief = buildTaskBrief(task);
+
+    expect(brief).toContain("# Rename the API");
+    expect(brief).toContain("Drop the v1 prefix.");
+  });
+
+  it("says so rather than leaving the body blank when a task has no notes", () => {
+    expect(buildTaskBrief({ ...task, notes: null })).toContain("_(no notes)_");
+  });
+
+  it("keeps the caller's own context alongside the task's", () => {
+    const brief = buildTaskBrief(task, "Start with the public routes.");
+
+    expect(brief).toContain("Drop the v1 prefix.");
+    expect(brief).toContain("Start with the public routes.");
+  });
+
+  it("ignores a blank extra rather than adding an empty section", () => {
+    expect(buildTaskBrief(task, "   ")).toBe(buildTaskBrief(task));
   });
 });

@@ -123,7 +123,7 @@ const ARCHIVING_REFRESH_INTERVAL_MS = 2_000;
 
 /** Where a workspace's agent session runs: always the workspace root, so the
  *  agent sees each repo's worktree as a subfolder and can read the
- *  `.yarvis/issue-prompt.md` seeded there for an issue "Start work" session. */
+ *  `.yarvis/brief.md` seeded there when the workspace was started on something. */
 function agentCwdForWorkspace(detail: WorkspaceDetail): string {
   return detail.rootPath;
 }
@@ -152,9 +152,9 @@ export default function WorkspacesPanel({
   // one workspace id for the same reason. Consumed by the terminal surface.
   const [focusSession, setFocusSession] = useState<{ id: string; sessionKey: string } | null>(null);
   const [creating, setCreating] = useState(false);
-  // Pre-fill (name/taskId) plus a pending Claude prompt for the New Workspace
-  // form, applied when another tab (Tasks) hands off a "create workspace" or
-  // "start work" request. Cleared alongside `creating`.
+  // Pre-fill (name/taskId, and whether to start work on the task) for the New
+  // Workspace form, applied when another tab (Tasks) hands off a "create
+  // workspace" or "start work" request. Cleared alongside `creating`.
   const [newWorkspacePrefill, setNewWorkspacePrefill] = useState<NewWorkspaceRequest | null>(null);
   const [showArchived, setShowArchived] = useState<boolean>(
     () => localStorage.getItem(SHOW_ARCHIVED_KEY) === "1",
@@ -439,7 +439,7 @@ function NewWorkspaceForm({
   onRepoAdded,
 }: {
   repos: Repo[];
-  /** Pre-fill from a cross-tab handoff (Tasks): name, taskId, Claude prompt. */
+  /** Pre-fill from a cross-tab handoff (Tasks): name, taskId, startWork. */
   prefill?: NewWorkspaceRequest | null;
   onCancel: () => void;
   onCreated: (id: string) => void;
@@ -510,9 +510,10 @@ function NewWorkspaceForm({
         repoIds: [...selected],
         existingBranches: Object.keys(existingBranches).length ? existingBranches : undefined,
         taskId: taskId || undefined,
-        // A "Start work" handoff (Tasks) seeds the agent session; the sidecar
-        // holds it so the launch doesn't depend on this form staying mounted.
-        issuePrompt: prefill?.claudePrompt,
+        // A "Start work" handoff (Tasks) has the sidecar compose the task's
+        // brief and launch on it, so the kick-off doesn't depend on this form
+        // staying mounted.
+        startWork: prefill?.startWork,
       });
       setPhase("provisioning");
       const result = await consumeProvision(ws.id, (text) => setLog((prev) => prev + text));

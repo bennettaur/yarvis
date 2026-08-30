@@ -30,9 +30,9 @@ import {
   listLinksForWorkspace,
   sanitizeIssueText,
   upsertLink,
-  writeIssuePrompt,
 } from "../issues/service.ts";
 import { completeTasksByWorkspace, tasksForWorkspace } from "../tasks/service.ts";
+import { WORKSPACE_BRIEF_FILE, writeWorkspaceBrief } from "./brief.ts";
 import {
   type ClaudeSessionStarter,
   startClaudeSession,
@@ -318,11 +318,12 @@ export interface CreateWorkspaceInput {
   existingBranches?: Record<string, string>;
   taskId?: string | null;
   /**
-   * The "Start work" prompt for this workspace. Stored on the row so
-   * provisioning can write it to `.yarvis/issue-prompt.md` itself and the agent
-   * launch survives the UI navigating away — see `workspaces.pendingIssuePrompt`.
+   * What the workspace's first agent session should work on — an issue, a JIRA
+   * ticket, a task, or a brief the chat agent composed. Stored on the row so
+   * provisioning can write it to `.yarvis/brief.md` itself and the agent
+   * launch survives the UI navigating away — see `workspaces.pendingBrief`.
    */
-  issuePrompt?: string | null;
+  brief?: string | null;
 }
 
 export interface WorkspaceRepoDetail extends WorkspaceRepo {
@@ -396,15 +397,13 @@ export async function createWorkspace(
   // Sanitized here rather than at each caller so every producer (issues, JIRA,
   // tasks) gets the same defense against hidden instructions surviving into the
   // auto-approved agent session. Sanitizing sanitized text is a no-op.
-  const pendingIssuePrompt = input.issuePrompt?.trim()
-    ? sanitizeIssueText(input.issuePrompt)
-    : null;
+  const pendingBrief = input.brief?.trim() ? sanitizeIssueText(input.brief) : null;
 
   // One transaction so a mid-create failure never leaves a half-built workspace.
   const created = await db.transaction(async (tx) => {
     const [workspace] = await tx
       .insert(workspaces)
-      .values({ name: input.name.trim(), slug, rootPath, status: "creating", pendingIssuePrompt })
+      .values({ name: input.name.trim(), slug, rootPath, status: "creating", pendingBrief })
       .returning();
 
     // A scratch workspace has no repo rows; skip the insert (Drizzle rejects an
@@ -446,7 +445,7 @@ export async function createWorkspace(
       workspaceId: created.id,
       name: created.name,
       repos: selected.map((r) => `${r.owner}/${r.name}`),
-      fromTicket: Boolean(input.issuePrompt),
+      fromTicket: Boolean(input.brief),
     },
   });
 
@@ -455,10 +454,10 @@ export async function createWorkspace(
 
 /**
  * A workspace list row. Everything on the workspace except the pending kick-off
- * prompt, which holds a whole ticket body and is wanted only by the one
+ * brief, which holds a whole ticket body and is wanted only by the one
  * workspace being opened — this list is polled, and for every workspace at once.
  */
-export interface WorkspaceSummary extends Omit<Workspace, "pendingIssuePrompt"> {
+export interface WorkspaceSummary extends Omit<Workspace, "pendingBrief"> {
   /** Names of the repos in this workspace, for grouping in the sidebar. */
   repoNames: string[];
   /**
@@ -481,7 +480,7 @@ export interface WorkspaceSummaryPr {
 }
 
 export async function listWorkspaces(db: Db): Promise<WorkspaceSummary[]> {
-  const { pendingIssuePrompt: _omitted, ...listColumns } = getTableColumns(workspaces);
+  const { pendingBrief: _omitted, ...listColumns } = getTableColumns(workspaces);
   const wsRows = await db.select(listColumns).from(workspaces).orderBy(workspaces.createdAt);
   if (!wsRows.length) return [];
 
@@ -1449,21 +1448,21 @@ export async function provisionWorkspace(
     // Finish the "Start work" kick-off before reporting the workspace active,
     // so by the time anything can see it there is already a session to attach
     // to. Doing it here rather than in the caller is what frees the flow from
-    // whoever started it: seeding the prompt file and launching the agent are
+    // whoever started it: seeding the brief file and launching the agent are
     // the last two steps of provisioning, not a UI's follow-up.
-    const pendingPrompt = after?.pendingIssuePrompt;
-    if (status === "active" && after && pendingPrompt) {
+    const pendingBrief = after?.pendingBrief;
+    if (status === "active" && after && pendingBrief) {
       try {
-        await writeIssuePrompt(after.rootPath, pendingPrompt);
+        await writeWorkspaceBrief(after.rootPath, pendingBrief);
       } catch (e) {
         status = "error";
-        error = `could not write the issue prompt file: ${e instanceof Error ? e.message : String(e)}`;
+        error = `could not write the brief file: ${e instanceof Error ? e.message : String(e)}`;
       }
     }
 
     // Launch before the status flips, so a workspace is never reported ready
     // with its kick-off still owed a session — whoever looks next just attaches.
-    if (status === "active" && after && pendingPrompt) {
+    if (status === "active" && after && pendingBrief) {
       await launchKickOffSession(db, after, startSession, remoteControl);
     }
 
@@ -1497,18 +1496,18 @@ export async function provisionWorkspace(
 }
 
 /**
- * What a "Start work" session is told to do. The ticket itself is written to a
- * known file under the workspace root, so a fixed instruction to read that file
- * is enough and a body of any size stays off the command line.
+ * What a kick-off session is told to do. The work itself — a ticket body, a
+ * task's notes, a brief the chat agent composed — is written to a known file
+ * under the workspace root, so one fixed instruction covers every producer and
+ * a body of any size stays off the command line.
  */
-export const AGENT_ISSUE_INSTRUCTION =
-  "Read the ticket details in .yarvis/issue-prompt.md and implement a first pass at the ticket, following the repository's conventions.";
+export const AGENT_KICKOFF_INSTRUCTION = `Read the work described in ${WORKSPACE_BRIEF_FILE} and make a first pass at it, following the conventions of whichever repository you are working in.`;
 
 /**
- * Launches the session a kick-off has been waiting for and drops the prompt that
+ * Launches the session a kick-off has been waiting for and drops the brief that
  * recorded it was owed. Best-effort by design: the workspace is provisioned and
  * usable either way, so a launch failure (commonly: the agent isn't logged in)
- * leaves the prompt in place for `resumeKickOffs` to retry rather than failing
+ * leaves the brief in place for `resumeKickOffs` to retry rather than failing
  * the workspace. Retrying is safe — the core keys sessions by workspace and
  * discards a spawn for an id that already has one.
  */
@@ -1524,7 +1523,7 @@ async function launchKickOffSession(
       cwd: detail.rootPath,
       name: detail.name,
       remoteControl,
-      instruction: AGENT_ISSUE_INSTRUCTION,
+      instruction: AGENT_KICKOFF_INSTRUCTION,
     });
   } catch (e) {
     console.error("[workspaces] could not start the kick-off session:", e);
@@ -1535,18 +1534,18 @@ async function launchKickOffSession(
     source: "workspaces",
     payload: { workspaceId: detail.id, name: detail.name, kickOff: true, remoteControl },
   });
-  await clearPendingIssuePrompt(db, detail.id).catch(() => undefined);
+  await clearPendingBrief(db, detail.id).catch(() => undefined);
 }
 
 /**
- * Drops a workspace's pending "Start work" prompt, once its session has been
- * launched on the ticket. Until then the prompt stays put, which is what lets an
- * interrupted kick-off resume.
+ * Drops a workspace's pending brief, once its session has been launched on it.
+ * Until then the brief stays put, which is what lets an interrupted kick-off
+ * resume.
  */
-export async function clearPendingIssuePrompt(db: Db, id: string): Promise<void> {
+export async function clearPendingBrief(db: Db, id: string): Promise<void> {
   await db
     .update(workspaces)
-    .set({ pendingIssuePrompt: null, updatedAt: new Date() })
+    .set({ pendingBrief: null, updatedAt: new Date() })
     .where(eq(workspaces.id, id));
 }
 
@@ -1554,7 +1553,7 @@ export async function clearPendingIssuePrompt(db: Db, id: string): Promise<void>
  * Starts a workspace's kick-off running in the background and returns at once.
  * "Start work" answers as soon as the workspace and its issue link exist, because
  * cloning and a setup script take minutes and nothing downstream should wait on
- * them: provisioning, seeding the prompt file, and launching the session all
+ * them: provisioning, seeding the brief file, and launching the session all
  * finish here whether or not anyone is still looking at the screen that asked.
  * Progress is watchable meanwhile via the provision stream, which joins the run
  * already going.
@@ -1567,7 +1566,7 @@ export function startKickOff(db: Db, id: string): void {
 
 /**
  * Resumes kick-offs stranded by a sidecar restart: any workspace still holding a
- * prompt is one whose session was never launched. Provisioning is idempotent, so
+ * brief is one whose session was never launched. Provisioning is idempotent, so
  * this re-drives it whatever state the workspace stopped in. Called once at
  * startup — nothing else can strand one, since the sequence otherwise runs to
  * completion in the background regardless of what the UI is doing.
@@ -1576,7 +1575,7 @@ export async function resumeKickOffs(db: Db, options: ProvisionOptions = {}): Pr
   const stranded = await db
     .select({ id: workspaces.id })
     .from(workspaces)
-    .where(and(isNotNull(workspaces.pendingIssuePrompt), ne(workspaces.status, "archived")));
+    .where(and(isNotNull(workspaces.pendingBrief), ne(workspaces.status, "archived")));
   if (!stranded.length) return;
   console.warn(`[workspaces] resuming ${stranded.length} interrupted kick-off(s)`);
   for (const { id } of stranded) {
@@ -1861,9 +1860,9 @@ async function removeWorktreesAndFinish(
       mergedPrUrl: input.mergedPrUrl ?? detail.mergedPrUrl ?? linkedPrUrl(detail),
       error: fullyRemoved ? null : "one or more worktrees could not be removed",
       // A torn-down workspace has no session left to hand a kick-off to, so a
-      // prompt still pending on it is only a copy of the ticket body kept alive
-      // for nobody.
-      pendingIssuePrompt: fullyRemoved ? null : detail.pendingIssuePrompt,
+      // brief still pending on it is only a copy of the work kept alive for
+      // nobody.
+      pendingBrief: fullyRemoved ? null : detail.pendingBrief,
       archivedAt: fullyRemoved ? new Date() : null,
       updatedAt: new Date(),
     })

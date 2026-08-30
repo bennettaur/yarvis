@@ -1,5 +1,3 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import {
@@ -238,19 +236,6 @@ export async function applyStartWorkSideEffects(
     }
   }
   return warnings;
-}
-
-/**
- * Writes the issue prompt into the workspace's `.yarvis/` folder (under the
- * workspace root, outside any repo worktree so it never dirties git status) and
- * returns the absolute path. The terminal launches Claude with this file.
- */
-export async function writeIssuePrompt(rootPath: string, prompt: string): Promise<string> {
-  const dir = join(rootPath, ".yarvis");
-  await mkdir(dir, { recursive: true });
-  const file = join(dir, "issue-prompt.md");
-  await writeFile(file, prompt, "utf8");
-  return file;
 }
 
 // --- Saved filters ---

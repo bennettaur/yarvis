@@ -438,11 +438,12 @@ switching workspaces (or leaving the Workspaces tab) and coming back counts as
 opening the workspace again and starts a fresh session. The header's start-session
 button brings one back on the spot.
 
-An issue's "Start work" is held by the sidecar on the workspace itself, not by
-the screen you started it from, so navigating away mid-kick-off doesn't strand
-it. Reopening the workspace rejoins the provisioning run already in flight and
-picks its log back up, then launches the agent on the ticket once it lands. If
-provisioning failed, the ticket is still waiting behind "Retry provisioning".
+A kick-off — an issue's "Start work", a task's, or one the in-app agent
+started — is held by the sidecar on the workspace itself, not by the screen you
+started it from, so navigating away mid-kick-off doesn't strand it. Reopening
+the workspace rejoins the provisioning run already in flight and picks its log
+back up, then launches the agent on the work once it lands. If provisioning
+failed, the work is still waiting behind "Retry provisioning".
 
 A failed provision opens on the failed repo's setup log, and leaves two buttons.
 "Retry provisioning" picks up where the run stopped: the worktrees it did manage
@@ -478,9 +479,10 @@ even though Claude runs one directory above the repos. It also writes a
 `.mcp.json` pointing the session at Yarvis's own MCP endpoint (see "Yarvis as an
 MCP server"). Both files are merged, not overwritten, so any other keys — or
 other MCP servers — already present are left intact. A
-workspace opened from an issue's "Start work" also gets the ticket itself, in
-`.yarvis/issue-prompt.md` — the file its agent session is launched to read, as
-the last step of provisioning.
+workspace started on something — an issue's "Start work", a task, or a brief
+handed to the in-app agent — also gets that work written to `.yarvis/brief.md`,
+the file its agent session is launched to read, as the last step of
+provisioning.
 
 When several workspaces need the same upstream fix, ask the in-app agent (or
 Telegram) to merge main into them — "merge main into all my open PRs" — and it
