@@ -312,7 +312,7 @@ export function createWorkspaceRoutes(config: Config): Hono {
     try {
       const detail = await ignoreWorkspaceError(db(), c.req.param("id"));
       if (!detail) return c.json({ error: "not found" }, 404);
-      const { pendingIssuePrompt: _internal, ...body } = detail;
+      const { pendingBrief: _internal, ...body } = detail;
       return c.json(body);
     } catch (e) {
       // A run in flight is a "come back in a moment", not a malformed request.

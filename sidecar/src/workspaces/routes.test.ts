@@ -1408,7 +1408,7 @@ describe("provision + archive (injected git runner)", () => {
 
   /** A repo whose setup script fails, provisioned once so its workspace is
    *  parked in `error` with the worktree already cut. */
-  async function failedProvision(name: string, issuePrompt?: string) {
+  async function failedProvision(name: string, brief?: string) {
     const db = getDb(url).db;
     const created = await app.request("/api/repos", {
       method: "POST",
@@ -1416,7 +1416,7 @@ describe("provision + archive (injected git runner)", () => {
       body: JSON.stringify({ cloneUrl: `git@github.com:acme/${name}.git`, setupScript: "exit 3" }),
     });
     const repo = (await created.json()) as { id: string };
-    const ws = await createWorkspace(db, config, { name, repoIds: [repo.id], issuePrompt });
+    const ws = await createWorkspace(db, config, { name, repoIds: [repo.id], brief });
     await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     const detail = await getWorkspace(db, ws.id);
     expect(detail?.status).toBe("error");
@@ -1570,7 +1570,7 @@ describe("provision + archive (injected git runner)", () => {
     // Otherwise the prompt outlives the ignore, and the startup sweep re-drives
     // provisioning and puts the workspace straight back into `error`.
     const { db, ws, detail } = await failedProvision("ignored kickoff", "implement the ticket");
-    expect(detail.pendingIssuePrompt).toBe("implement the ticket");
+    expect(detail.pendingBrief).toBe("implement the ticket");
 
     const started: StartClaudeSessionInput[] = [];
     const after = await ignoreWorkspaceError(db, ws.id, {
@@ -1581,10 +1581,10 @@ describe("provision + archive (injected git runner)", () => {
     });
 
     expect(after?.status).toBe("active");
-    expect(after?.pendingIssuePrompt).toBeNull();
+    expect(after?.pendingBrief).toBeNull();
     expect(started).toHaveLength(1);
-    expect(started[0]?.instruction ?? "").toContain(".yarvis/issue-prompt.md");
-    expect(readFileSync(join(detail.rootPath, ".yarvis", "issue-prompt.md"), "utf-8")).toBe(
+    expect(started[0]?.instruction ?? "").toContain(".yarvis/brief.md");
+    expect(readFileSync(join(detail.rootPath, ".yarvis", "brief.md"), "utf-8")).toBe(
       "implement the ticket",
     );
   });
@@ -1603,8 +1603,8 @@ describe("provision + archive (injected git runner)", () => {
     });
 
     expect(after?.status).toBe("active");
-    expect(after?.pendingIssuePrompt).toBeNull();
-    expect(readFileSync(join(detail.rootPath, ".yarvis", "issue-prompt.md"), "utf-8")).toBe(
+    expect(after?.pendingBrief).toBeNull();
+    expect(readFileSync(join(detail.rootPath, ".yarvis", "brief.md"), "utf-8")).toBe(
       "implement the ticket",
     );
   });
@@ -1639,7 +1639,7 @@ describe("provision + archive (injected git runner)", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.status).toBe("active");
     // The sidecar's own bookkeeping, kept off every workspace response.
-    expect(body).not.toHaveProperty("pendingIssuePrompt");
+    expect(body).not.toHaveProperty("pendingBrief");
 
     // And a second click, on a workspace already recovered, is refused rather
     // than taking the view down with a 500.

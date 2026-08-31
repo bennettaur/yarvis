@@ -1599,7 +1599,7 @@ export async function resumeKickOffs(db: Db, options: ProvisionOptions = {}): Pr
  * undo the ignore — `resumeKickOffs` re-drives provisioning for any workspace
  * still holding one, the repos are still failed, and the next sidecar start
  * would park the workspace back in `error`. The ticket itself is not lost by
- * dropping it: `.yarvis/issue-prompt.md` is where the agent reads it from, and
+ * dropping it: `.yarvis/brief.md` is where the agent reads it from, and
  * a session started by hand finds it there.
  */
 export async function ignoreWorkspaceError(
@@ -1625,15 +1625,15 @@ export async function ignoreWorkspaceError(
   mkdirSync(detail.rootPath, { recursive: true });
   writeWorkspaceFiles(detail);
 
-  if (detail.pendingIssuePrompt) {
+  if (detail.pendingBrief) {
     // Fatal for the same reason it is fatal in `provisionWorkspace`: the agent is
     // launched to read this file, so a workspace must never be reported ready
     // without it.
-    await writeIssuePrompt(detail.rootPath, detail.pendingIssuePrompt);
+    await writeWorkspaceBrief(detail.rootPath, detail.pendingBrief);
     // Not remotely controllable: the ignore is a click at the machine, whatever
     // the kick-off's own origin was.
     await launchKickOffSession(db, detail, startSession, false);
-    await clearPendingIssuePrompt(db, id);
+    await clearPendingBrief(db, id);
   }
 
   // Checked again on the way out: a run that started while the kick-off was
