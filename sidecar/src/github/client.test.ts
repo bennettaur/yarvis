@@ -2,9 +2,11 @@ import { describe, expect, it } from "bun:test";
 import {
   encodeRepoPath,
   GitHubClient,
+  summarizeCheckItems,
   summarizeChecks,
   summarizeReviewDecision,
   toPrDetail,
+  toStackEntry,
 } from "./client.ts";
 
 function fakeFetch(routes: Record<string, unknown>): typeof fetch {
@@ -629,5 +631,219 @@ describe("github client", () => {
   it("reports whether the head branch lives in a fork", () => {
     expect(toPrDetail({ number: 7, isCrossRepository: true }).fromFork).toBe(true);
     expect(toPrDetail({ number: 7 }).fromFork).toBe(false);
+  });
+});
+
+/**
+ * A GraphQL-aware fake: the stack walk issues three different queries against
+ * one endpoint, so the routing has to key on the operation rather than on the
+ * path the way {@link fakeFetch} does.
+ */
+function fakeGraphql(handler: (query: string, variables: any) => unknown): typeof fetch {
+  return (async (_url: string, init: any) => {
+    const body = JSON.parse(init.body);
+    return new Response(JSON.stringify({ data: handler(body.query, body.variables) }), {
+      status: 200,
+    });
+  }) as unknown as typeof fetch;
+}
+
+/** A PullRequest node as the stack queries select it. */
+const node = (number: number, headRefName: string, baseRefName: string, extra: any = {}) => ({
+  number,
+  title: `pr ${number}`,
+  url: `https://github.com/o/r/pull/${number}`,
+  state: "OPEN",
+  isDraft: false,
+  isInMergeQueue: false,
+  headRefName,
+  baseRefName,
+  mergeStateStatus: "CLEAN",
+  reviewDecision: null,
+  ...extra,
+});
+
+/**
+ * Serves the three stack queries out of one branch->PR map, so a test states
+ * the stack it means and nothing about how the walk finds it.
+ */
+function stackFetch(
+  nodes: any[],
+  trunk = "main",
+  behindBy: Record<string, number> = {},
+): typeof fetch {
+  return fakeGraphql((query, variables) => {
+    if (query.includes("compare(headRef")) {
+      // One aliased field per adjacent pair; `behindBy` is keyed by head branch.
+      const out: Record<string, unknown> = {};
+      for (let i = 0; variables[`h${i}`] !== undefined; i++) {
+        out[`c${i}`] = { compare: { behindBy: behindBy[variables[`h${i}`]] ?? 0 } };
+      }
+      return { repository: out };
+    }
+    if (query.includes("defaultBranchRef")) {
+      return {
+        repository: {
+          defaultBranchRef: { name: trunk },
+          pullRequest: nodes.find((n) => n.number === variables.number) ?? null,
+        },
+      };
+    }
+    const key = query.includes("headRefName:$branch") ? "headRefName" : "baseRefName";
+    const match = nodes.find((n) => n[key] === variables.branch);
+    return { repository: { pullRequests: { nodes: match ? [match] : [] } } };
+  });
+}
+
+const REF = { provider: "github", owner: "o", repo: "r", number: 1 } as const;
+
+describe("github stacked pull requests", () => {
+  const stack = [node(1, "auth", "main"), node(2, "api", "auth"), node(3, "ui", "api")];
+
+  it("walks base and head refs into a stack, bottom first", async () => {
+    const gh = new GitHubClient("t", stackFetch(stack));
+    const result = await gh.prStack("o", "r", 2);
+
+    expect(result.trunk).toBe("main");
+    expect(result.entries.map((e) => e.number)).toEqual([1, 2, 3]);
+    expect(result.entries.map((e) => e.isCurrent)).toEqual([false, true, false]);
+  });
+
+  it("reports a pull request that is not stacked as a stack of one", async () => {
+    const gh = new GitHubClient("t", stackFetch([node(9, "solo", "main")]));
+    expect((await gh.prStack("o", "r", 9)).entries.map((e) => e.number)).toEqual([9]);
+  });
+
+  // Two PRs targeting each other's head branch is a shape GitHub permits, and
+  // the walk would otherwise follow it forever.
+  it("stops when the walk comes back to a pull request it has already seen", async () => {
+    const cycle = [node(1, "a", "b"), node(2, "b", "a")];
+    const gh = new GitHubClient("t", stackFetch(cycle));
+    expect((await gh.prStack("o", "r", 1)).entries.map((e) => e.number)).toEqual([2, 1]);
+  });
+
+  it("flags a layer GitHub reports as behind the one below it", () => {
+    const entry = toStackEntry(node(2, "api", "auth", { mergeStateStatus: "BEHIND" }), REF, false);
+    expect(entry.needsUpdate).toBe(true);
+    expect(toStackEntry(node(2, "api", "auth"), REF, false).needsUpdate).toBe(false);
+  });
+
+  it("carries each layer's lifecycle state", () => {
+    const merged = toStackEntry(node(1, "auth", "main", { state: "MERGED" }), REF, false);
+    expect(merged.state).toBe("merged");
+    expect(merged.merged).toBe(true);
+    expect(toStackEntry(node(1, "a", "main", { isInMergeQueue: true }), REF, false).queued).toBe(
+      true,
+    );
+  });
+
+  it("summarizes a layer's checks from the rollup", () => {
+    const entry = toStackEntry(
+      node(1, "auth", "main", {
+        commits: {
+          nodes: [
+            {
+              commit: {
+                statusCheckRollup: {
+                  contexts: {
+                    nodes: [
+                      {
+                        __typename: "CheckRun",
+                        name: "build",
+                        status: "COMPLETED",
+                        conclusion: "SUCCESS",
+                      },
+                      {
+                        __typename: "CheckRun",
+                        name: "test",
+                        status: "IN_PROGRESS",
+                        conclusion: null,
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          ],
+        },
+      }),
+      REF,
+      false,
+    );
+    expect(entry.checks).toEqual({ total: 2, success: 1, failure: 0, pending: 1 });
+  });
+
+  // A legacy commit status reports "still running" as a PENDING conclusion on a
+  // context that has no separate status, so the uppercase pass has to catch it.
+  it("counts a pending commit status as running, not failing", () => {
+    expect(
+      summarizeCheckItems([{ name: "ci", status: "COMPLETED", conclusion: "PENDING", url: null }]),
+    ).toEqual({ total: 1, success: 0, failure: 0, pending: 1 });
+  });
+
+  it("maps GitHub's review decision onto the shared verdict", () => {
+    expect(
+      toStackEntry(node(1, "a", "main", { reviewDecision: "CHANGES_REQUESTED" }), REF, false)
+        .reviewDecision,
+    ).toBe("changes_requested");
+    expect(toStackEntry(node(1, "a", "main"), REF, false).reviewDecision).toBeNull();
+  });
+});
+
+describe("github stack restack detection", () => {
+  const stack = [node(1, "auth", "main"), node(2, "api", "auth"), node(3, "ui", "api")];
+
+  // `mergeStateStatus` only reports BEHIND where the base branch requires
+  // branches to be up to date, so on an ordinary repo the comparison is the
+  // only thing that answers this at all.
+  it("flags a layer whose branch is behind the one below it", async () => {
+    const gh = new GitHubClient("t", stackFetch(stack, "main", { ui: 4 }));
+    const result = await gh.prStack("o", "r", 2);
+
+    expect(result.entries.map((e) => e.needsUpdate)).toEqual([false, false, true]);
+  });
+
+  it("compares every adjacent pair in one request, the bottom against the trunk", async () => {
+    const queries: string[] = [];
+    const inner = stackFetch(stack);
+    const gh = new GitHubClient("t", (async (url: string, init: any) => {
+      queries.push(JSON.parse(init.body).query);
+      return inner(url, init);
+    }) as unknown as typeof fetch);
+
+    await gh.prStack("o", "r", 2);
+    const compares = queries.filter((q) => q.includes("compare(headRef"));
+    expect(compares).toHaveLength(1);
+    // Three layers, three pairs: main→auth, auth→api, api→ui.
+    expect(compares[0]?.match(/c\d+:/g)).toHaveLength(3);
+  });
+
+  it("keeps the stack when the comparison fails", async () => {
+    const gh = new GitHubClient("t", (async (url: string, init: any) => {
+      if (JSON.parse(init.body).query.includes("compare(headRef")) {
+        return new Response("nope", { status: 500 });
+      }
+      return stackFetch(stack)(url, init);
+    }) as unknown as typeof fetch);
+
+    expect((await gh.prStack("o", "r", 2)).entries).toHaveLength(3);
+  });
+
+  it("reports a stack it had to stop walking as truncated", async () => {
+    // A chain longer than the depth cap: each layer's base is the one below it.
+    const deep = Array.from({ length: 14 }, (_, i) =>
+      node(i + 1, `layer-${i + 1}`, i === 0 ? "main" : `layer-${i}`),
+    );
+    const gh = new GitHubClient("t", stackFetch(deep));
+
+    const result = await gh.prStack("o", "r", 14);
+    expect(result.truncated).toBe(true);
+    expect(result.entries.length).toBeLessThan(deep.length);
+  });
+
+  it("reports a stack it walked to the end as complete", async () => {
+    expect((await new GitHubClient("t", stackFetch(stack)).prStack("o", "r", 2)).truncated).toBe(
+      false,
+    );
   });
 });

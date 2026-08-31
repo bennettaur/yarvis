@@ -128,6 +128,11 @@ back to ad-hoc.
   the tools in `codeTools.ts` are written once and GitHub/Azure each supply an
   implementation. A capability one provider lacks resolves to `null` so the
   caller can say so, rather than throwing.
+- Stacked pull requests have two sources and neither is optional: the CLI
+  decides membership, the API decides each layer's status, and either being
+  absent degrades rather than fails. `sidecar/src/workspaces/stack.ts` explains
+  why and does the reconciling. Merging is CLI-only, so it exists only where a
+  worktree does.
 - What models a provider offers is data, not code: `llm/catalog.ts` holds the
   bundled defaults and the capability tags (`chat`, `stt`, `tts`, `vision`,
   `embed`), and rows in `provider_models` take a provider's catalogue over the

@@ -16,6 +16,7 @@ import {
 } from "../db/schema.ts";
 import { createTask } from "../tasks/service.ts";
 import type { StartClaudeSessionInput } from "./claudeSession.ts";
+import type { RunResult } from "./exec.ts";
 import type { GitRunner } from "./git.ts";
 import {
   archiveWorkspace,
@@ -30,6 +31,7 @@ import {
   startArchiveWorkspace,
   unlinkTask,
 } from "./service.ts";
+import { type GhRunner, mergeWorkspaceRepoStack, workspaceRepoStack } from "./stack.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -85,6 +87,154 @@ const skillsGit: GitRunner = async (args, opts) => {
 
 beforeEach(async () => {
   await sql`TRUNCATE repos, workspaces, workspace_repos, workspace_repo_pr, tasks, issue_links RESTART IDENTITY CASCADE`;
+});
+
+/**
+ * The stack merge is the one irreversible thing in this file: `gh stack merge N`
+ * takes every layer below N with it. These exercise the guards through the real
+ * database rows, with `gh` faked — a route-level test would shell out to the
+ * user's actual CLI.
+ */
+describe("workspace stack", () => {
+  const ok = (stdout: string): RunResult => ({ stdout, stderr: "", exitCode: 0 });
+
+  const view = {
+    trunk: "main",
+    currentBranch: "api",
+    branches: [
+      { name: "auth", pr: { number: 1, state: "OPEN" } },
+      { name: "api", isCurrent: true, pr: { number: 2, state: "OPEN" } },
+    ],
+  };
+
+  function fakeGh(stdout = JSON.stringify(view)): { gh: GhRunner; calls: string[][] } {
+    const calls: string[][] = [];
+    return {
+      calls,
+      gh: async (args) => {
+        calls.push(args);
+        return ok(args[1] === "merge" ? "merged" : stdout);
+      },
+    };
+  }
+
+  /** A provisioned workspace repo, which is what the stack functions address. */
+  async function workspaceRepo(cloneUrl = "git@github.com:acme/widget.git") {
+    const repo = await addRepo(cloneUrl);
+    const created = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "stacked", repoIds: [repo.id] }),
+    });
+    const ws = (await created.json()) as { id: string };
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    const [wr] = await db
+      .select()
+      .from(workspaceRepos)
+      .where(eq(workspaceRepos.workspaceId, ws.id));
+    return { workspaceId: ws.id, workspaceRepoId: wr!.id };
+  }
+
+  it("reads the stack for a workspace repo", async () => {
+    const { workspaceId, workspaceRepoId } = await workspaceRepo();
+    const { gh, calls } = fakeGh();
+
+    const result = await workspaceRepoStack(db, config, workspaceId, workspaceRepoId, gh);
+
+    expect(calls[0]).toEqual(["stack", "view", "--json"]);
+    expect(result.stack?.entries.map((e) => e.number)).toEqual([1, 2]);
+    // No token is configured in this suite, so nothing was asked of GitHub and
+    // the layers carry only what the CLI knows.
+    expect(result.stack?.entries.every((e) => e.statusKnown)).toBe(false);
+  });
+
+  it("refuses a pull request that is not a layer of the stack", async () => {
+    const { workspaceId, workspaceRepoId } = await workspaceRepo();
+    const { gh, calls } = fakeGh();
+
+    await expect(
+      mergeWorkspaceRepoStack(db, config, workspaceId, workspaceRepoId, 99, [99], undefined, gh),
+    ).rejects.toThrow("#99 is not part of this stack");
+    // The safety property: it never reached the merge.
+    expect(calls.map((c) => c[1])).not.toContain("merge");
+  });
+
+  // `gh stack merge` widens downward, so confirming "2 PRs" and merging five is
+  // the failure that matters. An agent restacking in this same worktree between
+  // the click and the call is ordinary use, not an exotic race.
+  it("refuses when the stack no longer matches what the user confirmed", async () => {
+    const { workspaceId, workspaceRepoId } = await workspaceRepo();
+    const { gh, calls } = fakeGh();
+
+    await expect(
+      mergeWorkspaceRepoStack(db, config, workspaceId, workspaceRepoId, 2, [2], undefined, gh),
+    ).rejects.toThrow("the stack changed since you looked");
+    expect(calls.map((c) => c[1])).not.toContain("merge");
+  });
+
+  it("merges once the plan matches what was confirmed", async () => {
+    const { workspaceId, workspaceRepoId } = await workspaceRepo();
+    const { gh, calls } = fakeGh();
+
+    const result = await mergeWorkspaceRepoStack(
+      db,
+      config,
+      workspaceId,
+      workspaceRepoId,
+      2,
+      [1, 2],
+      "SQUASH",
+      gh,
+    );
+
+    expect(result.merged).toBe(true);
+    expect(calls.at(-1)).toEqual(["stack", "merge", "2", "--yes", "--squash"]);
+  });
+
+  it("refuses to merge a stack gh could not read", async () => {
+    const { workspaceId, workspaceRepoId } = await workspaceRepo();
+    const gh: GhRunner = async () => ({ stdout: "", stderr: "no stack here", exitCode: 1 });
+
+    await expect(
+      mergeWorkspaceRepoStack(db, config, workspaceId, workspaceRepoId, 2, [1, 2], undefined, gh),
+    ).rejects.toThrow("gh stack is not available here");
+  });
+
+  // A repo can only be merged through the workspace that holds its worktree.
+  it("refuses a repo addressed through the wrong workspace", async () => {
+    const { workspaceRepoId } = await workspaceRepo();
+    const other = await workspaceRepo("git@github.com:acme/other.git");
+    const { gh } = fakeGh();
+
+    await expect(
+      workspaceRepoStack(db, config, other.workspaceId, workspaceRepoId, gh),
+    ).rejects.toThrow("workspace repo not found");
+  });
+
+  it("refuses a repo that isn't on GitHub", async () => {
+    const { workspaceId, workspaceRepoId } = await workspaceRepo(
+      "https://acme@dev.azure.com/acme/Shop/_git/widget",
+    );
+    const { gh } = fakeGh();
+
+    await expect(workspaceRepoStack(db, config, workspaceId, workspaceRepoId, gh)).rejects.toThrow(
+      "stacked pull requests are a GitHub feature",
+    );
+  });
+
+  it("rejects a merge body with no plan to check against", async () => {
+    const { workspaceId, workspaceRepoId } = await workspaceRepo();
+    const res = await app.request(
+      `/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/stack/merge`,
+      { method: "POST", headers: jsonAuth, body: JSON.stringify({ upTo: 2 }) },
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects ids that are not uuids before they reach a query", async () => {
+    const res = await app.request("/api/workspaces/x/repos/not-a-uuid/stack", { headers: auth });
+    expect(res.status).toBe(400);
+  });
 });
 
 afterAll(async () => {
@@ -1258,7 +1408,7 @@ describe("provision + archive (injected git runner)", () => {
 
   /** A repo whose setup script fails, provisioned once so its workspace is
    *  parked in `error` with the worktree already cut. */
-  async function failedProvision(name: string, issuePrompt?: string) {
+  async function failedProvision(name: string, brief?: string) {
     const db = getDb(url).db;
     const created = await app.request("/api/repos", {
       method: "POST",
@@ -1266,7 +1416,7 @@ describe("provision + archive (injected git runner)", () => {
       body: JSON.stringify({ cloneUrl: `git@github.com:acme/${name}.git`, setupScript: "exit 3" }),
     });
     const repo = (await created.json()) as { id: string };
-    const ws = await createWorkspace(db, config, { name, repoIds: [repo.id], issuePrompt });
+    const ws = await createWorkspace(db, config, { name, repoIds: [repo.id], brief });
     await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     const detail = await getWorkspace(db, ws.id);
     expect(detail?.status).toBe("error");
@@ -1420,7 +1570,7 @@ describe("provision + archive (injected git runner)", () => {
     // Otherwise the prompt outlives the ignore, and the startup sweep re-drives
     // provisioning and puts the workspace straight back into `error`.
     const { db, ws, detail } = await failedProvision("ignored kickoff", "implement the ticket");
-    expect(detail.pendingIssuePrompt).toBe("implement the ticket");
+    expect(detail.pendingBrief).toBe("implement the ticket");
 
     const started: StartClaudeSessionInput[] = [];
     const after = await ignoreWorkspaceError(db, ws.id, {
@@ -1431,10 +1581,10 @@ describe("provision + archive (injected git runner)", () => {
     });
 
     expect(after?.status).toBe("active");
-    expect(after?.pendingIssuePrompt).toBeNull();
+    expect(after?.pendingBrief).toBeNull();
     expect(started).toHaveLength(1);
-    expect(started[0]?.instruction ?? "").toContain(".yarvis/issue-prompt.md");
-    expect(readFileSync(join(detail.rootPath, ".yarvis", "issue-prompt.md"), "utf-8")).toBe(
+    expect(started[0]?.instruction ?? "").toContain(".yarvis/brief.md");
+    expect(readFileSync(join(detail.rootPath, ".yarvis", "brief.md"), "utf-8")).toBe(
       "implement the ticket",
     );
   });
@@ -1453,8 +1603,8 @@ describe("provision + archive (injected git runner)", () => {
     });
 
     expect(after?.status).toBe("active");
-    expect(after?.pendingIssuePrompt).toBeNull();
-    expect(readFileSync(join(detail.rootPath, ".yarvis", "issue-prompt.md"), "utf-8")).toBe(
+    expect(after?.pendingBrief).toBeNull();
+    expect(readFileSync(join(detail.rootPath, ".yarvis", "brief.md"), "utf-8")).toBe(
       "implement the ticket",
     );
   });
@@ -1489,7 +1639,7 @@ describe("provision + archive (injected git runner)", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.status).toBe("active");
     // The sidecar's own bookkeeping, kept off every workspace response.
-    expect(body).not.toHaveProperty("pendingIssuePrompt");
+    expect(body).not.toHaveProperty("pendingBrief");
 
     // And a second click, on a workspace already recovered, is refused rather
     // than taking the view down with a 500.

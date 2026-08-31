@@ -220,3 +220,70 @@ export interface Viewer {
   /** Provider user id, when the provider needs one for search (Azure). */
   id?: string;
 }
+
+/**
+ * One pull request's place in a stack: a chain of PRs where each targets the
+ * one below it, so each layer's diff is only its own change.
+ *
+ * The status fields are the reason the stack is worth rendering at all — the
+ * question a reviewer asks of a stack is "what is holding it up", which needs
+ * every layer's draft/merged state, checks and review verdict side by side.
+ */
+export interface StackEntry {
+  ref: PrRef;
+  /** {@link NO_PULL_REQUEST} for a branch `gh stack` tracks that has no PR yet. */
+  number: number;
+  title: string;
+  url: string;
+  /** Branch this layer targets — the head of the layer below, or the trunk. */
+  baseRef: string;
+  headRef: string;
+  /** "open" | "closed" | "merged", or "none" for a branch with no pull request. */
+  state: string;
+  merged: boolean;
+  draft: boolean;
+  queued: boolean;
+  checks: ChecksSummary;
+  reviewDecision: ReviewDecision | null;
+  /** True for the pull request the stack was looked up from. */
+  isCurrent: boolean;
+  /**
+   * The layer below has moved since this branch was last rebased onto it, so
+   * the stack needs restacking before this layer's diff reads as only its own
+   * change.
+   */
+  needsUpdate: boolean;
+  /**
+   * False when nothing is known about this layer beyond its existence, because
+   * the provider couldn't be reached. Distinguishes a layer with no checks and
+   * no reviews from one whose checks and reviews were never fetched — both
+   * would otherwise render as a clean pull request awaiting review.
+   */
+  statusKnown: boolean;
+}
+
+/**
+ * The number a layer carries when it has no pull request. Pull request numbers
+ * start at 1, so zero cannot collide with a real one.
+ */
+export const NO_PULL_REQUEST = 0;
+
+/**
+ * A pull request's stack, bottom (closest to the trunk) first.
+ *
+ * GitHub ships stacks through the `gh stack` CLI and exposes no API for them,
+ * so a stack is reconstructed by walking base/head branch names through the
+ * ordinary pull-request API — which needs no local clone, and also finds the
+ * stacks people built by hand long before the feature existed. A workspace with
+ * a worktree can additionally run the CLI; `sidecar/src/workspaces/stack.ts`
+ * explains how the two are reconciled.
+ */
+export interface PrStack {
+  /** The branch the bottom of the stack targets. */
+  trunk: string;
+  entries: StackEntry[];
+  /** GitHub's repository-scoped stack number; null unless `gh stack` reported one. */
+  stackNumber: number | null;
+  /** True when the walk hit its depth cap, so layers below or above are missing. */
+  truncated: boolean;
+}

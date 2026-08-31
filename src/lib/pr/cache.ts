@@ -7,7 +7,8 @@ import {
   fetchPrStatus,
 } from "./api";
 import { refKey } from "./ref";
-import type { PrDetail, PrFile, PrRef, PrStatus } from "./types";
+import { fetchPrStack } from "./stack";
+import type { PrDetail, PrFile, PrRef, PrStack, PrStatus } from "./types";
 
 /**
  * A tiny request cache for PR data, keyed by a string derived from the resource
@@ -187,6 +188,13 @@ function useCachedResource<T>(key: string | null, loader: () => Promise<T>): Res
 
 export const prDetailKey = (ref: PrRef) => `detail:${refKey(ref)}`;
 
+/**
+ * Named alongside {@link prDetailKey} because the two go stale together: a
+ * merge or a review verdict changes how this pull request reads *and* how its
+ * layer reads in the stack, so anything invalidating one invalidates both.
+ */
+export const prStackKey = (ref: PrRef) => `stack:${refKey(ref)}`;
+
 export function usePrDetail(ref: PrRef | null): Resource<PrDetail> {
   return useCachedResource(ref ? prDetailKey(ref) : null, () => fetchPrDetail(ref!));
 }
@@ -197,6 +205,15 @@ export function usePrFiles(ref: PrRef | null): Resource<PrFile[]> {
 
 export function usePrStatus(ref: PrRef | null): Resource<PrStatus> {
   return useCachedResource(ref ? `status:${refKey(ref)}` : null, () => fetchPrStatus(ref!));
+}
+
+/**
+ * The stack a pull request belongs to. Walking it costs a provider round trip
+ * per layer, so it sits behind the same cache as everything else here rather
+ * than being refetched by each surface that shows it.
+ */
+export function usePrStack(ref: PrRef | null): Resource<PrStack | null> {
+  return useCachedResource(ref ? prStackKey(ref) : null, () => fetchPrStack(ref!));
 }
 
 /**

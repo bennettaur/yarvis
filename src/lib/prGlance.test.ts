@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { prGlance, prGlanceBadge } from "./prGlance";
+import type { StackEntry } from "./pr/types";
+import { prGlance, prGlanceBadge, stackEntryBadge, stackEntryGlance } from "./prGlance";
 import type { WorkspaceSummaryPr } from "./workspaces";
 
 const PR: WorkspaceSummaryPr = {
@@ -68,5 +69,103 @@ describe("prGlanceBadge", () => {
     const badge = prGlanceBadge({ ...PR, reviewDecision: "approved" });
     expect(badge.label).toBe("web #12 approved");
     expect(badge.icon).toBe("✓");
+  });
+});
+
+const LAYER: StackEntry = {
+  ref: { provider: "github", owner: "o", repo: "r", number: 4 },
+  number: 4,
+  title: "api routes",
+  url: "https://github.com/o/r/pull/4",
+  baseRef: "auth",
+  headRef: "api",
+  state: "open",
+  merged: false,
+  draft: false,
+  queued: false,
+  checks: { total: 2, success: 2, failure: 0, pending: 0 },
+  reviewDecision: "review_required",
+  isCurrent: false,
+  needsUpdate: false,
+  statusKnown: true,
+};
+
+describe("stackEntryGlance", () => {
+  // Each of these puts two conditions in conflict, so it pins the precedence
+  // rather than just the mapping.
+  it("orders a layer's state by what the reader would act on first", () => {
+    const failing = { total: 2, success: 0, failure: 1, pending: 1 };
+    expect(
+      stackEntryGlance({ ...LAYER, checks: failing, reviewDecision: "changes_requested" }),
+    ).toBe("checks_failing");
+    expect(
+      stackEntryGlance({
+        ...LAYER,
+        checks: { total: 1, success: 0, failure: 0, pending: 1 },
+        reviewDecision: "changes_requested",
+      }),
+    ).toBe("changes_requested");
+    expect(
+      stackEntryGlance({
+        ...LAYER,
+        checks: { total: 1, success: 0, failure: 0, pending: 1 },
+        reviewDecision: "approved",
+      }),
+    ).toBe("checks_running");
+  });
+
+  it("maps each condition on its own", () => {
+    expect(stackEntryGlance({ ...LAYER, checks: { ...LAYER.checks, failure: 1 } })).toBe(
+      "checks_failing",
+    );
+    expect(stackEntryGlance({ ...LAYER, reviewDecision: "changes_requested" })).toBe(
+      "changes_requested",
+    );
+    expect(stackEntryGlance({ ...LAYER, checks: { ...LAYER.checks, pending: 1 } })).toBe(
+      "checks_running",
+    );
+    expect(stackEntryGlance({ ...LAYER, reviewDecision: "approved" })).toBe("approved");
+    expect(stackEntryGlance(LAYER)).toBe("open");
+  });
+
+  // A landed or queued layer is settled: what its checks said no longer asks
+  // anything of anyone.
+  it("reports a settled layer by its lifecycle, not its checks", () => {
+    const failing = { ...LAYER, checks: { total: 1, success: 0, failure: 1, pending: 0 } };
+    expect(stackEntryGlance({ ...failing, merged: true })).toBe("merged");
+    expect(stackEntryGlance({ ...failing, queued: true })).toBe("queued");
+    expect(stackEntryGlance({ ...failing, draft: true })).toBe("draft");
+  });
+
+  // `gh stack` tracks a branch from creation, well before it has a PR.
+  it("reports a branch with no pull request as such", () => {
+    expect(stackEntryGlance({ ...LAYER, number: 0, state: "none" })).toBe("no_pr");
+  });
+
+  // A layer read while GitHub was unreachable has no checks and no reviews,
+  // which is not the same as having clean ones.
+  it("does not pass off an unread layer as open and awaiting review", () => {
+    const unread = {
+      ...LAYER,
+      checks: { total: 0, success: 0, failure: 0, pending: 0 },
+      reviewDecision: null,
+      statusKnown: false,
+    };
+    expect(stackEntryGlance(unread)).toBe("unknown");
+    expect(stackEntryGlance({ ...unread, statusKnown: true })).toBe("open");
+    // What is known regardless still wins: the CLI reports merges by itself.
+    expect(stackEntryGlance({ ...unread, merged: true })).toBe("merged");
+  });
+});
+
+describe("stackEntryBadge", () => {
+  it("names the PR in the tooltip and the state on its own for the row", () => {
+    const badge = stackEntryBadge({ ...LAYER, merged: true });
+    expect(badge.label).toBe("#4 merged");
+    expect(badge.status).toBe("merged");
+  });
+
+  it("falls back to the branch name when there is no PR to name", () => {
+    expect(stackEntryBadge({ ...LAYER, number: 0 }).label).toBe("api no pull request yet");
   });
 });

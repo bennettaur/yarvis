@@ -6,7 +6,7 @@ import {
   mergePr,
   type ReviewAction,
 } from "../../lib/pr/api";
-import { invalidate, prDetailKey } from "../../lib/pr/cache";
+import { invalidate, prDetailKey, prStackKey } from "../../lib/pr/cache";
 import { refDisplayRepo, refNumber, refProviderName } from "../../lib/pr/ref";
 import type { CheckItem, MergeMethod, PrDetail, PrRef, PrSummary } from "../../lib/pr/types";
 import { openExternal } from "../../lib/url";
@@ -298,6 +298,13 @@ export default function PrFloatingHeader({
   onBack: () => void;
 }) {
   const prRef: PrRef = pr.ref;
+  // Publishing, approving or merging changes both how this pull request reads
+  // and how its layer reads in the stack section below, so the two caches are
+  // dropped together.
+  const invalidatePr = (ref: PrRef) => {
+    invalidate(prDetailKey(ref));
+    invalidate(prStackKey(ref));
+  };
   const [open, setOpen] = useState<ReviewAction | null>(null);
   const [pending, setPending] = useState<ReviewAction | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -316,7 +323,7 @@ export default function PrFloatingHeader({
     setError(null);
     try {
       await applyReviewAction(prRef, action, body);
-      invalidate(prDetailKey(prRef));
+      invalidatePr(prRef);
       setOpen(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -331,7 +338,7 @@ export default function PrFloatingHeader({
     try {
       if (op === "merge") await mergePr(prRef, method);
       else await enableAutoMerge(prRef, method);
-      invalidate(prDetailKey(prRef));
+      invalidatePr(prRef);
       setMergeMenu(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -345,7 +352,7 @@ export default function PrFloatingHeader({
     setError(null);
     try {
       await disableAutoMerge(prRef);
-      invalidate(prDetailKey(prRef));
+      invalidatePr(prRef);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

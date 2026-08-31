@@ -1,8 +1,9 @@
 import { type ReactNode, useEffect } from "react";
 import { recordEvent } from "../lib/events";
-import { usePrDetail } from "../lib/pr/cache";
+import { usePrDetail, usePrStack } from "../lib/pr/cache";
 import { refKey } from "../lib/pr/ref";
-import type { CheckItem, PrSummary, Reviewer } from "../lib/pr/types";
+import { isStacked, needsUpdateCount } from "../lib/pr/stack";
+import type { CheckItem, PrStack, PrSummary, Reviewer } from "../lib/pr/types";
 import { usePrViewedFiles } from "../lib/pr/viewed";
 import PrChecks from "./pr/PrChecks";
 import PrDescription from "./pr/PrDescription";
@@ -11,6 +12,7 @@ import PrFileList from "./pr/PrFileList";
 import PrFloatingHeader from "./pr/PrFloatingHeader";
 import PrGuidePanel, { PrGuideStart } from "./pr/PrGuidePanel";
 import PrReviewers from "./pr/PrReviewers";
+import PrStackList from "./pr/PrStackList";
 import { usePrGuide } from "./pr/usePrGuide";
 import SplitPane, { usePersistedBoolean, usePersistedRatio } from "./SplitPane";
 
@@ -44,9 +46,12 @@ function checksSummary(checks: CheckItem[]): string {
   let failing = 0;
   let pending = 0;
   for (const c of checks) {
-    if (c.status !== "COMPLETED") pending++;
-    else if (["SUCCESS", "NEUTRAL", "SKIPPED"].includes((c.conclusion ?? "").toUpperCase()))
-      passing++;
+    const conclusion = (c.conclusion ?? "").toUpperCase();
+    // A legacy commit status reports "still running" as a PENDING conclusion on
+    // a context that is otherwise complete; counting it as failing would have
+    // this header contradict the Stack row for the same pull request.
+    if (c.status !== "COMPLETED" || ["PENDING", "EXPECTED"].includes(conclusion)) pending++;
+    else if (["SUCCESS", "NEUTRAL", "SKIPPED"].includes(conclusion)) passing++;
     else failing++;
   }
   const parts: string[] = [];
@@ -73,6 +78,16 @@ function reviewersSummary(reviewers: Reviewer[]): string {
   if (changes) parts.push(`${changes} requested changes`);
   if (pending) parts.push(`${pending} pending`);
   if (commented) parts.push(`${commented} commented`);
+  return parts.join(" · ");
+}
+
+/** "3 PRs · you are 2 of 3 from the trunk" for the collapsed Stack header. */
+function stackSummary(stack: PrStack): string {
+  const position = stack.entries.findIndex((e) => e.isCurrent) + 1;
+  const stale = needsUpdateCount(stack);
+  const parts = [`${stack.entries.length}${stack.truncated ? "+" : ""} PRs`];
+  if (position > 0) parts.push(`you are ${position} of ${stack.entries.length} from the trunk`);
+  if (stale > 0) parts.push(`${stale} need${stale === 1 ? "s" : ""} restack`);
   return parts.join(" · ");
 }
 
@@ -126,6 +141,9 @@ export default function PrDetailView({
 }) {
   const prRef = pr.ref;
   const { data: detail, error } = usePrDetail(prRef);
+  // Null for a provider with no stacks (Azure), and a one-entry stack for a PR
+  // that simply isn't stacked — the section renders for neither.
+  const { data: stack } = usePrStack(prRef);
   // Shared so the file list and diffs stay in lockstep.
   const viewedFiles = usePrViewedFiles(prRef);
   // The last argument is what ticks off a step's files as the reader moves past
@@ -173,6 +191,12 @@ export default function PrDetailView({
           >
             <PrReviewers prRef={prRef} />
           </CollapsibleSection>
+
+          {isStacked(stack) && (
+            <CollapsibleSection title="Stack" summary={stackSummary(stack)} defaultOpen={true}>
+              <PrStackList stack={stack} />
+            </CollapsibleSection>
+          )}
 
           <CollapsibleSection
             title="Checks"

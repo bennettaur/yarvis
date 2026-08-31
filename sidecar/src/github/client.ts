@@ -12,11 +12,14 @@ import type {
   PrDetail,
   PrFile,
   PrInvolvement,
+  PrRef,
+  PrStack,
   PrStatus,
   PrSummary,
   ReviewDecision,
   Reviewer,
   ReviewerState,
+  StackEntry,
 } from "../pr/types.ts";
 
 // Re-exported so existing `from "./client.ts"` imports keep resolving the
@@ -303,6 +306,146 @@ export function toPrDetail(pr: any, repo?: any): PrDetail {
       })),
     })),
   };
+}
+
+/**
+ * Aggregates already-normalized checks into the buckets a summary needs. Reads
+ * the GraphQL rollup's vocabulary: uppercase enums, and a legacy StatusContext
+ * whose "still running" arrives as a `PENDING` conclusion rather than as an
+ * incomplete status.
+ */
+export function summarizeCheckItems(items: CheckItem[]): ChecksSummary {
+  let success = 0;
+  let failure = 0;
+  let pending = 0;
+  for (const item of items) {
+    const conclusion = (item.conclusion ?? "").toUpperCase();
+    if (item.status.toUpperCase() !== "COMPLETED" || ["PENDING", "EXPECTED"].includes(conclusion)) {
+      pending++;
+    } else if (["SUCCESS", "NEUTRAL", "SKIPPED"].includes(conclusion)) {
+      success++;
+    } else {
+      failure++;
+    }
+  }
+  return { total: items.length, success, failure, pending };
+}
+
+/** Maps GitHub's PullRequestReviewDecision enum onto the shared verdict. */
+function toReviewDecision(value: unknown): ReviewDecision | null {
+  switch (String(value ?? "").toUpperCase()) {
+    case "APPROVED":
+      return "approved";
+    case "CHANGES_REQUESTED":
+      return "changes_requested";
+    case "REVIEW_REQUIRED":
+      return "review_required";
+    default:
+      return null;
+  }
+}
+
+/**
+ * Shapes a PullRequest node selected with {@link STACK_NODE_FIELDS} into one
+ * layer of a stack.
+ *
+ * `needsUpdate` starts from GitHub's `mergeStateStatus`, which is only worth a
+ * little: `BEHIND` is reported solely where the base branch requires branches
+ * to be up to date before merging, so on an unprotected repo a badly-behind
+ * layer still reads `CLEAN`. {@link GitHubClient.prStack} therefore settles the
+ * question itself by comparing each pair of adjacent branches; this is the
+ * cheap signal it starts from, not the answer.
+ */
+export function toStackEntry(node: any, ref: PrRef, isCurrent: boolean): StackEntry {
+  const rollupNodes = node.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
+  const state = String(node.state ?? "OPEN").toLowerCase();
+  return {
+    ref,
+    number: node.number,
+    title: node.title ?? "",
+    url: node.url ?? "",
+    baseRef: node.baseRefName ?? "",
+    headRef: node.headRefName ?? "",
+    state,
+    merged: state === "merged",
+    draft: Boolean(node.isDraft),
+    queued: Boolean(node.isInMergeQueue),
+    checks: summarizeCheckItems(rollupNodes.map(toCheckItem)),
+    reviewDecision: toReviewDecision(node.reviewDecision),
+    isCurrent,
+    needsUpdate: String(node.mergeStateStatus ?? "").toUpperCase() === "BEHIND",
+    statusKnown: true,
+  };
+}
+
+/** The fields {@link toStackEntry} reads. Shared by all three stack queries. */
+const STACK_NODE_FIELDS = `
+  number title url state isDraft isInMergeQueue
+  baseRefName headRefName mergeStateStatus reviewDecision
+  commits(last:1){ nodes{ commit{ statusCheckRollup{ contexts(first:100){ nodes{
+    __typename
+    ... on CheckRun { name status conclusion detailsUrl }
+    ... on StatusContext { context state targetUrl }
+  }}}}}}
+`;
+
+const STACK_SEED_QUERY = `
+query($owner:String!,$repo:String!,$number:Int!){
+  repository(owner:$owner,name:$repo){
+    defaultBranchRef{ name }
+    pullRequest(number:$number){ ${STACK_NODE_FIELDS} }
+  }
+}`;
+
+/**
+ * The layer below: the pull request whose head branch this one targets. Merged
+ * PRs count, because a stack whose bottom just landed is precisely when the
+ * reviewer needs to see that it did — GitHub retargets the layer above only
+ * once the merged branch is deleted.
+ */
+const STACK_DOWN_QUERY = `
+query($owner:String!,$repo:String!,$branch:String!){
+  repository(owner:$owner,name:$repo){
+    pullRequests(headRefName:$branch, states:[OPEN,MERGED], first:1, orderBy:{field:CREATED_AT,direction:DESC}){
+      nodes{ ${STACK_NODE_FIELDS} }
+    }
+  }
+}`;
+
+/** The layer above: the pull request based on this one's head branch. */
+const STACK_UP_QUERY = `
+query($owner:String!,$repo:String!,$branch:String!){
+  repository(owner:$owner,name:$repo){
+    pullRequests(baseRefName:$branch, states:[OPEN], first:1, orderBy:{field:CREATED_AT,direction:ASC}){
+      nodes{ ${STACK_NODE_FIELDS} }
+    }
+  }
+}`;
+
+/**
+ * How far {@link GitHubClient.prStack} walks in each direction. Each layer costs
+ * a round trip, so this is what bounds the price of the lookup; hitting it sets
+ * `truncated` on the stack rather than silently presenting a partial chain as
+ * the whole thing.
+ */
+const STACK_MAX_DEPTH = 10;
+
+/**
+ * Asks, for each adjacent pair of branches in the stack, how many commits the
+ * upper one is missing from the lower — which is the whole of "does this layer
+ * need restacking". Every pair goes in one request as an aliased field, the
+ * same batching {@link buildPrLookupQuery} uses, so settling it for the entire
+ * stack costs one round trip rather than one per layer.
+ */
+function buildBehindQuery(count: number): string {
+  const varDecls = Array.from({ length: count }, (_, i) => `$b${i}:String!,$h${i}:String!`).join(
+    ",",
+  );
+  const fields = Array.from(
+    { length: count },
+    (_, i) => `  c${i}: ref(qualifiedName:$b${i}){ compare(headRef:$h${i}){ behindBy } }`,
+  ).join("\n");
+  return `query($owner:String!,$repo:String!,${varDecls}){\n repository(owner:$owner,name:$repo){\n${fields}\n }\n}`;
 }
 
 /**
@@ -694,6 +837,123 @@ export class GitHubClient {
       path: item.path,
       fragments: (item.text_matches ?? []).map((m: any) => m.fragment).filter(Boolean),
     }));
+  }
+
+  /**
+   * The stack a pull request sits in, bottom first.
+   *
+   * GitHub's stacked pull requests are a `gh stack` CLI feature with no REST or
+   * GraphQL surface of their own, so the stack is reconstructed from what the
+   * ordinary API does expose: a stacked PR is one whose base branch is another
+   * PR's head branch. Walking that relation both ways needs no local clone —
+   * which is what lets the review view show a stack for any pull request — and
+   * it finds hand-built stacks too, which predate the feature by years.
+   *
+   * The walk is linear: where several open PRs target the same branch, the
+   * oldest is followed. A stack is a chain by construction, so a fork in it is
+   * two pieces of unrelated work sharing a base, not a layer of this stack.
+   */
+  async prStack(owner: string, repo: string, number: number): Promise<PrStack> {
+    const seed = await this.graphql<{
+      repository?: { defaultBranchRef?: { name?: string }; pullRequest?: any };
+    }>(STACK_SEED_QUERY, { owner, repo, number });
+    const pr = seed.repository?.pullRequest;
+    if (!pr) throw new Error(`pull request ${owner}/${repo}#${number} not found`);
+    const trunk = seed.repository?.defaultBranchRef?.name ?? pr.baseRefName ?? "";
+
+    // A PR reached twice is a cycle (GitHub permits two PRs to target each
+    // other's head branch); dropping the repeat ends the walk on that side.
+    const seen = new Set<number>([pr.number]);
+    const step = async (query: string, branch: string): Promise<any | null> => {
+      const data = await this.graphql<{ repository?: { pullRequests?: { nodes?: any[] } } }>(
+        query,
+        { owner, repo, branch },
+      );
+      const node = data.repository?.pullRequests?.nodes?.[0];
+      if (!node?.number || seen.has(node.number)) return null;
+      seen.add(node.number);
+      return node;
+    };
+
+    const below: any[] = [];
+    let cursor = pr;
+    while (below.length < STACK_MAX_DEPTH && cursor.baseRefName && cursor.baseRefName !== trunk) {
+      const next = await step(STACK_DOWN_QUERY, cursor.baseRefName);
+      if (!next) break;
+      below.unshift(next);
+      cursor = next;
+    }
+
+    const above: any[] = [];
+    cursor = pr;
+    while (above.length < STACK_MAX_DEPTH) {
+      const next = await step(STACK_UP_QUERY, cursor.headRefName);
+      if (!next) break;
+      above.push(next);
+      cursor = next;
+    }
+
+    const entries = [...below, pr, ...above].map((node) =>
+      toStackEntry(
+        node,
+        { provider: "github", owner, repo, number: node.number },
+        node.number === number,
+      ),
+    );
+    await this.markBehindLayers(owner, repo, trunk, entries);
+
+    return {
+      trunk,
+      stackNumber: null,
+      truncated: below.length >= STACK_MAX_DEPTH || above.length >= STACK_MAX_DEPTH,
+      entries,
+    };
+  }
+
+  /**
+   * Sets `needsUpdate` on every layer that no longer contains the tip of the
+   * branch beneath it. Mutates in place: it is the second half of building the
+   * entries, split out only because it is one batched request rather than part
+   * of the walk.
+   *
+   * A merged layer is skipped — its branch is usually deleted, and restacking
+   * something already landed means nothing. A failure leaves whatever
+   * `mergeStateStatus` said standing, since a stack that can't answer this is
+   * still worth showing.
+   */
+  private async markBehindLayers(
+    owner: string,
+    repo: string,
+    trunk: string,
+    entries: StackEntry[],
+  ): Promise<void> {
+    const pairs = entries.flatMap((entry, i) => {
+      const below = i === 0 ? trunk : entries[i - 1]?.headRef;
+      if (entry.merged || !below || !entry.headRef) return [];
+      return [{ entry, below }];
+    });
+    if (pairs.length === 0) return;
+
+    const variables: Record<string, unknown> = { owner, repo };
+    pairs.forEach((pair, i) => {
+      variables[`b${i}`] = `refs/heads/${pair.below}`;
+      variables[`h${i}`] = pair.entry.headRef;
+    });
+    try {
+      const data = await this.graphql<{ repository?: Record<string, any> }>(
+        buildBehindQuery(pairs.length),
+        variables,
+        // One deleted or renamed branch nulls its own field; the rest of the
+        // stack still gets a real answer.
+        { allowPartial: true },
+      );
+      pairs.forEach((pair, i) => {
+        const behindBy = data.repository?.[`c${i}`]?.compare?.behindBy;
+        if (typeof behindBy === "number" && behindBy > 0) pair.entry.needsUpdate = true;
+      });
+    } catch (e) {
+      console.error("[github] could not compare stack layers:", e);
+    }
   }
 
   async prFiles(owner: string, repo: string, number: number): Promise<PrFile[]> {

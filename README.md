@@ -65,6 +65,9 @@ changes.
 - PostgreSQL with the `pgvector` extension available
 - [uv](https://docs.astral.sh/uv/) — only for the local speech server behind the
   Voice feature; skip it if you are not using voice
+- [GitHub CLI](https://cli.github.com) plus `gh extension install github/gh-stack`
+  — only for the workspace Stack tab's grouping and its merge action; the stack
+  itself is still derived from the API without them
 
 ## Setup
 
@@ -562,6 +565,50 @@ it once the worktrees are actually gone: they were scaffolding for work that is
 done. An archive that stops partway (a worktree that won't remove) is still
 reopenable, so its comments are left where they are.
 
+#### Stacked pull requests
+
+The **Stack** tab in the right column shows the chain of pull requests this
+repo's branch belongs to — each layer targeting the one below it, rooted on the
+trunk — drawn top-down with the trunk at the bottom. Every layer carries a
+one-glyph state, the same vocabulary the workspace list uses: merged, queued,
+draft, checks failing, changes requested, approved, plus two only a stack has —
+a branch `gh stack` is tracking that has no pull request yet, and a layer whose
+status couldn't be read. So the one holding the rest up is visible without
+opening any of them. Clicking a layer opens it in the PRs tab for review; a
+branch with no pull request has nothing to open.
+
+GitHub ships stacks through the [`gh stack`][gh-stack] CLI and exposes no API
+for them, so the tab reads two sources and reconciles them. Each layer's status
+comes from the ordinary pull-request API. Membership and order come from
+`gh stack view --json` run in the worktree, which also reports which branches
+have drifted off the layer below and need `gh stack rebase` — those are flagged
+**needs restack**. Without `gh` or the extension installed the tab still works
+once the branch has a pull request of its own: it falls back to walking
+base/head branch names through the API, which finds hand-built stacks too, and
+says why the CLI half is missing. `gh` uses the GitHub token from Settings when
+there is one and its own `gh auth login` otherwise — and merging needs a token
+that may write to the repo, which the read-only scopes above don't grant.
+
+Unlike its sibling views the tab isn't polled: a `gh stack view` subprocess plus
+a provider round trip is a lot more than the single git command those cost, and
+a stack changes on your own actions. It loads when you open it and offers
+**Refresh** — worth pressing after a `gh stack rebase` in the terminal.
+
+**Merge stack up to #N** merges every layer from the trunk up to and including
+this repo's own pull request — the layers above it, being furthest from done,
+are left alone. It takes a second press, which spells out how many pull requests
+that is, because they aren't all on screen. The strategy dropdown defaults to
+whatever the repo last used, as running the command by hand would; squash, merge
+commit and rebase are the alternatives. The merge is all-or-nothing on GitHub's
+side: if any pull request in range can't merge, none do, and the reason is shown
+as `gh` reported it. If the stack changes between the confirmation and the merge
+— an agent restacking in the same worktree, say — the merge is refused rather
+than quietly landing a different set than the one you agreed to. It runs
+`gh stack merge`, so without the CLI the button is replaced by a line saying so;
+`gh pr merge` does not work on a stack.
+
+[gh-stack]: https://docs.github.com/en/pull-requests/reference/stacked-prs-cli-commands
+
 ### Clipboard
 
 #### Copy buttons
@@ -679,6 +726,21 @@ for anyone you're pasting to (see "Copy buttons"). Both are always shown in the
 diff header, and appear in the file list on hovering a row, where only the
 basename is visible. Clicking a row scrolls its diff into view and flashes the
 file's header, so a jump lands somewhere you can see it arrived.
+
+#### Where a PR sits in its stack
+
+A pull request that is part of a stack gets a **Stack** section above Checks,
+listing every layer with its state and marking where you are. It is derived
+from base/head branch names through the API rather than from `gh stack`, which
+needs a checkout — so it works for anyone's PR, and picks up stacks built by
+hand as well as by the CLI. A layer whose branch no longer contains the tip of
+the one below it is flagged **needs restack**. Clicking a layer opens it. A PR
+that isn't stacked gets no section, and Azure DevOps has no stacks at all. The
+walk stops after ten layers in each direction, and says so with a `+` on the
+count when it does.
+
+Merging a stack needs the CLI and so lives in the workspace's Stack tab (see
+"Stacked pull requests" under Workspaces).
 
 #### Guided review and line insights
 
@@ -998,14 +1060,15 @@ src/            React frontend (Vite + TS + Tailwind)
                 voice loop pieces (useVoice.ts the turn hook, voice.ts + voiceConfig.ts clients,
                 useVoiceRecorder.ts mic capture, speechChunks.ts sentence splitting,
                 speechQueue.ts pipelined playback, audioEncoding.ts, audioPlayback.ts)
-    pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs, per-file viewed state, remembered panel place, link/shorthand locator, diff parsing + context expansion, guide + insight clients)
+    pr/         provider-agnostic PR data layer (GitHub + Azure DevOps transports, cache, refs, per-file viewed state, remembered panel place, link/shorthand locator, diff parsing + context expansion, guide + insight + stack clients)
     issues/     provider-neutral issue data layer (GitHub + JIRA) — types, api client, start-work flow (useGithubStartWork.ts)
     jira/       JIRA-specific data layer (issue detail, transitions, comments, create) — types, api client, start-work flow (useJiraStartWork.ts)
     find/       find-on-page engine — visible-text index, match offsets, CSS Custom Highlight painting, useFind controller
   components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, Terminal, Workspaces, …)
     voice/      the mic button and the voice controls shared by the chat surfaces
     pr/         PR dashboard + embedded review: lists, file diffs (unified + split),
-                gap/context expansion, change minimap, guide panel, insight cards
+                gap/context expansion, change minimap, guide panel, insight cards,
+                stack list (PrStackList.tsx, shared with the workspace Stack tab)
     issue/      Issues tab views: GitHub + JIRA issue lists, detail, create/repo-picker modals
     files/      shared file-tree rows (collapsible folders), used by PR review and workspaces
     editor/     CodeMirror 6 wrapper (lazy-loaded) behind the workspace file editor
@@ -1059,15 +1122,17 @@ sidecar/        Bun + TS service (Hono)
   src/pr/       provider-neutral PR review subsystem (/api/pr): guide + insight storage,
                 the tour/ask agent runs, provider-agnostic code tools (read file, list dir,
                 search) over a GitHub/Azure source seam, opening a workspace on a PR's
-                branch (workspace.ts), and the chat agent's review tools
+                branch (workspace.ts), the stack a PR sits in (/api/pr/stack), and the
+                chat agent's review tools
   src/issues/   provider-neutral issue routes/service (stars, filters, workspace links, start-work, issue writes)
   src/jira/     JIRA Cloud REST client + routes + agent tools + ADF↔Markdown conversion
   src/google/   Google Calendar OAuth, event reads, and the one write (create)
   src/omni/     Omni UI generation (streaming) + saved layouts
   src/workspaces/ repo registry + git-worktree provisioning, bulk base-branch sync, and
                   teardown (/api/repos, /api/workspaces), plus local self-review
-                  comments on a workspace's own diffs (reviewComments.ts) and
-                  reading/writing a worktree file for the editor (files.ts)
+                  comments on a workspace's own diffs (reviewComments.ts), the
+                  `gh stack` bridge that reads and merges a stack in a worktree (stack.ts)
+                  and reading/writing a worktree file for the editor (files.ts)
   src/mcp/      MCP client: connected servers, OAuth, tool registry sync, approvals
   src/mcpServer/  the MCP endpoint Yarvis serves (memory tools over /mcp)
   src/attention/  attention stream: hook ingest, SSE stream, scoped clearing
