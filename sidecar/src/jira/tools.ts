@@ -2,7 +2,9 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
+import { emitEvent } from "../events/service.ts";
 import { buildIssuePrompt, sanitizeIssueText, upsertLink } from "../issues/service.ts";
+import { kickOffResult, WORKSPACE_BRIEF_FILE } from "../workspaces/brief.ts";
 import {
   type ClaudeSessionStarter,
   startClaudeSession as defaultStartClaudeSession,
@@ -69,6 +71,11 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
         cwd: detail.rootPath,
         name: detail.name,
         remoteControl,
+      });
+      void emitEvent(db, {
+        type: "workspace.session_started",
+        source: "jira",
+        payload: { workspaceId: detail.id, name: detail.name, kickOff: false, remoteControl },
       });
       return {
         workspaceId: detail.id,
@@ -179,6 +186,11 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
             issueTypeName,
             description,
           });
+          void emitEvent(db, {
+            type: "jira.issue.created",
+            source: "chat",
+            payload: { key: created.externalId, projectKey, issueTypeName },
+          });
           return {
             key: created.externalId,
             summary: sanitizeIssueText(created.title),
@@ -192,7 +204,7 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
     }),
 
     jira_start_work_on_issue: tool({
-      description: `Start work on a JIRA issue like the 'Start work' button on the issue view: create a workspace, provision it, seed the issue details into .yarvis/issue-prompt.md, assign the issue to the user and transition it to in-progress (best-effort), and start ${sessionDescription(remoteControl)} in it. Because a JIRA ticket isn't tied to a repo, pass the repo ids to include (resolve them with list_repos); pass an empty list for a scratch workspace with no repo. Requires JIRA to be configured.`,
+      description: `Start work on a JIRA issue like the 'Start work' button on the issue view: create a workspace, provision it, seed the issue details into ${WORKSPACE_BRIEF_FILE}, assign the issue to the user and transition it to in-progress (best-effort), and start ${sessionDescription(remoteControl)} in it. Because a JIRA ticket isn't tied to a repo, pass the repo ids to include (resolve them with list_repos); pass an empty list for a scratch workspace with no repo. Requires JIRA to be configured.`,
       inputSchema: z.object({
         key: issueKeyArg.describe("Issue key, e.g. PROJ-45"),
         repoIds: z
@@ -224,7 +236,7 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
         const ws = await createWorkspace(db, config, {
           name: issue.title,
           repoIds,
-          issuePrompt: buildIssuePrompt({
+          brief: buildIssuePrompt({
             displayId: issue.displayId,
             title: issue.title,
             url: issue.url,
@@ -269,30 +281,16 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
           transitionToInProgress,
         });
 
-        // The prompt is dropped once the session has been launched on it, so a
-        // prompt still sitting there is a launch that didn't happen.
-        if (detail.pendingIssuePrompt) {
-          return {
-            error: "workspace is ready, but the agent session failed to start",
-            workspaceId: ws.id,
-            name: detail.name,
-            status: detail.status,
-            warnings,
-            note: "Open the workspace locally and start the agent there; the ticket is already seeded in .yarvis/issue-prompt.md.",
-          };
-        }
+        void emitEvent(db, {
+          type: "jira.work_started",
+          source: "chat",
+          payload: { key, workspaceId: ws.id, repos: detail.repos.map((r) => r.repo.name) },
+        });
 
         return {
-          workspaceId: ws.id,
-          name: detail.name,
-          status: detail.status,
-          repos: detail.repos.map((r) => r.repo.name),
-          sessionName: detail.name,
-          sessionKey: `ws-claude:${ws.id}`,
-          message: sessionStartedMessage(detail.name, remoteControl),
+          ...kickOffResult(detail, remoteControl),
           issue: { key, summary: sanitizeIssueText(issue.title), url: issue.url },
           warnings,
-          promptFile: ".yarvis/issue-prompt.md",
         };
       },
     }),

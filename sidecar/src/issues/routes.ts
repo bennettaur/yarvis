@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { emitEvent } from "../events/service.ts";
 import { GitHubClient } from "../github/client.ts";
 import { noTraversal } from "../pr/codeTools.ts";
 import { createWorkspace, startKickOff } from "../workspaces/service.ts";
@@ -269,7 +270,13 @@ export function createIssueRoutes(config: Config): Hono {
       return c.json({ error: `repo ${owner}/${repo} is not set to pull issues` }, 400);
     }
     try {
-      return c.json(await gh.createIssue(owner, repo, parsed.data), 201);
+      const created = await gh.createIssue(owner, repo, parsed.data);
+      void emitEvent(db(), {
+        type: "issue.created",
+        source: "github",
+        payload: { key: `${owner}/${repo}#${created.externalId}`, title: created.title },
+      });
+      return c.json(created, 201);
     } catch (e) {
       return c.json({ error: String(e) }, 502);
     }
@@ -328,6 +335,11 @@ export function createIssueRoutes(config: Config): Hono {
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
       await gh.addIssueComment(params.owner, params.repo, params.number, parsed.data.body);
+      void emitEvent(db(), {
+        type: "issue.commented",
+        source: "github",
+        payload: { key: `${params.owner}/${params.repo}#${params.number}` },
+      });
       return c.json(await gh.issueDetail(params.owner, params.repo, params.number), 201);
     } catch (e) {
       return c.json({ error: String(e) }, 502);
@@ -408,7 +420,7 @@ export function createIssueRoutes(config: Config): Hono {
    * GitHub. The workspace + link are the source of truth: a failed GitHub write
    * (e.g. a read-only token) is reported as a warning, not an error, so work
    * still starts. The response is only the receipt: the rest of the kick-off —
-   * provisioning, seeding `.yarvis/issue-prompt.md`, launching the agent on the
+   * provisioning, seeding `.yarvis/brief.md`, launching the agent on the
    * ticket — runs in the background here, so nothing about it depends on the
    * caller sticking around. Clients just open the workspace and attach to the
    * session that is or will be there.
@@ -440,7 +452,7 @@ export function createIssueRoutes(config: Config): Hono {
       const ws = await createWorkspace(db(), config, {
         name: input.title,
         repoIds: [repo.id],
-        issuePrompt: prompt,
+        brief: prompt,
       });
       workspaceId = ws.id;
     } catch (e) {
@@ -469,6 +481,12 @@ export function createIssueRoutes(config: Config): Hono {
       : [];
 
     startKickOff(db(), workspaceId);
+
+    void emitEvent(db(), {
+      type: "issue.work_started",
+      source: provider,
+      payload: { provider, key: `${input.sourceKey}#${number}`, workspaceId },
+    });
 
     return c.json({ workspaceId, warnings }, 201);
   });

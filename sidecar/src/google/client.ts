@@ -11,8 +11,26 @@ const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const CALENDAR_EVENTS = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 
-/** Read-only calendar access is all the integration needs. */
-export const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.readonly";
+/**
+ * Read plus event-create. `calendar.events` is the narrowest scope Google offers
+ * that allows creating an event — there is no create-only scope — so the
+ * restraint is enforced here instead: this client exposes no update or delete
+ * call, and the agent has no tool for one. Changing or cancelling a meeting stays
+ * something the user does in their own calendar.
+ *
+ * Widening the scope means existing tokens no longer cover it, so
+ * `scopeSatisfied` drives a re-consent prompt rather than failing a create with
+ * an opaque 403.
+ */
+export const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events";
+
+/**
+ * Whether a stored grant covers what we now ask for. A token minted against the
+ * old read-only scope satisfies reading but not creating.
+ */
+export function scopeSatisfied(grantedScope: string | null | undefined): boolean {
+  return (grantedScope ?? "").split(/\s+/).includes(CALENDAR_SCOPE);
+}
 
 export interface TokenResponse {
   accessToken: string;
@@ -152,5 +170,62 @@ export class GoogleCalendarClient {
     if (!res.ok) throw new Error(`google calendar events -> ${res.status}`);
     const data = (await res.json()) as { items?: any[] };
     return (data.items ?? []).map(toCalendarEvent);
+  }
+
+  /**
+   * Creates an event on the primary calendar. Deliberately the only write:
+   * there is no update or delete here, so a mistaken create can be fixed by the
+   * user but nothing already on their calendar can be moved or removed by an
+   * agent.
+   *
+   * `conferenceLink` asks Google to mint a Meet link, which needs the
+   * conferenceDataVersion parameter to be honoured at all.
+   */
+  async createEvent(
+    accessToken: string,
+    input: {
+      title: string;
+      /** ISO instant, or a date for an all-day event. */
+      start: string;
+      end: string;
+      allDay?: boolean;
+      description?: string;
+      location?: string;
+      attendees?: string[];
+      conferenceLink?: boolean;
+    },
+  ): Promise<CalendarEvent> {
+    const when = (value: string) =>
+      input.allDay ? { date: value.slice(0, 10) } : { dateTime: value };
+    const body: Record<string, unknown> = {
+      summary: input.title,
+      start: when(input.start),
+      end: when(input.end),
+      ...(input.description ? { description: input.description } : {}),
+      ...(input.location ? { location: input.location } : {}),
+      ...(input.attendees?.length
+        ? { attendees: input.attendees.map((email) => ({ email })) }
+        : {}),
+      ...(input.conferenceLink
+        ? {
+            conferenceData: {
+              createRequest: { requestId: crypto.randomUUID() },
+            },
+          }
+        : {}),
+    };
+    const params = new URLSearchParams();
+    if (input.conferenceLink) params.set("conferenceDataVersion", "1");
+    const query = params.toString();
+    const res = await this.fetchImpl(`${CALENDAR_EVENTS}${query ? `?${query}` : ""}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`google calendar create -> ${res.status}`);
+    return toCalendarEvent(await res.json());
   }
 }

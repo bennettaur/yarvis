@@ -3,8 +3,10 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { emitEvent } from "../events/service.ts";
 import { describeError } from "../llm/errors.ts";
 import { retireGuide } from "../pr/guides.ts";
+import { refKey } from "../pr/types.ts";
 import { AzureDevOpsClient, type AzureRef, isAllowedAzureOrgUrl } from "./client.ts";
 import {
   addStar,
@@ -264,6 +266,11 @@ export function createAzureRoutes(config: Config): Hono {
     if ("error" in ref) return c.json({ error: ref.error }, 400);
     try {
       await az.markReady(ref);
+      void emitEvent(db(), {
+        type: "pr.marked_ready",
+        source: "azure",
+        payload: { ref: refKey({ provider: "azure", org: az.org, ...ref }) },
+      });
       return c.json({ ok: true });
     } catch (e) {
       return upstreamError(c, e);
@@ -288,6 +295,14 @@ export function createAzureRoutes(config: Config): Hono {
       // has done its job. Azure has no "comment without voting" here, so unlike
       // GitHub there is no case to exclude.
       await retireGuide(db(), { provider: "azure", org: az.org, ...ref });
+      void emitEvent(db(), {
+        type: parsed.data.vote === 10 ? "pr.approved" : "pr.changes_requested",
+        source: "azure",
+        payload: {
+          ref: refKey({ provider: "azure", org: az.org, ...ref }),
+          vote: parsed.data.vote,
+        },
+      });
       return c.json({ ok: true }, 201);
     } catch (e) {
       return upstreamError(c, e);
@@ -303,6 +318,14 @@ export function createAzureRoutes(config: Config): Hono {
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
       await az.postComment(ref, parsed.data);
+      void emitEvent(db(), {
+        type: "pr.commented",
+        source: "azure",
+        payload: {
+          ref: refKey({ provider: "azure", org: az.org, ...ref }),
+          path: parsed.data.path ?? null,
+        },
+      });
       return c.json({ ok: true }, 201);
     } catch (e) {
       return upstreamError(c, e);

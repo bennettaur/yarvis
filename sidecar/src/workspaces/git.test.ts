@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,6 +8,7 @@ import {
   branchSync,
   createWorktree,
   detectDefaultBranch,
+  existingWorktree,
   fetchBranch,
   fileDiff,
   type GitRunner,
@@ -98,6 +99,114 @@ describe("createWorktree", () => {
     await createWorktree(runner, "/repo", worktreePath, "yarvis/task", "main");
     expect(calls[0]).toEqual(["worktree", "prune"]);
     expect(calls[1]).toEqual(["worktree", "add", "-b", "yarvis/task", worktreePath, "origin/main"]);
+  });
+});
+
+describe("existingWorktree", () => {
+  /** A runner answering `worktree list` with the given NUL-separated records. */
+  const listing = (...records: string[]) => {
+    const stdout = records.map((r) => `${r}\0`).join("");
+    return fakeRunner((args) => (args[0] === "worktree" && args[1] === "list" ? { stdout } : {}));
+  };
+
+  /** One porcelain record: fields NUL-terminated, closed by an empty field. */
+  const record = (...fields: string[]) => fields.join("\0");
+
+  it("prunes before listing, so a folder deleted out of band reads as free", async () => {
+    const { runner, calls } = listing();
+    expect(await existingWorktree(runner, "/repo", "/ws/service-a")).toBeNull();
+    expect(calls[0]).toEqual(["worktree", "prune"]);
+    // `-z`, so a path containing a newline can't be read as a record boundary.
+    expect(calls[1]).toEqual(["worktree", "list", "--porcelain", "-z"]);
+  });
+
+  it("answers with the branch checked out at the path", async () => {
+    const { runner } = listing(
+      record("worktree /repo", "HEAD abc", "branch refs/heads/main"),
+      record("worktree /ws/service-a", "HEAD def", "branch refs/heads/yarvis/task"),
+    );
+    expect(await existingWorktree(runner, "/repo", "/ws/service-a")).toEqual({
+      branch: "yarvis/task",
+    });
+  });
+
+  it("reports a detached worktree as having no branch", async () => {
+    const { runner } = listing(record("worktree /ws/service-a", "HEAD def", "detached"));
+    expect(await existingWorktree(runner, "/repo", "/ws/service-a")).toEqual({ branch: null });
+  });
+
+  it("reads a record carrying extra attribute lines", async () => {
+    // `locked`/`prunable` sit alongside the fields we want, so matching by
+    // prefix rather than by position is what keeps the parse honest.
+    const { runner } = listing(
+      record("worktree /ws/service-a", "HEAD def", "branch refs/heads/yarvis/task", "locked"),
+    );
+    expect(await existingWorktree(runner, "/repo", "/ws/service-a")).toEqual({
+      branch: "yarvis/task",
+    });
+  });
+
+  it("reads a path containing a newline, which is why -z is asked for", async () => {
+    const { runner } = listing(
+      record("worktree /ws/odd\nworktree /ws/service-a", "HEAD def", "branch refs/heads/decoy"),
+      record("worktree /ws/service-a", "HEAD abc", "branch refs/heads/yarvis/task"),
+    );
+    expect(await existingWorktree(runner, "/repo", "/ws/service-a")).toEqual({
+      branch: "yarvis/task",
+    });
+  });
+
+  it("returns null for a path no worktree is registered at", async () => {
+    const { runner } = listing(record("worktree /ws/other", "HEAD def", "branch refs/heads/other"));
+    expect(await existingWorktree(runner, "/repo", "/ws/service-a")).toBeNull();
+  });
+
+  it("matches through a symlinked path, which is what git reports", async () => {
+    // The workspaces root sits under /var on macOS, which git resolves to
+    // /private/var — a plain string compare would call the path free and then
+    // fail on `worktree add`.
+    const parent = mkdtempSync(join(tmpdir(), "yarvis-wt-"));
+    tmpDirs.push(parent);
+    const worktreePath = join(parent, "service-a");
+    mkdirSync(worktreePath);
+    const { runner } = listing(
+      record(`worktree ${realpathSync(worktreePath)}`, "HEAD def", "branch refs/heads/yarvis/task"),
+    );
+    expect(await existingWorktree(runner, "/repo", worktreePath)).toEqual({
+      branch: "yarvis/task",
+    });
+  });
+
+  it("names an unrelated directory occupying the path rather than letting the add fail", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "yarvis-wt-"));
+    tmpDirs.push(parent);
+    const worktreePath = join(parent, "service-a");
+    mkdirSync(worktreePath);
+    writeFileSync(join(worktreePath, "stray"), "");
+    const { runner } = listing();
+    await expect(existingWorktree(runner, "/repo", worktreePath)).rejects.toThrow(
+      "remove it to provision again",
+    );
+  });
+
+  it("names a file on the path too, rather than raising ENOTDIR", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "yarvis-wt-"));
+    tmpDirs.push(parent);
+    const worktreePath = join(parent, "service-a");
+    writeFileSync(worktreePath, "");
+    const { runner } = listing();
+    await expect(existingWorktree(runner, "/repo", worktreePath)).rejects.toThrow(
+      "remove it to provision again",
+    );
+  });
+
+  it("treats an empty leftover folder as free, which git accepts", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "yarvis-wt-"));
+    tmpDirs.push(parent);
+    const worktreePath = join(parent, "service-a");
+    mkdirSync(worktreePath);
+    const { runner } = listing();
+    expect(await existingWorktree(runner, "/repo", worktreePath)).toBeNull();
   });
 });
 

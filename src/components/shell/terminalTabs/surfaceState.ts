@@ -44,7 +44,22 @@ export interface SetupLogTab {
   workspaceRepoId: string;
 }
 
-export type Tab = TerminalTab | DiffTab | SetupLogTab;
+/**
+ * A tab editing one file in a repo's worktree. Like a diff tab it owns no PTY
+ * and only tracks which file it shows, so a repeat request re-selects it rather
+ * than opening the file twice. It is a separate kind from `DiffTab` because the
+ * same file is legitimately open as both — the diff to review, the editor to
+ * change it.
+ */
+export interface EditorTab {
+  id: string;
+  title: string;
+  kind: "editor";
+  repoId: string;
+  path: string;
+}
+
+export type Tab = TerminalTab | DiffTab | SetupLogTab | EditorTab;
 
 /**
  * A tab bound to an externally-managed PTY session (e.g. an agent session the
@@ -120,6 +135,37 @@ export function loadState(key: string, initialTab: InitialTab): SurfaceState {
   } catch {
     return defaultState(initialTab);
   }
+}
+
+/**
+ * The state after an editor tab is asked for: the existing tab for that file
+ * re-selected, or a new one opened and selected.
+ *
+ * A diff tab for the same file is deliberately not a match — the two answer
+ * different questions about it, and both are worth having open at once. Lives
+ * here rather than in `TerminalTabs` so the dedupe rule can be exercised without
+ * mounting a surface. Returns `prev` unchanged when the tab is already active,
+ * which is what keeps the request/consume effect from looping.
+ */
+export function stateAfterOpenEditor(
+  prev: SurfaceState,
+  file: { repoId: string; path: string },
+  title: string,
+): SurfaceState {
+  const existing = prev.tabs.find(
+    (t) => t.kind === "editor" && t.repoId === file.repoId && t.path === file.path,
+  );
+  if (existing) {
+    return prev.activeTabId === existing.id ? prev : { ...prev, activeTabId: existing.id };
+  }
+  const tab: EditorTab = {
+    id: uid("t"),
+    title,
+    kind: "editor",
+    repoId: file.repoId,
+    path: file.path,
+  };
+  return { ...prev, tabs: [...prev.tabs, tab], activeTabId: tab.id };
 }
 
 /**

@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { emitEvent } from "../events/service.ts";
 import { buildIssuePrompt, upsertLink } from "../issues/service.ts";
 import { createWorkspace, startKickOff } from "../workspaces/service.ts";
 import { isAllowedJiraBaseUrl, JiraClient } from "./client.ts";
@@ -188,6 +189,11 @@ export function createJiraRoutes(config: Config): Hono {
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
       await client.updateFields(key, parsed.data);
+      void emitEvent(db(), {
+        type: "jira.issue.updated",
+        source: "jira",
+        payload: { key, fields: Object.keys(parsed.data) },
+      });
       return c.json(await client.issueDetail(key));
     } catch (e) {
       return upstreamError(c, e);
@@ -203,6 +209,11 @@ export function createJiraRoutes(config: Config): Hono {
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
       await client.transitionIssue(key, parsed.data.transitionId);
+      void emitEvent(db(), {
+        type: "jira.issue.updated",
+        source: "jira",
+        payload: { key, transitioned: true },
+      });
       return c.json(await client.issueDetail(key));
     } catch (e) {
       return upstreamError(c, e);
@@ -232,7 +243,9 @@ export function createJiraRoutes(config: Config): Hono {
     const parsed = commentSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
-      return c.json(await client.addComment(key, parsed.data.body), 201);
+      const comment = await client.addComment(key, parsed.data.body);
+      void emitEvent(db(), { type: "jira.issue.commented", source: "jira", payload: { key } });
+      return c.json(comment, 201);
     } catch (e) {
       return upstreamError(c, e);
     }
@@ -280,7 +293,13 @@ export function createJiraRoutes(config: Config): Hono {
     const parsed = createSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
-      return c.json(await client.createIssue(parsed.data), 201);
+      const created = await client.createIssue(parsed.data);
+      void emitEvent(db(), {
+        type: "jira.issue.created",
+        source: "jira",
+        payload: { key: created.externalId, projectKey: parsed.data.projectKey },
+      });
+      return c.json(created, 201);
     } catch (e) {
       return upstreamError(c, e);
     }
@@ -294,7 +313,7 @@ export function createJiraRoutes(config: Config): Hono {
    * the repos (an empty list yields a scratch workspace). Best-effort JIRA side
    * effects (assign to viewer + transition to in-progress) become warnings on
    * failure — the workspace + link are the source of truth. The rest of the
-   * kick-off — provisioning, seeding `.yarvis/issue-prompt.md`, launching the
+   * kick-off — provisioning, seeding `.yarvis/brief.md`, launching the
    * agent on the ticket — runs in the background here, so nothing about it
    * depends on the caller sticking around.
    */
@@ -318,7 +337,7 @@ export function createJiraRoutes(config: Config): Hono {
       const ws = await createWorkspace(db(), config, {
         name: input.title,
         repoIds: input.repoIds,
-        issuePrompt: prompt,
+        brief: prompt,
       });
       workspaceId = ws.id;
     } catch (e) {
@@ -342,6 +361,12 @@ export function createJiraRoutes(config: Config): Hono {
     });
 
     startKickOff(db(), workspaceId);
+
+    void emitEvent(db(), {
+      type: "jira.work_started",
+      source: "jira",
+      payload: { key: input.externalId, workspaceId, repos: input.repoIds.length },
+    });
 
     return c.json({ workspaceId, warnings }, 201);
   });

@@ -9,7 +9,7 @@
  *
  * A session can also be given an `instruction` to start on, which is how the
  * issue "Start work" sequence hands over its ticket: the whole sequence —
- * provision, seed `.yarvis/issue-prompt.md`, launch — runs here, and the
+ * provision, seed `.yarvis/brief.md`, launch — runs here, and the
  * frontend only ever attaches to the result.
  *
  * `remoteControl` adds `--remote-control`, making the session drivable from

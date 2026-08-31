@@ -24,14 +24,15 @@ import {
   workspaceRepos,
   workspaces,
 } from "../db/schema.ts";
+import { emitEvent } from "../events/service.ts";
 import {
   deleteLinkForWorkspace,
   listLinksForWorkspace,
   sanitizeIssueText,
   upsertLink,
-  writeIssuePrompt,
 } from "../issues/service.ts";
 import { completeTasksByWorkspace, tasksForWorkspace } from "../tasks/service.ts";
+import { WORKSPACE_BRIEF_FILE, writeWorkspaceBrief } from "./brief.ts";
 import {
   type ClaudeSessionStarter,
   startClaudeSession,
@@ -39,6 +40,12 @@ import {
 } from "./claudeSession.ts";
 import { writeClaudeSettings } from "./claudeSettings.ts";
 import { runStreaming } from "./exec.ts";
+import {
+  readWorktreeFile,
+  type WorktreeFile,
+  type WriteResult,
+  writeWorktreeFile,
+} from "./files.ts";
 import {
   addExistingBranchWorktree,
   type BranchSync,
@@ -49,6 +56,7 @@ import {
   defaultGitRunner,
   detectDefaultBranch,
   ensurePrimaryClone,
+  existingWorktree,
   fetchBranch,
   fetchRemote,
   fileDiff,
@@ -310,11 +318,12 @@ export interface CreateWorkspaceInput {
   existingBranches?: Record<string, string>;
   taskId?: string | null;
   /**
-   * The "Start work" prompt for this workspace. Stored on the row so
-   * provisioning can write it to `.yarvis/issue-prompt.md` itself and the agent
-   * launch survives the UI navigating away — see `workspaces.pendingIssuePrompt`.
+   * What the workspace's first agent session should work on — an issue, a JIRA
+   * ticket, a task, or a brief the chat agent composed. Stored on the row so
+   * provisioning can write it to `.yarvis/brief.md` itself and the agent
+   * launch survives the UI navigating away — see `workspaces.pendingBrief`.
    */
-  issuePrompt?: string | null;
+  brief?: string | null;
 }
 
 export interface WorkspaceRepoDetail extends WorkspaceRepo {
@@ -388,15 +397,13 @@ export async function createWorkspace(
   // Sanitized here rather than at each caller so every producer (issues, JIRA,
   // tasks) gets the same defense against hidden instructions surviving into the
   // auto-approved agent session. Sanitizing sanitized text is a no-op.
-  const pendingIssuePrompt = input.issuePrompt?.trim()
-    ? sanitizeIssueText(input.issuePrompt)
-    : null;
+  const pendingBrief = input.brief?.trim() ? sanitizeIssueText(input.brief) : null;
 
   // One transaction so a mid-create failure never leaves a half-built workspace.
-  return db.transaction(async (tx) => {
+  const created = await db.transaction(async (tx) => {
     const [workspace] = await tx
       .insert(workspaces)
-      .values({ name: input.name.trim(), slug, rootPath, status: "creating", pendingIssuePrompt })
+      .values({ name: input.name.trim(), slug, rootPath, status: "creating", pendingBrief })
       .returning();
 
     // A scratch workspace has no repo rows; skip the insert (Drizzle rejects an
@@ -428,14 +435,29 @@ export async function createWorkspace(
 
     return workspace!;
   });
+
+  // Emitted after the transaction commits, so a rolled-back create leaves no
+  // event behind claiming a workspace that doesn't exist.
+  void emitEvent(db, {
+    type: "workspace.created",
+    source: "workspaces",
+    payload: {
+      workspaceId: created.id,
+      name: created.name,
+      repos: selected.map((r) => `${r.owner}/${r.name}`),
+      fromTicket: Boolean(input.brief),
+    },
+  });
+
+  return created;
 }
 
 /**
  * A workspace list row. Everything on the workspace except the pending kick-off
- * prompt, which holds a whole ticket body and is wanted only by the one
+ * brief, which holds a whole ticket body and is wanted only by the one
  * workspace being opened — this list is polled, and for every workspace at once.
  */
-export interface WorkspaceSummary extends Omit<Workspace, "pendingIssuePrompt"> {
+export interface WorkspaceSummary extends Omit<Workspace, "pendingBrief"> {
   /** Names of the repos in this workspace, for grouping in the sidebar. */
   repoNames: string[];
   /**
@@ -458,7 +480,7 @@ export interface WorkspaceSummaryPr {
 }
 
 export async function listWorkspaces(db: Db): Promise<WorkspaceSummary[]> {
-  const { pendingIssuePrompt: _omitted, ...listColumns } = getTableColumns(workspaces);
+  const { pendingBrief: _omitted, ...listColumns } = getTableColumns(workspaces);
   const wsRows = await db.select(listColumns).from(workspaces).orderBy(workspaces.createdAt);
   if (!wsRows.length) return [];
 
@@ -632,6 +654,33 @@ export async function workspaceRepoChanges(
   return listChangedFiles(runner, wr.worktreePath, wr.baseBranch);
 }
 
+/** One file's current contents in a workspace repo's worktree, for the editor. */
+export async function workspaceRepoFile(
+  db: Db,
+  workspaceRepoId: string,
+  path: string,
+): Promise<WorktreeFile> {
+  const wr = await getWorkspaceRepo(db, workspaceRepoId);
+  return readWorktreeFile(wr.worktreePath, path);
+}
+
+/**
+ * Saves an edited file back into a workspace repo's worktree. `expectedHash` is
+ * the hash the editor was handed when it opened the file; a mismatch means the
+ * agent (or anything else sharing the worktree) has written since, and the save
+ * is refused rather than applied over it.
+ */
+export async function saveWorkspaceRepoFile(
+  db: Db,
+  workspaceRepoId: string,
+  path: string,
+  content: string,
+  expectedHash: string,
+): Promise<WriteResult> {
+  const wr = await getWorkspaceRepo(db, workspaceRepoId);
+  return writeWorktreeFile(wr.worktreePath, path, content, expectedHash);
+}
+
 /** The unified-diff patch for one changed file in a workspace repo's worktree. */
 export async function workspaceRepoFileDiff(
   db: Db,
@@ -773,6 +822,19 @@ export async function syncWorkspaceWithBase(
       outcomes.push({ ...identity, ...skipped(sanitizeIssueText(errorText(e))) });
     }
   }
+
+  void emitEvent(db, {
+    type: "workspace.synced",
+    source: "workspaces",
+    payload: {
+      workspaceId: detail.id,
+      name: detail.name,
+      merged: outcomes.filter((o) => o.merge === "merged").length,
+      conflicted: outcomes.filter((o) => o.merge === "conflict").length,
+      skipped: outcomes.filter((o) => o.merge === "skipped").length,
+      pushed: outcomes.filter((o) => o.pushed).length,
+    },
+  });
 
   return { workspaceId: detail.id, name: detail.name, repos: outcomes };
 }
@@ -1126,14 +1188,16 @@ function aborted(signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * (Re)writes AGENTS.md and CLAUDE.md at the workspace root. Claude is started
- * in the workspace root rather than inside a single repo — so it can work
- * across every repo checked out there — but that's not its usual layout, and
- * without help it can assume the workspace root itself is the project. These
- * files spell out which repos are present, where, and on what branch.
- * Best-effort: a write failure is logged but must not fail provisioning.
+ * (Re)writes the files a workspace root needs before an agent runs there: the
+ * AGENTS.md/CLAUDE.md pair, the Claude settings, and the MCP config. Claude is
+ * started in the workspace root rather than inside a single repo — so it can
+ * work across every repo checked out there — but that's not its usual layout,
+ * and without help it can assume the workspace root itself is the project. The
+ * context files spell out which repos are present, where, and on what branch.
+ * Best-effort throughout: a write failure is logged but must not fail
+ * provisioning.
  */
-function writeContextFiles(detail: WorkspaceDetail): void {
+function writeWorkspaceFiles(detail: WorkspaceDetail): void {
   const lines = [
     `# Workspace: ${detail.name}`,
     "",
@@ -1165,13 +1229,78 @@ function writeContextFiles(detail: WorkspaceDetail): void {
   } catch (e) {
     console.error("[workspaces] failed to write AGENTS.md/CLAUDE.md:", e);
   }
+
+  writeClaudeSettings(
+    detail.rootPath,
+    detail.id,
+    detail.repos.map((wr) => wr.worktreePath),
+  );
+  writeMcpConfig(detail.rootPath);
+}
+
+/**
+ * Puts a worktree at the row's path and answers with the branch it ends up on.
+ * Everything a provision run does after this point can fail — the setup script
+ * most often — so a retry has to expect the worktree to be there already and
+ * adopt it. Cutting it again is what used to make a failed provision
+ * unrecoverable: `worktree add` refuses the path, and every retry failed on the
+ * one step that had actually worked.
+ *
+ * A branch that already exists is still never reused: the row's status says a
+ * previous attempt happened, not that *this* row is what cut the branch — an
+ * attempt that failed while cloning never got that far, and an archived
+ * workspace frees its slug (`resolveUniqueSlug`) while leaving its branch
+ * behind. Cutting a distinct branch beside it is what keeps a new workspace off
+ * an old one's commits.
+ */
+async function ensureWorktree(
+  runner: GitRunner,
+  wr: WorkspaceRepoDetail,
+  base: string,
+): Promise<string> {
+  const clone = wr.repo.primaryClonePath;
+
+  const existing = await existingWorktree(runner, clone, wr.worktreePath);
+  if (existing) {
+    // A detached worktree has no branch to record, and the column is what every
+    // later merge, push and diff reads — recording the row's branch anyway would
+    // push a ref that isn't the work that is there.
+    if (!existing.branch) {
+      throw new Error(
+        `${wr.worktreePath} is on a detached HEAD — check a branch out there, or remove it, to provision again`,
+      );
+    }
+    // What is checked out wins over the row: the worktree is a real checkout the
+    // user can move, and its branch is where any work already done actually is.
+    // It is also the one branch name that reaches the row from outside our own
+    // naming, so it is held to the same shape as a user-chosen one.
+    assertSafeBranchName(existing.branch);
+    return existing.branch;
+  }
+
+  if (wr.existingBranch) {
+    // Check out the branch the user chose as-is; `base` still stands as the diff
+    // base so changes show against the default branch.
+    await fetchBranch(runner, clone, wr.branch);
+    await addExistingBranchWorktree(runner, clone, wr.worktreePath, wr.branch);
+    return wr.branch;
+  }
+
+  // Avoid colliding with a branch left behind by a prior workspace.
+  const branch = (await branchExists(runner, clone, wr.branch))
+    ? `${wr.branch}-${wr.workspaceId.slice(0, 8)}`
+    : wr.branch;
+  await createWorktree(runner, clone, wr.worktreePath, branch, base);
+  return branch;
 }
 
 /**
  * Drives provisioning for a workspace: per repo, ensure the primary clone,
  * refresh its default branch, cut a worktree, and run the setup script —
  * emitting progress events (setup output streams through `emit`). Idempotent
- * enough to retry: a repo already `ready`/`removed` is skipped. A call made
+ * enough to retry: a repo already `ready`/`removed` is skipped, and one that
+ * stopped part-way adopts the worktree its attempt did manage to cut rather
+ * than failing on it a second time (see `ensureWorktree`). A call made
  * while a run is already in flight follows that run instead of starting a
  * second one, and `signal` detaches that follower without disturbing the run.
  */
@@ -1255,32 +1384,11 @@ export async function provisionWorkspace(
 
           await updateDefaultBranch(runner, repo.primaryClonePath, base);
 
-          if (wr.existingBranch) {
-            // Check out the branch the user chose as-is; `base` still stands as
-            // the diff base so changes show against the default branch.
-            await fetchBranch(runner, repo.primaryClonePath, wr.branch);
-            await addExistingBranchWorktree(
-              runner,
-              repo.primaryClonePath,
-              wr.worktreePath,
-              wr.branch,
-            );
-            await db
-              .update(workspaceRepos)
-              .set({ baseBranch: base })
-              .where(eq(workspaceRepos.id, wr.id));
-          } else {
-            // Avoid colliding with a branch left behind by a prior workspace.
-            let branch = wr.branch;
-            if (await branchExists(runner, repo.primaryClonePath, branch)) {
-              branch = `${wr.branch}-${id.slice(0, 8)}`;
-            }
-            await createWorktree(runner, repo.primaryClonePath, wr.worktreePath, branch, base);
-            await db
-              .update(workspaceRepos)
-              .set({ branch, baseBranch: base })
-              .where(eq(workspaceRepos.id, wr.id));
-          }
+          const branch = await ensureWorktree(runner, wr, base);
+          await db
+            .update(workspaceRepos)
+            .set({ branch, baseBranch: base })
+            .where(eq(workspaceRepos.id, wr.id));
         });
 
         let exitCode = 0;
@@ -1332,15 +1440,7 @@ export async function provisionWorkspace(
 
     // The workspace is active only if every repo provisioned cleanly.
     const after = await getWorkspace(db, id);
-    if (after) {
-      writeContextFiles(after);
-      writeClaudeSettings(
-        after.rootPath,
-        after.id,
-        after.repos.map((wr) => wr.worktreePath),
-      );
-      writeMcpConfig(after.rootPath);
-    }
+    if (after) writeWorkspaceFiles(after);
     const allReady = after?.repos.every((r) => r.status === "ready" || r.status === "removed");
     let status: Workspace["status"] = allReady ? "active" : "error";
     let error = allReady ? null : "one or more repos failed";
@@ -1348,21 +1448,21 @@ export async function provisionWorkspace(
     // Finish the "Start work" kick-off before reporting the workspace active,
     // so by the time anything can see it there is already a session to attach
     // to. Doing it here rather than in the caller is what frees the flow from
-    // whoever started it: seeding the prompt file and launching the agent are
+    // whoever started it: seeding the brief file and launching the agent are
     // the last two steps of provisioning, not a UI's follow-up.
-    const pendingPrompt = after?.pendingIssuePrompt;
-    if (status === "active" && after && pendingPrompt) {
+    const pendingBrief = after?.pendingBrief;
+    if (status === "active" && after && pendingBrief) {
       try {
-        await writeIssuePrompt(after.rootPath, pendingPrompt);
+        await writeWorkspaceBrief(after.rootPath, pendingBrief);
       } catch (e) {
         status = "error";
-        error = `could not write the issue prompt file: ${e instanceof Error ? e.message : String(e)}`;
+        error = `could not write the brief file: ${e instanceof Error ? e.message : String(e)}`;
       }
     }
 
     // Launch before the status flips, so a workspace is never reported ready
     // with its kick-off still owed a session — whoever looks next just attaches.
-    if (status === "active" && after && pendingPrompt) {
+    if (status === "active" && after && pendingBrief) {
       await launchKickOffSession(db, after, startSession, remoteControl);
     }
 
@@ -1396,18 +1496,18 @@ export async function provisionWorkspace(
 }
 
 /**
- * What a "Start work" session is told to do. The ticket itself is written to a
- * known file under the workspace root, so a fixed instruction to read that file
- * is enough and a body of any size stays off the command line.
+ * What a kick-off session is told to do. The work itself — a ticket body, a
+ * task's notes, a brief the chat agent composed — is written to a known file
+ * under the workspace root, so one fixed instruction covers every producer and
+ * a body of any size stays off the command line.
  */
-export const AGENT_ISSUE_INSTRUCTION =
-  "Read the ticket details in .yarvis/issue-prompt.md and implement a first pass at the ticket, following the repository's conventions.";
+export const AGENT_KICKOFF_INSTRUCTION = `Read the work described in ${WORKSPACE_BRIEF_FILE} and make a first pass at it, following the conventions of whichever repository you are working in.`;
 
 /**
- * Launches the session a kick-off has been waiting for and drops the prompt that
+ * Launches the session a kick-off has been waiting for and drops the brief that
  * recorded it was owed. Best-effort by design: the workspace is provisioned and
  * usable either way, so a launch failure (commonly: the agent isn't logged in)
- * leaves the prompt in place for `resumeKickOffs` to retry rather than failing
+ * leaves the brief in place for `resumeKickOffs` to retry rather than failing
  * the workspace. Retrying is safe — the core keys sessions by workspace and
  * discards a spawn for an id that already has one.
  */
@@ -1423,24 +1523,29 @@ async function launchKickOffSession(
       cwd: detail.rootPath,
       name: detail.name,
       remoteControl,
-      instruction: AGENT_ISSUE_INSTRUCTION,
+      instruction: AGENT_KICKOFF_INSTRUCTION,
     });
   } catch (e) {
     console.error("[workspaces] could not start the kick-off session:", e);
     return;
   }
-  await clearPendingIssuePrompt(db, detail.id).catch(() => undefined);
+  void emitEvent(db, {
+    type: "workspace.session_started",
+    source: "workspaces",
+    payload: { workspaceId: detail.id, name: detail.name, kickOff: true, remoteControl },
+  });
+  await clearPendingBrief(db, detail.id).catch(() => undefined);
 }
 
 /**
- * Drops a workspace's pending "Start work" prompt, once its session has been
- * launched on the ticket. Until then the prompt stays put, which is what lets an
- * interrupted kick-off resume.
+ * Drops a workspace's pending brief, once its session has been launched on it.
+ * Until then the brief stays put, which is what lets an interrupted kick-off
+ * resume.
  */
-export async function clearPendingIssuePrompt(db: Db, id: string): Promise<void> {
+export async function clearPendingBrief(db: Db, id: string): Promise<void> {
   await db
     .update(workspaces)
-    .set({ pendingIssuePrompt: null, updatedAt: new Date() })
+    .set({ pendingBrief: null, updatedAt: new Date() })
     .where(eq(workspaces.id, id));
 }
 
@@ -1448,7 +1553,7 @@ export async function clearPendingIssuePrompt(db: Db, id: string): Promise<void>
  * Starts a workspace's kick-off running in the background and returns at once.
  * "Start work" answers as soon as the workspace and its issue link exist, because
  * cloning and a setup script take minutes and nothing downstream should wait on
- * them: provisioning, seeding the prompt file, and launching the session all
+ * them: provisioning, seeding the brief file, and launching the session all
  * finish here whether or not anyone is still looking at the screen that asked.
  * Progress is watchable meanwhile via the provision stream, which joins the run
  * already going.
@@ -1461,7 +1566,7 @@ export function startKickOff(db: Db, id: string): void {
 
 /**
  * Resumes kick-offs stranded by a sidecar restart: any workspace still holding a
- * prompt is one whose session was never launched. Provisioning is idempotent, so
+ * brief is one whose session was never launched. Provisioning is idempotent, so
  * this re-drives it whatever state the workspace stopped in. Called once at
  * startup — nothing else can strand one, since the sequence otherwise runs to
  * completion in the background regardless of what the UI is doing.
@@ -1470,7 +1575,7 @@ export async function resumeKickOffs(db: Db, options: ProvisionOptions = {}): Pr
   const stranded = await db
     .select({ id: workspaces.id })
     .from(workspaces)
-    .where(and(isNotNull(workspaces.pendingIssuePrompt), ne(workspaces.status, "archived")));
+    .where(and(isNotNull(workspaces.pendingBrief), ne(workspaces.status, "archived")));
   if (!stranded.length) return;
   console.warn(`[workspaces] resuming ${stranded.length} interrupted kick-off(s)`);
   for (const { id } of stranded) {
@@ -1478,6 +1583,72 @@ export async function resumeKickOffs(db: Db, options: ProvisionOptions = {}): Pr
       console.error(`[workspaces] could not resume kick-off for ${id}:`, e),
     );
   }
+}
+
+/**
+ * Accepts a workspace's failed provisioning and puts it back in service. The
+ * worktrees a failed run did cut are real, and a setup script that exited
+ * non-zero usually leaves a space that is perfectly workable — so rather than
+ * every visit to the workspace leading with its error page, this flips it
+ * `active` and leaves the per-repo failures and their setup logs on the rows,
+ * where they still read as failed and a retry is still offered.
+ *
+ * A kick-off the failed run still owed is discharged here, whichever way it
+ * goes: the ticket is written to disk, the session is launched if it can be,
+ * and the pending prompt is dropped either way. Leaving it set is what would
+ * undo the ignore — `resumeKickOffs` re-drives provisioning for any workspace
+ * still holding one, the repos are still failed, and the next sidecar start
+ * would park the workspace back in `error`. The ticket itself is not lost by
+ * dropping it: `.yarvis/issue-prompt.md` is where the agent reads it from, and
+ * a session started by hand finds it there.
+ */
+export async function ignoreWorkspaceError(
+  db: Db,
+  id: string,
+  { startSession = startClaudeSession }: { startSession?: ClaudeSessionStarter } = {},
+): Promise<WorkspaceDetail | null> {
+  // A run in flight ends by writing the status itself, so an ignore landing
+  // mid-retry would be overwritten — by `error` again, if the retry fails.
+  if (provisioning.has(id)) {
+    throw new Error("provisioning is still running for this workspace");
+  }
+
+  const detail = await getWorkspace(db, id);
+  if (!detail) return null;
+  if (detail.status !== "error") {
+    throw new Error("only a workspace whose provisioning failed can be ignored");
+  }
+
+  // A run that failed outright may never have got this far, and the workspace is
+  // about to have an agent session started in it. Failing here rather than
+  // carrying on: a root that can't be created is not a space to work in.
+  mkdirSync(detail.rootPath, { recursive: true });
+  writeWorkspaceFiles(detail);
+
+  if (detail.pendingIssuePrompt) {
+    // Fatal for the same reason it is fatal in `provisionWorkspace`: the agent is
+    // launched to read this file, so a workspace must never be reported ready
+    // without it.
+    await writeIssuePrompt(detail.rootPath, detail.pendingIssuePrompt);
+    // Not remotely controllable: the ignore is a click at the machine, whatever
+    // the kick-off's own origin was.
+    await launchKickOffSession(db, detail, startSession, false);
+    await clearPendingIssuePrompt(db, id);
+  }
+
+  // Checked again on the way out: a run that started while the kick-off was
+  // being discharged ends by writing the status itself, and whichever of the two
+  // lands last wins. Better to leave the workspace to that run than to paint
+  // `active` over its verdict.
+  if (provisioning.has(id)) {
+    throw new Error("provisioning is still running for this workspace");
+  }
+
+  await db
+    .update(workspaces)
+    .set({ status: "active", error: null, updatedAt: new Date() })
+    .where(eq(workspaces.id, id));
+  return getWorkspace(db, id);
 }
 
 // ---------------------------------------------------------------------------
@@ -1689,9 +1860,9 @@ async function removeWorktreesAndFinish(
       mergedPrUrl: input.mergedPrUrl ?? detail.mergedPrUrl ?? linkedPrUrl(detail),
       error: fullyRemoved ? null : "one or more worktrees could not be removed",
       // A torn-down workspace has no session left to hand a kick-off to, so a
-      // prompt still pending on it is only a copy of the ticket body kept alive
-      // for nobody.
-      pendingIssuePrompt: fullyRemoved ? null : detail.pendingIssuePrompt,
+      // brief still pending on it is only a copy of the work kept alive for
+      // nobody.
+      pendingBrief: fullyRemoved ? null : detail.pendingBrief,
       archivedAt: fullyRemoved ? new Date() : null,
       updatedAt: new Date(),
     })
@@ -1712,6 +1883,20 @@ async function removeWorktreesAndFinish(
     }
   } else {
     await raiseArchiveFailure(db, detail, errors);
+  }
+
+  if (fullyRemoved) {
+    void emitEvent(db, {
+      type: "workspace.archived",
+      source: "workspaces",
+      payload: {
+        workspaceId: id,
+        name: detail.name,
+        summary: input.summary ?? detail.summary,
+        mergedPrUrl: input.mergedPrUrl ?? detail.mergedPrUrl ?? linkedPrUrl(detail),
+        completedTasks: completedTasks.length,
+      },
+    });
   }
 
   return { status, errors, completedTasks: completedTasks.length };

@@ -1,25 +1,84 @@
-import { and, cosineDistance, desc, eq, gte, isNotNull, type SQL, sql } from "drizzle-orm";
+import {
+  and,
+  cosineDistance,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import type { Db } from "../db/client.ts";
-import { type MemoryRow, memories } from "../db/schema.ts";
+import type { MemoryKind, MemoryRow, MemorySourceRef } from "../db/schema.ts";
+import { memories } from "../db/schema.ts";
 import { memoryDebug, preview } from "./debug.ts";
 import type { Embedder, EmbedderIdentity } from "./embedder.ts";
 
 export interface MemoryRecord {
   id: string;
   content: string;
+  kind: MemoryKind;
+  sourceRef: MemorySourceRef | null;
   metadata: unknown;
   createdAt: Date;
+  supersededAt: Date | null;
   /** Cosine similarity (0–1) when returned from a search. */
   score?: number;
 }
 
 /** Filters for browsing stored memories (management UI, recaps). */
 export interface MemoryListOptions {
-  /** Match the metadata `type` tag (e.g. "note", "doc"). */
-  type?: string;
+  /** Match any of these kinds (e.g. `["note"]`, `["day-summary"]`). */
+  kinds?: readonly MemoryKind[];
   /** Only memories created at or after this instant. */
   since?: Date;
+  /**
+   * Only memories created at or before this instant. Load-bearing for a windowed
+   * read: `limit` is applied by the query, so a caller that filters an upper
+   * bound in JS afterwards gets the newest rows *then* discards them — which
+   * silently returns nothing for any window that isn't the most recent one.
+   */
+  until?: Date;
   limit?: number;
+  offset?: number;
+  /** Include memories the user has since corrected. Off by default. */
+  includeSuperseded?: boolean;
+}
+
+/** Narrowing for a semantic search. */
+export interface MemorySearchOptions {
+  kinds?: readonly MemoryKind[];
+  /**
+   * Include superseded memories. Off by default, because a corrected fact
+   * resurfacing in recall is exactly what superseding is meant to prevent.
+   */
+  includeSuperseded?: boolean;
+}
+
+/** What a write records beyond the text itself. */
+export interface MemoryWriteInput {
+  kind?: MemoryKind;
+  sourceRef?: MemorySourceRef | null;
+  metadata?: Record<string, unknown>;
+}
+
+/** One item for a batched memory insert. */
+export interface MemoryInput extends MemoryWriteInput {
+  content: string;
+}
+
+/**
+ * Fields an edit may change. Content changes trigger a re-embed. Metadata is
+ * deliberately not editable: it holds provenance the writer set (an ingested
+ * chunk's source URL and position, the embedder identity), and a patch that
+ * replaced it wholesale would quietly drop that.
+ */
+export interface MemoryPatch {
+  content?: string;
+  kind?: MemoryKind;
 }
 
 /**
@@ -27,35 +86,53 @@ export interface MemoryListOptions {
  * depends only on this interface, so the backing store (pgvector today,
  * OpenMemory's server later) can change without touching callers.
  */
-/** One item for a batched memory insert. */
-export interface MemoryInput {
-  content: string;
-  metadata?: Record<string, unknown>;
-}
-
 export interface MemoryService {
-  add(content: string, metadata?: Record<string, unknown>): Promise<MemoryRecord>;
+  add(content: string, input?: MemoryWriteInput): Promise<MemoryRecord>;
   /** Adds several memories in one embedding call + insert. */
   addMany(items: MemoryInput[]): Promise<MemoryRecord[]>;
-  search(query: string, limit?: number): Promise<MemoryRecord[]>;
+  search(query: string, limit?: number, options?: MemorySearchOptions): Promise<MemoryRecord[]>;
   list(options?: MemoryListOptions): Promise<MemoryRecord[]>;
+  count(options?: MemoryListOptions): Promise<number>;
   get(id: string): Promise<MemoryRecord | null>;
+  update(id: string, patch: MemoryPatch): Promise<MemoryRecord | null>;
+  /**
+   * Replaces a memory's claim with a corrected one: the new text is stored as
+   * its own memory and the old row is marked superseded and pointed at it.
+   */
+  supersede(id: string, content: string, input?: MemoryWriteInput): Promise<MemoryRecord | null>;
   delete(id: string): Promise<boolean>;
 }
 
 /** The columns toRecord needs — a subset of MemoryRow (the embedding is omitted
  * from list/search selects since it isn't returned to callers). */
-type MemoryRowFields = Pick<MemoryRow, "id" | "content" | "metadata" | "createdAt">;
+type MemoryRowFields = Pick<
+  MemoryRow,
+  "id" | "content" | "kind" | "sourceRef" | "metadata" | "createdAt" | "supersededAt"
+>;
 
 function toRecord(row: MemoryRowFields, score?: number): MemoryRecord {
   return {
     id: row.id,
     content: row.content,
+    kind: row.kind,
+    sourceRef: row.sourceRef ?? null,
     metadata: row.metadata,
     createdAt: row.createdAt,
+    supersededAt: row.supersededAt ?? null,
     score,
   };
 }
+
+/** The columns every read selects; the embedding is deliberately not among them. */
+const RECORD_COLUMNS = {
+  id: memories.id,
+  content: memories.content,
+  kind: memories.kind,
+  sourceRef: memories.sourceRef,
+  metadata: memories.metadata,
+  createdAt: memories.createdAt,
+  supersededAt: memories.supersededAt,
+} as const;
 
 /** MemoryService backed by Postgres + pgvector, using a pluggable embedder. */
 export class PgVectorMemoryStore implements MemoryService {
@@ -74,15 +151,21 @@ export class PgVectorMemoryStore implements MemoryService {
     return { ...(metadata ?? {}), embedder: this.embedder.identity() };
   }
 
-  async add(content: string, metadata?: Record<string, unknown>): Promise<MemoryRecord> {
+  async add(content: string, input: MemoryWriteInput = {}): Promise<MemoryRecord> {
     const embedding = await this.embedder.embed(content);
     const [row] = await this.db
       .insert(memories)
-      .values({ content, metadata: this.stamp(metadata), embedding })
+      .values({
+        content,
+        kind: input.kind ?? "fact",
+        sourceRef: input.sourceRef ?? null,
+        metadata: this.stamp(input.metadata),
+        embedding,
+      })
       .returning();
     memoryDebug(
       "memory",
-      `add id=${row!.id} type=${(metadata?.type as string) ?? "—"} chars=${content.length} ` +
+      `add id=${row!.id} kind=${row!.kind} chars=${content.length} ` +
         `embedder=${this.embedder.kind} → stored`,
     );
     return toRecord(row!);
@@ -96,6 +179,8 @@ export class PgVectorMemoryStore implements MemoryService {
       .values(
         items.map((item, i) => ({
           content: item.content,
+          kind: item.kind ?? "fact",
+          sourceRef: item.sourceRef ?? null,
           metadata: this.stamp(item.metadata),
           embedding: embeddings[i]!,
         })),
@@ -105,18 +190,20 @@ export class PgVectorMemoryStore implements MemoryService {
     return rows.map((r) => toRecord(r));
   }
 
-  async search(query: string, limit = 5): Promise<MemoryRecord[]> {
+  async search(
+    query: string,
+    limit = 5,
+    options: MemorySearchOptions = {},
+  ): Promise<MemoryRecord[]> {
     const queryVec = await this.embedder.embedQuery(query);
     const distance = cosineDistance(memories.embedding, queryVec);
+    const conditions: SQL[] = [];
+    if (options.kinds?.length) conditions.push(inArray(memories.kind, [...options.kinds]));
+    if (!options.includeSuperseded) conditions.push(isNull(memories.supersededAt));
     const rows = await this.db
-      .select({
-        id: memories.id,
-        content: memories.content,
-        metadata: memories.metadata,
-        createdAt: memories.createdAt,
-        distance,
-      })
+      .select({ ...RECORD_COLUMNS, distance })
       .from(memories)
+      .where(conditions.length ? and(...conditions) : undefined)
       .orderBy(distance)
       .limit(limit);
     const results = rows.map((r) => toRecord(r, 1 - Number(r.distance)));
@@ -129,31 +216,88 @@ export class PgVectorMemoryStore implements MemoryService {
     return results;
   }
 
-  async list(options: MemoryListOptions = {}): Promise<MemoryRecord[]> {
+  /** Shared WHERE for list/count, so a paginated browse's total matches its rows. */
+  private listConditions(options: MemoryListOptions): SQL | undefined {
     const conditions: SQL[] = [];
-    if (options.type) {
-      conditions.push(sql`${memories.metadata}->>'type' = ${options.type}`);
-    }
-    if (options.since) {
-      conditions.push(gte(memories.createdAt, options.since));
-    }
+    if (options.kinds?.length) conditions.push(inArray(memories.kind, [...options.kinds]));
+    if (options.since) conditions.push(gte(memories.createdAt, options.since));
+    if (options.until) conditions.push(lte(memories.createdAt, options.until));
+    if (!options.includeSuperseded) conditions.push(isNull(memories.supersededAt));
+    return conditions.length ? and(...conditions) : undefined;
+  }
+
+  async list(options: MemoryListOptions = {}): Promise<MemoryRecord[]> {
     const rows = await this.db
-      .select({
-        id: memories.id,
-        content: memories.content,
-        metadata: memories.metadata,
-        createdAt: memories.createdAt,
-      })
+      .select(RECORD_COLUMNS)
       .from(memories)
-      .where(conditions.length ? and(...conditions) : undefined)
+      .where(this.listConditions(options))
       .orderBy(desc(memories.createdAt))
-      .limit(options.limit ?? 100);
+      .limit(options.limit ?? 100)
+      .offset(options.offset ?? 0);
     return rows.map((r) => toRecord(r));
   }
 
+  async count(options: MemoryListOptions = {}): Promise<number> {
+    const [row] = await this.db
+      .select({ total: sql<number>`count(*)::int` })
+      .from(memories)
+      .where(this.listConditions(options));
+    return Number(row?.total ?? 0);
+  }
+
   async get(id: string): Promise<MemoryRecord | null> {
-    const [row] = await this.db.select().from(memories).where(eq(memories.id, id));
+    const [row] = await this.db.select(RECORD_COLUMNS).from(memories).where(eq(memories.id, id));
     return row ? toRecord(row) : null;
+  }
+
+  async update(id: string, patch: MemoryPatch): Promise<MemoryRecord | null> {
+    const existing = await this.get(id);
+    if (!existing) return null;
+    // A changed claim needs a new vector: leaving the old one in place would
+    // leave the memory findable by its previous wording and not its current one.
+    const embedding =
+      patch.content !== undefined && patch.content !== existing.content
+        ? await this.embedder.embed(patch.content)
+        : undefined;
+    const [row] = await this.db
+      .update(memories)
+      .set({
+        ...(patch.content !== undefined ? { content: patch.content } : {}),
+        ...(patch.kind !== undefined ? { kind: patch.kind } : {}),
+        // A re-embed has to re-stamp the embedder identity beside the new vector,
+        // or `embedderHealth` reports the memory as produced by whatever model
+        // last touched it. Existing metadata is carried through, not replaced.
+        ...(embedding
+          ? {
+              embedding,
+              metadata: this.stamp(existing.metadata as Record<string, unknown> | null),
+            }
+          : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(memories.id, id))
+      .returning(RECORD_COLUMNS);
+    return row ? toRecord(row) : null;
+  }
+
+  async supersede(
+    id: string,
+    content: string,
+    input: MemoryWriteInput = {},
+  ): Promise<MemoryRecord | null> {
+    const existing = await this.get(id);
+    if (!existing) return null;
+    const replacement = await this.add(content, {
+      kind: input.kind ?? existing.kind,
+      sourceRef: input.sourceRef ?? existing.sourceRef,
+      metadata: input.metadata,
+    });
+    await this.db
+      .update(memories)
+      .set({ supersededAt: new Date(), supersededById: replacement.id, updatedAt: new Date() })
+      .where(eq(memories.id, id));
+    memoryDebug("memory", `supersede id=${id} → ${replacement.id}`);
+    return replacement;
   }
 
   async delete(id: string): Promise<boolean> {

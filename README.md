@@ -441,11 +441,22 @@ switching workspaces (or leaving the Workspaces tab) and coming back counts as
 opening the workspace again and starts a fresh session. The header's start-session
 button brings one back on the spot.
 
-An issue's "Start work" is held by the sidecar on the workspace itself, not by
-the screen you started it from, so navigating away mid-kick-off doesn't strand
-it. Reopening the workspace rejoins the provisioning run already in flight and
-picks its log back up, then launches the agent on the ticket once it lands. If
-provisioning failed, the ticket is still waiting behind "Retry provisioning".
+A kick-off — an issue's "Start work", a task's, or one the in-app agent
+started — is held by the sidecar on the workspace itself, not by the screen you
+started it from, so navigating away mid-kick-off doesn't strand it. Reopening
+the workspace rejoins the provisioning run already in flight and picks its log
+back up, then launches the agent on the work once it lands. If provisioning
+failed, the work is still waiting behind "Retry provisioning".
+
+A failed provision opens on the failed repo's setup log, and leaves two buttons.
+"Retry provisioning" picks up where the run stopped: the worktrees it did manage
+to cut are adopted rather than cut again, so the retry recovers the workspace
+instead of failing on the one step that worked. "Ignore and use anyway" takes the
+failure as read and puts the workspace back in service — the agent session
+starts, the repos that failed keep their badges and setup logs, and the retry
+stays on offer — so the workspace stops opening on its error page every time you
+come back to it. A workspace started from a ticket has its session launched on
+that ticket when you ignore the error, the same as a clean provision would.
 
 The agent's tab title and launch command are set under Settings → Repositories →
 Agent, defaulting to `Claude` and `claude --permission-mode auto`, so you can
@@ -471,9 +482,10 @@ even though Claude runs one directory above the repos. It also writes a
 `.mcp.json` pointing the session at Yarvis's own MCP endpoint (see "Yarvis as an
 MCP server"). Both files are merged, not overwritten, so any other keys — or
 other MCP servers — already present are left intact. A
-workspace opened from an issue's "Start work" also gets the ticket itself, in
-`.yarvis/issue-prompt.md` — the file its agent session is launched to read, as
-the last step of provisioning.
+workspace started on something — an issue's "Start work", a task, or a brief
+handed to the in-app agent — also gets that work written to `.yarvis/brief.md`,
+the file its agent session is launched to read, as the last step of
+provisioning.
 
 When several workspaces need the same upstream fix, ask the in-app agent (or
 Telegram) to merge main into them — "merge main into all my open PRs" — and it
@@ -501,6 +513,30 @@ is closed. Raise or lower that under Settings → Repositories → Terminals (up
 for how many workspaces you can keep open. Leaving the field blank restores the
 default. The value applies to the next terminal opened, without a restart, and
 is stored in `settings.json` in the app data directory.
+
+#### Editing a file
+
+The right column's **All files** list opens a file in an editor tab, and the
+✎ that appears on hovering a changed file does the same — the diff is still
+what a click on the row gives you, since reading what changed is usually why
+you opened it. The
+editor is CodeMirror with the file's own grammar, loaded from the file's name;
+a file with no grammar we recognise opens uncoloured rather than not at all.
+Binary files, files that aren't valid UTF-8, and anything past 2 MB are
+described instead of opened: saving one back would rewrite bytes the editor
+never showed you.
+
+**⌘S** (or **Save**) writes the file back to the worktree. Edits live outside
+the tab, so switching to another tab and back keeps what you have typed, and
+the tab is marked while it is unsaved; closing it asks first. **Revert** throws
+the buffer away and re-reads the file. Unsaved text is held in memory only —
+the tab itself comes back when the app reopens, but anything unsaved in it does
+not, so save before quitting.
+
+A save carries the hash the file was read with, and is refused if the file has
+changed since — the agent session works in the same worktree, and a save that
+landed on top of its work would drop it silently. The refusal keeps your edits
+and offers both ways out: reload from disk, or overwrite with what you have.
 
 #### Reviewing your own work
 
@@ -789,6 +825,126 @@ deleted so the code doesn't linger, and the app raises a desktop notification on
 each unlock/failed/lockout so you see access you didn't initiate. The code is
 verified in the sidecar; it never leaves your authenticator and laptop.
 
+### The assistant loop: activity, memory, projects, planning
+
+The chat agent tracks tasks and remembers facts, and on top of that it keeps a
+record of what you actually did and uses it to help you decide what to do next.
+Five pieces, all local:
+
+**The activity log.** Meaningful actions are recorded as events — a PR viewed,
+approved, commented on or merged (GitHub and Azure), an issue or JIRA ticket
+created or commented, work started on a ticket, a workspace created, its session
+started, synced, archived, tasks created and completed, calendar events booked.
+UI navigation is deliberately not an event. Its own actions are logged too — todos it opens and closes, projects it starts
+tracking, each summary it writes — and this list is a sample rather than the
+whole set. Browse and search it under **Memory → Activity**; the agent reads the same log with `search_events` and
+`activity_summary` when a question needs detail the summaries don't carry.
+
+**Consolidation.** Every four hours a background job folds the events nobody has
+summarized yet into one `activity-summary` memory. Overnight, a pass over the Claude Code
+transcripts under `~/.claude/projects` writes a `session-summary` for each new or
+extended session, and an hour later those and the window summaries are folded
+together into a single `day-summary` — plus an `agent-feedback` memory when the session
+contained instructions about how an agent should behave, so that guidance is
+recallable in its own right rather than buried in one transcript. Events are only
+marked processed once a summary is stored, and only the ones that fit the
+summarizer's prompt, so a failed or oversized run loses nothing.
+
+The transcript pass is **off until you turn it on**: transcripts are local files
+that often hold pasted secrets and other people's data, and summarizing them
+means sending them to your configured LLM provider. Enable it under
+**Settings → Assistant** and choose which project directories it may read — an
+empty list digests nothing. Job status and a manual trigger live there too.
+
+**Typed memory.** Every memory carries a `kind` (`fact`, `preference`, `note`,
+`project`, `decision`, `agent-feedback`, the three summary kinds, `doc`,
+`dismissal`), and the agent narrows recall by it. When something you told it
+changes, it corrects the memory rather than storing a contradiction: the old row
+stays for the trail but drops out of recall, and the text is re-embedded so it is
+findable by what it now says.
+
+**Projects and todos.** Tell it about a project and it keeps the structured part
+— status, what this week is for, the tickets with the priority you gave them —
+while the narrative goes to memory. Its own commitments go on a separate todo
+list with a progress log, so "I'll check that PR before Thursday" survives the
+end of the conversation without landing in your daily plan. Both are visible
+under **Memory → Projects** and **Memory → Agent todos**.
+
+**Planning.** `suggest_next_work` ranks what you have left — your own open PRs,
+reviews requested of you, reviews you started and never signed off, live
+workspaces, overdue tasks — and reports how much reviewing you have actually done
+this week, promoting a review when that number is low. Turn something down and it
+is dismissed by key, so it stops coming back. `work_summary` assembles the
+material for "what did I get done this week" (activity counts, review verdicts
+given, your PRs and their current state, tasks completed, workspaces archived)
+and the model writes the prose.
+
+Multi-step work is delegated rather than done inline, to a **specialist** that
+runs in its own context with only the tools its definition lists. See
+[Writing your own specialist](#writing-your-own-specialist) — they are markdown
+files. A delegated run gets no MCP tools (it has no way to hold an approval
+prompt open) and cannot delegate further. It can write somewhere other people
+see — filing a JIRA ticket, say — only if that tool is granted to it by name;
+Settings marks such a specialist "acts unattended", and `project-manager` is the
+one that ships with a grant, because turning a discussion into tickets is its
+job. The same specialists back the background jobs, so a summary written at 3am
+reads like one written in conversation.
+
+### Writing your own specialist
+
+A specialist is a markdown file: YAML frontmatter for its configuration, the body
+as its system prompt. The ones the app ships live in
+`sidecar/src/agents/definitions/` and are embedded in the build; yours go in
+`~/.yarvis/agents/*.md`, and a file named after one that ships **replaces** it —
+so a shipped prompt keeps improving with the app while anything you write stays
+yours. **Settings → Assistant** lists what loaded, names the directory, reports
+any file that failed to parse, and reloads without a restart.
+
+```markdown
+---
+name: release-notes
+description: >-
+  Turns a week of merged PRs into release notes. Use it when the user asks what
+  to tell people about what shipped.
+tools:
+  - work_summary
+  - search_events
+  - recall
+model: anthropic/claude-sonnet-5   # optional; omit for the default chat model
+maxSteps: 8                         # optional, default 8, hard cap 30
+---
+
+You write release notes from a developer's own activity.
+
+Group by theme rather than by pull request, and name each PR once…
+```
+
+`name` is the handle the assistant delegates by, and `description` is what it
+reads when choosing — write it as "what this is for, and when to reach for it".
+`tools` are bare built-in tool names (the Tool Manager lists them all), written
+as a YAML list or comma-separated; an unknown one is reported rather than
+silently dropped, and omitting the key gives a specialist with no tools, which is
+right for anything that works purely from material handed to it.
+`enabled: false` turns one off, including a built-in you would rather not have.
+A misspelled key is an error too — `tool:` where `tools:` was meant would
+otherwise be a specialist with no tools and no complaint.
+
+Two things a definition deliberately cannot do. It cannot delegate — a specialist
+that could would eventually delegate to itself. And a tool that writes where other
+people can see it is withheld unless the file also names it under `unattended:`,
+because a delegated run has no way to stop and ask; that grant is what Settings
+flags on the row.
+
+Definitions are read from `~/.yarvis/agents` only, never from a workspace or a
+checked-out repo. A definition is a system prompt plus a tool list, so a repo that
+could contribute one would be a repo that hands the agent instructions and the
+means to act on them.
+
+Two boundaries worth knowing: the agent's todo tools are **not** on the MCP
+endpoint, so a Claude Code session can read and write memory but not edit the
+assistant's plan; and the calendar integration can create an event but has no
+update or delete — moving or cancelling a meeting stays yours.
+
 ## Development
 
 ```bash
@@ -860,6 +1016,8 @@ primary one by default:
 | Workspace/PR poller | Doubles provider API traffic and writes the same rows twice | `YARVIS_BACKGROUND_WORKERS=1` |
 | Resuming interrupted kick-offs | Would launch two agent sessions in one workspace | `YARVIS_BACKGROUND_WORKERS=1` |
 | Stale PR-guide sweep | Deletes rows on a schedule; once is enough | `YARVIS_BACKGROUND_WORKERS=1` |
+| Background jobs (event consolidation, nightly rollup, transcript digest) | Write memories and call an LLM provider on a schedule; two processes duplicate both | `YARVIS_BACKGROUND_WORKERS=1` |
+| Seeding the built-in specialists | Inserts the shipped rows once into the shared table | `YARVIS_BACKGROUND_WORKERS=1` |
 | Global hotkeys (`Control + Shift + Space`, `Control + Shift + V`) | One process holds an accelerator machine-wide | `YARVIS_GLOBAL_SHORTCUTS=1` |
 
 Set an override to `1` on the instance that should take the work, or `0` on the
@@ -898,6 +1056,7 @@ render real components with the `renderToHtml` helper in `src/test/render.tsx`.
 ```
 src/            React frontend (Vite + TS + Tailwind)
   lib/          sidecar API client, Keychain wrappers, Omni Chat context registry, notifications, cross-tab nav (nav.ts),
+                unsaved editor buffers (fileDrafts.ts),
                 voice loop pieces (useVoice.ts the turn hook, voice.ts + voiceConfig.ts clients,
                 useVoiceRecorder.ts mic capture, speechChunks.ts sentence splitting,
                 speechQueue.ts pipelined playback, audioEncoding.ts, audioPlayback.ts)
@@ -912,12 +1071,15 @@ src/            React frontend (Vite + TS + Tailwind)
                 stack list (PrStackList.tsx, shared with the workspace Stack tab)
     issue/      Issues tab views: GitHub + JIRA issue lists, detail, create/repo-picker modals
     files/      shared file-tree rows (collapsible folders), used by PR review and workspaces
-    workspaces/  workspace detail subviews + Omni widgets, and the self-review
-                comment layer over a changed file's diff
+    editor/     CodeMirror 6 wrapper (lazy-loaded) behind the workspace file editor
+    workspaces/  workspace detail subviews + Omni widgets, the self-review
+                comment layer over a changed file's diff, and the file editor
     shell/      desktop shell: nav rail, top bar, boot loading screen, tab shortcuts,
                 keyboard cheat sheet (the catalogue every shortcut is listed from)
     omni/       Omni view — chat-driven dynamic-UI canvas
     omnichat/   Omni Chat — global summon-from-anywhere chat overlay
+    memory/     memory screen tabs: the memory library, the activity log browser,
+                the assistant's todos, and projects
     clipboard/  clipboard palette — saved snippets + screened clipboard history
     find/       find-on-page bar (Cmd+F), hosted by the shell over the content region
   omni/         json-render component catalog, registry, layout primitives
@@ -942,9 +1104,19 @@ sidecar/        Bun + TS service (Hono)
                 config.ts holds the settings every surface shares
   src/clipboard/ saved clipboard entries + the credential screen (screening.ts)
   src/telegram/ Telegram remote-control bot (long-poll loop, slash commands, chat→session map)
-  src/tasks/    daily/weekly work tracking
-  src/events/   local on-device event log (action trail; reconciled to memory later)
-  src/memory/   pgvector memory, notes, ingestion, recaps
+  src/tasks/    daily/weekly work tracking, title-similarity dedupe, and the
+                completion-evidence pass (reconcile.ts) behind "did I already finish this?"
+  src/events/   local on-device event log (action trail, searchable + paginated;
+                consolidated into memory by the jobs)
+  src/memory/   pgvector memory (typed by `kind`, with corrections that supersede),
+                notes, ingestion, recaps
+  src/projects/ projects the work is for: status, focus, and tracked tickets with priorities
+  src/todos/    the assistant's own todo list (not exposed over the MCP endpoint)
+  src/agents/   delegation: the configured specialists and the bounded runs the
+                orchestrator and the jobs both go through
+  src/jobs/     background scheduler (lease + schedule) and the jobs themselves:
+                event consolidation, the nightly rollup, the Claude Code session digest
+  src/digest/   dangling work, next-work ranking, weekly summary material, dismissals
   src/github/   GitHub PR dashboard + embedded review (REST + GraphQL), dashboard config, in-progress review roll-up
   src/azure/    Azure DevOps PR dashboard + embedded review (REST; diffs built with jsdiff)
   src/pr/       provider-neutral PR review subsystem (/api/pr): guide + insight storage,
@@ -954,12 +1126,13 @@ sidecar/        Bun + TS service (Hono)
                 chat agent's review tools
   src/issues/   provider-neutral issue routes/service (stars, filters, workspace links, start-work, issue writes)
   src/jira/     JIRA Cloud REST client + routes + agent tools + ADF↔Markdown conversion
-  src/google/   Google Calendar OAuth + events
+  src/google/   Google Calendar OAuth, event reads, and the one write (create)
   src/omni/     Omni UI generation (streaming) + saved layouts
   src/workspaces/ repo registry + git-worktree provisioning, bulk base-branch sync, and
                   teardown (/api/repos, /api/workspaces), plus local self-review
-                  comments on a workspace's own diffs (reviewComments.ts) and the
+                  comments on a workspace's own diffs (reviewComments.ts), the
                   `gh stack` bridge that reads and merges a stack in a worktree (stack.ts)
+                  and reading/writing a worktree file for the editor (files.ts)
   src/mcp/      MCP client: connected servers, OAuth, tool registry sync, approvals
   src/mcpServer/  the MCP endpoint Yarvis serves (memory tools over /mcp)
   src/attention/  attention stream: hook ingest, SSE stream, scoped clearing
@@ -975,6 +1148,15 @@ reach into the app. Today it exposes the memory tools — `recall`, `remember`,
 `take_note`, `list_memories`, `forget` — over the same pgvector store the in-app
 chat uses, so a coding session can look up what you told Yarvis last week and
 write back what it learns.
+
+The assistant's **own** todo list is deliberately *not* exposed here. A coding
+session should be able to read and write the shared memory; editing the in-app
+agent's plan would be one agent rewriting another's. Projects are likewise
+in-app only.
+
+`list_memories` takes a `kind` (`fact`, `note`, `session-summary`, …) — it was
+`type` before memory kinds became a column, and a client still sending `type`
+gets an unfiltered list rather than an error.
 
 The endpoint is `POST http://127.0.0.1:<sidecar port>/mcp`, authenticated with a
 scoped token that grants access to those tools and nothing else — not the rest of

@@ -122,12 +122,12 @@ export interface CreateWorkspaceInput {
   existingBranches?: Record<string, string>;
   taskId?: string | null;
   /**
-   * A "Start work" prompt to seed the workspace's agent session with. The
-   * sidecar seeds `.yarvis/issue-prompt.md` and launches the session on it as
-   * the last steps of provisioning, so the kick-off completes whether or not
-   * this view is still around.
+   * Whether a linked task starts the session working on it. The sidecar
+   * composes the brief from the task, seeds `.yarvis/brief.md` and launches the
+   * session on it as the last steps of provisioning, so the kick-off completes
+   * whether or not this view is still around.
    */
-  issuePrompt?: string;
+  startWork?: boolean;
 }
 
 export interface ArchiveWorkspaceInput {
@@ -193,6 +193,17 @@ export async function* provisionWorkspace(id: string): AsyncGenerator<ProvisionE
   }
 }
 
+/**
+ * Accepts a failed provision: the workspace reads `active` again so it can be
+ * worked in, while the repos that failed keep their status and setup logs. What
+ * this buys is a workspace that stops opening on its error page.
+ */
+export async function ignoreWorkspaceError(id: string): Promise<WorkspaceDetail> {
+  const res = await sidecarFetch(`/api/workspaces/${id}/ignore-error`, { method: "POST" });
+  if (!res.ok) return readError(res, "ignore provisioning error");
+  return res.json();
+}
+
 export async function workspaceRepoFiles(
   workspaceId: string,
   workspaceRepoId: string,
@@ -227,6 +238,71 @@ export async function workspaceRepoFileDiff(
     `/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/diff?path=${encodeURIComponent(path)}`,
   );
   if (!res.ok) return readError(res, "load file diff");
+  return res.json();
+}
+
+/** Why a file came back without its contents. Null when it is editable text. */
+export type FileUnreadable = "binary" | "too-large" | "encoding";
+
+/** One file in a workspace repo's worktree, as the editor opens it. */
+export interface WorkspaceFile {
+  path: string;
+  /** UTF-8 text, or null when `unreadable` says why there is none. */
+  content: string | null;
+  unreadable: FileUnreadable | null;
+  /** Hash of the bytes on disk, handed back on save to prove the edit was
+   *  written against what is still there. Null for a file too large to have been
+   *  read, and so one nothing can be saved over. */
+  hash: string | null;
+  size: number;
+}
+
+export interface SaveFileResult {
+  hash: string;
+  size: number;
+}
+
+/** A save refused because the file changed on disk after it was opened — the
+ *  agent session shares the worktree, so this is an ordinary outcome the editor
+ *  offers to resolve, not a failure to report as one. */
+export class FileConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FileConflictError";
+  }
+}
+
+/** One file's current contents in a workspace repo's worktree. */
+export async function workspaceRepoFile(
+  workspaceId: string,
+  workspaceRepoId: string,
+  path: string,
+): Promise<WorkspaceFile> {
+  const res = await sidecarFetch(
+    `/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/file?path=${encodeURIComponent(path)}`,
+  );
+  if (!res.ok) return readError(res, "load file");
+  return res.json();
+}
+
+/** Writes an edited file back. `expectedHash` is the hash the file was opened
+ *  with; a stale one comes back as a `FileConflictError`. */
+export async function saveWorkspaceRepoFile(
+  workspaceId: string,
+  workspaceRepoId: string,
+  path: string,
+  content: string,
+  expectedHash: string,
+): Promise<SaveFileResult> {
+  const res = await sidecarFetch(`/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/file`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, content, expectedHash }),
+  });
+  if (res.status === 409) {
+    throw new FileConflictError("This file changed on disk since you opened it.");
+  }
+  if (!res.ok) return readError(res, "save file");
   return res.json();
 }
 

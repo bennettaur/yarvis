@@ -50,8 +50,9 @@ describe("event routes", () => {
 
     const list = await app.request("/api/events", { headers: jsonAuth });
     expect(list.status).toBe(200);
-    const rows = (await list.json()) as { type: string }[];
-    expect(rows.map((r) => r.type)).toContain("pr.viewed");
+    const page = (await list.json()) as { items: { type: string }[]; total: number };
+    expect(page.items.map((r) => r.type)).toContain("pr.viewed");
+    expect(page.total).toBe(1);
   });
 
   it("rejects an unknown event type", async () => {
@@ -74,9 +75,9 @@ describe("event routes", () => {
     const res = await app.request("/api/events?type=alarm.created", {
       headers: jsonAuth,
     });
-    const rows = (await res.json()) as { type: string }[];
-    expect(rows.length).toBe(1);
-    expect(rows[0]!.type).toBe("alarm.created");
+    const page = (await res.json()) as { items: { type: string }[]; total: number };
+    expect(page.total).toBe(1);
+    expect(page.items[0]!.type).toBe("alarm.created");
   });
 
   it("rejects an unknown type filter", async () => {
@@ -98,8 +99,47 @@ describe("event routes", () => {
         headers: jsonAuth,
       });
       expect(res.status).toBe(200);
-      expect(((await res.json()) as unknown[]).length).toBe(1);
+      expect(((await res.json()) as { items: unknown[] }).items.length).toBe(1);
     }
+  });
+
+  it("paginates with a stable total and searches the payload", async () => {
+    for (const number of [1, 2, 3]) {
+      await app.request("/api/events", {
+        method: "POST",
+        headers: jsonAuth,
+        body: JSON.stringify({
+          type: "pr.viewed",
+          source: "github",
+          payload: { owner: "a", repo: "b", number, title: number === 2 ? "Fix flaky login" : "x" },
+        }),
+      });
+    }
+
+    const firstPage = await app.request("/api/events?limit=2&offset=0", { headers: jsonAuth });
+    const first = (await firstPage.json()) as { items: unknown[]; total: number };
+    expect(first.items.length).toBe(2);
+    expect(first.total).toBe(3);
+
+    const secondPage = await app.request("/api/events?limit=2&offset=2", { headers: jsonAuth });
+    const second = (await secondPage.json()) as { items: unknown[]; total: number };
+    expect(second.items.length).toBe(1);
+    expect(second.total).toBe(3);
+
+    const search = await app.request("/api/events?q=flaky%20login", { headers: jsonAuth });
+    const found = (await search.json()) as {
+      items: { payload: { number: number } }[];
+      total: number;
+    };
+    expect(found.total).toBe(1);
+    expect(found.items[0]!.payload.number).toBe(2);
+  });
+
+  it("lists the known event types", async () => {
+    const res = await app.request("/api/events/types", { headers: jsonAuth });
+    const body = (await res.json()) as { types: string[] };
+    expect(body.types).toContain("pr.approved");
+    expect(body.types).toContain("workspace.archived");
   });
 
   it("requires authentication", async () => {

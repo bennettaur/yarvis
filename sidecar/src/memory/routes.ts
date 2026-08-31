@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import { EMBED_DIM } from "../db/schema.ts";
+import { EMBED_DIM, MEMORY_KINDS, type MemoryKind } from "../db/schema.ts";
 import { clientError } from "../llm/errors.ts";
 import { resolveModel } from "../llm/providers.ts";
 import { tasksCompletedBetween } from "../tasks/service.ts";
@@ -21,9 +21,23 @@ import { assembleRecapContext, dateRange, recapMaterial, recapSystemPrompt } fro
 /** Cap the recap LLM call so a hung provider can't block the request forever. */
 const RECAP_TIMEOUT_MS = 30_000;
 
+/**
+ * The kinds this endpoint may write. The summary kinds are excluded for the same
+ * reason the chat tools exclude them: they are the consolidation jobs' output,
+ * and hand-written text arriving as a `day-summary` would be read back as one.
+ */
+const WRITABLE_KINDS = [
+  "fact",
+  "preference",
+  "note",
+  "project",
+  "decision",
+  "agent-feedback",
+] as const satisfies readonly MemoryKind[];
+
 const addSchema = z.object({
   content: z.string().min(1),
-  type: z.string().min(1).optional(),
+  kind: z.enum(WRITABLE_KINDS).optional(),
 });
 
 const ingestSchema = z
@@ -68,14 +82,29 @@ export function createMemoryRoutes(config: Config): Hono {
     return new PgVectorMemoryStore(db, await chooseEmbedder(config, db));
   };
 
+  /**
+   * Browses memories newest-first. Paginated with a total, because the browser
+   * shows a page at a time once summaries start accumulating daily.
+   * `?kind=` may be repeated; unknown kinds are rejected rather than ignored,
+   * so a typo doesn't silently read everything.
+   */
   router.get("/", async (c) => {
-    const type = c.req.query("type") ?? undefined;
-    const limit = Number(c.req.query("limit") ?? "100");
-    const records = await (await store()).list({
-      type,
-      limit: Number.isFinite(limit) ? limit : 100,
-    });
-    return c.json(records);
+    const kindParams = c.req.queries("kind") ?? [];
+    const known = new Set<string>(MEMORY_KINDS);
+    for (const kind of kindParams) {
+      if (!known.has(kind)) return c.json({ error: `unknown kind: ${kind}` }, 400);
+    }
+    const kinds = kindParams as MemoryKind[];
+    const rawLimit = Number(c.req.query("limit") ?? "100");
+    const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 500) : 100;
+    const rawOffset = Number(c.req.query("offset") ?? "0");
+    const offset = Number.isInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+    const includeSuperseded = c.req.query("includeSuperseded") === "true";
+
+    const memory = await store();
+    const options = { kinds, limit, offset, includeSuperseded };
+    const [items, total] = await Promise.all([memory.list(options), memory.count(options)]);
+    return c.json({ items, total, limit, offset });
   });
 
   router.get("/search", async (c) => {
@@ -88,15 +117,14 @@ export function createMemoryRoutes(config: Config): Hono {
   router.post("/", async (c) => {
     const parsed = addSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const metadata = parsed.data.type ? { type: parsed.data.type } : undefined;
-    return c.json(await (await store()).add(parsed.data.content, metadata), 201);
+    return c.json(await (await store()).add(parsed.data.content, { kind: parsed.data.kind }), 201);
   });
 
-  // A note is just a memory tagged type "note"; convenience endpoint.
+  // A note is just a memory of kind "note"; convenience endpoint.
   router.post("/notes", async (c) => {
     const parsed = addSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    return c.json(await (await store()).add(parsed.data.content, { type: "note" }), 201);
+    return c.json(await (await store()).add(parsed.data.content, { kind: "note" }), 201);
   });
 
   router.delete("/:id", async (c) =>
@@ -131,7 +159,7 @@ export function createMemoryRoutes(config: Config): Hono {
     const db = getDb(config.databaseUrl as string).db;
     const window = dateRange(range);
     const tasks = await tasksCompletedBetween(db, window.from, window.to);
-    const notes = await (await store()).list({ type: "note", since: window.from });
+    const notes = await (await store()).list({ kinds: ["note"], since: window.from });
     const context = assembleRecapContext(tasks, notes);
 
     // Summarize with the chosen model when available; otherwise return the raw

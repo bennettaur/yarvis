@@ -175,8 +175,10 @@ export async function assembleAgentToolset(opts: {
   builtinTools: Record<string, Tool>;
   approval?: ApprovalHooks;
   /**
-   * Built-ins that must be confirmed before they run on this turn. Empty for a
-   * surface where the user proof-read what they sent.
+   * Built-ins that must be confirmed before they run on this turn. Never empty in
+   * practice: the outward-facing tools ask on every turn, and a turn the user
+   * spoke rather than typed adds the wider destructive set. A surface with no way
+   * to prompt gets them dropped instead — see below.
    */
   confirmBuiltins?: ReadonlySet<string>;
 }): Promise<AgentToolset> {

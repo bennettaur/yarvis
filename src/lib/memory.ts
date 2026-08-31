@@ -2,12 +2,36 @@ import { invoke } from "@tauri-apps/api/core";
 import { sidecarFetch } from "./api";
 import type { ProviderId } from "./chat";
 
+/** Kinds a memory can have; mirrors `MEMORY_KINDS` in the sidecar's schema. */
+export type MemoryKind =
+  | "fact"
+  | "preference"
+  | "note"
+  | "doc"
+  | "activity-summary"
+  | "day-summary"
+  | "session-summary"
+  | "agent-feedback"
+  | "project"
+  | "decision";
+
 export interface MemoryRecord {
   id: string;
   content: string;
+  kind: MemoryKind;
+  sourceRef: Record<string, unknown> | null;
   metadata: Record<string, unknown> | null;
   createdAt: string;
+  supersededAt: string | null;
   score?: number;
+}
+
+/** A page of a paginated list, with the size of the full match. */
+export interface Page<T> {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface RecapTask {
@@ -105,8 +129,20 @@ async function send<T>(path: string, method: string, body?: unknown): Promise<T>
   return res.json();
 }
 
-export const memList = (type?: string) =>
-  get<MemoryRecord[]>(`/api/memory${type ? `?type=${encodeURIComponent(type)}` : ""}`);
+export interface MemListOptions {
+  kinds?: MemoryKind[];
+  limit?: number;
+  offset?: number;
+}
+
+export const memList = (options: MemListOptions = {}) => {
+  const params = new URLSearchParams();
+  for (const kind of options.kinds ?? []) params.append("kind", kind);
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.offset !== undefined) params.set("offset", String(options.offset));
+  const query = params.toString();
+  return get<Page<MemoryRecord>>(`/api/memory${query ? `?${query}` : ""}`);
+};
 
 export const memSearch = (q: string) =>
   get<MemoryRecord[]>(`/api/memory/search?q=${encodeURIComponent(q)}`);

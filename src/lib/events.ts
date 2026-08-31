@@ -8,6 +8,69 @@ import { sidecarFetch } from "./api";
  */
 export type UiEventType = "pr.viewed" | "alarm.created";
 
+/** One row of the activity log. */
+export interface EventRecord {
+  id: string;
+  type: string;
+  source: string | null;
+  payload: Record<string, unknown> | null;
+  occurredAt: string;
+  processedAt: string | null;
+  createdAt: string;
+}
+
+export interface EventPage {
+  items: EventRecord[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface EventQuery {
+  types?: string[];
+  /** Substring match against the type, source and serialized payload. */
+  q?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/** Reads the paginated log for the events browser. */
+export async function listEvents(query: EventQuery = {}): Promise<EventPage> {
+  const params = new URLSearchParams();
+  for (const type of query.types ?? []) params.append("type", type);
+  if (query.q) params.set("q", query.q);
+  params.set("limit", String(query.limit ?? 50));
+  params.set("offset", String(query.offset ?? 0));
+  const res = await sidecarFetch(`/api/events?${params.toString()}`);
+  if (!res.ok) throw new Error(`GET /api/events → ${res.status}`);
+  return res.json();
+}
+
+/**
+ * The event types the sidecar accepts, for the browser's filter. Memoized: the
+ * response is a constant in the sidecar, and the tab it feeds is remounted every
+ * time the user switches to it.
+ */
+let cachedTypes: Promise<string[]> | null = null;
+
+export function listEventTypes(): Promise<string[]> {
+  if (!cachedTypes) {
+    cachedTypes = sidecarFetch("/api/events/types")
+      .then((res) => {
+        if (!res.ok) throw new Error(`GET /api/events/types → ${res.status}`);
+        return res.json() as Promise<{ types: string[] }>;
+      })
+      .then((body) => body.types)
+      .catch((e) => {
+        // Not cached on failure, so a transient error doesn't disable the filter
+        // for the rest of the session.
+        cachedTypes = null;
+        throw e;
+      });
+  }
+  return cachedTypes;
+}
+
 /**
  * Records a UI event, swallowing failures. Intentionally not awaited at call
  * sites: analytics should never block or break a user action.

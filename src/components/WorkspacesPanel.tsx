@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { setViewedWorkspace } from "../lib/attentionScope";
 import { useAttentionWorkspaceIds } from "../lib/attentionStore";
+import { clearDraft, draftKey, fileKey, useWorkspaceDraftKeys } from "../lib/fileDrafts";
 import type { NewWorkspaceRequest, OpenWorkspaceRequest } from "../lib/nav";
 import { type AgentConfig, getAgentConfig, ptyExists, startClaudeSession } from "../lib/pty";
 import { createRepo, listRepoBranches, listRepos, type Repo } from "../lib/repos";
@@ -9,6 +10,7 @@ import { openExternal } from "../lib/url";
 import {
   createWorkspace,
   getWorkspace,
+  ignoreWorkspaceError,
   listWorkspaces,
   unlinkWorkspaceIssue,
   unlinkWorkspaceTask,
@@ -22,6 +24,7 @@ import CopyPathButton from "./pr/CopyPathButton";
 import SplitPane, { usePersistedRatio } from "./SplitPane";
 import TerminalTabs, {
   type OpenFileDiff,
+  type OpenFileEditor,
   type OpenSetupLog,
 } from "./shell/terminalTabs/TerminalTabs";
 import TerminalPanel from "./TerminalPanel";
@@ -37,11 +40,17 @@ import {
 } from "./workspaces/agentTab";
 import BranchCombobox from "./workspaces/BranchCombobox";
 import LinkWorkModal from "./workspaces/LinkWorkModal";
+import { provisionActions, setupLogToAutoOpen } from "./workspaces/provisionActions";
 import { consumeProvision } from "./workspaces/provisionStream";
 import WorkspaceFileDiff from "./workspaces/WorkspaceFileDiff";
 import WorkspacePrBadges from "./workspaces/WorkspacePrBadges";
 import WorkspacePrStatus from "./workspaces/WorkspacePrStatus";
 import WorkspaceSetupLog from "./workspaces/WorkspaceSetupLog";
+
+// The editor tab pulls CodeMirror in with it — a few hundred kilobytes that a
+// session which never opens a file has no use for, so it is fetched when the
+// first editor tab is.
+const WorkspaceFileEditor = lazy(() => import("./workspaces/WorkspaceFileEditor"));
 
 const STATUS_STYLES: Record<WorkspaceStatus, string> = {
   creating: "bg-amber-900/40 text-amber-200",
@@ -114,7 +123,7 @@ const ARCHIVING_REFRESH_INTERVAL_MS = 2_000;
 
 /** Where a workspace's agent session runs: always the workspace root, so the
  *  agent sees each repo's worktree as a subfolder and can read the
- *  `.yarvis/issue-prompt.md` seeded there for an issue "Start work" session. */
+ *  `.yarvis/brief.md` seeded there when the workspace was started on something. */
 function agentCwdForWorkspace(detail: WorkspaceDetail): string {
   return detail.rootPath;
 }
@@ -143,9 +152,9 @@ export default function WorkspacesPanel({
   // one workspace id for the same reason. Consumed by the terminal surface.
   const [focusSession, setFocusSession] = useState<{ id: string; sessionKey: string } | null>(null);
   const [creating, setCreating] = useState(false);
-  // Pre-fill (name/taskId) plus a pending Claude prompt for the New Workspace
-  // form, applied when another tab (Tasks) hands off a "create workspace" or
-  // "start work" request. Cleared alongside `creating`.
+  // Pre-fill (name/taskId, and whether to start work on the task) for the New
+  // Workspace form, applied when another tab (Tasks) hands off a "create
+  // workspace" or "start work" request. Cleared alongside `creating`.
   const [newWorkspacePrefill, setNewWorkspacePrefill] = useState<NewWorkspaceRequest | null>(null);
   const [showArchived, setShowArchived] = useState<boolean>(
     () => localStorage.getItem(SHOW_ARCHIVED_KEY) === "1",
@@ -430,7 +439,7 @@ function NewWorkspaceForm({
   onRepoAdded,
 }: {
   repos: Repo[];
-  /** Pre-fill from a cross-tab handoff (Tasks): name, taskId, Claude prompt. */
+  /** Pre-fill from a cross-tab handoff (Tasks): name, taskId, startWork. */
   prefill?: NewWorkspaceRequest | null;
   onCancel: () => void;
   onCreated: (id: string) => void;
@@ -501,9 +510,10 @@ function NewWorkspaceForm({
         repoIds: [...selected],
         existingBranches: Object.keys(existingBranches).length ? existingBranches : undefined,
         taskId: taskId || undefined,
-        // A "Start work" handoff (Tasks) seeds the agent session; the sidecar
-        // holds it so the launch doesn't depend on this form staying mounted.
-        issuePrompt: prefill?.claudePrompt,
+        // A "Start work" handoff (Tasks) has the sidecar compose the task's
+        // brief and launch on it, so the kick-off doesn't depend on this form
+        // staying mounted.
+        startWork: prefill?.startWork,
       });
       setPhase("provisioning");
       const result = await consumeProvision(ws.id, (text) => setLog((prev) => prev + text));
@@ -773,6 +783,11 @@ function WorkspaceDetailView({
   // A changed file the side panel asked to open in a diff tab; consumed by
   // TerminalTabs, which either opens a new tab or re-focuses the existing one.
   const [diffRequest, setDiffRequest] = useState<OpenFileDiff | null>(null);
+  // A file the side panel asked to open for editing, consumed the same way.
+  const [editorRequest, setEditorRequest] = useState<OpenFileEditor | null>(null);
+  // This workspace's unsaved editor buffers. They live outside the tabs because
+  // a tab is unmounted whenever another one is selected.
+  const dirtyEditorKeys = useWorkspaceDraftKeys(id);
   // A failed repo's setup log to open in a tab (same request/consume shape as
   // diffRequest). Set by the auto-open effect below and the per-repo button.
   const [setupLogRequest, setSetupLogRequest] = useState<OpenSetupLog | null>(null);
@@ -795,6 +810,8 @@ function WorkspaceDetailView({
   // Why the last agent launch failed, shown in the header. Non-fatal; see
   // `startAgent`.
   const [agentError, setAgentError] = useState<string | null>(null);
+  // Why the last "ignore the error" click was refused, shown beside that button.
+  const [ignoreFailure, setIgnoreFailure] = useState<string | null>(null);
   // Bumped when the active id changes (or this view unmounts) so an in-flight
   // load() from a previous selection won't overwrite the new one's detail.
   // Capture the current value at call time; compare on resolve.
@@ -894,16 +911,16 @@ function WorkspaceDetailView({
     };
   }, [id, detail?.status]);
 
-  // When a workspace with a failed repo loads — whether provisioning just failed
-  // here, or the user reopened an errored workspace — auto-open that repo's
-  // setup-log tab so the failure is visible without hunting for it. Fires once
-  // per mount; the per-repo "Setup log" button below reopens it after a close.
+  // When a workspace whose provisioning failed loads — whether it just failed
+  // here, or the user reopened it — auto-open the failed repo's setup-log tab so
+  // the failure is visible without hunting for it. Fires once per mount; the
+  // per-repo "Setup log" button below reopens it after a close. See
+  // `setupLogToAutoOpen` for what has to hold first.
   useEffect(() => {
-    if (setupAutoOpenedRef.current || !detail) return;
-    const failed = detail.repos.find((wr) => wr.status === "error");
-    if (!failed) return;
+    const request = setupLogToAutoOpen(detail, setupAutoOpenedRef.current);
+    if (!request) return;
     setupAutoOpenedRef.current = true;
-    setSetupLogRequest({ workspaceRepoId: failed.id, title: failed.repo.name });
+    setSetupLogRequest(request);
   }, [detail]);
 
   const provision = useCallback(async () => {
@@ -923,6 +940,25 @@ function WorkspaceDetailView({
       if (result.error) setError(result.error);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [id, load, onChanged]);
+
+  // Take the provisioning failure as read and use the workspace anyway. The
+  // sidecar flips it back to `active`, which is what lets the agent session and
+  // the rest of the workspace's surfaces come up; the repos that failed keep
+  // their badges and setup logs, and the retry button below stays offered.
+  // Reported beside the button rather than as the view's `error`, which replaces
+  // the whole workspace: a refused ignore (a retry started meanwhile, or a
+  // second click on a workspace already recovered) must not take down the view
+  // it was clicked to repair.
+  const ignoreError = useCallback(async () => {
+    setIgnoreFailure(null);
+    try {
+      await ignoreWorkspaceError(id);
+      await load();
+      onChanged();
+    } catch (e) {
+      setIgnoreFailure(e instanceof Error ? e.message : String(e));
     }
   }, [id, load, onChanged]);
 
@@ -1014,6 +1050,7 @@ function WorkspaceDetailView({
   if (!detail) return <p className="p-6 text-sm text-zinc-500">Loading…</p>;
 
   const provisioned = detail.status === "active";
+  const actions = provisionActions(detail);
   const agentCwd = agentCwdForWorkspace(detail);
   // A background teardown that couldn't remove a worktree parks the workspace
   // in `archiving` with the failure recorded, so the button becomes the retry.
@@ -1216,19 +1253,28 @@ function WorkspaceDetailView({
         />
       )}
 
-      {!provisioned && provisionLog === null && (
-        <div className="shrink-0 border-b border-zinc-800 px-4 py-2">
+      {actions.show && provisionLog === null && (
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-zinc-800 px-4 py-2">
           <button
             type="button"
             onClick={() => void provision()}
             className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500"
           >
-            {detail.status === "error"
-              ? "Retry provisioning"
-              : detail.repos.length === 0
-                ? "Create folder"
-                : "Provision worktrees"}
+            {actions.label}
           </button>
+          {actions.showIgnore && (
+            <button
+              type="button"
+              onClick={() => void ignoreError()}
+              className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
+            >
+              Ignore and use anyway
+            </button>
+          )}
+          {actions.showIgnore && detail.error && (
+            <span className="text-xs text-red-400">{detail.error}</span>
+          )}
+          {ignoreFailure && <span className="text-xs text-red-400">{ignoreFailure}</span>}
         </div>
       )}
 
@@ -1269,6 +1315,27 @@ function WorkspaceDetailView({
                   renderFileDiff={({ repoId, path }) => (
                     <WorkspaceFileDiff workspaceId={detail.id} repoId={repoId} path={path} />
                   )}
+                  openFileEditor={editorRequest}
+                  onFileEditorOpened={() => setEditorRequest(null)}
+                  // Keyed by the file: without it React reuses one editor
+                  // across editor tabs, leaving the previous file's contents and
+                  // conflict state on screen under the new file's name — and
+                  // "Overwrite with mine" would then write those contents to
+                  // this file, with a hash fresh enough to pass the guard.
+                  renderFileEditor={({ repoId, path }) => (
+                    <Suspense fallback={<p className="p-3 text-xs text-zinc-500">Loading…</p>}>
+                      <WorkspaceFileEditor
+                        key={fileKey(repoId, path)}
+                        workspaceId={detail.id}
+                        repoId={repoId}
+                        path={path}
+                      />
+                    </Suspense>
+                  )}
+                  dirtyEditorKeys={dirtyEditorKeys}
+                  onDiscardEditor={({ repoId, path }) =>
+                    clearDraft(draftKey(detail.id, repoId, path))
+                  }
                   openSetupLog={setupLogRequest}
                   onSetupLogOpened={() => setSetupLogRequest(null)}
                   renderSetupLog={({ workspaceRepoId }) => {
@@ -1329,6 +1396,7 @@ function WorkspaceDetailView({
               workspaceId={detail.id}
               repos={detail.repos}
               onOpenFile={(repoId, path) => setDiffRequest({ repoId, path })}
+              onEditFile={(repoId, path) => setEditorRequest({ repoId, path })}
             />
           }
         />

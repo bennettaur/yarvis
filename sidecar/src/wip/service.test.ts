@@ -101,6 +101,7 @@ function task(id: string, status: Task["status"] = "open"): Task {
     notes: null,
     sourceSessionId: null,
     workspaceId: null,
+    projectId: null,
     createdAt: new Date(),
     completedAt: null,
   };

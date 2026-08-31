@@ -1,12 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import {
   applyStartWorkSideEffects,
   mergeIssues,
   type StartWorkSideEffectClient,
-  writeIssuePrompt,
 } from "./service.ts";
 import type { IssueSummary } from "./types.ts";
 
@@ -42,19 +38,6 @@ describe("mergeIssues", () => {
 
   it("returns empty when every repo failed", () => {
     expect(mergeIssues([{ status: "rejected", reason: new Error("x") }])).toEqual([]);
-  });
-});
-
-describe("writeIssuePrompt", () => {
-  it("writes the prompt under .yarvis/ and returns the absolute path", async () => {
-    const root = mkdtempSync(join(tmpdir(), "yarvis-issue-"));
-    try {
-      const path = await writeIssuePrompt(root, "the prompt body");
-      expect(path).toBe(join(root, ".yarvis", "issue-prompt.md"));
-      expect(readFileSync(path, "utf8")).toBe("the prompt body");
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
   });
 });
 

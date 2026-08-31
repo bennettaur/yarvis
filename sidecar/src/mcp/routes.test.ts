@@ -328,26 +328,30 @@ describe("tool registry routes", () => {
   });
 
   it("searches only 'search'-policy tools", async () => {
-    await app.request("/api/mcp/tools", { headers: jsonAuth }); // seed builtins (all 'always')
-    // No tools are searchable yet.
-    const empty = await app.request("/api/mcp/tools/search", {
-      method: "POST",
-      headers: jsonAuth,
-      body: JSON.stringify({ query: "remember a fact" }),
-    });
-    expect(((await empty.json()) as unknown[]).length).toBe(0);
+    await app.request("/api/mcp/tools", { headers: jsonAuth }); // seed builtins
+
+    const search = async (query: string) => {
+      const res = await app.request("/api/mcp/tools/search", {
+        method: "POST",
+        headers: jsonAuth,
+        body: JSON.stringify({ query }),
+      });
+      return ((await res.json()) as { id: string }[]).map((h) => h.id);
+    };
+
+    // `remember` seeds always-on, so it is in every turn already and has nothing
+    // to be found by search.
+    expect(await search("remember a fact")).not.toContain("builtin:remember");
+    // A situational family seeds behind search, which is how the agent reaches it.
+    expect(await search("start a claude session in a workspace")).toContain(
+      "builtin:create_workspace_session",
+    );
 
     await app.request("/api/mcp/tools/builtin:remember", {
       method: "PATCH",
       headers: jsonAuth,
       body: JSON.stringify({ policy: "search" }),
     });
-    const hit = await app.request("/api/mcp/tools/search", {
-      method: "POST",
-      headers: jsonAuth,
-      body: JSON.stringify({ query: "remember a fact" }),
-    });
-    const hits = (await hit.json()) as { id: string }[];
-    expect(hits.map((h) => h.id)).toContain("builtin:remember");
+    expect(await search("remember a fact")).toContain("builtin:remember");
   });
 });
