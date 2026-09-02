@@ -779,6 +779,28 @@ export const embeddingsConfig = pgTable("embeddings_config", {
 });
 
 /**
+ * Which provider/model backs each complexity tier for internal-use LLM calls —
+ * a specialist that summarizes or consolidates rather than one the user is
+ * chatting with. Single row, like `voice_config`: it lives here rather than in
+ * the frontend's localStorage because the background jobs and the Telegram bot
+ * run in the sidecar and need the same settings (see #226 for `voice_config`'s
+ * version of the same argument). A blank pair means "unset" — the caller falls
+ * back to the default chat model — so absent and empty differ the same way
+ * `voice_config`'s provider/model columns do.
+ */
+export const complexityModelConfig = pgTable("complexity_model_config", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  lowProvider: text("low_provider").notNull().default(""),
+  lowModel: text("low_model").notNull().default(""),
+  mediumProvider: text("medium_provider").notNull().default(""),
+  mediumModel: text("medium_model").notNull().default(""),
+  maxProvider: text("max_provider").notNull().default(""),
+  maxModel: text("max_model").notNull().default(""),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
  * Connected MCP (Model Context Protocol) servers. Structural data only — like
  * `custom_providers`, any credentials (HTTP auth header values, stdio env-var
  * secrets) stay in the macOS Keychain and reach the sidecar via the
@@ -849,6 +871,9 @@ export type NewEmbeddingsConfigRow = typeof embeddingsConfig.$inferInsert;
 
 export type VoiceConfigRow = typeof voiceConfig.$inferSelect;
 export type NewVoiceConfigRow = typeof voiceConfig.$inferInsert;
+
+export type ComplexityModelConfigRow = typeof complexityModelConfig.$inferSelect;
+export type NewComplexityModelConfigRow = typeof complexityModelConfig.$inferInsert;
 
 /**
  * A local, on-device log of meaningful actions (tasks added/completed, a chat

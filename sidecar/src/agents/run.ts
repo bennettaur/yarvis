@@ -9,6 +9,7 @@ import {
 } from "../chat/destructiveTools.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
+import { resolveComplexityModel } from "../llm/complexity.ts";
 import { describeError } from "../llm/errors.ts";
 import { defaultProviderModel, resolveModel } from "../llm/providers.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
@@ -178,9 +179,11 @@ export async function runSpecialist(input: RunSpecialistInput): Promise<Speciali
   const chosen =
     input.provider && input.model
       ? { provider: input.provider, model: input.model }
-      : specialist.provider && specialist.model
-        ? { provider: specialist.provider, model: specialist.model }
-        : await defaultProviderModel(config, db);
+      : specialist.complexityTier
+        ? await resolveComplexityModel(config, db, specialist.complexityTier)
+        : specialist.provider && specialist.model
+          ? { provider: specialist.provider, model: specialist.model }
+          : await defaultProviderModel(config, db);
   if (!chosen) throw new Error("no chat model is configured");
   const model = await resolveModel(config, db, chosen.provider, chosen.model);
 

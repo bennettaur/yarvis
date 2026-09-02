@@ -204,6 +204,13 @@
       "when": 1787669877523,
       "tag": "0028_elite_korvac",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1788357732912,
+      "tag": "0029_married_shatterstar",
+      "breakpoints": true
     }
   ]
 }

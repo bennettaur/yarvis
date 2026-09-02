@@ -1,5 +1,6 @@
 import { useState } from "react";
 import AgentSection from "./AgentSection";
+import ComplexityModelSection from "./ComplexityModelSection";
 import CustomProviderSection from "./CustomProviderSection";
 import EmbeddingsSection from "./EmbeddingsSection";
 import JobsSection from "./JobsSection";
@@ -101,6 +102,7 @@ export default function SettingsPanel() {
       )}
       {active === "assistant" && (
         <div className="space-y-5">
+          <ComplexityModelSection />
           <SpecialistSection />
           <JobsSection />
         </div>
