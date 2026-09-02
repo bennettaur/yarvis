@@ -2,6 +2,8 @@ import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import * as realApi from "../lib/api";
 import * as realChat from "../lib/chat";
+import { OmniChatOverlayProvider } from "../lib/omniChatOverlay";
+import { useChatThread } from "../lib/useChatThread";
 import { mountForInteraction, textOf } from "../test/render";
 import ChatPanel from "./ChatPanel";
 
@@ -68,11 +70,34 @@ mock.module("@tauri-apps/api/core", () => ({ invoke: async () => ({ port: 1, tok
  */
 mock.module("../lib/chat", () => ({
   ...realChat,
-  streamChat: async function* (req: Record<string, unknown>) {
+  streamChat: async function* (req: Record<string, unknown>, init: { signal?: AbortSignal } = {}) {
     sent.push(req);
-    for (const event of scripted) yield event;
+    for (const event of scripted) {
+      // A turn that never finishes on its own, so a test can stop it. The real
+      // stream rejects on abort; this one has to as well.
+      if ((event as { type?: string }).type === "hang") {
+        await new Promise((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+        });
+      }
+      yield event;
+    }
   },
 }));
+
+/**
+ * The turn machine on its own, for what the Chat tab has no affordance to
+ * drive — a spoken turn. `lib/chat` is already stubbed for this file, and the
+ * hook has no test file of its own because a second `mock.module` on the same
+ * module elsewhere would make both order-dependent.
+ */
+let thread: ReturnType<typeof useChatThread> | null = null;
+function ThreadHarness() {
+  thread = useChatThread({});
+  return null;
+}
+
+const settle = (ms = 80) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Types a message into the composer and presses Send. */
 async function say(host: HTMLElement, text: string) {
@@ -99,6 +124,7 @@ afterAll(() => {
 afterEach(() => {
   unmount?.();
   unmount = null;
+  thread = null;
   sessions = [];
   created = 0;
   scripted = [];
@@ -186,5 +212,91 @@ describe("ChatPanel", () => {
       "pull the notion doc",
     ]);
     expect(mounted.host.textContent).toContain("second time lucky");
+  });
+
+  // The sidecar collapses two identical consecutive sends into one turn, so a
+  // message the user retypes after a failure must not leave a second bubble the
+  // transcript never gained.
+  it("shows one question when the same message is sent twice in a row", async () => {
+    scripted = [{ type: "error", message: "model not found (status 404)" }];
+    const mounted = await mountForInteraction(createElement(ChatPanel));
+    unmount = mounted.unmount;
+
+    await say(mounted.host, "pull the notion doc");
+    scripted = [
+      { type: "delta", text: "second time lucky" },
+      { type: "done", finishReason: "stop" },
+    ];
+    await say(mounted.host, "pull the notion doc");
+
+    const asked = mounted.host.textContent?.split("pull the notion doc").length ?? 0;
+    expect(asked - 1).toBe(1);
+    expect(mounted.host.textContent).toContain("second time lucky");
+  });
+
+  // The Omni Chat overlay covers this panel and carries an approval bar of its
+  // own. Two live keydown listeners and one "A" is how a call the user cannot
+  // see gets approved.
+  it("stops answering the keyboard while the Omni Chat overlay covers it", async () => {
+    scripted = [
+      {
+        type: "tool_approval_request",
+        id: "call-1",
+        toolId: "mcp:server-uuid:search_pages",
+        name: "search_pages",
+        server: "Notion",
+        args: { query: "roadmap" },
+      },
+      { type: "hang" },
+    ];
+    const mounted = await mountForInteraction(
+      createElement(OmniChatOverlayProvider, { value: true }, createElement(ChatPanel)),
+    );
+    unmount = mounted.unmount;
+
+    await say(mounted.host, "pull the notion doc");
+    await settle(500);
+    expect(mounted.host.textContent).toContain("search_pages");
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }));
+    await settle();
+    expect(mounted.host.textContent).toContain("search_pages");
+  });
+});
+
+describe("useChatThread", () => {
+  // `source: "voice"` is what puts the irreversible built-ins behind a
+  // confirmation. A retry that dropped it would run them unconfirmed.
+  it("retries a spoken turn as a spoken turn", async () => {
+    scripted = [{ type: "error", message: "model not found (status 404)" }];
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    await thread?.send("delete the workspace", { source: "voice" });
+    await settle();
+    thread?.retry();
+    await settle();
+
+    expect(sent).toHaveLength(2);
+    expect(sent[1]?.source).toBe("voice");
+    expect(sent[1]?.message).toBe("delete the workspace");
+  });
+
+  it("reports a stopped turn as the user's own doing, not a failure", async () => {
+    scripted = [{ type: "delta", text: "half a th" }, { type: "hang" }];
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    void thread?.send("pull the notion doc");
+    await settle();
+    thread?.stop();
+    await settle();
+
+    expect(thread?.error?.tone).toBe("notice");
+    expect(thread?.error?.message).toContain("Turn stopped");
+    // Nothing was persisted for it, so the partial reply goes with it.
+    expect(thread?.messages.some((m) => m.content.includes("half a th"))).toBe(false);
   });
 });

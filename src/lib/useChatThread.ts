@@ -215,17 +215,22 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
       }
 
       // A retry re-sends a message the thread is already showing; the sidecar
-      // recognises it as the same turn rather than recording it twice.
-      if (!sendOptions.resend) {
-        setMessages((prev) => [
+      // recognises it as the same turn rather than recording it twice. It
+      // collapses on the text alone, so a message the user retypes after a
+      // failure is the same turn to it — show one bubble here too, or a reload
+      // would drop the one the transcript never gained.
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (sendOptions.resend || (last?.role === "user" && last.content === trimmed)) return prev;
+        return [
           ...prev,
           {
             role: "user",
             content: trimmed,
             metadata: sendOptions.source ? { source: "voice" } : null,
           },
-        ]);
-      }
+        ];
+      });
       setBusy(true);
       setError(null);
       setThinking("");
@@ -291,7 +296,13 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
             onAttention?.(evt.reason);
           } else if (evt.type === "error") {
             failed = true;
-            setError({ message: evt.message ?? "stream error", detail: evt.detail });
+            setError({
+              message: evt.message ?? "stream error",
+              detail: evt.detail,
+              // The sidecar reports a stop through the same event; it is the
+              // user's own doing either way, whichever side notices first.
+              tone: controller.signal.aborted ? "notice" : "error",
+            });
           }
         }
       } catch (e) {
@@ -300,7 +311,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
         // sitting in a transcript that a reload would not reproduce.
         failed = true;
         if (controller.signal.aborted) {
-          setError({ message: "Turn stopped. Nothing was saved for it." });
+          setError({ message: "Turn stopped. Nothing was saved for it.", tone: "notice" });
         } else {
           setError(formatError(e));
         }

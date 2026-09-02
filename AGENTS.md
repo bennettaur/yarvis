@@ -253,6 +253,24 @@ back to ad-hoc.
   "ask", since consent was given for the tool as it was described then. Neither
   mechanism gives MCP tools to a surface that cannot prompt: that still requires
   `approval` hooks to exist at all.
+- A pending approval is answered in one place per surface: `ToolApprovalBar`
+  above the composer, showing the front of the queue with a count, rather than a
+  card per call inside the thread. Its `A`/`D` shortcuts are on `window`, so a
+  bar the host is keeping off screen must be told — `visible` — or it answers
+  for a surface the user cannot see: Omni Chat stays mounted and streaming while
+  hidden, and the overlay covers a `ChatPanel` that has a bar of its own
+  (`lib/omniChatOverlay.ts`). Anything else that mounts a second bar owes the
+  same gate.
+- Stopping a turn is the user's own doing, and both layers say so. The AI SDK
+  ends its iteration normally on an abort rather than throwing, so `runAgentTurn`
+  checks the abort *before* the empty-turn branch and saves nothing; the surface
+  drops the partial reply for the same reason and reports it as a
+  `tone: "notice"`, not a failure — red and `role="alert"` for something the user
+  asked for is the jank this is meant to remove. A retry re-sends the same text,
+  which the sidecar collapses onto the existing user row by content, so it holds
+  for any client and for a user who retypes rather than pressing Retry;
+  `useChatThread` suppresses the duplicate bubble on the same condition so the
+  surface and the transcript agree.
 - A chat turn reports what it is doing, not only what it concluded.
   `runAgentTurn` drives `fullStream`, so tool calls, their outcomes and any
   reasoning the provider returns reach the surface as they happen; the tool

@@ -11,6 +11,10 @@ import CopyButton from "./CopyButton";
  *
  * `actions` hangs affordances that belong with the failure (retry, open
  * settings) off the same row.
+ *
+ * An error with `tone: "notice"` is not a failure — a turn the user stopped —
+ * so it drops the red, the alert role and the copy button, which would otherwise
+ * announce the user's own deliberate action as something that went wrong.
  */
 export default function ErrorNotice({
   error,
@@ -24,20 +28,25 @@ export default function ErrorNotice({
   className?: string;
 }) {
   const [showDetail, setShowDetail] = useState(false);
+  const notice = error.tone === "notice";
 
   return (
     <div
-      role="alert"
-      className={`rounded-lg border border-red-900/60 bg-red-950/30 p-3 text-sm ${className}`}
+      role={notice ? "status" : "alert"}
+      className={`rounded-lg border p-3 text-sm ${
+        notice ? "border-zinc-700 bg-zinc-900/60" : "border-red-900/60 bg-red-950/30"
+      } ${className}`}
     >
       <div className="flex items-start gap-2">
-        <p className="flex-1 whitespace-pre-wrap text-red-300">{error.message}</p>
-        <CopyButton value={() => errorText(error)} subject="error details" />
+        <p className={`flex-1 whitespace-pre-wrap ${notice ? "text-zinc-300" : "text-red-300"}`}>
+          {error.message}
+        </p>
+        {!notice && <CopyButton value={() => errorText(error)} subject="error details" />}
         {onDismiss && (
           <button
             type="button"
             onClick={onDismiss}
-            aria-label="Dismiss error"
+            aria-label={notice ? "Dismiss notice" : "Dismiss error"}
             className="shrink-0 rounded px-1 text-zinc-500 hover:text-zinc-200"
           >
             ×

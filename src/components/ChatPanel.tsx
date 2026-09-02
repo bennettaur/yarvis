@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type ChatSession, listSessions, type ProviderId } from "../lib/chat";
 import { type DisplayError, formatError } from "../lib/errors";
+import { useOmniChatOverlayOpen } from "../lib/omniChatOverlay";
 import { useChatThread } from "../lib/useChatThread";
 import { useReasoningPreference } from "../lib/useReasoningPreference";
 import { useVoice } from "../lib/useVoice";
@@ -55,6 +56,10 @@ export default function ChatPanel() {
 
   const voice = useVoice({ send, streaming, busy });
 
+  // The Omni Chat overlay covers this panel and carries an approval bar of its
+  // own, so ours must stop answering the keyboard while it is up.
+  const overlayOpen = useOmniChatOverlayOpen();
+
   useEffect(() => {
     void (async () => {
       try {
@@ -70,7 +75,7 @@ export default function ChatPanel() {
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-run on thread growth
   useEffect(() => {
     threadRef.current?.scrollTo(0, threadRef.current.scrollHeight);
-  }, [messages, streaming]);
+  }, [messages, streaming, activity]);
 
   // Clear only once the turn is under way: `send` declines while the provider
   // list is still loading, and a message that vanished without being sent is
@@ -158,6 +163,7 @@ export default function ChatPanel() {
 
       <ToolApprovalBar
         approvals={approvals}
+        visible={!overlayOpen}
         onRespond={(id, approved) => void respondApproval(id, approved)}
         onAlwaysAllow={(a) => void alwaysAllow(a)}
       />

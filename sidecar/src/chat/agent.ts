@@ -274,9 +274,11 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
   const history = await getMessages(db, sessionId);
   // A turn that failed persisted its user message and nothing else, so retrying
   // it sends the same text again. Recording that a second time would leave the
-  // thread — and every later replay of it — asking twice. Two identical
-  // consecutive sends are indistinguishable from a retry and are collapsed the
-  // same way, which is the right answer for a chat either way.
+  // thread — and every later replay of it — asking twice. The collapse is on
+  // the text, not on a flag from the client, so it holds for any caller
+  // (Telegram included) and for a user who retypes rather than pressing Retry;
+  // `useChatThread` suppresses the duplicate bubble on the same condition so
+  // the surface and the transcript agree.
   const last = history[history.length - 1];
   const repeatsLastUserMessage = last?.role === "user" && last.content === message;
   if (repeatsLastUserMessage) history.pop();

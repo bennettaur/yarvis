@@ -6,6 +6,11 @@
 export interface DisplayError {
   message: string;
   detail?: string;
+  /**
+   * "notice" for an outcome the user asked for — a stopped turn — which shares
+   * this shape and this slot on screen but is not a failure to report.
+   */
+  tone?: "error" | "notice";
 }
 
 /** Cap on a serialized value, so one huge object can't fill the detail view. */
