@@ -9,10 +9,14 @@ import {
   setSecret,
 } from "../lib/keychain";
 import { formatSecretForDisplay, generateOtpSecret, otpauthUri } from "../lib/otp";
+import {
+  getSettings,
+  type Settings,
+  setTelegramAllowedChatIds,
+  setTelegramOtpWindowMinutes,
+} from "../lib/settings";
 import { StatusDot } from "./Dashboard";
 import { MaskedInput } from "./MaskedInput";
-
-const DEFAULT_OTP_WINDOW = "120";
 
 /** Trigger a sidecar restart and wait for it to come back ready. */
 async function restartAndWait(): Promise<void> {
@@ -27,14 +31,15 @@ async function restartAndWait(): Promise<void> {
 }
 
 /**
- * Configures the Telegram remote-control bot: a bot token (from @BotFather) and
- * the allowlist of chat ids permitted to talk to it. Values live in the macOS
- * Keychain; saving reloads the sidecar so the bot picks them up. Like the rest
- * of the Keychain UI, stored values are never read back — both fields are
- * write-only and show only whether something is set.
+ * Configures the Telegram remote-control bot: a bot token (from @BotFather,
+ * Keychain) and the allowlist of chat ids permitted to talk to it (a plain
+ * setting in `~/.yarvis/settings.json` — not a credential, so unlike the
+ * token it can be shown and edited in place). Saving either reloads the
+ * sidecar so the bot picks up the change.
  */
 export default function TelegramSection() {
   const [secrets, setSecrets] = useState<SecretStatus[]>([]);
+  const [settings, setSettingsState] = useState<Settings | null>(null);
   const [token, setToken] = useState("");
   const [chatIds, setChatIds] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -42,11 +47,15 @@ export default function TelegramSection() {
   // A freshly-generated OTP secret being enrolled, held in memory until the user
   // confirms they've added it to their authenticator. Null when not enrolling.
   const [pendingOtpSecret, setPendingOtpSecret] = useState<string | null>(null);
-  const [otpWindow, setOtpWindow] = useState(DEFAULT_OTP_WINDOW);
+  const [otpWindow, setOtpWindow] = useState("");
 
   const refresh = useCallback(async () => {
     try {
-      setSecrets(await listSecretStatus());
+      const [nextSecrets, nextSettings] = await Promise.all([listSecretStatus(), getSettings()]);
+      setSecrets(nextSecrets);
+      setSettingsState(nextSettings);
+      setChatIds(nextSettings.telegramAllowedChatIds ?? "");
+      setOtpWindow(String(nextSettings.telegramOtpWindowMinutes ?? ""));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -90,20 +99,37 @@ export default function TelegramSection() {
     [refresh],
   );
 
-  // Persist the enrolled OTP secret + window and turn the gate on. Done together
-  // so the gate never activates with a half-configured pair.
+  const saveChatIds = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await setTelegramAllowedChatIds(chatIds.trim() || null);
+      await restartAndWait();
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [chatIds, refresh]);
+
+  // Persist the enrolled OTP secret + window and turn the gate on. The window
+  // (a setting) is saved before the secret so the gate never activates with a
+  // stale or missing window.
   const enableOtp = useCallback(async () => {
     if (!pendingOtpSecret) return;
-    const minutes = Number(otpWindow);
-    if (!Number.isInteger(minutes) || minutes < 1) {
+    const minutes = otpWindow.trim()
+      ? Number(otpWindow)
+      : settings?.defaultTelegramOtpWindowMinutes;
+    if (minutes === undefined || !Number.isInteger(minutes) || minutes < 1) {
       setError("OTP window must be a whole number of minutes (≥ 1).");
       return;
     }
     setBusy(true);
     setError(null);
     try {
+      await setTelegramOtpWindowMinutes(minutes);
       await setSecret("telegram_otp_secret", pendingOtpSecret);
-      await setSecret("telegram_otp_window_minutes", String(minutes));
       setPendingOtpSecret(null);
       await restartAndWait();
       await refresh();
@@ -112,14 +138,14 @@ export default function TelegramSection() {
     } finally {
       setBusy(false);
     }
-  }, [pendingOtpSecret, otpWindow, refresh]);
+  }, [pendingOtpSecret, otpWindow, refresh, settings]);
 
   const disableOtp = useCallback(async () => {
     setBusy(true);
     setError(null);
     try {
       await deleteSecret("telegram_otp_secret");
-      await deleteSecret("telegram_otp_window_minutes");
+      await setTelegramOtpWindowMinutes(null);
       await restartAndWait();
       await refresh();
     } catch (e) {
@@ -178,8 +204,8 @@ export default function TelegramSection() {
           <div className="mb-1 flex items-center justify-between">
             <label className="text-sm font-medium">Allowed chat ids</label>
             <span className="flex items-center gap-1.5 text-xs text-zinc-400">
-              <StatusDot state={isPresent("telegram_allowed_chat_ids")} />
-              {isPresent("telegram_allowed_chat_ids") ? "set" : "not set"}
+              <StatusDot state={!!settings?.telegramAllowedChatIds} />
+              {settings?.telegramAllowedChatIds ? "set" : "not set"}
             </span>
           </div>
           <p className="mb-2 text-xs text-zinc-500">
@@ -195,18 +221,11 @@ export default function TelegramSection() {
               className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-zinc-500"
             />
             <button
-              onClick={() => void save("telegram_allowed_chat_ids", chatIds, () => setChatIds(""))}
-              disabled={busy || !chatIds.trim()}
+              onClick={() => void saveChatIds()}
+              disabled={busy}
               className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500 disabled:opacity-40"
             >
               Save
-            </button>
-            <button
-              onClick={() => void clear("telegram_allowed_chat_ids")}
-              disabled={busy || !isPresent("telegram_allowed_chat_ids")}
-              className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
-            >
-              Clear
             </button>
           </div>
         </div>
@@ -250,6 +269,7 @@ export default function TelegramSection() {
                   type="number"
                   min={1}
                   value={otpWindow}
+                  placeholder={String(settings?.defaultTelegramOtpWindowMinutes ?? "")}
                   onChange={(e) => setOtpWindow(e.target.value)}
                   className="w-24 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-zinc-500"
                 />

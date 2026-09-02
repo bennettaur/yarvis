@@ -2,7 +2,8 @@
 //!
 //! On startup the core picks a free loopback port and generates a bearer token,
 //! exposes them to the frontend via `get_sidecar_info`, and spawns the sidecar
-//! with secrets injected from the Keychain. The sidecar is restarted if it exits.
+//! with secrets injected from the Keychain and non-secret configuration
+//! injected from `settings.rs`. The sidecar is restarted if it exits.
 
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -17,6 +18,7 @@ use tokio::time::sleep;
 
 use crate::custom_providers::build_sidecar_env;
 use crate::keychain::{read_root, secret_from_root};
+use crate::settings::SettingsState;
 
 /// Webview origins permitted to call the sidecar; the sidecar still requires the
 /// bearer token regardless. The Vite dev server's origin is added alongside
@@ -222,20 +224,8 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
     if let Some(token) = secret_from_root(&secrets, "azure_devops_token") {
         cmd.env("AZURE_DEVOPS_TOKEN", token);
     }
-    if let Some(url) = secret_from_root(&secrets, "azure_devops_org_url") {
-        cmd.env("AZURE_DEVOPS_ORG_URL", url);
-    }
-    if let Some(url) = secret_from_root(&secrets, "jira_base_url") {
-        cmd.env("JIRA_BASE_URL", url);
-    }
-    if let Some(email) = secret_from_root(&secrets, "jira_email") {
-        cmd.env("JIRA_EMAIL", email);
-    }
     if let Some(token) = secret_from_root(&secrets, "jira_api_token") {
         cmd.env("JIRA_API_TOKEN", token);
-    }
-    if let Some(id) = secret_from_root(&secrets, "google_client_id") {
-        cmd.env("GOOGLE_CLIENT_ID", id);
     }
     if let Some(secret) = secret_from_root(&secrets, "google_client_secret") {
         cmd.env("GOOGLE_CLIENT_SECRET", secret);
@@ -243,14 +233,33 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
     if let Some(token) = secret_from_root(&secrets, "telegram_bot_token") {
         cmd.env("TELEGRAM_BOT_TOKEN", token);
     }
-    if let Some(ids) = secret_from_root(&secrets, "telegram_allowed_chat_ids") {
-        cmd.env("TELEGRAM_ALLOWED_CHAT_IDS", ids);
-    }
     if let Some(secret) = secret_from_root(&secrets, "telegram_otp_secret") {
         cmd.env("TELEGRAM_OTP_SECRET", secret);
     }
-    if let Some(minutes) = secret_from_root(&secrets, "telegram_otp_window_minutes") {
-        cmd.env("TELEGRAM_OTP_WINDOW_MINUTES", minutes);
+
+    // Non-secret configuration that rides alongside the credentials above but
+    // lives in `settings.rs`'s `~/.yarvis/settings.json`, not the Keychain.
+    let settings = app
+        .try_state::<SettingsState>()
+        .map(|s| s.snapshot())
+        .unwrap_or_default();
+    if let Some(url) = settings.azure_devops_org_url {
+        cmd.env("AZURE_DEVOPS_ORG_URL", url);
+    }
+    if let Some(url) = settings.jira_base_url {
+        cmd.env("JIRA_BASE_URL", url);
+    }
+    if let Some(email) = settings.jira_email {
+        cmd.env("JIRA_EMAIL", email);
+    }
+    if let Some(id) = settings.google_client_id {
+        cmd.env("GOOGLE_CLIENT_ID", id);
+    }
+    if let Some(ids) = settings.telegram_allowed_chat_ids {
+        cmd.env("TELEGRAM_ALLOWED_CHAT_IDS", ids);
+    }
+    if let Some(minutes) = settings.telegram_otp_window_minutes {
+        cmd.env("TELEGRAM_OTP_WINDOW_MINUTES", minutes.to_string());
     }
 
     if let Some(json) = build_sidecar_env(&secrets) {
@@ -261,7 +270,7 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
         cmd.env("YARVIS_MCP_SECRETS", json);
     }
 
-    if let Some(json) = crate::embeddings_secrets::build_sidecar_env() {
+    if let Some(json) = crate::embeddings_secrets::build_sidecar_env(&secrets) {
         cmd.env("YARVIS_EMBEDDINGS_SECRETS", json);
     }
 

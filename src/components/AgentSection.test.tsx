@@ -25,6 +25,13 @@ function defaultSettings(): Settings {
     defaultAgentName: "Claude",
     defaultAgentCommand: "claude --permission-mode auto",
     agentCommandOverriddenByEnv: false,
+    azureDevopsOrgUrl: null,
+    jiraBaseUrl: null,
+    jiraEmail: null,
+    googleClientId: null,
+    telegramAllowedChatIds: null,
+    telegramOtpWindowMinutes: null,
+    defaultTelegramOtpWindowMinutes: 120,
   };
 }
 

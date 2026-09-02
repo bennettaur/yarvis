@@ -115,10 +115,15 @@ back to ad-hoc.
   tests, injected fake git runners to avoid real network/filesystem git ops).
 - Secrets (provider API keys, tokens, DB URL) are entered in the app's
   Settings screen and stored in a single macOS Keychain item — never in env
-  files or committed anywhere. Non-secret config (e.g.
-  `YARVIS_WORKSPACES_ROOT`) uses env vars instead. Preferences the user is
-  expected to change from the UI go in `src-tauri/src/settings.rs` when the
-  Rust core enforces them, and in Postgres via the sidecar otherwise.
+  files or committed anywhere. Non-secret configuration the user is expected
+  to change from the UI goes in `src-tauri/src/settings.rs`'s
+  `~/.yarvis/settings.json` instead, whether the Rust core enforces it
+  directly (the PTY session cap, the workspace agent) or it just rides along
+  to the sidecar's environment at spawn (Azure DevOps/JIRA/Telegram
+  configuration) — a value only belongs in the Keychain if it's actually a
+  credential. `YARVIS_WORKSPACES_ROOT` and similar stay env vars, since
+  they're set once per machine rather than edited from the UI. Everything
+  else the sidecar owns lives in Postgres.
 - Several instances of the app can run at once (`bun run dev:instance`), sharing
   one Keychain item and, unless told otherwise, one database. Anything singular
   to the machine or to that shared database — a global hotkey, a poll loop, a
