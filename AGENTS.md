@@ -247,8 +247,11 @@ back to ad-hoc.
   the Tool Manager, and lets `assembleAgentToolset` skip the approval wrapper for
   it. Built-ins are not covered by it: whether one is confirmed comes from
   `chat/destructiveTools.ts` and how the turn was composed — a spoken turn was
-  never proof-read — which no stored preference may waive. Neither mechanism
-  gives MCP tools to a surface that cannot prompt: that still requires
+  never proof-read — which no stored preference may waive. That reasoning binds
+  the stored consent too: a spoken turn ignores it and asks for every MCP tool,
+  and a resync that finds a tool's description or schema changed resets it to
+  "ask", since consent was given for the tool as it was described then. Neither
+  mechanism gives MCP tools to a surface that cannot prompt: that still requires
   `approval` hooks to exist at all.
 - A chat turn reports what it is doing, not only what it concluded.
   `runAgentTurn` drives `fullStream`, so tool calls, their outcomes and any

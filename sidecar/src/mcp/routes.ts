@@ -235,7 +235,14 @@ export function createMcpRoutes(config: Config): Hono {
     const body = await c.req.json().catch(() => null);
     const parsed = toolSettingsSchema.safeParse(body);
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const row = await setToolSettings(db(), c.req.param("id"), parsed.data);
+    const id = c.req.param("id");
+    // Standing consent is only meaningful for MCP tools. A built-in's
+    // confirmation follows from how the turn was composed, so the database must
+    // not be able to hold a row saying one is auto-approved.
+    if (parsed.data.approval && !id.startsWith("mcp:")) {
+      return c.json({ error: "approval can only be set on an MCP tool" }, 400);
+    }
+    const row = await setToolSettings(db(), id, parsed.data);
     if (!row) return c.json({ error: "not found" }, 404);
     return c.json(row);
   });

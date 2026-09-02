@@ -42,7 +42,7 @@ export default function ToolManagerSection() {
     void refresh();
   }, [refresh]);
 
-  const change = useCallback(
+  const updateTool = useCallback(
     async (id: string, settings: { policy?: ToolPolicy; approval?: ToolApproval }) => {
       try {
         const updated = await setToolSettings(id, settings);
@@ -54,13 +54,13 @@ export default function ToolManagerSection() {
     [],
   );
 
-  const setServerApproval = useCallback(
-    async (serverTools: RegistryTool[], approval: ToolApproval) => {
-      for (const t of serverTools) {
-        if (t.approval !== approval) await change(t.id, { approval });
+  const setGroupApproval = useCallback(
+    async (groupTools: RegistryTool[], approval: ToolApproval) => {
+      for (const t of groupTools) {
+        if (t.approval !== approval) await updateTool(t.id, { approval });
       }
     },
-    [change],
+    [updateTool],
   );
 
   const groups = useMemo(() => {
@@ -97,14 +97,14 @@ export default function ToolManagerSection() {
         <p className="text-xs text-zinc-500">No tools registered yet.</p>
       ) : (
         <div className="space-y-5">
-          <ToolGroup title="Built-in" tools={groups.builtins} onChange={change} />
+          <ToolGroup title="Built-in" tools={groups.builtins} onChange={updateTool} />
           {groups.mcpGroups.map((g) => (
             <ToolGroup
               key={g.title}
               title={g.title}
               tools={g.tools}
-              onChange={change}
-              onApproveAll={(approval) => void setServerApproval(g.tools, approval)}
+              onChange={updateTool}
+              onSetGroupApproval={(approval) => void setGroupApproval(g.tools, approval)}
             />
           ))}
         </div>
@@ -117,13 +117,13 @@ function ToolGroup({
   title,
   tools,
   onChange,
-  onApproveAll,
+  onSetGroupApproval,
 }: {
   title: string;
   tools: RegistryTool[];
   onChange: (id: string, settings: { policy?: ToolPolicy; approval?: ToolApproval }) => void;
-  /** Present for MCP groups: sets every tool on the server at once. */
-  onApproveAll?: (approval: ToolApproval) => void;
+  /** Present for MCP groups: sets every tool on the server at once, either way. */
+  onSetGroupApproval?: (approval: ToolApproval) => void;
 }) {
   if (tools.length === 0) return null;
   const allAuto = tools.every((t) => t.approval === "auto");
@@ -131,10 +131,10 @@ function ToolGroup({
     <div>
       <div className="mb-2 flex items-center gap-2">
         <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">{title}</span>
-        {onApproveAll && (
+        {onSetGroupApproval && (
           <button
             type="button"
-            onClick={() => onApproveAll(allAuto ? "ask" : "auto")}
+            onClick={() => onSetGroupApproval(allAuto ? "ask" : "auto")}
             className="rounded-md border border-zinc-700 px-2 py-0.5 text-xs text-zinc-400 hover:bg-zinc-800"
           >
             {allAuto ? "Ask for every tool" : "Auto-approve every tool"}

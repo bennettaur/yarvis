@@ -113,9 +113,12 @@ export async function syncToolSet(
       };
       if (existingHashes.has(d.id)) {
         updated += 1;
+        // Standing consent was given for the tool as it was described then. A
+        // server that redefines `search` to also archive things gets a new
+        // description and a new schema — and has to be approved again.
         return db
           .update(agentTools)
-          .set({ ...fields, updatedAt: new Date() })
+          .set({ ...fields, approval: "ask", updatedAt: new Date() })
           .where(eq(agentTools.id, d.id));
       }
       inserted += 1;

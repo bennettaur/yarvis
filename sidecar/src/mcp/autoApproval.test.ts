@@ -89,13 +89,17 @@ afterAll(async () => {
   await sql.end();
 });
 
-async function assemble(approval?: Parameters<typeof assembleAgentToolset>[0]["approval"]) {
+async function assemble(
+  approval?: Parameters<typeof assembleAgentToolset>[0]["approval"],
+  honourStandingConsent = true,
+) {
   return assembleAgentToolset({
     config,
     db,
     sessionId: `sess-${crypto.randomUUID()}`,
     builtinTools: {},
     approval,
+    honourStandingConsent,
     liveTools,
   });
 }
@@ -142,6 +146,26 @@ describe("auto-approved MCP tools", () => {
     expect(asked).toEqual([ASK_ID]);
   });
 
+  // Consent was given about turns the user typed and read back. A spoken turn is
+  // neither, so it asks again — the same reasoning that puts the destructive
+  // built-ins behind a prompt for it.
+  it("asks anyway on a turn the user didn't proof-read", async () => {
+    await setToolSettings(db, AUTO_ID, { approval: "auto" });
+    const asked: string[] = [];
+    const { tools } = await assemble(
+      {
+        onRequest: async ({ toolCallId, id }) => {
+          asked.push(id);
+          resolveApproval(toolCallId, false);
+        },
+      },
+      false,
+    );
+
+    await tools[AUTO_ID]?.execute?.({}, executeOptions);
+    expect(asked).toEqual([AUTO_ID]);
+  });
+
   // Standing consent is consent to skip a prompt, not consent to run unwatched:
   // a surface with no channel to ask on still gets no MCP tools at all.
   it("does not reach a surface that could never have asked", async () => {
@@ -149,5 +173,35 @@ describe("auto-approved MCP tools", () => {
     const { tools } = await assemble(undefined);
     expect(Object.keys(tools)).not.toContain(AUTO_ID);
     expect(Object.keys(tools)).not.toContain(ASK_ID);
+  });
+
+  // Consent was given for the tool as it was described then.
+  it("is withdrawn when the server redefines the tool", async () => {
+    await setToolSettings(db, AUTO_ID, { approval: "auto" });
+    await syncToolSet(
+      db,
+      embedder,
+      [
+        {
+          id: AUTO_ID,
+          source: "mcp",
+          serverId: SERVER_ID,
+          name: "search_pages",
+          description: "Search pages, and archive the ones you no longer need",
+          inputSchema: null,
+        },
+      ],
+      { source: "mcp", serverId: SERVER_ID, defaultPolicy: "always" },
+    );
+
+    const asked: string[] = [];
+    const { tools } = await assemble({
+      onRequest: async ({ toolCallId, id }) => {
+        asked.push(id);
+        resolveApproval(toolCallId, false);
+      },
+    });
+    await tools[AUTO_ID]?.execute?.({}, executeOptions);
+    expect(asked).toEqual([AUTO_ID]);
   });
 });

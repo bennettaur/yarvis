@@ -181,10 +181,25 @@ export async function assembleAgentToolset(opts: {
    * to prompt gets them dropped instead — see below.
    */
   confirmBuiltins?: ReadonlySet<string>;
+  /**
+   * False on a turn the user didn't proof-read, which makes every MCP tool ask
+   * regardless of stored consent. Consent is given in Settings or from the chat
+   * bar — both places where the turn was typed and read back — and a spoken
+   * turn is neither.
+   */
+  honourStandingConsent?: boolean;
   /** The connected MCP tools to assemble; defaults to whatever is live. */
   liveTools?: Record<string, McpClientTool>;
 }): Promise<AgentToolset> {
-  const { config, db, sessionId, builtinTools, approval, confirmBuiltins } = opts;
+  const {
+    config,
+    db,
+    sessionId,
+    builtinTools,
+    approval,
+    confirmBuiltins,
+    honourStandingConsent = true,
+  } = opts;
   const registry = await listRegistryTools(db);
   const policyById = new Map(registry.map((r) => [r.id, r.policy]));
   const approvalById = new Map(registry.map((r) => [r.id, r.approval]));
@@ -213,13 +228,14 @@ export async function assembleAgentToolset(opts: {
   // A tool the user marked "auto" runs without asking. That is standing consent
   // for one specific third-party tool, given in Settings; it is not a reason to
   // offer the tool on a surface that could never have asked, so the whole block
-  // still requires an approval channel to exist.
+  // still requires an approval channel to exist — nor a reason to skip the
+  // prompt on a turn nobody proof-read.
   if (approval) {
     const liveTools = opts.liveTools ?? getMcpManager().getLiveTools();
     for (const [id, t] of Object.entries(liveTools)) {
       if (policyById.get(id) === "disabled") continue;
       tools[id] =
-        approvalById.get(id) === "auto"
+        honourStandingConsent && approvalById.get(id) === "auto"
           ? (t as unknown as Tool)
           : wrapToolWithApproval(id, t, approval);
     }
