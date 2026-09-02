@@ -123,6 +123,8 @@ export interface ChatEvent {
   reason?: string;
   /** `tool_approval_request`: the tool call id to approve or deny. */
   id?: string;
+  /** `tool_approval_request`: the tool's registry id, for a standing "always allow". */
+  toolId?: string;
   /** `tool_approval_request` and `tool_call`: the tool, its server, its arguments. */
   name?: string;
   server?: string;
@@ -135,7 +137,10 @@ export interface ChatEvent {
 
 /** A pending MCP tool call awaiting the user's approve/deny decision. */
 export interface PendingApproval {
+  /** The tool call awaiting a decision. */
   id: string;
+  /** The tool's registry id (`mcp:<serverId>:<tool>`), for "always allow". */
+  toolId?: string;
   name: string;
   server: string;
   args: unknown;

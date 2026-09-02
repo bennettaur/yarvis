@@ -7,7 +7,7 @@ import { useVoice } from "../lib/useVoice";
 import ChatComposer from "./ChatComposer";
 import ChatMessages from "./ChatMessages";
 import ErrorNotice from "./ErrorNotice";
-import { ToolApprovalPrompt } from "./ToolApprovalPrompt";
+import ToolApprovalBar from "./ToolApprovalBar";
 import VoiceControls from "./voice/VoiceControls";
 
 const EMPTY_HINT =
@@ -45,7 +45,10 @@ export default function ChatPanel() {
     error,
     approvals,
     respondApproval,
+    alwaysAllow,
     send,
+    retry,
+    stop,
     newChat,
     loadSession,
   } = useChatThread({ onSessionCreated: addSession, reasoning });
@@ -148,19 +151,32 @@ export default function ChatPanel() {
           thinking={thinking}
           activity={activity}
         />
-        {approvals.map((a) => (
-          <ToolApprovalPrompt
-            key={a.id}
-            approval={a}
-            onRespond={(approved) => void respondApproval(a.id, approved)}
-          />
-        ))}
       </div>
+
+      <ToolApprovalBar
+        approvals={approvals}
+        onRespond={(id, approved) => void respondApproval(id, approved)}
+        onAlwaysAllow={(a) => void alwaysAllow(a)}
+      />
 
       {sessionsError && (
         <ErrorNotice error={sessionsError} onDismiss={() => setSessionsError(null)} />
       )}
-      {error && <ErrorNotice error={error} />}
+      {error && (
+        <ErrorNotice
+          error={error}
+          actions={
+            <button
+              type="button"
+              onClick={retry}
+              disabled={busy}
+              className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+            >
+              Retry
+            </button>
+          }
+        />
+      )}
 
       <ChatComposer
         value={input}
@@ -170,6 +186,7 @@ export default function ChatPanel() {
         placeholder="Message..."
         submitLabel="Send"
         maxHeight={360}
+        onStop={stop}
       />
 
       <VoiceControls voice={voice} />

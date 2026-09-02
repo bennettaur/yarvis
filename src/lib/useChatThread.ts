@@ -14,6 +14,7 @@ import {
   type ToolActivity,
 } from "./chat";
 import { type DisplayError, formatError } from "./errors";
+import { setToolSettings } from "./mcp";
 
 // Shared with ChatPanel so Omni Chat defaults to the same provider/model the
 // user last picked in the main Chat tab.
@@ -62,6 +63,14 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
   const [error, setError] = useState<DisplayError | null>(null);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
 
+  // Lets the surface end a turn early. Aborting the fetch disconnects the SSE
+  // stream, which the sidecar reads as the client going away and uses to cancel
+  // the upstream call, so a stopped turn stops costing tokens.
+  const inFlight = useRef<AbortController | null>(null);
+  const stop = useCallback(() => {
+    inFlight.current?.abort();
+  }, []);
+
   const respondApproval = useCallback(async (id: string, approved: boolean) => {
     setApprovals((prev) => prev.filter((a) => a.id !== id));
     try {
@@ -70,6 +79,26 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
       setError(formatError(e));
     }
   }, []);
+
+  /**
+   * Records standing consent for the tool this call belongs to, then approves
+   * the call. Only MCP tools carry a registry id here — a built-in's
+   * confirmation follows from how the turn was composed, not from a preference.
+   */
+  const alwaysAllow = useCallback(
+    async (approval: PendingApproval) => {
+      if (approval.toolId?.startsWith("mcp:")) {
+        try {
+          await setToolSettings(approval.toolId, { approval: "auto" });
+        } catch (e) {
+          // The call itself can still go ahead; only the memory of it failed.
+          setError(formatError(e));
+        }
+      }
+      await respondApproval(approval.id, true);
+    },
+    [respondApproval],
+  );
 
   const loadSession = useCallback(async (id: string) => {
     setSessionId(id);
@@ -146,7 +175,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
   }, [onSessionCreated]);
 
   const send = useCallback(
-    async (text: string, sendOptions: { source?: "voice" } = {}) => {
+    async (text: string, sendOptions: { source?: "voice"; resend?: boolean } = {}) => {
       const trimmed = text.trim();
       if (!trimmed || !provider || !model || busy) return;
 
@@ -158,34 +187,43 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
         onSessionCreated?.(session);
       }
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "user",
-          content: trimmed,
-          metadata: sendOptions.source ? { source: "voice" } : null,
-        },
-      ]);
+      // A retry re-sends a message the thread is already showing; the sidecar
+      // recognises it as the same turn rather than recording it twice.
+      if (!sendOptions.resend) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "user",
+            content: trimmed,
+            metadata: sendOptions.source ? { source: "voice" } : null,
+          },
+        ]);
+      }
       setBusy(true);
       setError(null);
       setThinking("");
       setActivity([]);
       const context = getContext?.();
+      const controller = new AbortController();
+      inFlight.current = controller;
       let acc = "";
       let thought = "";
       const ran: ToolActivity[] = [];
       try {
-        for await (const evt of streamChat({
-          sessionId: activeId,
-          message: trimmed,
-          provider,
-          model,
-          context,
-          reasoning,
-          // Marks a turn the user spoke rather than typed, which is what puts
-          // the agent's irreversible tools behind a confirmation.
-          source: sendOptions.source,
-        })) {
+        for await (const evt of streamChat(
+          {
+            sessionId: activeId,
+            message: trimmed,
+            provider,
+            model,
+            context,
+            reasoning,
+            // Marks a turn the user spoke rather than typed, which is what puts
+            // the agent's irreversible tools behind a confirmation.
+            source: sendOptions.source,
+          },
+          { signal: controller.signal },
+        )) {
           if (evt.type === "delta" && evt.text) {
             acc += evt.text;
             setStreaming(acc);
@@ -213,7 +251,13 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
             const id = evt.id;
             setApprovals((prev) => [
               ...prev,
-              { id, name: evt.name ?? id, server: evt.server ?? "", args: evt.args },
+              {
+                id,
+                toolId: evt.toolId,
+                name: evt.name ?? id,
+                server: evt.server ?? "",
+                args: evt.args,
+              },
             ]);
           } else if (evt.type === "attention" && evt.reason) {
             onAttention?.(evt.reason);
@@ -222,8 +266,17 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
           }
         }
       } catch (e) {
-        setError(formatError(e));
+        // Stopping is the user's own doing, not a failure to report. Nothing was
+        // persisted for the turn, so the partial reply goes with it rather than
+        // sitting in a transcript that a reload would not reproduce.
+        if (controller.signal.aborted) {
+          acc = "";
+          setError({ message: "Turn stopped. Nothing was saved for it." });
+        } else {
+          setError(formatError(e));
+        }
       } finally {
+        inFlight.current = null;
         // A failed turn keeps its activity on screen rather than in the
         // transcript: nothing was persisted for it, and the tools it did run are
         // what explains the failure.
@@ -249,6 +302,17 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     [provider, model, busy, sessionId, getContext, onAttention, onSessionCreated, reasoning],
   );
 
+  /**
+   * Runs the last user message again. Used after a failure, where the reply is
+   * what went missing — asking the user to retype what they already sent is
+   * the app admitting it lost their message.
+   */
+  const retry = useCallback(() => {
+    const last = [...messages].reverse().find((m) => m.role === "user");
+    if (!last || busy) return;
+    void send(last.content, { resend: true });
+  }, [messages, busy, send]);
+
   return {
     providers,
     provider,
@@ -265,7 +329,10 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     error,
     approvals,
     respondApproval,
+    alwaysAllow,
     send,
+    retry,
+    stop,
     newChat,
     loadSession,
   };

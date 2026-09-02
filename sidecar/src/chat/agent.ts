@@ -269,7 +269,13 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
   } = params;
 
   const history = await getMessages(db, sessionId);
-  await addMessage(db, { sessionId, role: "user", content: message, metadata: userMetadata });
+  // A turn that failed persisted its user message and nothing else, so retrying
+  // it sends the same text again. Recording that a second time would leave the
+  // thread — and every later replay of it — asking twice.
+  const last = history[history.length - 1];
+  const isRetry = last?.role === "user" && last.content === message;
+  if (isRetry) history.pop();
+  else await addMessage(db, { sessionId, role: "user", content: message, metadata: userMetadata });
 
   // Only user/assistant messages are replayed. A persisted `system` row could
   // otherwise override the application system prompt on the next turn, so
