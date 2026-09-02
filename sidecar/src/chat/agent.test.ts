@@ -218,6 +218,24 @@ describe("runAgentTurn", () => {
     });
   });
 
+  // The turn changed things outside this app. Losing that record is what makes
+  // a retry do all of it a second time.
+  it("records what an out-of-steps turn already ran", async () => {
+    const session = await createSession(db, null);
+    await collect(
+      streamingModel(
+        [toolCall("c1", "list_tasks", {}), finish("tool-calls")],
+        [toolCall("c2", "list_tasks", {}), finish("tool-calls")],
+      ),
+      session.id,
+    );
+
+    const [, assistant] = await getMessages(db, session.id);
+    expect(assistant?.role).toBe("assistant");
+    expect(assistant?.content).toContain("ran out of steps");
+    expect(assistant?.toolCalls?.length).toBeGreaterThan(0);
+  });
+
   it("streams reasoning separately from the reply", async () => {
     const session = await createSession(db, null);
     const events = await collect(

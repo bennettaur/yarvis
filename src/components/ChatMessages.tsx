@@ -22,8 +22,8 @@ const AssistantReply = memo(function AssistantReply({ content }: { content: stri
  * hashes in a prompt survive instead of being parsed as formatting.
  *
  * A reply is preceded by what the assistant did to produce it — the tools it
- * called and, where the provider returns it, its reasoning. Waiting with no
- * sign of either is what made a working turn look like a hung one.
+ * called and, where the provider returns it, its reasoning. Without those, a
+ * turn spent in tools is indistinguishable from a hung one.
  */
 export default function ChatMessages({
   messages,

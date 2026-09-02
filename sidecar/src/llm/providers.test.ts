@@ -14,6 +14,7 @@ import {
   availableProviders,
   CUSTOM_PROVIDER_PREFIX,
   defaultProviderModel,
+  reasoningOptions,
   resolveModel,
 } from "./providers.ts";
 
@@ -289,5 +290,35 @@ describe("resolveModel for custom providers", () => {
     await expect(
       resolveModel(configWithSecrets(), `${CUSTOM_PROVIDER_PREFIX}does-not-exist`, "x"),
     ).rejects.toThrow();
+  });
+});
+
+describe("reasoningOptions", () => {
+  it("asks Anthropic for adaptive thinking only on models that accept it", async () => {
+    expect(await reasoningOptions("anthropic", "claude-opus-4-7")).toEqual({
+      anthropic: { thinking: { type: "adaptive", display: "summarized" } },
+    });
+    expect(await reasoningOptions("anthropic", "claude-sonnet-5")).toBeDefined();
+    // Shipped in the default catalogue, and a 400 on adaptive thinking.
+    expect(await reasoningOptions("anthropic", "claude-haiku-4-5")).toBeUndefined();
+    expect(await reasoningOptions("anthropic", "something-else")).toBeUndefined();
+  });
+
+  it("uses Bedrock's own namespace and field", async () => {
+    expect(await reasoningOptions("bedrock", "anthropic.claude-sonnet-4-6-v1:0")).toEqual({
+      bedrock: { reasoningConfig: { type: "adaptive", display: "summarized" } },
+    });
+    // Bedrock also serves models with no thinking parameter at all.
+    expect(await reasoningOptions("bedrock", "amazon.nova-pro-v1:0")).toBeUndefined();
+  });
+
+  it("asks Gemini for its thoughts", async () => {
+    expect(await reasoningOptions("gemini", "gemini-3.5-flash")).toEqual({
+      google: { thinkingConfig: { includeThoughts: true } },
+    });
+  });
+
+  it("says nothing to a provider whose parameter shape we don't know", async () => {
+    expect(await reasoningOptions("cerebras", "some-model")).toBeUndefined();
   });
 });

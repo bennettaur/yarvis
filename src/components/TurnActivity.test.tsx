@@ -52,9 +52,12 @@ describe("TurnActivity", () => {
     expect(textOf(html)).toContain("denied");
   });
 
-  it("shows a call with no outcome yet as still running", async () => {
+  it("shows a call that hasn't come back as pending", async () => {
     const html = await renderToHtml(
-      <TurnActivity activity={[entry({ durationMs: undefined, result: undefined })]} running />,
+      <TurnActivity
+        activity={[entry({ status: "pending", durationMs: undefined, result: undefined })]}
+        running
+      />,
     );
     const text = textOf(html);
     expect(text).toContain("search_pages");

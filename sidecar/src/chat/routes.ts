@@ -98,7 +98,7 @@ export function createChatRoutes(config: Config): Hono {
     }
     const servers = await listMcpServers();
     const serverNames = new Map(servers.map((s) => [s.id, s.name]));
-    const providerOptions = reasoning ? await reasoningOptions(provider) : undefined;
+    const providerOptions = reasoning ? await reasoningOptions(provider, model) : undefined;
 
     return streamSSE(c, async (stream) => {
       // Tool-approval requests are emitted from inside a tool's `execute`, out of

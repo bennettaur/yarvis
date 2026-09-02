@@ -3,12 +3,13 @@ import type { ToolActivity } from "../lib/chat";
 
 /**
  * What the assistant did during a turn: the tools it called, how each ended,
- * and — when the provider returns it — the reasoning behind them.
+ * and — when the provider returns it — the reasoning behind them. A turn that
+ * spends its time in tools has nothing else to show until the reply arrives,
+ * which is indistinguishable from a hung app.
  *
- * A turn that spends its time in tools used to show nothing at all until the
- * reply arrived, which is indistinguishable from a hung app. Each row is
- * collapsed to a line; the arguments and the result are one click away, because
- * the interesting question ("what did it actually ask for?") is occasional.
+ * Each row is collapsed to a line; the arguments and the result are one click
+ * away, because the interesting question ("what did it actually ask for?") is
+ * occasional.
  */
 export default function TurnActivity({
   activity,
@@ -26,7 +27,7 @@ export default function TurnActivity({
     <div className="space-y-1">
       {thinking && <ThinkingBlock text={thinking} streaming={running} />}
       {activity.map((entry) => (
-        <ToolRow key={entry.id} entry={entry} running={running} />
+        <ToolRow key={entry.id} entry={entry} />
       ))}
     </div>
   );
@@ -56,24 +57,23 @@ function ThinkingBlock({ text, streaming }: { text: string; streaming?: boolean 
   );
 }
 
-/** A settled row's mark, so the outcome reads without relying on colour alone. */
+/** Each outcome's mark, so a row reads without relying on colour alone. */
 const STATUS_MARK: Record<ToolActivity["status"], string> = {
+  pending: "…",
   ok: "✓",
   error: "✕",
   denied: "⃠",
 };
 
 const STATUS_COLOR: Record<ToolActivity["status"], string> = {
+  pending: "text-zinc-500",
   ok: "text-emerald-400",
   error: "text-red-400",
   denied: "text-amber-400",
 };
 
-function ToolRow({ entry, running }: { entry: ToolActivity; running?: boolean }) {
+function ToolRow({ entry }: { entry: ToolActivity }) {
   const [open, setOpen] = useState(false);
-  // A row with no duration hasn't come back yet; while the turn is live that
-  // means it is still running, and afterwards it means the turn ended first.
-  const settled = entry.durationMs !== undefined;
   const hasDetail = entry.args !== undefined || entry.result !== undefined;
 
   return (
@@ -85,13 +85,11 @@ function ToolRow({ entry, running }: { entry: ToolActivity; running?: boolean })
         className="flex w-full items-center gap-2 px-2 py-1.5 text-left"
       >
         {hasDetail ? <Chevron open={open} /> : <span className="w-3" />}
-        <span className={settled ? STATUS_COLOR[entry.status] : "text-zinc-500"}>
-          {settled ? STATUS_MARK[entry.status] : running ? "…" : "—"}
-        </span>
+        <span className={STATUS_COLOR[entry.status]}>{STATUS_MARK[entry.status]}</span>
         <span className="font-mono text-zinc-300">{entry.name}</span>
         {entry.server && <span className="text-zinc-500">on {entry.server}</span>}
         {entry.status === "denied" && <span className="text-amber-400">denied</span>}
-        {settled && (
+        {entry.durationMs !== undefined && (
           <span className="ml-auto text-zinc-600">{formatDuration(entry.durationMs)}</span>
         )}
       </button>

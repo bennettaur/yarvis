@@ -57,7 +57,7 @@ export interface ToolActivity {
   name: string;
   server?: string;
   args?: unknown;
-  status: "ok" | "error" | "denied";
+  status: "pending" | "ok" | "error" | "denied";
   result?: string;
   durationMs?: number;
 }

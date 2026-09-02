@@ -230,28 +230,56 @@ export async function resolveModel(
 }
 
 /**
+ * Adaptive thinking is a Claude 4.6-and-later parameter; an older model rejects
+ * it with a 400 and the whole turn fails. Model ids are `claude-<family>-<major>`
+ * with an optional `-<minor>` (`claude-opus-5`, `claude-sonnet-4-6`), possibly
+ * behind a Bedrock or gateway prefix. An id we cannot read is treated as
+ * unsupported: not asking for reasoning costs a feature, asking wrongly costs
+ * the turn.
+ */
+export function supportsAdaptiveThinking(modelId: string): boolean {
+  const match = /claude-[a-z]+-(\d+)(?:-(\d+))?/.exec(modelId);
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2] ?? 0);
+  return major > 4 || (major === 4 && minor >= 6);
+}
+
+/**
  * Provider options that ask a model to return its reasoning, for the surfaces
- * that offer to show it. Only providers whose parameter shape we know are asked;
- * anything else is left alone, because a gateway that rejects an unknown field
- * fails the whole turn — and a model that streams reasoning natively is
- * displayed either way, since the reasoning parts arrive regardless.
+ * that offer to show it. Only providers *and models* whose parameter shape we
+ * know are asked; anything else is left alone, because a provider that rejects
+ * an unknown or unsupported field fails the whole turn — and a model that
+ * streams reasoning natively is displayed either way, since the reasoning parts
+ * arrive regardless.
  *
- * Anthropic takes adaptive thinking with `display: "summarized"`: the default is
- * omitted, which streams empty reasoning blocks and reads as a long pause.
+ * Anthropic takes adaptive thinking, and `display` must be set explicitly:
+ * relying on the provider's default streams empty reasoning blocks, which reads
+ * as a long pause with nothing in it.
  */
 export async function reasoningOptions(
   providerId: ProviderId,
+  modelId: string,
 ): Promise<Record<string, Record<string, JSONValue>> | undefined> {
-  const anthropicThinking = {
-    anthropic: { thinking: { type: "adaptive", display: "summarized" } },
-  };
-  if (providerId === "anthropic" || providerId === "bedrock") return anthropicThinking;
+  const thinking = { type: "adaptive", display: "summarized" };
+  if (providerId === "anthropic") {
+    return supportsAdaptiveThinking(modelId) ? { anthropic: { thinking } } : undefined;
+  }
+  if (providerId === "bedrock") {
+    // Bedrock has its own namespace and its own field name, and also serves
+    // models that have no thinking parameter at all.
+    return supportsAdaptiveThinking(modelId)
+      ? { bedrock: { reasoningConfig: thinking } }
+      : undefined;
+  }
   if (providerId === "gemini") return { google: { thinkingConfig: { includeThoughts: true } } };
   if (!providerId.startsWith(CUSTOM_PROVIDER_PREFIX)) return undefined;
 
-  // A custom provider is a proxy: what it wants is decided by the API it speaks,
-  // not by the model name behind it.
+  // A custom provider is a proxy: what it accepts is decided by the API it
+  // speaks, and the model behind it still has to be one that takes the field.
   const id = providerId.slice(CUSTOM_PROVIDER_PREFIX.length);
   const row = (await listCustomProviders()).find((r) => r.id === id);
-  return row?.apiKind === "anthropic" ? anthropicThinking : undefined;
+  return row?.apiKind === "anthropic" && supportsAdaptiveThinking(modelId)
+    ? { anthropic: { thinking } }
+    : undefined;
 }

@@ -198,7 +198,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
               name: evt.name ?? evt.id,
               server: evt.server,
               args: evt.args,
-              status: "ok",
+              status: "pending",
             });
             setActivity([...ran]);
           } else if (evt.type === "tool_result" && evt.id) {

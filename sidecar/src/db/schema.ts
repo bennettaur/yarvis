@@ -67,7 +67,8 @@ export interface ToolActivity {
   /** The MCP server that owns the tool, when it came from one. */
   server?: string;
   args?: unknown;
-  status: "ok" | "error" | "denied";
+  /** "pending" until the call comes back; a turn that ended first leaves it. */
+  status: "pending" | "ok" | "error" | "denied";
   /** A short rendering of the result or the error, capped before storage. */
   result?: string;
   durationMs?: number;
