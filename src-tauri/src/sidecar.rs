@@ -7,6 +7,7 @@
 
 use std::io::Write;
 use std::net::TcpListener;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -110,9 +111,12 @@ fn rotate_if_large(path: &PathBuf) {
 }
 
 fn append_line(path: &PathBuf, line: &str) {
+    // 0600: the file aggregates everything the sidecar prints, and nothing but
+    // this user has any business reading it.
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
+        .mode(0o600)
         .open(path)
     {
         let _ = writeln!(file, "{line}");

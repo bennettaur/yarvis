@@ -78,3 +78,10 @@ describe("capacity and truncation", () => {
     expect(entry?.message).not.toContain("sk-ant-");
   });
 });
+
+describe("record", () => {
+  it("returns the redacted line, which is what the console and the log file get", () => {
+    const line = record("error", ["[llm] key: sk-ant-abcdef0123456789abcdef"]);
+    expect(line).toBe("[llm] key: [redacted-token]");
+  });
+});

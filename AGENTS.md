@@ -246,7 +246,8 @@ back to ad-hoc.
   into a bounded in-memory tail that `/api/logs` serves and Settings →
   Diagnostics reads, and the core pipes the process's stdout/stderr to
   `app_log_dir/sidecar.log` so a packaged build leaves something behind to read.
-  Both are redacted through `redactSecrets`. A new log line therefore just uses
+  The wrapper writes the *redacted* line to the real console, so both copies are
+  redacted — the file is the one a user attaches to a bug report. A new log line therefore just uses
   `console.*` with the usual `[scope]` prefix — that prefix is what the
   Diagnostics filter groups by — and never needs a logger of its own.
 - Work that happens on a schedule is a `JobDefinition` in `sidecar/src/jobs/`,

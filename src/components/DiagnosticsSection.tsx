@@ -17,12 +17,12 @@ const LEVEL_COLOR: Record<LogLevel, string> = {
 
 /**
  * The sidecar's log, read from inside the app. A packaged build has no terminal
- * attached, so until now a failure that printed a perfectly good explanation
- * left the user with nothing to read — and nothing to attach to a bug report.
+ * attached, so this is the only place a failure's own explanation reaches the
+ * user — and where they copy it from for a bug report.
  *
- * The tail here is the sidecar's in-memory buffer, which resets when it
- * restarts; the file path shown at the bottom is the durable copy the core
- * writes, which is the one that survives the crash worth reporting.
+ * The tail is the sidecar's in-memory buffer, which resets when it restarts;
+ * the file path shown at the bottom is the durable copy the core writes, which
+ * is the one that survives the crash worth reporting.
  */
 export default function DiagnosticsSection() {
   const [entries, setEntries] = useState<LogEntry[]>([]);

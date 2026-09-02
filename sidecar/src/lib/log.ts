@@ -43,7 +43,13 @@ function render(value: unknown): string {
   }
 }
 
-export function record(level: LogLevel, args: unknown[]): void {
+/**
+ * Adds one line to the buffer and returns it as it will be shown — redacted and
+ * capped. The caller writes *that* to the real console rather than the original
+ * arguments, so the file the core tees stdout into carries no credential the
+ * buffer would have stripped.
+ */
+export function record(level: LogLevel, args: unknown[]): string {
   // Redact before truncating: a credential straddling the cut would otherwise
   // lose the tail that makes it match, and half a token is still a leak.
   const redacted = redactSecrets(args.map(render).join(" "));
@@ -57,6 +63,7 @@ export function record(level: LogLevel, args: unknown[]): void {
     message: scoped ? capped.slice(scoped[0].length) : capped,
   });
   if (entries.length > CAPACITY) entries.splice(0, entries.length - CAPACITY);
+  return capped;
 }
 
 export interface LogQuery {
@@ -105,7 +112,9 @@ let installed = false;
 
 /**
  * Tees `console` into the buffer above, keeping the original write so a dev run
- * and the core's log file still see everything. Idempotent.
+ * and the core's log file still see everything — but writing the redacted line,
+ * not the original arguments. The file is the copy a user is invited to attach
+ * to a bug report, so it must not be the unredacted one. Idempotent.
  */
 export function installLogCapture(): void {
   if (installed) return;
@@ -121,8 +130,7 @@ export function installLogCapture(): void {
     // biome-ignore lint/suspicious/noConsole: wrapping console is the point
     const original = console[method].bind(console);
     console[method] = (...args: unknown[]) => {
-      record(level, args);
-      original(...args);
+      original(record(level, args));
     };
   }
 }
