@@ -2,13 +2,12 @@ import { describeError, redactSecrets } from "../llm/errors.ts";
 
 /**
  * An in-memory tail of everything the sidecar logged, so the app can show the
- * user what happened without them running the process from a terminal. A
- * packaged build's stdout goes nowhere they can reach, which is why a failure
- * used to be unexplainable from inside the app.
+ * user what happened without them running the process from a terminal: a
+ * packaged build's stdout goes nowhere they can reach.
  *
- * Capture works by wrapping `console`, not by rewriting ~50 call sites: every
- * existing log line is already written where something went wrong, and a
- * parallel logging API would only be adopted by the code that remembered to.
+ * Capture works by wrapping `console`, not by a logging API of its own: every
+ * log line in the sidecar is already written where something went wrong, and a
+ * parallel API would only be adopted by the code that remembered to.
  */
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -45,15 +44,17 @@ function render(value: unknown): string {
 }
 
 export function record(level: LogLevel, args: unknown[]): void {
-  const raw = args.map(render).join(" ");
-  const redacted = redactSecrets(raw.length > MAX_LINE ? `${raw.slice(0, MAX_LINE)}…` : raw);
-  const scoped = SCOPE.exec(redacted);
+  // Redact before truncating: a credential straddling the cut would otherwise
+  // lose the tail that makes it match, and half a token is still a leak.
+  const redacted = redactSecrets(args.map(render).join(" "));
+  const capped = redacted.length > MAX_LINE ? `${redacted.slice(0, MAX_LINE)}…` : redacted;
+  const scoped = SCOPE.exec(capped);
   entries.push({
     seq: nextSeq++,
     at: new Date().toISOString(),
     level,
     scope: scoped?.[1] ?? null,
-    message: scoped ? redacted.slice(scoped[0].length) : redacted,
+    message: scoped ? capped.slice(scoped[0].length) : capped,
   });
   if (entries.length > CAPACITY) entries.splice(0, entries.length - CAPACITY);
 }

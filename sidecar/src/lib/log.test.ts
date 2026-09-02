@@ -62,3 +62,19 @@ describe("knownScopes", () => {
     expect(knownScopes()).toEqual(["chat", "mcp"]);
   });
 });
+
+describe("capacity and truncation", () => {
+  it("keeps only the newest lines once the buffer is full", () => {
+    for (let i = 0; i < 2100; i++) record("info", [`line ${i}`]);
+    const kept = recentLogs({ limit: 2000 });
+    expect(kept).toHaveLength(2000);
+    expect(kept[0]?.message).toBe("line 100");
+  });
+
+  it("redacts before truncating, so a token straddling the cut can't survive", () => {
+    const token = "sk-ant-abcdef0123456789abcdef";
+    record("error", [`${"x".repeat(7985)} ${token}`]);
+    const [entry] = recentLogs();
+    expect(entry?.message).not.toContain("sk-ant-");
+  });
+});
