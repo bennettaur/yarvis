@@ -1,10 +1,17 @@
 //! Keychain-backed secret storage.
 //!
-//! Every Yarvis secret (API keys, the database URL, and the custom-provider
-//! credentials owned by [`crate::custom_providers`]) lives in a **single**
-//! macOS Keychain item, stored as one JSON object. Using one item rather than
-//! one-per-secret means the OS authorizes Keychain access once per session
-//! instead of prompting for each secret in turn.
+//! Every Yarvis secret (API keys, the database URL, and the custom-provider,
+//! MCP-server, and embeddings-provider credentials owned by their respective
+//! modules) lives in a **single** macOS Keychain item, stored as one JSON
+//! object. Using one item rather than one-per-secret means the OS authorizes
+//! Keychain access once per session instead of prompting for each secret in
+//! turn — every module that needs Keychain-backed storage nests its data under
+//! a key in this shared blob rather than opening its own [`Entry`].
+//!
+//! Non-sensitive configuration that used to ride this blob purely to keep its
+//! injection path uniform with real credentials (an org URL, an account email,
+//! a chat-id allowlist) has moved to `settings.rs`'s `~/.yarvis/settings.json`;
+//! `settings::init` migrates any values it finds here on first run.
 //!
 //! The frontend can store and clear secrets and check presence, but never reads
 //! values back after entry. The Rust core reads values only to inject them into
@@ -21,7 +28,10 @@ const SERVICE: &str = "com.mikebennett.yarvis";
 const SECRETS_ACCOUNT: &str = "secrets";
 
 /// The complete set of top-level secrets the app manages. Writes to any other
-/// key are rejected so the frontend cannot store arbitrary data in the Keychain.
+/// key are rejected so the frontend cannot store arbitrary data in the
+/// Keychain. Non-secret configuration that used to sit alongside these (org
+/// URLs, an account email, a chat-id allowlist) now lives in `settings.rs`
+/// instead — see `settings::LEGACY_SETTING_KEYS` for the migration off this list.
 pub const SECRET_KEYS: &[&str] = &[
     "anthropic_api_key",
     "gemini_api_key",
@@ -29,17 +39,11 @@ pub const SECRET_KEYS: &[&str] = &[
     "huggingface_api_key",
     "github_token",
     "azure_devops_token",
-    "azure_devops_org_url",
-    "jira_base_url",
-    "jira_email",
     "jira_api_token",
     "database_url",
-    "google_client_id",
     "google_client_secret",
     "telegram_bot_token",
-    "telegram_allowed_chat_ids",
     "telegram_otp_secret",
-    "telegram_otp_window_minutes",
 ];
 
 #[derive(Serialize)]

@@ -25,6 +25,21 @@ export interface Settings {
   defaultAgentCommand: string;
   /** True while `YARVIS_CLAUDE_COMMAND` is set, which outranks `agentCommand`. */
   agentCommandOverriddenByEnv: boolean;
+  /** Azure DevOps organization base URL for the PR dashboard. */
+  azureDevopsOrgUrl: string | null;
+  /** Atlassian Cloud site base URL for the Issues dashboard. */
+  jiraBaseUrl: string | null;
+  /** Atlassian account email paired with the JIRA API token (Keychain). */
+  jiraEmail: string | null;
+  /** Google Cloud OAuth client id for the calendar integration. */
+  googleClientId: string | null;
+  /** Comma-separated Telegram chat ids allowed to use the remote-control bot. */
+  telegramAllowedChatIds: string | null;
+  /** Re-auth window, in minutes, for the Telegram bot's OTP gate; null means
+   *  the default applies. */
+  telegramOtpWindowMinutes: number | null;
+  /** The window that applies while `telegramOtpWindowMinutes` is null. */
+  defaultTelegramOtpWindowMinutes: number;
 }
 
 export const getSettings = () => invoke<Settings>("get_settings");
@@ -39,3 +54,28 @@ export const setMaxPtySessions = (value: number | null) =>
  * started — no restart. Rejects a value spanning more than one line. */
 export const setAgent = (name: string | null, command: string | null) =>
   invoke<Settings>("set_agent", { name, command });
+
+/**
+ * The settings below are injected into the sidecar's environment at spawn
+ * time, so a saved change only takes effect once the sidecar restarts — call
+ * `restartSidecar` from `lib/keychain` after saving, the same as a Keychain
+ * secret change.
+ */
+
+export const setAzureDevopsOrgUrl = (value: string | null) =>
+  invoke<Settings>("set_azure_devops_org_url", { value });
+
+export const setJiraBaseUrl = (value: string | null) =>
+  invoke<Settings>("set_jira_base_url", { value });
+
+export const setJiraEmail = (value: string | null) => invoke<Settings>("set_jira_email", { value });
+
+export const setGoogleClientId = (value: string | null) =>
+  invoke<Settings>("set_google_client_id", { value });
+
+export const setTelegramAllowedChatIds = (value: string | null) =>
+  invoke<Settings>("set_telegram_allowed_chat_ids", { value });
+
+/** Rejects zero; `null` clears back to `defaultTelegramOtpWindowMinutes`. */
+export const setTelegramOtpWindowMinutes = (value: number | null) =>
+  invoke<Settings>("set_telegram_otp_window_minutes", { value });

@@ -2,13 +2,18 @@
 //!
 //! The structural config (base URL, model, dimensions, header names) lives in
 //! the sidecar's Postgres database. Only credential material — the API key and
-//! any custom header values — lives here, in the macOS Keychain, as a single
-//! entry (`embeddings_provider_secrets`) holding a JSON object:
-//! `{ "apiKey"?: string, "headers": { "<name>": string } }`. That blob is
-//! injected into the sidecar at spawn time as `YARVIS_EMBEDDINGS_SECRETS`.
+//! any custom header values — lives here, nested under one key in the shared
+//! Keychain blob owned by [`crate::keychain`]: `{ "apiKey"?: string, "headers":
+//! { "<name>": string } }`. That blob is injected into the sidecar at spawn
+//! time as `YARVIS_EMBEDDINGS_SECRETS`.
 //!
-//! Unlike `custom_providers`, there is only one embeddings provider, so the blob
-//! is a single secret bundle rather than a map keyed by provider id.
+//! Unlike `custom_providers`, there is only one embeddings provider, so the
+//! blob is a single secret bundle rather than a map keyed by provider id.
+//!
+//! This used to be its own standalone Keychain item, which cost a second
+//! authorization prompt at startup on top of the shared item everything else
+//! lives in. [`migrate_legacy_item`] folds any pre-existing value into the
+//! shared item once and deletes the old one.
 
 use std::collections::BTreeMap;
 
@@ -16,33 +21,74 @@ use keyring::Entry;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-/// Keychain service name shared with `keychain.rs` so the user sees a single
-/// Yarvis bundle in Keychain Access.
-const SERVICE: &str = "com.mikebennett.yarvis";
-const SECRETS_KEY: &str = "embeddings_provider_secrets";
+use crate::keychain;
 
-fn entry() -> Result<Entry, String> {
-    Entry::new(SERVICE, SECRETS_KEY).map_err(|e| e.to_string())
+/// Key under which the embeddings-provider credentials nest inside the shared
+/// secrets blob. Keeping them in that one Keychain item means embeddings
+/// secrets don't add a separate authorization prompt.
+const EMBEDDINGS_KEY: &str = "embeddingsProvider";
+
+/// Service/account of the standalone Keychain item this data lived in before
+/// it was folded into the shared item, kept only for [`migrate_legacy_item`].
+const LEGACY_SERVICE: &str = "com.mikebennett.yarvis";
+const LEGACY_ACCOUNT: &str = "embeddings_provider_secrets";
+
+/// Set in the shared root once the standalone item has been checked (and
+/// migrated, if it had anything), so later startups never query it again —
+/// otherwise every launch would cost a second Keychain item's worth of access
+/// forever, the same problem this whole module now avoids for the credential
+/// itself.
+const LEGACY_MIGRATED_KEY: &str = "embeddingsProviderLegacyMigrated";
+
+/// Migrates the pre-consolidation standalone Keychain item (`embeddings_provider_secrets`)
+/// into the shared item, once, and deletes the old one. Call at startup before
+/// the sidecar spawns so a migrated key is injected on the very first launch
+/// after upgrading.
+pub fn migrate_legacy_item() {
+    let mut root = keychain::read_root();
+    if root.get(LEGACY_MIGRATED_KEY).and_then(Value::as_bool) == Some(true) {
+        return;
+    }
+    let Some(obj) = root.as_object_mut() else {
+        return;
+    };
+    if let Ok(entry) = Entry::new(LEGACY_SERVICE, LEGACY_ACCOUNT) {
+        if let Ok(raw) = entry.get_password() {
+            if let Ok(blob) = serde_json::from_str::<Value>(&raw) {
+                let has_content = blob.as_object().map(|o| !o.is_empty()).unwrap_or(false);
+                if has_content && !obj.contains_key(EMBEDDINGS_KEY) {
+                    obj.insert(EMBEDDINGS_KEY.to_string(), blob);
+                }
+            }
+            let _ = entry.delete_credential();
+        }
+    }
+    obj.insert(LEGACY_MIGRATED_KEY.to_string(), Value::Bool(true));
+    if let Err(e) = keychain::write_root(&root) {
+        eprintln!("[embeddings_secrets] failed to persist legacy-item migration: {e}");
+    }
 }
 
+/// Reads the embeddings-provider credential blob out of the shared secrets
+/// blob.
 fn read_blob() -> Value {
-    let raw = match entry().and_then(|e| {
-        e.get_password().map_err(|err| match err {
-            keyring::Error::NoEntry => "missing".to_string(),
-            other => other.to_string(),
-        })
-    }) {
-        Ok(s) => s,
-        Err(_) => return Value::Object(Map::new()),
-    };
-    serde_json::from_str(&raw).unwrap_or(Value::Object(Map::new()))
+    blob_from_root(&keychain::read_root())
+}
+
+/// Extracts the embeddings-provider subtree from an already-read secrets blob.
+fn blob_from_root(root: &Value) -> Value {
+    root.get(EMBEDDINGS_KEY)
+        .cloned()
+        .unwrap_or_else(|| Value::Object(Map::new()))
 }
 
 fn write_blob(value: &Value) -> Result<(), String> {
-    let serialized = serde_json::to_string(value).map_err(|e| e.to_string())?;
-    entry()?
-        .set_password(&serialized)
-        .map_err(|e| e.to_string())
+    let mut root = keychain::read_root();
+    let obj = root
+        .as_object_mut()
+        .ok_or_else(|| "secrets store is not a JSON object".to_string())?;
+    obj.insert(EMBEDDINGS_KEY.to_string(), value.clone());
+    keychain::write_root(&root)
 }
 
 fn validate_slot(slot: &str) -> Result<(), String> {
@@ -132,9 +178,10 @@ pub fn delete_embeddings_secret(slot: String) -> Result<(), String> {
 }
 
 /// Returns the raw JSON blob to inject as `YARVIS_EMBEDDINGS_SECRETS`, or `None`
-/// when nothing is stored.
-pub fn build_sidecar_env() -> Option<String> {
-    let blob = read_blob();
+/// when nothing is stored. Takes the already-read secrets blob so the sidecar
+/// spawn reads the Keychain only once.
+pub fn build_sidecar_env(root: &Value) -> Option<String> {
+    let blob = blob_from_root(root);
     if blob.as_object().map(|o| o.is_empty()).unwrap_or(true) {
         return None;
     }
