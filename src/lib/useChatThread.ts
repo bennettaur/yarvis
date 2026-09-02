@@ -11,6 +11,7 @@ import {
   respondToToolApproval,
   streamChat,
   type ThreadMessage,
+  type ToolActivity,
 } from "./chat";
 import { type DisplayError, formatError } from "./errors";
 
@@ -27,6 +28,11 @@ export interface UseChatThreadOptions {
   /** Invoked when the agent emits an attention signal during a turn. */
   onAttention?: (reason: string) => void;
   /**
+   * Ask the provider for the model's reasoning. Costs tokens and latency where
+   * it is supported, so it is the surface's (and the user's) choice.
+   */
+  reasoning?: boolean;
+  /**
    * Invoked with each session this thread creates, including the one an empty
    * thread opens on its first send. A caller that renders a session list needs
    * to hear about those, since the hook owns when they happen.
@@ -42,7 +48,7 @@ export interface UseChatThreadOptions {
  * across summons.
  */
 export function useChatThread(options: UseChatThreadOptions = {}) {
-  const { sessionStorageKey, getContext, onAttention, onSessionCreated } = options;
+  const { sessionStorageKey, getContext, onAttention, onSessionCreated, reasoning } = options;
 
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [provider, setProvider] = useState<ProviderId | "">("");
@@ -50,6 +56,8 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ThreadMessage[]>([]);
   const [streaming, setStreaming] = useState("");
+  const [thinking, setThinking] = useState("");
+  const [activity, setActivity] = useState<ToolActivity[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<DisplayError | null>(null);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
@@ -68,7 +76,12 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     try {
       const msgs = await getMessages(id);
       setMessages(
-        msgs.map((m: ChatMessage) => ({ role: m.role, content: m.content, metadata: m.metadata })),
+        msgs.map((m: ChatMessage) => ({
+          role: m.role,
+          content: m.content,
+          metadata: m.metadata,
+          activity: m.toolCalls ?? undefined,
+        })),
       );
     } catch (e) {
       setError(formatError(e));
@@ -155,8 +168,12 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
       ]);
       setBusy(true);
       setError(null);
+      setThinking("");
+      setActivity([]);
       const context = getContext?.();
       let acc = "";
+      let thought = "";
+      const ran: ToolActivity[] = [];
       try {
         for await (const evt of streamChat({
           sessionId: activeId,
@@ -164,6 +181,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
           provider,
           model,
           context,
+          reasoning,
           // Marks a turn the user spoke rather than typed, which is what puts
           // the agent's irreversible tools behind a confirmation.
           source: sendOptions.source,
@@ -171,6 +189,26 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
           if (evt.type === "delta" && evt.text) {
             acc += evt.text;
             setStreaming(acc);
+          } else if (evt.type === "reasoning" && evt.text) {
+            thought += evt.text;
+            setThinking(thought);
+          } else if (evt.type === "tool_call" && evt.id) {
+            ran.push({
+              id: evt.id,
+              name: evt.name ?? evt.id,
+              server: evt.server,
+              args: evt.args,
+              status: "ok",
+            });
+            setActivity([...ran]);
+          } else if (evt.type === "tool_result" && evt.id) {
+            const entry = ran.find((a) => a.id === evt.id);
+            if (entry) {
+              entry.status = evt.status ?? "ok";
+              entry.result = evt.result;
+              entry.durationMs = evt.durationMs;
+              setActivity([...ran]);
+            }
           } else if (evt.type === "tool_approval_request" && evt.id) {
             const id = evt.id;
             setApprovals((prev) => [
@@ -186,14 +224,29 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
       } catch (e) {
         setError(formatError(e));
       } finally {
-        if (acc) setMessages((prev) => [...prev, { role: "assistant", content: acc }]);
+        // A failed turn keeps its activity on screen rather than in the
+        // transcript: nothing was persisted for it, and the tools it did run are
+        // what explains the failure.
+        if (acc) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: "assistant",
+              content: acc,
+              activity: ran.length ? ran : undefined,
+              reasoning: thought || undefined,
+            },
+          ]);
+          setThinking("");
+          setActivity([]);
+        }
         setStreaming("");
         setBusy(false);
         // Any approvals not acted on are moot once the turn ends.
         setApprovals([]);
       }
     },
-    [provider, model, busy, sessionId, getContext, onAttention, onSessionCreated],
+    [provider, model, busy, sessionId, getContext, onAttention, onSessionCreated, reasoning],
   );
 
   return {
@@ -206,6 +259,8 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     sessionId,
     messages,
     streaming,
+    thinking,
+    activity,
     busy,
     error,
     approvals,

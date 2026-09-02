@@ -3,6 +3,7 @@ import type { ProviderId } from "../../lib/chat";
 import { OMNI_CHAT_SESSION_KEY } from "../../lib/omniChat";
 import { collectContext, formatContext } from "../../lib/omniChatContext";
 import { useChatThread } from "../../lib/useChatThread";
+import { useReasoningPreference } from "../../lib/useReasoningPreference";
 import { useVoice } from "../../lib/useVoice";
 import ChatComposer from "../ChatComposer";
 import ChatMessages from "../ChatMessages";
@@ -26,6 +27,7 @@ export default function OmniChat({
   onClose: () => void;
   onAttention: (reason: string) => void;
 }) {
+  const [reasoning, setReasoning] = useReasoningPreference();
   const {
     providers,
     provider,
@@ -35,6 +37,8 @@ export default function OmniChat({
     modelsFor,
     messages,
     streaming,
+    thinking,
+    activity,
     busy,
     error,
     approvals,
@@ -42,6 +46,7 @@ export default function OmniChat({
     send,
     newChat,
   } = useChatThread({
+    reasoning,
     sessionStorageKey: OMNI_CHAT_SESSION_KEY,
     // collectContext/formatContext are module-level and stable, so this is too.
     getContext: useCallback(() => formatContext(collectContext()), []),
@@ -66,7 +71,7 @@ export default function OmniChat({
   useEffect(() => {
     if (!open) return;
     threadRef.current?.scrollTo(0, threadRef.current.scrollHeight);
-  }, [open, messages, streaming]);
+  }, [open, messages, streaming, activity]);
 
   // Esc hides the overlay; the conversation keeps running in the background.
   useEffect(() => {
@@ -114,7 +119,15 @@ export default function OmniChat({
           >
             New chat
           </button>
-          <div className="ml-auto flex gap-2">
+          <div className="ml-auto flex items-center gap-2">
+            <label className="flex items-center gap-1 text-xs text-zinc-400">
+              <input
+                type="checkbox"
+                checked={reasoning}
+                onChange={(e) => setReasoning(e.target.checked)}
+              />
+              Thinking
+            </label>
             <select
               value={provider}
               onChange={(e) => {
@@ -153,6 +166,8 @@ export default function OmniChat({
             messages={messages}
             streaming={streaming}
             busy={busy}
+            thinking={thinking}
+            activity={activity}
             emptyHint="Ask about whatever you're looking at — it's sent along as context."
           />
           {approvals.map((a) => (

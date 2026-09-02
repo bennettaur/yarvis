@@ -2,7 +2,7 @@ import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
-import type { LanguageModel } from "ai";
+import type { JSONValue, LanguageModel } from "ai";
 import type { Config } from "../config.ts";
 import { type CustomProviderRow, listCustomProviders } from "../customProviders/service.ts";
 import { validateOutboundUrl } from "../lib/urlSafety.ts";
@@ -227,4 +227,31 @@ export async function resolveModel(
     default:
       throw new Error(`unknown provider: ${providerId}`);
   }
+}
+
+/**
+ * Provider options that ask a model to return its reasoning, for the surfaces
+ * that offer to show it. Only providers whose parameter shape we know are asked;
+ * anything else is left alone, because a gateway that rejects an unknown field
+ * fails the whole turn — and a model that streams reasoning natively is
+ * displayed either way, since the reasoning parts arrive regardless.
+ *
+ * Anthropic takes adaptive thinking with `display: "summarized"`: the default is
+ * omitted, which streams empty reasoning blocks and reads as a long pause.
+ */
+export async function reasoningOptions(
+  providerId: ProviderId,
+): Promise<Record<string, Record<string, JSONValue>> | undefined> {
+  const anthropicThinking = {
+    anthropic: { thinking: { type: "adaptive", display: "summarized" } },
+  };
+  if (providerId === "anthropic" || providerId === "bedrock") return anthropicThinking;
+  if (providerId === "gemini") return { google: { thinkingConfig: { includeThoughts: true } } };
+  if (!providerId.startsWith(CUSTOM_PROVIDER_PREFIX)) return undefined;
+
+  // A custom provider is a proxy: what it wants is decided by the API it speaks,
+  // not by the model name behind it.
+  const id = providerId.slice(CUSTOM_PROVIDER_PREFIX.length);
+  const row = (await listCustomProviders()).find((r) => r.id === id);
+  return row?.apiKind === "anthropic" ? anthropicThinking : undefined;
 }

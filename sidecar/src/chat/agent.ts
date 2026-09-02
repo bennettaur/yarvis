@@ -1,7 +1,11 @@
 import { type LanguageModel, type ModelMessage, stepCountIs, streamText } from "ai";
+
+/** The options bag `streamText` accepts, so callers can borrow one field of it. */
+type StreamTextOptions = Parameters<typeof streamText>[0];
+
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
-import type { ChatMessageMetadata } from "../db/schema.ts";
+import type { ChatMessageMetadata, ToolActivity } from "../db/schema.ts";
 import { clientError, describeError, errorDetail } from "../llm/errors.ts";
 import { type ApprovalHooks, assembleAgentToolset } from "../mcp/chatTools.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
@@ -40,6 +44,50 @@ function emptyTurnMessage(finishReason: string | undefined, steps: number | unde
         finishReason ? ` (finish reason: ${finishReason})` : ""
       }.`;
   }
+}
+
+/** Longest tool result kept for display and storage; the model saw all of it. */
+const TOOL_RESULT_CHARS = 400;
+
+/**
+ * The model-facing key of an MCP tool is its registry id,
+ * `mcp:<serverId>:<toolName>`. Only the last part means anything to a reader.
+ */
+function toolLabel(key: string): string {
+  if (!key.startsWith("mcp:")) return key;
+  const [, , ...rest] = key.split(":");
+  return rest.join(":") || key;
+}
+
+function serverOf(key: string, names?: ReadonlyMap<string, string>): string | undefined {
+  if (!key.startsWith("mcp:")) return undefined;
+  const serverId = key.split(":")[1] ?? "";
+  return names?.get(serverId) ?? serverId;
+}
+
+/** A tool's output as one short line: enough to see what came back, not the payload. */
+function summarizeToolOutput(output: unknown): string | undefined {
+  if (output === undefined || output === null) return undefined;
+  const text = typeof output === "string" ? output : safeJson(output);
+  if (!text) return undefined;
+  return text.length > TOOL_RESULT_CHARS ? `${text.slice(0, TOOL_RESULT_CHARS)}…` : text;
+}
+
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/** The parts of a settled entry the wire event carries. */
+function toolOutcome(entry: ToolActivity): {
+  status: ToolActivity["status"];
+  result?: string;
+  durationMs?: number;
+} {
+  return { status: entry.status, result: entry.result, durationMs: entry.durationMs };
 }
 
 function systemPrompt(): string {
@@ -116,6 +164,21 @@ export function buildScreenContextMessage(
  */
 export type AgentEvent =
   | { type: "delta"; text: string }
+  | { type: "reasoning"; text: string }
+  | {
+      type: "tool_call";
+      id: string;
+      name: string;
+      server?: string;
+      args?: unknown;
+    }
+  | {
+      type: "tool_result";
+      id: string;
+      status: ToolActivity["status"];
+      result?: string;
+      durationMs?: number;
+    }
   | { type: "attention"; reason?: string }
   | { type: "error"; message: string; detail?: string }
   | { type: "done"; text: string; finishReason?: string; steps?: number };
@@ -134,6 +197,17 @@ export interface AgentTurnParams {
   userMetadata?: ChatMessageMetadata;
   /** Cancels the upstream provider call when the consumer goes away. */
   signal?: AbortSignal;
+  /**
+   * MCP server id to display name, so a tool call can name the server it went
+   * to. Absent on surfaces with no MCP tools to begin with.
+   */
+  serverNames?: ReadonlyMap<string, string>;
+  /**
+   * Provider-specific options for the call, e.g. asking Anthropic or Gemini to
+   * return their reasoning. Built by the caller from the provider it resolved,
+   * since the resolved model no longer says which one it is.
+   */
+  providerOptions?: StreamTextOptions["providerOptions"];
   /**
    * How this surface asks the user to approve an MCP tool call. Requests are
    * raised from inside a tool's `execute`, which the turn blocks on, so they
@@ -159,7 +233,19 @@ export interface AgentTurnParams {
  * persisted.
  */
 export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<AgentEvent> {
-  const { config, db, model, sessionId, message, context, userMetadata, signal, approval } = params;
+  const {
+    config,
+    db,
+    model,
+    sessionId,
+    message,
+    context,
+    userMetadata,
+    signal,
+    approval,
+    serverNames,
+    providerOptions,
+  } = params;
 
   const history = await getMessages(db, sessionId);
   await addMessage(db, { sessionId, role: "user", content: message, metadata: userMetadata });
@@ -230,6 +316,7 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
     // tool mounted mid-turn becomes usable on the next one.
     prepareStep: () => ({ activeTools: computeActiveTools() }),
     stopWhen: stepCountIs(MAX_STEPS),
+    providerOptions,
     // Cancel the upstream call if the consumer disconnects instead of draining
     // the provider with no reader.
     abortSignal: signal,
@@ -242,15 +329,86 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
     },
   });
 
+  // What the turn did, in order, for the live view and for the persisted
+  // transcript. Keyed by tool call id so a result finds the call it belongs to.
+  const activity: ToolActivity[] = [];
+  const byId = new Map<string, { entry: ToolActivity; startedAt: number }>();
+
+  const settle = (
+    toolCallId: string,
+    status: ToolActivity["status"],
+    result: string | undefined,
+  ): ToolActivity | undefined => {
+    const pending = byId.get(toolCallId);
+    if (!pending) return undefined;
+    byId.delete(toolCallId);
+    pending.entry.status = status;
+    pending.entry.result = result;
+    pending.entry.durationMs = Date.now() - pending.startedAt;
+    return pending.entry;
+  };
+
   try {
-    for await (const delta of result.textStream) {
-      full += delta;
-      yield { type: "delta", text: delta };
+    // `fullStream`, not `textStream`: the text is only part of what a turn does,
+    // and a turn that spends its time in tools showed the user nothing at all.
+    for await (const part of result.fullStream) {
+      switch (part.type) {
+        case "text-delta":
+          full += part.text;
+          yield { type: "delta", text: part.text };
+          break;
+        case "reasoning-delta":
+          yield { type: "reasoning", text: part.text };
+          break;
+        case "tool-call": {
+          const entry: ToolActivity = {
+            id: part.toolCallId,
+            name: toolLabel(part.toolName),
+            server: serverOf(part.toolName, serverNames),
+            args: part.input,
+            status: "ok",
+          };
+          activity.push(entry);
+          byId.set(part.toolCallId, { entry, startedAt: Date.now() });
+          yield {
+            type: "tool_call",
+            id: entry.id,
+            name: entry.name,
+            server: entry.server,
+            args: entry.args,
+          };
+          break;
+        }
+        case "tool-result": {
+          // The approval wrapper answers a denial with a result, not an error,
+          // so the model can move on — but for the user that is the outcome
+          // that matters most, and it must not read as a successful call.
+          const denied =
+            typeof part.output === "object" &&
+            part.output !== null &&
+            (part.output as { denied?: unknown }).denied === true;
+          const entry = settle(
+            part.toolCallId,
+            denied ? "denied" : "ok",
+            summarizeToolOutput(part.output),
+          );
+          if (entry) yield { type: "tool_result", id: entry.id, ...toolOutcome(entry) };
+          break;
+        }
+        case "tool-error": {
+          const entry = settle(part.toolCallId, "error", clientError(part.error));
+          if (entry) yield { type: "tool_result", id: entry.id, ...toolOutcome(entry) };
+          break;
+        }
+      }
     }
   } catch (e) {
     streamError = e;
     console.error("[chat] stream iteration error:", describeError(e));
   }
+
+  // A tool still pending when the stream ends was cut short with it.
+  for (const [id] of byId) settle(id, "error", "The turn ended before this finished.");
 
   if (streamError) {
     yield { type: "error", message: clientError(streamError), detail: errorDetail(streamError) };
@@ -273,7 +431,12 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
     return;
   }
 
-  await addMessage(db, { sessionId, role: "assistant", content: full });
+  await addMessage(db, {
+    sessionId,
+    role: "assistant",
+    content: full,
+    toolCalls: activity.length ? activity : undefined,
+  });
   if (attention.requested) {
     yield { type: "attention", reason: attention.reason ?? undefined };
   }

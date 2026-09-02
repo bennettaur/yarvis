@@ -5,7 +5,7 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { isModelCapability } from "../llm/catalog.ts";
 import { clientError, describeError, errorDetail } from "../llm/errors.ts";
-import { availableProviders, resolveModel } from "../llm/providers.ts";
+import { availableProviders, reasoningOptions, resolveModel } from "../llm/providers.ts";
 import { resolveApproval } from "../mcp/approvals.ts";
 import { listMcpServers } from "../mcp/service.ts";
 import { runAgentTurn } from "./agent.ts";
@@ -29,6 +29,12 @@ const chatSchema = z.object({
    * own metadata and never comes through this route.)
    */
   source: z.literal("voice").optional(),
+  /**
+   * Ask the provider to return the model's reasoning for this turn. Off by
+   * default: on the providers that support it, thinking costs tokens and time,
+   * so it is the user's choice per surface rather than something always on.
+   */
+  reasoning: z.boolean().optional(),
 });
 
 const createSessionSchema = z.object({ title: z.string().nullish() });
@@ -80,7 +86,7 @@ export function createChatRoutes(config: Config): Hono {
     const body = await c.req.json().catch(() => null);
     const parsed = chatSchema.safeParse(body);
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const { sessionId, message, provider, model, context, source } = parsed.data;
+    const { sessionId, message, provider, model, context, source, reasoning } = parsed.data;
 
     const dbh = db();
     let chatModel;
@@ -92,6 +98,7 @@ export function createChatRoutes(config: Config): Hono {
     }
     const servers = await listMcpServers();
     const serverNames = new Map(servers.map((s) => [s.id, s.name]));
+    const providerOptions = reasoning ? await reasoningOptions(provider) : undefined;
 
     return streamSSE(c, async (stream) => {
       // Tool-approval requests are emitted from inside a tool's `execute`, out of
@@ -114,6 +121,8 @@ export function createChatRoutes(config: Config): Hono {
         message,
         context,
         userMetadata: source ? { source } : undefined,
+        serverNames,
+        providerOptions,
         // Cancel the upstream call if the client disconnects.
         signal: c.req.raw.signal,
         // This surface holds a live channel to the user, so it can ask for MCP
@@ -134,6 +143,24 @@ export function createChatRoutes(config: Config): Hono {
       })) {
         if (event.type === "delta") {
           await safeWrite({ type: "delta", text: event.text });
+        } else if (event.type === "reasoning") {
+          await safeWrite({ type: "reasoning", text: event.text });
+        } else if (event.type === "tool_call") {
+          await safeWrite({
+            type: "tool_call",
+            id: event.id,
+            name: event.name,
+            server: event.server,
+            args: event.args,
+          });
+        } else if (event.type === "tool_result") {
+          await safeWrite({
+            type: "tool_result",
+            id: event.id,
+            status: event.status,
+            result: event.result,
+            durationMs: event.durationMs,
+          });
         } else if (event.type === "attention") {
           await safeWrite({ type: "attention", reason: event.reason });
         } else if (event.type === "error") {

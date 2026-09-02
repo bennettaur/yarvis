@@ -55,6 +55,24 @@ export interface ChatMessageMetadata {
   telegramFirstName?: string;
 }
 
+/**
+ * One tool call the assistant made during a turn, kept so a reloaded thread
+ * shows what it actually did rather than only what it said afterwards. Stored
+ * on the assistant message that concluded the turn.
+ */
+export interface ToolActivity {
+  /** The AI SDK tool call id, unique within the turn. */
+  id: string;
+  name: string;
+  /** The MCP server that owns the tool, when it came from one. */
+  server?: string;
+  args?: unknown;
+  status: "ok" | "error" | "denied";
+  /** A short rendering of the result or the error, capped before storage. */
+  result?: string;
+  durationMs?: number;
+}
+
 export const taskStatus = pgEnum("task_status", ["open", "done"]);
 export const taskScope = pgEnum("task_scope", ["daily", "weekly"]);
 
@@ -72,7 +90,8 @@ export const chatMessages = pgTable("chat_messages", {
     .references(() => chatSessions.id, { onDelete: "cascade" }),
   role: messageRole("role").notNull(),
   content: text("content").notNull(),
-  toolCalls: jsonb("tool_calls"),
+  // What the assistant ran during the turn this message concluded.
+  toolCalls: jsonb("tool_calls").$type<ToolActivity[]>(),
   // Provenance for the message (e.g. that it arrived via Telegram). Null for
   // messages composed in the app.
   metadata: jsonb("metadata").$type<ChatMessageMetadata>(),
