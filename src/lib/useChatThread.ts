@@ -11,6 +11,7 @@ import {
   streamChat,
   type ThreadMessage,
 } from "./chat";
+import { type DisplayError, formatError } from "./errors";
 
 // Shared with ChatPanel so Omni Chat defaults to the same provider/model the
 // user last picked in the main Chat tab.
@@ -42,7 +43,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
   const [messages, setMessages] = useState<ThreadMessage[]>([]);
   const [streaming, setStreaming] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<DisplayError | null>(null);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
 
   const respondApproval = useCallback(async (id: string, approved: boolean) => {
@@ -50,7 +51,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     try {
       await respondToToolApproval(id, approved);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(formatError(e));
     }
   }, []);
 
@@ -62,7 +63,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
         msgs.map((m: ChatMessage) => ({ role: m.role, content: m.content, metadata: m.metadata })),
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(formatError(e));
     }
   }, []);
 
@@ -85,7 +86,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
           );
         }
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(formatError(e));
       }
     })();
   }, []);
@@ -169,11 +170,11 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
           } else if (evt.type === "attention" && evt.reason) {
             onAttention?.(evt.reason);
           } else if (evt.type === "error") {
-            setError(evt.message ?? "stream error");
+            setError({ message: evt.message ?? "stream error", detail: evt.detail });
           }
         }
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(formatError(e));
       } finally {
         if (acc) setMessages((prev) => [...prev, { role: "assistant", content: acc }]);
         setStreaming("");

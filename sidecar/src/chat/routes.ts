@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { isModelCapability } from "../llm/catalog.ts";
+import { clientError, describeError, errorDetail } from "../llm/errors.ts";
 import { availableProviders, resolveModel } from "../llm/providers.ts";
 import { resolveApproval } from "../mcp/approvals.ts";
 import { listMcpServers } from "../mcp/service.ts";
@@ -86,8 +87,8 @@ export function createChatRoutes(config: Config): Hono {
     try {
       chatModel = await resolveModel(config, provider, model);
     } catch (e) {
-      console.error("[chat] model resolution failed:", e);
-      return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+      console.error("[chat] model resolution failed:", describeError(e));
+      return c.json({ error: clientError(e), detail: errorDetail(e) }, 400);
     }
     const servers = await listMcpServers();
     const serverNames = new Map(servers.map((s) => [s.id, s.name]));
@@ -136,9 +137,13 @@ export function createChatRoutes(config: Config): Hono {
         } else if (event.type === "attention") {
           await safeWrite({ type: "attention", reason: event.reason });
         } else if (event.type === "error") {
-          await safeWrite({ type: "error", message: event.message });
+          await safeWrite({ type: "error", message: event.message, detail: event.detail });
         } else if (event.type === "done") {
-          await safeWrite({ type: "done" });
+          await safeWrite({
+            type: "done",
+            finishReason: event.finishReason,
+            steps: event.steps,
+          });
         }
       }
     });

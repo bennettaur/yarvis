@@ -86,6 +86,11 @@ export interface ChatEvent {
   type: "delta" | "done" | "error" | "attention" | "tool_approval_request";
   text?: string;
   message?: string;
+  /** `error`: the full redacted diagnosis (status, endpoint, provider body). */
+  detail?: string;
+  /** `done`: why the model stopped, and how many steps the turn took. */
+  finishReason?: string;
+  steps?: number;
   /** Present on `attention` events: why the agent needs the user. */
   reason?: string;
   /** `tool_approval_request`: the tool call id to approve or deny. */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { clientError, describeError, redactSecrets } from "./errors.ts";
+import { clientError, describeError, errorDetail, errorMessage, redactSecrets } from "./errors.ts";
 
 describe("redactSecrets", () => {
   it("redacts api-key tokens echoed back in a provider error body", () => {
@@ -77,5 +77,53 @@ describe("clientError", () => {
 
   it("returns just the message when there is no numeric status", () => {
     expect(clientError(new Error("plain"))).toBe("plain");
+  });
+});
+
+describe("errors thrown as plain objects", () => {
+  // The shape an OpenAI-compatible gateway (e.g. litellm) rejects with, and the
+  // reason a failed chat used to read as "[object Object]".
+  const gatewayError = {
+    error: { message: "model not found", type: "invalid_request" },
+    status: 404,
+  };
+
+  it("unwraps a nested message instead of stringifying the object", () => {
+    expect(errorMessage(gatewayError)).toBe("model not found");
+    expect(clientError(gatewayError)).toBe("model not found (status 404)");
+    expect(describeError(gatewayError)).toContain("model not found");
+  });
+
+  it("never returns [object Object] for an object with no message", () => {
+    expect(errorMessage({ code: "ECONNREFUSED" })).toBe('{"code":"ECONNREFUSED"}');
+    expect(clientError({})).toBe("<Object with no readable fields>");
+  });
+
+  it("survives a circular object", () => {
+    const circular: Record<string, unknown> = { code: 1 };
+    circular.self = circular;
+    expect(errorMessage(circular)).toContain("[circular]");
+  });
+});
+
+describe("errorDetail", () => {
+  it("carries the status, endpoint and provider body the inline line omits", () => {
+    const err = Object.assign(new Error("bad request"), {
+      statusCode: 400,
+      url: "https://litellm.internal/v1/responses",
+      responseBody: '{"error":"unsupported endpoint"}',
+    });
+    const out = errorDetail(err);
+    expect(out).toContain("status=400");
+    expect(out).toContain("url=https://litellm.internal/v1/responses");
+    expect(out).toContain("unsupported endpoint");
+  });
+
+  it("redacts credentials a provider echoed back", () => {
+    const err = Object.assign(new Error("unauthorized"), {
+      responseBody: "Wrong API key provided: sk-ant-abcdef0123456789abcdef.",
+    });
+    expect(errorDetail(err)).toContain("[redacted-token]");
+    expect(errorDetail(err)).not.toContain("abcdef0123456789");
   });
 });

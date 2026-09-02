@@ -61,25 +61,30 @@ export async function sidecarFetch(path: string, init: RequestInit = {}): Promis
  * into one line. Returns null when the body is empty or unparseable so the
  * caller can fall back to the bare status.
  */
-async function readErrorDetail(res: Response): Promise<string | null> {
+async function readErrorDetail(res: Response): Promise<{ reason: string | null; detail?: string }> {
   let raw: string;
   try {
     raw = (await res.text()).trim();
   } catch {
-    return null;
+    return { reason: null };
   }
-  if (!raw) return null;
+  if (!raw) return { reason: null };
 
   let body: unknown;
   try {
     body = JSON.parse(raw);
   } catch {
     // Non-JSON body (e.g. a plain-text error) — surface it verbatim.
-    return raw;
+    return { reason: raw };
   }
 
+  // Routes that can say more than one line put the diagnosis in `detail`; it is
+  // what the UI's expander shows and what a bug report should carry.
+  const extra = (body as { detail?: unknown })?.detail;
+  const detail = typeof extra === "string" && extra ? extra : raw;
+
   const err = (body as { error?: unknown })?.error;
-  if (typeof err === "string") return err;
+  if (typeof err === "string") return { reason: err, detail };
   if (err && typeof err === "object") {
     const flat = err as { formErrors?: string[]; fieldErrors?: Record<string, string[]> };
     const parts: string[] = [];
@@ -87,9 +92,26 @@ async function readErrorDetail(res: Response): Promise<string | null> {
     for (const [field, msgs] of Object.entries(flat.fieldErrors ?? {})) {
       if (Array.isArray(msgs) && msgs.length) parts.push(`${field}: ${msgs.join(", ")}`);
     }
-    if (parts.length) return parts.join("; ");
+    if (parts.length) return { reason: parts.join("; "), detail };
   }
-  return raw;
+  return { reason: raw, detail };
+}
+
+/**
+ * A failed sidecar call. Carries the HTTP status and the server's own longer
+ * explanation so the UI can show one line and keep the diagnosis behind an
+ * expander instead of throwing it away.
+ */
+export class SidecarError extends Error {
+  readonly status: number;
+  readonly detail?: string;
+
+  constructor(message: string, status: number, detail?: string) {
+    super(message);
+    this.name = "SidecarError";
+    this.status = status;
+    this.detail = detail;
+  }
 }
 
 /**
@@ -100,9 +122,11 @@ async function readErrorDetail(res: Response): Promise<string | null> {
  */
 export async function ensureOk(res: Response, context: string): Promise<void> {
   if (res.ok) return;
-  const detail = await readErrorDetail(res);
-  throw new Error(
-    detail ? `${context} failed (${res.status}): ${detail}` : `${context} failed: ${res.status}`,
+  const { reason, detail } = await readErrorDetail(res);
+  throw new SidecarError(
+    reason ? `${context} failed (${res.status}): ${reason}` : `${context} failed: ${res.status}`,
+    res.status,
+    detail,
   );
 }
 
