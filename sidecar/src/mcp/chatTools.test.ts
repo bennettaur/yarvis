@@ -3,7 +3,7 @@ import { tool } from "ai";
 import postgres from "postgres";
 import { z } from "zod";
 import { syncBuiltins } from "../agentTools/registry.ts";
-import { setToolPolicy } from "../agentTools/store.ts";
+import { setToolSettings } from "../agentTools/store.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { HashEmbedder } from "../memory/embedder.ts";
@@ -74,8 +74,8 @@ describe("assembleAgentToolset", () => {
 
   it("excludes disabled tools and gates search-policy tools until mounted", async () => {
     unmountAll("sess-b");
-    await setToolPolicy(db, "builtin:create_task", "search");
-    await setToolPolicy(db, "builtin:remember", "disabled");
+    await setToolSettings(db, "builtin:create_task", { policy: "search" });
+    await setToolSettings(db, "builtin:remember", { policy: "disabled" });
     const builtinTools = {
       create_task: fakeBuiltin("create_task"),
       remember: fakeBuiltin("remember"),

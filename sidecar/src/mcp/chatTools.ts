@@ -119,7 +119,7 @@ export function buildMetaTools(deps: MetaToolDeps): Record<string, Tool> {
           mounted: toMount,
           skipped,
           note: toMount.length
-            ? "These tools are now callable. MCP tool calls require user approval."
+            ? "These tools are now callable. An MCP tool call asks the user to approve it first, unless they have marked that tool as auto-approved."
             : "No tools were mounted.",
         };
       },
@@ -181,10 +181,13 @@ export async function assembleAgentToolset(opts: {
    * to prompt gets them dropped instead — see below.
    */
   confirmBuiltins?: ReadonlySet<string>;
+  /** The connected MCP tools to assemble; defaults to whatever is live. */
+  liveTools?: Record<string, McpClientTool>;
 }): Promise<AgentToolset> {
   const { config, db, sessionId, builtinTools, approval, confirmBuiltins } = opts;
   const registry = await listRegistryTools(db);
   const policyById = new Map(registry.map((r) => [r.id, r.policy]));
+  const approvalById = new Map(registry.map((r) => [r.id, r.approval]));
 
   const tools: Record<string, Tool> = {};
 
@@ -206,11 +209,19 @@ export async function assembleAgentToolset(opts: {
   // Live MCP tools: keyed by registry id, wrapped with approval, excluded when
   // disabled. (Tools whose server is disconnected simply aren't present here.)
   // With no approval channel they are skipped outright — see the note above.
+  //
+  // A tool the user marked "auto" runs without asking. That is standing consent
+  // for one specific third-party tool, given in Settings; it is not a reason to
+  // offer the tool on a surface that could never have asked, so the whole block
+  // still requires an approval channel to exist.
   if (approval) {
-    const liveTools = getMcpManager().getLiveTools();
+    const liveTools = opts.liveTools ?? getMcpManager().getLiveTools();
     for (const [id, t] of Object.entries(liveTools)) {
       if (policyById.get(id) === "disabled") continue;
-      tools[id] = wrapToolWithApproval(id, t, approval);
+      tools[id] =
+        approvalById.get(id) === "auto"
+          ? (t as unknown as Tool)
+          : wrapToolWithApproval(id, t, approval);
     }
   }
 

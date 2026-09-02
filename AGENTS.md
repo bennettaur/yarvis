@@ -242,6 +242,14 @@ back to ad-hoc.
   the *active* tool set for a step is computed from registry policy, so a
   built-in the registry doesn't know about is assembled into the turn and then
   never offered to the model. A new family of tools is added there, not beside it.
+- Who has to approve a tool call is decided in two different places on purpose.
+  `agent_tools.approval` is the user's standing consent for one MCP tool, set in
+  the Tool Manager, and lets `assembleAgentToolset` skip the approval wrapper for
+  it. Built-ins are not covered by it: whether one is confirmed comes from
+  `chat/destructiveTools.ts` and how the turn was composed — a spoken turn was
+  never proof-read — which no stored preference may waive. Neither mechanism
+  gives MCP tools to a surface that cannot prompt: that still requires
+  `approval` hooks to exist at all.
 - A chat turn reports what it is doing, not only what it concluded.
   `runAgentTurn` drives `fullStream`, so tool calls, their outcomes and any
   reasoning the provider returns reach the surface as they happen; the tool

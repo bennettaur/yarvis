@@ -854,6 +854,15 @@ export const mcpServers = pgTable("mcp_servers", {
 
 export const toolSource = pgEnum("tool_source", ["builtin", "mcp"]);
 export const toolPolicy = pgEnum("tool_policy", ["always", "search", "disabled"]);
+/**
+ * Whether calling a tool needs the user's say-so each time. Only meaningful for
+ * MCP tools: they are third-party code, so they ask by default, and "auto" is
+ * the user's standing consent for one they trust. Built-in tools are governed by
+ * `chat/destructiveTools.ts` instead, which decides from how the turn was
+ * composed rather than from a stored preference — a spoken turn was never
+ * proof-read, and no amount of prior trust makes that safe.
+ */
+export const toolApproval = pgEnum("tool_approval", ["ask", "auto"]);
 
 /**
  * The unified tool registry: one row per tool the agent can use, spanning both
@@ -864,6 +873,7 @@ export const toolPolicy = pgEnum("tool_policy", ["always", "search", "disabled"]
  *   - "always"   → always mounted (always in the model's context),
  *   - "search"   → discoverable via search and mounted on demand,
  *   - "disabled" → never registered with the model.
+ * `approval` governs whether an MCP tool call pauses for the user first.
  *
  * `id` is a stable string key: "builtin:<name>" or "mcp:<serverId>:<toolName>".
  * `contentHash` lets a resync skip re-embedding tools whose name/description/
@@ -881,6 +891,7 @@ export const agentTools = pgTable("agent_tools", {
   description: text("description").notNull().default(""),
   inputSchema: jsonb("input_schema"),
   policy: toolPolicy("policy").notNull().default("search"),
+  approval: toolApproval("approval").notNull().default("ask"),
   contentHash: text("content_hash").notNull(),
   embedding: vector("embedding", { dimensions: EMBED_DIM }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

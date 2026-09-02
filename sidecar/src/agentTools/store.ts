@@ -12,6 +12,8 @@ import type { Embedder } from "../memory/embedder.ts";
  */
 
 export type ToolPolicy = "always" | "search" | "disabled";
+/** Whether an MCP tool call waits for the user's approval. See `agentTools.approval`. */
+export type ToolApproval = "ask" | "auto";
 export type ToolSource = "builtin" | "mcp";
 
 /** A tool to upsert into the registry, before policy/embedding are applied. */
@@ -146,6 +148,7 @@ export async function listRegistryTools(db: Db): Promise<RegistryTool[]> {
       description: agentTools.description,
       inputSchema: agentTools.inputSchema,
       policy: agentTools.policy,
+      approval: agentTools.approval,
       contentHash: agentTools.contentHash,
       createdAt: agentTools.createdAt,
       updatedAt: agentTools.updatedAt,
@@ -154,14 +157,18 @@ export async function listRegistryTools(db: Db): Promise<RegistryTool[]> {
     .orderBy(agentTools.source, agentTools.name);
 }
 
-export async function setToolPolicy(
+/**
+ * Updates what the user controls about a tool: how it is exposed to the model,
+ * and whether calling it asks first. Fields left out are unchanged.
+ */
+export async function setToolSettings(
   db: Db,
   id: string,
-  policy: ToolPolicy,
+  settings: { policy?: ToolPolicy; approval?: ToolApproval },
 ): Promise<RegistryTool | null> {
   const [row] = await db
     .update(agentTools)
-    .set({ policy, updatedAt: new Date() })
+    .set({ ...settings, updatedAt: new Date() })
     .where(eq(agentTools.id, id))
     .returning({
       id: agentTools.id,
@@ -171,6 +178,7 @@ export async function setToolPolicy(
       description: agentTools.description,
       inputSchema: agentTools.inputSchema,
       policy: agentTools.policy,
+      approval: agentTools.approval,
       contentHash: agentTools.contentHash,
       createdAt: agentTools.createdAt,
       updatedAt: agentTools.updatedAt,
