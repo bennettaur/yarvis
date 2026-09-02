@@ -91,8 +91,14 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
         try {
           await setToolSettings(approval.toolId, { approval: "auto" });
         } catch (e) {
-          // The call itself can still go ahead; only the memory of it failed.
-          setError(formatError(e));
+          // The call still goes ahead — only the standing consent failed to
+          // save. Say which half worked, or the user is left assuming they
+          // won't be asked again.
+          const { message, detail } = formatError(e);
+          setError({
+            message: `Approved this call, but "always allow" wasn't saved: ${message}`,
+            detail,
+          });
         }
       }
       await respondApproval(approval.id, true);
@@ -207,6 +213,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
       const controller = new AbortController();
       inFlight.current = controller;
       let acc = "";
+      let failed = false;
       let thought = "";
       const ran: ToolActivity[] = [];
       try {
@@ -262,6 +269,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
           } else if (evt.type === "attention" && evt.reason) {
             onAttention?.(evt.reason);
           } else if (evt.type === "error") {
+            failed = true;
             setError({ message: evt.message ?? "stream error", detail: evt.detail });
           }
         }
@@ -269,18 +277,20 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
         // Stopping is the user's own doing, not a failure to report. Nothing was
         // persisted for the turn, so the partial reply goes with it rather than
         // sitting in a transcript that a reload would not reproduce.
+        failed = true;
         if (controller.signal.aborted) {
-          acc = "";
           setError({ message: "Turn stopped. Nothing was saved for it." });
         } else {
           setError(formatError(e));
         }
       } finally {
         inFlight.current = null;
-        // A failed turn keeps its activity on screen rather than in the
-        // transcript: nothing was persisted for it, and the tools it did run are
-        // what explains the failure.
-        if (acc) {
+        // A failed or stopped turn persisted nothing, so its partial reply is
+        // not added to the transcript either — leaving it there would show a
+        // message the next reload cannot reproduce, and a retry would then
+        // stack a second reply under it. Its activity stays on screen, since
+        // the tools it did run are what explains the failure.
+        if (acc && !failed) {
           setMessages((prev) => [
             ...prev,
             {
