@@ -271,6 +271,21 @@ back to ad-hoc.
   for any client and for a user who retypes rather than pressing Retry;
   `useChatThread` suppresses the duplicate bubble on the same condition so the
   surface and the transcript agree.
+- How far a turn may go is configuration, not a constant: `chat/config.ts` holds
+  the step budget and an optional output-token cap at the `chatConfig` key in
+  `~/.yarvis/settings.json`, read per turn by every caller of `runAgentTurn` so a
+  change applies to the next message with no restart. It sits with the other
+  structural settings rather than in Postgres — it decides how the sidecar
+  behaves rather than recording anything the user produced, and a turn reads it
+  on a path that must work whether or not the database is up. The right number is a property of the work rather
+  than of the code — a question needs two steps, "grab a few tickets" needs one
+  tool call per ticket — and a turn that runs out ends with *no reply at all*
+  having already paid for the calls it made, so the budget errs high and
+  `stopWhen` is a runaway guard rather than a throttle. A message that names the
+  limit must name the one the turn actually ran with, or it sends the user to
+  raise a limit they already raised. The specialists' own ceiling in
+  `agents/catalog.ts` is deliberately separate and lower: a delegated run has no
+  approval channel, so it is not covered by a setting the chat surfaces share.
 - A chat turn reports what it is doing, not only what it concluded.
   `runAgentTurn` drives `fullStream`, so tool calls, their outcomes and any
   reasoning the provider returns reach the surface as they happen; the tool

@@ -1343,14 +1343,6 @@ export const jobConfig = pgTable("job_config", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-/**
- * Suggestions the user has turned down, so "what should I work on next" stops
- * offering them. A structured row rather than a memory because the suggester
- * has to filter on it exactly, and a semantic match is the wrong instrument for
- * "is this specific PR dismissed". The reason is kept for when the agent has to
- * explain why something is absent, and `expiresAt` lets "not this week" differ
- * from "never".
- */
 export const suggestionDismissals = pgTable(
   "suggestion_dismissals",
   {

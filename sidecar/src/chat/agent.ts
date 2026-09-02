@@ -12,16 +12,9 @@ import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
 import { newAttentionState } from "./attentionTools.ts";
 import { buildBuiltinTools } from "./builtinTools.ts";
+import { type ChatConfig, DEFAULT_CHAT_CONFIG } from "./config.ts";
 import { ALWAYS_CONFIRM_BUILTIN_TOOLS, DESTRUCTIVE_BUILTIN_TOOLS } from "./destructiveTools.ts";
 import { addMessage, getMessages } from "./service.ts";
-
-/**
- * Steps one turn may take. Headroom for multi-step workspace flows: "grab a few
- * tickets" chains list_repos → list_repo_issues → one start_work_on_issue per
- * ticket, which exceeds a 5-step budget once more than one ticket is involved.
- * The search → mount → call → use cycle for an on-demand tool needs the same.
- */
-const MAX_STEPS = 12;
 
 /**
  * Why a turn ended with nothing to say. A model that spends its last step on a
@@ -30,11 +23,15 @@ const MAX_STEPS = 12;
  * stopped mid-thought. Naming it is the difference between "it broke" and
  * "raise the step budget".
  */
-function emptyTurnMessage(finishReason: string | undefined, steps: number | undefined): string {
+function emptyTurnMessage(
+  finishReason: string | undefined,
+  steps: number | undefined,
+  maxSteps: number,
+): string {
   const used = steps ? ` after ${steps} step${steps === 1 ? "" : "s"}` : "";
   switch (finishReason) {
     case "tool-calls":
-      return `The model ran out of steps${used} — it was still calling tools when it hit the ${MAX_STEPS}-step limit for a turn, so it never wrote a reply. Ask it to continue.`;
+      return `The model ran out of steps${used} — it was still calling tools when it hit the ${maxSteps}-step limit for a turn, so it never wrote a reply. Raise the limit in Settings, or ask it to continue.`;
     case "length":
       return `The reply was cut off by the model's output token limit${used} and nothing was returned.`;
     case "content-filter":
@@ -240,6 +237,11 @@ export interface AgentTurnParams {
    * then left out of the turn entirely rather than run unapproved.
    */
   approval?: ApprovalHooks;
+  /**
+   * How much room this turn gets. Omitted by callers with no database to read
+   * it from, which then get the defaults.
+   */
+  budget?: Partial<ChatConfig>;
 }
 
 /**
@@ -270,6 +272,7 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
     serverNames,
     providerOptions,
   } = params;
+  const budget: ChatConfig = { ...DEFAULT_CHAT_CONFIG, ...params.budget };
 
   const history = await getMessages(db, sessionId);
   // A turn that failed persisted its user message and nothing else, so retrying
@@ -353,7 +356,12 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
     // this session has mounted, and the meta tools. Recomputed per step so a
     // tool mounted mid-turn becomes usable on the next one.
     prepareStep: () => ({ activeTools: computeActiveTools() }),
-    stopWhen: stepCountIs(MAX_STEPS),
+    stopWhen: stepCountIs(budget.maxSteps),
+    // Null leaves the provider's own limit in place rather than adding a second,
+    // lower one that would truncate a long answer.
+    maxOutputTokens: budget.maxOutputTokens ?? undefined,
+    // Null leaves the provider's own limit in place rather than adding a second,
+    // lower one that would truncate a long answer.
     providerOptions,
     // Cancel the upstream call if the consumer disconnects instead of draining
     // the provider with no reader.
@@ -482,7 +490,7 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
   ]);
 
   if (!full.trim()) {
-    const reason = emptyTurnMessage(finishReason, steps);
+    const reason = emptyTurnMessage(finishReason, steps, budget.maxSteps);
     // A turn with nothing to say and nothing done leaves no row: an empty
     // assistant message would replay as a blank turn forever. A turn that ran
     // tools is the opposite case — it changed things outside this app, and

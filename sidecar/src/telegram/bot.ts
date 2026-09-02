@@ -1,4 +1,5 @@
 import { runAgentTurn } from "../chat/agent.ts";
+import { getChatConfig } from "../chat/config.ts";
 import { createSession } from "../chat/service.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
@@ -355,6 +356,7 @@ async function handleChat(
       message: text,
       userMetadata,
       signal,
+      budget: await getChatConfig(),
     })) {
       if (event.type === "done") full = event.text;
       else if (event.type === "attention") attentionReason = event.reason;

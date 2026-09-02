@@ -9,6 +9,13 @@ import { availableProviders, reasoningOptions, resolveModel } from "../llm/provi
 import { resolveApproval } from "../mcp/approvals.ts";
 import { listMcpServers } from "../mcp/service.ts";
 import { runAgentTurn } from "./agent.ts";
+import {
+  type ChatConfig,
+  getChatConfig,
+  MAX_OUTPUT_TOKENS_CEILING,
+  MAX_STEPS_CEILING,
+  saveChatConfig,
+} from "./config.ts";
 import { createSession, getMessages, listSessions } from "./service.ts";
 
 // Re-exported from the shared agent module so the existing context test (which
@@ -42,6 +49,17 @@ const createSessionSchema = z.object({ title: z.string().nullish() });
 const approvalSchema = z.object({ approved: z.boolean() });
 
 /** Chat routes, mounted under /api/chat. */
+/**
+ * The ceilings are a guard against a mistyped figure, not a judgement about the
+ * right budget: a turn that runs out of steps costs the user the tool calls it
+ * already paid for and returns no reply, so the useful failure is far from
+ * either bound.
+ */
+const configSchema = z.object({
+  maxSteps: z.number().int().min(1).max(MAX_STEPS_CEILING),
+  maxOutputTokens: z.number().int().min(256).max(MAX_OUTPUT_TOKENS_CEILING).nullable(),
+});
+
 export function createChatRoutes(config: Config): Hono {
   const router = new Hono();
 
@@ -68,6 +86,18 @@ export function createChatRoutes(config: Config): Hono {
   });
 
   const db = () => getDb(config.databaseUrl as string).db;
+
+  // How much room a turn gets. Settings reads and writes it; the turn above
+  // reads it per request, so a change applies to the next turn without a
+  // restart.
+  router.get("/config", async (c) => c.json({ config: await getChatConfig() }));
+
+  router.put("/config", async (c) => {
+    const parsed = configSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const saved: ChatConfig = await saveChatConfig(parsed.data);
+    return c.json({ config: saved });
+  });
 
   router.get("/sessions", async (c) => c.json(await listSessions(db())));
 
@@ -99,6 +129,7 @@ export function createChatRoutes(config: Config): Hono {
     const servers = await listMcpServers();
     const serverNames = new Map(servers.map((s) => [s.id, s.name]));
     const providerOptions = reasoning ? await reasoningOptions(provider, model) : undefined;
+    const budget = await getChatConfig();
 
     return streamSSE(c, async (stream) => {
       // Tool-approval requests are emitted from inside a tool's `execute`, out of
@@ -123,6 +154,7 @@ export function createChatRoutes(config: Config): Hono {
         userMetadata: source ? { source } : undefined,
         serverNames,
         providerOptions,
+        budget,
         // Cancel the upstream call if the client disconnects.
         signal: c.req.raw.signal,
         // This surface holds a live channel to the user, so it can ask for MCP
