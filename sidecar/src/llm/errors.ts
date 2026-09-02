@@ -1,14 +1,27 @@
 /**
- * Patterns redacted from error text before it reaches logs or `/health`. Covers
- * Authorization headers, common API-key header shapes, Set-Cookie, and a
- * Postgres connection string with embedded credentials.
+ * Patterns redacted from error text before it reaches a log, `/health`, or the
+ * error detail the user copies into a bug report. Covers Authorization headers
+ * (raw or JSON-encoded, which is how a gateway echoes back the request it
+ * rejected), common API-key shapes, anything named like a credential whatever
+ * its format, a credential in a query string, Set-Cookie, and a Postgres
+ * connection string with embedded credentials.
  */
 const REDACT_PATTERNS: Array<[RegExp, string]> = [
-  [/(authorization:\s*bearer\s+)[^\s",]+/gi, "$1[redacted]"],
-  [/(authorization:\s*basic\s+)[^\s",]+/gi, "$1[redacted]"],
-  [/(x-api-key:\s*)[^\s",]+/gi, "$1[redacted]"],
-  [/(api-key:\s*)[^\s",]+/gi, "$1[redacted]"],
-  [/(set-cookie:\s*)[^\r\n]+/gi, "$1[redacted]"],
+  // The separator class covers a header echoed back inside JSON — which is how
+  // a gateway usually reports the request it rejected — as well as raw headers.
+  [/(authorization"?\s*[:=]\s*"?\s*bearer\s+)[^\s",}]+/gi, "$1[redacted]"],
+  [/(authorization"?\s*[:=]\s*"?\s*basic\s+)[^\s",}]+/gi, "$1[redacted]"],
+  [/("?x-api-key"?\s*[:=]\s*"?)[^\s",}]+/gi, "$1[redacted]"],
+  [/("?api[_-]?key"?\s*[:=]\s*"?)[^\s",}]+/gi, "$1[redacted]"],
+  // Anything else named like a credential, whatever its shape: a provider token
+  // need not look like `sk-…` to be one (Google's `ya29.…`, a bare JWT).
+  [
+    /("?(?:access_token|refresh_token|id_token|token|secret|password)"?\s*[:=]\s*"?)[^\s",}]{8,}/gi,
+    "$1[redacted]",
+  ],
+  // A credential in a query string, which is how several gateways authenticate.
+  [/([?&][^=&\s]*(?:key|token|secret|password)[^=&\s]*=)[^&\s"]+/gi, "$1[redacted]"],
+  [/(set-cookie"?\s*[:=]\s*"?)[^\r\n]+/gi, "$1[redacted]"],
   [/(postgres(?:ql)?:\/\/[^:@/\s]+:)[^@\s]+(@)/gi, "$1[redacted]$2"],
   // sk-, ghp_, github_pat_, etc. style tokens that sometimes show up in error bodies.
   // The optional `c` covers Cerebras keys: `\b` won't fire between `c` and `sk-`,
@@ -37,6 +50,14 @@ const SERIALIZED_CHARS = 2000;
 /** How deep to follow `cause` / nested `error` wrappers before giving up. */
 const MAX_DEPTH = 4;
 
+/**
+ * Fields never serialized out of a thrown value. `stack` is noise; the rest are
+ * the AI SDK's copy of the outbound request, which is the whole conversation
+ * plus its headers — not something to put in a string the user will paste into
+ * a bug report.
+ */
+const SKIPPED_FIELDS = new Set(["stack", "requestBodyValues", "headers", "body"]);
+
 function truncate(text: string, limit: number): string {
   return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
@@ -56,7 +77,7 @@ function serialize(value: unknown): string {
     seen.add(input);
     const out: Record<string, unknown> = {};
     for (const key of Object.getOwnPropertyNames(input)) {
-      if (key === "stack") continue;
+      if (SKIPPED_FIELDS.has(key)) continue;
       out[key] = expand((input as Record<string, unknown>)[key]);
     }
     return out;
@@ -70,6 +91,11 @@ function serialize(value: unknown): string {
   if (!json || json === "{}")
     return `<${value.constructor?.name ?? "object"} with no readable fields>`;
   return truncate(json, SERIALIZED_CHARS);
+}
+
+function withoutQuery(url: string): string {
+  const cut = url.search(/[?#]/);
+  return cut === -1 ? url : `${url.slice(0, cut)}?[redacted]`;
 }
 
 /**
@@ -109,7 +135,9 @@ function detailParts(error: unknown, bodyChars: number, depth = 0): string[] {
   }
   const status = fields.statusCode ?? fields.status;
   if (typeof status === "number") parts.push(`status=${status}`);
-  if (typeof fields.url === "string") parts.push(`url=${fields.url}`);
+  // Origin and path only: several gateways authenticate with a query parameter,
+  // and the endpoint is the diagnostic — the query string is not.
+  if (typeof fields.url === "string") parts.push(`url=${withoutQuery(fields.url)}`);
   if (typeof fields.responseBody === "string" && fields.responseBody) {
     parts.push(`body=${truncate(fields.responseBody, bodyChars)}`);
   }

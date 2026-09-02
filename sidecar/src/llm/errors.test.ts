@@ -127,3 +127,33 @@ describe("errorDetail", () => {
     expect(errorDetail(err)).not.toContain("abcdef0123456789");
   });
 });
+
+describe("redaction of what a gateway echoes back", () => {
+  it("redacts a JSON-encoded Authorization header", () => {
+    const out = redactSecrets('{"headers":{"authorization":"Bearer ya29.a0AfH6SMBxxxxxxxx"}}');
+    expect(out).not.toContain("ya29");
+    expect(out).toContain("[redacted]");
+  });
+
+  it("redacts a credential named as one, whatever its shape", () => {
+    expect(redactSecrets('"access_token": "eyJhbGciOiJIUzI1NiJ9.payload"')).not.toContain("eyJ");
+    expect(redactSecrets("x-api-key: 9f3c1d2e4b5a6789")).not.toContain("9f3c1d2e");
+  });
+
+  it("keeps the endpoint but not a credential in its query string", () => {
+    const err = Object.assign(new Error("bad request"), {
+      statusCode: 400,
+      url: "https://gateway.internal/v1beta/models/x:stream?key=AIzaSyFAKEKEY123456",
+    });
+    const detail = errorDetail(err);
+    expect(detail).toContain("https://gateway.internal/v1beta/models/x:stream");
+    expect(detail).not.toContain("AIzaSy");
+  });
+
+  it("never serializes the request the SDK attached to the error", () => {
+    // `requestBodyValues` is the whole outbound conversation, headers included.
+    const thrown = { requestBodyValues: { messages: [{ content: "private notes" }] }, code: 400 };
+    expect(errorDetail(thrown)).not.toContain("private notes");
+    expect(errorDetail(thrown)).toContain("400");
+  });
+});

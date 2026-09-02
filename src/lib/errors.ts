@@ -24,7 +24,11 @@ function serialize(value: unknown): string {
     if (seen.has(input)) return "[circular]";
     seen.add(input);
     const out: Record<string, unknown> = {};
-    for (const key of Object.getOwnPropertyNames(input)) out[key] = expand(input[key as never]);
+    for (const key of Object.getOwnPropertyNames(input)) {
+      // The stack is noise beside the fields; the sidecar skips it too.
+      if (key === "stack") continue;
+      out[key] = expand(input[key as never]);
+    }
     return out;
   };
   let json = "";
