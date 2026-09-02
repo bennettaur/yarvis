@@ -1,6 +1,7 @@
 import { useState } from "react";
 import AgentSection from "./AgentSection";
 import CustomProviderSection from "./CustomProviderSection";
+import DiagnosticsSection from "./DiagnosticsSection";
 import EmbeddingsSection from "./EmbeddingsSection";
 import IntegrationSettingsSection from "./IntegrationSettingsSection";
 import JobsSection from "./JobsSection";
@@ -27,7 +28,8 @@ type TabKey =
   | "embeddings"
   | "telegram"
   | "wip"
-  | "assistant";
+  | "assistant"
+  | "diagnostics";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "credentials", label: "Credentials" },
@@ -40,6 +42,7 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "telegram", label: "Telegram" },
   { key: "wip", label: "Work in progress" },
   { key: "assistant", label: "Assistant" },
+  { key: "diagnostics", label: "Diagnostics" },
 ];
 
 const TAB_STORAGE_KEY = "yarvis.settings.activeTab";
@@ -116,6 +119,7 @@ export default function SettingsPanel() {
       {active === "embeddings" && <EmbeddingsSection />}
       {active === "telegram" && <TelegramSection />}
       {active === "wip" && <WipSection />}
+      {active === "diagnostics" && <DiagnosticsSection />}
     </div>
   );
 }

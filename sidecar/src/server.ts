@@ -5,6 +5,7 @@ import { getDb } from "./db/client.ts";
 import { runMigrations } from "./db/migrate.ts";
 import { allJobs } from "./jobs/registry.ts";
 import { startJobScheduler } from "./jobs/scheduler.ts";
+import { installLogCapture } from "./lib/log.ts";
 import { watchParentProcess } from "./lib/parentWatch.ts";
 import { redactSecrets } from "./llm/errors.ts";
 import { chooseEmbedder } from "./memory/embedder.ts";
@@ -14,6 +15,11 @@ import { migrateStructuralConfig } from "./settings/migrateStructuralConfig.ts";
 import { startTelegramBot } from "./telegram/index.ts";
 import { startWorkspacePoller } from "./workspaces/poller.ts";
 import { resumeKickOffs } from "./workspaces/service.ts";
+
+// Before anything else logs: the buffer this fills is what the app's
+// Diagnostics view reads, and a line written during boot is exactly the one
+// worth having when startup is what failed.
+installLogCapture();
 
 const config = loadConfig();
 const instance = loadInstanceConfig();

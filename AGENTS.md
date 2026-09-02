@@ -242,6 +242,13 @@ back to ad-hoc.
   the *active* tool set for a step is computed from registry policy, so a
   built-in the registry doesn't know about is assembled into the turn and then
   never offered to the model. A new family of tools is added there, not beside it.
+- Everything the sidecar logs is captured. `lib/log.ts` wraps `console` at boot
+  into a bounded in-memory tail that `/api/logs` serves and Settings →
+  Diagnostics reads, and the core pipes the process's stdout/stderr to
+  `app_log_dir/sidecar.log` so a packaged build leaves something behind to read.
+  Both are redacted through `redactSecrets`. A new log line therefore just uses
+  `console.*` with the usual `[scope]` prefix — that prefix is what the
+  Diagnostics filter groups by — and never needs a logger of its own.
 - Work that happens on a schedule is a `JobDefinition` in `sidecar/src/jobs/`,
   not a `setInterval`. The scheduler holds a database lease per job, so two
   instances sharing one database can both tick without doing the work twice, and

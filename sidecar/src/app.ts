@@ -18,6 +18,7 @@ import { createJiraRoutes } from "./jira/routes.ts";
 import { createJobRoutes } from "./jobs/routes.ts";
 import { redactSecrets } from "./llm/errors.ts";
 import { createModelCatalogRoutes } from "./llm/routes.ts";
+import { createLogRoutes } from "./logs/routes.ts";
 import { createMcpOAuthCallbackRoutes } from "./mcp/callbackRoutes.ts";
 import { createMcpRoutes } from "./mcp/routes.ts";
 import { createMcpEndpointInfoRoutes, createMcpEndpointRoutes } from "./mcpServer/routes.ts";
@@ -144,6 +145,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/todos", createTodoRoutes(config));
   app.route("/api/specialists", createSpecialistRoutes(config));
   app.route("/api/jobs", createJobRoutes(config));
+  app.route("/api/logs", createLogRoutes());
   app.route("/api/attention", createAttentionRoutes(config));
   app.route("/api/wip", createWipRoutes(config));
   app.route("/api/calendar", createCalendarRoutes(config));
