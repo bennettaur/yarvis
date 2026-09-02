@@ -401,6 +401,25 @@ mod tests {
     }
 
     #[test]
+    fn a_large_log_is_rotated_aside_so_the_previous_run_survives() {
+        let dir = std::env::temp_dir().join(format!("yarvis-log-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("sidecar.log");
+        let rotated = log.with_extension("log.1");
+
+        append_line(&log, "small");
+        rotate_if_large(&log);
+        assert!(!rotated.exists(), "a small log is left alone");
+
+        std::fs::write(&log, vec![b'x'; (MAX_LOG_BYTES + 1) as usize]).unwrap();
+        rotate_if_large(&log);
+        assert!(rotated.exists(), "an oversized log moves aside");
+        assert!(!log.exists(), "and the next run starts a fresh one");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn an_instance_override_beats_the_shared_keychain_database() {
         assert_eq!(
             database_url(

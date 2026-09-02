@@ -1,5 +1,7 @@
 # Logs
 logs
+# ...but the sidecar's own log routes are source, not output.
+!sidecar/src/logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
