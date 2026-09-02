@@ -71,6 +71,10 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     inFlight.current?.abort();
   }, []);
 
+  // A surface that unmounts mid-turn leaves nobody to read the stream; the
+  // sidecar takes the disconnect as a cancel.
+  useEffect(() => () => inFlight.current?.abort(), []);
+
   const respondApproval = useCallback(async (id: string, approved: boolean) => {
     setApprovals((prev) => prev.filter((a) => a.id !== id));
     try {
@@ -106,22 +110,38 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     [respondApproval],
   );
 
-  const loadSession = useCallback(async (id: string) => {
-    setSessionId(id);
-    try {
-      const msgs = await getMessages(id);
-      setMessages(
-        msgs.map((m: ChatMessage) => ({
-          role: m.role,
-          content: m.content,
-          metadata: m.metadata,
-          activity: m.toolCalls ?? undefined,
-        })),
-      );
-    } catch (e) {
-      setError(formatError(e));
-    }
+  /** Ends the turn in flight and clears what it had on screen. */
+  const abandonTurn = useCallback(() => {
+    inFlight.current?.abort();
+    setStreaming("");
+    setThinking("");
+    setActivity([]);
+    setApprovals([]);
+    setError(null);
   }, []);
+
+  const loadSession = useCallback(
+    async (id: string) => {
+      // A turn started in another thread would otherwise keep streaming and
+      // append its reply here, into a conversation it was never part of.
+      abandonTurn();
+      setSessionId(id);
+      try {
+        const msgs = await getMessages(id);
+        setMessages(
+          msgs.map((m: ChatMessage) => ({
+            role: m.role,
+            content: m.content,
+            metadata: m.metadata,
+            activity: m.toolCalls ?? undefined,
+          })),
+        );
+      } catch (e) {
+        setError(formatError(e));
+      }
+    },
+    [abandonTurn],
+  );
 
   // Load providers and restore the last-used provider/model.
   useEffect(() => {
@@ -172,18 +192,19 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
   );
 
   const newChat = useCallback(async () => {
+    abandonTurn();
     const session = await createSession();
     setSessionId(session.id);
     setMessages([]);
-    setError(null);
     onSessionCreated?.(session);
     return session;
-  }, [onSessionCreated]);
+  }, [onSessionCreated, abandonTurn]);
 
   const send = useCallback(
     async (text: string, sendOptions: { source?: "voice"; resend?: boolean } = {}) => {
       const trimmed = text.trim();
-      if (!trimmed || !provider || !model || busy) return;
+      // Nothing to send, nothing to send it with, or a turn already running.
+      if (!trimmed || !provider || !model || busy) return false;
 
       let activeId = sessionId;
       if (!activeId) {
@@ -308,6 +329,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
         // Any approvals not acted on are moot once the turn ends.
         setApprovals([]);
       }
+      return true;
     },
     [provider, model, busy, sessionId, getContext, onAttention, onSessionCreated, reasoning],
   );
@@ -316,11 +338,16 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
    * Runs the last user message again. Used after a failure, where the reply is
    * what went missing — asking the user to retype what they already sent is
    * the app admitting it lost their message.
+   *
+   * The retry carries the original turn's provenance. A spoken turn is what
+   * puts the irreversible tools behind a confirmation, and re-sending it as
+   * though it had been typed would quietly drop that gate.
    */
   const retry = useCallback(() => {
     const last = [...messages].reverse().find((m) => m.role === "user");
     if (!last || busy) return;
-    void send(last.content, { resend: true });
+    const source = last.metadata?.source === "voice" ? "voice" : undefined;
+    void send(last.content, { resend: true, source });
   }, [messages, busy, send]);
 
   return {

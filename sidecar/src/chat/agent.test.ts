@@ -94,6 +94,7 @@ async function collect(
   model: MockLanguageModelV3,
   sessionId: string,
   approval?: { onRequest: (info: { toolCallId: string }) => Promise<void> },
+  signal?: AbortSignal,
 ): Promise<AgentEvent[]> {
   const events: AgentEvent[] = [];
   for await (const event of runAgentTurn({
@@ -104,6 +105,7 @@ async function collect(
     message: "hi",
     serverNames,
     approval,
+    signal,
   })) {
     events.push(event);
   }
@@ -234,6 +236,31 @@ describe("runAgentTurn", () => {
     expect(assistant?.role).toBe("assistant");
     expect(assistant?.content).toContain("ran out of steps");
     expect(assistant?.toolCalls?.length).toBeGreaterThan(0);
+  });
+
+  // The surface that stopped the turn has already dropped its partial reply;
+  // persisting it here would put a message in the transcript the user was told
+  // did not exist.
+  it("saves nothing for a turn the user stopped", async () => {
+    const session = await createSession(db, null);
+    const controller = new AbortController();
+    const model = new MockLanguageModelV3({
+      doStream: async () => {
+        controller.abort();
+        return {
+          stream: new ReadableStream<StreamPart>({
+            start(c) {
+              for (const part of text("half a th")) c.enqueue(part);
+              c.close();
+            },
+          }),
+        };
+      },
+    });
+
+    const events = await collect(model, session.id, undefined, controller.signal);
+    expect(events.find((e) => e.type === "error")?.message).toContain("Turn stopped");
+    expect((await getMessages(db, session.id)).map((m) => m.role)).toEqual(["user"]);
   });
 
   it("streams reasoning separately from the reply", async () => {

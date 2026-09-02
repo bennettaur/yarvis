@@ -27,8 +27,8 @@ export default function ChatComposer({
   busy?: boolean;
   /**
    * Ends the turn in flight. Present on surfaces that can cancel; the send
-   * button becomes Stop while busy, since waiting out a turn you no longer want
-   * is the one thing the composer offered no way out of.
+   * button becomes Stop while busy, so a turn the user no longer wants doesn't
+   * have to be waited out.
    */
   onStop?: () => void;
   placeholder?: string;

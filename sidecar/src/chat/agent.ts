@@ -95,10 +95,13 @@ function safeJson(value: unknown): string {
  */
 function truncateArgs(input: unknown): unknown {
   const json = typeof input === "string" ? input : safeJson(input);
-  if (json.length <= TOOL_ARGS_CHARS) {
-    return typeof input === "string" ? redactSecrets(input) : input;
+  const redacted = redactSecrets(json);
+  // Once redaction or the cap has changed it, the value is no longer the object
+  // it was, so it travels as the string it now is.
+  if (redacted.length <= TOOL_ARGS_CHARS) {
+    return redacted === json && typeof input !== "string" ? input : redacted;
   }
-  return `${redactSecrets(json).slice(0, TOOL_ARGS_CHARS)}…`;
+  return `${redacted.slice(0, TOOL_ARGS_CHARS)}…`;
 }
 
 /** The parts of a settled entry the wire event carries. */
@@ -271,10 +274,12 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
   const history = await getMessages(db, sessionId);
   // A turn that failed persisted its user message and nothing else, so retrying
   // it sends the same text again. Recording that a second time would leave the
-  // thread — and every later replay of it — asking twice.
+  // thread — and every later replay of it — asking twice. Two identical
+  // consecutive sends are indistinguishable from a retry and are collapsed the
+  // same way, which is the right answer for a chat either way.
   const last = history[history.length - 1];
-  const isRetry = last?.role === "user" && last.content === message;
-  if (isRetry) history.pop();
+  const repeatsLastUserMessage = last?.role === "user" && last.content === message;
+  if (repeatsLastUserMessage) history.pop();
   else await addMessage(db, { sessionId, role: "user", content: message, metadata: userMetadata });
 
   // Only user/assistant messages are replayed. A persisted `system` row could
@@ -335,6 +340,7 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
   });
 
   let streamError: unknown = null;
+  let aborted = false;
   let full = "";
   const result = streamText({
     model,
@@ -425,6 +431,12 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
           if (entry) yield { type: "tool_result", id: entry.id, ...toolOutcome(entry) };
           break;
         }
+        case "abort":
+          // The AI SDK ends the iteration normally on an abort rather than
+          // throwing, so without this a stopped turn looks like a completed one
+          // and persists a reply the client has already discarded.
+          aborted = true;
+          break;
         case "tool-error": {
           const entry = settle(part.toolCallId, "error", clientError(part.error));
           if (entry) yield { type: "tool_result", id: entry.id, ...toolOutcome(entry) };
@@ -447,6 +459,14 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
 
   if (streamError) {
     yield { type: "error", message: clientError(streamError), detail: errorDetail(streamError) };
+    return;
+  }
+
+  // A stopped turn is the user's own doing, and the surface that stopped it has
+  // already dropped the partial reply. Persisting it here would put a message
+  // in the transcript that they were told did not exist.
+  if (aborted || signal?.aborted) {
+    yield { type: "error", message: "Turn stopped. Nothing was saved for it." };
     return;
   }
 

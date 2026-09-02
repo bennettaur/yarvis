@@ -72,10 +72,13 @@ export default function ChatPanel() {
     threadRef.current?.scrollTo(0, threadRef.current.scrollHeight);
   }, [messages, streaming]);
 
+  // Clear only once the turn is under way: `send` declines while the provider
+  // list is still loading, and a message that vanished without being sent is
+  // worse than a button that briefly does nothing.
   const submit = () => {
-    const text = input;
-    setInput("");
-    void send(text);
+    void send(input).then((sent) => {
+      if (sent) setInput("");
+    });
   };
 
   return (

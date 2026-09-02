@@ -65,10 +65,11 @@ describe("ToolApprovalBar", () => {
     ]);
   });
 
-  it("approves with A and denies with D", async () => {
+  it("approves with A and denies with D once the call has settled on screen", async () => {
     const answered: Array<[string, boolean]> = [];
     const mounted = await mountForInteraction(
       <ToolApprovalBar approvals={[approval()]} onRespond={(id, ok) => answered.push([id, ok])} />,
+      500,
     );
     cleanup = mounted.unmount;
 
@@ -78,6 +79,37 @@ describe("ToolApprovalBar", () => {
       ["call-1", true],
       ["call-1", false],
     ]);
+  });
+
+  // A call that has just moved to the front must not catch a keypress meant for
+  // the one it replaced — the arguments panel collapses with it, so the user
+  // would be authorising something they never saw.
+  it("ignores those keys until the call has been on screen a moment", async () => {
+    const answered: Array<[string, boolean]> = [];
+    const mounted = await mountForInteraction(
+      <ToolApprovalBar approvals={[approval()]} onRespond={(id, ok) => answered.push([id, ok])} />,
+      0,
+    );
+    cleanup = mounted.unmount;
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }));
+    expect(answered).toEqual([]);
+  });
+
+  it("does not answer for a bar the host is keeping off screen", async () => {
+    const answered: Array<[string, boolean]> = [];
+    const mounted = await mountForInteraction(
+      <ToolApprovalBar
+        approvals={[approval()]}
+        onRespond={(id, ok) => answered.push([id, ok])}
+        visible={false}
+      />,
+      500,
+    );
+    cleanup = mounted.unmount;
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }));
+    expect(answered).toEqual([]);
   });
 
   it("ignores those keys while the user is typing", async () => {

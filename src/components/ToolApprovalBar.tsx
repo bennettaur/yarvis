@@ -1,14 +1,19 @@
 import { useEffect, useState } from "react";
 import type { PendingApproval } from "../lib/chat";
 
+/** How long a newly promoted call is immune to the keyboard shortcuts (ms). */
+const ARMING_MS = 400;
+
 /**
- * The approve/deny prompt for pending MCP tool calls, as one bar above the
- * thread rather than a stack of cards inside it.
+ * The approve/deny prompt for pending MCP tool calls: one bar above the thread
+ * showing the front of the queue with a count, rather than a card per call
+ * inside it, so several waiting calls don't push the conversation off screen.
  *
- * Several calls can be waiting at once, and rendering one block each pushed the
- * conversation off screen and made the first decision the least reachable. One
- * bar shows the front of the queue with a count, so the thread stays visible
- * and answering is `A` / `D` without leaving the composer.
+ * `A` and `D` answer the front of the queue, with two guards. The bar must be
+ * on screen — Omni Chat stays mounted while hidden and its turn keeps running,
+ * so an unscoped shortcut would approve a call the user cannot see. And a call
+ * that has just moved to the front is briefly not answerable, so a keypress
+ * meant for the previous one can't land on the tool that replaced it.
  *
  * "Always allow" is offered only for MCP tools, and only when the caller can
  * store the decision: a built-in's confirmation depends on how the turn was
@@ -18,19 +23,33 @@ export default function ToolApprovalBar({
   approvals,
   onRespond,
   onAlwaysAllow,
+  visible = true,
 }: {
   approvals: PendingApproval[];
   onRespond: (id: string, approved: boolean) => void;
   /** Records standing consent for the tool, then approves this call. */
   onAlwaysAllow?: (approval: PendingApproval) => void;
+  /**
+   * False while the host is mounted but this bar isn't on screen — a hidden
+   * Omni Chat keeps streaming, and its shortcuts must not answer for it.
+   */
+  visible?: boolean;
 }) {
   const [showArgs, setShowArgs] = useState(false);
+  const [armed, setArmed] = useState(false);
   const current = approvals[0];
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-arm per call
+  useEffect(() => {
+    setArmed(false);
+    const timer = setTimeout(() => setArmed(true), ARMING_MS);
+    return () => clearTimeout(timer);
+  }, [current?.id]);
 
   // Answer without leaving the composer. Ignored while the user is typing, so
   // an "a" in a sentence never approves anything.
   useEffect(() => {
-    if (!current) return;
+    if (!current || !visible || !armed) return;
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       const typing =
@@ -45,7 +64,7 @@ export default function ToolApprovalBar({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [current, onRespond]);
+  }, [current, onRespond, visible, armed]);
 
   // Each decision brings the next call forward; its arguments are its own to open.
   // biome-ignore lint/correctness/useExhaustiveDependencies: collapse per call
