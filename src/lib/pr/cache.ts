@@ -153,6 +153,14 @@ function useCachedResource<T>(key: string | null, loader: () => Promise<T>): Res
       return;
     }
     let active = true;
+    // A new key names a different resource, so whatever is on screen does not
+    // describe it: drop the value and let consumers fall back to their loading
+    // state. Without this, moving between the layers of a stack leaves the
+    // review header titled with the layer the reader just left. The
+    // invalidation-driven `load` below deliberately keeps the value — that is
+    // the same resource being refreshed, and blanking it would flicker the
+    // header after every approve or merge.
+    setData(null);
     // An invalidation can fire `load` while a prior load is still in flight;
     // track the latest so an out-of-order resolution can't write back a stale
     // value over the newer one.

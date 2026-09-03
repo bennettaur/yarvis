@@ -1,7 +1,7 @@
 import { describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import type { PrDetail, PrSummary } from "../../lib/pr/types";
-import { renderToHtml } from "../../test/render";
+import { renderToHtml, textOf } from "../../test/render";
 import PrFloatingHeader from "./PrFloatingHeader";
 
 // The header renders PrWorkspaceAction, which calls sidecarFetch to look up a
@@ -81,5 +81,30 @@ describe("PrFloatingHeader merge controls", () => {
     const html = await render(detail({ state: "MERGED" }));
     expect(html).not.toContain("Enable auto-merge");
     expect(html).not.toContain("Auto-merge on");
+  });
+});
+
+describe("PrFloatingHeader loading state", () => {
+  // A stack layer swaps the pull request instantly and then waits on a provider
+  // round trip. The summary already carries a title, so the only sign the page
+  // is mid-navigation is this indicator (#268).
+  it("says it is loading while the detail is on its way", async () => {
+    const html = await renderToHtml(
+      createElement(PrFloatingHeader, {
+        pr: summary(),
+        detail: null,
+        loading: true,
+        onBack: () => {},
+      }),
+    );
+
+    expect(textOf(html)).toContain("Loading…");
+    expect(html).toContain('aria-busy="true"');
+  });
+
+  it("says nothing once the detail has landed", async () => {
+    const html = await render(detail());
+
+    expect(textOf(html)).not.toContain("Loading…");
   });
 });

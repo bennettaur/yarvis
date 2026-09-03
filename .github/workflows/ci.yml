@@ -113,10 +113,24 @@ jobs:
       # GHSA-67mh-4wv8-2f99 (esbuild dev-server CORS) reaches us only through
       # drizzle-kit's archived @esbuild-kit loader, which has no patched
       # release. It is a build-time tool that never runs an esbuild dev server,
-      # so the advisory is not exploitable here. Any other moderate+ advisory
-      # still fails this job.
+      # so the advisory is not exploitable here.
+      #
+      # The two qs advisories (array-limit bypass, isBuffer DoS) have no
+      # published fix — the second names 6.16.0 as the fixed version and qs has
+      # not released past 6.15.3. Both reach us as
+      # @modelcontextprotocol/sdk › express › body-parser › qs, and the SDK
+      # declares express unconditionally: the MCP endpoint in
+      # sidecar/src/mcpServer/ is served over @hono/mcp's
+      # StreamableHTTPTransport, so no express query or body parsing ever runs.
+      # Drop these two the moment qs ships a fix.
+      #
+      # Any other moderate+ advisory still fails this job.
       - name: Audit production dependencies
-        run: bun audit --prod --ignore GHSA-67mh-4wv8-2f99
+        run: >-
+          bun audit --prod
+          --ignore GHSA-67mh-4wv8-2f99
+          --ignore GHSA-x5fp-wj9c-mxmx
+          --ignore GHSA-4mjr-xmp4-gh2g
 
   rust-fmt:
     name: Rust formatting
