@@ -112,16 +112,19 @@ back to ad-hoc.
   directly (the PTY session cap, the workspace agent) or it just rides along
   to the sidecar's environment at spawn (Azure DevOps/JIRA/Telegram
   configuration) — a value only belongs in the Keychain if it's actually a
-  credential. `YARVIS_WORKSPACES_ROOT` and similar stay env vars, since
-  they're set once per machine rather than edited from the UI. Everything
-  else the sidecar owns lives in Postgres.
+  credential *or* an authorization boundary: the Telegram chat-id allowlist
+  isn't a credential, but with OTP off by default it's the bot's only
+  access-control check, so it stays Keychain-only rather than becoming a
+  plain, freely-editable setting. `YARVIS_WORKSPACES_ROOT` and similar stay
+  env vars, since they're set once per machine rather than edited from the
+  UI. Everything else the sidecar owns lives in Postgres.
 - Several instances of the app can run at once (`bun run dev:instance`), sharing
-  one Keychain item and, unless told otherwise, one database. Anything singular
-  to the machine or to that shared database — a global hotkey, a poll loop, a
-  resume-on-startup sweep — belongs behind `instance.rs`, which decides who owns
-  it, rather than being started unconditionally. Per-instance state that Tauri
-  already keys by bundle identifier (the app data dir, the single-instance
-  socket) needs nothing.
+  one Keychain item, the same `~/.yarvis/settings.json`, and, unless told
+  otherwise, one database. Anything singular to the machine or to that shared
+  database — a global hotkey, a poll loop, a resume-on-startup sweep — belongs
+  behind `instance.rs`, which decides who owns it, rather than being started
+  unconditionally. Per-instance state that Tauri already keys by bundle
+  identifier (the app data dir, the single-instance socket) needs nothing.
 - Work that must finish regardless of what the UI is doing belongs in the
   sidecar, not in a React effect. An issue's "Start work" is the worked example:
   the route answers as soon as the workspace exists and the rest — provisioning,

@@ -2,9 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 
 /**
  * Client for the settings the Rust core owns (`src-tauri/src/settings.rs`),
- * persisted as `settings.json` in the app data directory. Preferences the
- * sidecar owns (repos, embeddings) go through `lib/api` instead; these are the
- * ones the core itself reads.
+ * persisted as `~/.yarvis/settings.json`, shared across `dev:instance` copies
+ * the same way the Keychain is. Preferences the sidecar owns (repos,
+ * embeddings) go through `lib/api` instead; these are the ones the core
+ * itself reads or injects into the sidecar's environment.
  */
 
 export interface Settings {
@@ -33,10 +34,10 @@ export interface Settings {
   jiraEmail: string | null;
   /** Google Cloud OAuth client id for the calendar integration. */
   googleClientId: string | null;
-  /** Comma-separated Telegram chat ids allowed to use the remote-control bot. */
-  telegramAllowedChatIds: string | null;
   /** Re-auth window, in minutes, for the Telegram bot's OTP gate; null means
-   *  the default applies. */
+   *  the default applies. The chat-id allowlist itself stays in the Keychain
+   *  (`lib/keychain`'s `telegram_allowed_chat_ids`) — it's the bot's only
+   *  access-control check while OTP is off, not inert configuration. */
   telegramOtpWindowMinutes: number | null;
   /** The window that applies while `telegramOtpWindowMinutes` is null. */
   defaultTelegramOtpWindowMinutes: number;
@@ -72,9 +73,6 @@ export const setJiraEmail = (value: string | null) => invoke<Settings>("set_jira
 
 export const setGoogleClientId = (value: string | null) =>
   invoke<Settings>("set_google_client_id", { value });
-
-export const setTelegramAllowedChatIds = (value: string | null) =>
-  invoke<Settings>("set_telegram_allowed_chat_ids", { value });
 
 /** Rejects zero; `null` clears back to `defaultTelegramOtpWindowMinutes`. */
 export const setTelegramOtpWindowMinutes = (value: number | null) =>

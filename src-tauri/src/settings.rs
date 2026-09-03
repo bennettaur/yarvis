@@ -8,6 +8,16 @@
 //! environment, so the frontend can change them without the core having to ask
 //! the sidecar.
 //!
+//! The file is shared across `dev:instance` copies the same way the Keychain
+//! item is, so every setter re-reads it before merging in its one field rather
+//! than writing straight from this process's in-memory snapshot — the same
+//! read-before-write discipline `custom_providers.rs`/`mcp.rs` use for their
+//! nested subtrees of the shared Keychain blob. That narrows, but doesn't
+//! close, the window: two instances saving at nearly the same moment can still
+//! clobber each other, since there's no file lock — only genuinely concurrent
+//! writes lose data now, rather than any save from a longer-running instance
+//! reverting whatever a newer one wrote since it started.
+//!
 //! A handful of fields (the `azure_devops_org_url`.. `telegram_otp_window_minutes`
 //! group below) used to live in the Keychain's shared secrets blob purely to
 //! keep their injection path uniform with real credentials, even though they
@@ -49,9 +59,11 @@ pub struct Settings {
     /// OAuth client ids aren't confidential — only the paired client secret is,
     /// which stays in the Keychain.
     pub google_client_id: Option<String>,
-    /// Comma-separated Telegram chat ids allowed to use the remote-control bot.
-    pub telegram_allowed_chat_ids: Option<String>,
-    /// Re-auth window, in minutes, for the Telegram bot's OTP gate.
+    /// Re-auth window, in minutes, for the Telegram bot's OTP gate. Only the
+    /// window duration lives here — the chat-id allowlist itself stays in the
+    /// Keychain (`keychain::SECRET_KEYS`), because OTP is off by default and
+    /// the allowlist is then the bot's *only* access-control check; a plain
+    /// file has no per-item authorization the way a Keychain entry does.
     pub telegram_otp_window_minutes: Option<u32>,
     /// Set once [`migrate_keychain_settings`] has run, so steady-state startup
     /// never re-reads the Keychain to check for values that can no longer be
@@ -68,7 +80,6 @@ const LEGACY_SETTING_KEYS: &[&str] = &[
     "jira_base_url",
     "jira_email",
     "google_client_id",
-    "telegram_allowed_chat_ids",
     "telegram_otp_window_minutes",
 ];
 
@@ -98,14 +109,12 @@ fn apply_legacy_migration(settings: &mut Settings, root: &Value) -> Vec<&'static
             "jira_base_url" => set_if_unset(&mut settings.jira_base_url, value),
             "jira_email" => set_if_unset(&mut settings.jira_email, value),
             "google_client_id" => set_if_unset(&mut settings.google_client_id, value),
-            "telegram_allowed_chat_ids" => {
-                set_if_unset(&mut settings.telegram_allowed_chat_ids, value)
-            }
             "telegram_otp_window_minutes" => match value.parse::<u32>() {
+                // 0 isn't valid (see `set_telegram_otp_window_minutes`); treat
+                // it the same as malformed rather than migrating a value the
+                // live setter would itself reject.
+                Ok(0) | Err(_) => true,
                 Ok(minutes) => set_if_unset(&mut settings.telegram_otp_window_minutes, minutes),
-                // Malformed: discard rather than retry forever, since nothing
-                // can write this key back once it's off `keychain::SECRET_KEYS`.
-                Err(_) => true,
             },
             _ => unreachable!("LEGACY_SETTING_KEYS and this match must stay in lockstep"),
         };
@@ -167,16 +176,22 @@ pub struct SettingsState {
 
 impl SettingsState {
     fn load(path: PathBuf) -> Self {
-        // A malformed file falls back to defaults rather than failing startup;
-        // the next write replaces it.
-        let settings = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<Settings>(&s).ok())
-            .unwrap_or_default();
+        let settings = Self::read_from_disk(&path);
         Self {
             settings: Mutex::new(settings),
             path,
         }
+    }
+
+    /// A malformed or missing file reads as defaults rather than failing —
+    /// on startup that means a fresh install just gets the built-in defaults,
+    /// and mid-run (see the setters below) it means a concurrent writer's
+    /// truncated-but-not-yet-renamed file never gets read back half-written.
+    fn read_from_disk(path: &std::path::Path) -> Settings {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Settings>(&s).ok())
+            .unwrap_or_default()
     }
 
     /// Persists the current settings, reporting failure to the caller — unlike
@@ -196,7 +211,9 @@ impl SettingsState {
             // The file lives in a private (~/.yarvis, 0700) directory but carries
             // its own 0600 in case that directory is ever loosened or the file
             // copied elsewhere — it can hold a JIRA account email and similar.
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+            if let Err(e) = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)) {
+                eprintln!("[settings] failed to set {tmp:?} to 0600: {e}");
+            }
         }
         std::fs::rename(&tmp, &self.path).map_err(|e| e.to_string())
     }
@@ -228,6 +245,13 @@ impl SettingsState {
         }
         {
             let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
+            // Re-read the shared file before merging in this one field, the
+            // same read-before-write discipline `keychain.rs`'s nested modules
+            // use for the Keychain item — `~/.yarvis/settings.json` is shared
+            // across `dev:instance` copies too, so writing straight from this
+            // process's in-memory snapshot would silently drop whatever a
+            // longer-running instance saved after this one started.
+            *settings = Self::read_from_disk(&self.path);
             settings.max_pty_sessions = value;
         }
         self.save()
@@ -257,6 +281,7 @@ impl SettingsState {
         }
         {
             let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
+            *settings = Self::read_from_disk(&self.path);
             settings.agent_name = name;
             settings.agent_command = command;
         }
@@ -274,6 +299,7 @@ impl SettingsState {
         let value = non_blank(value);
         {
             let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
+            *settings = Self::read_from_disk(&self.path);
             *field(&mut settings) = value;
         }
         self.save()
@@ -287,6 +313,7 @@ impl SettingsState {
         }
         {
             let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
+            *settings = Self::read_from_disk(&self.path);
             settings.telegram_otp_window_minutes = value;
         }
         self.save()
@@ -312,7 +339,9 @@ fn yarvis_dir(app: &AppHandle) -> Result<PathBuf, String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        if let Err(e) = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)) {
+            eprintln!("[settings] failed to set {dir:?} to 0700: {e}");
+        }
     }
     Ok(dir)
 }
@@ -457,17 +486,6 @@ pub fn set_google_client_id(
     value: Option<String>,
 ) -> Result<SettingsView, String> {
     state.set_text_field(value, |s| &mut s.google_client_id)?;
-    Ok(state.snapshot().into())
-}
-
-/// Sets the comma-separated Telegram chat id allowlist, or clears it on
-/// `None`/blank. Takes effect on the sidecar's next restart.
-#[tauri::command]
-pub fn set_telegram_allowed_chat_ids(
-    state: tauri::State<'_, SettingsState>,
-    value: Option<String>,
-) -> Result<SettingsView, String> {
-    state.set_text_field(value, |s| &mut s.telegram_allowed_chat_ids)?;
     Ok(state.snapshot().into())
 }
 
@@ -681,11 +699,11 @@ mod tests {
         let mut settings = Settings::default();
         let root = json!({
             "anthropic_api_key": "sk-ant-should-stay-in-keychain",
+            "telegram_allowed_chat_ids": "123,456-should-stay-in-keychain",
             "azure_devops_org_url": "https://dev.azure.com/acme",
             "jira_base_url": "https://acme.atlassian.net",
             "jira_email": "dev@acme.com",
             "google_client_id": "abc.apps.googleusercontent.com",
-            "telegram_allowed_chat_ids": "123,456",
             "telegram_otp_window_minutes": "45",
         });
 
@@ -704,13 +722,12 @@ mod tests {
             settings.google_client_id.as_deref(),
             Some("abc.apps.googleusercontent.com")
         );
-        assert_eq!(
-            settings.telegram_allowed_chat_ids.as_deref(),
-            Some("123,456")
-        );
         assert_eq!(settings.telegram_otp_window_minutes, Some(45));
-        assert_eq!(migrated.len(), 6);
+        assert_eq!(migrated.len(), 5);
         assert!(!migrated.contains(&"anthropic_api_key"));
+        // The chat-id allowlist is the bot's sole access-control check when
+        // OTP is off, so it stays a Keychain-only secret — never migrated.
+        assert!(!migrated.contains(&"telegram_allowed_chat_ids"));
     }
 
     #[test]
@@ -750,5 +767,29 @@ mod tests {
         // reading it again on every future launch.
         assert_eq!(settings.telegram_otp_window_minutes, None);
         assert_eq!(migrated, vec!["telegram_otp_window_minutes"]);
+    }
+
+    #[test]
+    fn a_zero_otp_window_is_discarded_by_migration_like_the_live_setter_would_reject_it() {
+        let mut settings = Settings::default();
+        let root = json!({ "telegram_otp_window_minutes": "0" });
+
+        let migrated = apply_legacy_migration(&mut settings, &root);
+
+        assert_eq!(settings.telegram_otp_window_minutes, None);
+        assert_eq!(migrated, vec!["telegram_otp_window_minutes"]);
+    }
+
+    #[test]
+    fn the_migrated_flag_survives_a_reload_so_migration_never_re_runs() {
+        let store = temp_store("migrated-flag-round-trip");
+        {
+            let mut settings = store.settings.lock().unwrap();
+            settings.keychain_settings_migrated = Some(true);
+        }
+        store.save().unwrap();
+
+        let reloaded = SettingsState::load(store.path.clone());
+        assert_eq!(reloaded.snapshot().keychain_settings_migrated, Some(true));
     }
 }

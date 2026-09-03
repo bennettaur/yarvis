@@ -2,7 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 
 /** Secrets the app manages, mirrored from the Rust `SECRET_KEYS` allowlist.
  * Non-sensitive configuration that used to ride alongside these (org URLs, an
- * account email, a chat-id allowlist) now lives in `lib/settings` instead. */
+ * account email) now lives in `lib/settings` instead — except the Telegram
+ * chat-id allowlist, which stays here: with OTP off by default it's the bot's
+ * only access-control check, so it keeps the Keychain's authorization gate
+ * rather than becoming a plain, freely-editable setting. */
 export type SecretKey =
   | "anthropic_api_key"
   | "gemini_api_key"
@@ -17,6 +20,7 @@ export type SecretKey =
   // rather than the generic Secrets list, so they are intentionally absent from
   // the SECRETS array below.
   | "telegram_bot_token"
+  | "telegram_allowed_chat_ids"
   | "telegram_otp_secret";
 
 export interface SecretMeta {

@@ -95,11 +95,13 @@ integration), an optional Hugging Face token (for speech-to-text; see
 Settings → Voice — the Gemini key covers both speech halves on its own), an
 optional embeddings-provider secret (an API key and/or
 custom header values for an OpenAI-compatible embeddings endpoint), and an
-optional Telegram bot token (and, when the optional second
-factor is enabled, a TOTP secret) for the remote-control bot, see below. The
-non-secret configuration paired with these — the Azure DevOps organization
-URL, the JIRA base URL and account email, the Google client id, the Telegram
-allowed-chat-id list and OTP re-auth window — lives in
+optional Telegram bot token + allowed chat-id list (and, when the optional
+second factor is enabled, a TOTP secret) for the remote-control bot, see
+below — the allowlist is the bot's only access-control check while the OTP
+second factor is off, so it stays a Keychain-only value rather than becoming
+a plain setting. The non-secret configuration paired with these — the Azure
+DevOps organization URL, the JIRA base URL and account email, the Google
+client id, and the Telegram OTP re-auth window — lives in
 `~/.yarvis/settings.json` instead, set from the same Settings screen. AWS
 Bedrock uses the standard AWS credential chain.
 
@@ -344,9 +346,11 @@ All secrets live in a **single** Keychain item (one JSON object), rather than
 one item per secret. macOS authorizes Keychain access per item, so consolidating
 means a session is authorized once instead of prompting for every secret in
 turn. Non-secret configuration that used to ride alongside them here — org
-URLs, an account email, a chat-id allowlist — now lives in a private
-`~/.yarvis/settings.json` instead, set from the same Settings screen; it isn't
-a credential, so it doesn't need the Keychain at all.
+URLs, an account email — now lives in a private `~/.yarvis/settings.json`
+instead, set from the same Settings screen; it isn't a credential, so it
+doesn't need the Keychain at all. The Telegram chat-id allowlist stays here
+despite not being a credential either, since it's the bot's only
+access-control check while OTP is off.
 
 > **Upgrading from an earlier build:** secrets previously lived in one item per
 > key, so re-save each secret once in Settings to populate the consolidated
@@ -355,11 +359,11 @@ a credential, so it doesn't need the Keychain at all.
 > to live in its own separate item (`embeddings_provider_secrets`), which cost
 > a second Keychain prompt at startup; it's now folded into the same
 > consolidated item. The non-secret values named above (org URLs, account
-> email, client id, chat-id allowlist, OTP window) migrate automatically out
-> of the Keychain into `~/.yarvis/settings.json` the first time the app starts
-> after upgrading, and the embeddings-provider secret migrates from its old
-> standalone item into the consolidated one the same way — both migrations
-> read the old location once and delete it, so neither costs an extra prompt
+> email, client id, OTP window) migrate automatically out of the Keychain into
+> `~/.yarvis/settings.json` the first time the app starts after upgrading, and
+> the embeddings-provider secret migrates from its old standalone item into
+> the consolidated one the same way — both migrations read the old location
+> once and delete it, so neither costs an extra prompt
 > on later launches.
 
 > **Touch ID:** gating this item behind Touch ID requires the app to be

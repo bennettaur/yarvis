@@ -233,6 +233,9 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
     if let Some(token) = secret_from_root(&secrets, "telegram_bot_token") {
         cmd.env("TELEGRAM_BOT_TOKEN", token);
     }
+    if let Some(ids) = secret_from_root(&secrets, "telegram_allowed_chat_ids") {
+        cmd.env("TELEGRAM_ALLOWED_CHAT_IDS", ids);
+    }
     if let Some(secret) = secret_from_root(&secrets, "telegram_otp_secret") {
         cmd.env("TELEGRAM_OTP_SECRET", secret);
     }
@@ -254,9 +257,6 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
     }
     if let Some(id) = settings.google_client_id {
         cmd.env("GOOGLE_CLIENT_ID", id);
-    }
-    if let Some(ids) = settings.telegram_allowed_chat_ids {
-        cmd.env("TELEGRAM_ALLOWED_CHAT_IDS", ids);
     }
     if let Some(minutes) = settings.telegram_otp_window_minutes {
         cmd.env("TELEGRAM_OTP_WINDOW_MINUTES", minutes.to_string());

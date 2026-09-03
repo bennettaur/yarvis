@@ -9,14 +9,6 @@ import {
   type SecretStatus,
   setSecret,
 } from "../lib/keychain";
-import {
-  getSettings,
-  type Settings,
-  setAzureDevopsOrgUrl,
-  setGoogleClientId,
-  setJiraBaseUrl,
-  setJiraEmail,
-} from "../lib/settings";
 import { StatusDot } from "./Dashboard";
 import { MaskedInput } from "./MaskedInput";
 
@@ -32,132 +24,13 @@ async function restartAndWait(): Promise<void> {
   await waitForSidecarReady({ minUptimeMsBefore: priorUptimeMs });
 }
 
-interface SettingMeta {
-  key: keyof Pick<Settings, "azureDevopsOrgUrl" | "jiraBaseUrl" | "jiraEmail" | "googleClientId">;
-  label: string;
-  placeholder: string;
-  help: string;
-  set: (value: string | null) => Promise<Settings>;
-}
-
-/** Non-secret configuration that rides alongside the Keychain credentials
- * above but is injected into the sidecar from `settings.rs`'s
- * `~/.yarvis/settings.json` instead — plain values, unlike a secret they can
- * be shown and edited in place rather than only reporting presence. */
-const SETTINGS: SettingMeta[] = [
-  {
-    key: "azureDevopsOrgUrl",
-    label: "Azure DevOps org URL",
-    placeholder: "https://dev.azure.com/your-org",
-    help: "Organization base URL for the PR dashboard. Project is chosen per search.",
-    set: setAzureDevopsOrgUrl,
-  },
-  {
-    key: "jiraBaseUrl",
-    label: "JIRA base URL",
-    placeholder: "https://your-org.atlassian.net",
-    help: "Atlassian Cloud site base URL for the Issues dashboard.",
-    set: setJiraBaseUrl,
-  },
-  {
-    key: "jiraEmail",
-    label: "JIRA email",
-    placeholder: "you@example.com",
-    help: "Atlassian account email paired with the API token above.",
-    set: setJiraEmail,
-  },
-  {
-    key: "googleClientId",
-    label: "Google client id",
-    placeholder: "...apps.googleusercontent.com",
-    help: "Google Cloud OAuth client (Desktop app) id for the calendar integration.",
-    set: setGoogleClientId,
-  },
-];
-
-/** Manages the non-secret settings listed in `SETTINGS` above. */
-function SettingsSection() {
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [busyKey, setBusyKey] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const adopt = useCallback((next: Settings) => {
-    setSettings(next);
-    setDrafts({
-      azureDevopsOrgUrl: next.azureDevopsOrgUrl ?? "",
-      jiraBaseUrl: next.jiraBaseUrl ?? "",
-      jiraEmail: next.jiraEmail ?? "",
-      googleClientId: next.googleClientId ?? "",
-    });
-  }, []);
-
-  useEffect(() => {
-    getSettings()
-      .then(adopt)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
-  }, [adopt]);
-
-  const onSave = useCallback(
-    async (meta: SettingMeta) => {
-      setBusyKey(meta.key);
-      setError(null);
-      try {
-        const value = drafts[meta.key]?.trim() || null;
-        adopt(await meta.set(value));
-        await restartAndWait();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        setBusyKey(null);
-      }
-    },
-    [drafts, adopt],
-  );
-
-  return (
-    <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
-      <h2 className="mb-1 text-sm font-medium uppercase tracking-wide text-zinc-500">Settings</h2>
-      <p className="mb-4 text-xs text-zinc-500">
-        Stored in <code>~/.yarvis/settings.json</code>, not the Keychain. Saving reloads the sidecar
-        so changes take effect right away.
-      </p>
-      <div className="space-y-5">
-        {SETTINGS.map((meta) => (
-          <div key={meta.key}>
-            <label className="mb-1 block text-sm font-medium">{meta.label}</label>
-            <p className="mb-2 text-xs text-zinc-500">{meta.help}</p>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={drafts[meta.key] ?? ""}
-                placeholder={meta.placeholder}
-                onChange={(e) => setDrafts((prev) => ({ ...prev, [meta.key]: e.target.value }))}
-                className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-zinc-500"
-              />
-              <button
-                onClick={() => void onSave(meta)}
-                disabled={busyKey !== null || settings === null}
-                className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500 disabled:opacity-40"
-              >
-                {busyKey === meta.key ? "Saving…" : "Save"}
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
-      {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
-    </section>
-  );
-}
-
 /**
  * Manages the built-in app secrets (database URL, provider API keys, GitHub
- * token, Google OAuth client secret) plus the non-secret settings that ride
- * alongside them into the sidecar's environment (`SettingsSection`, below).
- * Secrets live in the macOS Keychain; the settings live in
- * `~/.yarvis/settings.json`. Saving either reloads the sidecar so changes take
- * effect immediately.
+ * token, Google OAuth client secret). Values live in the macOS Keychain;
+ * saving reloads the sidecar so changes take effect immediately. Telegram's
+ * secrets have their own dedicated `TelegramSection`, and the non-secret
+ * settings that ride alongside these into the sidecar's environment live in
+ * `IntegrationSettingsSection`.
  */
 export default function KeychainSection() {
   const [secrets, setSecrets] = useState<SecretStatus[]>([]);
@@ -201,54 +74,50 @@ export default function KeychainSection() {
   const isPresent = (key: SecretKey) => secrets.find((s) => s.key === key)?.present ?? false;
 
   return (
-    <div className="space-y-5">
-      <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
-        <h2 className="mb-1 text-sm font-medium uppercase tracking-wide text-zinc-500">Secrets</h2>
-        <p className="mb-4 text-xs text-zinc-500">
-          Stored in the macOS Keychain. Saving reloads the sidecar so changes take effect right
-          away.
-        </p>
-        <div className="space-y-5">
-          {SECRETS.map((meta) => (
-            <div key={meta.key}>
-              <div className="mb-1 flex items-center justify-between">
-                <label className="text-sm font-medium">{meta.label}</label>
-                <span className="flex items-center gap-1.5 text-xs text-zinc-400">
-                  <StatusDot state={isPresent(meta.key)} />
-                  {isPresent(meta.key) ? "set" : "not set"}
-                </span>
-              </div>
-              <p className="mb-2 text-xs text-zinc-500">{meta.help}</p>
-              <div className="flex gap-2">
-                <MaskedInput
-                  value={inputs[meta.key] ?? ""}
-                  placeholder={meta.placeholder}
-                  onChange={(v) => setInputs((prev) => ({ ...prev, [meta.key]: v }))}
-                />
-                <button
-                  onClick={() => void onSave(meta.key)}
-                  className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500"
-                >
-                  Save
-                </button>
-                <button
-                  onClick={() => void onClear(meta.key)}
-                  disabled={!isPresent(meta.key)}
-                  className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
-                >
-                  Clear
-                </button>
-              </div>
+    <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
+      <h2 className="mb-1 text-sm font-medium uppercase tracking-wide text-zinc-500">Secrets</h2>
+      <p className="mb-4 text-xs text-zinc-500">
+        Stored in the macOS Keychain. Saving reloads the sidecar so changes take effect right away.
+      </p>
+      <div className="space-y-5">
+        {SECRETS.map((meta) => (
+          <div key={meta.key}>
+            <div className="mb-1 flex items-center justify-between">
+              <label className="text-sm font-medium">{meta.label}</label>
+              <span className="flex items-center gap-1.5 text-xs text-zinc-400">
+                <StatusDot state={isPresent(meta.key)} />
+                {isPresent(meta.key) ? "set" : "not set"}
+              </span>
             </div>
-          ))}
-        </div>
-        {error && (
-          <p className="mt-3 text-sm text-red-400">
-            {error} — invoke commands require the app to run under Tauri.
-          </p>
-        )}
-      </section>
-      <SettingsSection />
-    </div>
+            <p className="mb-2 text-xs text-zinc-500">{meta.help}</p>
+            <div className="flex gap-2">
+              <MaskedInput
+                value={inputs[meta.key] ?? ""}
+                placeholder={meta.placeholder}
+                onChange={(v) => setInputs((prev) => ({ ...prev, [meta.key]: v }))}
+              />
+              <button
+                onClick={() => void onSave(meta.key)}
+                className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500"
+              >
+                Save
+              </button>
+              <button
+                onClick={() => void onClear(meta.key)}
+                disabled={!isPresent(meta.key)}
+                className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+      {error && (
+        <p className="mt-3 text-sm text-red-400">
+          {error} — invoke commands require the app to run under Tauri.
+        </p>
+      )}
+    </section>
   );
 }
