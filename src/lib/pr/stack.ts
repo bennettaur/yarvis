@@ -1,5 +1,6 @@
 import { ensureOk, sidecarFetch } from "../api";
 import { prRefQuery } from "./guide";
+import { refKey } from "./ref";
 import type { PrRef, PrStack, StackEntry } from "./types";
 
 /**
@@ -52,6 +53,19 @@ const NO_PULL_REQUEST = 0;
  * merge or link to.
  */
 export const hasPullRequest = (entry: StackEntry): boolean => entry.number !== NO_PULL_REQUEST;
+
+/**
+ * Where a pull request sits in a stack, or -1 when it is not one of the layers.
+ *
+ * The stack is fetched per layer and each copy marks its own subject with
+ * `isCurrent`, so a surface that already knows which pull request it is showing
+ * should ask this instead: it answers before the refetch for the layer just
+ * opened lands.
+ */
+export function layerIndexOf(stack: PrStack, ref: PrRef): number {
+  const key = refKey(ref);
+  return stack.entries.findIndex((e) => hasPullRequest(e) && refKey(e.ref) === key);
+}
 
 /**
  * The layer a "merge the stack" action should stop at: the one the workspace is

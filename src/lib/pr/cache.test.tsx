@@ -4,13 +4,16 @@ import { createRoot, type Root } from "react-dom/client";
 
 // The cache module reads these from ./api at import time; stub the detail
 // loader so we control what each (re)fetch resolves to without hitting a
-// provider transport.
+// provider transport. `loadMs` holds a fetch open so a case can look at what
+// the hook renders while one is in flight.
 let draft = true;
 let fetchCount = 0;
+let loadMs = 0;
 mock.module("./api", () => ({
-  fetchPrDetail: async () => {
+  fetchPrDetail: async (ref: PrRef) => {
     fetchCount++;
-    return { draft };
+    if (loadMs > 0) await new Promise((resolve) => setTimeout(resolve, loadMs));
+    return { draft, number: ref.provider === "github" ? ref.number : ref.prId };
   },
   fetchPrFiles: async () => [],
   fetchPrStatus: async () => ({}),
@@ -21,6 +24,8 @@ import { invalidate, prDetailKey, usePrDetail } from "./cache";
 import type { PrRef } from "./types";
 
 const ref: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 7 };
+/** A second pull request, for moving a mounted hook from one key to another. */
+const otherRef: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 8 };
 
 // Renders detail as "draft" / "open" / "loading" so a subscriber's live state
 // is observable in the DOM. `subject` lets a case exercise the null-key path.
@@ -29,7 +34,14 @@ function Probe({ subject }: { subject: PrRef | null }) {
   return createElement("span", null, data ? (data.draft ? "draft" : "open") : "loading");
 }
 
-const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
+const settle = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Renders which pull request the resolved detail describes, so a case can tell
+// a stale value apart from the one belonging to the current key.
+function Numbered({ subject }: { subject: PrRef }) {
+  const { data } = usePrDetail(subject);
+  return createElement("span", null, data ? `#${data.number}` : "loading");
+}
 
 // Mounts an element into a detached host, returning the host and root so a case
 // can read the DOM, invalidate, and unmount at will — `renderToHtml` can't
@@ -48,7 +60,9 @@ describe("cache invalidation", () => {
     // reusing `ref` stay independent of each other.
     draft = true;
     fetchCount = 0;
+    loadMs = 0;
     invalidate(prDetailKey(ref));
+    invalidate(prDetailKey(otherRef));
   });
 
   it("refetches a mounted subscriber when its key is invalidated", async () => {
@@ -109,6 +123,44 @@ describe("cache invalidation", () => {
     a.host.remove();
     b.root.unmount();
     b.host.remove();
+  });
+
+  // Clicking a layer of a stack points this hook at another pull request. The
+  // detail already on screen belongs to the layer just left, so keeping it
+  // would title the new review page with the old PR — which reads as a click
+  // that did nothing (#268).
+  it("drops the value it was showing when the key changes", async () => {
+    const { host, root } = mount(createElement(Numbered, { subject: ref }));
+    await settle();
+    expect(host.textContent).toBe("#7");
+
+    loadMs = 60;
+    root.render(createElement(Numbered, { subject: otherRef }));
+    await settle();
+    expect(host.textContent).toBe("loading");
+
+    await settle(120);
+    expect(host.textContent).toBe("#8");
+
+    root.unmount();
+    host.remove();
+  });
+
+  // The counterpart: a write invalidates the key the hook is already on, and
+  // blanking the header for the length of a refetch would flicker after every
+  // approve or merge.
+  it("keeps the value it is showing while the same key refetches", async () => {
+    const { host, root } = mount(createElement(Numbered, { subject: ref }));
+    await settle();
+    expect(host.textContent).toBe("#7");
+
+    loadMs = 60;
+    invalidate(prDetailKey(ref));
+    await settle();
+    expect(host.textContent).toBe("#7");
+
+    root.unmount();
+    host.remove();
   });
 
   it("never subscribes or fetches for a null key", async () => {
