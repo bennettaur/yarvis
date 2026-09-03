@@ -31,9 +31,9 @@ Three processes, each with a clean ownership boundary:
   (Drizzle ORM), LLM calls, and memory. Also hosts an optional Telegram
   remote-control bot.
 
-Data lives in local **PostgreSQL + pgvector**. See `README.md`'s "Project
-layout" section for a directory-by-directory map of both `src/` and
-`sidecar/src/`.
+Data lives in local **PostgreSQL + pgvector**; small structural settings live
+in `~/.yarvis/settings.json` instead. See `README.md`'s "Project layout"
+section for a directory-by-directory map of both `src/` and `sidecar/src/`.
 
 ## Commands
 
@@ -126,7 +126,14 @@ back to ad-hoc.
   access-control check, so it stays Keychain-only rather than becoming a
   plain, freely-editable setting. `YARVIS_WORKSPACES_ROOT` and similar stay
   env vars, since they're set once per machine rather than edited from the
-  UI. Everything else the sidecar owns lives in Postgres.
+  UI. Small, rarely-changing structural config the sidecar owns — custom LLM
+  providers, the model catalogue, MCP servers, voice/embeddings/work-in-progress/
+  GitHub-PR/job settings — lives directly in that same `~/.yarvis/settings.json`
+  too, read and written by the sidecar itself (`sidecar/src/settings/store.ts`),
+  with no Rust core involvement; the frontend still reaches it over the
+  sidecar's HTTP API exactly as before. Everything else the sidecar owns —
+  actual data (chat history, memories, workspaces, PR/issue caches) — lives in
+  Postgres.
 - Several instances of the app can run at once (`bun run dev:instance`), sharing
   one Keychain item, the same `~/.yarvis/settings.json`, and, unless told
   otherwise, one database. Anything singular to the machine or to that shared
@@ -152,11 +159,13 @@ back to ad-hoc.
   worktree does.
 - What models a provider offers is data, not code: `llm/catalog.ts` holds the
   bundled defaults and the capability tags (`chat`, `stt`, `tts`, `vision`,
-  `embed`), and rows in `provider_models` take a provider's catalogue over the
-  moment the user saves one. Surfaces ask for the capability they need rather
-  than filtering names — `availableProviders(config, db, "chat")` — so a
-  text-to-speech model can be listed without becoming something to think with.
-  A new provider adds its defaults there, not a fresh array beside them.
+  `embed`), and entries in `~/.yarvis/settings.json`'s `providerModels` section
+  take a provider's catalogue over the moment the user saves one — no database
+  needed, so custom providers and the model catalogue work even without
+  Postgres configured. Surfaces ask for the capability they need rather than
+  filtering names — `availableProviders(config, "chat")` — so a text-to-speech
+  model can be listed without becoming something to think with. A new provider
+  adds its defaults there, not a fresh array beside them.
 - Speech backends sit behind the `SpeechClient` interface in
   `sidecar/src/voice/speech.ts`, resolved by `voice/providers.ts` the same way
   `llm/providers.ts` resolves chat models — built-ins keep a bare id, user
@@ -167,7 +176,7 @@ back to ad-hoc.
   `src/lib/useVoice.ts` wraps speech around a thread the caller already owns,
   taking that surface's `send` and watching the reply text it is already
   accumulating. A spoken turn therefore uses whatever provider/model that chat
-  is set to. Which speech backends to use lives in Postgres
+  is set to. Which speech backends to use lives in `~/.yarvis/settings.json`
   (`sidecar/src/voice/config.ts`), not in the frontend, because the Telegram bot
   runs in the sidecar and needs the same settings (#226).
 - Outbound speech calls go through `guardedFetch` in that same file, never a

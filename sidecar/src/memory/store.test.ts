@@ -34,14 +34,18 @@ const baseConfig: Config = {
 // The embeddings provider config now lives in ~/.yarvis/settings.json, not
 // Postgres — isolate each test from the real one.
 let settingsDir: string;
+let originalSettingsPath: string | undefined;
 
 beforeEach(async () => {
   await sql`TRUNCATE memories RESTART IDENTITY CASCADE`;
   settingsDir = await mkdtemp(join(tmpdir(), "yarvis-memory-store-"));
+  originalSettingsPath = process.env.YARVIS_SETTINGS_PATH;
   process.env.YARVIS_SETTINGS_PATH = join(settingsDir, "settings.json");
 });
 
 afterEach(async () => {
+  if (originalSettingsPath === undefined) delete process.env.YARVIS_SETTINGS_PATH;
+  else process.env.YARVIS_SETTINGS_PATH = originalSettingsPath;
   await rm(settingsDir, { recursive: true, force: true });
 });
 

@@ -60,7 +60,7 @@ export interface McpServerInput {
 
 export type McpServerUpdate = Partial<McpServerInput>;
 
-type McpServerTable = Record<string, McpServerRow>;
+type McpServersSection = Record<string, McpServerRow>;
 
 /**
  * `oauth.ts` and `connectionManager.ts` still type their server parameter
@@ -83,12 +83,12 @@ export function oauthProviderFor(config: Config, server: McpServerRow) {
 }
 
 export async function listMcpServers(): Promise<McpServerRow[]> {
-  const table = (await readSection<McpServerTable>(SETTINGS_KEY)) ?? {};
+  const table = (await readSection<McpServersSection>(SETTINGS_KEY)) ?? {};
   return Object.values(table).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function getMcpServer(id: string): Promise<McpServerRow | null> {
-  const table = (await readSection<McpServerTable>(SETTINGS_KEY)) ?? {};
+  const table = (await readSection<McpServersSection>(SETTINGS_KEY)) ?? {};
   return table[id] ?? null;
 }
 
@@ -108,7 +108,7 @@ export async function createMcpServer(input: McpServerInput): Promise<McpServerR
     createdAt: now,
     updatedAt: now,
   };
-  return withSection<McpServerTable, McpServerRow>(SETTINGS_KEY, (current) => ({
+  return withSection<McpServersSection, McpServerRow>(SETTINGS_KEY, (current) => ({
     next: { ...current, [row.id]: row },
     result: row,
   }));
@@ -118,7 +118,7 @@ export async function updateMcpServer(
   id: string,
   patch: McpServerUpdate,
 ): Promise<McpServerRow | null> {
-  return withSection<McpServerTable, McpServerRow | null>(SETTINGS_KEY, (current) => {
+  return withSection<McpServersSection, McpServerRow | null>(SETTINGS_KEY, (current) => {
     const existing = current?.[id];
     if (!existing) return { next: current ?? {}, result: null };
     const updated: McpServerRow = { ...existing, ...patch, updatedAt: new Date().toISOString() };
@@ -127,24 +127,24 @@ export async function updateMcpServer(
 }
 
 export async function deleteMcpServer(db: Db, id: string): Promise<boolean> {
+  if (!(await getMcpServer(id))) return false;
   // Drop the live connection and OAuth state first, exactly as today. The
   // Keychain entry, OAuth included, is cleared by the frontend's
   // `delete_mcp_all_secrets` call.
   await getMcpManager().disconnect(id);
   forgetOAuthProvider(id);
-  const existed = await withSection<McpServerTable, boolean>(SETTINGS_KEY, (current) => {
+  // The Postgres FK that used to cascade-delete these rows is gone (serverId is
+  // now a plain uuid, not a foreign key) — delete them explicitly, and before
+  // removing the server from settings.json: if this throws, the server (and
+  // its tools) are left intact and the whole delete can simply be retried,
+  // rather than leaving orphaned agent_tools rows with no server left to
+  // retry the cleanup against.
+  await db.delete(agentTools).where(and(eq(agentTools.source, "mcp"), eq(agentTools.serverId, id)));
+  return withSection<McpServersSection, boolean>(SETTINGS_KEY, (current) => {
     if (!current?.[id]) return { next: current ?? {}, result: false };
     const { [id]: _removed, ...rest } = current;
     return { next: rest, result: true };
   });
-  if (existed) {
-    // The Postgres FK that used to cascade-delete these is gone (serverId is now
-    // a plain uuid, not a foreign key) — delete them explicitly instead.
-    await db
-      .delete(agentTools)
-      .where(and(eq(agentTools.source, "mcp"), eq(agentTools.serverId, id)));
-  }
-  return existed;
 }
 
 export interface RefreshResult {

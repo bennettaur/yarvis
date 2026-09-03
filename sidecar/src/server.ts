@@ -59,11 +59,11 @@ if (config.tokenGenerated) {
 if (config.databaseUrl) {
   runMigrations(config.databaseUrl)
     .then(async () => {
-      readiness.set("ready");
       // A secondary instance serves its window and nothing else: the work below
       // reaches out to providers and writes rows on a schedule, and running it
       // from two processes against one database duplicates both.
       if (!instance.backgroundWorkers) {
+        readiness.set("ready");
         console.log(`[sidecar] instance '${instance.name}' is not running background workers`);
         return;
       }
@@ -73,11 +73,17 @@ if (config.databaseUrl) {
       // that file, so this is a no-op on every startup after the first —
       // restricted to this instance the same way the work below is, since two
       // instances racing to write the same settings file is worse than one.
+      //
+      // Runs before `readiness.set("ready")`: nothing gates routes on readiness
+      // besides /health's own loading screen, so a request served mid-migration
+      // could read a section the copy hasn't reached yet, or have its own write
+      // clobbered by the migration's snapshot-based overwrite of that section.
       try {
         await migrateStructuralConfig(getDb(config.databaseUrl as string).db);
       } catch (e) {
         console.error("[sidecar] structural config migration failed:", redactSecrets(String(e)));
       }
+      readiness.set("ready");
       // Seed the built-in tools into the unified registry so the Tool Manager
       // and tool search see them. Best-effort: a failure here (e.g. embedder
       // misconfig) must not take the service down. Gated with the rest because

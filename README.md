@@ -23,7 +23,9 @@ Three processes with a clean ownership split:
   `src/server.ts` directly with Bun in development; compiled to a single binary
   for distribution.
 
-Data lives in a local **PostgreSQL + pgvector**.
+Data lives in a local **PostgreSQL + pgvector**; small structural settings
+(custom providers, MCP servers, voice/embeddings/work-in-progress/GitHub-PR/job
+config) live in `~/.yarvis/settings.json` instead.
 
 ## Installing a nightly build
 
@@ -320,8 +322,8 @@ key from a cold server. Then:
   binary is not bundled, so the prompt is attributed to the terminal that
   launched it. Run a built app if permission looks stuck.
 
-Speech settings live in Postgres rather than this window, so every surface
-shares one setup — including the Telegram bot once it grows voice notes
+Speech settings live in `~/.yarvis/settings.json` rather than this window, so
+every surface shares one setup — including the Telegram bot once it grows voice notes
 ([#226](https://github.com/bennettaur/yarvis/issues/226)). Starting the speech
 server is still a manual step; having the app supervise it is
 [#228](https://github.com/bennettaur/yarvis/issues/228).
@@ -385,7 +387,7 @@ client secret (Settings, Keychain) and connect from the Calendar tab. See
 connects *out* to (as opposed to the endpoint it serves — see "Yarvis as an MCP
 server"). A server is either **remote** (Streamable HTTP / SSE, given a URL) or
 **local** (a stdio subprocess, given a command and arguments). Its structure is
-stored in Postgres; its credentials go to the Keychain. Press **Connect** to
+stored in `~/.yarvis/settings.json`; its credentials go to the Keychain. Press **Connect** to
 attach and pull the server's tools into the tool registry, then decide per tool
 in the Tool Manager whether it is always mounted, discoverable by search, or off.
 
@@ -1122,7 +1124,7 @@ sidecar/        Bun + TS service (Hono)
   src/chat/     multi-provider streaming chat + tool-calls (agent.ts: shared agent turn)
   src/llm/      provider resolution + the model catalogue (/api/model-catalog):
                 catalog.ts holds the capability tags and the bundled per-provider
-                defaults that a user's saved rows take over from
+                defaults that a user's saved entries take over from
   src/voice/    speech-to-text + text-to-speech (/api/voice): Hugging Face Inference,
                 the Gemini API (both halves over generateContent), and the OpenAI audio
                 API, the last reusing a custom provider's base URL;

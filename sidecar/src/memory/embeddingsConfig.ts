@@ -7,7 +7,7 @@ import { readSection, withSection } from "../settings/store.ts";
  * `config.embeddingsSecrets`.
  */
 
-const SECTION = "embeddingsConfig";
+const SETTINGS_KEY = "embeddingsConfig";
 
 export interface EmbeddingsConfigInput {
   baseUrl: string;
@@ -21,7 +21,7 @@ export interface EmbeddingsConfigInput {
 
 /** Returns the active embeddings config, or null when none is set. */
 export async function getEmbeddingsConfig(): Promise<EmbeddingsConfigInput | null> {
-  const stored = await readSection<EmbeddingsConfigInput>(SECTION);
+  const stored = await readSection<EmbeddingsConfigInput>(SETTINGS_KEY);
   return stored ?? null;
 }
 
@@ -29,7 +29,7 @@ export async function getEmbeddingsConfig(): Promise<EmbeddingsConfigInput | nul
 export async function upsertEmbeddingsConfig(
   input: EmbeddingsConfigInput,
 ): Promise<EmbeddingsConfigInput> {
-  return withSection<EmbeddingsConfigInput, EmbeddingsConfigInput>(SECTION, () => ({
+  return withSection<EmbeddingsConfigInput, EmbeddingsConfigInput>(SETTINGS_KEY, () => ({
     next: input,
     result: input,
   }));
@@ -37,7 +37,7 @@ export async function upsertEmbeddingsConfig(
 
 /** Removes any configured embeddings provider, reverting to Gemini/hash. */
 export async function deleteEmbeddingsConfig(): Promise<boolean> {
-  return withSection<EmbeddingsConfigInput | undefined, boolean>(SECTION, (current) => ({
+  return withSection<EmbeddingsConfigInput | undefined, boolean>(SETTINGS_KEY, (current) => ({
     next: undefined,
     result: current !== undefined,
   }));

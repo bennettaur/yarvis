@@ -11,15 +11,19 @@ const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_t
 const sql = postgres(url, { max: 1 });
 
 let settingsDir: string;
+let originalSettingsPath: string | undefined;
 
 beforeEach(async () => {
   // Custom providers now live in ~/.yarvis/settings.json, not Postgres — point
   // each test at an isolated file so this suite never touches the real one.
   settingsDir = await mkdtemp(join(tmpdir(), "yarvis-chat-routes-"));
+  originalSettingsPath = process.env.YARVIS_SETTINGS_PATH;
   process.env.YARVIS_SETTINGS_PATH = join(settingsDir, "settings.json");
 });
 
 afterEach(async () => {
+  if (originalSettingsPath === undefined) delete process.env.YARVIS_SETTINGS_PATH;
+  else process.env.YARVIS_SETTINGS_PATH = originalSettingsPath;
   await rm(settingsDir, { recursive: true, force: true });
 });
 

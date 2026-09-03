@@ -40,22 +40,24 @@ export interface CustomProviderInput {
 
 export type CustomProviderUpdate = Partial<CustomProviderInput>;
 
+const SETTINGS_KEY = "customProviders";
+
 type CustomProvidersSection = Record<string, CustomProviderRow>;
 
 export async function listCustomProviders(): Promise<CustomProviderRow[]> {
-  const section = await readSection<CustomProvidersSection>("customProviders");
+  const section = await readSection<CustomProvidersSection>(SETTINGS_KEY);
   return Object.values(section ?? {}).sort((a, b) =>
     a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
   );
 }
 
 export async function getCustomProvider(id: string): Promise<CustomProviderRow | null> {
-  const section = await readSection<CustomProvidersSection>("customProviders");
+  const section = await readSection<CustomProvidersSection>(SETTINGS_KEY);
   return section?.[id] ?? null;
 }
 
 export async function createCustomProvider(input: CustomProviderInput): Promise<CustomProviderRow> {
-  return withSection<CustomProvidersSection, CustomProviderRow>("customProviders", (current) => {
+  return withSection<CustomProvidersSection, CustomProviderRow>(SETTINGS_KEY, (current) => {
     const now = new Date().toISOString();
     const row: CustomProviderRow = {
       id: crypto.randomUUID(),
@@ -71,19 +73,16 @@ export async function updateCustomProvider(
   id: string,
   patch: CustomProviderUpdate,
 ): Promise<CustomProviderRow | null> {
-  return withSection<CustomProvidersSection, CustomProviderRow | null>(
-    "customProviders",
-    (current) => {
-      const existing = current?.[id];
-      if (!existing) return { next: current ?? {}, result: null };
-      const row: CustomProviderRow = { ...existing, ...patch, updatedAt: new Date().toISOString() };
-      return { next: { ...current, [id]: row }, result: row };
-    },
-  );
+  return withSection<CustomProvidersSection, CustomProviderRow | null>(SETTINGS_KEY, (current) => {
+    const existing = current?.[id];
+    if (!existing) return { next: current ?? {}, result: null };
+    const row: CustomProviderRow = { ...existing, ...patch, updatedAt: new Date().toISOString() };
+    return { next: { ...current, [id]: row }, result: row };
+  });
 }
 
 export async function deleteCustomProvider(id: string): Promise<boolean> {
-  return withSection<CustomProvidersSection, boolean>("customProviders", (current) => {
+  return withSection<CustomProvidersSection, boolean>(SETTINGS_KEY, (current) => {
     if (!current?.[id]) return { next: current ?? {}, result: false };
     const { [id]: _removed, ...rest } = current;
     return { next: rest, result: true };

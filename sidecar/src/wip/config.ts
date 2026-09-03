@@ -41,6 +41,11 @@ export async function getWipConfig(): Promise<WipConfig> {
 
 /** Stores the config as the whole section, replacing whatever was there before. */
 export async function saveWipConfig(input: WipConfig): Promise<WipConfig> {
-  await withSection<WipConfig, void>(SETTINGS_KEY, () => ({ next: input, result: undefined }));
-  return getWipConfig();
+  return withSection<WipConfig, WipConfig>(SETTINGS_KEY, () => {
+    const next = {
+      sources: { ...DEFAULT_WIP_SOURCES, ...input.sources },
+      issueLabels: input.issueLabels ?? [],
+    };
+    return { next, result: next };
+  });
 }

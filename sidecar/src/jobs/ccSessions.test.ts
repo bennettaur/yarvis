@@ -34,6 +34,7 @@ const PROJECT_DIR = "-Users-me-dev-app";
 let claudeHome: string;
 let settingsDir: string;
 const previousHome = process.env.CLAUDE_HOME;
+const previousSettingsPath = process.env.YARVIS_SETTINGS_PATH;
 
 /** One transcript line in Claude Code's JSONL shape. */
 function line(role: "user" | "assistant", text: string): string {
@@ -61,6 +62,8 @@ beforeEach(async () => {
 afterEach(() => {
   if (previousHome === undefined) delete process.env.CLAUDE_HOME;
   else process.env.CLAUDE_HOME = previousHome;
+  if (previousSettingsPath === undefined) delete process.env.YARVIS_SETTINGS_PATH;
+  else process.env.YARVIS_SETTINGS_PATH = previousSettingsPath;
   rmSync(claudeHome, { recursive: true, force: true });
   rmSync(settingsDir, { recursive: true, force: true });
 });

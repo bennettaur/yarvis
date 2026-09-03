@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -43,9 +43,17 @@ async function readDocument(path: string): Promise<Document> {
 }
 
 async function writeDocument(path: string, doc: Document): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const dir = dirname(path);
+  // `mode` on mkdir/writeFile only applies at creation time — it does nothing
+  // for a directory or leftover `.tmp` file that already existed with wider
+  // permissions (an older build, a crash between write and rename, a backup
+  // tool that doesn't preserve POSIX bits). Chmod unconditionally, the way
+  // `src-tauri/src/settings.rs` does for the same shared file.
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await chmod(dir, 0o700);
   const tmp = `${path}.tmp`;
   await writeFile(tmp, JSON.stringify(doc, null, 2), { mode: 0o600 });
+  await chmod(tmp, 0o600);
   await rename(tmp, path);
 }
 

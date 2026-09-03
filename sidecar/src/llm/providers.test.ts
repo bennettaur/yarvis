@@ -39,13 +39,17 @@ function configWithSecrets(secrets: Config["customProviderSecrets"] = {}): Confi
 // not Postgres — none of this file needs a database anymore. Isolate each test
 // in its own settings file so it never touches the real one.
 let settingsDir: string;
+let originalSettingsPath: string | undefined;
 
 beforeEach(async () => {
   settingsDir = await mkdtemp(join(tmpdir(), "yarvis-llm-providers-"));
+  originalSettingsPath = process.env.YARVIS_SETTINGS_PATH;
   process.env.YARVIS_SETTINGS_PATH = join(settingsDir, "settings.json");
 });
 
 afterEach(async () => {
+  if (originalSettingsPath === undefined) delete process.env.YARVIS_SETTINGS_PATH;
+  else process.env.YARVIS_SETTINGS_PATH = originalSettingsPath;
   await rm(settingsDir, { recursive: true, force: true });
 });
 

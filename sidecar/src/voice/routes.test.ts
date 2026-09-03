@@ -1,4 +1,7 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 
@@ -23,6 +26,23 @@ function app(secrets: Partial<Config["secrets"]> = {}): ReturnType<typeof create
 }
 
 const auth = { Authorization: "Bearer test-token" };
+
+// The speech config now lives in ~/.yarvis/settings.json — isolate every test
+// from the developer's real one.
+let settingsDir: string;
+let originalSettingsPath: string | undefined;
+
+beforeEach(async () => {
+  settingsDir = await mkdtemp(join(tmpdir(), "yarvis-voice-routes-"));
+  originalSettingsPath = process.env.YARVIS_SETTINGS_PATH;
+  process.env.YARVIS_SETTINGS_PATH = join(settingsDir, "settings.json");
+});
+
+afterEach(async () => {
+  if (originalSettingsPath === undefined) delete process.env.YARVIS_SETTINGS_PATH;
+  else process.env.YARVIS_SETTINGS_PATH = originalSettingsPath;
+  await rm(settingsDir, { recursive: true, force: true });
+});
 
 function audioRequest(
   query: string,
@@ -50,6 +70,60 @@ describe("GET /api/voice/providers", () => {
     const providers = (await res.json()) as { id: string; available: boolean }[];
     expect(providers.map((p) => p.id)).toContain("huggingface");
     expect(providers.find((p) => p.id === "huggingface")?.available).toBe(true);
+  });
+});
+
+describe("GET/PATCH /api/voice/config", () => {
+  it("requires the bearer token", async () => {
+    expect((await app().request("/api/voice/config")).status).toBe(401);
+    expect(
+      (
+        await app().request("/api/voice/config", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        })
+      ).status,
+    ).toBe(401);
+  });
+
+  it("saves and reads a field back", async () => {
+    const res = await app().request("/api/voice/config", {
+      method: "PATCH",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ sttProvider: "huggingface" }),
+    });
+    expect(res.status).toBe(200);
+
+    const read = await app().request("/api/voice/config", { headers: auth });
+    expect(await read.json()).toMatchObject({ sttProvider: "huggingface" });
+  });
+
+  it("rejects a malformed language", async () => {
+    const res = await app().request("/api/voice/config", {
+      method: "PATCH",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ sttLanguage: "english" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a reference clip that is not an audio data URI", async () => {
+    const res = await app().request("/api/voice/config", {
+      method: "PATCH",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ ttsRefAudio: "https://example.com/clip.wav" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("refuses extras that would rewrite the model or the text", async () => {
+    const res = await app().request("/api/voice/config", {
+      method: "PATCH",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ ttsExtras: { model: "other" } }),
+    });
+    expect(res.status).toBe(400);
   });
 });
 

@@ -40,16 +40,20 @@ const config = {
 } as Config;
 
 let settingsDir: string;
+let originalSettingsPath: string | undefined;
 
 beforeEach(async () => {
   await sql`TRUNCATE job_runs, events, memories RESTART IDENTITY CASCADE`;
   // job_config now lives in ~/.yarvis/settings.json, not Postgres — point this
   // suite at an isolated file so it never touches the real one.
   settingsDir = await mkdtemp(join(tmpdir(), "yarvis-jobs-settings-"));
+  originalSettingsPath = process.env.YARVIS_SETTINGS_PATH;
   process.env.YARVIS_SETTINGS_PATH = join(settingsDir, "settings.json");
 });
 
 afterEach(async () => {
+  if (originalSettingsPath === undefined) delete process.env.YARVIS_SETTINGS_PATH;
+  else process.env.YARVIS_SETTINGS_PATH = originalSettingsPath;
   await rm(settingsDir, { recursive: true, force: true });
 });
 

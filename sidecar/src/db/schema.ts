@@ -437,9 +437,12 @@ export const googleTokens = pgTable("google_tokens", {
 });
 
 /**
- * User-configured LLM proxy providers (e.g. a litellm endpoint). Structural
- * data lives here; the secret values (API key, header values) stay in the
- * macOS Keychain and are injected into the sidecar at spawn time.
+ * User-configured LLM proxy providers (e.g. a litellm endpoint).
+ *
+ * Legacy — superseded by the `customProviders` section of
+ * `~/.yarvis/settings.json` (`sidecar/src/customProviders/service.ts`). Kept
+ * only as the source `sidecar/src/settings/migrateStructuralConfig.ts` reads
+ * from for its one-time copy; no application code writes here anymore.
  */
 export const customProviders = pgTable("custom_providers", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -467,6 +470,11 @@ export const customProviders = pgTable("custom_providers", {
  *
  * `provider_id` matches `ProviderInfo.id`, so a `custom:<uuid>` provider can be
  * tagged here too; those rows are keyed by the same string the picker uses.
+ *
+ * Legacy — superseded by the `providerModels` section of
+ * `~/.yarvis/settings.json` (`sidecar/src/llm/catalog.ts`). Kept only as the
+ * source `sidecar/src/settings/migrateStructuralConfig.ts` reads from for its
+ * one-time copy; no application code writes here anymore.
  */
 export const providerModels = pgTable(
   "provider_models",
@@ -716,17 +724,6 @@ export const issueStars = pgTable(
 );
 
 /**
- * The active embeddings provider. Single-row model (like `google_tokens`): the
- * service keeps at most one row, the most recent. Structural data only — the
- * API key and any custom header values live in the macOS Keychain and reach the
- * sidecar via the `YARVIS_EMBEDDINGS_SECRETS` env var, like `custom_providers`.
- *
- * `dimensions` records the model's output size and must equal EMBED_DIM (the
- * column dimension); the embedder factory validates this and surfaces a clear
- * error otherwise. `apiKind` is "openai" today — both the user's proxy and a
- * local Ollama server speak the OpenAI-compatible embeddings API.
- */
-/**
  * The speech backends every surface uses — the Voice controls in chat, and the
  * Telegram bot once it grows them (#226). It lives here rather than in the
  * frontend precisely because the bot runs in this process and has no way to
@@ -734,6 +731,11 @@ export const issueStars = pgTable(
  *
  * Credentials are not here: a Hugging Face token is a Keychain secret, and a
  * custom provider's key rides its own entry. This is the structural half only.
+ *
+ * Legacy — superseded by the `voiceConfig` section of
+ * `~/.yarvis/settings.json` (`sidecar/src/voice/config.ts`). Kept only as the
+ * source `sidecar/src/settings/migrateStructuralConfig.ts` reads from for its
+ * one-time copy; no application code writes here anymore.
  */
 export const voiceConfig = pgTable("voice_config", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -767,6 +769,22 @@ export const voiceConfig = pgTable("voice_config", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * The active embeddings provider. Single-row model (like `google_tokens`): the
+ * service keeps at most one row, the most recent. Structural data only — the
+ * API key and any custom header values live in the macOS Keychain and reach the
+ * sidecar via the `YARVIS_EMBEDDINGS_SECRETS` env var, like `custom_providers`.
+ *
+ * `dimensions` records the model's output size and must equal EMBED_DIM (the
+ * column dimension); the embedder factory validates this and surfaces a clear
+ * error otherwise. `apiKind` is "openai" today — both the user's proxy and a
+ * local Ollama server speak the OpenAI-compatible embeddings API.
+ *
+ * Legacy — superseded by the `embeddingsConfig` section of
+ * `~/.yarvis/settings.json` (`sidecar/src/memory/embeddingsConfig.ts`). Kept
+ * only as the source `sidecar/src/settings/migrateStructuralConfig.ts` reads
+ * from for its one-time copy; no application code writes here anymore.
+ */
 export const embeddingsConfig = pgTable("embeddings_config", {
   id: uuid("id").primaryKey().defaultRandom(),
   baseUrl: text("base_url").notNull(),
@@ -792,6 +810,12 @@ export const embeddingsConfig = pgTable("embeddings_config", {
  * hand-entered bearer header. `oauthScope` overrides the scopes requested at
  * registration and authorization; absent, the server's advertised scopes are
  * used. Both are inert for stdio, which has no HTTP layer to authorize.
+ *
+ * Legacy — superseded by the `mcpServers` section of
+ * `~/.yarvis/settings.json` (`sidecar/src/mcp/service.ts`). Kept only as the
+ * source `sidecar/src/settings/migrateStructuralConfig.ts` reads from for its
+ * one-time copy; no application code writes here anymore. `agent_tools.serverId`
+ * (below) correlates to an id in that settings.json section, not a row here.
  */
 export const mcpServers = pgTable("mcp_servers", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -1006,6 +1030,11 @@ export interface WipSourcesConfig {
  * `sources` toggles each roll-up source on/off; `issueLabels` drives an extra
  * "labeled issues" source — open GitHub issues assigned to the user carrying any
  * of these labels, across the repos flagged for issue tracking.
+ *
+ * Legacy — superseded by the `wipConfig` section of `~/.yarvis/settings.json`
+ * (`sidecar/src/wip/config.ts`). Kept only as the source
+ * `sidecar/src/settings/migrateStructuralConfig.ts` reads from for its
+ * one-time copy; no application code writes here anymore.
  */
 export const wipConfig = pgTable("wip_config", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -1026,6 +1055,11 @@ export type WipConfigRow = typeof wipConfig.$inferSelect;
  * excluded, a specific org, …). `reviewingLookbackDays` bounds how far back the
  * "Reviewing" tab looks for PRs the user has touched — both in the local
  * `pr.viewed` event log and in GitHub's own record of their comments/reviews.
+ *
+ * Legacy — superseded by the `githubPrConfig` section of
+ * `~/.yarvis/settings.json` (`sidecar/src/github/config.ts`). Kept only as
+ * the source `sidecar/src/settings/migrateStructuralConfig.ts` reads from for
+ * its one-time copy; no application code writes here anymore.
  */
 export const githubPrConfig = pgTable("github_pr_config", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -1263,6 +1297,11 @@ export const ccSessionDigests = pgTable(
  * whichever LLM provider is configured. For a local-first app that is not
  * something to switch on by default, so it stays off until the user enables it
  * and names the project directories it may read.
+ *
+ * Legacy — superseded by the `jobConfig` section of `~/.yarvis/settings.json`
+ * (`sidecar/src/jobs/config.ts`). Kept only as the source
+ * `sidecar/src/settings/migrateStructuralConfig.ts` reads from for its
+ * one-time copy; no application code writes here anymore.
  */
 export const jobConfig = pgTable("job_config", {
   id: uuid("id").primaryKey().defaultRandom(),

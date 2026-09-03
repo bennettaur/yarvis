@@ -108,9 +108,9 @@ export interface ProviderModelInput {
 function rowToInfo(row: ProviderModelRow): ModelInfo {
   return {
     id: row.modelId,
-    // Rows predate no capability the code knows about today, but a row written
-    // by a newer build could; drop what this build can't act on rather than
-    // handing a picker a tag it will never match.
+    // A row saved by a newer build could carry a capability tag this build
+    // doesn't recognize; drop it here rather than handing a picker a tag it
+    // can never match.
     capabilities: row.capabilities.filter(isModelCapability),
   };
 }
