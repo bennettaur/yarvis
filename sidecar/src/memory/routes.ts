@@ -167,7 +167,7 @@ export function createMemoryRoutes(config: Config): Hono {
     let recap = context;
     if (provider && model) {
       try {
-        const llm = await resolveModel(config, db, provider, model);
+        const llm = await resolveModel(config, provider, model);
         const { text } = await generateText({
           model: llm,
           system: recapSystemPrompt(window.label),
@@ -197,8 +197,7 @@ export function createMemoryRoutes(config: Config): Hono {
   // memories match the active embedder. The UI uses health to warn + offer
   // re-embedding after a provider/dimension change.
   router.get("/embeddings/config", async (c) => {
-    const db = getDb(config.databaseUrl as string).db;
-    const cfg = await getEmbeddingsConfig(db);
+    const cfg = await getEmbeddingsConfig();
     const health = await (await store()).embedderHealth();
     const stored = health.stored.reduce((sum, group) => sum + group.count, 0);
     memoryDebug(
@@ -224,14 +223,12 @@ export function createMemoryRoutes(config: Config): Hono {
         400,
       );
     }
-    const db = getDb(config.databaseUrl as string).db;
-    const row = await upsertEmbeddingsConfig(db, parsed.data);
+    const row = await upsertEmbeddingsConfig(parsed.data);
     return c.json(row);
   });
 
   router.delete("/embeddings/config", async (c) => {
-    const db = getDb(config.databaseUrl as string).db;
-    return c.json({ deleted: await deleteEmbeddingsConfig(db) });
+    return c.json({ deleted: await deleteEmbeddingsConfig() });
   });
 
   // Re-embed every memory with the active embedder. Run after switching

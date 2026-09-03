@@ -247,11 +247,15 @@ export class OpenAICompatibleEmbedder implements Embedder {
  *
  * The chosen embedder's output dimension must equal EMBED_DIM (the column
  * dimension); a mismatch is a configuration error surfaced clearly rather than
- * left to fail deep in an insert. Reads the provider config from the database,
- * so it is async.
+ * left to fail deep in an insert. Reads the provider config from
+ * `~/.yarvis/settings.json`, so it is async.
+ *
+ * Takes `db` for call-site symmetry with the many callers that also construct
+ * a `PgVectorMemoryStore(db, ...)` alongside this — the embedder choice itself
+ * no longer needs it.
  */
-export async function chooseEmbedder(config: Config, db?: Db): Promise<Embedder> {
-  const { embedder, reason } = await selectEmbedder(config, db);
+export async function chooseEmbedder(config: Config, _db?: Db): Promise<Embedder> {
+  const { embedder, reason } = await selectEmbedder(config);
   if (embedder.dimensions !== EMBED_DIM) {
     throw new Error(
       `embedding dimension mismatch: ${embedder.kind} produces ${embedder.dimensions}-dim ` +
@@ -285,21 +289,19 @@ interface EmbedderChoice {
   reason: string;
 }
 
-async function selectEmbedder(config: Config, db?: Db): Promise<EmbedderChoice> {
-  if (db) {
-    const cfg = await getEmbeddingsConfig(db);
-    if (cfg) {
-      return {
-        embedder: new OpenAICompatibleEmbedder({
-          baseUrl: cfg.baseUrl,
-          model: cfg.model,
-          dimensions: cfg.dimensions,
-          apiKey: config.embeddingsSecrets.apiKey,
-          headers: config.embeddingsSecrets.headers,
-        }),
-        reason: `embeddings_config row → ${cfg.baseUrl}`,
-      };
-    }
+async function selectEmbedder(config: Config): Promise<EmbedderChoice> {
+  const cfg = await getEmbeddingsConfig();
+  if (cfg) {
+    return {
+      embedder: new OpenAICompatibleEmbedder({
+        baseUrl: cfg.baseUrl,
+        model: cfg.model,
+        dimensions: cfg.dimensions,
+        apiKey: config.embeddingsSecrets.apiKey,
+        headers: config.embeddingsSecrets.headers,
+      }),
+      reason: `embeddings_config → ${cfg.baseUrl}`,
+    };
   }
   if (config.secrets.geminiApiKey) {
     return {

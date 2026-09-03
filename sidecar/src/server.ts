@@ -10,6 +10,7 @@ import { redactSecrets } from "./llm/errors.ts";
 import { chooseEmbedder } from "./memory/embedder.ts";
 import { sweepStaleGuides } from "./pr/guides.ts";
 import { createReadiness } from "./readiness.ts";
+import { migrateStructuralConfig } from "./settings/migrateStructuralConfig.ts";
 import { startTelegramBot } from "./telegram/index.ts";
 import { startWorkspacePoller } from "./workspaces/poller.ts";
 import { resumeKickOffs } from "./workspaces/service.ts";
@@ -65,6 +66,17 @@ if (config.databaseUrl) {
       if (!instance.backgroundWorkers) {
         console.log(`[sidecar] instance '${instance.name}' is not running background workers`);
         return;
+      }
+      // One-time copy of the small structural config tables (custom providers,
+      // MCP servers, voice/embeddings/wip/github-pr/job config) into the shared
+      // ~/.yarvis/settings.json. Gated behind `structuralSettingsMigrated` in
+      // that file, so this is a no-op on every startup after the first —
+      // restricted to this instance the same way the work below is, since two
+      // instances racing to write the same settings file is worse than one.
+      try {
+        await migrateStructuralConfig(getDb(config.databaseUrl as string).db);
+      } catch (e) {
+        console.error("[sidecar] structural config migration failed:", redactSecrets(String(e)));
       }
       // Seed the built-in tools into the unified registry so the Tool Manager
       // and tool search see them. Best-effort: a failure here (e.g. embedder

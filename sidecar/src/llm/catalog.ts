@@ -1,6 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
-import type { Db } from "../db/client.ts";
-import { type ProviderModelRow, providerModels } from "../db/schema.ts";
+import { readSection, withSection } from "../settings/store.ts";
 
 /**
  * What every surface draws its model list from.
@@ -34,6 +32,15 @@ export interface ModelInfo {
 
 export function isModelCapability(value: string): value is ModelCapability {
   return (MODEL_CAPABILITIES as readonly string[]).includes(value);
+}
+
+/** One configured model, flattened out of the `providerModels` settings section. */
+export interface ProviderModelRow {
+  providerId: string;
+  modelId: string;
+  capabilities: ModelCapability[];
+  enabled: boolean;
+  sortOrder: number;
 }
 
 /** Shorthand for the common case of a text-in/text-out chat model. */
@@ -108,61 +115,77 @@ function rowToInfo(row: ProviderModelRow): ModelInfo {
   };
 }
 
+const PROVIDER_MODELS_KEY = "providerModels";
+
+/** One provider's entry in the `providerModels` settings section — the provider id lives in the map key, not here. */
+interface ProviderModelEntry {
+  modelId: string;
+  capabilities: ModelCapability[];
+  enabled: boolean;
+  sortOrder: number;
+}
+
+type ProviderModelsSection = Record<string, ProviderModelEntry[]>;
+
 /** Every configured row, in the order the pickers should show them. */
-export async function listProviderModels(db: Db): Promise<ProviderModelRow[]> {
-  return db
-    .select()
-    .from(providerModels)
-    .orderBy(
-      asc(providerModels.providerId),
-      asc(providerModels.sortOrder),
-      asc(providerModels.modelId),
+export async function listProviderModels(): Promise<ProviderModelRow[]> {
+  const section = (await readSection<ProviderModelsSection>(PROVIDER_MODELS_KEY)) ?? {};
+  return Object.entries(section)
+    .flatMap(([providerId, entries]) => entries.map((entry) => ({ providerId, ...entry })))
+    .sort(
+      (a, b) =>
+        a.providerId.localeCompare(b.providerId) ||
+        a.sortOrder - b.sortOrder ||
+        a.modelId.localeCompare(b.modelId),
     );
 }
 
 /**
- * Upserts one model. Keyed on (provider, model) rather than the row id so the
+ * Upserts one model. Keyed on (provider, model) rather than a row id so the
  * settings UI can save a model without first looking up whether it exists.
  */
-export async function saveProviderModel(
-  db: Db,
-  input: ProviderModelInput,
-): Promise<ProviderModelRow> {
-  const [row] = await db
-    .insert(providerModels)
-    .values(input)
-    .onConflictDoUpdate({
-      target: [providerModels.providerId, providerModels.modelId],
-      set: {
-        capabilities: input.capabilities,
-        enabled: input.enabled ?? true,
-        sortOrder: input.sortOrder ?? 0,
-        updatedAt: new Date(),
-      },
-    })
-    .returning();
-  return row!;
+export async function saveProviderModel(input: ProviderModelInput): Promise<ProviderModelRow> {
+  const entry: ProviderModelEntry = {
+    modelId: input.modelId,
+    capabilities: input.capabilities,
+    enabled: input.enabled ?? true,
+    sortOrder: input.sortOrder ?? 0,
+  };
+  return withSection<ProviderModelsSection, ProviderModelRow>(PROVIDER_MODELS_KEY, (current) => {
+    const section = current ?? {};
+    const existing = section[input.providerId] ?? [];
+    const index = existing.findIndex((e) => e.modelId === input.modelId);
+    const updated = index === -1 ? [...existing, entry] : existing.with(index, entry);
+    return {
+      next: { ...section, [input.providerId]: updated },
+      result: { providerId: input.providerId, ...entry },
+    };
+  });
 }
 
-export async function deleteProviderModel(
-  db: Db,
-  providerId: string,
-  modelId: string,
-): Promise<boolean> {
-  const rows = await db
-    .delete(providerModels)
-    .where(and(eq(providerModels.providerId, providerId), eq(providerModels.modelId, modelId)))
-    .returning({ id: providerModels.id });
-  return rows.length > 0;
+export async function deleteProviderModel(providerId: string, modelId: string): Promise<boolean> {
+  return withSection<ProviderModelsSection, boolean>(PROVIDER_MODELS_KEY, (current) => {
+    const section = current ?? {};
+    const existing = section[providerId] ?? [];
+    const updated = existing.filter((e) => e.modelId !== modelId);
+    return {
+      next: { ...section, [providerId]: updated },
+      result: updated.length !== existing.length,
+    };
+  });
 }
 
-/** Drops every row for a provider, returning it to the bundled defaults. */
-export async function resetProviderModels(db: Db, providerId: string): Promise<number> {
-  const rows = await db
-    .delete(providerModels)
-    .where(eq(providerModels.providerId, providerId))
-    .returning({ id: providerModels.id });
-  return rows.length;
+/** Drops every entry for a provider, returning it to the bundled defaults. */
+export async function resetProviderModels(providerId: string): Promise<number> {
+  return withSection<ProviderModelsSection, number>(PROVIDER_MODELS_KEY, (current) => {
+    const section = current ?? {};
+    const existing = section[providerId] ?? [];
+    if (existing.length === 0) return { next: section, result: 0 };
+    return {
+      next: { ...section, [providerId]: [] },
+      result: existing.length,
+    };
+  });
 }
 
 /**

@@ -1,11 +1,9 @@
-import { desc, eq } from "drizzle-orm";
-import type { Db } from "../db/client.ts";
-import { githubPrConfig } from "../db/schema.ts";
+import { readSection, withSection } from "../settings/store.ts";
 
 /**
- * Singleton store for the GitHub PR dashboard configuration. Modeled on the
- * work-in-progress config — at most one row, most recent wins, defaults apply
- * when no row exists.
+ * Singleton config for the GitHub PR dashboard, stored under the
+ * `githubPrConfig` key in `~/.yarvis/settings.json`. Defaults apply when
+ * nothing is stored.
  */
 
 export interface GithubPrConfig {
@@ -34,31 +32,16 @@ export const DEFAULT_GITHUB_PR_CONFIG: GithubPrConfig = {
   reviewingLookbackDays: DEFAULT_REVIEWING_LOOKBACK_DAYS,
 };
 
-export async function getGithubPrConfig(db: Db): Promise<GithubPrConfig> {
-  const [row] = await db
-    .select()
-    .from(githubPrConfig)
-    .orderBy(desc(githubPrConfig.updatedAt))
-    .limit(1);
-  if (!row) return DEFAULT_GITHUB_PR_CONFIG;
-  return {
-    reviewQuery: row.reviewQuery,
-    reviewingLookbackDays: row.reviewingLookbackDays,
-  };
+const SETTINGS_KEY = "githubPrConfig";
+
+export async function getGithubPrConfig(): Promise<GithubPrConfig> {
+  const stored = await readSection<GithubPrConfig>(SETTINGS_KEY);
+  return stored ?? DEFAULT_GITHUB_PR_CONFIG;
 }
 
-/** Upserts the singleton config, keeping the table to one row. */
-export async function saveGithubPrConfig(db: Db, input: GithubPrConfig): Promise<GithubPrConfig> {
-  const values = {
-    reviewQuery: input.reviewQuery,
-    reviewingLookbackDays: input.reviewingLookbackDays,
-    updatedAt: new Date(),
-  };
-  const [existing] = await db.select({ id: githubPrConfig.id }).from(githubPrConfig).limit(1);
-  if (existing) {
-    await db.update(githubPrConfig).set(values).where(eq(githubPrConfig.id, existing.id));
-  } else {
-    await db.insert(githubPrConfig).values(values);
-  }
-  return getGithubPrConfig(db);
+export async function saveGithubPrConfig(input: GithubPrConfig): Promise<GithubPrConfig> {
+  return withSection<GithubPrConfig, GithubPrConfig>(SETTINGS_KEY, () => ({
+    next: input,
+    result: input,
+  }));
 }

@@ -159,7 +159,7 @@ export function createGithubRoutes(config: Config): Hono {
     const gh = client();
     if (!gh) return c.json({ error: "github token not configured" }, 400);
     try {
-      const [{ login }, prConfig] = await Promise.all([gh.viewer(), getGithubPrConfig(db())]);
+      const [{ login }, prConfig] = await Promise.all([gh.viewer(), getGithubPrConfig()]);
       return c.json(await getReviewingList(db(), gh, login, prConfig.reviewingLookbackDays));
     } catch (e) {
       return c.json({ error: String(e) }, 502);
@@ -441,12 +441,12 @@ export function createGithubRoutes(config: Config): Hono {
 
   // --- Dashboard config (database only) ---
 
-  router.get("/config", async (c) => c.json(await getGithubPrConfig(db())));
+  router.get("/config", async (c) => c.json(await getGithubPrConfig()));
 
   router.put("/config", async (c) => {
     const parsed = prConfigSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    return c.json(await saveGithubPrConfig(db(), parsed.data));
+    return c.json(await saveGithubPrConfig(parsed.data));
   });
 
   // --- Saved filters (database only) ---

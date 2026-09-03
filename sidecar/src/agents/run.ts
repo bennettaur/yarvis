@@ -180,9 +180,9 @@ export async function runSpecialist(input: RunSpecialistInput): Promise<Speciali
       ? { provider: input.provider, model: input.model }
       : specialist.provider && specialist.model
         ? { provider: specialist.provider, model: specialist.model }
-        : await defaultProviderModel(config, db);
+        : await defaultProviderModel(config);
   if (!chosen) throw new Error("no chat model is configured");
-  const model = await resolveModel(config, db, chosen.provider, chosen.model);
+  const model = await resolveModel(config, chosen.provider, chosen.model);
 
   const memory = new PgVectorMemoryStore(db, await chooseEmbedder(config, db));
   const allTools = buildBuiltinTools({

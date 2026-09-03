@@ -1,12 +1,13 @@
-import { desc, eq } from "drizzle-orm";
-import type { Db } from "../db/client.ts";
-import { type EmbeddingsConfigRow, embeddingsConfig } from "../db/schema.ts";
+import { readSection, withSection } from "../settings/store.ts";
 
 /**
- * Singleton store for the active embeddings provider's structural config. Like
- * the Google token store, we keep at most one row (the most recent). Credential
- * values live in the macOS Keychain, not here — see `config.embeddingsSecrets`.
+ * Singleton store for the active embeddings provider's structural config,
+ * held in the sidecar's `embeddingsConfig` section of `~/.yarvis/settings.json`.
+ * Credential values live in the macOS Keychain, not here — see
+ * `config.embeddingsSecrets`.
  */
+
+const SECTION = "embeddingsConfig";
 
 export interface EmbeddingsConfigInput {
   baseUrl: string;
@@ -19,38 +20,25 @@ export interface EmbeddingsConfigInput {
 }
 
 /** Returns the active embeddings config, or null when none is set. */
-export async function getEmbeddingsConfig(db: Db): Promise<EmbeddingsConfigRow | null> {
-  const [row] = await db
-    .select()
-    .from(embeddingsConfig)
-    .orderBy(desc(embeddingsConfig.updatedAt))
-    .limit(1);
-  return row ?? null;
+export async function getEmbeddingsConfig(): Promise<EmbeddingsConfigInput | null> {
+  const stored = await readSection<EmbeddingsConfigInput>(SECTION);
+  return stored ?? null;
 }
 
-/**
- * Upserts the singleton config: updates the existing row in place if present,
- * otherwise inserts the first one. Keeps the table to a single row.
- */
+/** Replaces whatever embeddings config is stored — there's only ever one. */
 export async function upsertEmbeddingsConfig(
-  db: Db,
   input: EmbeddingsConfigInput,
-): Promise<EmbeddingsConfigRow> {
-  const existing = await getEmbeddingsConfig(db);
-  if (existing) {
-    const [row] = await db
-      .update(embeddingsConfig)
-      .set({ ...input, updatedAt: new Date() })
-      .where(eq(embeddingsConfig.id, existing.id))
-      .returning();
-    return row!;
-  }
-  const [row] = await db.insert(embeddingsConfig).values(input).returning();
-  return row!;
+): Promise<EmbeddingsConfigInput> {
+  return withSection<EmbeddingsConfigInput, EmbeddingsConfigInput>(SECTION, () => ({
+    next: input,
+    result: input,
+  }));
 }
 
 /** Removes any configured embeddings provider, reverting to Gemini/hash. */
-export async function deleteEmbeddingsConfig(db: Db): Promise<boolean> {
-  const rows = await db.delete(embeddingsConfig).returning({ id: embeddingsConfig.id });
-  return rows.length > 0;
+export async function deleteEmbeddingsConfig(): Promise<boolean> {
+  return withSection<EmbeddingsConfigInput | undefined, boolean>(SECTION, (current) => ({
+    next: undefined,
+    result: current !== undefined,
+  }));
 }

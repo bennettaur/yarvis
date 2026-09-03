@@ -1,10 +1,12 @@
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import postgres from "postgres";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 
-const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
-const sql = postgres(url, { max: 1 });
+let dir: string;
+let originalPath: string | undefined;
 
 const config: Config = {
   port: 0,
@@ -13,7 +15,7 @@ const config: Config = {
   attentionToken: "test-attention-token",
   mcpToken: "test-mcp-token",
   allowedOrigins: null,
-  databaseUrl: url,
+  databaseUrl: undefined,
   workspacesRoot: "/tmp/yarvis-test-workspaces",
   secrets: {},
   customProviderSecrets: {},
@@ -28,11 +30,15 @@ const jsonAuth = {
 };
 
 beforeEach(async () => {
-  await sql`TRUNCATE custom_providers RESTART IDENTITY CASCADE`;
+  dir = await mkdtemp(join(tmpdir(), "yarvis-custom-providers-routes-"));
+  originalPath = process.env.YARVIS_SETTINGS_PATH;
+  process.env.YARVIS_SETTINGS_PATH = join(dir, "settings.json");
 });
 
-afterAll(async () => {
-  await sql.end();
+afterEach(async () => {
+  if (originalPath === undefined) delete process.env.YARVIS_SETTINGS_PATH;
+  else process.env.YARVIS_SETTINGS_PATH = originalPath;
+  await rm(dir, { recursive: true, force: true });
 });
 
 describe("custom provider routes", () => {

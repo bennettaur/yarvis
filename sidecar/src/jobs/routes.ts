@@ -47,7 +47,7 @@ export function createJobRoutes(config: Config): Hono {
   // round-trip to the Claude Code routes.
   router.get("/config", async (c) =>
     c.json({
-      config: await getJobConfig(db()),
+      config: await getJobConfig(),
       availableProjectDirs: (await listProjects()).map((p) => ({ dir: p.dir, path: p.path })),
     }),
   );
@@ -55,7 +55,7 @@ export function createJobRoutes(config: Config): Hono {
   router.put("/config", async (c) => {
     const parsed = configSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    return c.json({ config: await saveJobConfig(db(), parsed.data) });
+    return c.json({ config: await saveJobConfig(parsed.data) });
   });
 
   // Runs one job now. Answers with its outcome, including "busy" when the job is

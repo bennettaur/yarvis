@@ -1,19 +1,19 @@
-import { desc, eq } from "drizzle-orm";
-import type { Db } from "../db/client.ts";
-import { type WipSourcesConfig, wipConfig } from "../db/schema.ts";
+import type { WipSourcesConfig } from "../db/schema.ts";
+import { readSection, withSection } from "../settings/store.ts";
 
 /**
  * Singleton store for the work-in-progress roll-up configuration: which sources
  * are enabled, and the GitHub issue labels that drive the "labeled issues"
- * source. Modeled on the embeddings-config singleton — at most one row, most
- * recent wins. When no row exists, sensible defaults apply (all sources on, no
- * label filter).
+ * source. Lives at the `wipConfig` key in `~/.yarvis/settings.json`. When
+ * nothing is stored, sensible defaults apply (all sources on, no label filter).
  */
 
 export interface WipConfig {
   sources: WipSourcesConfig;
   issueLabels: string[];
 }
+
+const SETTINGS_KEY = "wipConfig";
 
 /** All sources on — the roll-up shows everything until the user narrows it. */
 export const DEFAULT_WIP_SOURCES: WipSourcesConfig = {
@@ -29,24 +29,18 @@ export const DEFAULT_WIP_CONFIG: WipConfig = {
   issueLabels: [],
 };
 
-/** Returns the saved config merged over defaults (so new source keys default on). */
-export async function getWipConfig(db: Db): Promise<WipConfig> {
-  const [row] = await db.select().from(wipConfig).orderBy(desc(wipConfig.updatedAt)).limit(1);
-  if (!row) return DEFAULT_WIP_CONFIG;
+/** Returns the stored config merged over defaults (so new source keys default on). */
+export async function getWipConfig(): Promise<WipConfig> {
+  const stored = await readSection<WipConfig>(SETTINGS_KEY);
+  if (!stored) return DEFAULT_WIP_CONFIG;
   return {
-    sources: { ...DEFAULT_WIP_SOURCES, ...row.sources },
-    issueLabels: row.issueLabels ?? [],
+    sources: { ...DEFAULT_WIP_SOURCES, ...stored.sources },
+    issueLabels: stored.issueLabels ?? [],
   };
 }
 
-/** Upserts the singleton config, keeping the table to one row. */
-export async function saveWipConfig(db: Db, input: WipConfig): Promise<WipConfig> {
-  const values = { sources: input.sources, issueLabels: input.issueLabels, updatedAt: new Date() };
-  const [existing] = await db.select({ id: wipConfig.id }).from(wipConfig).limit(1);
-  if (existing) {
-    await db.update(wipConfig).set(values).where(eq(wipConfig.id, existing.id));
-  } else {
-    await db.insert(wipConfig).values(values);
-  }
-  return getWipConfig(db);
+/** Stores the config as the whole section, replacing whatever was there before. */
+export async function saveWipConfig(input: WipConfig): Promise<WipConfig> {
+  await withSection<WipConfig, void>(SETTINGS_KEY, () => ({ next: input, result: undefined }));
+  return getWipConfig();
 }

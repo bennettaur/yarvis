@@ -306,7 +306,7 @@ async function handleChat(
   let provider = state?.provider ?? undefined;
   let chatModelId = state?.model ?? undefined;
   if (!provider || !chatModelId) {
-    const def = await defaultProviderModel(config, db);
+    const def = await defaultProviderModel(config);
     if (!def) {
       await client.sendMessage(
         chatId,
@@ -320,7 +320,7 @@ async function handleChat(
 
   let model: Awaited<ReturnType<typeof resolveModel>>;
   try {
-    model = await resolveModel(config, db, provider, chatModelId);
+    model = await resolveModel(config, provider, chatModelId);
   } catch (e) {
     await client.sendMessage(
       chatId,

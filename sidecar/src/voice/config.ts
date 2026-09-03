@@ -1,11 +1,9 @@
-import { desc, eq } from "drizzle-orm";
-import type { Db } from "../db/client.ts";
-import { type VoiceConfigRow, voiceConfig } from "../db/schema.ts";
+import { readSection, withSection } from "../settings/store.ts";
 import type { SynthesisExtras } from "./speech.ts";
 
 /**
- * Singleton store for the speech settings, kept the same way the embeddings
- * provider is: at most one row, the most recent.
+ * Singleton store for the speech settings, kept as one plain object under the
+ * `voiceConfig` key in `~/.yarvis/settings.json`.
  */
 
 export interface VoiceConfigInput {
@@ -38,42 +36,18 @@ export const DEFAULT_VOICE_CONFIG: VoiceConfigInput = {
   handsFree: false,
 };
 
-/** Returns the stored settings, or the defaults when none have been saved. */
-export async function getVoiceConfig(db: Db): Promise<VoiceConfigInput> {
-  const row = await getVoiceConfigRow(db);
-  if (!row) return { ...DEFAULT_VOICE_CONFIG };
-  return {
-    sttProvider: row.sttProvider,
-    sttModel: row.sttModel,
-    sttLanguage: row.sttLanguage,
-    ttsProvider: row.ttsProvider,
-    ttsModel: row.ttsModel,
-    ttsVoice: row.ttsVoice,
-    ttsRefAudio: row.ttsRefAudio,
-    ttsExtras: row.ttsExtras,
-    speakReplies: row.speakReplies,
-    handsFree: row.handsFree,
-  };
+const SETTINGS_KEY = "voiceConfig";
+
+/** Returns the stored settings merged onto the defaults, or the defaults verbatim when none have been saved. */
+export async function getVoiceConfig(): Promise<VoiceConfigInput> {
+  const stored = await readSection<Partial<VoiceConfigInput>>(SETTINGS_KEY);
+  return { ...DEFAULT_VOICE_CONFIG, ...stored };
 }
 
-async function getVoiceConfigRow(db: Db): Promise<VoiceConfigRow | null> {
-  const [row] = await db.select().from(voiceConfig).orderBy(desc(voiceConfig.updatedAt)).limit(1);
-  return row ?? null;
-}
-
-/** Upserts the singleton row, updating in place when one already exists. */
-export async function saveVoiceConfig(
-  db: Db,
-  input: Partial<VoiceConfigInput>,
-): Promise<VoiceConfigInput> {
-  const existing = await getVoiceConfigRow(db);
-  if (existing) {
-    await db
-      .update(voiceConfig)
-      .set({ ...input, updatedAt: new Date() })
-      .where(eq(voiceConfig.id, existing.id));
-  } else {
-    await db.insert(voiceConfig).values({ ...DEFAULT_VOICE_CONFIG, ...input });
-  }
-  return getVoiceConfig(db);
+/** Merges `input` onto the existing stored config (or the defaults) and writes the whole result back. */
+export async function saveVoiceConfig(input: Partial<VoiceConfigInput>): Promise<VoiceConfigInput> {
+  return withSection<Partial<VoiceConfigInput>, VoiceConfigInput>(SETTINGS_KEY, (current) => {
+    const next = { ...DEFAULT_VOICE_CONFIG, ...current, ...input };
+    return { next, result: next };
+  });
 }

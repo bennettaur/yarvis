@@ -828,7 +828,11 @@ export const toolPolicy = pgEnum("tool_policy", ["always", "search", "disabled"]
 export const agentTools = pgTable("agent_tools", {
   id: text("id").primaryKey(),
   source: toolSource("source").notNull(),
-  serverId: uuid("server_id").references(() => mcpServers.id, { onDelete: "cascade" }),
+  // Correlates to an id in `mcpServers` (now `~/.yarvis/settings.json`, not this
+  // table) — a plain uuid rather than an FK, since the referenced row no longer
+  // lives in Postgres. `mcp/service.ts`'s `deleteMcpServer` deletes these rows
+  // explicitly, taking over what the FK's `onDelete: "cascade"` used to do.
+  serverId: uuid("server_id"),
   name: text("name").notNull(),
   description: text("description").notNull().default(""),
   inputSchema: jsonb("input_schema"),

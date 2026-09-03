@@ -7,13 +7,13 @@ import { getDb } from "../db/client.ts";
 import { UrlSafetyError, validateOutboundUrl } from "../lib/urlSafety.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { getMcpManager } from "./connectionManager.ts";
-import { getOAuthProvider } from "./oauth.ts";
 import {
   beginAuthorization,
   createMcpServer,
   deleteMcpServer,
   getMcpServer,
   listMcpServers,
+  oauthProviderFor,
   refreshServer,
   revokeAuthorization,
   updateMcpServer,
@@ -153,10 +153,10 @@ export function createMcpRoutes(config: Config): Hono {
 
   // --- MCP servers -----------------------------------------------------------
 
-  router.get("/servers", async (c) => c.json(await listMcpServers(db())));
+  router.get("/servers", async (c) => c.json(await listMcpServers()));
 
   router.get("/servers/:id", async (c) => {
-    const row = await getMcpServer(db(), c.req.param("id"));
+    const row = await getMcpServer(c.req.param("id"));
     if (!row) return c.json({ error: "not found" }, 404);
     return c.json(row);
   });
@@ -165,14 +165,14 @@ export function createMcpRoutes(config: Config): Hono {
     const body = await c.req.json().catch(() => null);
     const parsed = createSchema.safeParse(body);
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    return c.json(await createMcpServer(db(), parsed.data), 201);
+    return c.json(await createMcpServer(parsed.data), 201);
   });
 
   router.patch("/servers/:id", async (c) => {
     const body = await c.req.json().catch(() => null);
     const parsed = updateSchema.safeParse(body);
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const row = await updateMcpServer(db(), c.req.param("id"), parsed.data);
+    const row = await updateMcpServer(c.req.param("id"), parsed.data);
     if (!row) return c.json({ error: "not found" }, 404);
     return c.json(row);
   });
@@ -191,8 +191,8 @@ export function createMcpRoutes(config: Config): Hono {
 
   router.get("/servers/:id/status", async (c) => {
     const id = c.req.param("id");
-    const server = await getMcpServer(db(), id);
-    const provider = server ? getOAuthProvider(config, server) : undefined;
+    const server = await getMcpServer(id);
+    const provider = server ? oauthProviderFor(config, server) : undefined;
     return c.json({
       ...getMcpManager().status(id),
       oauth: provider?.status() ?? null,
@@ -212,7 +212,7 @@ export function createMcpRoutes(config: Config): Hono {
   });
 
   router.post("/servers/:id/oauth/disconnect", async (c) => {
-    const ok = await revokeAuthorization(config, db(), c.req.param("id"));
+    const ok = await revokeAuthorization(config, c.req.param("id"));
     if (!ok) return c.json({ error: "not found, or not an oauth server" }, 404);
     return c.json({ ok: true });
   });

@@ -1,9 +1,13 @@
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
 import { chooseEmbedder, HashEmbedder } from "./embedder.ts";
+import { upsertEmbeddingsConfig } from "./embeddingsConfig.ts";
 import { PgVectorMemoryStore } from "./index.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -27,15 +31,21 @@ const baseConfig: Config = {
   telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
 };
 
+// The embeddings provider config now lives in ~/.yarvis/settings.json, not
+// Postgres — isolate each test from the real one.
+let settingsDir: string;
+
 beforeEach(async () => {
   await sql`TRUNCATE memories RESTART IDENTITY CASCADE`;
-  await sql`TRUNCATE embeddings_config RESTART IDENTITY CASCADE`;
+  settingsDir = await mkdtemp(join(tmpdir(), "yarvis-memory-store-"));
+  process.env.YARVIS_SETTINGS_PATH = join(settingsDir, "settings.json");
+});
+
+afterEach(async () => {
+  await rm(settingsDir, { recursive: true, force: true });
 });
 
 afterAll(async () => {
-  // The suite deliberately writes a bad-dimension provider row; leaving it
-  // behind would break every other file whose routes select an embedder.
-  await sql`TRUNCATE embeddings_config RESTART IDENTITY CASCADE`;
   await sql.end();
 });
 
@@ -167,11 +177,15 @@ describe("pgvector memory store", () => {
   });
 
   it("rejects a configured embedder whose dimension doesn't match the column", async () => {
-    // A row with the wrong dimension shouldn't normally exist (the PUT route
-    // rejects it), but chooseEmbedder guards against it regardless.
-    await sql`
-      INSERT INTO embeddings_config (base_url, model, api_kind, dimensions)
-      VALUES ('http://localhost:11434/v1', 'wrong-dims', 'openai', ${schema.EMBED_DIM + 1})`;
+    // A config with the wrong dimension shouldn't normally exist (the PUT
+    // route rejects it), but chooseEmbedder guards against it regardless.
+    await upsertEmbeddingsConfig({
+      baseUrl: "http://localhost:11434/v1",
+      model: "wrong-dims",
+      apiKind: "openai",
+      dimensions: schema.EMBED_DIM + 1,
+      headerNames: [],
+    });
     await expect(chooseEmbedder(baseConfig, db)).rejects.toThrow(/dimension/i);
   });
 });
