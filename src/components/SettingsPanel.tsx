@@ -2,6 +2,7 @@ import { useState } from "react";
 import AgentSection from "./AgentSection";
 import CustomProviderSection from "./CustomProviderSection";
 import EmbeddingsSection from "./EmbeddingsSection";
+import IntegrationSettingsSection from "./IntegrationSettingsSection";
 import JobsSection from "./JobsSection";
 import KeychainSection from "./KeychainSection";
 import McpEndpointSection from "./McpEndpointSection";
@@ -78,7 +79,12 @@ export default function SettingsPanel() {
         ))}
       </nav>
 
-      {active === "credentials" && <KeychainSection />}
+      {active === "credentials" && (
+        <div className="space-y-5">
+          <KeychainSection />
+          <IntegrationSettingsSection />
+        </div>
+      )}
       {active === "providers" && (
         <div className="space-y-5">
           <ModelCatalogSection />

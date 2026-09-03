@@ -189,7 +189,6 @@ pub fn run() {
             settings::set_jira_base_url,
             settings::set_jira_email,
             settings::set_google_client_id,
-            settings::set_telegram_allowed_chat_ids,
             settings::set_telegram_otp_window_minutes,
         ])
         .run(tauri::generate_context!())

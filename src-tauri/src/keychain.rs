@@ -9,9 +9,13 @@
 //! a key in this shared blob rather than opening its own [`Entry`].
 //!
 //! Non-sensitive configuration that used to ride this blob purely to keep its
-//! injection path uniform with real credentials (an org URL, an account email,
-//! a chat-id allowlist) has moved to `settings.rs`'s `~/.yarvis/settings.json`;
-//! `settings::init` migrates any values it finds here on first run.
+//! injection path uniform with real credentials (an org URL, an account email)
+//! has moved to `settings.rs`'s `~/.yarvis/settings.json`; `settings::init`
+//! migrates any values it finds here on first run. A value only belongs in the
+//! Keychain if it's actually a credential or an authorization boundary — the
+//! Telegram chat-id allowlist stays here for the latter reason: with OTP off
+//! by default, it's the bot's only access-control check, and a plain settings
+//! file has no per-item authorization gate the way a Keychain entry does.
 //!
 //! The frontend can store and clear secrets and check presence, but never reads
 //! values back after entry. The Rust core reads values only to inject them into
@@ -30,8 +34,8 @@ const SECRETS_ACCOUNT: &str = "secrets";
 /// The complete set of top-level secrets the app manages. Writes to any other
 /// key are rejected so the frontend cannot store arbitrary data in the
 /// Keychain. Non-secret configuration that used to sit alongside these (org
-/// URLs, an account email, a chat-id allowlist) now lives in `settings.rs`
-/// instead — see `settings::LEGACY_SETTING_KEYS` for the migration off this list.
+/// URLs, an account email) now lives in `settings.rs` instead — the private
+/// `LEGACY_SETTING_KEYS` list there does the migration off this list.
 pub const SECRET_KEYS: &[&str] = &[
     "anthropic_api_key",
     "gemini_api_key",
@@ -43,6 +47,7 @@ pub const SECRET_KEYS: &[&str] = &[
     "database_url",
     "google_client_secret",
     "telegram_bot_token",
+    "telegram_allowed_chat_ids",
     "telegram_otp_secret",
 ];
 

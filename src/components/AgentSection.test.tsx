@@ -29,7 +29,6 @@ function defaultSettings(): Settings {
     jiraBaseUrl: null,
     jiraEmail: null,
     googleClientId: null,
-    telegramAllowedChatIds: null,
     telegramOtpWindowMinutes: null,
     defaultTelegramOtpWindowMinutes: 120,
   };

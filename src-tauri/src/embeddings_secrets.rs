@@ -44,29 +44,47 @@ const LEGACY_MIGRATED_KEY: &str = "embeddingsProviderLegacyMigrated";
 /// into the shared item, once, and deletes the old one. Call at startup before
 /// the sidecar spawns so a migrated key is injected on the very first launch
 /// after upgrading.
+///
+/// Order matters: the shared item is written — with the migrated value and
+/// `LEGACY_MIGRATED_KEY` both in place — *before* the old item is deleted. If
+/// the write fails, the old item and the not-yet-set flag are left alone so
+/// the next launch retries from scratch; deleting first would risk losing the
+/// only copy of the secret to a write that never lands.
 pub fn migrate_legacy_item() {
     let mut root = keychain::read_root();
     if root.get(LEGACY_MIGRATED_KEY).and_then(Value::as_bool) == Some(true) {
         return;
     }
+    let Some(entry) = Entry::new(LEGACY_SERVICE, LEGACY_ACCOUNT).ok() else {
+        return;
+    };
+    let Ok(raw) = entry.get_password() else {
+        // No legacy item (already migrated in a prior version, or never used)
+        // — nothing to copy, but still worth recording so this lookup isn't
+        // repeated on every future launch.
+        if let Some(obj) = root.as_object_mut() {
+            obj.insert(LEGACY_MIGRATED_KEY.to_string(), Value::Bool(true));
+        }
+        if let Err(e) = keychain::write_root(&root) {
+            eprintln!("[embeddings_secrets] failed to persist legacy-item migration: {e}");
+        }
+        return;
+    };
     let Some(obj) = root.as_object_mut() else {
         return;
     };
-    if let Ok(entry) = Entry::new(LEGACY_SERVICE, LEGACY_ACCOUNT) {
-        if let Ok(raw) = entry.get_password() {
-            if let Ok(blob) = serde_json::from_str::<Value>(&raw) {
-                let has_content = blob.as_object().map(|o| !o.is_empty()).unwrap_or(false);
-                if has_content && !obj.contains_key(EMBEDDINGS_KEY) {
-                    obj.insert(EMBEDDINGS_KEY.to_string(), blob);
-                }
-            }
-            let _ = entry.delete_credential();
+    if let Ok(blob) = serde_json::from_str::<Value>(&raw) {
+        let has_content = blob.as_object().map(|o| !o.is_empty()).unwrap_or(false);
+        if has_content && !obj.contains_key(EMBEDDINGS_KEY) {
+            obj.insert(EMBEDDINGS_KEY.to_string(), blob);
         }
     }
     obj.insert(LEGACY_MIGRATED_KEY.to_string(), Value::Bool(true));
     if let Err(e) = keychain::write_root(&root) {
         eprintln!("[embeddings_secrets] failed to persist legacy-item migration: {e}");
+        return;
     }
+    let _ = entry.delete_credential();
 }
 
 /// Reads the embeddings-provider credential blob out of the shared secrets
