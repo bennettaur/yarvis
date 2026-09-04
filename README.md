@@ -910,7 +910,7 @@ tools:
   - work_summary
   - search_events
   - recall
-model: anthropic/claude-sonnet-5   # optional; omit for the default chat model
+model: anthropic/claude-sonnet-5   # optional; or complexity: low|medium|max
 maxSteps: 8                         # optional, default 8, hard cap 30
 ---
 
@@ -928,6 +928,13 @@ right for anything that works purely from material handed to it.
 `enabled: false` turns one off, including a built-in you would rather not have.
 A misspelled key is an error too — `tool:` where `tools:` was meant would
 otherwise be a specialist with no tools and no complaint.
+
+`complexity: low | medium | max` is an alternative to `model:` — it resolves to
+whichever provider/model you've set for that tier in **Settings → Assistant →
+Complexity tiers**, so a cheap specialist stays cheap (or gets more capable) as
+that setting changes rather than as a release. The two are mutually exclusive;
+a file setting both is an error. Leaving both unset falls back to the default
+chat model, same as today.
 
 Two things a definition deliberately cannot do. It cannot delegate — a specialist
 that could would eventually delegate to itself. And a tool that writes where other
