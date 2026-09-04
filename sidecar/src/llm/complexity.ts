@@ -6,9 +6,8 @@ import { defaultProviderModel, type ProviderId } from "./providers.ts";
 
 /**
  * Singleton store for which model backs each complexity tier of internal-use
- * LLM calls — a specialist that summarizes or consolidates rather than one the
- * user is chatting with. Kept the same way `voice_config` is: at most one row,
- * the most recent.
+ * LLM calls. Kept the same way `voice_config` is (see `db/schema.ts` for why):
+ * at most one row, the most recent.
  */
 
 export const COMPLEXITY_TIERS = ["low", "medium", "max"] as const;

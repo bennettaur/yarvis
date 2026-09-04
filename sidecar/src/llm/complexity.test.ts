@@ -2,13 +2,10 @@ import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
+import { getDb } from "../db/client.ts";
+import { resolveComplexityModel } from "./complexity.ts";
 
-/**
- * The complexity-tier model settings live in Postgres for the same reason
- * `voice_config` does: the background jobs run in this process and cannot read
- * a browser's localStorage. These cover the round trip every specialist that
- * opts into a tier depends on.
- */
+/** Covers the round trip every specialist that opts into a tier depends on. */
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -18,8 +15,8 @@ const sql = postgres(url, { max: 1 });
  * explicitly would trigger the default parameter and quietly give the app a
  * database, which is the opposite of what those tests are checking.
  */
-function app(databaseUrl: string | null = url): ReturnType<typeof createApp> {
-  const config: Config = {
+function testConfig(databaseUrl: string | null): Config {
+  return {
     port: 0,
     token: "test-token",
     tokenGenerated: false,
@@ -34,7 +31,10 @@ function app(databaseUrl: string | null = url): ReturnType<typeof createApp> {
     embeddingsSecrets: { headers: {} },
     telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
   };
-  return createApp(config);
+}
+
+function app(databaseUrl: string | null = url): ReturnType<typeof createApp> {
+  return createApp(testConfig(databaseUrl));
 }
 
 const auth = { Authorization: "Bearer test-token" };
@@ -111,5 +111,24 @@ describe("complexity model config", () => {
 
   it("refuses to save with no database", async () => {
     expect((await patch({ low: { provider: "x", model: "y" } }, app(null))).status).toBe(503);
+  });
+});
+
+describe("resolveComplexityModel", () => {
+  const config = testConfig(url);
+  const db = getDb(url).db;
+
+  it("returns the configured tier's model verbatim", async () => {
+    await patch({ low: { provider: "cerebras", model: "llama-3.3-70b" } });
+    expect(await resolveComplexityModel(config, db, "low")).toEqual({
+      provider: "cerebras",
+      model: "llama-3.3-70b",
+    });
+  });
+
+  it("falls back to the default chat model when the tier is unset", async () => {
+    // No provider secrets configured, so there is no default to fall back to —
+    // the point being it *falls back* rather than throwing or inventing one.
+    expect(await resolveComplexityModel(config, db, "medium")).toBeNull();
   });
 });

@@ -170,6 +170,26 @@ export function materialBlock(material: string, nonce: string): string {
   return `<material-${nonce}>\n${safe}\n</material-${nonce}>`;
 }
 
+/**
+ * Resolves a specialist's own choice of model, from whichever of `provider`/
+ * `model` or `complexityTier` its file set — `catalog.ts` rejects a file that
+ * sets both, so this never has to choose between them. Falls back to the
+ * default chat model when the specialist named neither.
+ */
+export async function specialistModel(
+  config: Config,
+  db: Db,
+  specialist: SpecialistDefinition,
+): Promise<{ provider: string; model: string } | null> {
+  if (specialist.provider && specialist.model) {
+    return { provider: specialist.provider, model: specialist.model };
+  }
+  if (specialist.complexityTier) {
+    return resolveComplexityModel(config, db, specialist.complexityTier);
+  }
+  return defaultProviderModel(config, db);
+}
+
 export async function runSpecialist(input: RunSpecialistInput): Promise<SpecialistRun> {
   const { config, db, name, task, material, signal } = input;
   const specialist = await findSpecialist(name);
@@ -179,11 +199,7 @@ export async function runSpecialist(input: RunSpecialistInput): Promise<Speciali
   const chosen =
     input.provider && input.model
       ? { provider: input.provider, model: input.model }
-      : specialist.complexityTier
-        ? await resolveComplexityModel(config, db, specialist.complexityTier)
-        : specialist.provider && specialist.model
-          ? { provider: specialist.provider, model: specialist.model }
-          : await defaultProviderModel(config, db);
+      : await specialistModel(config, db, specialist);
   if (!chosen) throw new Error("no chat model is configured");
   const model = await resolveModel(config, db, chosen.provider, chosen.model);
 

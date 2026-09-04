@@ -3,9 +3,9 @@ import { ensureOk, sidecarFetch } from "./api";
 /**
  * Which provider/model backs each complexity tier for internal-use LLM
  * calls — specialists like the session summarizer and activity consolidator,
- * not the chat the user is talking to. Lives server-side for the same reason
- * `voiceConfig.ts` does: the background jobs run in the sidecar and need the
- * same settings a browser's localStorage can't reach.
+ * not the chat the user is talking to. Lives server-side, like `voiceConfig.ts`,
+ * because the background jobs run in the sidecar and need the same settings a
+ * browser's localStorage can't reach.
  */
 
 export const COMPLEXITY_TIERS = ["low", "medium", "max"] as const;

@@ -16,12 +16,24 @@ import {
  * answer the defaults with no database rather than 503.
  */
 
-const selectionSchema = z
-  .object({
-    provider: z.string().min(1).max(128),
-    model: z.string().min(1).max(128),
-  })
-  .nullable();
+/**
+ * Same shape `llm/routes.ts`'s `saveSchema` enforces on a model id: some
+ * providers (Gemini) embed it directly in a request path, so `..` or an
+ * unexpected shape is rejected here rather than at the first call that uses it.
+ */
+const SEGMENT = "[A-Za-z0-9][A-Za-z0-9._-]*";
+const MODEL_ID = new RegExp(`^${SEGMENT}(/${SEGMENT})?(:${SEGMENT})?$`);
+
+const modelId = z
+  .string()
+  .min(1)
+  .max(128)
+  .refine((v) => !v.includes(".."), "model id must not contain '..'")
+  .refine((v) => MODEL_ID.test(v), "model id has an unexpected shape");
+
+const providerId = z.string().min(1).max(128);
+
+const selectionSchema = z.object({ provider: providerId, model: modelId }).nullable();
 
 const saveSchema = z.object({
   low: selectionSchema.optional(),

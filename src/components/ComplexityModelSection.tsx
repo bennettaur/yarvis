@@ -14,7 +14,8 @@ import {
  * Which model answers for each complexity tier — the setting internal-use
  * specialists (session summaries, activity consolidation) draw on instead of a
  * model hardcoded into their prompt. A tier left unset falls back to whatever
- * the chat default is, so leaving all three blank changes nothing.
+ * the chat default is, so leaving all three blank changes nothing (see
+ * `complexityModels.ts` for why this lives server-side).
  */
 
 const FIELD =
@@ -23,7 +24,7 @@ const FIELD =
 const TIER_HINTS: Record<ComplexityTier, string> = {
   low: "Cheap, fast calls — a session or activity summary.",
   medium: "A bit more judgment — consolidating memory, scouting work.",
-  max: "Falls back to the chat default when unset; reserve for what actually needs it.",
+  max: "Whatever actually needs the best model available.",
 };
 
 export default function ComplexityModelSection() {
@@ -49,15 +50,21 @@ export default function ComplexityModelSection() {
     void refresh();
   }, [refresh]);
 
-  const save = useCallback(async (tier: ComplexityTier, selection: ModelSelection | null) => {
-    setConfig((prev) => ({ ...prev, [tier]: selection }));
-    try {
-      setConfig(await saveComplexityModelConfig({ [tier]: selection }));
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
+  const save = useCallback(
+    async (tier: ComplexityTier, selection: ModelSelection | null) => {
+      setConfig((prev) => ({ ...prev, [tier]: selection }));
+      try {
+        setConfig(await saveComplexityModelConfig({ [tier]: selection }));
+        setError(null);
+      } catch (e) {
+        // Revert the optimistic update: a selection left on screen next to an
+        // error would otherwise look saved when it wasn't.
+        setConfig((prev) => ({ ...prev, [tier]: config[tier] }));
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [config],
+  );
 
   const modelsFor = (providerId: string) =>
     providers.find((p) => p.id === providerId)?.models ?? [];
