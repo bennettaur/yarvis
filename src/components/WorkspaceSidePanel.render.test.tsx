@@ -17,6 +17,10 @@ mock.module("../lib/workspaces", () => ({
 
 const { default: WorkspaceSidePanel } = await import("./WorkspaceSidePanel");
 
+// A workspace id distinct from every other test file: `useReviewComments`
+// caches comments in a module-level Map keyed by this id, and that cache is
+// shared across the whole `bun test` process — a colliding id would leak
+// another file's comment fixtures into this one depending on file order.
 const REPO: WorkspaceRepoDetail = {
   id: "wr-1",
   workspaceId: "ws-side-panel-1",
@@ -86,10 +90,6 @@ const mount = async (
 ) => {
   const mounted = await mountForInteraction(
     <WorkspaceSidePanel
-      // A workspace id distinct from every other test file: `useReviewComments`
-      // caches comments in a module-level Map keyed by this id, and that cache is
-      // shared across the whole `bun test` process — a colliding id would leak
-      // another file's comment fixtures into this one depending on file order.
       workspaceId="ws-side-panel-1"
       repos={[repo]}
       onOpenFile={onOpenFile}

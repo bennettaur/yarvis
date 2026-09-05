@@ -72,9 +72,9 @@ afterEach(() => {
 const mount = async (onOpenFile: (repoId: string, path: string) => void = () => {}) => {
   const mounted = await mountForInteraction(
     // A workspace id distinct from every other test file: `useReviewComments`
-    // caches comments in a module-level Map keyed by this id, and that cache is
-    // shared across the whole `bun test` process — a colliding id would leak
-    // another file's comment fixtures into this one depending on file order.
+    // caches comments in a module-level Map keyed by this id, shared across
+    // the whole `bun test` process — a colliding id would leak another
+    // file's comment fixtures into this one depending on file order.
     <WorkspaceReviewComments
       workspaceId="ws-review-comments-1"
       repos={[REPO]}
