@@ -76,15 +76,9 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: yarvis_test
-          # A throwaway, network-isolated CI database with no real secrets:
-          # trust auth rules out the recurring, unexplained "password
-          # authentication failed for user \"runner\"" failures under
-          # connection load without weakening anything that matters here.
-          POSTGRES_HOST_AUTH_METHOD: trust
         ports:
           - 5432:5432
         options: >-
-          --shm-size=1g
           --health-cmd pg_isready
           --health-interval 10s
           --health-timeout 5s
