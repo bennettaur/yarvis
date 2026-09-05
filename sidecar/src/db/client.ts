@@ -9,16 +9,22 @@ interface DbHandle {
   sql: postgres.Sql;
 }
 
-let handle: DbHandle | null = null;
+const handles = new Map<string, DbHandle>();
 
 /**
  * Returns a lazily-created Drizzle client bound to the given connection string.
- * The first call establishes the pool; later calls reuse it.
+ * The first call for a given URL establishes its pool; later calls with that
+ * same URL reuse it. Keyed by URL (rather than a single cached instance) so a
+ * test process that touches more than one connection string — a real test
+ * database alongside a throwaway placeholder used only to satisfy a guard
+ * check — can't have the placeholder's pool leak into every other caller.
  */
 export function getDb(databaseUrl: string): DbHandle {
+  let handle = handles.get(databaseUrl);
   if (!handle) {
     const sql = postgres(databaseUrl, { max: 5, connect_timeout: 5 });
     handle = { db: drizzle(sql, { schema }), sql };
+    handles.set(databaseUrl, handle);
   }
   return handle;
 }
