@@ -18,6 +18,23 @@ pre-commit:
       run: bunx biome check --write --no-errors-on-unmatched {staged_files}
       stage_fixed: true
 
+    # A machine pointed at a private npm mirror (a corporate proxy, say) makes
+    # bun write that mirror's tarball URL into every `bun.lock` entry it
+    # touches. CI installs `--frozen-lockfile` from the default registry and
+    # cannot reach a host like that, so the URLs have to be scrubbed back to
+    # `""` before the lockfile is committed — the integrity hashes are the same
+    # either way, since a proxy serves the registry's own tarballs.
+    - name: lockfile-registry
+      tags: [frontend, lint]
+      glob: "bun.lock"
+      run: |
+        if grep -n 'https\?://' bun.lock; then
+          echo
+          echo "bun.lock names a registry above. Replace each URL with \"\" and re-stage."
+          echo "If this is a deliberate git or tarball dependency, this check needs updating."
+          exit 1
+        fi
+
     - name: rustfmt
       tags: [rust, format]
       glob: "src-tauri/**/*.rs"

@@ -1,9 +1,9 @@
-import { type ReactNode, useEffect } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 import { recordEvent } from "../lib/events";
 import { usePrDetail, usePrStack } from "../lib/pr/cache";
 import { refKey } from "../lib/pr/ref";
-import { isStacked, needsUpdateCount } from "../lib/pr/stack";
-import type { CheckItem, PrStack, PrSummary, Reviewer } from "../lib/pr/types";
+import { isStacked, layerIndexOf, needsUpdateCount } from "../lib/pr/stack";
+import type { CheckItem, PrRef, PrStack, PrSummary, Reviewer } from "../lib/pr/types";
 import { usePrViewedFiles } from "../lib/pr/viewed";
 import PrChecks from "./pr/PrChecks";
 import PrDescription from "./pr/PrDescription";
@@ -82,8 +82,10 @@ function reviewersSummary(reviewers: Reviewer[]): string {
 }
 
 /** "3 PRs · you are 2 of 3 from the trunk" for the collapsed Stack header. */
-function stackSummary(stack: PrStack): string {
-  const position = stack.entries.findIndex((e) => e.isCurrent) + 1;
+function stackSummary(stack: PrStack, prRef: PrRef): string {
+  // Positioned from the ref rather than the stack's `isCurrent`, which is set
+  // by whichever layer's fetch produced this list — see `layerIndexOf`.
+  const position = layerIndexOf(stack, prRef) + 1;
   const stale = needsUpdateCount(stack);
   const parts = [`${stack.entries.length}${stack.truncated ? "+" : ""} PRs`];
   if (position > 0) parts.push(`you are ${position} of ${stack.entries.length} from the trunk`);
@@ -115,6 +117,26 @@ function CollapsibleSection({
 }
 
 /**
+ * The stack to draw while this layer's own copy of it is still loading.
+ *
+ * Every layer fetches the stack again under its own cache key, so clicking one
+ * leaves nothing to draw for a round trip — and a section that vanishes and
+ * comes back on each click is the opposite of the continuity a stack view is
+ * for. The held list is only reused when it names the pull request now on
+ * screen, so opening an unrelated PR clears it instead of describing the wrong
+ * stack.
+ */
+function useHeldStack(prRef: PrRef, fetched: PrStack | null): PrStack | null {
+  const held = useRef<PrStack | null>(null);
+  if (fetched) {
+    held.current = fetched;
+    return fetched;
+  }
+  const previous = held.current;
+  return previous && layerIndexOf(previous, prRef) >= 0 ? previous : null;
+}
+
+/**
  * Full in-app PR review. Splits into a static header (title, derived lifecycle
  * status, and action buttons) at the top, and a scrolling body underneath with
  * the description, checks, and changed-file list. Owning the scroll here (the
@@ -140,10 +162,11 @@ export default function PrDetailView({
   recordView?: boolean;
 }) {
   const prRef = pr.ref;
-  const { data: detail, error } = usePrDetail(prRef);
+  const { data: detail, error, loading } = usePrDetail(prRef);
   // Null for a provider with no stacks (Azure), and a one-entry stack for a PR
   // that simply isn't stacked — the section renders for neither.
-  const { data: stack } = usePrStack(prRef);
+  const { data: fetchedStack } = usePrStack(prRef);
+  const stack = useHeldStack(prRef, fetchedStack);
   // Shared so the file list and diffs stay in lockstep.
   const viewedFiles = usePrViewedFiles(prRef);
   // The last argument is what ticks off a step's files as the reader moves past
@@ -158,6 +181,16 @@ export default function PrDetailView({
     false,
   );
 
+  // Moving between the layers of a stack keeps this view mounted, so without
+  // this the reader lands mid-diff in a pull request they have not seen — and
+  // the sections that shrink to a loading line while the new layer loads leave
+  // the offset somewhere arbitrary once it arrives.
+  const scrollPane = useRef<HTMLDivElement | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the ref identity, not the unstable pr object
+  useEffect(() => {
+    scrollPane.current?.scrollTo({ top: 0 });
+  }, [refKey(prRef)]);
+
   // Record opening a PR for review. Keyed strictly by PR identity (the ref key)
   // so re-renders (and metadata edits like a rename) don't re-fire; a different
   // PR records a new event. Fire-and-forget.
@@ -169,7 +202,7 @@ export default function PrDetailView({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <PrFloatingHeader pr={pr} detail={detail} onBack={onBack} />
+      <PrFloatingHeader pr={pr} detail={detail} loading={loading} onBack={onBack} />
 
       {/* The vertical padding lives on the inner wrapper, not this scroll
           container: a sticky file header uses `top-0` against this container, and
@@ -178,7 +211,7 @@ export default function PrDetailView({
           `data-pr-scroll` marks this element as the scroll pane so a collapsing
           file diff can re-anchor its header to the top (see PrFileDiffs'
           `toggleViewed`); keep the attribute if this markup moves. */}
-      <div data-pr-scroll className="min-h-0 flex-1 overflow-y-auto px-6">
+      <div ref={scrollPane} data-pr-scroll className="min-h-0 flex-1 overflow-y-auto px-6">
         <div className="space-y-5 py-5">
           {error && <p className="text-sm text-red-400">{error}</p>}
 
@@ -193,8 +226,12 @@ export default function PrDetailView({
           </CollapsibleSection>
 
           {isStacked(stack) && (
-            <CollapsibleSection title="Stack" summary={stackSummary(stack)} defaultOpen={true}>
-              <PrStackList stack={stack} />
+            <CollapsibleSection
+              title="Stack"
+              summary={stackSummary(stack, prRef)}
+              defaultOpen={true}
+            >
+              <PrStackList stack={stack} currentRef={prRef} />
             </CollapsibleSection>
           )}
 

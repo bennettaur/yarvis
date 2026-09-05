@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { isStacked, needsUpdateCount } from "./stack";
+import { isStacked, layerIndexOf, needsUpdateCount } from "./stack";
 import type { PrStack, StackEntry } from "./types";
 
 const entry = (number: number, extra: Partial<StackEntry> = {}): StackEntry => ({
@@ -43,5 +43,29 @@ describe("needsUpdateCount", () => {
   it("counts the layers whose base has moved underneath them", () => {
     expect(needsUpdateCount(stack([entry(1), entry(2, { needsUpdate: true }), entry(3)]))).toBe(1);
     expect(needsUpdateCount(null)).toBe(0);
+  });
+});
+
+describe("layerIndexOf", () => {
+  // The stack is fetched once per layer and each copy marks its own subject
+  // with `isCurrent`, so the review page positions the reader from the ref it
+  // is showing — otherwise the highlight lags a round trip behind the click.
+  it("finds a layer by ref regardless of which layer the stack was fetched for", () => {
+    const s = stack([entry(1, { isCurrent: true }), entry(2), entry(3)]);
+
+    expect(layerIndexOf(s, entry(3).ref)).toBe(2);
+    expect(layerIndexOf(s, entry(1).ref)).toBe(0);
+  });
+
+  it("reports a pull request that is not one of the layers as absent", () => {
+    expect(layerIndexOf(stack([entry(1), entry(2)]), entry(9).ref)).toBe(-1);
+  });
+
+  // A branch `gh stack` tracks before a PR exists carries number 0, and every
+  // such layer would otherwise collide with any other on the same number.
+  it("never matches a branch that has no pull request", () => {
+    const s = stack([entry(1), entry(0)]);
+
+    expect(layerIndexOf(s, entry(0).ref)).toBe(-1);
   });
 });

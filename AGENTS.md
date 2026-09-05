@@ -95,6 +95,15 @@ back to ad-hoc.
 ## Conventions
 
 - Package manager is **Bun** everywhere, including the sidecar workspace.
+- `bun.lock` records no registry: every entry's resolution field stays `""` so
+  CI's `--frozen-lockfile` install resolves from the default registry. A machine
+  pointed at a private mirror has bun write that mirror's tarball URL into every
+  entry it touches, which no other machine can reach — scrub them back to `""`
+  before committing (the integrity hashes are unchanged, since a mirror serves
+  the registry's own tarballs). The `lockfile-registry` pre-commit job catches
+  it. Pin a transitive dependency through root `overrides`, not by adding it to
+  a workspace's `dependencies` — which is what `bun update <pkg>` does when the
+  package isn't already a direct dependency.
 - Formatting/linting is **Biome** for TS/JS/JSON/CSS; **rustfmt/clippy** for
   Rust. Run `bun run check:write` before committing frontend/sidecar changes.
 - Frontend tests use `bun test` with a happy-dom environment; the preload in
