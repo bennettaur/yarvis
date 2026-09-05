@@ -2,9 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 
 /**
  * Client for the settings the Rust core owns (`src-tauri/src/settings.rs`),
- * persisted as `settings.json` in the app data directory. Preferences the
- * sidecar owns (repos, embeddings) go through `lib/api` instead; these are the
- * ones the core itself reads.
+ * persisted as `~/.yarvis/settings.json`, shared across `dev:instance` copies
+ * the same way the Keychain is. Preferences the sidecar owns (repos,
+ * embeddings) go through `lib/api` instead; these are the ones the core
+ * itself reads or injects into the sidecar's environment.
  */
 
 export interface Settings {
@@ -25,6 +26,21 @@ export interface Settings {
   defaultAgentCommand: string;
   /** True while `YARVIS_CLAUDE_COMMAND` is set, which outranks `agentCommand`. */
   agentCommandOverriddenByEnv: boolean;
+  /** Azure DevOps organization base URL for the PR dashboard. */
+  azureDevopsOrgUrl: string | null;
+  /** Atlassian Cloud site base URL for the Issues dashboard. */
+  jiraBaseUrl: string | null;
+  /** Atlassian account email paired with the JIRA API token (Keychain). */
+  jiraEmail: string | null;
+  /** Google Cloud OAuth client id for the calendar integration. */
+  googleClientId: string | null;
+  /** Re-auth window, in minutes, for the Telegram bot's OTP gate; null means
+   *  the default applies. The chat-id allowlist itself stays in the Keychain
+   *  (`lib/keychain`'s `telegram_allowed_chat_ids`) — it's the bot's only
+   *  access-control check while OTP is off, not inert configuration. */
+  telegramOtpWindowMinutes: number | null;
+  /** The window that applies while `telegramOtpWindowMinutes` is null. */
+  defaultTelegramOtpWindowMinutes: number;
 }
 
 export const getSettings = () => invoke<Settings>("get_settings");
@@ -39,3 +55,25 @@ export const setMaxPtySessions = (value: number | null) =>
  * started — no restart. Rejects a value spanning more than one line. */
 export const setAgent = (name: string | null, command: string | null) =>
   invoke<Settings>("set_agent", { name, command });
+
+/**
+ * The settings below are injected into the sidecar's environment at spawn
+ * time, so a saved change only takes effect once the sidecar restarts — call
+ * `restartSidecar` from `lib/keychain` after saving, the same as a Keychain
+ * secret change.
+ */
+
+export const setAzureDevopsOrgUrl = (value: string | null) =>
+  invoke<Settings>("set_azure_devops_org_url", { value });
+
+export const setJiraBaseUrl = (value: string | null) =>
+  invoke<Settings>("set_jira_base_url", { value });
+
+export const setJiraEmail = (value: string | null) => invoke<Settings>("set_jira_email", { value });
+
+export const setGoogleClientId = (value: string | null) =>
+  invoke<Settings>("set_google_client_id", { value });
+
+/** Rejects zero; `null` clears back to `defaultTelegramOtpWindowMinutes`. */
+export const setTelegramOtpWindowMinutes = (value: number | null) =>
+  invoke<Settings>("set_telegram_otp_window_minutes", { value });

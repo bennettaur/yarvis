@@ -7,6 +7,12 @@ import type { ReviewComment } from "./workspaceReview";
  * The store behind `useReviewComments`: the diff tab and the comments list read
  * the same workspace through it, so a write in one has to land in the other.
  * These tests mount two probes on one workspace id rather than any real view.
+ *
+ * The ids below are namespaced to this file (`ws-store-*`) rather than the
+ * more obvious `ws-1`/`ws-2`: `useReviewComments` caches comments in a
+ * module-level Map keyed by workspace id, shared across the whole `bun test`
+ * process, so a generic id risks leaking this file's fixtures into another
+ * one that happens to reuse it.
  */
 
 let stored: Record<string, ReviewComment[]> = {};
@@ -62,7 +68,10 @@ const read = (host: HTMLElement, label: string) =>
 let unmount: (() => void) | null = null;
 
 beforeEach(() => {
-  stored = { "ws-1": [comment()], "ws-2": [comment({ id: "c-2", body: "Other workspace." })] };
+  stored = {
+    "ws-store-1": [comment()],
+    "ws-store-2": [comment({ id: "c-2", body: "Other workspace." })],
+  };
   loadCount = 0;
   deleted.length = 0;
 });
@@ -76,8 +85,8 @@ describe("useReviewComments", () => {
   it("shows one workspace's comments to every view of it", async () => {
     const mounted = await mountForInteraction(
       <>
-        <Probe workspaceId="ws-1" label="diff" />
-        <Probe workspaceId="ws-1" label="list" />
+        <Probe workspaceId="ws-store-1" label="diff" />
+        <Probe workspaceId="ws-store-1" label="list" />
       </>,
     );
     unmount = mounted.unmount;
@@ -88,8 +97,8 @@ describe("useReviewComments", () => {
   it("makes one request for a workspace two views mount on at once", async () => {
     const mounted = await mountForInteraction(
       <>
-        <Probe workspaceId="ws-1" label="diff" />
-        <Probe workspaceId="ws-1" label="list" />
+        <Probe workspaceId="ws-store-1" label="diff" />
+        <Probe workspaceId="ws-store-1" label="list" />
       </>,
     );
     unmount = mounted.unmount;
@@ -99,8 +108,8 @@ describe("useReviewComments", () => {
   it("lands a delete made in one view in the other", async () => {
     const mounted = await mountForInteraction(
       <>
-        <Probe workspaceId="ws-1" label="diff" />
-        <Probe workspaceId="ws-1" label="list" />
+        <Probe workspaceId="ws-store-1" label="diff" />
+        <Probe workspaceId="ws-store-1" label="list" />
       </>,
     );
     unmount = mounted.unmount;
@@ -120,11 +129,11 @@ describe("useReviewComments", () => {
   // prop changes in place — so the list has to follow the id, not the mount.
   it("follows a changed workspace id rather than showing the previous one", async () => {
     function Switcher() {
-      const [workspaceId, setWorkspaceId] = useState("ws-1");
+      const [workspaceId, setWorkspaceId] = useState("ws-store-1");
       return (
         <div>
           <Probe workspaceId={workspaceId} label="panel" />
-          <button type="button" onClick={() => setWorkspaceId("ws-2")}>
+          <button type="button" onClick={() => setWorkspaceId("ws-store-2")}>
             switch
           </button>
         </div>

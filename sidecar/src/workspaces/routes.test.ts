@@ -1263,12 +1263,10 @@ describe("provision + archive (injected git runner)", () => {
     await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     await startArchiveWorkspace(db, ws.id, {}, dirtyGit);
-    await waitForError(ws.id);
-
-    const [item] = await db
-      .select()
-      .from(attentionItems)
-      .where(eq(attentionItems.workspaceId, ws.id));
+    // The workspace's `error` column and the attention item are two separate
+    // writes after the same failure; waiting on the item itself (rather than
+    // `waitForError`, then a one-shot read) avoids racing that gap.
+    const item = await waitForAttention(ws.id, "pending");
     expect(item?.kind).toBe("error");
     expect(item?.status).toBe("pending");
     expect(item?.title).toBe("needs-me");

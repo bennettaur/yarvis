@@ -26,8 +26,11 @@ async function restartAndWait(): Promise<void> {
 
 /**
  * Manages the built-in app secrets (database URL, provider API keys, GitHub
- * token, Google OAuth credentials). Values live in the macOS Keychain; saving
- * reloads the sidecar so changes take effect immediately.
+ * token, Google OAuth client secret). Values live in the macOS Keychain;
+ * saving reloads the sidecar so changes take effect immediately. Telegram's
+ * secrets have their own dedicated `TelegramSection`, and the non-secret
+ * settings that ride alongside these into the sidecar's environment live in
+ * `IntegrationSettingsSection`.
  */
 export default function KeychainSection() {
   const [secrets, setSecrets] = useState<SecretStatus[]>([]);
