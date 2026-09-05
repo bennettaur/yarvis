@@ -19,7 +19,7 @@ const { default: WorkspaceSidePanel } = await import("./WorkspaceSidePanel");
 
 const REPO: WorkspaceRepoDetail = {
   id: "wr-1",
-  workspaceId: "ws-1",
+  workspaceId: "ws-side-panel-1",
   repoId: "repo-1",
   status: "ready",
   branch: "feature",
@@ -86,7 +86,11 @@ const mount = async (
 ) => {
   const mounted = await mountForInteraction(
     <WorkspaceSidePanel
-      workspaceId="ws-1"
+      // A workspace id distinct from every other test file: `useReviewComments`
+      // caches comments in a module-level Map keyed by this id, and that cache is
+      // shared across the whole `bun test` process — a colliding id would leak
+      // another file's comment fixtures into this one depending on file order.
+      workspaceId="ws-side-panel-1"
       repos={[repo]}
       onOpenFile={onOpenFile}
       onEditFile={onEditFile}
