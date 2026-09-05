@@ -182,14 +182,11 @@ export interface EmbedderHealth {
 
 /** Structural config for the active embeddings provider (no secrets). */
 export interface EmbeddingsConfig {
-  id: string;
   baseUrl: string;
   model: string;
   apiKind: string;
   dimensions: number;
   headerNames: string[];
-  createdAt: string;
-  updatedAt: string;
 }
 
 export interface EmbeddingsConfigInput {

@@ -204,6 +204,13 @@
       "when": 1787669877523,
       "tag": "0028_elite_korvac",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1788416095717,
+      "tag": "0029_abandoned_vector",
+      "breakpoints": true
     }
   ]
 }

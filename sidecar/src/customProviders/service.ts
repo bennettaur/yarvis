@@ -1,11 +1,13 @@
-import { asc, eq } from "drizzle-orm";
-import type { Db } from "../db/client.ts";
-import { type CustomProviderRow, customProviders } from "../db/schema.ts";
+import { readSection, withSection } from "../settings/store.ts";
 
 /**
  * CRUD for user-configured proxy providers. Structure-only — API key and
  * header values live in the macOS Keychain and reach the sidecar via the
  * `YARVIS_CUSTOM_PROVIDER_SECRETS` env var on spawn.
+ *
+ * Rows live under the `customProviders` section of `~/.yarvis/settings.json`,
+ * keyed by id — the same convention `config.ts` uses for
+ * `customProviderSecrets: Record<string, CustomProviderSecrets>`.
  */
 
 /**
@@ -17,6 +19,17 @@ import { type CustomProviderRow, customProviders } from "../db/schema.ts";
  */
 export type CustomProviderApiKind = "openai" | "openai-chat" | "anthropic";
 
+export interface CustomProviderRow {
+  id: string;
+  name: string;
+  baseUrl: string;
+  apiKind: CustomProviderApiKind;
+  models: string[];
+  headerNames: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface CustomProviderInput {
   name: string;
   baseUrl: string;
@@ -27,40 +40,51 @@ export interface CustomProviderInput {
 
 export type CustomProviderUpdate = Partial<CustomProviderInput>;
 
-export async function listCustomProviders(db: Db): Promise<CustomProviderRow[]> {
-  return db.select().from(customProviders).orderBy(asc(customProviders.name));
+const SETTINGS_KEY = "customProviders";
+
+type CustomProvidersSection = Record<string, CustomProviderRow>;
+
+export async function listCustomProviders(): Promise<CustomProviderRow[]> {
+  const section = await readSection<CustomProvidersSection>(SETTINGS_KEY);
+  return Object.values(section ?? {}).sort((a, b) =>
+    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+  );
 }
 
-export async function getCustomProvider(db: Db, id: string): Promise<CustomProviderRow | null> {
-  const [row] = await db.select().from(customProviders).where(eq(customProviders.id, id));
-  return row ?? null;
+export async function getCustomProvider(id: string): Promise<CustomProviderRow | null> {
+  const section = await readSection<CustomProvidersSection>(SETTINGS_KEY);
+  return section?.[id] ?? null;
 }
 
-export async function createCustomProvider(
-  db: Db,
-  input: CustomProviderInput,
-): Promise<CustomProviderRow> {
-  const [row] = await db.insert(customProviders).values(input).returning();
-  return row!;
+export async function createCustomProvider(input: CustomProviderInput): Promise<CustomProviderRow> {
+  return withSection<CustomProvidersSection, CustomProviderRow>(SETTINGS_KEY, (current) => {
+    const now = new Date().toISOString();
+    const row: CustomProviderRow = {
+      id: crypto.randomUUID(),
+      ...input,
+      createdAt: now,
+      updatedAt: now,
+    };
+    return { next: { ...current, [row.id]: row }, result: row };
+  });
 }
 
 export async function updateCustomProvider(
-  db: Db,
   id: string,
   patch: CustomProviderUpdate,
 ): Promise<CustomProviderRow | null> {
-  const [row] = await db
-    .update(customProviders)
-    .set({ ...patch, updatedAt: new Date() })
-    .where(eq(customProviders.id, id))
-    .returning();
-  return row ?? null;
+  return withSection<CustomProvidersSection, CustomProviderRow | null>(SETTINGS_KEY, (current) => {
+    const existing = current?.[id];
+    if (!existing) return { next: current ?? {}, result: null };
+    const row: CustomProviderRow = { ...existing, ...patch, updatedAt: new Date().toISOString() };
+    return { next: { ...current, [id]: row }, result: row };
+  });
 }
 
-export async function deleteCustomProvider(db: Db, id: string): Promise<boolean> {
-  const rows = await db
-    .delete(customProviders)
-    .where(eq(customProviders.id, id))
-    .returning({ id: customProviders.id });
-  return rows.length > 0;
+export async function deleteCustomProvider(id: string): Promise<boolean> {
+  return withSection<CustomProvidersSection, boolean>(SETTINGS_KEY, (current) => {
+    if (!current?.[id]) return { next: current ?? {}, result: false };
+    const { [id]: _removed, ...rest } = current;
+    return { next: rest, result: true };
+  });
 }

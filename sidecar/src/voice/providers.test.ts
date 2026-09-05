@@ -1,6 +1,26 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Config } from "../config.ts";
 import { availableVoiceProviders, resolveSpeechClient } from "./providers.ts";
+
+// Custom providers (part of `resolveSpeechClient`'s lookup) now live in
+// ~/.yarvis/settings.json — isolate each test from the real one.
+let settingsDir: string;
+let originalSettingsPath: string | undefined;
+
+beforeEach(async () => {
+  settingsDir = await mkdtemp(join(tmpdir(), "yarvis-voice-providers-"));
+  originalSettingsPath = process.env.YARVIS_SETTINGS_PATH;
+  process.env.YARVIS_SETTINGS_PATH = join(settingsDir, "settings.json");
+});
+
+afterEach(async () => {
+  if (originalSettingsPath === undefined) delete process.env.YARVIS_SETTINGS_PATH;
+  else process.env.YARVIS_SETTINGS_PATH = originalSettingsPath;
+  await rm(settingsDir, { recursive: true, force: true });
+});
 
 function configWith(secrets: Partial<Config["secrets"]> = {}): Config {
   return {
@@ -68,7 +88,7 @@ describe("availableVoiceProviders", () => {
 
 describe("resolveSpeechClient", () => {
   it("refuses Hugging Face without a token", async () => {
-    await expect(resolveSpeechClient(configWith(), undefined, "huggingface")).rejects.toThrow(
+    await expect(resolveSpeechClient(configWith(), "huggingface")).rejects.toThrow(
       /Hugging Face API key not configured/,
     );
   });
@@ -76,7 +96,6 @@ describe("resolveSpeechClient", () => {
   it("resolves Hugging Face once a token is configured", async () => {
     const client = await resolveSpeechClient(
       configWith({ huggingFaceApiKey: "hf_x" }),
-      undefined,
       "huggingface",
     );
     expect(typeof client.transcribe).toBe("function");
@@ -84,27 +103,23 @@ describe("resolveSpeechClient", () => {
   });
 
   it("refuses Gemini without a key and resolves it with one", async () => {
-    await expect(resolveSpeechClient(configWith(), undefined, "gemini")).rejects.toThrow(
+    await expect(resolveSpeechClient(configWith(), "gemini")).rejects.toThrow(
       /Gemini API key not configured/,
     );
-    const client = await resolveSpeechClient(
-      configWith({ geminiApiKey: "g" }),
-      undefined,
-      "gemini",
-    );
+    const client = await resolveSpeechClient(configWith({ geminiApiKey: "g" }), "gemini");
     expect(typeof client.transcribe).toBe("function");
     expect(typeof client.synthesize).toBe("function");
   });
 
   it("rejects an unknown provider id", async () => {
-    await expect(resolveSpeechClient(configWith(), undefined, "nope")).rejects.toThrow(
+    await expect(resolveSpeechClient(configWith(), "nope")).rejects.toThrow(
       /unknown voice provider/,
     );
   });
 
-  it("needs a database before it can resolve a custom provider", async () => {
-    await expect(resolveSpeechClient(configWith(), undefined, "custom:abc")).rejects.toThrow(
-      /custom providers require a configured database/,
+  it("throws when the custom provider id is unknown", async () => {
+    await expect(resolveSpeechClient(configWith(), "custom:abc")).rejects.toThrow(
+      /unknown custom provider/,
     );
   });
 });

@@ -1,4 +1,7 @@
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import type { Config } from "../config.ts";
@@ -36,8 +39,22 @@ const config = {
   telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
 } as Config;
 
+let settingsDir: string;
+let originalSettingsPath: string | undefined;
+
 beforeEach(async () => {
-  await sql`TRUNCATE job_runs, events, memories, job_config RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE job_runs, events, memories RESTART IDENTITY CASCADE`;
+  // job_config now lives in ~/.yarvis/settings.json, not Postgres — point this
+  // suite at an isolated file so it never touches the real one.
+  settingsDir = await mkdtemp(join(tmpdir(), "yarvis-jobs-settings-"));
+  originalSettingsPath = process.env.YARVIS_SETTINGS_PATH;
+  process.env.YARVIS_SETTINGS_PATH = join(settingsDir, "settings.json");
+});
+
+afterEach(async () => {
+  if (originalSettingsPath === undefined) delete process.env.YARVIS_SETTINGS_PATH;
+  else process.env.YARVIS_SETTINGS_PATH = originalSettingsPath;
+  await rm(settingsDir, { recursive: true, force: true });
 });
 
 afterAll(async () => {
@@ -101,7 +118,7 @@ describe("cc-session digest consent", () => {
   });
 
   it("still does nothing when enabled with no project allowed", async () => {
-    await saveJobConfig(db, { ccDigestEnabled: true, ccDigestProjectDirs: [] });
+    await saveJobConfig({ ccDigestEnabled: true, ccDigestProjectDirs: [] });
     const result = await runJob(ccSessionDigestJob, config, db);
     expect(result.status).toBe("skipped");
     expect(result.detail).toContain("no project directories");

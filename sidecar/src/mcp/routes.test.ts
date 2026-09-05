@@ -1,10 +1,15 @@
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 
 /**
- * MCP route tests. Require a Postgres with pgvector (provided in CI). With no
+ * MCP route tests. The tool-registry routes require a Postgres with pgvector
+ * (provided in CI); the MCP-server CRUD routes now live in
+ * `~/.yarvis/settings.json`, pointed at a per-test temp file. With no
  * embeddings_config row and no GEMINI key, the registry falls back to the
  * offline HashEmbedder, so these run without network access.
  */
@@ -32,10 +37,21 @@ const jsonAuth = { Authorization: "Bearer test-token", "Content-Type": "applicat
 // so an app outliving the TRUNCATE below would serve an empty registry for every
 // test after the first. Build a fresh one per test to keep the two in step.
 let app: ReturnType<typeof createApp>;
+let dir: string;
+let originalSettingsPath: string | undefined;
 
 beforeEach(async () => {
-  await sql`TRUNCATE agent_tools, mcp_servers RESTART IDENTITY CASCADE`;
+  dir = await mkdtemp(join(tmpdir(), "yarvis-mcp-routes-"));
+  originalSettingsPath = process.env.YARVIS_SETTINGS_PATH;
+  process.env.YARVIS_SETTINGS_PATH = join(dir, "settings.json");
+  await sql`TRUNCATE agent_tools RESTART IDENTITY CASCADE`;
   app = createApp(config);
+});
+
+afterEach(async () => {
+  if (originalSettingsPath === undefined) delete process.env.YARVIS_SETTINGS_PATH;
+  else process.env.YARVIS_SETTINGS_PATH = originalSettingsPath;
+  await rm(dir, { recursive: true, force: true });
 });
 
 afterAll(async () => {

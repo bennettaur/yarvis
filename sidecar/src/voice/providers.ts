@@ -1,8 +1,11 @@
 import type { Config } from "../config.ts";
-import { listCustomProviders } from "../customProviders/service.ts";
-import type { Db } from "../db/client.ts";
-import type { CustomProviderRow, ProviderModelRow } from "../db/schema.ts";
-import { catalogFor, listProviderModels, withCapability } from "../llm/catalog.ts";
+import { type CustomProviderRow, listCustomProviders } from "../customProviders/service.ts";
+import {
+  catalogFor,
+  listProviderModels,
+  type ProviderModelRow,
+  withCapability,
+} from "../llm/catalog.ts";
 import { CUSTOM_PROVIDER_PREFIX } from "../llm/providers.ts";
 import {
   GeminiSpeech,
@@ -98,13 +101,8 @@ function customVoiceProviderInfo(
 }
 
 /** Lists speech providers and whether each is usable. */
-export async function availableVoiceProviders(
-  config: Config,
-  db?: Db,
-): Promise<VoiceProviderInfo[]> {
-  const [modelRows, customRows] = db
-    ? await Promise.all([listProviderModels(db), listCustomProviders(db)])
-    : [[] as ProviderModelRow[], [] as CustomProviderRow[]];
+export async function availableVoiceProviders(config: Config): Promise<VoiceProviderInfo[]> {
+  const [modelRows, customRows] = await Promise.all([listProviderModels(), listCustomProviders()]);
 
   const built: VoiceProviderInfo[] = [
     {
@@ -135,13 +133,11 @@ export async function availableVoiceProviders(
 /** Resolves the client that talks to a speech provider, or throws if it can't. */
 export async function resolveSpeechClient(
   config: Config,
-  db: Db | undefined,
   providerId: VoiceProviderId,
 ): Promise<SpeechClient> {
   if (providerId.startsWith(CUSTOM_PROVIDER_PREFIX)) {
-    if (!db) throw new Error("custom providers require a configured database");
     const id = providerId.slice(CUSTOM_PROVIDER_PREFIX.length);
-    const rows = await listCustomProviders(db);
+    const rows = await listCustomProviders();
     const row = rows.find((r) => r.id === id);
     if (!row) throw new Error(`unknown custom provider: ${id}`);
     if (!servesSpeech(row)) {

@@ -30,12 +30,12 @@ export function createWipRoutes(config: Config): Hono {
 
   router.get("/", async (c) => c.json(await getWipList(db(), config)));
 
-  router.get("/config", async (c) => c.json(await getWipConfig(db())));
+  router.get("/config", async (c) => c.json(await getWipConfig()));
 
   router.put("/config", async (c) => {
     const parsed = configSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    return c.json(await saveWipConfig(db(), parsed.data));
+    return c.json(await saveWipConfig(parsed.data));
   });
 
   return router;

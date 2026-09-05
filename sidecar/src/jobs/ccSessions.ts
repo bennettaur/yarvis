@@ -119,7 +119,7 @@ export const ccSessionDigestJob: JobDefinition = {
     // provider — transcripts hold whatever was pasted into a session — so it
     // does nothing until the user turns it on and names the projects it may
     // read. An empty allowlist means none, not all.
-    const { ccDigestEnabled, ccDigestProjectDirs } = await getJobConfig(db);
+    const { ccDigestEnabled, ccDigestProjectDirs } = await getJobConfig();
     if (!ccDigestEnabled) {
       return { skipped: true, detail: "transcript digest is off (Settings → Assistant)" };
     }

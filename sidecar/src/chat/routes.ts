@@ -45,12 +45,11 @@ export function createChatRoutes(config: Config): Hono {
    * for a caller that wants a different half.
    */
   router.get("/providers", async (c) => {
-    const db = config.databaseUrl ? getDb(config.databaseUrl).db : undefined;
     const requested = c.req.query("capability");
     if (requested !== undefined && !isModelCapability(requested)) {
       return c.json({ error: `unknown capability: ${requested}` }, 400);
     }
-    return c.json(await availableProviders(config, db, requested ?? "chat"));
+    return c.json(await availableProviders(config, requested ?? "chat"));
   });
 
   // Routes below need a database.
@@ -85,12 +84,12 @@ export function createChatRoutes(config: Config): Hono {
     const dbh = db();
     let chatModel;
     try {
-      chatModel = await resolveModel(config, dbh, provider, model);
+      chatModel = await resolveModel(config, provider, model);
     } catch (e) {
       console.error("[chat] model resolution failed:", e);
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
     }
-    const servers = await listMcpServers(dbh);
+    const servers = await listMcpServers();
     const serverNames = new Map(servers.map((s) => [s.id, s.name]));
 
     return streamSSE(c, async (stream) => {

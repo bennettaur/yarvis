@@ -184,18 +184,17 @@ export function createPrRoutes(config: Config): Hono {
    * provider is configured" is a settings problem, not a server fault.
    */
   const modelFor = async (
-    dbh: ReturnType<typeof db>,
     providerId?: string,
     modelId?: string,
   ): Promise<{ model: Awaited<ReturnType<typeof resolveModel>> } | { error: string }> => {
-    const fallback = pickDefaultModel(await availableProviders(config, dbh, "chat"));
+    const fallback = pickDefaultModel(await availableProviders(config, "chat"));
     const provider = providerId ?? fallback?.provider;
     const model = modelId ?? fallback?.model;
     if (!provider || !model) return { error: "no LLM provider is configured" };
     try {
       // Wrapped rather than returned bare: a resolved model can itself be a
       // string, so an `"error" in x` check would not tell the two apart.
-      return { model: await resolveModel(config, dbh, provider, model) };
+      return { model: await resolveModel(config, provider, model) };
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) };
     }
@@ -211,7 +210,7 @@ export function createPrRoutes(config: Config): Hono {
     if ("error" in source) return c.json({ error: source.error }, 400);
 
     const dbh = db();
-    const resolved = await modelFor(dbh, parsed.data.provider, parsed.data.model);
+    const resolved = await modelFor(parsed.data.provider, parsed.data.model);
     if ("error" in resolved) return c.json({ error: resolved.error }, 400);
 
     try {
@@ -312,7 +311,7 @@ export function createPrRoutes(config: Config): Hono {
     if ("error" in source) return c.json({ error: source.error }, 400);
 
     const dbh = db();
-    const resolved = await modelFor(dbh, parsed.data.provider, parsed.data.model);
+    const resolved = await modelFor(parsed.data.provider, parsed.data.model);
     if ("error" in resolved) return c.json({ error: resolved.error }, 400);
 
     try {

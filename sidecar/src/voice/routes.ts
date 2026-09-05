@@ -1,9 +1,8 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
-import { getDb } from "../db/client.ts";
 import { UrlSafetyError } from "../lib/urlSafety.ts";
-import { DEFAULT_VOICE_CONFIG, getVoiceConfig, saveVoiceConfig } from "./config.ts";
+import { getVoiceConfig, saveVoiceConfig } from "./config.ts";
 import { availableVoiceProviders, resolveSpeechClient } from "./providers.ts";
 import {
   MAX_AUDIO_BYTES,
@@ -128,27 +127,15 @@ function safeAudioType(contentType: string): string {
 export function createVoiceRoutes(config: Config): Hono {
   const router = new Hono();
 
-  const db = () => (config.databaseUrl ? getDb(config.databaseUrl).db : undefined);
+  router.get("/providers", async (c) => c.json(await availableVoiceProviders(config)));
 
-  router.get("/providers", async (c) => c.json(await availableVoiceProviders(config, db())));
-
-  /**
-   * The speech settings, shared by every surface. Answers the defaults with no
-   * database rather than 503: a surface that can't reach one should render its
-   * controls as unconfigured, not fail to load.
-   */
-  router.get("/config", async (c) => {
-    const database = db();
-    if (!database) return c.json(DEFAULT_VOICE_CONFIG);
-    return c.json(await getVoiceConfig(database));
-  });
+  /** The speech settings, shared by every surface. Read directly from settings.json. */
+  router.get("/config", async (c) => c.json(await getVoiceConfig()));
 
   router.patch("/config", async (c) => {
-    const database = db();
-    if (!database) return c.json({ error: "database not configured" }, 503);
     const parsed = voiceConfigSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    return c.json(await saveVoiceConfig(database, parsed.data));
+    return c.json(await saveVoiceConfig(parsed.data));
   });
 
   /**
@@ -185,7 +172,7 @@ export function createVoiceRoutes(config: Config): Hono {
 
     let client: SpeechClient;
     try {
-      client = await resolveSpeechClient(config, db(), parsed.data.provider);
+      client = await resolveSpeechClient(config, parsed.data.provider);
     } catch (e) {
       return c.json({ error: errorMessage(e) }, 400);
     }
@@ -212,7 +199,7 @@ export function createVoiceRoutes(config: Config): Hono {
 
     let client: SpeechClient;
     try {
-      client = await resolveSpeechClient(config, db(), parsed.data.provider);
+      client = await resolveSpeechClient(config, parsed.data.provider);
     } catch (e) {
       return c.json({ error: errorMessage(e) }, 400);
     }

@@ -113,7 +113,7 @@ export async function findDanglingWork(
     unavailable.push("github (no token configured)");
   } else {
     const gh = new GitHubClient(token);
-    const prConfig = await getGithubPrConfig(db);
+    const prConfig = await getGithubPrConfig();
     const lookbackDays = options.lookbackDays ?? prConfig.reviewingLookbackDays;
     try {
       // Only the reviewing list needs the viewer's login, so the two searches

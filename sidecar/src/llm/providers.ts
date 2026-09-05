@@ -4,15 +4,14 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
 import type { LanguageModel } from "ai";
 import type { Config } from "../config.ts";
-import { listCustomProviders } from "../customProviders/service.ts";
-import type { Db } from "../db/client.ts";
-import type { CustomProviderRow, ProviderModelRow } from "../db/schema.ts";
+import { type CustomProviderRow, listCustomProviders } from "../customProviders/service.ts";
 import { validateOutboundUrl } from "../lib/urlSafety.ts";
 import {
   catalogFor,
   listProviderModels,
   type ModelCapability,
   type ModelInfo,
+  type ProviderModelRow,
   withCapability,
 } from "./catalog.ts";
 
@@ -101,9 +100,10 @@ function customProviderInfo(row: CustomProviderRow, rows: ProviderModelRow[]): P
 }
 
 /**
- * Lists providers and whether each is usable. When a `db` is provided, the
- * user's configured custom providers are appended and their saved catalogues
- * take over from the bundled defaults.
+ * Lists providers and whether each is usable. The user's configured custom
+ * providers are appended and their saved catalogues take over from the
+ * bundled defaults — both live in `~/.yarvis/settings.json`, not Postgres, so
+ * this needs no database.
  *
  * Passing a `capability` narrows every provider's models to the ones that serve
  * it — what a chat picker wants, so a TTS model never shows up as something to
@@ -112,7 +112,6 @@ function customProviderInfo(row: CustomProviderRow, rows: ProviderModelRow[]): P
  */
 export async function availableProviders(
   config: Config,
-  db?: Db,
   capability?: ModelCapability,
 ): Promise<ProviderInfo[]> {
   const narrow = (providers: ProviderInfo[]): ProviderInfo[] =>
@@ -120,11 +119,7 @@ export async function availableProviders(
       ? providers.map((p) => ({ ...p, models: withCapability(p.models, capability) }))
       : providers;
 
-  if (!db) return narrow(builtInProviders(config, []));
-  const [modelRows, customRows] = await Promise.all([
-    listProviderModels(db),
-    listCustomProviders(db),
-  ]);
+  const [modelRows, customRows] = await Promise.all([listProviderModels(), listCustomProviders()]);
   return narrow([
     ...builtInProviders(config, modelRows),
     ...customRows.map((row) => customProviderInfo(row, modelRows)),
@@ -140,9 +135,8 @@ export async function availableProviders(
  */
 export async function defaultProviderModel(
   config: Config,
-  db?: Db,
 ): Promise<{ provider: ProviderId; model: string } | null> {
-  return pickDefaultModel(await availableProviders(config, db, "chat"));
+  return pickDefaultModel(await availableProviders(config, "chat"));
 }
 
 /**
@@ -196,14 +190,12 @@ function resolveCustom(row: CustomProviderRow, config: Config, modelId: string):
 /** Resolves a concrete language model for the given provider/model. */
 export async function resolveModel(
   config: Config,
-  db: Db | undefined,
   providerId: ProviderId,
   modelId: string,
 ): Promise<LanguageModel> {
   if (providerId.startsWith(CUSTOM_PROVIDER_PREFIX)) {
-    if (!db) throw new Error("custom providers require a configured database");
     const id = providerId.slice(CUSTOM_PROVIDER_PREFIX.length);
-    const rows = await listCustomProviders(db);
+    const rows = await listCustomProviders();
     const row = rows.find((r) => r.id === id);
     if (!row) throw new Error(`unknown custom provider: ${id}`);
     return resolveCustom(row, config, modelId);

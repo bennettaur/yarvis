@@ -119,7 +119,7 @@ function availableModelsText(providers: ProviderInfo[]): string {
 async function showModel(config: Config, db: Db, chatId: number): Promise<string> {
   const [state, providers] = await Promise.all([
     getChatState(db, chatId),
-    availableProviders(config, db, "chat"),
+    availableProviders(config, "chat"),
   ]);
   const list = availableModelsText(providers);
   if (state?.provider && state.model) {
@@ -136,7 +136,7 @@ async function showModel(config: Config, db: Db, chatId: number): Promise<string
 async function setModel(config: Config, db: Db, chatId: number, args: string): Promise<string> {
   // Chat-capable only: the bot has nowhere to play audio, so a speech model is
   // never a valid answer to /setmodel.
-  const providers = await availableProviders(config, db, "chat");
+  const providers = await availableProviders(config, "chat");
   const [provider, model] = args.split(/\s+/).filter(Boolean);
   if (!provider || !model) {
     return `Usage: /setmodel <provider> <model>\n\n${availableModelsText(providers)}`;
