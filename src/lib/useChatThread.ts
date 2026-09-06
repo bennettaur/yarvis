@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type ChatMessage,
+  type ChatSession,
   createSession,
   getMessages,
   listProviders,
@@ -25,16 +26,23 @@ export interface UseChatThreadOptions {
   getContext?: () => string | undefined;
   /** Invoked when the agent emits an attention signal during a turn. */
   onAttention?: (reason: string) => void;
+  /**
+   * Invoked with each session this thread creates, including the one an empty
+   * thread opens on its first send. A caller that renders a session list needs
+   * to hear about those, since the hook owns when they happen.
+   */
+  onSessionCreated?: (session: ChatSession) => void;
 }
 
 /**
- * The provider/model/session/streaming machinery behind a chat thread, factored
- * out so Omni Chat (and, later, the Chat tab) can share one implementation.
- * Optionally persists its session id to localStorage so the same conversation
- * resumes across summons.
+ * The provider/model/session/streaming machinery behind a chat thread. Both
+ * chat surfaces — the Chat tab and the Omni Chat overlay — run on this one
+ * implementation, so a turn behaves the same wherever it was typed. Optionally
+ * persists its session id to localStorage so the same conversation resumes
+ * across summons.
  */
 export function useChatThread(options: UseChatThreadOptions = {}) {
-  const { sessionStorageKey, getContext, onAttention } = options;
+  const { sessionStorageKey, getContext, onAttention, onSessionCreated } = options;
 
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [provider, setProvider] = useState<ProviderId | "">("");
@@ -120,8 +128,9 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     setSessionId(session.id);
     setMessages([]);
     setError(null);
-    return session.id;
-  }, []);
+    onSessionCreated?.(session);
+    return session;
+  }, [onSessionCreated]);
 
   const send = useCallback(
     async (text: string, sendOptions: { source?: "voice" } = {}) => {
@@ -133,6 +142,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
         const session = await createSession();
         activeId = session.id;
         setSessionId(activeId);
+        onSessionCreated?.(session);
       }
 
       setMessages((prev) => [
@@ -183,7 +193,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
         setApprovals([]);
       }
     },
-    [provider, model, busy, sessionId, getContext, onAttention],
+    [provider, model, busy, sessionId, getContext, onAttention, onSessionCreated],
   );
 
   return {
