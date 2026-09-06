@@ -6,6 +6,7 @@ import { useChatThread } from "../../lib/useChatThread";
 import { useVoice } from "../../lib/useVoice";
 import ChatComposer from "../ChatComposer";
 import ChatMessages from "../ChatMessages";
+import ErrorNotice from "../ErrorNotice";
 import { ToolApprovalPrompt } from "../ToolApprovalPrompt";
 import VoiceControls from "../voice/VoiceControls";
 
@@ -163,7 +164,7 @@ export default function OmniChat({
           ))}
         </div>
 
-        {error && <p className="text-sm text-red-400">{error}</p>}
+        {error && <ErrorNotice error={error} />}
 
         <ChatComposer
           value={input}

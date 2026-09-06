@@ -2,7 +2,7 @@ import { type LanguageModel, type ModelMessage, stepCountIs, streamText } from "
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import type { ChatMessageMetadata } from "../db/schema.ts";
-import { clientError, describeError } from "../llm/errors.ts";
+import { clientError, describeError, errorDetail } from "../llm/errors.ts";
 import { type ApprovalHooks, assembleAgentToolset } from "../mcp/chatTools.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
@@ -10,6 +10,37 @@ import { newAttentionState } from "./attentionTools.ts";
 import { buildBuiltinTools } from "./builtinTools.ts";
 import { ALWAYS_CONFIRM_BUILTIN_TOOLS, DESTRUCTIVE_BUILTIN_TOOLS } from "./destructiveTools.ts";
 import { addMessage, getMessages } from "./service.ts";
+
+/**
+ * Steps one turn may take. Headroom for multi-step workspace flows: "grab a few
+ * tickets" chains list_repos → list_repo_issues → one start_work_on_issue per
+ * ticket, which exceeds a 5-step budget once more than one ticket is involved.
+ * The search → mount → call → use cycle for an on-demand tool needs the same.
+ */
+const MAX_STEPS = 12;
+
+/**
+ * Why a turn ended with nothing to say. A model that spends its last step on a
+ * tool call, is cut off by the token limit, or is refused by a content filter
+ * leaves the reply empty, which used to reach the user as a chat that simply
+ * stopped mid-thought. Naming the reason is the difference between "it broke"
+ * and "raise the step budget".
+ */
+function emptyTurnMessage(finishReason: string | undefined, steps: number | undefined): string {
+  const used = steps ? ` after ${steps} step${steps === 1 ? "" : "s"}` : "";
+  switch (finishReason) {
+    case "tool-calls":
+      return `The model ran out of steps${used} — it was still calling tools when it hit the ${MAX_STEPS}-step limit for a turn, so it never wrote a reply. Ask it to continue.`;
+    case "length":
+      return `The reply was cut off by the model's output token limit${used} and nothing was returned.`;
+    case "content-filter":
+      return "The provider's content filter blocked the reply.";
+    default:
+      return `The model ended the turn without a reply${used}${
+        finishReason ? ` (finish reason: ${finishReason})` : ""
+      }.`;
+  }
+}
 
 function systemPrompt(): string {
   const today = new Date().toISOString().slice(0, 10);
@@ -86,8 +117,8 @@ export function buildScreenContextMessage(
 export type AgentEvent =
   | { type: "delta"; text: string }
   | { type: "attention"; reason?: string }
-  | { type: "error"; message: string }
-  | { type: "done"; text: string };
+  | { type: "error"; message: string; detail?: string }
+  | { type: "done"; text: string; finishReason?: string; steps?: number };
 
 export interface AgentTurnParams {
   config: Config;
@@ -198,11 +229,7 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
     // this session has mounted, and the meta tools. Recomputed per step so a
     // tool mounted mid-turn becomes usable on the next one.
     prepareStep: () => ({ activeTools: computeActiveTools() }),
-    // Headroom for multi-step workspace flows: "grab a few tickets" chains
-    // list_repos → list_repo_issues → one start_work_on_issue per ticket, which
-    // exceeds a 5-step budget once more than one ticket is involved. The
-    // search → mount → call → use cycle for an on-demand tool needs the same.
-    stopWhen: stepCountIs(12),
+    stopWhen: stepCountIs(MAX_STEPS),
     // Cancel the upstream call if the consumer disconnects instead of draining
     // the provider with no reader.
     abortSignal: signal,
@@ -226,7 +253,23 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
   }
 
   if (streamError) {
-    yield { type: "error", message: clientError(streamError) };
+    yield { type: "error", message: clientError(streamError), detail: errorDetail(streamError) };
+    return;
+  }
+
+  // Settled once the stream has drained; a provider that failed mid-stream has
+  // already been caught above, so these are only unavailable in odd cases.
+  const [finishReason, steps] = await Promise.all([
+    Promise.resolve(result.finishReason).catch(() => undefined),
+    Promise.resolve(result.steps)
+      .then((s) => s.length)
+      .catch(() => undefined),
+  ]);
+
+  // Persisting an empty assistant row would replay as a blank turn forever, and
+  // a surface that renders nothing for it looks like the app hung.
+  if (!full.trim()) {
+    yield { type: "error", message: emptyTurnMessage(finishReason, steps) };
     return;
   }
 
@@ -234,5 +277,5 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
   if (attention.requested) {
     yield { type: "attention", reason: attention.reason ?? undefined };
   }
-  yield { type: "done", text: full };
+  yield { type: "done", text: full, finishReason, steps };
 }

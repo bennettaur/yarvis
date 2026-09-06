@@ -13,9 +13,11 @@ import {
   streamChat,
   type ThreadMessage,
 } from "../lib/chat";
+import { type DisplayError, formatError } from "../lib/errors";
 import { useVoice } from "../lib/useVoice";
 import ChatComposer from "./ChatComposer";
 import ChatMessages from "./ChatMessages";
+import ErrorNotice from "./ErrorNotice";
 import { ToolApprovalPrompt } from "./ToolApprovalPrompt";
 import VoiceControls from "./voice/VoiceControls";
 
@@ -34,7 +36,7 @@ export default function ChatPanel() {
   const [streaming, setStreaming] = useState("");
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<DisplayError | null>(null);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const threadRef = useRef<HTMLDivElement>(null);
 
@@ -43,7 +45,7 @@ export default function ChatPanel() {
     try {
       await respondToToolApproval(id, approved);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(formatError(e));
     }
   }, []);
 
@@ -68,7 +70,7 @@ export default function ChatPanel() {
         }
         setSessions(await listSessions());
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(formatError(e));
       }
     })();
   }, []);
@@ -144,11 +146,11 @@ export default function ChatPanel() {
               { id, name: evt.name ?? id, server: evt.server ?? "", args: evt.args },
             ]);
           } else if (evt.type === "error") {
-            setError(evt.message ?? "stream error");
+            setError({ message: evt.message ?? "stream error", detail: evt.detail });
           }
         }
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(formatError(e));
       } finally {
         if (acc) setMessages((prev) => [...prev, { role: "assistant", content: acc }]);
         setStreaming("");
@@ -233,7 +235,7 @@ export default function ChatPanel() {
         ))}
       </div>
 
-      {error && <p className="text-sm text-red-400">{error}</p>}
+      {error && <ErrorNotice error={error} onDismiss={() => setError(null)} />}
 
       <ChatComposer
         value={input}
