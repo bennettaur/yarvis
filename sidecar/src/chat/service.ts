@@ -6,6 +6,7 @@ import {
   type ChatSession,
   chatMessages,
   chatSessions,
+  type ToolActivity,
 } from "../db/schema.ts";
 import { emitEvent } from "../events/service.ts";
 
@@ -40,7 +41,8 @@ export interface AddMessageInput {
   sessionId: string;
   role: "user" | "assistant" | "system" | "tool";
   content: string;
-  toolCalls?: unknown;
+  /** What the assistant ran during the turn this message concluded. */
+  toolCalls?: ToolActivity[];
   metadata?: ChatMessageMetadata;
 }
 

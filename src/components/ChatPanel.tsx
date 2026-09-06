@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { type ChatSession, listSessions, type ProviderId } from "../lib/chat";
 import { type DisplayError, formatError } from "../lib/errors";
 import { useChatThread } from "../lib/useChatThread";
+import { useReasoningPreference } from "../lib/useReasoningPreference";
 import { useVoice } from "../lib/useVoice";
 import ChatComposer from "./ChatComposer";
 import ChatMessages from "./ChatMessages";
@@ -21,6 +22,7 @@ export default function ChatPanel() {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionsError, setSessionsError] = useState<DisplayError | null>(null);
   const [input, setInput] = useState("");
+  const [reasoning, setReasoning] = useReasoningPreference();
   const threadRef = useRef<HTMLDivElement>(null);
 
   const addSession = useCallback((session: ChatSession) => {
@@ -37,6 +39,8 @@ export default function ChatPanel() {
     sessionId,
     messages,
     streaming,
+    thinking,
+    activity,
     busy,
     error,
     approvals,
@@ -44,7 +48,7 @@ export default function ChatPanel() {
     send,
     newChat,
     loadSession,
-  } = useChatThread({ onSessionCreated: addSession });
+  } = useChatThread({ onSessionCreated: addSession, reasoning });
 
   const voice = useVoice({ send, streaming, busy });
 
@@ -93,7 +97,15 @@ export default function ChatPanel() {
             </option>
           ))}
         </select>
-        <div className="ml-auto flex gap-2">
+        <div className="ml-auto flex items-center gap-2">
+          <label className="flex items-center gap-1 text-xs text-zinc-400">
+            <input
+              type="checkbox"
+              checked={reasoning}
+              onChange={(e) => setReasoning(e.target.checked)}
+            />
+            Thinking
+          </label>
           <select
             value={provider}
             onChange={(e) => {
@@ -133,6 +145,8 @@ export default function ChatPanel() {
           streaming={streaming}
           busy={busy}
           emptyHint={EMPTY_HINT}
+          thinking={thinking}
+          activity={activity}
         />
         {approvals.map((a) => (
           <ToolApprovalPrompt

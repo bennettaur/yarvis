@@ -47,12 +47,28 @@ export interface ChatMessageMetadata {
   telegramFirstName?: string;
 }
 
+/**
+ * One tool the assistant ran during a turn, mirrored from the sidecar's
+ * `ToolActivity`. Persisted on the assistant message that concluded the turn,
+ * so a reloaded thread still shows what it did rather than only what it said.
+ */
+export interface ToolActivity {
+  id: string;
+  name: string;
+  server?: string;
+  args?: unknown;
+  status: "pending" | "ok" | "error" | "denied";
+  result?: string;
+  durationMs?: number;
+}
+
 export interface ChatMessage {
   id: string;
   sessionId: string;
   role: string;
   content: string;
   metadata?: ChatMessageMetadata | null;
+  toolCalls?: ToolActivity[] | null;
   createdAt: string;
 }
 
@@ -61,6 +77,10 @@ export interface ThreadMessage {
   role: string;
   content: string;
   metadata?: ChatMessageMetadata | null;
+  /** What the assistant ran while producing this reply, in order. */
+  activity?: ToolActivity[];
+  /** The model's reasoning for this turn, when it returned any. Not persisted. */
+  reasoning?: string;
 }
 
 /**
@@ -83,7 +103,15 @@ export function messageLabel(role: string, metadata?: ChatMessageMetadata | null
 }
 
 export interface ChatEvent {
-  type: "delta" | "done" | "error" | "attention" | "tool_approval_request";
+  type:
+    | "delta"
+    | "reasoning"
+    | "tool_call"
+    | "tool_result"
+    | "done"
+    | "error"
+    | "attention"
+    | "tool_approval_request";
   text?: string;
   message?: string;
   /** `error`: the full redacted diagnosis (status, endpoint, provider body). */
@@ -95,10 +123,14 @@ export interface ChatEvent {
   reason?: string;
   /** `tool_approval_request`: the tool call id to approve or deny. */
   id?: string;
-  /** `tool_approval_request`: the tool name, owning server, and arguments. */
+  /** `tool_approval_request` and `tool_call`: the tool, its server, its arguments. */
   name?: string;
   server?: string;
   args?: unknown;
+  /** `tool_result`: how the call ended, a short rendering of it, and how long it took. */
+  status?: ToolActivity["status"];
+  result?: string;
+  durationMs?: number;
 }
 
 /** A pending MCP tool call awaiting the user's approve/deny decision. */
@@ -154,6 +186,8 @@ export interface ChatRequest {
    * a transcript was never proof-read.
    */
   source?: "voice";
+  /** Ask the provider to stream the model's reasoning, where it supports it. */
+  reasoning?: boolean;
 }
 
 /** Responds to a pending MCP tool-call approval mid-stream. */

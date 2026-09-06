@@ -242,6 +242,13 @@ back to ad-hoc.
   the *active* tool set for a step is computed from registry policy, so a
   built-in the registry doesn't know about is assembled into the turn and then
   never offered to the model. A new family of tools is added there, not beside it.
+- A chat turn reports what it is doing, not only what it concluded.
+  `runAgentTurn` drives `fullStream`, so tool calls, their outcomes and any
+  reasoning the provider returns reach the surface as they happen; the tool
+  activity is persisted on the assistant message (`chat_messages.tool_calls`) so
+  a reloaded thread still shows it. Reasoning is asked for per turn via
+  `reasoningOptions`, which only names the providers whose parameter shape we
+  know — a gateway that rejects an unknown field fails the whole turn.
 - Everything the sidecar logs is captured. `lib/log.ts` wraps `console` at boot
   into a bounded in-memory tail that `/api/logs` serves and Settings →
   Diagnostics reads, and the core pipes the process's stdout/stderr to

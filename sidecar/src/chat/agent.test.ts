@@ -3,6 +3,7 @@ import { MockLanguageModelV3 } from "ai/test";
 import postgres from "postgres";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { resolveApproval } from "../mcp/approvals.ts";
 import { type AgentEvent, runAgentTurn } from "./agent.ts";
 import { createSession, getMessages } from "./service.ts";
 
@@ -35,19 +36,36 @@ const usage = {
   outputTokens: { total: 1, text: 1, reasoning: 0 },
 };
 
-/** A model whose whole turn is the given stream parts. */
-function streamingModel(parts: StreamPart[]): MockLanguageModelV3 {
+/**
+ * A model whose turn is the given stream parts. Passing several arrays gives one
+ * per step, which is what a turn with tool calls in it takes: the SDK asks the
+ * model again once it has the results.
+ */
+function streamingModel(...steps: StreamPart[][]): MockLanguageModelV3 {
+  let call = 0;
   return new MockLanguageModelV3({
-    doStream: async () => ({
-      stream: new ReadableStream<StreamPart>({
-        start(controller) {
-          for (const part of parts) controller.enqueue(part);
-          controller.close();
-        },
-      }),
-    }),
+    doStream: async () => {
+      const parts = steps[Math.min(call++, steps.length - 1)] ?? [];
+      return {
+        stream: new ReadableStream<StreamPart>({
+          start(controller) {
+            for (const part of parts) controller.enqueue(part);
+            controller.close();
+          },
+        }),
+      };
+    },
   });
 }
+
+/** A tool call as a provider emits it: the arguments arrive as a JSON string. */
+const toolCall = (id: string, name: string, input: unknown): StreamPart =>
+  ({
+    type: "tool-call",
+    toolCallId: id,
+    toolName: name,
+    input: JSON.stringify(input),
+  }) as unknown as StreamPart;
 
 const finish = (reason: "stop" | "tool-calls"): StreamPart =>
   ({
@@ -63,16 +81,46 @@ const text = (value: string): StreamPart[] =>
     { type: "text-end", id: "t1" },
   ] as unknown as StreamPart[];
 
-async function collect(model: MockLanguageModelV3, sessionId: string): Promise<AgentEvent[]> {
+const serverNames = new Map([["server-uuid", "Notion"]]);
+
+/** Denies every approval request, as a user pressing Deny would. */
+const denyingApproval = {
+  onRequest: async ({ toolCallId }: { toolCallId: string }) => {
+    resolveApproval(toolCallId, false);
+  },
+};
+
+async function collect(
+  model: MockLanguageModelV3,
+  sessionId: string,
+  approval?: { onRequest: (info: { toolCallId: string }) => Promise<void> },
+): Promise<AgentEvent[]> {
   const events: AgentEvent[] = [];
-  for await (const event of runAgentTurn({ config, db, model, sessionId, message: "hi" })) {
+  for await (const event of runAgentTurn({
+    config,
+    db,
+    model,
+    sessionId,
+    message: "hi",
+    serverNames,
+    approval,
+  })) {
     events.push(event);
   }
   return events;
 }
 
 beforeEach(async () => {
-  await sql`TRUNCATE chat_messages, chat_sessions RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE chat_messages, chat_sessions, agent_tools RESTART IDENTITY CASCADE`;
+  // Only tools the registry marks "always" are offered to the model each step,
+  // and nothing has synced the built-ins into this database. Register the two
+  // these tests drive.
+  for (const name of ["list_tasks", "create_calendar_event"]) {
+    await sql`
+      INSERT INTO agent_tools (id, source, server_id, name, description, policy, content_hash)
+      VALUES (${`builtin:${name}`}, 'builtin', NULL, ${name}, '', 'always', '')
+    `;
+  }
 });
 
 afterAll(async () => {
@@ -103,6 +151,109 @@ describe("runAgentTurn", () => {
     expect(events.some((e) => e.type === "done")).toBe(false);
     const stored = await getMessages(db, session.id);
     expect(stored.map((m) => m.role)).toEqual(["user"]);
+  });
+
+  it("reports each tool call and its outcome, and persists them with the reply", async () => {
+    const session = await createSession(db, null);
+    const events = await collect(
+      streamingModel(
+        [toolCall("c1", "list_tasks", { scope: "daily" }), finish("tool-calls")],
+        [...text("done"), finish("stop")],
+      ),
+      session.id,
+    );
+
+    const call = events.find((e) => e.type === "tool_call");
+    expect(call).toMatchObject({ id: "c1", name: "list_tasks", args: { scope: "daily" } });
+
+    const result = events.find((e) => e.type === "tool_result");
+    expect(result).toMatchObject({ id: "c1", status: "ok" });
+    expect(result?.durationMs).toBeGreaterThanOrEqual(0);
+
+    const [, assistant] = await getMessages(db, session.id);
+    expect(assistant?.toolCalls?.map((a) => [a.name, a.status])).toEqual([["list_tasks", "ok"]]);
+  });
+
+  // A denial comes back to the model as a normal result so it can move on, but
+  // for the user it is the outcome that matters most and must not read as a
+  // successful call.
+  it("marks a denied tool call as denied rather than as a result", async () => {
+    const session = await createSession(db, null);
+    const events = await collect(
+      streamingModel(
+        [
+          toolCall("c1", "create_calendar_event", {
+            title: "sync",
+            start: "2026-01-01T10:00:00Z",
+            end: "2026-01-01T10:30:00Z",
+          }),
+          finish("tool-calls"),
+        ],
+        [...text("told them no"), finish("stop")],
+      ),
+      session.id,
+      denyingApproval,
+    );
+
+    expect(events.find((e) => e.type === "tool_result")).toMatchObject({ status: "denied" });
+    const [, assistant] = await getMessages(db, session.id);
+    expect(assistant?.toolCalls?.map((a) => a.status)).toEqual(["denied"]);
+  });
+
+  it("names the MCP server a tool belongs to", async () => {
+    const session = await createSession(db, null);
+    const events = await collect(
+      streamingModel(
+        [toolCall("c1", "mcp:server-uuid:search_pages", { query: "notion" }), finish("tool-calls")],
+        [...text("done"), finish("stop")],
+      ),
+      session.id,
+    );
+
+    // The model-facing key of an MCP tool is its registry id; only the tool's
+    // own name means anything to a reader.
+    expect(events.find((e) => e.type === "tool_call")).toMatchObject({
+      name: "search_pages",
+      server: "Notion",
+    });
+  });
+
+  // The turn changed things outside this app. Losing that record is what makes
+  // a retry do all of it a second time.
+  it("records what an out-of-steps turn already ran", async () => {
+    const session = await createSession(db, null);
+    await collect(
+      streamingModel(
+        [toolCall("c1", "list_tasks", {}), finish("tool-calls")],
+        [toolCall("c2", "list_tasks", {}), finish("tool-calls")],
+      ),
+      session.id,
+    );
+
+    const [, assistant] = await getMessages(db, session.id);
+    expect(assistant?.role).toBe("assistant");
+    expect(assistant?.content).toContain("ran out of steps");
+    expect(assistant?.toolCalls?.length).toBeGreaterThan(0);
+  });
+
+  it("streams reasoning separately from the reply", async () => {
+    const session = await createSession(db, null);
+    const events = await collect(
+      streamingModel([
+        { type: "reasoning-start", id: "r1" } as unknown as StreamPart,
+        { type: "reasoning-delta", id: "r1", delta: "weighing it up" } as unknown as StreamPart,
+        ...text("answer"),
+        finish("stop"),
+      ]),
+      session.id,
+    );
+
+    expect(events.filter((e) => e.type === "reasoning").map((e) => e.text)).toEqual([
+      "weighing it up",
+    ]);
+    // Reasoning is not part of the reply, and is not persisted with it.
+    const [, assistant] = await getMessages(db, session.id);
+    expect(assistant?.content).toBe("answer");
   });
 
   it("reports a provider failure with a detail worth reading", async () => {
