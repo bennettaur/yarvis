@@ -16,6 +16,7 @@ import { createCalendarRoutes, createGoogleCallbackRoutes } from "./google/route
 import { createIssueRoutes } from "./issues/routes.ts";
 import { createJiraRoutes } from "./jira/routes.ts";
 import { createJobRoutes } from "./jobs/routes.ts";
+import { createComplexityModelRoutes } from "./llm/complexityRoutes.ts";
 import { redactSecrets } from "./llm/errors.ts";
 import { createModelCatalogRoutes } from "./llm/routes.ts";
 import { createLogRoutes } from "./logs/routes.ts";
@@ -132,6 +133,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/clipboard", createClipboardRoutes(config));
   app.route("/api/custom-providers", createCustomProviderRoutes(config));
   app.route("/api/model-catalog", createModelCatalogRoutes(config));
+  app.route("/api/complexity-models", createComplexityModelRoutes(config));
   app.route("/api/mcp", createMcpRoutes(config));
   app.route("/api/mcp-endpoint", createMcpEndpointInfoRoutes(config));
   app.route("/api/cc", createCcRoutes());
