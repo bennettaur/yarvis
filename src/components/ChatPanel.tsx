@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type ChatSession, listSessions, type ProviderId } from "../lib/chat";
 import { type DisplayError, formatError } from "../lib/errors";
+import { useOmniChatOverlayOpen } from "../lib/omniChatOverlay";
 import { useChatThread } from "../lib/useChatThread";
 import { useReasoningPreference } from "../lib/useReasoningPreference";
 import { useVoice } from "../lib/useVoice";
 import ChatComposer from "./ChatComposer";
 import ChatMessages from "./ChatMessages";
 import ErrorNotice from "./ErrorNotice";
-import { ToolApprovalPrompt } from "./ToolApprovalPrompt";
+import ToolApprovalBar from "./ToolApprovalBar";
 import VoiceControls from "./voice/VoiceControls";
 
 const EMPTY_HINT =
@@ -45,12 +46,19 @@ export default function ChatPanel() {
     error,
     approvals,
     respondApproval,
+    alwaysAllow,
     send,
+    retry,
+    stop,
     newChat,
     loadSession,
   } = useChatThread({ onSessionCreated: addSession, reasoning });
 
   const voice = useVoice({ send, streaming, busy });
+
+  // The Omni Chat overlay covers this panel and carries an approval bar of its
+  // own, so ours must stop answering the keyboard while it is up.
+  const overlayOpen = useOmniChatOverlayOpen();
 
   useEffect(() => {
     void (async () => {
@@ -67,12 +75,15 @@ export default function ChatPanel() {
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-run on thread growth
   useEffect(() => {
     threadRef.current?.scrollTo(0, threadRef.current.scrollHeight);
-  }, [messages, streaming]);
+  }, [messages, streaming, activity]);
 
+  // Clear only once the turn is under way: `send` declines while the provider
+  // list is still loading, and a message that vanished without being sent is
+  // worse than a button that briefly does nothing.
   const submit = () => {
-    const text = input;
-    setInput("");
-    void send(text);
+    void send(input).then((sent) => {
+      if (sent) setInput("");
+    });
   };
 
   return (
@@ -148,19 +159,33 @@ export default function ChatPanel() {
           thinking={thinking}
           activity={activity}
         />
-        {approvals.map((a) => (
-          <ToolApprovalPrompt
-            key={a.id}
-            approval={a}
-            onRespond={(approved) => void respondApproval(a.id, approved)}
-          />
-        ))}
       </div>
+
+      <ToolApprovalBar
+        approvals={approvals}
+        visible={!overlayOpen}
+        onRespond={(id, approved) => void respondApproval(id, approved)}
+        onAlwaysAllow={(a) => void alwaysAllow(a)}
+      />
 
       {sessionsError && (
         <ErrorNotice error={sessionsError} onDismiss={() => setSessionsError(null)} />
       )}
-      {error && <ErrorNotice error={error} />}
+      {error && (
+        <ErrorNotice
+          error={error}
+          actions={
+            <button
+              type="button"
+              onClick={retry}
+              disabled={busy}
+              className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+            >
+              Retry
+            </button>
+          }
+        />
+      )}
 
       <ChatComposer
         value={input}
@@ -170,6 +195,7 @@ export default function ChatPanel() {
         placeholder="Message..."
         submitLabel="Send"
         maxHeight={360}
+        onStop={stop}
       />
 
       <VoiceControls voice={voice} />

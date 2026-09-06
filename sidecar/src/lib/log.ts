@@ -130,7 +130,14 @@ export function installLogCapture(): void {
     // biome-ignore lint/suspicious/noConsole: wrapping console is the point
     const original = console[method].bind(console);
     console[method] = (...args: unknown[]) => {
-      original(record(level, args));
+      // The real write happens whatever capture does with the line: a throw in
+      // here would turn a log call in an error path into a second, unrelated
+      // exception at an arbitrary call site.
+      try {
+        original(record(level, args));
+      } catch {
+        original(...args);
+      }
     };
   }
 }

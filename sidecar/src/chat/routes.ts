@@ -134,6 +134,9 @@ export function createChatRoutes(config: Config): Hono {
             await safeWrite({
               type: "tool_approval_request",
               id: toolCallId,
+              // The registry id, so the client can offer "always allow" for
+              // this tool without having to reassemble it from the parts.
+              toolId: id,
               name: rest.join(":"),
               server: serverNames.get(serverId) ?? serverId,
               args,

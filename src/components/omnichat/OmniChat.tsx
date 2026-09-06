@@ -8,7 +8,7 @@ import { useVoice } from "../../lib/useVoice";
 import ChatComposer from "../ChatComposer";
 import ChatMessages from "../ChatMessages";
 import ErrorNotice from "../ErrorNotice";
-import { ToolApprovalPrompt } from "../ToolApprovalPrompt";
+import ToolApprovalBar from "../ToolApprovalBar";
 import VoiceControls from "../voice/VoiceControls";
 
 /**
@@ -43,7 +43,10 @@ export default function OmniChat({
     error,
     approvals,
     respondApproval,
+    alwaysAllow,
     send,
+    retry,
+    stop,
     newChat,
   } = useChatThread({
     reasoning,
@@ -86,10 +89,13 @@ export default function OmniChat({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
+  // Clear only once the turn is under way: `send` declines while the provider
+  // list is still loading, and a message that vanished without being sent is
+  // worse than a button that briefly does nothing.
   const submit = () => {
-    const text = input;
-    setInput("");
-    void send(text);
+    void send(input).then((sent) => {
+      if (sent) setInput("");
+    });
   };
 
   return (
@@ -170,16 +176,30 @@ export default function OmniChat({
             activity={activity}
             emptyHint="Ask about whatever you're looking at — it's sent along as context."
           />
-          {approvals.map((a) => (
-            <ToolApprovalPrompt
-              key={a.id}
-              approval={a}
-              onRespond={(approved) => void respondApproval(a.id, approved)}
-            />
-          ))}
         </div>
 
-        {error && <ErrorNotice error={error} />}
+        <ToolApprovalBar
+          approvals={approvals}
+          visible={open}
+          onRespond={(id, approved) => void respondApproval(id, approved)}
+          onAlwaysAllow={(a) => void alwaysAllow(a)}
+        />
+
+        {error && (
+          <ErrorNotice
+            error={error}
+            actions={
+              <button
+                type="button"
+                onClick={retry}
+                disabled={busy}
+                className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+              >
+                Retry
+              </button>
+            }
+          />
+        )}
 
         <ChatComposer
           value={input}
@@ -189,6 +209,7 @@ export default function OmniChat({
           placeholder="Ask anything about what you're looking at…"
           submitLabel="Send"
           textareaClassName="min-h-24"
+          onStop={stop}
         />
         <div className="flex flex-wrap items-center justify-between gap-2">
           <VoiceControls voice={voice} compact />

@@ -94,6 +94,7 @@ async function collect(
   model: MockLanguageModelV3,
   sessionId: string,
   approval?: { onRequest: (info: { toolCallId: string }) => Promise<void> },
+  signal?: AbortSignal,
 ): Promise<AgentEvent[]> {
   const events: AgentEvent[] = [];
   for await (const event of runAgentTurn({
@@ -104,6 +105,7 @@ async function collect(
     message: "hi",
     serverNames,
     approval,
+    signal,
   })) {
     events.push(event);
   }
@@ -236,6 +238,31 @@ describe("runAgentTurn", () => {
     expect(assistant?.toolCalls?.length).toBeGreaterThan(0);
   });
 
+  // The surface that stopped the turn has already dropped its partial reply;
+  // persisting it here would put a message in the transcript the user was told
+  // did not exist.
+  it("saves nothing for a turn the user stopped", async () => {
+    const session = await createSession(db, null);
+    const controller = new AbortController();
+    const model = new MockLanguageModelV3({
+      doStream: async () => {
+        controller.abort();
+        return {
+          stream: new ReadableStream<StreamPart>({
+            start(c) {
+              for (const part of text("half a th")) c.enqueue(part);
+              c.close();
+            },
+          }),
+        };
+      },
+    });
+
+    const events = await collect(model, session.id, undefined, controller.signal);
+    expect(events.find((e) => e.type === "error")?.message).toContain("Turn stopped");
+    expect((await getMessages(db, session.id)).map((m) => m.role)).toEqual(["user"]);
+  });
+
   it("streams reasoning separately from the reply", async () => {
     const session = await createSession(db, null);
     const events = await collect(
@@ -254,6 +281,20 @@ describe("runAgentTurn", () => {
     // Reasoning is not part of the reply, and is not persisted with it.
     const [, assistant] = await getMessages(db, session.id);
     expect(assistant?.content).toBe("answer");
+  });
+
+  // Retrying a failed turn re-sends the same text. The failed turn already
+  // persisted it, so recording it twice would leave the thread asking twice —
+  // and every later replay of that thread with it.
+  it("treats a resend of the last user message as the same turn", async () => {
+    const session = await createSession(db, null);
+    await collect(streamingModel([finish("tool-calls")]), session.id);
+    expect((await getMessages(db, session.id)).map((m) => m.role)).toEqual(["user"]);
+
+    await collect(streamingModel([...text("second time lucky"), finish("stop")]), session.id);
+    const stored = await getMessages(db, session.id);
+    expect(stored.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(stored[1]?.content).toBe("second time lucky");
   });
 
   it("reports a provider failure with a detail worth reading", async () => {
