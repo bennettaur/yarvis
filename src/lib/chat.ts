@@ -224,3 +224,26 @@ export async function* streamChat(
     yield JSON.parse(data) as ChatEvent;
   }
 }
+
+/** How much room one chat turn gets, as Settings edits it. */
+export interface ChatConfig {
+  maxSteps: number;
+  /** Null leaves the provider's own output limit in place. */
+  maxOutputTokens: number | null;
+}
+
+export async function getChatConfig(): Promise<ChatConfig> {
+  const res = await sidecarFetch("/api/chat/config");
+  await ensureOk(res, "load chat settings");
+  return (await res.json()).config;
+}
+
+export async function saveChatConfig(input: ChatConfig): Promise<ChatConfig> {
+  const res = await sidecarFetch("/api/chat/config", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  await ensureOk(res, "save chat settings");
+  return (await res.json()).config;
+}

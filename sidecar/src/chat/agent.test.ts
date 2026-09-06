@@ -95,6 +95,7 @@ async function collect(
   sessionId: string,
   approval?: { onRequest: (info: { toolCallId: string }) => Promise<void> },
   signal?: AbortSignal,
+  budget?: { maxSteps?: number; maxOutputTokens?: number | null },
 ): Promise<AgentEvent[]> {
   const events: AgentEvent[] = [];
   for await (const event of runAgentTurn({
@@ -106,6 +107,7 @@ async function collect(
     serverNames,
     approval,
     signal,
+    budget,
   })) {
     events.push(event);
   }
@@ -153,6 +155,23 @@ describe("runAgentTurn", () => {
     expect(events.some((e) => e.type === "done")).toBe(false);
     const stored = await getMessages(db, session.id);
     expect(stored.map((m) => m.role)).toEqual(["user"]);
+  });
+
+  // The number in that message is the budget the turn actually ran with, not a
+  // constant — otherwise it sends the user to raise a limit they already raised.
+  it("names the configured step limit when a turn runs out of steps", async () => {
+    const session = await createSession(db, null);
+    const events = await collect(
+      streamingModel([finish("tool-calls")]),
+      session.id,
+      undefined,
+      undefined,
+      {
+        maxSteps: 37,
+      },
+    );
+
+    expect(events.find((e) => e.type === "error")?.message).toContain("37-step limit");
   });
 
   it("reports each tool call and its outcome, and persists them with the reply", async () => {
