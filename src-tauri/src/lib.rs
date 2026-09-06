@@ -165,6 +165,7 @@ pub fn run() {
             embeddings_secrets::delete_embeddings_secret,
             sidecar::get_sidecar_info,
             sidecar::restart_sidecar,
+            sidecar::get_sidecar_log_path,
             alarms::list_alarms,
             alarms::create_alarm,
             alarms::cancel_alarm,
