@@ -1,19 +1,19 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { syncBuiltins } from "../agentTools/registry.ts";
-import { listRegistryTools, searchRegistry, setToolPolicy } from "../agentTools/store.ts";
+import { listRegistryTools, searchRegistry, setToolSettings } from "../agentTools/store.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { UrlSafetyError, validateOutboundUrl } from "../lib/urlSafety.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { getMcpManager } from "./connectionManager.ts";
-import { getOAuthProvider } from "./oauth.ts";
 import {
   beginAuthorization,
   createMcpServer,
   deleteMcpServer,
   getMcpServer,
   listMcpServers,
+  oauthProviderFor,
   refreshServer,
   revokeAuthorization,
   updateMcpServer,
@@ -121,7 +121,14 @@ const updateSchema = z.object({
   enabled: z.boolean().optional(),
 });
 
-const policySchema = z.object({ policy: z.enum(["always", "search", "disabled"]) });
+const toolSettingsSchema = z
+  .object({
+    policy: z.enum(["always", "search", "disabled"]).optional(),
+    approval: z.enum(["ask", "auto"]).optional(),
+  })
+  .refine((v) => v.policy !== undefined || v.approval !== undefined, {
+    message: "provide policy, approval, or both",
+  });
 const searchSchema = z.object({
   query: z.string().min(1),
   limit: z.number().int().min(1).max(50).optional(),
@@ -153,10 +160,10 @@ export function createMcpRoutes(config: Config): Hono {
 
   // --- MCP servers -----------------------------------------------------------
 
-  router.get("/servers", async (c) => c.json(await listMcpServers(db())));
+  router.get("/servers", async (c) => c.json(await listMcpServers()));
 
   router.get("/servers/:id", async (c) => {
-    const row = await getMcpServer(db(), c.req.param("id"));
+    const row = await getMcpServer(c.req.param("id"));
     if (!row) return c.json({ error: "not found" }, 404);
     return c.json(row);
   });
@@ -165,14 +172,14 @@ export function createMcpRoutes(config: Config): Hono {
     const body = await c.req.json().catch(() => null);
     const parsed = createSchema.safeParse(body);
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    return c.json(await createMcpServer(db(), parsed.data), 201);
+    return c.json(await createMcpServer(parsed.data), 201);
   });
 
   router.patch("/servers/:id", async (c) => {
     const body = await c.req.json().catch(() => null);
     const parsed = updateSchema.safeParse(body);
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const row = await updateMcpServer(db(), c.req.param("id"), parsed.data);
+    const row = await updateMcpServer(c.req.param("id"), parsed.data);
     if (!row) return c.json({ error: "not found" }, 404);
     return c.json(row);
   });
@@ -191,8 +198,8 @@ export function createMcpRoutes(config: Config): Hono {
 
   router.get("/servers/:id/status", async (c) => {
     const id = c.req.param("id");
-    const server = await getMcpServer(db(), id);
-    const provider = server ? getOAuthProvider(config, server) : undefined;
+    const server = await getMcpServer(id);
+    const provider = server ? oauthProviderFor(config, server) : undefined;
     return c.json({
       ...getMcpManager().status(id),
       oauth: provider?.status() ?? null,
@@ -212,7 +219,7 @@ export function createMcpRoutes(config: Config): Hono {
   });
 
   router.post("/servers/:id/oauth/disconnect", async (c) => {
-    const ok = await revokeAuthorization(config, db(), c.req.param("id"));
+    const ok = await revokeAuthorization(config, c.req.param("id"));
     if (!ok) return c.json({ error: "not found, or not an oauth server" }, 404);
     return c.json({ ok: true });
   });
@@ -226,9 +233,16 @@ export function createMcpRoutes(config: Config): Hono {
 
   router.patch("/tools/:id", async (c) => {
     const body = await c.req.json().catch(() => null);
-    const parsed = policySchema.safeParse(body);
+    const parsed = toolSettingsSchema.safeParse(body);
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const row = await setToolPolicy(db(), c.req.param("id"), parsed.data.policy);
+    const id = c.req.param("id");
+    // Standing consent is only meaningful for MCP tools. A built-in's
+    // confirmation follows from how the turn was composed, so the database must
+    // not be able to hold a row saying one is auto-approved.
+    if (parsed.data.approval && !id.startsWith("mcp:")) {
+      return c.json({ error: "approval can only be set on an MCP tool" }, 400);
+    }
+    const row = await setToolSettings(db(), id, parsed.data);
     if (!row) return c.json({ error: "not found" }, 404);
     return c.json(row);
   });

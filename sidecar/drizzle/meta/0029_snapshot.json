@@ -1,5 +1,5 @@
 {
-  "id": "778b8019-87da-4379-a255-333354370085",
+  "id": "87dc25c0-9f31-44da-97f7-b440f02be506",
   "prevId": "63ec4586-c042-4cf1-9427-921e34bbfe40",
   "version": "7",
   "dialect": "postgresql",
@@ -205,21 +205,7 @@
         }
       },
       "indexes": {},
-      "foreignKeys": {
-        "agent_tools_server_id_mcp_servers_id_fk": {
-          "name": "agent_tools_server_id_mcp_servers_id_fk",
-          "tableFrom": "agent_tools",
-          "tableTo": "mcp_servers",
-          "columnsFrom": [
-            "server_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -824,82 +810,6 @@
           "with": {}
         }
       },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.complexity_model_config": {
-      "name": "complexity_model_config",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "low_provider": {
-          "name": "low_provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "low_model": {
-          "name": "low_model",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "medium_provider": {
-          "name": "medium_provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "medium_model": {
-          "name": "medium_model",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "max_provider": {
-          "name": "max_provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "max_model": {
-          "name": "max_model",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},

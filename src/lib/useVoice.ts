@@ -53,7 +53,7 @@ const REAL_IO: VoiceIO = {
 
 export interface UseVoiceOptions {
   /** The surface's own send. Marked as spoken so the agent gates its writes. */
-  send: (text: string, options: { source: "voice" }) => void | Promise<void>;
+  send: (text: string, options: { source: "voice" }) => unknown;
   /** Reply text accumulating for the current turn; "" between turns. */
   streaming: string;
   /** Whether a turn is in flight on the surface. */

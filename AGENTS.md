@@ -31,9 +31,9 @@ Three processes, each with a clean ownership boundary:
   (Drizzle ORM), LLM calls, and memory. Also hosts an optional Telegram
   remote-control bot.
 
-Data lives in local **PostgreSQL + pgvector**. See `README.md`'s "Project
-layout" section for a directory-by-directory map of both `src/` and
-`sidecar/src/`.
+Data lives in local **PostgreSQL + pgvector**; small structural settings live
+in `~/.yarvis/settings.json` instead. See `README.md`'s "Project layout"
+section for a directory-by-directory map of both `src/` and `sidecar/src/`.
 
 ## Commands
 
@@ -95,6 +95,15 @@ back to ad-hoc.
 ## Conventions
 
 - Package manager is **Bun** everywhere, including the sidecar workspace.
+- `bun.lock` records no registry: every entry's resolution field stays `""` so
+  CI's `--frozen-lockfile` install resolves from the default registry. A machine
+  pointed at a private mirror has bun write that mirror's tarball URL into every
+  entry it touches, which no other machine can reach — scrub them back to `""`
+  before committing (the integrity hashes are unchanged, since a mirror serves
+  the registry's own tarballs). The `lockfile-registry` pre-commit job catches
+  it. Pin a transitive dependency through root `overrides`, not by adding it to
+  a workspace's `dependencies` — which is what `bun update <pkg>` does when the
+  package isn't already a direct dependency.
 - Formatting/linting is **Biome** for TS/JS/JSON/CSS; **rustfmt/clippy** for
   Rust. Run `bun run check:write` before committing frontend/sidecar changes.
 - Frontend tests use `bun test` with a happy-dom environment; the preload in
@@ -106,17 +115,32 @@ back to ad-hoc.
   tests, injected fake git runners to avoid real network/filesystem git ops).
 - Secrets (provider API keys, tokens, DB URL) are entered in the app's
   Settings screen and stored in a single macOS Keychain item — never in env
-  files or committed anywhere. Non-secret config (e.g.
-  `YARVIS_WORKSPACES_ROOT`) uses env vars instead. Preferences the user is
-  expected to change from the UI go in `src-tauri/src/settings.rs` when the
-  Rust core enforces them, and in Postgres via the sidecar otherwise.
+  files or committed anywhere. Non-secret configuration the user is expected
+  to change from the UI goes in `src-tauri/src/settings.rs`'s
+  `~/.yarvis/settings.json` instead, whether the Rust core enforces it
+  directly (the PTY session cap, the workspace agent) or it just rides along
+  to the sidecar's environment at spawn (Azure DevOps/JIRA/Telegram
+  configuration) — a value only belongs in the Keychain if it's actually a
+  credential *or* an authorization boundary: the Telegram chat-id allowlist
+  isn't a credential, but with OTP off by default it's the bot's only
+  access-control check, so it stays Keychain-only rather than becoming a
+  plain, freely-editable setting. `YARVIS_WORKSPACES_ROOT` and similar stay
+  env vars, since they're set once per machine rather than edited from the
+  UI. Small, rarely-changing structural config the sidecar owns — custom LLM
+  providers, the model catalogue, MCP servers, voice/embeddings/work-in-progress/
+  GitHub-PR/job settings — lives directly in that same `~/.yarvis/settings.json`
+  too, read and written by the sidecar itself (`sidecar/src/settings/store.ts`),
+  with no Rust core involvement; the frontend still reaches it over the
+  sidecar's HTTP API exactly as before. Everything else the sidecar owns —
+  actual data (chat history, memories, workspaces, PR/issue caches) — lives in
+  Postgres.
 - Several instances of the app can run at once (`bun run dev:instance`), sharing
-  one Keychain item and, unless told otherwise, one database. Anything singular
-  to the machine or to that shared database — a global hotkey, a poll loop, a
-  resume-on-startup sweep — belongs behind `instance.rs`, which decides who owns
-  it, rather than being started unconditionally. Per-instance state that Tauri
-  already keys by bundle identifier (the app data dir, the single-instance
-  socket) needs nothing.
+  one Keychain item, the same `~/.yarvis/settings.json`, and, unless told
+  otherwise, one database. Anything singular to the machine or to that shared
+  database — a global hotkey, a poll loop, a resume-on-startup sweep — belongs
+  behind `instance.rs`, which decides who owns it, rather than being started
+  unconditionally. Per-instance state that Tauri already keys by bundle
+  identifier (the app data dir, the single-instance socket) needs nothing.
 - Work that must finish regardless of what the UI is doing belongs in the
   sidecar, not in a React effect. An issue's "Start work" is the worked example:
   the route answers as soon as the workspace exists and the rest — provisioning,
@@ -135,11 +159,13 @@ back to ad-hoc.
   worktree does.
 - What models a provider offers is data, not code: `llm/catalog.ts` holds the
   bundled defaults and the capability tags (`chat`, `stt`, `tts`, `vision`,
-  `embed`), and rows in `provider_models` take a provider's catalogue over the
-  moment the user saves one. Surfaces ask for the capability they need rather
-  than filtering names — `availableProviders(config, db, "chat")` — so a
-  text-to-speech model can be listed without becoming something to think with.
-  A new provider adds its defaults there, not a fresh array beside them.
+  `embed`), and entries in `~/.yarvis/settings.json`'s `providerModels` section
+  take a provider's catalogue over the moment the user saves one — no database
+  needed, so custom providers and the model catalogue work even without
+  Postgres configured. Surfaces ask for the capability they need rather than
+  filtering names — `availableProviders(config, "chat")` — so a text-to-speech
+  model can be listed without becoming something to think with. A new provider
+  adds its defaults there, not a fresh array beside them.
 - Speech backends sit behind the `SpeechClient` interface in
   `sidecar/src/voice/speech.ts`, resolved by `voice/providers.ts` the same way
   `llm/providers.ts` resolves chat models — built-ins keep a bare id, user
@@ -150,7 +176,7 @@ back to ad-hoc.
   `src/lib/useVoice.ts` wraps speech around a thread the caller already owns,
   taking that surface's `send` and watching the reply text it is already
   accumulating. A spoken turn therefore uses whatever provider/model that chat
-  is set to. Which speech backends to use lives in Postgres
+  is set to. Which speech backends to use lives in `~/.yarvis/settings.json`
   (`sidecar/src/voice/config.ts`), not in the frontend, because the Telegram bot
   runs in the sidecar and needs the same settings (#226).
 - Outbound speech calls go through `guardedFetch` in that same file, never a
@@ -216,6 +242,65 @@ back to ad-hoc.
   the *active* tool set for a step is computed from registry policy, so a
   built-in the registry doesn't know about is assembled into the turn and then
   never offered to the model. A new family of tools is added there, not beside it.
+- Who has to approve a tool call is decided in two different places on purpose.
+  `agent_tools.approval` is the user's standing consent for one MCP tool, set in
+  the Tool Manager, and lets `assembleAgentToolset` skip the approval wrapper for
+  it. Built-ins are not covered by it: whether one is confirmed comes from
+  `chat/destructiveTools.ts` and how the turn was composed — a spoken turn was
+  never proof-read — which no stored preference may waive. That reasoning binds
+  the stored consent too: a spoken turn ignores it and asks for every MCP tool,
+  and a resync that finds a tool's description or schema changed resets it to
+  "ask", since consent was given for the tool as it was described then. Neither
+  mechanism gives MCP tools to a surface that cannot prompt: that still requires
+  `approval` hooks to exist at all.
+- A pending approval is answered in one place per surface: `ToolApprovalBar`
+  above the composer, showing the front of the queue with a count, rather than a
+  card per call inside the thread. Its `A`/`D` shortcuts are on `window`, so a
+  bar the host is keeping off screen must be told — `visible` — or it answers
+  for a surface the user cannot see: Omni Chat stays mounted and streaming while
+  hidden, and the overlay covers a `ChatPanel` that has a bar of its own
+  (`lib/omniChatOverlay.ts`). Anything else that mounts a second bar owes the
+  same gate.
+- Stopping a turn is the user's own doing, and both layers say so. The AI SDK
+  ends its iteration normally on an abort rather than throwing, so `runAgentTurn`
+  checks the abort *before* the empty-turn branch and saves nothing; the surface
+  drops the partial reply for the same reason and reports it as a
+  `tone: "notice"`, not a failure — red and `role="alert"` for something the user
+  asked for is the jank this is meant to remove. A retry re-sends the same text,
+  which the sidecar collapses onto the existing user row by content, so it holds
+  for any client and for a user who retypes rather than pressing Retry;
+  `useChatThread` suppresses the duplicate bubble on the same condition so the
+  surface and the transcript agree.
+- How far a turn may go is configuration, not a constant: `chat/config.ts` holds
+  the step budget and an optional output-token cap at the `chatConfig` key in
+  `~/.yarvis/settings.json`, read per turn by every caller of `runAgentTurn` so a
+  change applies to the next message with no restart. It sits with the other
+  structural settings rather than in Postgres — it decides how the sidecar
+  behaves rather than recording anything the user produced, and a turn reads it
+  on a path that must work whether or not the database is up. The right number is a property of the work rather
+  than of the code — a question needs two steps, "grab a few tickets" needs one
+  tool call per ticket — and a turn that runs out ends with *no reply at all*
+  having already paid for the calls it made, so the budget errs high and
+  `stopWhen` is a runaway guard rather than a throttle. A message that names the
+  limit must name the one the turn actually ran with, or it sends the user to
+  raise a limit they already raised. The specialists' own ceiling in
+  `agents/catalog.ts` is deliberately separate and lower: a delegated run has no
+  approval channel, so it is not covered by a setting the chat surfaces share.
+- A chat turn reports what it is doing, not only what it concluded.
+  `runAgentTurn` drives `fullStream`, so tool calls, their outcomes and any
+  reasoning the provider returns reach the surface as they happen; the tool
+  activity is persisted on the assistant message (`chat_messages.tool_calls`) so
+  a reloaded thread still shows it. Reasoning is asked for per turn via
+  `reasoningOptions`, which only names the providers whose parameter shape we
+  know — a gateway that rejects an unknown field fails the whole turn.
+- Everything the sidecar logs is captured. `lib/log.ts` wraps `console` at boot
+  into a bounded in-memory tail that `/api/logs` serves and Settings →
+  Diagnostics reads, and the core pipes the process's stdout/stderr to
+  `app_log_dir/sidecar.log` so a packaged build leaves something behind to read.
+  The wrapper writes the *redacted* line to the real console, so both copies are
+  redacted — the file is the one a user attaches to a bug report. A new log line therefore just uses
+  `console.*` with the usual `[scope]` prefix — that prefix is what the
+  Diagnostics filter groups by — and never needs a logger of its own.
 - Work that happens on a schedule is a `JobDefinition` in `sidecar/src/jobs/`,
   not a `setInterval`. The scheduler holds a database lease per job, so two
   instances sharing one database can both tick without doing the work twice, and

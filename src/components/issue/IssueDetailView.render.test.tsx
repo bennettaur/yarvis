@@ -107,6 +107,21 @@ function servedFor(path: string): IssueDetail {
 // Stubbing the transport rather than lib/issues/api keeps the URL, method, and
 // body that api.ts builds under test — the same layer the PR render tests stub.
 mock.module("../../lib/api", () => ({
+  sidecarInfo: async () => ({ port: 0, token: "test-token" }),
+  getHealth: async () => ({
+    status: "ok",
+    service: "sidecar",
+    uptimeMs: 0,
+    ready: true,
+    phase: "ready" as const,
+  }),
+  waitForSidecarReady: async () => {},
+  getStatus: async () => ({
+    service: "sidecar",
+    databaseConfigured: true,
+    providers: { anthropic: false, gemini: false, cerebras: false, huggingface: false },
+  }),
+  getDbHealth: async () => ({ configured: true, reachable: true }),
   sidecarFetch: async (path: string, init: RequestInit = {}) => {
     const method = init.method ?? "GET";
     const body = init.body ? JSON.parse(String(init.body)) : null;
@@ -140,8 +155,42 @@ mock.module("../../lib/api", () => ({
     }
     return new Response(JSON.stringify(servedFor(path)), { status: 200 });
   },
+  // Faithful copy of the real implementation: a naive stub here would leak
+  // into any other test file that runs in the same process (`mock.module` is
+  // process-global, not file-scoped) and break its assertions about the
+  // actual error-detail-extraction behavior.
   ensureOk: async (res: Response, context: string) => {
-    if (!res.ok) throw new Error(`${context} -> ${res.status}`);
+    if (res.ok) return;
+    let raw = "";
+    try {
+      raw = (await res.text()).trim();
+    } catch {
+      // no body to read
+    }
+    let detail: string | null = null;
+    if (raw) {
+      try {
+        const body = JSON.parse(raw) as { error?: unknown };
+        const err = body?.error;
+        if (typeof err === "string") {
+          detail = err;
+        } else if (err && typeof err === "object") {
+          const flat = err as { formErrors?: string[]; fieldErrors?: Record<string, string[]> };
+          const parts: string[] = [];
+          if (Array.isArray(flat.formErrors)) parts.push(...flat.formErrors);
+          for (const [field, msgs] of Object.entries(flat.fieldErrors ?? {})) {
+            if (Array.isArray(msgs) && msgs.length) parts.push(`${field}: ${msgs.join(", ")}`);
+          }
+          if (parts.length) detail = parts.join("; ");
+        }
+        if (detail === null) detail = raw;
+      } catch {
+        detail = raw;
+      }
+    }
+    throw new Error(
+      detail ? `${context} failed (${res.status}): ${detail}` : `${context} failed: ${res.status}`,
+    );
   },
   streamSSE: () => () => {},
 }));
@@ -566,7 +615,7 @@ describe("IssueDetailView", () => {
     button(host, "Start work")?.click();
     await settle();
     // The stale edit error must not stand in for the start the user just ran.
-    expect(host.textContent).toContain("/api/issues/github/start-work -> 500");
+    expect(host.textContent).toContain("/api/issues/github/start-work failed (500): nope");
     expect(button(host, "Start work")?.disabled).toBe(false);
     cleanup();
   });

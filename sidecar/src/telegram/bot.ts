@@ -1,4 +1,5 @@
 import { runAgentTurn } from "../chat/agent.ts";
+import { getChatConfig } from "../chat/config.ts";
 import { createSession } from "../chat/service.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
@@ -306,7 +307,7 @@ async function handleChat(
   let provider = state?.provider ?? undefined;
   let chatModelId = state?.model ?? undefined;
   if (!provider || !chatModelId) {
-    const def = await defaultProviderModel(config, db);
+    const def = await defaultProviderModel(config);
     if (!def) {
       await client.sendMessage(
         chatId,
@@ -320,7 +321,7 @@ async function handleChat(
 
   let model: Awaited<ReturnType<typeof resolveModel>>;
   try {
-    model = await resolveModel(config, db, provider, chatModelId);
+    model = await resolveModel(config, provider, chatModelId);
   } catch (e) {
     await client.sendMessage(
       chatId,
@@ -355,6 +356,7 @@ async function handleChat(
       message: text,
       userMetadata,
       signal,
+      budget: await getChatConfig(),
     })) {
       if (event.type === "done") full = event.text;
       else if (event.type === "attention") attentionReason = event.reason;

@@ -41,6 +41,7 @@ import {
 import { notify } from "./lib/notify";
 import { onOmniChatSummon } from "./lib/omniChat";
 import { useOmniChatContext } from "./lib/omniChatContext";
+import { OmniChatOverlayProvider } from "./lib/omniChatOverlay";
 import type { PrSummary } from "./lib/pr/types";
 import { useTelegramSecurityAlerts } from "./lib/useTelegramSecurityAlerts";
 import { getWip, type WipItem } from "./lib/wip";
@@ -270,7 +271,7 @@ export default function App() {
   }, []);
 
   return (
-    <>
+    <OmniChatOverlayProvider value={omniChatOpen}>
       <AppShell
         tab={tab}
         onTabChange={setTab}
@@ -352,6 +353,6 @@ export default function App() {
       <AttentionAutoClear />
 
       <AlarmTakeover />
-    </>
+    </OmniChatOverlayProvider>
   );
 }

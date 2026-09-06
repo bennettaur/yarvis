@@ -32,7 +32,9 @@ const config = {
 
 const PROJECT_DIR = "-Users-me-dev-app";
 let claudeHome: string;
+let settingsDir: string;
 const previousHome = process.env.CLAUDE_HOME;
+const previousSettingsPath = process.env.YARVIS_SETTINGS_PATH;
 
 /** One transcript line in Claude Code's JSONL shape. */
 function line(role: "user" | "assistant", text: string): string {
@@ -46,17 +48,24 @@ function writeTranscript(sessionId: string, body: string): string {
 }
 
 beforeEach(async () => {
-  await sql`TRUNCATE cc_session_digests, job_config, job_runs, memories, events RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE cc_session_digests, job_runs, memories, events RESTART IDENTITY CASCADE`;
   claudeHome = mkdtempSync(join(tmpdir(), "yarvis-claude-"));
   mkdirSync(join(claudeHome, "projects", PROJECT_DIR), { recursive: true });
   process.env.CLAUDE_HOME = claudeHome;
-  await saveJobConfig(db, { ccDigestEnabled: true, ccDigestProjectDirs: [PROJECT_DIR] });
+  // job_config now lives in ~/.yarvis/settings.json, not Postgres — point this
+  // suite at an isolated file so it never touches the real one.
+  settingsDir = mkdtempSync(join(tmpdir(), "yarvis-jobs-settings-"));
+  process.env.YARVIS_SETTINGS_PATH = join(settingsDir, "settings.json");
+  await saveJobConfig({ ccDigestEnabled: true, ccDigestProjectDirs: [PROJECT_DIR] });
 });
 
 afterEach(() => {
   if (previousHome === undefined) delete process.env.CLAUDE_HOME;
   else process.env.CLAUDE_HOME = previousHome;
+  if (previousSettingsPath === undefined) delete process.env.YARVIS_SETTINGS_PATH;
+  else process.env.YARVIS_SETTINGS_PATH = previousSettingsPath;
   rmSync(claudeHome, { recursive: true, force: true });
+  rmSync(settingsDir, { recursive: true, force: true });
 });
 
 afterAll(async () => {

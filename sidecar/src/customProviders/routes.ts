@@ -1,7 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
-import { getDb } from "../db/client.ts";
 import { UrlSafetyError, validateOutboundUrl } from "../lib/urlSafety.ts";
 import {
   createCustomProvider,
@@ -73,23 +72,19 @@ const updateSchema = z.object({
   headerNames: headerNames.optional(),
 });
 
-/** Custom provider CRUD, mounted under /api/custom-providers. */
-export function createCustomProviderRoutes(config: Config): Hono {
+/**
+ * Custom provider CRUD, mounted under /api/custom-providers. Rows live in
+ * `~/.yarvis/settings.json`, so no database handle is needed; `config` stays
+ * a parameter only so callers can pass it uniformly with the other route
+ * factories.
+ */
+export function createCustomProviderRoutes(_config: Config): Hono {
   const router = new Hono();
 
-  router.use("*", async (c, next) => {
-    if (!config.databaseUrl) {
-      return c.json({ error: "database not configured" }, 503);
-    }
-    return next();
-  });
-
-  const db = () => getDb(config.databaseUrl as string).db;
-
-  router.get("/", async (c) => c.json(await listCustomProviders(db())));
+  router.get("/", async (c) => c.json(await listCustomProviders()));
 
   router.get("/:id", async (c) => {
-    const row = await getCustomProvider(db(), c.req.param("id"));
+    const row = await getCustomProvider(c.req.param("id"));
     if (!row) return c.json({ error: "not found" }, 404);
     return c.json(row);
   });
@@ -98,20 +93,20 @@ export function createCustomProviderRoutes(config: Config): Hono {
     const body = await c.req.json().catch(() => null);
     const parsed = createSchema.safeParse(body);
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    return c.json(await createCustomProvider(db(), parsed.data), 201);
+    return c.json(await createCustomProvider(parsed.data), 201);
   });
 
   router.patch("/:id", async (c) => {
     const body = await c.req.json().catch(() => null);
     const parsed = updateSchema.safeParse(body);
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const row = await updateCustomProvider(db(), c.req.param("id"), parsed.data);
+    const row = await updateCustomProvider(c.req.param("id"), parsed.data);
     if (!row) return c.json({ error: "not found" }, 404);
     return c.json(row);
   });
 
   router.delete("/:id", async (c) => {
-    const ok = await deleteCustomProvider(db(), c.req.param("id"));
+    const ok = await deleteCustomProvider(c.req.param("id"));
     if (!ok) return c.json({ error: "not found" }, 404);
     return c.body(null, 204);
   });

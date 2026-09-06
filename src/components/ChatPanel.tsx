@@ -1,171 +1,96 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  type ChatMessage,
-  type ChatSession,
-  createSession,
-  getMessages,
-  listProviders,
-  listSessions,
-  type PendingApproval,
-  type ProviderId,
-  type ProviderInfo,
-  respondToToolApproval,
-  streamChat,
-  type ThreadMessage,
-} from "../lib/chat";
+import { type ChatSession, listSessions, type ProviderId } from "../lib/chat";
+import { type DisplayError, formatError } from "../lib/errors";
+import { useOmniChatOverlayOpen } from "../lib/omniChatOverlay";
+import { useChatThread } from "../lib/useChatThread";
+import { useReasoningPreference } from "../lib/useReasoningPreference";
 import { useVoice } from "../lib/useVoice";
 import ChatComposer from "./ChatComposer";
 import ChatMessages from "./ChatMessages";
-import { ToolApprovalPrompt } from "./ToolApprovalPrompt";
+import ErrorNotice from "./ErrorNotice";
+import ToolApprovalBar from "./ToolApprovalBar";
 import VoiceControls from "./voice/VoiceControls";
 
-const PROVIDER_KEY = "yarvis.chat.provider";
-const MODEL_KEY = "yarvis.chat.model";
 const EMPTY_HINT =
   'Start a conversation. Set a provider key in Settings if the picker shows "(no key)".';
 
+/**
+ * The Chat tab: a thread plus the session picker the overlay doesn't have.
+ * Everything about running a turn — providers, streaming, approvals, errors —
+ * belongs to `useChatThread`, so both chat surfaces behave identically.
+ */
 export default function ChatPanel() {
-  const [providers, setProviders] = useState<ProviderInfo[]>([]);
-  const [provider, setProvider] = useState<ProviderId | "">("");
-  const [model, setModel] = useState("");
   const [sessions, setSessions] = useState<ChatSession[]>([]);
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<ThreadMessage[]>([]);
-  const [streaming, setStreaming] = useState("");
+  const [sessionsError, setSessionsError] = useState<DisplayError | null>(null);
   const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [approvals, setApprovals] = useState<PendingApproval[]>([]);
+  const [reasoning, setReasoning] = useReasoningPreference();
   const threadRef = useRef<HTMLDivElement>(null);
 
-  const respondApproval = useCallback(async (id: string, approved: boolean) => {
-    setApprovals((prev) => prev.filter((a) => a.id !== id));
-    try {
-      await respondToToolApproval(id, approved);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
+  const addSession = useCallback((session: ChatSession) => {
+    setSessions((prev) => [session, ...prev]);
   }, []);
+
+  const {
+    providers,
+    provider,
+    setProvider,
+    model,
+    setModel,
+    modelsFor,
+    sessionId,
+    messages,
+    streaming,
+    thinking,
+    activity,
+    busy,
+    error,
+    approvals,
+    respondApproval,
+    alwaysAllow,
+    send,
+    retry,
+    stop,
+    newChat,
+    loadSession,
+  } = useChatThread({ onSessionCreated: addSession, reasoning });
+
+  const voice = useVoice({ send, streaming, busy });
+
+  // The Omni Chat overlay covers this panel and carries an approval bar of its
+  // own, so ours must stop answering the keyboard while it is up.
+  const overlayOpen = useOmniChatOverlayOpen();
 
   useEffect(() => {
     void (async () => {
       try {
-        const provs = await listProviders();
-        setProviders(provs);
-        // Restore the last-used provider/model, falling back to the first
-        // available provider and its first model.
-        const savedProvider = localStorage.getItem(PROVIDER_KEY) as ProviderId | null;
-        const savedModel = localStorage.getItem(MODEL_KEY);
-        const chosen =
-          provs.find((p) => p.id === savedProvider) ?? provs.find((p) => p.available) ?? provs[0];
-        if (chosen) {
-          setProvider(chosen.id);
-          setModel(
-            savedModel && chosen.models.some((m) => m.id === savedModel)
-              ? savedModel
-              : (chosen.models[0]?.id ?? ""),
-          );
-        }
         setSessions(await listSessions());
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setSessionsError(formatError(e));
       }
     })();
   }, []);
 
-  // Remember the last-used provider/model across sessions.
-  useEffect(() => {
-    if (provider) localStorage.setItem(PROVIDER_KEY, provider);
-    if (model) localStorage.setItem(MODEL_KEY, model);
-  }, [provider, model]);
-
+  // Keep the thread pinned to the newest message as it grows. The body doesn't
+  // read messages/streaming, but the effect must re-run as the thread does.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-run on thread growth
   useEffect(() => {
     threadRef.current?.scrollTo(0, threadRef.current.scrollHeight);
-  }, []);
+  }, [messages, streaming, activity]);
 
-  const selectSession = useCallback(async (id: string) => {
-    setSessionId(id);
-    const msgs = await getMessages(id);
-    setMessages(
-      msgs.map((m: ChatMessage) => ({ role: m.role, content: m.content, metadata: m.metadata })),
-    );
-  }, []);
-
-  const newChat = useCallback(async () => {
-    const session = await createSession();
-    setSessions((prev) => [session, ...prev]);
-    setSessionId(session.id);
-    setMessages([]);
-  }, []);
-
-  const onModelsForProvider = useCallback(
-    (id: ProviderId) => providers.find((p) => p.id === id)?.models.map((m) => m.id) ?? [],
-    [providers],
-  );
-
-  const sendText = useCallback(
-    async (raw: string, options: { source?: "voice" } = {}) => {
-      const text = raw.trim();
-      if (!text || !provider || !model || busy) return;
-
-      let activeId = sessionId;
-      if (!activeId) {
-        const session = await createSession();
-        setSessions((prev) => [session, ...prev]);
-        activeId = session.id;
-        setSessionId(activeId);
-      }
-
-      setInput("");
-      setMessages((prev) => [
-        ...prev,
-        { role: "user", content: text, metadata: options.source ? { source: "voice" } : null },
-      ]);
-      setBusy(true);
-      setError(null);
-      let acc = "";
-      try {
-        for await (const evt of streamChat({
-          sessionId: activeId,
-          message: text,
-          provider,
-          model,
-          // Marks a turn the user spoke rather than typed, which is what puts
-          // the agent's irreversible tools behind a confirmation.
-          source: options.source,
-        })) {
-          if (evt.type === "delta" && evt.text) {
-            acc += evt.text;
-            setStreaming(acc);
-          } else if (evt.type === "tool_approval_request" && evt.id) {
-            const id = evt.id;
-            setApprovals((prev) => [
-              ...prev,
-              { id, name: evt.name ?? id, server: evt.server ?? "", args: evt.args },
-            ]);
-          } else if (evt.type === "error") {
-            setError(evt.message ?? "stream error");
-          }
-        }
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        if (acc) setMessages((prev) => [...prev, { role: "assistant", content: acc }]);
-        setStreaming("");
-        setBusy(false);
-        // Any approvals not acted on are moot once the turn ends.
-        setApprovals([]);
-      }
-    },
-    [provider, model, busy, sessionId],
-  );
-
-  const voice = useVoice({ send: sendText, streaming, busy });
+  // Clear only once the turn is under way: `send` declines while the provider
+  // list is still loading, and a message that vanished without being sent is
+  // worse than a button that briefly does nothing.
+  const submit = () => {
+    void send(input).then((sent) => {
+      if (sent) setInput("");
+    });
+  };
 
   return (
     <div className="flex h-full flex-col gap-4 p-6">
       <div className="flex flex-wrap items-center gap-2">
         <button
+          type="button"
           onClick={() => void newChat()}
           className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800"
         >
@@ -173,7 +98,7 @@ export default function ChatPanel() {
         </button>
         <select
           value={sessionId ?? ""}
-          onChange={(e) => e.target.value && void selectSession(e.target.value)}
+          onChange={(e) => e.target.value && void loadSession(e.target.value)}
           className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
         >
           <option value="">— session —</option>
@@ -183,13 +108,21 @@ export default function ChatPanel() {
             </option>
           ))}
         </select>
-        <div className="ml-auto flex gap-2">
+        <div className="ml-auto flex items-center gap-2">
+          <label className="flex items-center gap-1 text-xs text-zinc-400">
+            <input
+              type="checkbox"
+              checked={reasoning}
+              onChange={(e) => setReasoning(e.target.checked)}
+            />
+            Thinking
+          </label>
           <select
             value={provider}
             onChange={(e) => {
               const id = e.target.value as ProviderId;
               setProvider(id);
-              setModel(onModelsForProvider(id)[0] ?? "");
+              setModel(modelsFor(id)[0] ?? "");
             }}
             className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
           >
@@ -205,7 +138,7 @@ export default function ChatPanel() {
             onChange={(e) => setModel(e.target.value)}
             className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
           >
-            {(provider ? onModelsForProvider(provider) : []).map((m) => (
+            {(provider ? modelsFor(provider) : []).map((m) => (
               <option key={m} value={m}>
                 {m}
               </option>
@@ -223,26 +156,46 @@ export default function ChatPanel() {
           streaming={streaming}
           busy={busy}
           emptyHint={EMPTY_HINT}
+          thinking={thinking}
+          activity={activity}
         />
-        {approvals.map((a) => (
-          <ToolApprovalPrompt
-            key={a.id}
-            approval={a}
-            onRespond={(approved) => void respondApproval(a.id, approved)}
-          />
-        ))}
       </div>
 
-      {error && <p className="text-sm text-red-400">{error}</p>}
+      <ToolApprovalBar
+        approvals={approvals}
+        visible={!overlayOpen}
+        onRespond={(id, approved) => void respondApproval(id, approved)}
+        onAlwaysAllow={(a) => void alwaysAllow(a)}
+      />
+
+      {sessionsError && (
+        <ErrorNotice error={sessionsError} onDismiss={() => setSessionsError(null)} />
+      )}
+      {error && (
+        <ErrorNotice
+          error={error}
+          actions={
+            <button
+              type="button"
+              onClick={retry}
+              disabled={busy}
+              className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+            >
+              Retry
+            </button>
+          }
+        />
+      )}
 
       <ChatComposer
         value={input}
         onChange={setInput}
-        onSubmit={() => void sendText(input)}
+        onSubmit={submit}
         busy={busy}
         placeholder="Message..."
         submitLabel="Send"
         maxHeight={360}
+        onStop={stop}
       />
 
       <VoiceControls voice={voice} />

@@ -1,7 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
-import { getDb } from "../db/client.ts";
 import {
   DEFAULT_MODELS,
   deleteProviderModel,
@@ -44,28 +43,21 @@ const saveSchema = z.object({
   sortOrder: z.number().int().min(0).max(9999).optional(),
 });
 
-export function createModelCatalogRoutes(config: Config): Hono {
+export function createModelCatalogRoutes(_config: Config): Hono {
   const router = new Hono();
-
-  router.use("*", async (c, next) => {
-    if (!config.databaseUrl) return c.json({ error: "database not configured" }, 503);
-    return next();
-  });
-
-  const db = () => getDb(config.databaseUrl as string).db;
 
   router.get("/", async (c) =>
     c.json({
       capabilities: MODEL_CAPABILITIES,
       defaults: DEFAULT_MODELS,
-      models: await listProviderModels(db()),
+      models: await listProviderModels(),
     }),
   );
 
   router.put("/", async (c) => {
     const parsed = saveSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    return c.json(await saveProviderModel(db(), parsed.data));
+    return c.json(await saveProviderModel(parsed.data));
   });
 
   /**
@@ -78,7 +70,7 @@ export function createModelCatalogRoutes(config: Config): Hono {
       .object({ providerId, modelId })
       .safeParse({ providerId: c.req.query("providerId"), modelId: c.req.query("modelId") });
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const ok = await deleteProviderModel(db(), parsed.data.providerId, parsed.data.modelId);
+    const ok = await deleteProviderModel(parsed.data.providerId, parsed.data.modelId);
     if (!ok) return c.json({ error: "not found" }, 404);
     return c.body(null, 204);
   });
@@ -87,7 +79,7 @@ export function createModelCatalogRoutes(config: Config): Hono {
   router.delete("/provider/:providerId", async (c) => {
     const parsed = providerId.safeParse(c.req.param("providerId"));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    return c.json({ removed: await resetProviderModels(db(), parsed.data) });
+    return c.json({ removed: await resetProviderModels(parsed.data) });
   });
 
   return router;

@@ -1,8 +1,11 @@
 import { useState } from "react";
 import AgentSection from "./AgentSection";
+import ChatBudgetSection from "./ChatBudgetSection";
 import ComplexityModelSection from "./ComplexityModelSection";
 import CustomProviderSection from "./CustomProviderSection";
+import DiagnosticsSection from "./DiagnosticsSection";
 import EmbeddingsSection from "./EmbeddingsSection";
+import IntegrationSettingsSection from "./IntegrationSettingsSection";
 import JobsSection from "./JobsSection";
 import KeychainSection from "./KeychainSection";
 import McpEndpointSection from "./McpEndpointSection";
@@ -27,7 +30,8 @@ type TabKey =
   | "embeddings"
   | "telegram"
   | "wip"
-  | "assistant";
+  | "assistant"
+  | "diagnostics";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "credentials", label: "Credentials" },
@@ -40,6 +44,7 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "telegram", label: "Telegram" },
   { key: "wip", label: "Work in progress" },
   { key: "assistant", label: "Assistant" },
+  { key: "diagnostics", label: "Diagnostics" },
 ];
 
 const TAB_STORAGE_KEY = "yarvis.settings.activeTab";
@@ -79,7 +84,12 @@ export default function SettingsPanel() {
         ))}
       </nav>
 
-      {active === "credentials" && <KeychainSection />}
+      {active === "credentials" && (
+        <div className="space-y-5">
+          <KeychainSection />
+          <IntegrationSettingsSection />
+        </div>
+      )}
       {active === "providers" && (
         <div className="space-y-5">
           <ModelCatalogSection />
@@ -102,6 +112,7 @@ export default function SettingsPanel() {
       )}
       {active === "assistant" && (
         <div className="space-y-5">
+          <ChatBudgetSection />
           <ComplexityModelSection />
           <SpecialistSection />
           <JobsSection />
@@ -112,6 +123,7 @@ export default function SettingsPanel() {
       {active === "embeddings" && <EmbeddingsSection />}
       {active === "telegram" && <TelegramSection />}
       {active === "wip" && <WipSection />}
+      {active === "diagnostics" && <DiagnosticsSection />}
     </div>
   );
 }

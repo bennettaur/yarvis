@@ -208,7 +208,7 @@ async function fetchLabeledIssues(
 export async function getWipList(db: Db, config: Config): Promise<WipItem[]> {
   const token = config.secrets.githubToken;
   const today = new Date().toISOString().slice(0, 10);
-  const { sources, issueLabels } = await getWipConfig(db);
+  const { sources, issueLabels } = await getWipConfig();
 
   const [
     starredPrs,

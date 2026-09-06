@@ -291,10 +291,18 @@ function MergeMenu({
 export default function PrFloatingHeader({
   pr,
   detail,
+  loading = false,
   onBack,
 }: {
   pr: PrSummary;
   detail: PrDetail | null;
+  /**
+   * Whether the detail behind this header is still on its way. Clicking a layer
+   * of a stack swaps the pull request instantly and then waits on a provider
+   * round trip, so without saying so the header reads as a click that did
+   * nothing (#268).
+   */
+  loading?: boolean;
   onBack: () => void;
 }) {
   const prRef: PrRef = pr.ref;
@@ -361,7 +369,7 @@ export default function PrFloatingHeader({
   };
 
   return (
-    <div className="shrink-0 border-b border-zinc-800 bg-[#0a0a0a] px-6 py-3">
+    <div aria-busy={loading} className="shrink-0 border-b border-zinc-800 bg-[#0a0a0a] px-6 py-3">
       <div className="flex items-center gap-3">
         <button
           onClick={onBack}
@@ -385,8 +393,11 @@ export default function PrFloatingHeader({
             </h2>
             <span className="font-normal text-zinc-500">#{refNumber(prRef)}</span>
           </div>
-          <div className="truncate text-xs text-zinc-500">
-            {refDisplayRepo(prRef)} · {detail?.author || pr.author || "—"}
+          <div className="flex min-w-0 items-center gap-2 text-xs text-zinc-500">
+            <span className="truncate">
+              {refDisplayRepo(prRef)} · {detail?.author || pr.author || "—"}
+            </span>
+            {loading && <span className="shrink-0 animate-pulse text-indigo-300">Loading…</span>}
           </div>
         </div>
         <span

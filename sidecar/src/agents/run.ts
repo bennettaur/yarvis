@@ -178,16 +178,15 @@ export function materialBlock(material: string, nonce: string): string {
  */
 export async function specialistModel(
   config: Config,
-  db: Db,
   specialist: SpecialistDefinition,
 ): Promise<{ provider: string; model: string } | null> {
   if (specialist.provider && specialist.model) {
     return { provider: specialist.provider, model: specialist.model };
   }
   if (specialist.complexityTier) {
-    return resolveComplexityModel(config, db, specialist.complexityTier);
+    return resolveComplexityModel(config, specialist.complexityTier);
   }
-  return defaultProviderModel(config, db);
+  return defaultProviderModel(config);
 }
 
 export async function runSpecialist(input: RunSpecialistInput): Promise<SpecialistRun> {
@@ -199,9 +198,9 @@ export async function runSpecialist(input: RunSpecialistInput): Promise<Speciali
   const chosen =
     input.provider && input.model
       ? { provider: input.provider, model: input.model }
-      : await specialistModel(config, db, specialist);
+      : await specialistModel(config, specialist);
   if (!chosen) throw new Error("no chat model is configured");
-  const model = await resolveModel(config, db, chosen.provider, chosen.model);
+  const model = await resolveModel(config, chosen.provider, chosen.model);
 
   const memory = new PgVectorMemoryStore(db, await chooseEmbedder(config, db));
   const allTools = buildBuiltinTools({

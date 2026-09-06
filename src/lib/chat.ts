@@ -47,12 +47,28 @@ export interface ChatMessageMetadata {
   telegramFirstName?: string;
 }
 
+/**
+ * One tool the assistant ran during a turn, mirrored from the sidecar's
+ * `ToolActivity`. Persisted on the assistant message that concluded the turn,
+ * so a reloaded thread still shows what it did rather than only what it said.
+ */
+export interface ToolActivity {
+  id: string;
+  name: string;
+  server?: string;
+  args?: unknown;
+  status: "pending" | "ok" | "error" | "denied";
+  result?: string;
+  durationMs?: number;
+}
+
 export interface ChatMessage {
   id: string;
   sessionId: string;
   role: string;
   content: string;
   metadata?: ChatMessageMetadata | null;
+  toolCalls?: ToolActivity[] | null;
   createdAt: string;
 }
 
@@ -61,6 +77,10 @@ export interface ThreadMessage {
   role: string;
   content: string;
   metadata?: ChatMessageMetadata | null;
+  /** What the assistant ran while producing this reply, in order. */
+  activity?: ToolActivity[];
+  /** The model's reasoning for this turn, when it returned any. Not persisted. */
+  reasoning?: string;
 }
 
 /**
@@ -83,22 +103,44 @@ export function messageLabel(role: string, metadata?: ChatMessageMetadata | null
 }
 
 export interface ChatEvent {
-  type: "delta" | "done" | "error" | "attention" | "tool_approval_request";
+  type:
+    | "delta"
+    | "reasoning"
+    | "tool_call"
+    | "tool_result"
+    | "done"
+    | "error"
+    | "attention"
+    | "tool_approval_request";
   text?: string;
   message?: string;
+  /** `error`: the full redacted diagnosis (status, endpoint, provider body). */
+  detail?: string;
+  /** `done`: why the model stopped, and how many steps the turn took. */
+  finishReason?: string;
+  steps?: number;
   /** Present on `attention` events: why the agent needs the user. */
   reason?: string;
   /** `tool_approval_request`: the tool call id to approve or deny. */
   id?: string;
-  /** `tool_approval_request`: the tool name, owning server, and arguments. */
+  /** `tool_approval_request`: the tool's registry id, for a standing "always allow". */
+  toolId?: string;
+  /** `tool_approval_request` and `tool_call`: the tool, its server, its arguments. */
   name?: string;
   server?: string;
   args?: unknown;
+  /** `tool_result`: how the call ended, a short rendering of it, and how long it took. */
+  status?: ToolActivity["status"];
+  result?: string;
+  durationMs?: number;
 }
 
 /** A pending MCP tool call awaiting the user's approve/deny decision. */
 export interface PendingApproval {
+  /** The tool call awaiting a decision. */
   id: string;
+  /** The tool's registry id (`mcp:<serverId>:<tool>`), for "always allow". */
+  toolId?: string;
   name: string;
   server: string;
   args: unknown;
@@ -149,6 +191,8 @@ export interface ChatRequest {
    * a transcript was never proof-read.
    */
   source?: "voice";
+  /** Ask the provider to stream the model's reasoning, where it supports it. */
+  reasoning?: boolean;
 }
 
 /** Responds to a pending MCP tool-call approval mid-stream. */
@@ -179,4 +223,27 @@ export async function* streamChat(
   })) {
     yield JSON.parse(data) as ChatEvent;
   }
+}
+
+/** How much room one chat turn gets, as Settings edits it. */
+export interface ChatConfig {
+  maxSteps: number;
+  /** Null leaves the provider's own output limit in place. */
+  maxOutputTokens: number | null;
+}
+
+export async function getChatConfig(): Promise<ChatConfig> {
+  const res = await sidecarFetch("/api/chat/config");
+  await ensureOk(res, "load chat settings");
+  return (await res.json()).config;
+}
+
+export async function saveChatConfig(input: ChatConfig): Promise<ChatConfig> {
+  const res = await sidecarFetch("/api/chat/config", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  await ensureOk(res, "save chat settings");
+  return (await res.json()).config;
 }

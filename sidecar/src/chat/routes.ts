@@ -4,10 +4,18 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { isModelCapability } from "../llm/catalog.ts";
-import { availableProviders, resolveModel } from "../llm/providers.ts";
+import { clientError, describeError, errorDetail } from "../llm/errors.ts";
+import { availableProviders, reasoningOptions, resolveModel } from "../llm/providers.ts";
 import { resolveApproval } from "../mcp/approvals.ts";
 import { listMcpServers } from "../mcp/service.ts";
 import { runAgentTurn } from "./agent.ts";
+import {
+  type ChatConfig,
+  getChatConfig,
+  MAX_OUTPUT_TOKENS_CEILING,
+  MAX_STEPS_CEILING,
+  saveChatConfig,
+} from "./config.ts";
 import { createSession, getMessages, listSessions } from "./service.ts";
 
 // Re-exported from the shared agent module so the existing context test (which
@@ -28,6 +36,12 @@ const chatSchema = z.object({
    * own metadata and never comes through this route.)
    */
   source: z.literal("voice").optional(),
+  /**
+   * Ask the provider to return the model's reasoning for this turn. Off by
+   * default: on the providers that support it, thinking costs tokens and time,
+   * so it is the user's choice per surface rather than something always on.
+   */
+  reasoning: z.boolean().optional(),
 });
 
 const createSessionSchema = z.object({ title: z.string().nullish() });
@@ -35,6 +49,17 @@ const createSessionSchema = z.object({ title: z.string().nullish() });
 const approvalSchema = z.object({ approved: z.boolean() });
 
 /** Chat routes, mounted under /api/chat. */
+/**
+ * The ceilings are a guard against a mistyped figure, not a judgement about the
+ * right budget: a turn that runs out of steps costs the user the tool calls it
+ * already paid for and returns no reply, so the useful failure is far from
+ * either bound.
+ */
+const configSchema = z.object({
+  maxSteps: z.number().int().min(1).max(MAX_STEPS_CEILING),
+  maxOutputTokens: z.number().int().min(256).max(MAX_OUTPUT_TOKENS_CEILING).nullable(),
+});
+
 export function createChatRoutes(config: Config): Hono {
   const router = new Hono();
 
@@ -45,12 +70,11 @@ export function createChatRoutes(config: Config): Hono {
    * for a caller that wants a different half.
    */
   router.get("/providers", async (c) => {
-    const db = config.databaseUrl ? getDb(config.databaseUrl).db : undefined;
     const requested = c.req.query("capability");
     if (requested !== undefined && !isModelCapability(requested)) {
       return c.json({ error: `unknown capability: ${requested}` }, 400);
     }
-    return c.json(await availableProviders(config, db, requested ?? "chat"));
+    return c.json(await availableProviders(config, requested ?? "chat"));
   });
 
   // Routes below need a database.
@@ -62,6 +86,18 @@ export function createChatRoutes(config: Config): Hono {
   });
 
   const db = () => getDb(config.databaseUrl as string).db;
+
+  // How much room a turn gets. Settings reads and writes it; the turn above
+  // reads it per request, so a change applies to the next turn without a
+  // restart.
+  router.get("/config", async (c) => c.json({ config: await getChatConfig() }));
+
+  router.put("/config", async (c) => {
+    const parsed = configSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const saved: ChatConfig = await saveChatConfig(parsed.data);
+    return c.json({ config: saved });
+  });
 
   router.get("/sessions", async (c) => c.json(await listSessions(db())));
 
@@ -80,18 +116,20 @@ export function createChatRoutes(config: Config): Hono {
     const body = await c.req.json().catch(() => null);
     const parsed = chatSchema.safeParse(body);
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const { sessionId, message, provider, model, context, source } = parsed.data;
+    const { sessionId, message, provider, model, context, source, reasoning } = parsed.data;
 
     const dbh = db();
     let chatModel;
     try {
-      chatModel = await resolveModel(config, dbh, provider, model);
+      chatModel = await resolveModel(config, provider, model);
     } catch (e) {
-      console.error("[chat] model resolution failed:", e);
-      return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+      console.error("[chat] model resolution failed:", describeError(e));
+      return c.json({ error: clientError(e), detail: errorDetail(e) }, 400);
     }
-    const servers = await listMcpServers(dbh);
+    const servers = await listMcpServers();
     const serverNames = new Map(servers.map((s) => [s.id, s.name]));
+    const providerOptions = reasoning ? await reasoningOptions(provider, model) : undefined;
+    const budget = await getChatConfig();
 
     return streamSSE(c, async (stream) => {
       // Tool-approval requests are emitted from inside a tool's `execute`, out of
@@ -114,6 +152,9 @@ export function createChatRoutes(config: Config): Hono {
         message,
         context,
         userMetadata: source ? { source } : undefined,
+        serverNames,
+        providerOptions,
+        budget,
         // Cancel the upstream call if the client disconnects.
         signal: c.req.raw.signal,
         // This surface holds a live channel to the user, so it can ask for MCP
@@ -125,6 +166,9 @@ export function createChatRoutes(config: Config): Hono {
             await safeWrite({
               type: "tool_approval_request",
               id: toolCallId,
+              // The registry id, so the client can offer "always allow" for
+              // this tool without having to reassemble it from the parts.
+              toolId: id,
               name: rest.join(":"),
               server: serverNames.get(serverId) ?? serverId,
               args,
@@ -134,12 +178,34 @@ export function createChatRoutes(config: Config): Hono {
       })) {
         if (event.type === "delta") {
           await safeWrite({ type: "delta", text: event.text });
+        } else if (event.type === "reasoning") {
+          await safeWrite({ type: "reasoning", text: event.text });
+        } else if (event.type === "tool_call") {
+          await safeWrite({
+            type: "tool_call",
+            id: event.id,
+            name: event.name,
+            server: event.server,
+            args: event.args,
+          });
+        } else if (event.type === "tool_result") {
+          await safeWrite({
+            type: "tool_result",
+            id: event.id,
+            status: event.status,
+            result: event.result,
+            durationMs: event.durationMs,
+          });
         } else if (event.type === "attention") {
           await safeWrite({ type: "attention", reason: event.reason });
         } else if (event.type === "error") {
-          await safeWrite({ type: "error", message: event.message });
+          await safeWrite({ type: "error", message: event.message, detail: event.detail });
         } else if (event.type === "done") {
-          await safeWrite({ type: "done" });
+          await safeWrite({
+            type: "done",
+            finishReason: event.finishReason,
+            steps: event.steps,
+          });
         }
       }
     });

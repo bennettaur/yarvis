@@ -23,7 +23,9 @@ Three processes with a clean ownership split:
   `src/server.ts` directly with Bun in development; compiled to a single binary
   for distribution.
 
-Data lives in a local **PostgreSQL + pgvector**.
+Data lives in a local **PostgreSQL + pgvector**; small structural settings
+(custom providers, MCP servers, voice/embeddings/work-in-progress/GitHub-PR/job
+config) live in `~/.yarvis/settings.json` instead.
 
 ## Installing a nightly build
 
@@ -87,17 +89,23 @@ DATABASE_URL="postgres://localhost:5432/yarvis" bun run --cwd sidecar db:migrate
 
 Secrets are entered in the app's **Settings** screen and stored in the macOS
 Keychain — not in env files: the database URL, provider keys (Anthropic,
-Gemini, Cerebras), a GitHub token and/or an Azure DevOps token + organization URL (for the
+Gemini, Cerebras), a GitHub token and/or an Azure DevOps token (for the
 PR dashboard + embedded review — either provider can back it, selected with a
-toggle in the PRs tab), a JIRA base URL + account email + API token (for the JIRA
-issues integration on the Issues tab), a Google Cloud OAuth client id/secret (for the Calendar
+toggle in the PRs tab), a JIRA API token (for the JIRA
+issues integration on the Issues tab), a Google Cloud OAuth client secret (for the Calendar
 integration), an optional Hugging Face token (for speech-to-text; see
 Settings → Voice — the Gemini key covers both speech halves on its own), an
 optional embeddings-provider secret (an API key and/or
 custom header values for an OpenAI-compatible embeddings endpoint), and an
-optional Telegram bot token + allowed chat-id list (and, when the optional second
-factor is enabled, a TOTP secret + re-auth window) for the remote-control bot,
-see below. AWS Bedrock uses the standard AWS credential chain.
+optional Telegram bot token + allowed chat-id list (and, when the optional
+second factor is enabled, a TOTP secret) for the remote-control bot, see
+below — the allowlist is the bot's only access-control check while the OTP
+second factor is off, so it stays a Keychain-only value rather than becoming
+a plain setting. The non-secret configuration paired with these — the Azure
+DevOps organization URL, the JIRA base URL and account email, the Google
+client id, and the Telegram OTP re-auth window — lives in
+`~/.yarvis/settings.json` instead, set from the same Settings screen. AWS
+Bedrock uses the standard AWS credential chain.
 
 The GitHub token needs `repo` on a classic PAT; on a fine-grained one, **Contents:
 Read** (the review reads file bodies and directories to show context around a
@@ -314,8 +322,8 @@ key from a cold server. Then:
   binary is not bundled, so the prompt is attributed to the terminal that
   launched it. Run a built app if permission looks stuck.
 
-Speech settings live in Postgres rather than this window, so every surface
-shares one setup — including the Telegram bot once it grows voice notes
+Speech settings live in `~/.yarvis/settings.json` rather than this window, so
+every surface shares one setup — including the Telegram bot once it grows voice notes
 ([#226](https://github.com/bennettaur/yarvis/issues/226)). Starting the speech
 server is still a manual step; having the app supervise it is
 [#228](https://github.com/bennettaur/yarvis/issues/228).
@@ -339,12 +347,26 @@ to regenerate vectors.
 All secrets live in a **single** Keychain item (one JSON object), rather than
 one item per secret. macOS authorizes Keychain access per item, so consolidating
 means a session is authorized once instead of prompting for every secret in
-turn.
+turn. Non-secret configuration that used to ride alongside them here — org
+URLs, an account email — now lives in a private `~/.yarvis/settings.json`
+instead, set from the same Settings screen; it isn't a credential, so it
+doesn't need the Keychain at all. The Telegram chat-id allowlist stays here
+despite not being a credential either, since it's the bot's only
+access-control check while OTP is off.
 
 > **Upgrading from an earlier build:** secrets previously lived in one item per
 > key, so re-save each secret once in Settings to populate the consolidated
 > item. The old per-key items are no longer read and can be deleted from
-> Keychain Access if you want to tidy up.
+> Keychain Access if you want to tidy up. The embeddings-provider secret used
+> to live in its own separate item (`embeddings_provider_secrets`), which cost
+> a second Keychain prompt at startup; it's now folded into the same
+> consolidated item. The non-secret values named above (org URLs, account
+> email, client id, OTP window) migrate automatically out of the Keychain into
+> `~/.yarvis/settings.json` the first time the app starts after upgrading, and
+> the embeddings-provider secret migrates from its old standalone item into
+> the consolidated one the same way — both migrations read the old location
+> once and delete it, so neither costs an extra prompt
+> on later launches.
 
 > **Touch ID:** gating this item behind Touch ID requires the app to be
 > code-signed with an application-identifier entitlement so it can use the macOS
@@ -355,8 +377,9 @@ turn.
 For Google Calendar, create a **Desktop app** OAuth client in Google Cloud
 Console and register the loopback redirect
 `http://127.0.0.1:<sidecar-port>/oauth/google/callback` (any port is accepted
-for Desktop clients), then enter the client id/secret in Settings and connect
-from the Calendar tab. See `ROADMAP.md` for the full verification steps.
+for Desktop clients), then enter the client id (Settings, non-secret) and
+client secret (Settings, Keychain) and connect from the Calendar tab. See
+`ROADMAP.md` for the full verification steps.
 
 ### Connected MCP servers
 
@@ -364,7 +387,7 @@ from the Calendar tab. See `ROADMAP.md` for the full verification steps.
 connects *out* to (as opposed to the endpoint it serves — see "Yarvis as an MCP
 server"). A server is either **remote** (Streamable HTTP / SSE, given a URL) or
 **local** (a stdio subprocess, given a command and arguments). Its structure is
-stored in Postgres; its credentials go to the Keychain. Press **Connect** to
+stored in `~/.yarvis/settings.json`; its credentials go to the Keychain. Press **Connect** to
 attach and pull the server's tools into the tool registry, then decide per tool
 in the Tool Manager whether it is always mounted, discoverable by search, or off.
 
@@ -512,7 +535,7 @@ is closed. Raise or lower that under Settings → Repositories → Terminals (up
 1000) — each session is a real shell, so the cap trades memory and process count
 for how many workspaces you can keep open. Leaving the field blank restores the
 default. The value applies to the next terminal opened, without a restart, and
-is stored in `settings.json` in the app data directory.
+is stored in `~/.yarvis/settings.json`.
 
 #### Editing a file
 
@@ -978,22 +1001,24 @@ else holds one. (The second port of each pair is the HMR socket, which Vite uses
 when `TAURI_DEV_HOST` is set.) `YARVIS_DEV_PORT` pins an explicit port instead;
 an occupied one then fails the launch rather than moving. Because macOS derives
 the app data directory from the identifier, each instance gets its own
-`settings.json`, `alarms.json` and core control socket, and the single-instance
-guard no longer sends the second launch to the first window. The window title
-carries the name so they're distinguishable on screen.
+`alarms.json` and core control socket, and the single-instance guard no longer
+sends the second launch to the first window. The window title carries the name
+so they're distinguishable on screen.
 
 All of that separation is the launcher's doing, not the environment variable's.
 Setting `YARVIS_INSTANCE` on a plain `bun run tauri dev` makes the process stand
 down from the hotkeys and background workers below, but leaves the bundle
-identifier alone — so it shares the primary's `settings.json`, `alarms.json` and
-control socket, and the single-instance guard still redirects the launch. Use
-`dev:instance`.
+identifier alone — so it shares the primary's `alarms.json` and control socket,
+and the single-instance guard still redirects the launch. Use `dev:instance`.
 
-Both instances read the **same Keychain item**, so provider keys, tokens and the
-database URL are entered once and shared. That means the second instance is
-looking at your real data by default — which is what you want for most testing.
-To isolate it (a migration under development is the usual reason), point it at
-its own database:
+Both instances read the **same Keychain item** and the **same
+`~/.yarvis/settings.json`**, so provider keys, tokens, the database URL, the PTY
+session cap and the workspace agent command are entered once and shared. That
+means the second instance is looking at your real data and preferences by
+default — which is what you want for most testing. The agent command can still
+diverge per instance without touching the shared file: `YARVIS_CLAUDE_COMMAND`
+overrides it locally. To isolate the database (a migration under development is
+the usual reason), point the instance at its own:
 
 ```bash
 createdb yarvis_dev
@@ -1092,6 +1117,8 @@ src/            React frontend (Vite + TS + Tailwind)
   omni/         json-render component catalog, registry, layout primitives
 src-tauri/      Rust core (Tauri v2)
   src/keychain.rs   Keychain-backed secret commands (single consolidated item)
+  src/settings.rs   non-secret settings, persisted to ~/.yarvis/settings.json;
+                    migrates the non-secret values that used to live in the Keychain
   src/instance.rs   which instance this process is, and what it therefore owns
   src/sidecar.rs    sidecar supervisor
   src/pty.rs        PTY sessions (terminals + workspace agent sessions), owned by the core
@@ -1104,7 +1131,7 @@ sidecar/        Bun + TS service (Hono)
   src/chat/     multi-provider streaming chat + tool-calls (agent.ts: shared agent turn)
   src/llm/      provider resolution + the model catalogue (/api/model-catalog):
                 catalog.ts holds the capability tags and the bundled per-provider
-                defaults that a user's saved rows take over from
+                defaults that a user's saved entries take over from
   src/voice/    speech-to-text + text-to-speech (/api/voice): Hugging Face Inference,
                 the Gemini API (both halves over generateContent), and the OpenAI audio
                 API, the last reusing a custom provider's base URL;

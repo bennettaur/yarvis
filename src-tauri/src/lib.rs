@@ -110,6 +110,7 @@ pub fn run() {
             if let Err(e) = settings::init(app.handle()) {
                 eprintln!("[settings] init failed: {e}");
             }
+            embeddings_secrets::migrate_legacy_item();
             #[cfg(unix)]
             if let Err(e) = pty::raise_fd_limit() {
                 eprintln!("[pty] raising the file descriptor limit failed: {e}");
@@ -164,6 +165,7 @@ pub fn run() {
             embeddings_secrets::delete_embeddings_secret,
             sidecar::get_sidecar_info,
             sidecar::restart_sidecar,
+            sidecar::get_sidecar_log_path,
             alarms::list_alarms,
             alarms::create_alarm,
             alarms::cancel_alarm,
@@ -184,6 +186,11 @@ pub fn run() {
             settings::get_settings,
             settings::set_max_pty_sessions,
             settings::set_agent,
+            settings::set_azure_devops_org_url,
+            settings::set_jira_base_url,
+            settings::set_jira_email,
+            settings::set_google_client_id,
+            settings::set_telegram_otp_window_minutes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

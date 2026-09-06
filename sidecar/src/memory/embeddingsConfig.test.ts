@@ -1,162 +1,73 @@
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import postgres from "postgres";
-import { createApp } from "../app.ts";
-import type { Config } from "../config.ts";
-import { EMBED_DIM } from "../db/schema.ts";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  deleteEmbeddingsConfig,
+  type EmbeddingsConfigInput,
+  getEmbeddingsConfig,
+  upsertEmbeddingsConfig,
+} from "./embeddingsConfig.ts";
 
-const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
-const sql = postgres(url, { max: 1 });
+let dir: string;
+let originalPath: string | undefined;
 
-const config: Config = {
-  port: 0,
-  token: "test-token",
-  tokenGenerated: false,
-  attentionToken: "test-attention-token",
-  mcpToken: "test-mcp-token",
-  allowedOrigins: null,
-  databaseUrl: url,
-  workspacesRoot: "/tmp/yarvis-test-workspaces",
-  secrets: {},
-  customProviderSecrets: {},
-  mcpSecrets: {},
-  embeddingsSecrets: { headers: {} },
-  telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
-};
-const app = createApp(config);
-const jsonAuth = {
-  Authorization: "Bearer test-token",
-  "Content-Type": "application/json",
-};
+beforeEach(async () => {
+  dir = await mkdtemp(join(tmpdir(), "yarvis-embeddings-config-"));
+  originalPath = process.env.YARVIS_SETTINGS_PATH;
+  process.env.YARVIS_SETTINGS_PATH = join(dir, "settings.json");
+});
 
-function validConfig(overrides: Record<string, unknown> = {}) {
+afterEach(async () => {
+  if (originalPath === undefined) delete process.env.YARVIS_SETTINGS_PATH;
+  else process.env.YARVIS_SETTINGS_PATH = originalPath;
+  await rm(dir, { recursive: true, force: true });
+});
+
+function validConfig(overrides: Partial<EmbeddingsConfigInput> = {}): EmbeddingsConfigInput {
   return {
     baseUrl: "http://localhost:11434/v1",
     model: "mxbai-embed-large",
     apiKind: "openai",
-    dimensions: EMBED_DIM,
+    dimensions: 1024,
     headerNames: [],
     ...overrides,
   };
 }
 
-beforeEach(async () => {
-  await sql`TRUNCATE embeddings_config RESTART IDENTITY CASCADE`;
-  await sql`TRUNCATE memories RESTART IDENTITY CASCADE`;
-});
-
-afterAll(async () => {
-  await sql.end();
-});
-
-describe("embeddings config routes", () => {
-  it("upserts a single config row in place across PUTs", async () => {
-    const first = await app.request("/api/memory/embeddings/config", {
-      method: "PUT",
-      headers: jsonAuth,
-      body: JSON.stringify(validConfig({ model: "model-a" })),
-    });
-    expect(first.status).toBe(200);
-
-    const second = await app.request("/api/memory/embeddings/config", {
-      method: "PUT",
-      headers: jsonAuth,
-      body: JSON.stringify(validConfig({ model: "model-b" })),
-    });
-    expect(second.status).toBe(200);
-
-    // Singleton: the second PUT updates in place rather than inserting.
-    const [{ n }] = await sql<{ n: number }[]>`
-      SELECT count(*)::int AS n FROM embeddings_config`;
-    expect(n).toBe(1);
-
-    const getRes = await app.request("/api/memory/embeddings/config", {
-      headers: jsonAuth,
-    });
-    const body = (await getRes.json()) as {
-      config: { model: string } | null;
-      health: { ok: boolean };
-    };
-    expect(body.config?.model).toBe("model-b");
+describe("embeddings config", () => {
+  it("returns null before any provider is configured", async () => {
+    expect(await getEmbeddingsConfig()).toBeNull();
   });
 
-  it("returns null config and healthy state before any provider is set", async () => {
-    const res = await app.request("/api/memory/embeddings/config", {
-      headers: jsonAuth,
-    });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      config: unknown | null;
-      health: { ok: boolean; active: { kind: string } };
-    };
-    expect(body.config).toBeNull();
-    expect(body.health.ok).toBe(true);
-    // No provider + no Gemini key → offline hash fallback.
-    expect(body.health.active.kind).toBe("hash");
+  it("stores a config and reads it back exactly", async () => {
+    const input = validConfig();
+    await upsertEmbeddingsConfig(input);
+    expect(await getEmbeddingsConfig()).toEqual(input);
   });
 
-  it("rejects a dimension that doesn't match the column", async () => {
-    const res = await app.request("/api/memory/embeddings/config", {
-      method: "PUT",
-      headers: jsonAuth,
-      body: JSON.stringify(validConfig({ dimensions: EMBED_DIM + 1 })),
-    });
-    expect(res.status).toBe(400);
+  it("replaces the prior config in place across upserts", async () => {
+    await upsertEmbeddingsConfig(validConfig({ model: "model-a" }));
+    await upsertEmbeddingsConfig(validConfig({ model: "model-b" }));
+
+    const stored = await getEmbeddingsConfig();
+    expect(stored?.model).toBe("model-b");
   });
 
-  it("rejects malformed input", async () => {
-    const res = await app.request("/api/memory/embeddings/config", {
-      method: "PUT",
-      headers: jsonAuth,
-      body: JSON.stringify({ baseUrl: "not-a-url", model: "", dimensions: 0 }),
-    });
-    expect(res.status).toBe(400);
+  it("returns the saved config from upsert", async () => {
+    const input = validConfig();
+    const result = await upsertEmbeddingsConfig(input);
+    expect(result).toEqual(input);
   });
 
-  it("deletes the config", async () => {
-    await app.request("/api/memory/embeddings/config", {
-      method: "PUT",
-      headers: jsonAuth,
-      body: JSON.stringify(validConfig()),
-    });
+  it("deletes the stored config, reverting to unconfigured", async () => {
+    await upsertEmbeddingsConfig(validConfig());
 
-    const del = await app.request("/api/memory/embeddings/config", {
-      method: "DELETE",
-      headers: jsonAuth,
-    });
-    expect((await del.json()) as { deleted: boolean }).toEqual({ deleted: true });
-
-    const delAgain = await app.request("/api/memory/embeddings/config", {
-      method: "DELETE",
-      headers: jsonAuth,
-    });
-    expect((await delAgain.json()) as { deleted: boolean }).toEqual({
-      deleted: false,
-    });
+    expect(await deleteEmbeddingsConfig()).toBe(true);
+    expect(await getEmbeddingsConfig()).toBeNull();
   });
 
-  it("re-embeds stored memories and reports the count", async () => {
-    // No provider configured, so the offline hash embedder is used end to end.
-    for (const content of ["alpha fact", "beta note"]) {
-      const add = await app.request("/api/memory", {
-        method: "POST",
-        headers: jsonAuth,
-        body: JSON.stringify({ content }),
-      });
-      expect(add.status).toBe(201);
-    }
-
-    const res = await app.request("/api/memory/reembed", {
-      method: "POST",
-      headers: jsonAuth,
-    });
-    expect(res.status).toBe(200);
-    expect((await res.json()) as { reembedded: number }).toEqual({
-      reembedded: 2,
-    });
-  });
-
-  it("requires authentication", async () => {
-    const res = await app.request("/api/memory/embeddings/config");
-    expect(res.status).toBe(401);
+  it("returns false deleting when nothing is configured", async () => {
+    expect(await deleteEmbeddingsConfig()).toBe(false);
   });
 });

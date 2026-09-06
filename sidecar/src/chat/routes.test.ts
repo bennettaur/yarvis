@@ -1,13 +1,31 @@
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 import { createCustomProvider } from "../customProviders/service.ts";
-import { getDb } from "../db/client.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
-const { db } = getDb(url);
+
+let settingsDir: string;
+let originalSettingsPath: string | undefined;
+
+beforeEach(async () => {
+  // Custom providers now live in ~/.yarvis/settings.json, not Postgres — point
+  // each test at an isolated file so this suite never touches the real one.
+  settingsDir = await mkdtemp(join(tmpdir(), "yarvis-chat-routes-"));
+  originalSettingsPath = process.env.YARVIS_SETTINGS_PATH;
+  process.env.YARVIS_SETTINGS_PATH = join(settingsDir, "settings.json");
+});
+
+afterEach(async () => {
+  if (originalSettingsPath === undefined) delete process.env.YARVIS_SETTINGS_PATH;
+  else process.env.YARVIS_SETTINGS_PATH = originalSettingsPath;
+  await rm(settingsDir, { recursive: true, force: true });
+});
 
 const config: Config = {
   port: 0,
@@ -52,7 +70,7 @@ describe("chat routes", () => {
   });
 
   it("lists configured custom providers alongside built-ins", async () => {
-    const row = await createCustomProvider(db, {
+    const row = await createCustomProvider({
       name: "litellm",
       baseUrl: "https://litellm.example.com/v1",
       apiKind: "openai",
@@ -97,7 +115,7 @@ describe("chat routes", () => {
     // the request should pass schema validation and start the stream rather
     // than being rejected with a 400. A literal loopback URL would now be
     // rejected by the outbound-URL guard, so use a publicly-shaped host.
-    const row = await createCustomProvider(db, {
+    const row = await createCustomProvider({
       name: "litellm",
       baseUrl: "https://litellm.example.invalid/v1",
       apiKind: "openai",

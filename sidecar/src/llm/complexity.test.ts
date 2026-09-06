@@ -1,134 +1,106 @@
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import postgres from "postgres";
-import { createApp } from "../app.ts";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Config } from "../config.ts";
-import { getDb } from "../db/client.ts";
-import { resolveComplexityModel } from "./complexity.ts";
-
-/** Covers the round trip every specialist that opts into a tier depends on. */
-
-const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
-const sql = postgres(url, { max: 1 });
+import {
+  DEFAULT_COMPLEXITY_MODEL_CONFIG,
+  getComplexityModelConfig,
+  resolveComplexityModel,
+  saveComplexityModelConfig,
+} from "./complexity.ts";
+import { defaultProviderModel } from "./providers.ts";
 
 /**
- * `null` means "no database configured". Not `undefined`: passing that
- * explicitly would trigger the default parameter and quietly give the app a
- * database, which is the opposite of what those tests are checking.
+ * The complexity-tier model settings live in `~/.yarvis/settings.json` for
+ * the same reason `voiceConfig` does (see issue #226). These cover the round
+ * trip every specialist that opts into a tier depends on.
  */
-function testConfig(databaseUrl: string | null): Config {
-  return {
-    port: 0,
-    token: "test-token",
-    tokenGenerated: false,
-    attentionToken: "test-attention-token",
-    mcpToken: "test-mcp-token",
-    allowedOrigins: null,
-    databaseUrl: databaseUrl ?? undefined,
-    workspacesRoot: "/tmp/yarvis-test-workspaces",
-    secrets: {},
-    customProviderSecrets: {},
-    mcpSecrets: {},
-    embeddingsSecrets: { headers: {} },
-    telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
-  };
-}
 
-function app(databaseUrl: string | null = url): ReturnType<typeof createApp> {
-  return createApp(testConfig(databaseUrl));
-}
-
-const auth = { Authorization: "Bearer test-token" };
-const jsonAuth = { ...auth, "Content-Type": "application/json" };
-
-const patch = (body: unknown, target = app()) =>
-  target.request("/api/complexity-models", {
-    method: "PATCH",
-    headers: jsonAuth,
-    body: JSON.stringify(body),
-  });
-
-const read = (target = app()) => target.request("/api/complexity-models", { headers: auth });
+let dir: string;
+let originalPath: string | undefined;
 
 beforeEach(async () => {
-  await sql`TRUNCATE complexity_model_config RESTART IDENTITY CASCADE`;
+  dir = await mkdtemp(join(tmpdir(), "yarvis-complexity-config-"));
+  originalPath = process.env.YARVIS_SETTINGS_PATH;
+  process.env.YARVIS_SETTINGS_PATH = join(dir, "settings.json");
 });
 
-afterAll(async () => {
-  await sql.end();
+afterEach(async () => {
+  if (originalPath === undefined) delete process.env.YARVIS_SETTINGS_PATH;
+  else process.env.YARVIS_SETTINGS_PATH = originalPath;
+  await rm(dir, { recursive: true, force: true });
 });
+
+const noSecrets: Config = {
+  port: 0,
+  token: "test-token",
+  tokenGenerated: false,
+  attentionToken: "test-attention-token",
+  mcpToken: "test-mcp-token",
+  allowedOrigins: null,
+  databaseUrl: undefined,
+  workspacesRoot: "/tmp/yarvis-test-workspaces",
+  secrets: {},
+  customProviderSecrets: {},
+  mcpSecrets: {},
+  embeddingsSecrets: { headers: {} },
+  telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
+};
 
 describe("complexity model config", () => {
-  it("requires the bearer token", async () => {
-    expect((await app().request("/api/complexity-models")).status).toBe(401);
-  });
-
   it("answers all tiers unset before anything is configured", async () => {
-    const body = (await (await read()).json()) as Record<string, unknown>;
-    expect(body).toEqual({ low: null, medium: null, max: null });
+    expect(await getComplexityModelConfig()).toEqual(DEFAULT_COMPLEXITY_MODEL_CONFIG);
   });
 
   it("saves and reads back one tier, leaving the others unset", async () => {
-    const saved = await patch({ low: { provider: "cerebras", model: "llama-3.3-70b" } });
-    expect(saved.status).toBe(200);
+    const saved = await saveComplexityModelConfig({
+      low: { provider: "cerebras", model: "llama-3.3-70b" },
+    });
+    expect(saved).toEqual({
+      ...DEFAULT_COMPLEXITY_MODEL_CONFIG,
+      low: { provider: "cerebras", model: "llama-3.3-70b" },
+    });
 
-    const body = (await (await read()).json()) as Record<string, unknown>;
-    expect(body.low).toEqual({ provider: "cerebras", model: "llama-3.3-70b" });
-    expect(body.medium).toBeNull();
-    expect(body.max).toBeNull();
+    expect(await getComplexityModelConfig()).toEqual(saved);
   });
 
-  it("keeps one row across repeated saves", async () => {
-    await patch({ low: { provider: "cerebras", model: "llama-3.3-70b" } });
-    await patch({ medium: { provider: "anthropic", model: "claude-haiku-4-5" } });
+  it("keeps a single merged object across repeated saves", async () => {
+    await saveComplexityModelConfig({ low: { provider: "cerebras", model: "llama-3.3-70b" } });
+    await saveComplexityModelConfig({
+      medium: { provider: "anthropic", model: "claude-haiku-4-5" },
+    });
 
-    const [{ count }] = await sql<
-      { count: string }[]
-    >`SELECT count(*) FROM complexity_model_config`;
-    expect(Number(count)).toBe(1);
     // A later save must not wipe what an earlier one set.
-    const body = (await (await read()).json()) as Record<string, unknown>;
-    expect(body.low).toEqual({ provider: "cerebras", model: "llama-3.3-70b" });
-    expect(body.medium).toEqual({ provider: "anthropic", model: "claude-haiku-4-5" });
+    const config = await getComplexityModelConfig();
+    expect(config.low).toEqual({ provider: "cerebras", model: "llama-3.3-70b" });
+    expect(config.medium).toEqual({ provider: "anthropic", model: "claude-haiku-4-5" });
   });
 
   it("clears a tier by saving it as null", async () => {
-    await patch({ low: { provider: "cerebras", model: "llama-3.3-70b" } });
-    await patch({ low: null });
+    await saveComplexityModelConfig({ low: { provider: "cerebras", model: "llama-3.3-70b" } });
+    await saveComplexityModelConfig({ low: null });
 
-    const body = (await (await read()).json()) as Record<string, unknown>;
-    expect(body.low).toBeNull();
-  });
-
-  it("rejects an incomplete selection", async () => {
-    expect((await patch({ low: { provider: "cerebras" } })).status).toBe(400);
-  });
-
-  it("serves all-unset rather than failing when there is no database", async () => {
-    const res = await read(app(null));
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ low: null, medium: null, max: null });
-  });
-
-  it("refuses to save with no database", async () => {
-    expect((await patch({ low: { provider: "x", model: "y" } }, app(null))).status).toBe(503);
+    expect((await getComplexityModelConfig()).low).toBeNull();
   });
 });
 
 describe("resolveComplexityModel", () => {
-  const config = testConfig(url);
-  const db = getDb(url).db;
-
   it("returns the configured tier's model verbatim", async () => {
-    await patch({ low: { provider: "cerebras", model: "llama-3.3-70b" } });
-    expect(await resolveComplexityModel(config, db, "low")).toEqual({
+    await saveComplexityModelConfig({ low: { provider: "cerebras", model: "llama-3.3-70b" } });
+    expect(await resolveComplexityModel(noSecrets, "low")).toEqual({
       provider: "cerebras",
       model: "llama-3.3-70b",
     });
   });
 
   it("falls back to the default chat model when the tier is unset", async () => {
-    // No provider secrets configured, so there is no default to fall back to —
-    // the point being it *falls back* rather than throwing or inventing one.
-    expect(await resolveComplexityModel(config, db, "medium")).toBeNull();
+    // Bedrock's AWS credentials can't be cheaply probed, so it reports
+    // available unconditionally and is what `defaultProviderModel` falls back
+    // to with no other provider configured — the point being it falls back to
+    // *that*, not to a hardcoded model of the tier's own.
+    expect(await resolveComplexityModel(noSecrets, "medium")).toEqual(
+      await defaultProviderModel(noSecrets),
+    );
   });
 });

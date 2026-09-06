@@ -9,10 +9,9 @@ import {
   setSecret,
 } from "../lib/keychain";
 import { formatSecretForDisplay, generateOtpSecret, otpauthUri } from "../lib/otp";
+import { getSettings, type Settings, setTelegramOtpWindowMinutes } from "../lib/settings";
 import { StatusDot } from "./Dashboard";
 import { MaskedInput } from "./MaskedInput";
-
-const DEFAULT_OTP_WINDOW = "120";
 
 /** Trigger a sidecar restart and wait for it to come back ready. */
 async function restartAndWait(): Promise<void> {
@@ -27,14 +26,18 @@ async function restartAndWait(): Promise<void> {
 }
 
 /**
- * Configures the Telegram remote-control bot: a bot token (from @BotFather) and
- * the allowlist of chat ids permitted to talk to it. Values live in the macOS
- * Keychain; saving reloads the sidecar so the bot picks them up. Like the rest
- * of the Keychain UI, stored values are never read back — both fields are
- * write-only and show only whether something is set.
+ * Configures the Telegram remote-control bot: a bot token, the allowlist of
+ * chat ids permitted to talk to it, and an optional OTP re-auth window. The
+ * token and allowlist live in the Keychain and are write-only (the allowlist
+ * is the bot's only access-control check while OTP is off, so it keeps the
+ * Keychain's authorization gate rather than becoming a freely-editable plain
+ * setting); the OTP window is a plain setting in `~/.yarvis/settings.json`
+ * and can be shown and edited in place. Saving any of them reloads the
+ * sidecar so the bot picks up the change.
  */
 export default function TelegramSection() {
   const [secrets, setSecrets] = useState<SecretStatus[]>([]);
+  const [settings, setSettings] = useState<Settings | null>(null);
   const [token, setToken] = useState("");
   const [chatIds, setChatIds] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -42,11 +45,14 @@ export default function TelegramSection() {
   // A freshly-generated OTP secret being enrolled, held in memory until the user
   // confirms they've added it to their authenticator. Null when not enrolling.
   const [pendingOtpSecret, setPendingOtpSecret] = useState<string | null>(null);
-  const [otpWindow, setOtpWindow] = useState(DEFAULT_OTP_WINDOW);
+  const [otpWindow, setOtpWindow] = useState("");
 
   const refresh = useCallback(async () => {
     try {
-      setSecrets(await listSecretStatus());
+      const [nextSecrets, nextSettings] = await Promise.all([listSecretStatus(), getSettings()]);
+      setSecrets(nextSecrets);
+      setSettings(nextSettings);
+      setOtpWindow(String(nextSettings.telegramOtpWindowMinutes ?? ""));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -90,20 +96,25 @@ export default function TelegramSection() {
     [refresh],
   );
 
-  // Persist the enrolled OTP secret + window and turn the gate on. Done together
-  // so the gate never activates with a half-configured pair.
+  // Persist the enrolled OTP secret + window and turn the gate on. The window
+  // (a setting) is saved before the secret so the gate never activates with a
+  // stale or missing window. A blank window is passed through as `null` so it
+  // tracks the sidecar's default rather than pinning today's default forever.
   const enableOtp = useCallback(async () => {
     if (!pendingOtpSecret) return;
-    const minutes = Number(otpWindow);
-    if (!Number.isInteger(minutes) || minutes < 1) {
-      setError("OTP window must be a whole number of minutes (≥ 1).");
-      return;
+    let minutes: number | null = null;
+    if (otpWindow.trim()) {
+      minutes = Number(otpWindow);
+      if (!Number.isInteger(minutes) || minutes < 1) {
+        setError("OTP window must be a whole number of minutes (≥ 1).");
+        return;
+      }
     }
     setBusy(true);
     setError(null);
     try {
+      await setTelegramOtpWindowMinutes(minutes);
       await setSecret("telegram_otp_secret", pendingOtpSecret);
-      await setSecret("telegram_otp_window_minutes", String(minutes));
       setPendingOtpSecret(null);
       await restartAndWait();
       await refresh();
@@ -119,7 +130,7 @@ export default function TelegramSection() {
     setError(null);
     try {
       await deleteSecret("telegram_otp_secret");
-      await deleteSecret("telegram_otp_window_minutes");
+      await setTelegramOtpWindowMinutes(null);
       await restartAndWait();
       await refresh();
     } catch (e) {
@@ -250,6 +261,7 @@ export default function TelegramSection() {
                   type="number"
                   min={1}
                   value={otpWindow}
+                  placeholder={String(settings?.defaultTelegramOtpWindowMinutes ?? "")}
                   onChange={(e) => setOtpWindow(e.target.value)}
                   className="w-24 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-zinc-500"
                 />

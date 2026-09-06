@@ -2,21 +2,28 @@
 //!
 //! On startup the core picks a free loopback port and generates a bearer token,
 //! exposes them to the frontend via `get_sidecar_info`, and spawns the sidecar
-//! with secrets injected from the Keychain. The sidecar is restarted if it exits.
+//! with secrets injected from the Keychain and non-secret configuration
+//! injected from `settings.rs`. The sidecar is restarted if it exits.
 
+use std::io::Write;
 use std::net::TcpListener;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
 use rand::Rng;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Notify;
 use tokio::time::sleep;
 
 use crate::custom_providers::build_sidecar_env;
 use crate::keychain::{read_root, secret_from_root};
+use crate::settings::SettingsState;
 
 /// Webview origins permitted to call the sidecar; the sidecar still requires the
 /// bearer token regardless. The Vite dev server's origin is added alongside
@@ -46,6 +53,10 @@ fn instance_env(name: &str, background_workers: bool) -> [(&'static str, String)
         ),
     ]
 }
+
+/// Size at which the sidecar log is rotated to `.1` on the next spawn. A single
+/// session's worth of lines is what a bug report needs; older ones are noise.
+const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 
 const TOKEN_BYTES: usize = 32;
 const RESTART_DELAY: Duration = Duration::from_secs(1);
@@ -77,6 +88,60 @@ pub struct McpToken(pub String);
 #[derive(Clone)]
 pub struct SidecarControl {
     restart: Arc<Notify>,
+}
+
+/// Where the sidecar's output is kept. A packaged app has no terminal attached,
+/// so without this a crash or a provider error leaves nothing behind to read;
+/// the app's Diagnostics view names this path so a bug report can attach it.
+pub fn log_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("sidecar.log"))
+}
+
+/// Keeps one previous log beside the current one, so the run before a restart
+/// is still readable — which is usually the run that explains the restart.
+fn rotate_if_large(path: &PathBuf) {
+    let too_big = std::fs::metadata(path)
+        .map(|m| m.len() > MAX_LOG_BYTES)
+        .unwrap_or(false);
+    if too_big {
+        let _ = std::fs::rename(path, path.with_extension("log.1"));
+    }
+}
+
+fn append_line(path: &PathBuf, line: &str) {
+    // 0600: the file aggregates everything the sidecar prints, and nothing but
+    // this user has any business reading it.
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)
+    {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
+/// Tees one of the sidecar's streams into the log file, keeping the write to
+/// this process's own stdout/stderr so `bun run tauri dev` is unchanged.
+fn tee<R>(reader: R, path: Option<PathBuf>, to_stderr: bool)
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    tauri::async_runtime::spawn(async move {
+        let mut lines = BufReader::new(reader).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if to_stderr {
+                eprintln!("{line}");
+            } else {
+                println!("{line}");
+            }
+            if let Some(path) = &path {
+                append_line(path, &line);
+            }
+        }
+    });
 }
 
 fn pick_free_port() -> std::io::Result<u16> {
@@ -123,9 +188,23 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
 }
 
 async fn supervise(app: AppHandle, port: u16, token: String, restart: Arc<Notify>) {
+    let log = log_path(&app)
+        .inspect_err(|e| eprintln!("[sidecar] no log file ({e}); output stays on stdout only"))
+        .ok();
     loop {
-        match build_command(&app, port, &token).spawn() {
+        if let Some(path) = &log {
+            rotate_if_large(path);
+        }
+        let mut command = build_command(&app, port, &token);
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        match command.spawn() {
             Ok(mut child) => {
+                if let Some(out) = child.stdout.take() {
+                    tee(out, log.clone(), false);
+                }
+                if let Some(err) = child.stderr.take() {
+                    tee(err, log.clone(), true);
+                }
                 // Wait for the sidecar to exit on its own or for a restart request.
                 tokio::select! {
                     status = child.wait() => {
@@ -222,20 +301,8 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
     if let Some(token) = secret_from_root(&secrets, "azure_devops_token") {
         cmd.env("AZURE_DEVOPS_TOKEN", token);
     }
-    if let Some(url) = secret_from_root(&secrets, "azure_devops_org_url") {
-        cmd.env("AZURE_DEVOPS_ORG_URL", url);
-    }
-    if let Some(url) = secret_from_root(&secrets, "jira_base_url") {
-        cmd.env("JIRA_BASE_URL", url);
-    }
-    if let Some(email) = secret_from_root(&secrets, "jira_email") {
-        cmd.env("JIRA_EMAIL", email);
-    }
     if let Some(token) = secret_from_root(&secrets, "jira_api_token") {
         cmd.env("JIRA_API_TOKEN", token);
-    }
-    if let Some(id) = secret_from_root(&secrets, "google_client_id") {
-        cmd.env("GOOGLE_CLIENT_ID", id);
     }
     if let Some(secret) = secret_from_root(&secrets, "google_client_secret") {
         cmd.env("GOOGLE_CLIENT_SECRET", secret);
@@ -249,8 +316,27 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
     if let Some(secret) = secret_from_root(&secrets, "telegram_otp_secret") {
         cmd.env("TELEGRAM_OTP_SECRET", secret);
     }
-    if let Some(minutes) = secret_from_root(&secrets, "telegram_otp_window_minutes") {
-        cmd.env("TELEGRAM_OTP_WINDOW_MINUTES", minutes);
+
+    // Non-secret configuration that rides alongside the credentials above but
+    // lives in `settings.rs`'s `~/.yarvis/settings.json`, not the Keychain.
+    let settings = app
+        .try_state::<SettingsState>()
+        .map(|s| s.snapshot())
+        .unwrap_or_default();
+    if let Some(url) = settings.azure_devops_org_url {
+        cmd.env("AZURE_DEVOPS_ORG_URL", url);
+    }
+    if let Some(url) = settings.jira_base_url {
+        cmd.env("JIRA_BASE_URL", url);
+    }
+    if let Some(email) = settings.jira_email {
+        cmd.env("JIRA_EMAIL", email);
+    }
+    if let Some(id) = settings.google_client_id {
+        cmd.env("GOOGLE_CLIENT_ID", id);
+    }
+    if let Some(minutes) = settings.telegram_otp_window_minutes {
+        cmd.env("TELEGRAM_OTP_WINDOW_MINUTES", minutes.to_string());
     }
 
     if let Some(json) = build_sidecar_env(&secrets) {
@@ -261,7 +347,7 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
         cmd.env("YARVIS_MCP_SECRETS", json);
     }
 
-    if let Some(json) = crate::embeddings_secrets::build_sidecar_env() {
+    if let Some(json) = crate::embeddings_secrets::build_sidecar_env(&secrets) {
         cmd.env("YARVIS_EMBEDDINGS_SECRETS", json);
     }
 
@@ -287,6 +373,13 @@ fn command_base() -> Command {
     Command::new("yarvis-sidecar")
 }
 
+/// The log file the frontend offers to reveal, so a user chasing a failure can
+/// find it without knowing where macOS puts an app's logs.
+#[tauri::command]
+pub fn get_sidecar_log_path(app: AppHandle) -> Result<String, String> {
+    Ok(log_path(&app)?.to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 pub fn get_sidecar_info(info: tauri::State<'_, SidecarInfo>) -> SidecarInfo {
     info.inner().clone()
@@ -309,6 +402,25 @@ mod tests {
             origins_for_port(1437),
             "http://localhost:1437,tauri://localhost,http://tauri.localhost"
         );
+    }
+
+    #[test]
+    fn a_large_log_is_rotated_aside_so_the_previous_run_survives() {
+        let dir = std::env::temp_dir().join(format!("yarvis-log-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("sidecar.log");
+        let rotated = log.with_extension("log.1");
+
+        append_line(&log, "small");
+        rotate_if_large(&log);
+        assert!(!rotated.exists(), "a small log is left alone");
+
+        std::fs::write(&log, vec![b'x'; (MAX_LOG_BYTES + 1) as usize]).unwrap();
+        rotate_if_large(&log);
+        assert!(rotated.exists(), "an oversized log moves aside");
+        assert!(!log.exists(), "and the next run starts a fresh one");
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

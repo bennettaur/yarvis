@@ -1,23 +1,31 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { type DisplayError, formatError } from "../lib/errors";
 import {
   listAgentTools,
   listMcpServers,
   type McpServer,
   type RegistryTool,
-  setToolPolicy,
+  setToolSettings,
+  type ToolApproval,
   type ToolPolicy,
 } from "../lib/mcp";
+import ErrorNotice from "./ErrorNotice";
 
 /**
  * The unified Tool Manager: lists every tool the agent can use — built-in and
  * MCP-sourced — grouped by source, and lets the user set each tool's policy
- * (always mounted, available via search, or disabled). Policy changes take
- * effect on the next chat turn; no restart needed.
+ * (always mounted, available via search, or disabled) and, for MCP tools,
+ * whether calling one asks first. Changes take effect on the next chat turn; no
+ * restart needed.
+ *
+ * Auto-approval is offered for MCP tools only. A built-in's confirmation is
+ * decided by how the turn was composed — a spoken turn was never proof-read —
+ * which is not something a stored preference should be able to waive.
  */
 export default function ToolManagerSection() {
   const [tools, setTools] = useState<RegistryTool[]>([]);
   const [servers, setServers] = useState<McpServer[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<DisplayError | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -26,7 +34,7 @@ export default function ToolManagerSection() {
       setServers(mcpServers);
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(formatError(e));
     }
   }, []);
 
@@ -34,14 +42,26 @@ export default function ToolManagerSection() {
     void refresh();
   }, [refresh]);
 
-  const changePolicy = useCallback(async (id: string, policy: ToolPolicy) => {
-    try {
-      const updated = await setToolPolicy(id, policy);
-      setTools((prev) => prev.map((t) => (t.id === id ? updated : t)));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
+  const updateTool = useCallback(
+    async (id: string, settings: { policy?: ToolPolicy; approval?: ToolApproval }) => {
+      try {
+        const updated = await setToolSettings(id, settings);
+        setTools((prev) => prev.map((t) => (t.id === id ? updated : t)));
+      } catch (e) {
+        setError(formatError(e));
+      }
+    },
+    [],
+  );
+
+  const setGroupApproval = useCallback(
+    async (groupTools: RegistryTool[], approval: ToolApproval) => {
+      for (const t of groupTools) {
+        if (t.approval !== approval) await updateTool(t.id, { approval });
+      }
+    },
+    [updateTool],
+  );
 
   const groups = useMemo(() => {
     const serverName = new Map(servers.map((s) => [s.id, s.name]));
@@ -68,17 +88,24 @@ export default function ToolManagerSection() {
       <p className="mb-4 text-xs text-zinc-500">
         Control how each tool is exposed to the agent. <strong>Always</strong> keeps it in context;{" "}
         <strong>Search</strong> makes it discoverable on demand; <strong>Disabled</strong> hides it.
+        An MCP tool asks before every call unless you mark it <strong>Auto</strong>.
       </p>
 
-      {error && <p className="mb-3 text-sm text-red-400">{error}</p>}
+      {error && <ErrorNotice error={error} onDismiss={() => setError(null)} className="mb-3" />}
 
       {tools.length === 0 ? (
         <p className="text-xs text-zinc-500">No tools registered yet.</p>
       ) : (
         <div className="space-y-5">
-          <ToolGroup title="Built-in" tools={groups.builtins} onChange={changePolicy} />
+          <ToolGroup title="Built-in" tools={groups.builtins} onChange={updateTool} />
           {groups.mcpGroups.map((g) => (
-            <ToolGroup key={g.title} title={g.title} tools={g.tools} onChange={changePolicy} />
+            <ToolGroup
+              key={g.title}
+              title={g.title}
+              tools={g.tools}
+              onChange={updateTool}
+              onSetGroupApproval={(approval) => void setGroupApproval(g.tools, approval)}
+            />
           ))}
         </div>
       )}
@@ -90,15 +117,30 @@ function ToolGroup({
   title,
   tools,
   onChange,
+  onSetGroupApproval,
 }: {
   title: string;
   tools: RegistryTool[];
-  onChange: (id: string, policy: ToolPolicy) => void;
+  onChange: (id: string, settings: { policy?: ToolPolicy; approval?: ToolApproval }) => void;
+  /** Present for MCP groups: sets every tool on the server at once, either way. */
+  onSetGroupApproval?: (approval: ToolApproval) => void;
 }) {
   if (tools.length === 0) return null;
+  const allAuto = tools.every((t) => t.approval === "auto");
   return (
     <div>
-      <div className="mb-2 text-xs font-medium uppercase tracking-wide text-zinc-500">{title}</div>
+      <div className="mb-2 flex items-center gap-2">
+        <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">{title}</span>
+        {onSetGroupApproval && (
+          <button
+            type="button"
+            onClick={() => onSetGroupApproval(allAuto ? "ask" : "auto")}
+            className="rounded-md border border-zinc-700 px-2 py-0.5 text-xs text-zinc-400 hover:bg-zinc-800"
+          >
+            {allAuto ? "Ask for every tool" : "Auto-approve every tool"}
+          </button>
+        )}
+      </div>
       <div className="space-y-2">
         {tools.map((t) => (
           <div
@@ -111,15 +153,29 @@ function ToolGroup({
                 <div className="truncate text-xs text-zinc-500">{t.description}</div>
               )}
             </div>
-            <select
-              value={t.policy}
-              onChange={(e) => onChange(t.id, e.target.value as ToolPolicy)}
-              className="shrink-0 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs outline-none focus:border-zinc-500"
-            >
-              <option value="always">Always</option>
-              <option value="search">Search</option>
-              <option value="disabled">Disabled</option>
-            </select>
+            <div className="flex shrink-0 items-center gap-2">
+              {t.source === "mcp" && (
+                <select
+                  value={t.approval}
+                  aria-label={`Approval for ${t.name}`}
+                  onChange={(e) => onChange(t.id, { approval: e.target.value as ToolApproval })}
+                  className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs outline-none focus:border-zinc-500"
+                >
+                  <option value="ask">Ask</option>
+                  <option value="auto">Auto</option>
+                </select>
+              )}
+              <select
+                value={t.policy}
+                aria-label={`Policy for ${t.name}`}
+                onChange={(e) => onChange(t.id, { policy: e.target.value as ToolPolicy })}
+                className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs outline-none focus:border-zinc-500"
+              >
+                <option value="always">Always</option>
+                <option value="search">Search</option>
+                <option value="disabled">Disabled</option>
+              </select>
+            </div>
           </div>
         ))}
       </div>

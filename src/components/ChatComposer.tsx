@@ -16,6 +16,7 @@ export default function ChatComposer({
   busy = false,
   placeholder,
   submitLabel,
+  onStop,
   className = "flex gap-2",
   textareaClassName = "",
   maxHeight = DEFAULT_MAX_HEIGHT,
@@ -24,6 +25,12 @@ export default function ChatComposer({
   onChange: (value: string) => void;
   onSubmit: () => void;
   busy?: boolean;
+  /**
+   * Ends the turn in flight. Present on surfaces that can cancel; the send
+   * button becomes Stop while busy, so a turn the user no longer wants doesn't
+   * have to be waited out.
+   */
+  onStop?: () => void;
   placeholder?: string;
   submitLabel: string;
   className?: string;
@@ -66,13 +73,24 @@ export default function ChatComposer({
         }}
         className={`flex-1 resize-none overflow-y-auto rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm outline-none focus:border-zinc-500 disabled:opacity-50 ${textareaClassName}`}
       />
-      <button
-        onClick={onSubmit}
-        disabled={busy}
-        className="h-fit self-end rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500 disabled:opacity-50"
-      >
-        {busy ? "…" : submitLabel}
-      </button>
+      {busy && onStop ? (
+        <button
+          type="button"
+          onClick={onStop}
+          className="h-fit self-end rounded-md border border-zinc-600 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-zinc-800"
+        >
+          Stop
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={onSubmit}
+          disabled={busy}
+          className="h-fit self-end rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500 disabled:opacity-50"
+        >
+          {busy ? "…" : submitLabel}
+        </button>
+      )}
     </div>
   );
 }

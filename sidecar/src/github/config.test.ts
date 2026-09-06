@@ -1,42 +1,43 @@
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
-import * as schema from "../db/schema.ts";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DEFAULT_GITHUB_PR_CONFIG, getGithubPrConfig, saveGithubPrConfig } from "./config.ts";
 
-const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
-const sql = postgres(url, { max: 1 });
-const db = drizzle(sql, { schema });
+let dir: string;
+let originalPath: string | undefined;
 
 beforeEach(async () => {
-  await sql`TRUNCATE github_pr_config RESTART IDENTITY CASCADE`;
+  dir = await mkdtemp(join(tmpdir(), "yarvis-github-config-"));
+  originalPath = process.env.YARVIS_SETTINGS_PATH;
+  process.env.YARVIS_SETTINGS_PATH = join(dir, "settings.json");
 });
 
-afterAll(async () => {
-  await sql.end();
+afterEach(async () => {
+  if (originalPath === undefined) delete process.env.YARVIS_SETTINGS_PATH;
+  else process.env.YARVIS_SETTINGS_PATH = originalPath;
+  await rm(dir, { recursive: true, force: true });
 });
 
 describe("github pr config", () => {
   it("returns the built-in defaults when nothing is saved", async () => {
-    expect(await getGithubPrConfig(db)).toEqual(DEFAULT_GITHUB_PR_CONFIG);
+    expect(await getGithubPrConfig()).toEqual(DEFAULT_GITHUB_PR_CONFIG);
   });
 
   it("saves and reads back the config", async () => {
-    const saved = await saveGithubPrConfig(db, {
+    const saved = await saveGithubPrConfig({
       reviewQuery: "is:open is:pr review-requested:@me -is:draft org:acme",
       reviewingLookbackDays: 7,
     });
     expect(saved.reviewQuery).toContain("org:acme");
     expect(saved.reviewingLookbackDays).toBe(7);
-    expect(await getGithubPrConfig(db)).toEqual(saved);
+    expect(await getGithubPrConfig()).toEqual(saved);
   });
 
-  it("keeps a single row across saves (updates in place)", async () => {
-    await saveGithubPrConfig(db, { reviewQuery: "is:pr a", reviewingLookbackDays: 10 });
-    await saveGithubPrConfig(db, { reviewQuery: "is:pr b", reviewingLookbackDays: 20 });
-    const rows = await sql`SELECT count(*)::int AS n FROM github_pr_config`;
-    expect(rows[0]!.n).toBe(1);
-    expect(await getGithubPrConfig(db)).toEqual({
+  it("keeps a single stored config across saves (overwrites in place)", async () => {
+    await saveGithubPrConfig({ reviewQuery: "is:pr a", reviewingLookbackDays: 10 });
+    await saveGithubPrConfig({ reviewQuery: "is:pr b", reviewingLookbackDays: 20 });
+    expect(await getGithubPrConfig()).toEqual({
       reviewQuery: "is:pr b",
       reviewingLookbackDays: 20,
     });
