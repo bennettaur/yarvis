@@ -323,6 +323,9 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
     confirmBuiltins: spoken
       ? new Set([...ALWAYS_CONFIRM_BUILTIN_TOOLS, ...DESTRUCTIVE_BUILTIN_TOOLS])
       : ALWAYS_CONFIRM_BUILTIN_TOOLS,
+    // Standing consent for an MCP tool was given about typed turns. A spoken one
+    // was never read back, so it asks again for everything.
+    honourStandingConsent: !spoken,
   });
 
   let streamError: unknown = null;

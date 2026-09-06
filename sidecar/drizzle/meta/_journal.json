@@ -211,6 +211,13 @@
       "when": 1788416095717,
       "tag": "0029_abandoned_vector",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1788635103089,
+      "tag": "0030_fearless_shard",
+      "breakpoints": true
     }
   ]
 }

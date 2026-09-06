@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { syncBuiltins } from "../agentTools/registry.ts";
-import { listRegistryTools, searchRegistry, setToolPolicy } from "../agentTools/store.ts";
+import { listRegistryTools, searchRegistry, setToolSettings } from "../agentTools/store.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { UrlSafetyError, validateOutboundUrl } from "../lib/urlSafety.ts";
@@ -121,7 +121,14 @@ const updateSchema = z.object({
   enabled: z.boolean().optional(),
 });
 
-const policySchema = z.object({ policy: z.enum(["always", "search", "disabled"]) });
+const toolSettingsSchema = z
+  .object({
+    policy: z.enum(["always", "search", "disabled"]).optional(),
+    approval: z.enum(["ask", "auto"]).optional(),
+  })
+  .refine((v) => v.policy !== undefined || v.approval !== undefined, {
+    message: "provide policy, approval, or both",
+  });
 const searchSchema = z.object({
   query: z.string().min(1),
   limit: z.number().int().min(1).max(50).optional(),
@@ -226,9 +233,16 @@ export function createMcpRoutes(config: Config): Hono {
 
   router.patch("/tools/:id", async (c) => {
     const body = await c.req.json().catch(() => null);
-    const parsed = policySchema.safeParse(body);
+    const parsed = toolSettingsSchema.safeParse(body);
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const row = await setToolPolicy(db(), c.req.param("id"), parsed.data.policy);
+    const id = c.req.param("id");
+    // Standing consent is only meaningful for MCP tools. A built-in's
+    // confirmation follows from how the turn was composed, so the database must
+    // not be able to hold a row saying one is auto-approved.
+    if (parsed.data.approval && !id.startsWith("mcp:")) {
+      return c.json({ error: "approval can only be set on an MCP tool" }, 400);
+    }
+    const row = await setToolSettings(db(), id, parsed.data);
     if (!row) return c.json({ error: "not found" }, 404);
     return c.json(row);
   });

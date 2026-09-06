@@ -5,7 +5,7 @@ import { HashEmbedder } from "../memory/embedder.ts";
 import {
   listRegistryTools,
   searchRegistry,
-  setToolPolicy,
+  setToolSettings,
   syncToolSet,
   type ToolDescriptor,
 } from "./store.ts";
@@ -68,7 +68,7 @@ describe("syncToolSet", () => {
 
   it("updates changed tools while preserving their policy", async () => {
     await syncToolSet(db, embedder, [builtin("a", "alpha")], builtinScope);
-    await setToolPolicy(db, "builtin:a", "search");
+    await setToolSettings(db, "builtin:a", { policy: "search" });
 
     const res = await syncToolSet(db, embedder, [builtin("a", "alpha v2")], builtinScope);
     expect(res).toEqual({ inserted: 0, updated: 1, deleted: 0 });
@@ -87,12 +87,22 @@ describe("syncToolSet", () => {
   });
 });
 
-describe("setToolPolicy", () => {
+describe("setToolSettings", () => {
   it("updates the policy and returns the row", async () => {
     await syncToolSet(db, embedder, [builtin("a", "alpha")], builtinScope);
-    const updated = await setToolPolicy(db, "builtin:a", "disabled");
+    const updated = await setToolSettings(db, "builtin:a", { policy: "disabled" });
     expect(updated?.policy).toBe("disabled");
-    expect(await setToolPolicy(db, "builtin:missing", "always")).toBeNull();
+    expect(await setToolSettings(db, "builtin:missing", { policy: "always" })).toBeNull();
+  });
+
+  it("defaults a tool to asking, and records standing consent without touching its policy", async () => {
+    await syncToolSet(db, embedder, [builtin("a", "does a")], builtinScope);
+    const seeded = await listRegistryTools(db);
+    expect(seeded[0]?.approval).toBe("ask");
+
+    const updated = await setToolSettings(db, "builtin:a", { approval: "auto" });
+    expect(updated?.approval).toBe("auto");
+    expect(updated?.policy).toBe(seeded[0]?.policy);
   });
 });
 
@@ -104,7 +114,7 @@ describe("searchRegistry", () => {
       [builtin("always_tool", "always"), builtin("search_tool", "searchable")],
       builtinScope,
     );
-    await setToolPolicy(db, "builtin:search_tool", "search");
+    await setToolSettings(db, "builtin:search_tool", { policy: "search" });
 
     const hits = await searchRegistry(db, embedder, "anything", 10);
     expect(hits.map((h) => h.id)).toEqual(["builtin:search_tool"]);

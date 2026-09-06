@@ -15,6 +15,12 @@ import { ensureOk, sidecarFetch } from "./api";
 
 export type McpTransport = "http" | "stdio";
 export type ToolPolicy = "always" | "search" | "disabled";
+/**
+ * Whether an MCP tool call pauses for the user. Mirrors the sidecar's
+ * `agentTools.approval`; only meaningful for MCP tools, since a built-in's
+ * confirmation is decided by how the turn was composed, not stored.
+ */
+export type ToolApproval = "ask" | "auto";
 export type ToolSource = "builtin" | "mcp";
 
 /** Structural fields for a configured MCP server (no secrets). */
@@ -56,6 +62,7 @@ export interface RegistryTool {
   description: string;
   inputSchema: unknown;
   policy: ToolPolicy;
+  approval: ToolApproval;
   contentHash: string;
   createdAt: string;
   updatedAt: string;
@@ -170,13 +177,20 @@ export async function listAgentTools(): Promise<RegistryTool[]> {
   return res.json();
 }
 
-export async function setToolPolicy(id: string, policy: ToolPolicy): Promise<RegistryTool> {
+/**
+ * Updates what the user controls about a tool — how it is exposed to the model,
+ * whether calling it asks first, or both. Fields left out are unchanged.
+ */
+export async function setToolSettings(
+  id: string,
+  settings: { policy?: ToolPolicy; approval?: ToolApproval },
+): Promise<RegistryTool> {
   const res = await sidecarFetch(`/api/mcp/tools/${encodeURIComponent(id)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ policy }),
+    body: JSON.stringify(settings),
   });
-  await ensureOk(res, "set tool policy");
+  await ensureOk(res, "set tool settings");
   return res.json();
 }
 
