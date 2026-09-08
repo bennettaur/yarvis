@@ -5,6 +5,7 @@ import { clearDraft, draftKey, fileKey, useWorkspaceDraftKeys } from "../lib/fil
 import type { NewWorkspaceRequest, OpenWorkspaceRequest } from "../lib/nav";
 import { type AgentConfig, getAgentConfig, ptyExists, startClaudeSession } from "../lib/pty";
 import { createRepo, listRepoBranches, listRepos, type Repo } from "../lib/repos";
+import { primeCache, useCachedResource } from "../lib/resourceCache";
 import { listTasks, type Task } from "../lib/tasks";
 import { openExternal } from "../lib/url";
 import {
@@ -21,6 +22,7 @@ import {
   type WorkspaceSummary,
 } from "../lib/workspaces";
 import CopyPathButton from "./pr/CopyPathButton";
+import RefreshingIndicator from "./RefreshingIndicator";
 import SplitPane, { usePersistedRatio } from "./SplitPane";
 import TerminalTabs, {
   type OpenFileDiff,
@@ -116,6 +118,13 @@ const SHOW_ARCHIVED_KEY = "yarvis.workspaces.showArchived";
  *  poll lands per refresh while still being cheap (one local SQL read). */
 const CACHE_REFRESH_INTERVAL_MS = 20_000;
 
+const WORKSPACES_KEY = "workspaces:list";
+const REPOS_KEY = "workspaces:repos";
+
+/** Stable identities so an unloaded resource doesn't re-render the list. */
+const NO_WORKSPACES: WorkspaceSummary[] = [];
+const NO_REPOS: Repo[] = [];
+
 /** Cadence used while a workspace is mid-archive: the teardown runs in the
  *  sidecar's background, so both the list and the open workspace lean on
  *  polling to notice it landed. */
@@ -143,8 +152,6 @@ export default function WorkspacesPanel({
   /** Called once we've consumed `requestedNew` so the parent can clear it. */
   onNewRequestConsumed?: () => void;
 } = {}) {
-  const [items, setItems] = useState<WorkspaceSummary[]>([]);
-  const [repos, setRepos] = useState<Repo[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(() =>
     localStorage.getItem(SELECTED_WORKSPACE_KEY),
   );
@@ -159,22 +166,16 @@ export default function WorkspacesPanel({
   const [showArchived, setShowArchived] = useState<boolean>(
     () => localStorage.getItem(SHOW_ARCHIVED_KEY) === "1",
   );
-  const [error, setError] = useState<string | null>(null);
+
+  const listRes = useCachedResource<WorkspaceSummary[]>(WORKSPACES_KEY, listWorkspaces);
+  const reposRes = useCachedResource<Repo[]>(REPOS_KEY, listRepos);
+  const items = listRes.data ?? NO_WORKSPACES;
+  const repos = reposRes.data ?? NO_REPOS;
+  const error = listRes.error ?? reposRes.error;
 
   const refresh = useCallback(async () => {
-    try {
-      const [ws, rs] = await Promise.all([listWorkspaces(), listRepos()]);
-      setItems(ws);
-      setRepos(rs);
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    await Promise.all([listRes.refresh(), reposRes.refresh()]);
+  }, [listRes.refresh, reposRes.refresh]);
 
   // Persisted across reloads.
   useEffect(() => {
@@ -248,7 +249,9 @@ export default function WorkspacesPanel({
       timer = null;
       try {
         const ws = await listWorkspaces();
-        if (live) setItems(ws);
+        // Written into the cache rather than into local state so the badges the
+        // poller earned survive the next tab switch along with the list itself.
+        if (live) primeCache(WORKSPACES_KEY, ws);
       } catch {
         // Keep what's on screen; the next tick tries again.
       }
@@ -317,15 +320,20 @@ export default function WorkspacesPanel({
     setSelectedId(id);
   };
 
-  const onRepoAdded = useCallback((repo: Repo) => {
-    setRepos((prev) => (prev.some((r) => r.id === repo.id) ? prev : [...prev, repo]));
-  }, []);
+  const onRepoAdded = useCallback(
+    (repo: Repo) => {
+      if (repos.some((r) => r.id === repo.id)) return;
+      primeCache(REPOS_KEY, [...repos, repo]);
+    },
+    [repos],
+  );
 
   return (
     <div className="flex h-full min-h-0">
       <aside className="flex w-72 shrink-0 flex-col border-r border-zinc-800">
-        <div className="flex shrink-0 items-center justify-between px-3 py-2">
-          <h2 className="text-sm font-medium text-zinc-200">Workspaces</h2>
+        <div className="flex shrink-0 items-center gap-2 px-3 py-2">
+          <h2 className="mr-auto text-sm font-medium text-zinc-200">Workspaces</h2>
+          <RefreshingIndicator active={listRes.refreshing || reposRes.refreshing} />
           <button
             type="button"
             onClick={beginNew}

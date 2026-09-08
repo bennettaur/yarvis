@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import type { ProviderId } from "../../lib/chat";
 import {
   type MemoryKind,
@@ -11,7 +11,9 @@ import {
   memSearch,
   type RecapResult,
 } from "../../lib/memory";
+import { useCachedResource } from "../../lib/resourceCache";
 import Markdown from "../Markdown";
+import RefreshingIndicator from "../RefreshingIndicator";
 
 // The chat panel persists the last-used model here; recaps reuse it so the
 // summary matches the provider the user already configured.
@@ -67,13 +69,20 @@ const FILTER_KINDS: MemoryKind[] = [
 /** Page size for the browse; a summary a day adds up over a few months. */
 const PAGE_SIZE = 50;
 
+interface MemoryPage {
+  items: MemoryRecord[];
+  total: number;
+}
+
+/** Stable identity so an unloaded resource doesn't re-render the list. */
+const NO_PAGE: MemoryPage = { items: [], total: 0 };
+
 export default function MemoryLibrary() {
-  const [items, setItems] = useState<MemoryRecord[]>([]);
-  const [total, setTotal] = useState(0);
   const [kind, setKind] = useState<MemoryKind | "">("");
   const [offset, setOffset] = useState(0);
   const [query, setQuery] = useState("");
-  const [searching, setSearching] = useState(false);
+  /** Non-null while a search is on screen in place of the browse. */
+  const [searchResults, setSearchResults] = useState<MemoryRecord[] | null>(null);
   const [note, setNote] = useState("");
   const [ingestUrl, setIngestUrl] = useState("");
   const [ingestText, setIngestText] = useState("");
@@ -82,48 +91,47 @@ export default function MemoryLibrary() {
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
-    try {
-      setSearching(false);
-      const page = await memList({
-        kinds: kind ? [kind] : undefined,
-        limit: PAGE_SIZE,
-        offset,
-      });
-      setItems(page.items);
-      setTotal(page.total);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, [kind, offset]);
+  // Both values the browse loader reads are in the key, so changing the kind
+  // filter or the page names a different resource rather than reusing the last.
+  const browseRes = useCachedResource<MemoryPage>(`memory:list:${kind}:${offset}`, () =>
+    memList({ kinds: kind ? [kind] : undefined, limit: PAGE_SIZE, offset }),
+  );
+  const { items: browsed, total } = browseRes.data ?? NO_PAGE;
+  const reload = browseRes.refresh;
 
-  useEffect(() => {
-    void reload();
-  }, [reload]);
+  // A search is a one-off answer to what the user typed, not a resource with a
+  // life of its own — it is dropped on Clear rather than cached and revisited.
+  const searching = searchResults !== null;
+  const items = searchResults ?? browsed;
 
   const runSearch = useCallback(async () => {
     const q = query.trim();
-    if (!q) return reload();
+    if (!q) {
+      setSearchResults(null);
+      return;
+    }
     try {
-      setSearching(true);
-      setItems(await memSearch(q));
+      setSearchResults(await memSearch(q));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [query, reload]);
+  }, [query]);
 
-  const onDelete = useCallback(async (id: string) => {
-    await memDelete(id);
-    setItems((prev) => prev.filter((m) => m.id !== id));
-    // Kept in step with the list, or the pager's range drifts from what is shown.
-    setTotal((prev) => Math.max(0, prev - 1));
-  }, []);
+  const onDelete = useCallback(
+    async (id: string) => {
+      await memDelete(id);
+      setSearchResults((prev) => prev?.filter((m) => m.id !== id) ?? null);
+      await reload();
+    },
+    [reload],
+  );
 
   const addNote = useCallback(async () => {
     const content = note.trim();
     if (!content) return;
     await memAddNote(content);
     setNote("");
+    setSearchResults(null);
     await reload();
   }, [note, reload]);
 
@@ -244,6 +252,7 @@ export default function MemoryLibrary() {
           <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-500">
             {searching ? "Search results" : "All memories"}
           </h2>
+          <RefreshingIndicator active={!searching && browseRes.refreshing} />
           <select
             value={kind}
             onChange={(e) => {
@@ -276,7 +285,7 @@ export default function MemoryLibrary() {
             <button
               onClick={() => {
                 setQuery("");
-                void reload();
+                setSearchResults(null);
               }}
               className="text-sm text-zinc-500 hover:text-zinc-300"
             >

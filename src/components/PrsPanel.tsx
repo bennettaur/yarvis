@@ -22,12 +22,52 @@ import {
 import { defaultPrsPlace, type PrsTabKey, readPrsPlace, writePrsPlace } from "../lib/pr/panelState";
 import { refDisplayRepo, refKey, refNumber } from "../lib/pr/ref";
 import type { AzFilter, GhFilter, Provider, PrSummary, ReviewingList } from "../lib/pr/types";
+import { useCachedResource } from "../lib/resourceCache";
 import PrDetailView from "./PrDetailView";
 import PrGroupedList from "./pr/PrGroupedList";
 import PrLocator from "./pr/PrLocator";
 import PrReviewingList from "./pr/PrReviewingList";
+import RefreshingIndicator from "./RefreshingIndicator";
 
 const GH_MY = "is:open is:pr author:@me";
+
+/**
+ * Whether a provider's credentials work changes only when the user edits them
+ * in Settings, so the probes are held far longer than the lists — long enough
+ * that moving between app tabs never re-probes, and the toggle is drawn from
+ * the cache on the first paint instead of settling into place.
+ */
+const PROBE_TTL_MS = 10 * 60_000;
+
+/** The lists this panel shows for one provider, loaded together. */
+interface ProviderLists {
+  mine: PrSummary[];
+  review: PrSummary[];
+  ghFilters: GhFilter[];
+  azFilters: AzFilter[];
+}
+
+const NO_LISTS: ProviderLists = { mine: [], review: [], ghFilters: [], azFilters: [] };
+
+async function loadProviderLists(provider: Provider): Promise<ProviderLists> {
+  if (provider === "github") {
+    // The needs-review query is user-configurable (Settings → PR review), since
+    // what counts as needing your attention varies by team.
+    const config = await ghPrConfig();
+    return {
+      ...NO_LISTS,
+      mine: await ghSearch(GH_MY),
+      review: await ghSearch(config.reviewQuery),
+      ghFilters: await ghFilters(),
+    };
+  }
+  return {
+    ...NO_LISTS,
+    mine: await azSearch("mine"),
+    review: await azSearch("review"),
+    azFilters: await azFilters(),
+  };
+}
 
 /**
  * The "Reviewing" tab is GitHub-only: it needs both the user's GitHub
@@ -68,22 +108,7 @@ export default function PrsPanel({
   // that writes the place below.
   const [restoredPlace] = useState(() => (persistPlace ? readPrsPlace() : defaultPrsPlace()));
   const [provider, setProvider] = useState<Provider>(restoredPlace.provider);
-  /**
-   * Which providers have working credentials. Starts EMPTY (rather than null /
-   * a both-providers placeholder) and grows as each viewer probe lands, so the
-   * provider toggle never flashes options that turn out to be unconfigured.
-   * `probeComplete` separately tracks whether we've heard back from every probe
-   * — needed to distinguish "still checking, none confirmed yet" from "checked,
-   * found nothing" so the empty-state message doesn't flash on first paint.
-   */
-  const [availableProviders, setAvailableProviders] = useState<Set<Provider>>(new Set());
-  const [probeComplete, setProbeComplete] = useState(false);
   const [activeTab, setActiveTab] = useState<PrsTabKey>(restoredPlace.tab);
-  const [mine, setMine] = useState<PrSummary[]>([]);
-  const [review, setReview] = useState<PrSummary[]>([]);
-  const [starredKeys, setStarredKeys] = useState<Set<string>>(new Set());
-  const [ghFilterList, setGhFilterList] = useState<GhFilter[]>([]);
-  const [azFilterList, setAzFilterList] = useState<AzFilter[]>([]);
   const [filterResults, setFilterResults] = useState<PrSummary[] | null>(null);
   const [newGhFilter, setNewGhFilter] = useState({ name: "", query: "" });
   const [newAzFilter, setNewAzFilter] = useState<{
@@ -92,11 +117,64 @@ export default function PrsPanel({
     project: string;
   }>({ name: "", scope: "mine", project: "" });
   const [selected, setSelected] = useState<PrSummary | null>(restoredPlace.selected);
-  const [error, setError] = useState<string | null>(null);
-  /** Null until the Reviewing tab has been opened at least once, or on failure. */
-  const [reviewing, setReviewing] = useState<ReviewingList | null>(null);
-  /** One fetch per provider selection: "settled" covers both success and failure. */
-  const [reviewingLoad, setReviewingLoad] = useState<"idle" | "loading" | "settled">("idle");
+
+  /**
+   * Which providers have working credentials. Each probe is its own resource, so
+   * a provider appears in the toggle the moment its own viewer call lands rather
+   * than the toggle flashing both and hiding the bad one once the slowest probe
+   * loses. `probeComplete` distinguishes "still checking, none confirmed yet"
+   * from "checked, found nothing", so the empty state can't flash on first
+   * paint; both are answered from the cache on a remount.
+   */
+  const ghProbe = useCachedResource("prs:viewer:github", ghViewer, PROBE_TTL_MS);
+  const azProbe = useCachedResource("prs:viewer:azure", azViewer, PROBE_TTL_MS);
+  const availableProviders = useMemo(() => {
+    const set = new Set<Provider>();
+    if (ghProbe.data) set.add("github");
+    if (azProbe.data) set.add("azure");
+    return set;
+  }, [ghProbe.data, azProbe.data]);
+  const probeComplete = !ghProbe.loading && !azProbe.loading;
+
+  // The probe already confirmed the viewer works, so the lists skip a second
+  // round trip and search straight away. Credentials invalidated mid-session
+  // surface as this resource's error instead.
+  const listsReady = probeComplete && availableProviders.has(provider);
+  const listsRes = useCachedResource(listsReady ? `prs:${provider}:lists` : null, () =>
+    loadProviderLists(provider),
+  );
+  const {
+    mine,
+    review,
+    ghFilters: ghFilterList,
+    azFilters: azFilterList,
+  } = listsRes.data ?? NO_LISTS;
+
+  const starsRes = useCachedResource(listsReady ? `prs:${provider}:stars` : null, () =>
+    provider === "github" ? ghStars() : azStars(),
+  );
+  const starredKeys = useMemo(
+    () => new Set((starsRes.data ?? []).map((s) => refKey(s.ref))),
+    [starsRes.data],
+  );
+
+  // The Reviewing list costs several GitHub round-trips (two searches plus a
+  // batched lookup for PRs only the local event log knows about), so it stays
+  // unkeyed until the tab is opened rather than loading beside the cheap ones.
+  const reviewingRes = useCachedResource<ReviewingList>(
+    activeTab === "reviewing" && provider === "github" && listsReady
+      ? "prs:github:reviewing"
+      : null,
+    ghReviewing,
+  );
+  const reviewing = reviewingRes.data;
+
+  const sources = [ghProbe, azProbe, listsRes, starsRes, reviewingRes];
+  const refreshing = sources.some((s) => s.refreshing);
+  // A probe that fails means that provider isn't configured, which the toggle
+  // and the empty state already say — only a failure to load what the user is
+  // actually looking at is worth reporting as an error.
+  const error = [listsRes, starsRes, reviewingRes].find((s) => s.error !== null)?.error ?? null;
 
   const tabs = useMemo(() => tabsFor(provider), [provider]);
 
@@ -124,11 +202,6 @@ export default function PrsPanel({
     };
   }, [selected, activeTab, provider, mine.length, review.length, reviewing]);
 
-  const loadStars = useCallback(async (p: Provider) => {
-    const stars = p === "github" ? await ghStars() : await azStars();
-    setStarredKeys(new Set(stars.map((s) => refKey(s.ref))));
-  }, []);
-
   // Honor a cross-tab open request: switch the toggle to the PR's provider and
   // jump straight to the detail view. Cleared via the consumed callback so a
   // second navigation back to PRs doesn't re-select an old request.
@@ -152,40 +225,6 @@ export default function PrsPanel({
     setFilterResults(null);
   }, []);
 
-  // Probe both providers independently and add each one to the visible set the
-  // moment its viewer call succeeds — so the toggle reveals providers as we
-  // discover them rather than flashing both and then hiding the bad one once
-  // the slowest probe loses. `probeComplete` flips when both have settled so
-  // the empty-state can render without an earlier "neither configured" flash.
-  useEffect(() => {
-    let live = true;
-    let outstanding = 2;
-    const settle = () => {
-      outstanding -= 1;
-      if (outstanding === 0 && live) setProbeComplete(true);
-    };
-    const add = (provider: Provider) => {
-      if (!live) return;
-      setAvailableProviders((prev) => {
-        if (prev.has(provider)) return prev;
-        const next = new Set(prev);
-        next.add(provider);
-        return next;
-      });
-    };
-    ghViewer()
-      .then(() => add("github"))
-      .catch(() => {})
-      .finally(settle);
-    azViewer()
-      .then(() => add("azure"))
-      .catch(() => {})
-      .finally(settle);
-    return () => {
-      live = false;
-    };
-  }, []);
-
   // Once probing is done, if the user is sitting on a provider that turned out
   // not to be configured, jump them to one that is. Done in a separate effect
   // (not the probe handlers) so it sees the fully-settled set rather than
@@ -207,76 +246,6 @@ export default function PrsPanel({
     setSelected((prev) => (prev && prev.ref.provider !== configured ? null : prev));
   }, [probeComplete, availableProviders, provider]);
 
-  // Refetch the per-provider lists whenever provider or availability changes.
-  // Deliberately does NOT touch `selected`: that's owned by user actions
-  // (clicking a row, the Back button) and the cross-tab open request, so this
-  // effect re-running on availability arrival never clobbers an in-flight
-  // navigation to a specific PR.
-  useEffect(() => {
-    setError(null);
-    setMine([]);
-    setReview([]);
-    setReviewing(null);
-    setReviewingLoad("idle");
-    setStarredKeys(new Set());
-    if (!probeComplete) return;
-    if (!availableProviders.has(provider)) return;
-    // The probe already confirmed the viewer works for this provider, so we
-    // skip a second viewer round-trip and go straight to fetching the lists.
-    // If credentials get invalidated mid-session, the search calls land in
-    // the catch below.
-    void (async () => {
-      try {
-        if (provider === "github") {
-          setMine(await ghSearch(GH_MY));
-          // The needs-review query is user-configurable (Settings → PR review),
-          // since what counts as needing your attention varies by team.
-          const config = await ghPrConfig();
-          setReview(await ghSearch(config.reviewQuery));
-          setGhFilterList(await ghFilters());
-        } else {
-          setMine(await azSearch("mine"));
-          setReview(await azSearch("review"));
-          setAzFilterList(await azFilters());
-        }
-        await loadStars(provider);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      }
-    })();
-  }, [provider, loadStars, availableProviders, probeComplete]);
-
-  // The Reviewing list costs several GitHub round-trips (two searches plus a
-  // batched lookup for PRs only the local event log knows about), so it loads
-  // when the tab is first opened rather than alongside the cheap searches.
-  // Keyed on `reviewingLoad` rather than on the list itself: a failed attempt
-  // leaves no list, and re-running off that emptiness would retry forever.
-  useEffect(() => {
-    if (activeTab !== "reviewing" || provider !== "github") return;
-    if (reviewingLoad !== "idle") return;
-    // Gated on the probe like the list fetch above, because a restored
-    // "reviewing" tab makes this effect reachable on the very first commit —
-    // before we know GitHub is configured, and early enough that the list
-    // effect's later `setReviewingLoad("idle")` would fire a second round-trip
-    // on top of the first.
-    if (!probeComplete || !availableProviders.has("github")) return;
-    let live = true;
-    setReviewingLoad("loading");
-    ghReviewing()
-      .then((list) => {
-        if (live) setReviewing(list);
-      })
-      .catch((e) => {
-        if (live) setError(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => {
-        if (live) setReviewingLoad("settled");
-      });
-    return () => {
-      live = false;
-    };
-  }, [activeTab, provider, reviewingLoad, probeComplete, availableProviders]);
-
   // A provider switch can retire the active tab (Azure has no Reviewing list).
   useEffect(() => {
     if (!tabs.some((t) => t.key === activeTab)) setActiveTab("mine");
@@ -294,9 +263,9 @@ export default function PrsPanel({
     async (pr: PrSummary, starred: boolean) => {
       if (starred) await removeStar(pr.ref);
       else await addStar(pr.ref, pr.title, pr.url);
-      await loadStars(provider);
+      await starsRes.refresh();
     },
-    [loadStars, provider],
+    [starsRes.refresh],
   );
 
   const isStarred = useCallback((pr: PrSummary) => starredKeys.has(refKey(pr.ref)), [starredKeys]);
@@ -313,8 +282,8 @@ export default function PrsPanel({
     if (!newGhFilter.name.trim() || !newGhFilter.query.trim()) return;
     await ghCreateFilter(newGhFilter.name.trim(), newGhFilter.query.trim());
     setNewGhFilter({ name: "", query: "" });
-    setGhFilterList(await ghFilters());
-  }, [newGhFilter]);
+    await listsRes.refresh();
+  }, [newGhFilter, listsRes.refresh]);
 
   const addAzFilter = useCallback(async () => {
     if (!newAzFilter.name.trim()) return;
@@ -324,8 +293,8 @@ export default function PrsPanel({
       newAzFilter.project.trim() || null,
     );
     setNewAzFilter({ name: "", scope: "mine", project: "" });
-    setAzFilterList(await azFilters());
-  }, [newAzFilter]);
+    await listsRes.refresh();
+  }, [newAzFilter, listsRes.refresh]);
 
   const visibleProviders = useMemo(
     () => PROVIDERS.filter((p) => availableProviders.has(p.key)),
@@ -378,7 +347,10 @@ export default function PrsPanel({
   return (
     <div className="h-full overflow-y-auto p-6">
       <div className="space-y-5">
-        <div className="flex items-center justify-between">{providerToggle}</div>
+        <div className="flex items-center justify-between gap-3">
+          {providerToggle}
+          <RefreshingIndicator active={refreshing} />
+        </div>
 
         {availableProviders.has("github") && <PrLocator onOpen={setSelected} />}
 
@@ -411,7 +383,7 @@ export default function PrsPanel({
             <PrReviewingList list={reviewing} listProps={listProps} />
           ) : (
             <p className="text-sm text-zinc-600">
-              {reviewingLoad === "settled" ? "Nothing to show." : "Loading…"}
+              {reviewingRes.loading ? "Loading…" : "Nothing to show."}
             </p>
           ))}
 
@@ -433,7 +405,7 @@ export default function PrsPanel({
                     <button
                       onClick={async () => {
                         await ghDeleteFilter(f.id);
-                        setGhFilterList(await ghFilters());
+                        await listsRes.refresh();
                       }}
                       className="text-zinc-600 hover:text-red-400"
                     >
@@ -485,7 +457,7 @@ export default function PrsPanel({
                     <button
                       onClick={async () => {
                         await azDeleteFilter(f.id);
-                        setAzFilterList(await azFilters());
+                        await listsRes.refresh();
                       }}
                       className="text-zinc-600 hover:text-red-400"
                     >

@@ -1,6 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { requestNewWorkspace } from "../lib/nav";
+import { useCachedResource } from "../lib/resourceCache";
 import { completeTask, createTask, deleteTask, listTasks, type Task } from "../lib/tasks";
+import RefreshingIndicator from "./RefreshingIndicator";
+
+const TASKS_KEY = "tasks:open";
+
+/** Stable identity so an unloaded resource doesn't re-render the sections. */
+const NO_TASKS: Task[] = [];
+
+const loadOpenTasks = () => listTasks({ status: "open" });
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
@@ -187,23 +196,12 @@ function TaskGroup({
 }
 
 export default function TasksPanel() {
-  const [tasks, setTasks] = useState<Task[]>([]);
   const [title, setTitle] = useState("");
   const [scope, setScope] = useState<"daily" | "weekly">("daily");
-  const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
-    try {
-      setTasks(await listTasks({ status: "open" }));
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  const tasksRes = useCachedResource<Task[]>(TASKS_KEY, loadOpenTasks);
+  const tasks = tasksRes.data ?? NO_TASKS;
+  const { error, refresh } = tasksRes;
 
   const onAdd = useCallback(async () => {
     const trimmed = title.trim();
@@ -244,6 +242,9 @@ export default function TasksPanel() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-5">
+      <div className="flex justify-end">
+        <RefreshingIndicator active={tasksRes.refreshing} />
+      </div>
       <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-3 shadow-sm">
         <div className="flex gap-2">
           <input

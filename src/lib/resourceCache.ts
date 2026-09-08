@@ -93,6 +93,18 @@ function peek<T>(key: string): { value: T; ts: number } | null {
 }
 
 /**
+ * Stores a value a caller already has, as though a load had just returned it,
+ * and lets mounted subscribers pick it up. For a surface that fetches on its own
+ * schedule — the workspaces list polls its PR badges — so its result outlives
+ * the panel rather than being thrown away on the next tab switch.
+ */
+export function primeCache<T>(key: string, value: T): void {
+  cache.set(key, { value, ts: Date.now() });
+  const subscribers = listeners.get(key);
+  if (subscribers) for (const notify of subscribers) notify();
+}
+
+/**
  * Drops a cached entry and notifies any mounted subscribers so they refetch
  * now (e.g. after a write). Without the notification a component already
  * showing the resource would keep its stale value until the key next mounts —

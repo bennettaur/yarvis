@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   getProject,
   listProjects,
@@ -7,6 +7,11 @@ import {
   updateProject,
   updateProjectItem,
 } from "../../lib/projects";
+import { useCachedResource } from "../../lib/resourceCache";
+import RefreshingIndicator from "../RefreshingIndicator";
+
+/** Stable identity so an unloaded resource doesn't re-render the list. */
+const NO_PROJECTS: Project[] = [];
 
 /**
  * The projects the assistant tracks work against: what each is for, what it is
@@ -30,49 +35,40 @@ const STATUS_COLOR: Record<string, string> = {
 };
 
 export default function ProjectsTab() {
-  const [projects, setProjects] = useState<Project[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
-  const [overview, setOverview] = useState<ProjectOverview | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
-    try {
-      const rows = await listProjects();
-      setProjects(rows);
-      setError(null);
-      // Keep whatever is selected if it survived, otherwise fall to the first.
-      setSelected((current) =>
-        current && rows.some((p) => p.id === current) ? current : (rows[0]?.id ?? null),
-      );
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
+  const projectsRes = useCachedResource<Project[]>("memory:projects", listProjects);
+  const projects = projectsRes.data ?? NO_PROJECTS;
+  const reload = projectsRes.refresh;
 
+  // Keep whatever is selected if it survived the reload, otherwise fall to the
+  // first. Held off until a list has actually landed, so an in-flight load
+  // doesn't momentarily deselect.
+  const rows = projectsRes.data;
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    if (rows === null) return;
+    setSelected((current) =>
+      current && rows.some((p) => p.id === current) ? current : (rows[0]?.id ?? null),
+    );
+  }, [rows]);
 
-  useEffect(() => {
-    if (!selected) {
-      setOverview(null);
-      return;
-    }
-    getProject(selected)
-      .then(setOverview)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
-  }, [selected]);
-
-  const refreshOverview = async () => {
-    if (selected) setOverview(await getProject(selected));
-  };
+  const overviewRes = useCachedResource<ProjectOverview>(
+    selected ? `memory:project:${selected}` : null,
+    () => getProject(selected!),
+  );
+  const overview = overviewRes.data;
+  const refreshOverview = overviewRes.refresh;
+  const error = projectsRes.error ?? overviewRes.error;
 
   return (
     <div className="space-y-3">
-      <p className="text-sm text-zinc-500">
-        Tell the assistant about a project in chat and it appears here, with the tickets and
-        priorities it is tracking.
-      </p>
+      <div className="flex items-start gap-2">
+        <p className="text-sm text-zinc-500">
+          Tell the assistant about a project in chat and it appears here, with the tickets and
+          priorities it is tracking.
+        </p>
+        <RefreshingIndicator active={projectsRes.refreshing || overviewRes.refreshing} />
+      </div>
 
       {projects.length === 0 ? (
         <p className="text-sm text-zinc-600">No projects yet.</p>
