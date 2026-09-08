@@ -23,7 +23,8 @@ describe("prGlance", () => {
     expect(prGlance({ ...PR, reviewDecision: "approved", checkRollup: "none" })).toBe(
       "ready_to_merge",
     );
-    // The column holds each provider's own casing — Azure's enum is uppercase.
+    // Case-insensitive for the same reason hasConflicts is: the column holds
+    // whatever casing a provider writes, and one already writes uppercase.
     expect(prGlance({ ...PR, reviewDecision: "approved", mergeable: "CLEAN" })).toBe(
       "ready_to_merge",
     );
@@ -33,7 +34,15 @@ describe("prGlance", () => {
   // "unknown" and Azure's conflicts-only enum included, leaves the merge
   // unpromised.
   it("keeps every other merge state as approved rather than ready", () => {
-    for (const mergeable of ["blocked", "behind", "unstable", "unknown", "MERGEABLE", null]) {
+    for (const mergeable of [
+      "blocked",
+      "behind",
+      "unstable",
+      "unknown",
+      "has_hooks",
+      "MERGEABLE",
+      null,
+    ]) {
       expect(prGlance({ ...PR, reviewDecision: "approved", mergeable })).toBe("approved");
     }
   });
