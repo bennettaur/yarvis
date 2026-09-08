@@ -21,13 +21,31 @@ import {
 } from "../../lib/issues/types";
 import { useGithubStartWork } from "../../lib/issues/useGithubStartWork";
 import { useOmniChatContext } from "../../lib/omniChatContext";
+import { invalidatePrefix, useCachedResource } from "../../lib/resourceCache";
 import { formatRelativeTime } from "../../lib/time";
 import { openExternal } from "../../lib/url";
+import RefreshingIndicator from "../RefreshingIndicator";
 import GithubCreateIssueModal from "./GithubCreateIssueModal";
 import IssueDetailView from "./IssueDetailView";
 import StartWorkButton from "./StartWorkButton";
 
 type TabKey = "assigned" | "all" | "filters";
+
+/**
+ * Cache keys for everything this view reads. They share the `issues:` prefix so
+ * a write that moves more than one of them — creating an issue changes both the
+ * assigned and the all-open list — invalidates them in one call.
+ */
+const REPOS_KEY = "issues:github:repos";
+const ASSIGNED_KEY = "issues:github:assigned";
+const ALL_KEY = "issues:github:all";
+const FILTERS_KEY = "issues:github:filters";
+const STARS_KEY = "issues:stars";
+const LINKS_KEY = "issues:links";
+
+/** Stable identities so an unloaded resource doesn't re-render the lists. */
+const NO_ISSUES: IssueSummary[] = [];
+const NO_FILTERS: IssueFilter[] = [];
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "assigned", label: "Assigned to me" },
@@ -204,18 +222,48 @@ export default function GithubIssuesView({
   onRequestConsumed?: () => void;
 } = {}) {
   const [activeTab, setActiveTab] = useState<TabKey>("assigned");
-  const [assigned, setAssigned] = useState<IssueSummary[]>([]);
-  const [all, setAll] = useState<IssueSummary[]>([]);
-  const [starredKeys, setStarredKeys] = useState<Set<string>>(new Set());
-  const [links, setLinks] = useState<Map<string, IssueLink>>(new Map());
-  const [filters, setFilters] = useState<IssueFilter[]>([]);
   const [filterResults, setFilterResults] = useState<IssueSummary[] | null>(null);
   const [newFilter, setNewFilter] = useState({ name: "", query: "" });
   const [selected, setSelected] = useState<IssueSummary | null>(null);
-  const [configuredRepos, setConfiguredRepos] = useState<IssueRepo[] | null>(null);
   const [creating, setCreating] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+
+  const reposRes = useCachedResource<IssueRepo[]>(REPOS_KEY, issuesRepos);
+  const configuredRepos = reposRes.data;
+  // The lists only mean anything once some repo is set to pull issues, so they
+  // stay unkeyed until that is known rather than costing a round trip to learn
+  // nothing.
+  const hasRepos = (configuredRepos?.length ?? 0) > 0;
+  const assignedRes = useCachedResource<IssueSummary[]>(
+    hasRepos ? ASSIGNED_KEY : null,
+    issuesAssigned,
+  );
+  const allRes = useCachedResource<IssueSummary[]>(hasRepos ? ALL_KEY : null, issuesAll);
+  const filtersRes = useCachedResource<IssueFilter[]>(hasRepos ? FILTERS_KEY : null, issueFilters);
+  const starsRes = useCachedResource(STARS_KEY, issueStars);
+  const linksRes = useCachedResource<IssueLink[]>(LINKS_KEY, issueLinks);
+
+  const assigned = assignedRes.data ?? NO_ISSUES;
+  const all = allRes.data ?? NO_ISSUES;
+  const filters = filtersRes.data ?? NO_FILTERS;
+  const starredKeys = useMemo(
+    () =>
+      new Set((starsRes.data ?? []).map((s) => issueKey(s.provider, s.sourceKey, s.externalId))),
+    [starsRes.data],
+  );
+  const links = useMemo(
+    () =>
+      new Map(
+        (linksRes.data ?? []).map((l) => [issueKey(l.provider, l.sourceKey, l.externalId), l]),
+      ),
+    [linksRes.data],
+  );
+
+  const sources = [reposRes, assignedRes, allRes, filtersRes, starsRes, linksRes];
+  // Only a load running behind data already on screen is a *re*fresh; a cold
+  // one leaves the lists empty and has nothing to keep up to date.
+  const refreshing = sources.some((s) => s.refreshing);
+  const busy = refreshing || sources.some((s) => s.loading);
+  const error = sources.find((s) => s.error !== null)?.error ?? null;
 
   // Open an issue another view asked for directly (attention/WIP panel). The
   // detail view re-fetches from the (provider, sourceKey, externalId) triple, so
@@ -238,47 +286,20 @@ export default function GithubIssuesView({
     return { source: "issues", summary: `On the Issues tab (${activeTab} list, ${count} shown)` };
   }, [selected, activeTab, assigned.length, all.length]);
 
-  const loadStars = useCallback(async () => {
-    const stars = await issueStars();
-    setStarredKeys(new Set(stars.map((s) => issueKey(s.provider, s.sourceKey, s.externalId))));
+  const loadLinks = linksRes.refresh;
+
+  /** Drops every issue resource at once; each mounted hook reloads itself. */
+  const refresh = useCallback(() => {
+    invalidatePrefix("issues:");
   }, []);
-
-  const loadLinks = useCallback(async () => {
-    const rows = await issueLinks();
-    setLinks(new Map(rows.map((l) => [issueKey(l.provider, l.sourceKey, l.externalId), l])));
-  }, []);
-
-  const refresh = useCallback(async () => {
-    setError(null);
-    setRefreshing(true);
-    try {
-      const repos = await issuesRepos();
-      setConfiguredRepos(repos);
-      if (repos.length === 0) return;
-      const [assignedList, allList] = await Promise.all([issuesAssigned(), issuesAll()]);
-      setAssigned(assignedList);
-      setAll(allList);
-      setFilters(await issueFilters());
-      await loadStars();
-      await loadLinks();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setRefreshing(false);
-    }
-  }, [loadStars, loadLinks]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
 
   const onToggleStar = useCallback(
     async (issue: IssueSummary, starred: boolean) => {
       if (starred) await removeIssueStar(issue);
       else await addIssueStar(issue);
-      await loadStars();
+      await starsRes.refresh();
     },
-    [loadStars],
+    [starsRes.refresh],
   );
 
   const isStarred = useCallback(
@@ -310,8 +331,8 @@ export default function GithubIssuesView({
     if (!newFilter.name.trim() || !newFilter.query.trim()) return;
     await createIssueFilter(newFilter.name.trim(), newFilter.query.trim());
     setNewFilter({ name: "", query: "" });
-    setFilters(await issueFilters());
-  }, [newFilter]);
+    await filtersRes.refresh();
+  }, [newFilter, filtersRes.refresh]);
 
   if (selected) {
     return (
@@ -319,7 +340,7 @@ export default function GithubIssuesView({
         summary={selected}
         onBack={() => setSelected(null)}
         onStarted={() => void loadLinks()}
-        onChanged={() => void refresh()}
+        onChanged={refresh}
       />
     );
   }
@@ -334,11 +355,11 @@ export default function GithubIssuesView({
         {/* Reachable refresh: flipping the toggle in Settings doesn't remount this view. */}
         <button
           type="button"
-          onClick={() => void refresh()}
-          disabled={refreshing}
+          onClick={refresh}
+          disabled={busy}
           className="mt-3 rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
         >
-          {refreshing ? "Refreshing…" : "↻ Refresh"}
+          {busy ? "Refreshing…" : "↻ Refresh"}
         </button>
       </div>
     );
@@ -378,14 +399,15 @@ export default function GithubIssuesView({
             })}
           </nav>
           <div className="flex items-center gap-2 pb-2">
+            <RefreshingIndicator active={refreshing} />
             <button
               type="button"
-              onClick={() => void refresh()}
-              disabled={refreshing}
+              onClick={refresh}
+              disabled={busy}
               className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
               title="Refresh issues"
             >
-              {refreshing ? "Refreshing…" : "↻ Refresh"}
+              {busy ? "Refreshing…" : "↻ Refresh"}
             </button>
             <button
               type="button"
@@ -428,7 +450,7 @@ export default function GithubIssuesView({
                     <button
                       onClick={async () => {
                         await deleteIssueFilter(f.id);
-                        setFilters(await issueFilters());
+                        await filtersRes.refresh();
                       }}
                       className="text-zinc-600 hover:text-red-400"
                     >

@@ -18,7 +18,9 @@ import {
 import { jiraAssigned, jiraCreated, jiraSearch, jiraViewer } from "../../lib/jira/api";
 import { useJiraStartWork } from "../../lib/jira/useJiraStartWork";
 import { useOmniChatContext } from "../../lib/omniChatContext";
+import { invalidatePrefix, useCachedResource } from "../../lib/resourceCache";
 import { openExternal } from "../../lib/url";
+import RefreshingIndicator from "../RefreshingIndicator";
 import JiraCreateIssueModal from "./JiraCreateIssueModal";
 import JiraIssueDetailView from "./JiraIssueDetailView";
 import JiraRepoPickerModal from "./JiraRepoPickerModal";
@@ -26,6 +28,23 @@ import { StatusBadge } from "./jiraStatus";
 import StartWorkButton from "./StartWorkButton";
 
 type TabKey = "assigned" | "created" | "search" | "starred";
+
+/**
+ * Cache keys for the JIRA lists, under the same `issues:` prefix the GitHub
+ * view uses so a write that moves both providers' views drops them together.
+ */
+const VIEWER_KEY = "issues:jira:viewer";
+const ASSIGNED_KEY = "issues:jira:assigned";
+const CREATED_KEY = "issues:jira:created";
+const FILTERS_KEY = "issues:jira:filters";
+const STARS_KEY = "issues:jira:stars";
+const LINKS_KEY = "issues:jira:links";
+
+/** Stable identities so an unloaded resource doesn't re-render the lists. */
+const NO_ISSUES: IssueSummary[] = [];
+const NO_STARS: IssueStar[] = [];
+const NO_FILTERS: IssueFilter[] = [];
+const NO_LINKS: IssueLink[] = [];
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "assigned", label: "Assigned to me" },
@@ -227,20 +246,60 @@ function GroupedList({
  */
 export default function JiraIssuesView() {
   const [activeTab, setActiveTab] = useState<TabKey>("assigned");
-  const [assigned, setAssigned] = useState<IssueSummary[]>([]);
-  const [created, setCreated] = useState<IssueSummary[]>([]);
-  const [stars, setStars] = useState<IssueStar[]>([]);
   const [starredIssues, setStarredIssues] = useState<IssueSummary[]>([]);
-  const [links, setLinks] = useState<Map<string, IssueLink>>(new Map());
-  const [filters, setFilters] = useState<IssueFilter[]>([]);
   const [searchText, setSearchText] = useState("");
   const [searchResults, setSearchResults] = useState<IssueSummary[] | null>(null);
   const [newFilterName, setNewFilterName] = useState("");
   const [selected, setSelected] = useState<IssueSummary | null>(null);
   const [creating, setCreating] = useState(false);
-  const [notConfigured, setNotConfigured] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [searchError, setSearchError] = useState<string | null>(null);
+
+  // Probed first so the "not configured" state (a 400 from the gate) reads
+  // precisely, distinct from an upstream failure, and so the lists below aren't
+  // asked for at all until JIRA is reachable.
+  const viewerRes = useCachedResource(VIEWER_KEY, jiraViewer);
+  const configured = viewerRes.data !== null;
+  const assignedRes = useCachedResource<IssueSummary[]>(
+    configured ? ASSIGNED_KEY : null,
+    jiraAssigned,
+  );
+  const createdRes = useCachedResource<IssueSummary[]>(
+    configured ? CREATED_KEY : null,
+    jiraCreated,
+  );
+  const filtersRes = useCachedResource<IssueFilter[]>(configured ? FILTERS_KEY : null, () =>
+    issueFilters("jira"),
+  );
+  const starsRes = useCachedResource<IssueStar[]>(configured ? STARS_KEY : null, () =>
+    issueStars("jira"),
+  );
+  const linksRes = useCachedResource<IssueLink[]>(configured ? LINKS_KEY : null, () =>
+    issueLinks("jira"),
+  );
+
+  const assigned = assignedRes.data ?? NO_ISSUES;
+  const created = createdRes.data ?? NO_ISSUES;
+  const stars = starsRes.data ?? NO_STARS;
+  const filters = filtersRes.data ?? NO_FILTERS;
+  const links = useMemo(
+    () =>
+      new Map(
+        (linksRes.data ?? NO_LINKS).map((l) => [
+          issueKey(l.provider, l.sourceKey, l.externalId),
+          l,
+        ]),
+      ),
+    [linksRes.data],
+  );
+
+  const sources = [viewerRes, assignedRes, createdRes, filtersRes, starsRes, linksRes];
+  const refreshing = sources.some((s) => s.refreshing);
+  const loading = sources.some((s) => s.loading);
+  // The gate answers a 400 "jira not configured" when the secrets are missing;
+  // that is a state to explain, not an error to report.
+  const notConfigured = viewerRes.error !== null && /not configured/i.test(viewerRes.error);
+  const listError = notConfigured ? null : (sources.find((s) => s.error !== null)?.error ?? null);
+  const error = searchError ?? listError;
 
   const starredKeys = useMemo(
     () => new Set(stars.map((s) => issueKey(s.provider, s.sourceKey, s.externalId))),
@@ -269,42 +328,12 @@ export default function JiraIssuesView() {
     };
   }, [selected, activeTab, assigned.length, created.length, starredIssues.length, searchResults]);
 
-  const loadStars = useCallback(async () => {
-    setStars(await issueStars("jira"));
+  const loadLinks = linksRes.refresh;
+
+  /** Drops every JIRA resource at once; each mounted hook reloads itself. */
+  const refresh = useCallback(() => {
+    invalidatePrefix("issues:jira:");
   }, []);
-
-  const loadLinks = useCallback(async () => {
-    const rows = await issueLinks("jira");
-    setLinks(new Map(rows.map((l) => [issueKey(l.provider, l.sourceKey, l.externalId), l])));
-  }, []);
-
-  const refresh = useCallback(async () => {
-    setError(null);
-    setNotConfigured(false);
-    setLoading(true);
-    try {
-      // Probe config/connectivity first so the "not configured" state (400) is
-      // shown precisely, distinct from an upstream failure.
-      await jiraViewer();
-      const [assignedList, createdList] = await Promise.all([jiraAssigned(), jiraCreated()]);
-      setAssigned(assignedList);
-      setCreated(createdList);
-      setFilters(await issueFilters("jira"));
-      await loadStars();
-      await loadLinks();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      // The gate returns a 400 "jira not configured" when secrets are missing.
-      if (/not configured/i.test(msg)) setNotConfigured(true);
-      else setError(msg);
-    } finally {
-      setLoading(false);
-    }
-  }, [loadStars, loadLinks]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
 
   // Resolve starred issues to full rows (status/labels/assignee) via one JQL.
   useEffect(() => {
@@ -317,7 +346,7 @@ export default function JiraIssuesView() {
     let live = true;
     jiraSearch(`issuekey in (${keys.join(",")}) ORDER BY updated DESC`)
       .then((rows) => live && setStarredIssues(rows))
-      .catch((e) => live && setError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => live && setSearchError(e instanceof Error ? e.message : String(e)));
     return () => {
       live = false;
     };
@@ -327,9 +356,9 @@ export default function JiraIssuesView() {
     async (issue: IssueSummary, starred: boolean) => {
       if (starred) await removeIssueStar(issue);
       else await addIssueStar(issue);
-      await loadStars();
+      await starsRes.refresh();
     },
-    [loadStars],
+    [starsRes.refresh],
   );
 
   const isStarred = useCallback(
@@ -396,15 +425,15 @@ export default function JiraIssuesView() {
       });
       return;
     }
-    void runSearch(text).catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    void runSearch(text).catch((e) => setSearchError(e instanceof Error ? e.message : String(e)));
   }, [searchText, runSearch]);
 
   const saveFilter = useCallback(async () => {
     if (!newFilterName.trim() || !searchText.trim()) return;
     await createIssueFilter(newFilterName.trim(), searchText.trim(), "jira");
     setNewFilterName("");
-    setFilters(await issueFilters("jira"));
-  }, [newFilterName, searchText]);
+    await filtersRes.refresh();
+  }, [newFilterName, searchText, filtersRes.refresh]);
 
   if (selected) {
     return (
@@ -459,13 +488,16 @@ export default function JiraIssuesView() {
               );
             })}
           </nav>
-          <button
-            type="button"
-            onClick={() => setCreating(true)}
-            className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800"
-          >
-            + New issue
-          </button>
+          <div className="flex items-center gap-2">
+            <RefreshingIndicator active={refreshing} />
+            <button
+              type="button"
+              onClick={() => setCreating(true)}
+              className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800"
+            >
+              + New issue
+            </button>
+          </div>
         </div>
 
         {loading && <p className="text-sm text-zinc-600">Loading…</p>}
@@ -526,7 +558,7 @@ export default function JiraIssuesView() {
                     <button
                       onClick={async () => {
                         await deleteIssueFilter(f.id, "jira");
-                        setFilters(await issueFilters("jira"));
+                        await filtersRes.refresh();
                       }}
                       className="text-zinc-600 hover:text-red-400"
                     >
@@ -581,9 +613,7 @@ export default function JiraIssuesView() {
         />
       )}
 
-      {creating && (
-        <JiraCreateIssueModal onClose={() => setCreating(false)} onCreated={() => void refresh()} />
-      )}
+      {creating && <JiraCreateIssueModal onClose={() => setCreating(false)} onCreated={refresh} />}
     </div>
   );
 }

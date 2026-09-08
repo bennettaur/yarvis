@@ -3,6 +3,7 @@ import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { IssueRepo, IssueSummary } from "../../lib/issues/types";
 import { type OpenWorkspaceRequest, onOpenWorkspace } from "../../lib/nav";
+import { invalidatePrefix } from "../../lib/resourceCache";
 
 const repos: IssueRepo[] = [{ id: "r1", owner: "octo", repo: "web", name: "web" }];
 
@@ -241,6 +242,9 @@ describe("GithubIssuesView", () => {
     cleanup();
 
     configured = [];
+    // Settings drops the cached issue resources when a repo's "Pull issues"
+    // changes, so the remount sees the new answer rather than the cached one.
+    invalidatePrefix("issues:");
     const empty = await mount();
     expect(button(empty.host, "+ New issue")).toBeUndefined();
     empty.cleanup();
