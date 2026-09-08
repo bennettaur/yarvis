@@ -90,6 +90,8 @@ export const setTelegramOtpWindowMinutes = (value: number | null) =>
 
 /** What became of the secrets during a backend switch. */
 export type Copied =
+  /** The selection was already what was asked for, so nothing moved. */
+  | "unchanged"
   /** They were carried into the new store. */
   | "secrets"
   /** The old store held nothing to carry. */

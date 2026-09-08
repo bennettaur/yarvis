@@ -191,6 +191,17 @@ describe("SecretBackendSection", () => {
     expect(invoked.map((c) => c.command)).not.toContain("restart_sidecar");
   });
 
+  // Re-saving the same selection must not claim the store was empty, nor
+  // restart the sidecar for a change that didn't happen.
+  it("reports a re-save of the current selection as no change", async () => {
+    copiedResult = "unchanged";
+    const host = await mount();
+    await clickSave(host);
+
+    expect(host.textContent).toContain("Already using macOS Keychain");
+    expect(invoked.map((c) => c.command)).not.toContain("restart_sidecar");
+  });
+
   it("switches back to the Keychain without needing the vault fields", async () => {
     stored = {
       ...defaultSettings(),

@@ -367,13 +367,17 @@ impl SettingsState {
             settings.one_password_item.as_deref(),
         )
         .unwrap_or(Store::Keychain);
-        let mut copied = Copied::NothingToCopy;
-        if target != current {
+        // Re-saving the same selection is not a switch: there is nothing to
+        // probe and nothing to carry, and reporting it as a copy that found
+        // nothing would tell a user with a full store that it was empty.
+        let copied = if target == current {
+            Copied::Unchanged
+        } else {
             if let Store::OnePassword(item_ref) = &target {
                 onepassword::probe(item_ref)?;
             }
-            copied = copy_secrets(&current, &target)?;
-        }
+            copy_secrets(&current, &target)?
+        };
         {
             let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
             *settings = Self::read_from_disk(&self.path);
@@ -397,6 +401,8 @@ impl SettingsState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Copied {
+    /// The selection was already what was asked for, so nothing moved.
+    Unchanged,
     /// The secrets were carried into the new store.
     Secrets,
     /// The old store held nothing to carry.

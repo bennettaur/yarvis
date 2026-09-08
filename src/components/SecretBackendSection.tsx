@@ -17,11 +17,13 @@ function storeName(backend: SecretBackend): string {
   return backend === "onepassword" ? "1Password" : "macOS Keychain";
 }
 
-/** What to tell the user became of their secrets. The third case is the one
- *  that matters: the app is now running on a different set of credentials than
- *  it was a moment ago, which nothing else on screen would reveal. */
+/** What to tell the user became of their secrets. `targetAlreadyHadSecrets` is
+ *  the case that matters: the app is now running on a different set of
+ *  credentials than it was a moment ago, which nothing else on screen reveals. */
 function copyNotice(copied: Copied, backend: SecretBackend): string {
   switch (copied) {
+    case "unchanged":
+      return `Already using ${storeName(backend)}. Nothing changed.`;
     case "secrets":
       return `Secrets copied into ${storeName(backend)}. The previous store still holds its own copy.`;
     case "nothingToCopy":
@@ -71,7 +73,12 @@ export default function SecretBackendSection() {
       );
       applySettings(result.settings);
       setNotice(copyNotice(result.copied, selectedBackend));
-      await restartAndWait();
+      // Secrets reach the sidecar only at spawn, so a real switch has to
+      // restart it. Re-saving the same selection moved nothing, and restarting
+      // for that would drop a running turn for no reason.
+      if (result.copied !== "unchanged") {
+        await restartAndWait();
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
