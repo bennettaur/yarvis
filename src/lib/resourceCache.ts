@@ -68,8 +68,13 @@ function subscribe(key: string, notify: () => void): () => void {
   }
   subscribers.add(notify);
   return () => {
-    subscribers.delete(notify);
-    if (subscribers.size === 0) listeners.delete(key);
+    // Looked up again rather than closed over: `clearResourceCache` replaces the
+    // whole map, and emptying the set this closure captured would leave a live
+    // subscriber's set deleted from under it.
+    const current = listeners.get(key);
+    if (!current) return;
+    current.delete(notify);
+    if (current.size === 0) listeners.delete(key);
   };
 }
 
@@ -123,7 +128,10 @@ function peek<T>(key: string): { value: T; ts: number } | null {
 export function primeCache<T>(key: string, next: T | ((current: T | null) => T)): void {
   // The updater form is the `setState` one, and exists for the same reason: a
   // caller adding to a list it read at render time would otherwise overwrite a
-  // load that landed in between.
+  // load that landed in between. It is handed `null` when there is no *resolved*
+  // value — including while a load is in flight — so an updater that edits an
+  // existing value has to say what an absent one means rather than treating it
+  // as empty.
   const value =
     typeof next === "function"
       ? (next as (current: T | null) => T)(peek<T>(key)?.value ?? null)
@@ -166,7 +174,9 @@ export function invalidatePrefix(prefix: string): void {
  * Discards the whole cache and every subscription. For a change that invalidates
  * everything at once rather than one key — the sidecar restarting under new
  * credentials — and so tests don't leak entries, or a root a failing case left
- * mounted, into each other.
+ * mounted, into each other. Subscribers are dropped rather than notified: a
+ * caller doing this is not asking every mounted surface to refetch at once, and
+ * whatever is on screen is replaced on its next mount.
  */
 export function clearResourceCache(): void {
   cache.clear();

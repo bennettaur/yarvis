@@ -195,6 +195,23 @@ describe("useCachedResource", () => {
     root.unmount();
   });
 
+  it("hands the updater null while a load is in flight, not the value it will get", async () => {
+    // The trap this pins: an updater that treats null as "empty" would write an
+    // empty value over a load about to fill it, and the identity guard in
+    // `cachedFetch` means that load can no longer put it back.
+    loadMs = 60;
+    const { root } = mount(createElement(Probe, { subject: "k" }));
+    await settle(10);
+    let seen: string | null | undefined;
+    primeCache<string>("k", (current) => {
+      seen = current;
+      return "primed";
+    });
+    expect(seen).toBeNull();
+    await settle(100);
+    root.unmount();
+  });
+
   it("primes a value a caller already has, without a load", async () => {
     primeCache("k", "polled");
     const { host, root } = mount(createElement(Probe, { subject: "k" }));

@@ -122,17 +122,22 @@ export default function MemoryLibrary() {
     async (id: string) => {
       await memDelete(id);
       setSearchResults((prev) => prev?.filter((m) => m.id !== id) ?? null);
-      // Drop the row straight away rather than leaving it under the cursor for
-      // a round trip; the total goes with it, or the pager's range drifts from
+      // Drop the row straight away rather than leaving it under the cursor for a
+      // round trip; the total goes with it, or the pager's range drifts from
       // what is shown. Written into the cache rather than followed by a reload,
-      // which would supersede this load and leave the row on screen until the
-      // server answered. The next revalidation reconciles the count.
-      primeCache<MemoryPage>(browseKey, (page) => ({
-        items: (page?.items ?? []).filter((m) => m.id !== id),
-        total: Math.max(0, (page?.total ?? 0) - 1),
-      }));
+      // which would supersede that write and leave the row up until the server
+      // answered. Edited from the page on screen — the one the row was clicked
+      // in — and skipped when there is none, since a load in flight has no page
+      // to edit and writing an empty one would blank the list it is about to
+      // fill.
+      const page = browseRes.data;
+      if (!page) return;
+      primeCache<MemoryPage>(browseKey, {
+        items: page.items.filter((m) => m.id !== id),
+        total: Math.max(0, page.total - 1),
+      });
     },
-    [browseKey],
+    [browseKey, browseRes.data],
   );
 
   const addNote = useCallback(async () => {

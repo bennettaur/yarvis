@@ -57,10 +57,9 @@ const NO_FILTERS: IssueFilter[] = [];
  * data means it is cached like any other answer — a remount of an unconfigured
  * JIRA paints the explanation straight away instead of an empty list first.
  *
- * Unlike the PR tab's probes, which collapse every failure into "not available",
- * this rethrows anything else: JIRA is the only provider this tab can show, so
- * "your credentials are missing" and "JIRA is down" send the user to different
- * places and must not read the same.
+ * Anything else is rethrown, and so not cached: JIRA is the only provider this
+ * tab can show, so "your credentials are missing" and "JIRA is down" send the
+ * user to different places and must not read the same.
  */
 async function probeJira(): Promise<{ configured: boolean }> {
   try {
@@ -437,6 +436,7 @@ export default function JiraIssuesView() {
   const onSubmitSearch = useCallback(() => {
     const text = searchText.trim();
     if (!text) return;
+    setSearchError(null);
     // A bare issue key opens that issue directly; anything else is JQL. JIRA
     // keys are upper-case, so normalise once and derive every field from it so
     // the composite issueKey() matches stored stars/links.
@@ -585,7 +585,9 @@ export default function JiraIssuesView() {
                     <button
                       onClick={() => {
                         setSearchText(f.query);
-                        void runSearch(f.query);
+                        void runSearch(f.query).catch((e) =>
+                          setSearchError(e instanceof Error ? e.message : String(e)),
+                        );
                       }}
                       className="hover:text-zinc-100"
                     >

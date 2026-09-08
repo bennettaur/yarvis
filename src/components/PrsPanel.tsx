@@ -48,7 +48,7 @@ async function probe(viewer: () => Promise<unknown>): Promise<boolean> {
     await viewer();
     return true;
   } catch (e) {
-    const status = (e as { status?: unknown }).status;
+    const status = e && typeof e === "object" ? (e as { status?: unknown }).status : undefined;
     if (typeof status === "number" && status >= 400 && status < 500) return false;
     throw e;
   }
@@ -346,12 +346,17 @@ export default function PrsPanel({
     ) : null;
 
   if (probeComplete && availableProviders.size === 0) {
+    // A probe that rejected rather than answering `false` means the provider
+    // could not be reached at all, which is a different thing to fix — so say so
+    // instead of sending the user to add a token they may already have.
+    const unreachable = ghProbe.error ?? azProbe.error;
     return (
       <div className="h-full overflow-y-auto p-6">
         <p className="text-sm text-zinc-400">
           No PR provider configured. Add a GitHub token or Azure DevOps PAT in Settings →
           Credentials to see your PRs here.
         </p>
+        {unreachable && <p className="mt-2 text-sm text-red-400">{unreachable}</p>}
       </div>
     );
   }
