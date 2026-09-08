@@ -46,16 +46,22 @@ export function hasConflicts(mergeable: string | null): boolean {
 }
 
 /**
- * True when the cached mergeable value says something is still holding the
- * merge back beyond the checks and review verdict we track ourselves: GitHub's
- * `mergeable_state` reports `blocked` for unmet branch-protection rules
- * (required reviewers, CODEOWNERS, required checks) and `behind` for a branch
- * a strict rule wants updated first. Azure's mapped enum carries none of that,
- * so its PRs fall through to the checks-and-review verdict.
+ * True only when the provider itself says nothing is holding the merge back.
+ * GitHub's `mergeable_state` says `clean`; every other value it can report is
+ * a reason not to promise a merge — `blocked` for an unmet branch-protection
+ * rule (required reviewers, CODEOWNERS, required checks), `behind` for a
+ * branch a strict rule wants updated first, `unstable` for a non-required
+ * check that failed, and `unknown` while GitHub is still recomputing after a
+ * push. Azure's mapped enum only ever answers the conflict question, so its
+ * PRs never reach this verdict and stay on the review-only reading the rest of
+ * their status has.
+ *
+ * An allow-list, unlike {@link hasConflicts}: "ready to merge" is a green
+ * light we assert, so an unrecognized or not-yet-known value has to fall back
+ * to the weaker claim rather than default into the stronger one.
  */
-function mergeHeld(mergeable: string | null): boolean {
-  const m = (mergeable ?? "").toLowerCase();
-  return m === "blocked" || m === "behind";
+function mergeUnblocked(mergeable: string | null): boolean {
+  return (mergeable ?? "").toLowerCase() === "clean";
 }
 
 export function prGlance(pr: WorkspaceSummaryPr): PrGlance {
@@ -73,7 +79,7 @@ export function prGlance(pr: WorkspaceSummaryPr): PrGlance {
   if (pr.checkRollup === "pending") return "checks_running";
   // Whatever reaches here has settled checks — failure and pending returned above.
   if (pr.reviewDecision === "approved") {
-    return mergeHeld(pr.mergeable) ? "approved" : "ready_to_merge";
+    return mergeUnblocked(pr.mergeable) ? "ready_to_merge" : "approved";
   }
   return "open";
 }
@@ -88,10 +94,8 @@ const GLANCE_BADGES: Record<PrGlance, { icon: string; label: string; className: 
   changes_requested: { icon: "✎", label: "changes requested", className: "text-amber-400" },
   checks_running: { icon: "●", label: "checks running", className: "text-amber-400" },
   ready_to_merge: { icon: "★", label: "ready to merge", className: "text-emerald-300" },
-  // Approved with settled checks, but not known to be mergeable: the provider
-  // still holds the merge (an unmet branch-protection rule, a base the branch
-  // must be updated against), or — on a stack layer — carries no merge state
-  // for us to read.
+  // Approved with settled checks, but not the green light ★ is: see
+  // {@link mergeUnblocked} for what the merge is still waiting on.
   approved: { icon: "✓", label: "approved", className: "text-emerald-400" },
   open: { icon: "◇", label: "open — awaiting review", className: "text-sky-400" },
   // Only a stack layer reaches these two. `gh stack` tracks a branch from the

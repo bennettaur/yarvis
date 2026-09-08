@@ -448,14 +448,16 @@ request, beside the workspace status, so a list of "active" workspaces still
 says which one wants you: `◇` open and awaiting review, `◌` draft, `●` checks
 running, `✗` checks failing, `⚠` merge conflicts, `✎` changes requested, `★`
 ready to merge, `✓` approved, `◆` merged, `⊘` closed. Hovering names the repo,
-the PR number and the state. The badge shows whatever needs acting on first, so
-a red build on an approved PR still reads as failing. `★` is the one that needs
-nothing from anyone: checks settled, signed off, and the provider reports the
-merge as unblocked. `✓` is an approval the merge is still held behind — an
-unmet branch-protection rule (required reviewers, CODEOWNERS, required checks)
-or a base the branch has to be updated against first. Azure DevOps PRs report
-no check state here, so theirs reflects the review only. The badges come from the same background PR poll the workspace
-page uses, so they lag a change by up to a minute.
+the PR number and the state. The badge shows whatever needs acting on first,
+so a red build on an approved PR still reads as failing. `★` is the one that
+needs nothing from anyone: signed off, and the provider itself calls the merge
+clean. `✓` is an approval that isn't a green light yet — an unmet
+branch-protection rule (required reviewers, CODEOWNERS, required checks), a
+base the branch has to be updated against first, or a merge state the provider
+hasn't worked out. Azure DevOps PRs report neither check state nor a merge
+verdict here, so theirs reflects the review only and never reaches `★`. The
+badges come from the same background PR poll the workspace page uses, so they
+lag a change by up to a minute.
 
 Every provisioned workspace opens with an agent tab and nothing else — opening
 one starts a Claude Code session in it (or attaches to the one already running)

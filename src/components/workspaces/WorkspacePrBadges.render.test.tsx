@@ -25,6 +25,19 @@ describe("WorkspacePrBadges", () => {
     expect(html).toContain("api #3 checks failing");
   });
 
+  it("separates a PR held behind a merge rule from one ready to merge", async () => {
+    const html = await renderToHtml(
+      <WorkspacePrBadges
+        prs={[PR, { ...PR, repoName: "api", prNumber: 3, mergeable: "blocked" }]}
+      />,
+    );
+
+    expect(html).toContain("web #12 ready to merge");
+    expect(html).toContain("api #3 approved");
+    expect(html).toContain("★");
+    expect(html).toContain("✓");
+  });
+
   it("renders nothing for a workspace with no PR yet", async () => {
     expect(await renderToHtml(<WorkspacePrBadges prs={[]} />)).toBe("");
   });
