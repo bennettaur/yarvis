@@ -18,9 +18,22 @@ describe("prGlance", () => {
     expect(prGlance(PR)).toBe("open");
   });
 
-  it("reports an approved PR with settled checks as approved", () => {
-    expect(prGlance({ ...PR, reviewDecision: "approved" })).toBe("approved");
-    expect(prGlance({ ...PR, reviewDecision: "approved", checkRollup: "none" })).toBe("approved");
+  it("reports an approved, unblocked PR as ready to merge", () => {
+    expect(prGlance({ ...PR, reviewDecision: "approved" })).toBe("ready_to_merge");
+    expect(prGlance({ ...PR, reviewDecision: "approved", checkRollup: "none" })).toBe(
+      "ready_to_merge",
+    );
+    // Azure reports its own vocabulary and never GitHub's held states.
+    expect(prGlance({ ...PR, reviewDecision: "approved", mergeable: "MERGEABLE" })).toBe(
+      "ready_to_merge",
+    );
+  });
+
+  // A rule the poller can't see itself (required reviewers, CODEOWNERS, a
+  // strict base) still holds the merge, so an approval isn't a green light.
+  it("keeps a held merge as approved rather than ready", () => {
+    expect(prGlance({ ...PR, reviewDecision: "approved", mergeable: "blocked" })).toBe("approved");
+    expect(prGlance({ ...PR, reviewDecision: "approved", mergeable: "behind" })).toBe("approved");
   });
 
   // Every Azure PR and every row written before the verdict was cached carries
@@ -66,9 +79,15 @@ describe("prGlance", () => {
 
 describe("prGlanceBadge", () => {
   it("names the repo and PR number in the tooltip", () => {
-    const badge = prGlanceBadge({ ...PR, reviewDecision: "approved" });
+    const badge = prGlanceBadge({ ...PR, reviewDecision: "approved", mergeable: "blocked" });
     expect(badge.label).toBe("web #12 approved");
     expect(badge.icon).toBe("✓");
+  });
+
+  it("gives a ready-to-merge PR its own glyph", () => {
+    const badge = prGlanceBadge({ ...PR, reviewDecision: "approved" });
+    expect(badge.label).toBe("web #12 ready to merge");
+    expect(badge.icon).toBe("★");
   });
 });
 

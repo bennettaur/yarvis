@@ -21,7 +21,7 @@ describe("WorkspacePrBadges", () => {
       />,
     );
 
-    expect(html).toContain("web #12 approved");
+    expect(html).toContain("web #12 ready to merge");
     expect(html).toContain("api #3 checks failing");
   });
 

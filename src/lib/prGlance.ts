@@ -18,6 +18,7 @@ export type PrGlance =
   | "checks_failing"
   | "changes_requested"
   | "checks_running"
+  | "ready_to_merge"
   | "approved"
   | "open"
   | "no_pr"
@@ -44,6 +45,19 @@ export function hasConflicts(mergeable: string | null): boolean {
   return m === "dirty" || m === "conflicting";
 }
 
+/**
+ * True when the cached mergeable value says something is still holding the
+ * merge back beyond the checks and review verdict we track ourselves: GitHub's
+ * `mergeable_state` reports `blocked` for unmet branch-protection rules
+ * (required reviewers, CODEOWNERS, required checks) and `behind` for a branch
+ * a strict rule wants updated first. Azure's mapped enum carries none of that,
+ * so its PRs fall through to the checks-and-review verdict.
+ */
+function mergeHeld(mergeable: string | null): boolean {
+  const m = (mergeable ?? "").toLowerCase();
+  return m === "blocked" || m === "behind";
+}
+
 export function prGlance(pr: WorkspaceSummaryPr): PrGlance {
   // A row only reaches here with a PR number, so an unset state is a provider
   // that didn't say — which for a PR that exists means open.
@@ -58,7 +72,9 @@ export function prGlance(pr: WorkspaceSummaryPr): PrGlance {
   if (pr.reviewDecision === "changes_requested") return "changes_requested";
   if (pr.checkRollup === "pending") return "checks_running";
   // Whatever reaches here has settled checks — failure and pending returned above.
-  if (pr.reviewDecision === "approved") return "approved";
+  if (pr.reviewDecision === "approved") {
+    return mergeHeld(pr.mergeable) ? "approved" : "ready_to_merge";
+  }
   return "open";
 }
 
@@ -71,9 +87,11 @@ const GLANCE_BADGES: Record<PrGlance, { icon: string; label: string; className: 
   checks_failing: { icon: "✗", label: "checks failing", className: "text-red-400" },
   changes_requested: { icon: "✎", label: "changes requested", className: "text-amber-400" },
   checks_running: { icon: "●", label: "checks running", className: "text-amber-400" },
-  // "approved", not "ready to merge": one approval is all the poller knows
-  // about, and a repo's own rules (required reviewers, CODEOWNERS) can still
-  // hold the merge.
+  ready_to_merge: { icon: "★", label: "ready to merge", className: "text-emerald-300" },
+  // Approved with settled checks, but not known to be mergeable: the provider
+  // still holds the merge (an unmet branch-protection rule, a base the branch
+  // must be updated against), or — on a stack layer — carries no merge state
+  // for us to read.
   approved: { icon: "✓", label: "approved", className: "text-emerald-400" },
   open: { icon: "◇", label: "open — awaiting review", className: "text-sky-400" },
   // Only a stack layer reaches these two. `gh stack` tracks a branch from the
@@ -100,10 +118,11 @@ export function prGlanceBadge(pr: WorkspaceSummaryPr): PrGlanceBadge {
  * the workspace list deliberately: a stack is read the same way, scanning for
  * the layer that is holding the rest up.
  *
- * Conflicts are absent because a stack entry carries no mergeable state — the
- * stack's equivalent, "the layer below moved", is rendered beside the badge
- * rather than folded into it, since a layer can need restacking and be failing
- * checks at once and the reader needs both.
+ * Conflicts and "ready to merge" are absent because a stack entry carries no
+ * mergeable state, so an approved layer can only be reported as approved. The
+ * stack's equivalent of a conflict, "the layer below moved", is rendered
+ * beside the badge rather than folded into it, since a layer can need
+ * restacking and be failing checks at once and the reader needs both.
  */
 export function stackEntryGlance(entry: StackEntry): PrGlance {
   if (entry.merged) return "merged";
