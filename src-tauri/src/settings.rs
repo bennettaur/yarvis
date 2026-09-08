@@ -26,13 +26,15 @@
 //! never touches the Keychain again for this purpose (`keychain_settings_migrated`).
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
 use crate::keychain;
+use crate::onepassword;
+use crate::secret_store::{self, Store, KEYCHAIN, ONEPASSWORD};
 
 /// The persisted settings document. Every field is optional and absent means
 /// "use the built-in default", so a settings file written by an older build
@@ -65,6 +67,14 @@ pub struct Settings {
     /// the allowlist is then the bot's *only* access-control check; a plain
     /// file has no per-item authorization the way a Keychain entry does.
     pub telegram_otp_window_minutes: Option<u32>,
+    /// Which store holds the secrets blob: `"onepassword"`, or the macOS
+    /// Keychain for anything else including unset. See `secret_store.rs`.
+    pub secret_backend: Option<String>,
+    /// 1Password vault holding the secrets item; only read while
+    /// `secret_backend` is `"onepassword"`.
+    pub one_password_vault: Option<String>,
+    /// Title of the 1Password item holding the secrets blob.
+    pub one_password_item: Option<String>,
     /// Set once [`migrate_keychain_settings`] has run, so steady-state startup
     /// never re-reads the Keychain to check for values that can no longer be
     /// there — the whole point of the migration is one Keychain access, not
@@ -138,7 +148,17 @@ fn migrate_keychain_settings(state: &SettingsState) {
     if state.snapshot().keychain_settings_migrated == Some(true) {
         return;
     }
-    let root = keychain::read_root();
+    // Pinned to the Keychain rather than the configured store: this is about
+    // values a *past* build wrote to the Keychain, so routing it through the
+    // front door would have a fresh install set to 1Password create an item
+    // before the user has stored anything in it.
+    let root = match keychain::read_root_from(&Store::Keychain) {
+        Ok(root) => root,
+        Err(e) => {
+            eprintln!("[settings] skipping Keychain migration: {e}");
+            return;
+        }
+    };
     let mut settings = state.snapshot();
     let migrated = apply_legacy_migration(&mut settings, &root);
     settings.keychain_settings_migrated = Some(true);
@@ -162,7 +182,7 @@ fn migrate_keychain_settings(state: &SettingsState) {
             obj.remove(*key);
         }
     }
-    if let Err(e) = keychain::write_root(&new_root) {
+    if let Err(e) = keychain::write_root_to(&Store::Keychain, &new_root) {
         eprintln!(
             "[settings] migrated settings saved, but failed to clear them from the Keychain: {e}"
         );
@@ -318,6 +338,66 @@ impl SettingsState {
         }
         self.save()
     }
+
+    /// Points the app at a different secret store, carrying the existing
+    /// secrets across.
+    ///
+    /// The order is the whole of the safety here: reach the new store, copy the
+    /// blob into it, and only then persist the selection. Reversed, a store
+    /// that turns out to be unreachable leaves the app pointing at nothing
+    /// while its own error message is the only clue. The old store's copy is
+    /// deliberately left in place — this is a switch, not a move, and a user
+    /// who mistypes a vault has somewhere to switch back to.
+    fn set_secret_backend(
+        &self,
+        backend: &str,
+        vault: Option<String>,
+        item: Option<String>,
+    ) -> Result<(), String> {
+        let vault = non_blank(vault);
+        let item = non_blank(item);
+        let target = secret_store::store_from(Some(backend), vault.as_deref(), item.as_deref())?;
+        let current = secret_store::active();
+        if target != current {
+            if let Store::OnePassword(ref item_ref) = target {
+                onepassword::probe(item_ref)?;
+            }
+            copy_secrets(&current, &target)?;
+        }
+        {
+            let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
+            *settings = Self::read_from_disk(&self.path);
+            settings.secret_backend = match target {
+                Store::Keychain => None,
+                Store::OnePassword(_) => Some(ONEPASSWORD.to_string()),
+            };
+            // Kept even when switching back to the Keychain, so returning to
+            // 1Password doesn't mean retyping the vault and item.
+            if vault.is_some() {
+                settings.one_password_vault = vault;
+            }
+            if item.is_some() {
+                settings.one_password_item = item;
+            }
+        }
+        self.save()
+    }
+}
+
+/// Copies the secrets blob from `from` into `to`, unless `to` already holds
+/// secrets — a store with contents is one the user has used before, and
+/// overwriting it would lose whatever is only there. Copying nothing is fine
+/// and silent: a first run has nothing to carry.
+fn copy_secrets(from: &Store, to: &Store) -> Result<(), String> {
+    let existing = keychain::read_root_from(to)?;
+    if existing.as_object().map(|o| !o.is_empty()).unwrap_or(false) {
+        return Ok(());
+    }
+    let source = keychain::read_root_from(from)?;
+    if source.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+        return Ok(());
+    }
+    keychain::write_root_to(to, &source)
 }
 
 /// The trimmed value, or `None` when it is absent or blank — an emptied field in
@@ -366,12 +446,28 @@ fn migrate_legacy_app_data_file(app: &AppHandle, new_path: &PathBuf) {
     }
 }
 
+/// Path of the settings file, published once `init` has run so
+/// [`from_disk`] can reach it without an `AppHandle`.
+static SETTINGS_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+/// The settings as they are on disk right now, or defaults before `init` has
+/// run. `secret_store::active` reads through this on every access rather than
+/// caching, so a backend switched in one `dev:instance` copy is honoured by the
+/// others without a restart.
+pub fn from_disk() -> Settings {
+    SETTINGS_PATH
+        .get()
+        .map(|path| SettingsState::read_from_disk(path))
+        .unwrap_or_default()
+}
+
 /// Loads persisted settings into managed state and runs the Keychain
 /// migration. Call from `setup`.
 pub fn init(app: &AppHandle) -> Result<(), String> {
     let dir = yarvis_dir(app)?;
     let path = dir.join("settings.json");
     migrate_legacy_app_data_file(app, &path);
+    let _ = SETTINGS_PATH.set(path.clone());
     let state = SettingsState::load(path);
     migrate_keychain_settings(&state);
     app.manage(state);
@@ -500,6 +596,23 @@ pub fn set_telegram_otp_window_minutes(
     Ok(state.snapshot().into())
 }
 
+/// Points the app at the macOS Keychain or at a 1Password item, copying the
+/// stored secrets into the new store first. See
+/// `SettingsState::set_secret_backend` for the ordering and what is rejected.
+#[tauri::command]
+pub fn set_secret_backend(
+    state: tauri::State<'_, SettingsState>,
+    backend: String,
+    vault: Option<String>,
+    item: Option<String>,
+) -> Result<SettingsView, String> {
+    if backend != KEYCHAIN && backend != ONEPASSWORD {
+        return Err(format!("unknown secret backend: {backend}"));
+    }
+    state.set_secret_backend(&backend, vault, item)?;
+    Ok(state.snapshot().into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{apply_legacy_migration, Settings, SettingsState, SettingsView};
@@ -599,6 +712,9 @@ mod tests {
         assert!(json["azureDevopsOrgUrl"].is_null());
         assert!(json["telegramOtpWindowMinutes"].is_null());
         assert_eq!(json["defaultTelegramOtpWindowMinutes"], 120);
+        assert!(json["secretBackend"].is_null());
+        assert!(json["onePasswordVault"].is_null());
+        assert!(json["onePasswordItem"].is_null());
     }
 
     #[test]

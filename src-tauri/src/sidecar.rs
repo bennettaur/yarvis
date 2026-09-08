@@ -274,9 +274,15 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
         cmd.env("YARVIS_DEBUG_MCP", value);
     }
 
-    // Read the single secrets item once; one Keychain access covers every
-    // value injected below.
-    let secrets = read_root();
+    // Read the single secrets item once; one store access covers every value
+    // injected below. A failed read is loud but not fatal: the sidecar still
+    // starts, so the user can reach Settings and fix the store rather than
+    // facing an app that won't come up. Everything below is simply absent,
+    // which is what the sidecar already handles for an unconfigured install.
+    let secrets = read_root().unwrap_or_else(|e| {
+        eprintln!("[sidecar] starting without secrets: {e}");
+        serde_json::Value::Object(serde_json::Map::new())
+    });
     if let Some(url) = database_url(
         crate::instance::database_url_override(),
         secret_from_root(&secrets, "database_url"),

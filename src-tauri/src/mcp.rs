@@ -29,8 +29,8 @@ use crate::keychain;
 /// prompt.
 const MCP_SERVERS_KEY: &str = "mcpServers";
 
-fn read_blob() -> Value {
-    servers_from_root(&keychain::read_root())
+fn read_blob() -> Result<Value, String> {
+    Ok(servers_from_root(&keychain::read_root()?))
 }
 
 fn servers_from_root(root: &Value) -> Value {
@@ -40,7 +40,7 @@ fn servers_from_root(root: &Value) -> Value {
 }
 
 fn write_blob(value: &Value) -> Result<(), String> {
-    let mut root = keychain::read_root();
+    let mut root = keychain::read_root()?;
     let obj = root
         .as_object_mut()
         .ok_or_else(|| "secrets store is not a JSON object".to_string())?;
@@ -168,8 +168,8 @@ fn presence_map(entry: &Map<String, Value>, field: &str) -> BTreeMap<String, boo
 }
 
 #[tauri::command]
-pub fn list_mcp_secret_status() -> Vec<McpSecretStatus> {
-    let blob = read_blob();
+pub fn list_mcp_secret_status() -> Result<Vec<McpSecretStatus>, String> {
+    let blob = read_blob()?;
     let obj = blob.as_object().cloned().unwrap_or_default();
     let mut out = Vec::with_capacity(obj.len());
     for (id, entry) in obj {
@@ -180,13 +180,13 @@ pub fn list_mcp_secret_status() -> Vec<McpSecretStatus> {
             env: presence_map(&entry_obj, "env"),
         });
     }
-    out
+    Ok(out)
 }
 
 #[tauri::command]
 pub fn set_mcp_secret(server_id: String, slot: String, value: String) -> Result<(), String> {
     validate_slot(&slot)?;
-    let mut blob = read_blob();
+    let mut blob = read_blob()?;
     if !blob.is_object() {
         blob = Value::Object(Map::new());
     }
@@ -238,7 +238,7 @@ fn validate_server_id(id: &str) -> Result<(), String> {
 /// is validated here rather than trusted from the caller.
 pub fn store_oauth(server_id: &str, oauth: Option<Value>) -> Result<(), String> {
     validate_server_id(server_id)?;
-    let mut blob = read_blob();
+    let mut blob = read_blob()?;
     if !blob.is_object() {
         blob = Value::Object(Map::new());
     }
@@ -268,7 +268,7 @@ pub fn store_oauth(server_id: &str, oauth: Option<Value>) -> Result<(), String> 
 #[tauri::command]
 pub fn delete_mcp_secret(server_id: String, slot: String) -> Result<(), String> {
     validate_slot(&slot)?;
-    let mut blob = read_blob();
+    let mut blob = read_blob()?;
     let Some(root) = blob.as_object_mut() else {
         return Ok(());
     };
@@ -293,7 +293,7 @@ pub fn delete_mcp_secret(server_id: String, slot: String) -> Result<(), String> 
 /// frontend when an MCP server is removed so no orphan credentials linger.
 #[tauri::command]
 pub fn delete_mcp_all_secrets(server_id: String) -> Result<(), String> {
-    let mut blob = read_blob();
+    let mut blob = read_blob()?;
     let Some(root) = blob.as_object_mut() else {
         return Ok(());
     };

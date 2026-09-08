@@ -15,7 +15,7 @@ working in the codebase.
 Three processes, each with a clean ownership boundary:
 
 - **Rust core** (`src-tauri/`) — native OS integration (window, tray,
-  notifications), Keychain-backed secret storage, sidecar supervision
+  notifications), secret storage (macOS Keychain or 1Password), sidecar supervision
   (port selection, bearer token, secrets injected as env vars), and every PTY
   session: both the Terminal tab's shells and each workspace's agent session
   live in `pty.rs`, independent of the webview that renders them. The sidecar
@@ -114,8 +114,18 @@ back to ad-hoc.
   for the pattern (temp workspaces root via `mkdtempSync`, `TRUNCATE` between
   tests, injected fake git runners to avoid real network/filesystem git ops).
 - Secrets (provider API keys, tokens, DB URL) are entered in the app's
-  Settings screen and stored in a single macOS Keychain item — never in env
-  files or committed anywhere. Non-secret configuration the user is expected
+  Settings screen and stored in a single item — never in env files or
+  committed anywhere. Which store holds that item, the macOS Keychain or a
+  1Password Secure Note reached through the `op` CLI, is `secret_store.rs`'s
+  only job; `keychain.rs` owns what the item contains and nothing downstream
+  knows the difference. Because every write is a read-modify-write of that one
+  shared blob, a read that *fails* must never look like an empty store — a
+  locked 1Password would otherwise erase every other secret on the next save,
+  which is why `read_root` is fallible and no caller writes on an error.
+  Historical migrations off the Keychain (`settings.rs`'s legacy non-secret
+  values, `embeddings_secrets.rs`'s standalone item) are pinned to the Keychain
+  rather than routed through that choice: they are about what a past build
+  wrote there. Non-secret configuration the user is expected
   to change from the UI goes in `src-tauri/src/settings.rs`'s
   `~/.yarvis/settings.json` instead, whether the Rust core enforces it
   directly (the PTY session cap, the workspace agent) or it just rides along

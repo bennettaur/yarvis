@@ -22,6 +22,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::keychain;
+use crate::secret_store::Store;
 
 /// Key under which the embeddings-provider credentials nest inside the shared
 /// secrets blob. Keeping them in that one Keychain item means embeddings
@@ -51,7 +52,13 @@ const LEGACY_MIGRATED_KEY: &str = "embeddingsProviderLegacyMigrated";
 /// the next launch retries from scratch; deleting first would risk losing the
 /// only copy of the secret to a write that never lands.
 pub fn migrate_legacy_item() {
-    let mut root = keychain::read_root();
+    let mut root = match keychain::read_root_from(&Store::Keychain) {
+        Ok(root) => root,
+        Err(e) => {
+            eprintln!("[embeddings_secrets] skipping legacy-item migration: {e}");
+            return;
+        }
+    };
     if root.get(LEGACY_MIGRATED_KEY).and_then(Value::as_bool) == Some(true) {
         return;
     }
@@ -65,7 +72,7 @@ pub fn migrate_legacy_item() {
         if let Some(obj) = root.as_object_mut() {
             obj.insert(LEGACY_MIGRATED_KEY.to_string(), Value::Bool(true));
         }
-        if let Err(e) = keychain::write_root(&root) {
+        if let Err(e) = keychain::write_root_to(&Store::Keychain, &root) {
             eprintln!("[embeddings_secrets] failed to persist legacy-item migration: {e}");
         }
         return;
@@ -80,7 +87,7 @@ pub fn migrate_legacy_item() {
         }
     }
     obj.insert(LEGACY_MIGRATED_KEY.to_string(), Value::Bool(true));
-    if let Err(e) = keychain::write_root(&root) {
+    if let Err(e) = keychain::write_root_to(&Store::Keychain, &root) {
         eprintln!("[embeddings_secrets] failed to persist legacy-item migration: {e}");
         return;
     }
@@ -89,8 +96,8 @@ pub fn migrate_legacy_item() {
 
 /// Reads the embeddings-provider credential blob out of the shared secrets
 /// blob.
-fn read_blob() -> Value {
-    blob_from_root(&keychain::read_root())
+fn read_blob() -> Result<Value, String> {
+    Ok(blob_from_root(&keychain::read_root()?))
 }
 
 /// Extracts the embeddings-provider subtree from an already-read secrets blob.
@@ -101,7 +108,7 @@ fn blob_from_root(root: &Value) -> Value {
 }
 
 fn write_blob(value: &Value) -> Result<(), String> {
-    let mut root = keychain::read_root();
+    let mut root = keychain::read_root()?;
     let obj = root
         .as_object_mut()
         .ok_or_else(|| "secrets store is not a JSON object".to_string())?;
@@ -130,8 +137,8 @@ pub struct EmbeddingsSecretStatus {
 }
 
 #[tauri::command]
-pub fn get_embeddings_secret_status() -> EmbeddingsSecretStatus {
-    let blob = read_blob();
+pub fn get_embeddings_secret_status() -> Result<EmbeddingsSecretStatus, String> {
+    let blob = read_blob()?;
     let obj = blob.as_object().cloned().unwrap_or_default();
     let api_key_present = obj
         .get("apiKey")
@@ -145,16 +152,16 @@ pub fn get_embeddings_secret_status() -> EmbeddingsSecretStatus {
             headers.insert(name.clone(), present);
         }
     }
-    EmbeddingsSecretStatus {
+    Ok(EmbeddingsSecretStatus {
         api_key_present,
         headers,
-    }
+    })
 }
 
 #[tauri::command]
 pub fn set_embeddings_secret(slot: String, value: String) -> Result<(), String> {
     validate_slot(&slot)?;
-    let mut blob = read_blob();
+    let mut blob = read_blob()?;
     if !blob.is_object() {
         blob = Value::Object(Map::new());
     }
@@ -180,7 +187,7 @@ pub fn set_embeddings_secret(slot: String, value: String) -> Result<(), String> 
 #[tauri::command]
 pub fn delete_embeddings_secret(slot: String) -> Result<(), String> {
     validate_slot(&slot)?;
-    let mut blob = read_blob();
+    let mut blob = read_blob()?;
     let Some(obj) = blob.as_object_mut() else {
         return Ok(());
     };
