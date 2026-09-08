@@ -311,8 +311,9 @@ back to ad-hoc.
   claims a window of events after the summary memory exists, so a failed run
   leaves the window for the next one instead of losing it.
 - Delegation is files, not rows. A specialist (`sidecar/src/agents/`) is a
-  markdown file: frontmatter for its tools, model and step budget, body as its
-  system prompt. The shipped ones live in `agents/definitions/` and are imported
+  markdown file: frontmatter for its tools, model (or complexity tier — see
+  `sidecar/src/llm/complexity.ts`) and step budget, body as its system prompt.
+  The shipped ones live in `agents/definitions/` and are imported
   with `with { type: "text" }`, so they are reviewable in git *and* embedded in
   the compiled binary; `~/.yarvis/agents/*.md` loads beside them and wins on a
   name collision. That precedence is why this beat a table: a shipped prompt

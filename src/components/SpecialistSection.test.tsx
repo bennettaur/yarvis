@@ -19,6 +19,7 @@ const CATALOG = {
       unattended: [],
       provider: null,
       model: null,
+      complexityTier: null,
       maxSteps: 12,
       enabled: true,
       source: "builtin",
@@ -32,10 +33,25 @@ const CATALOG = {
       unattended: ["jira_create_issue"],
       provider: "anthropic",
       model: "claude-sonnet-5",
+      complexityTier: null,
       maxSteps: 12,
       enabled: true,
       source: "user",
       path: "/Users/me/.yarvis/agents/project-manager.md",
+    },
+    {
+      name: "session-summarizer",
+      description: "Summarizes a coding session.",
+      prompt: "You summarize a session.",
+      tools: [],
+      unattended: [],
+      provider: null,
+      model: null,
+      complexityTier: "low",
+      maxSteps: 2,
+      enabled: true,
+      source: "builtin",
+      path: "definitions/session-summarizer.md",
     },
   ],
 };
@@ -67,6 +83,11 @@ describe("SpecialistSection", () => {
     expect(text).toContain("default model");
     expect(text).toContain("anthropic/claude-sonnet-5");
     expect(text).toContain("12 steps");
+  });
+
+  it("shows a specialist's complexity tier instead of a literal model", async () => {
+    const text = textOf(await renderToHtml(createElement(SpecialistSection)));
+    expect(text).toContain("low complexity");
   });
 
   it("says where to add one, and which came from there", async () => {
