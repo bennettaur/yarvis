@@ -20,6 +20,10 @@ describe("prGlance", () => {
 
   it("reports an approved PR the provider calls clean as ready to merge", () => {
     expect(prGlance({ ...PR, reviewDecision: "approved" })).toBe("ready_to_merge");
+    expect(prGlance({ ...PR, reviewDecision: "approved", checkRollup: "none" })).toBe(
+      "ready_to_merge",
+    );
+    // The column holds each provider's own casing — Azure's enum is uppercase.
     expect(prGlance({ ...PR, reviewDecision: "approved", mergeable: "CLEAN" })).toBe(
       "ready_to_merge",
     );
@@ -32,9 +36,6 @@ describe("prGlance", () => {
     for (const mergeable of ["blocked", "behind", "unstable", "unknown", "MERGEABLE", null]) {
       expect(prGlance({ ...PR, reviewDecision: "approved", mergeable })).toBe("approved");
     }
-    expect(prGlance({ ...PR, reviewDecision: "approved", checkRollup: "none" })).toBe(
-      "ready_to_merge",
-    );
   });
 
   // Every Azure PR and every row written before the verdict was cached carries
