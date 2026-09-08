@@ -136,7 +136,7 @@ pub struct EmbeddingsSecretStatus {
     pub headers: BTreeMap<String, bool>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_embeddings_secret_status() -> Result<EmbeddingsSecretStatus, String> {
     let blob = read_blob()?;
     let obj = blob.as_object().cloned().unwrap_or_default();
@@ -158,7 +158,7 @@ pub fn get_embeddings_secret_status() -> Result<EmbeddingsSecretStatus, String> 
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_embeddings_secret(slot: String, value: String) -> Result<(), String> {
     validate_slot(&slot)?;
     let mut blob = read_blob()?;
@@ -184,7 +184,7 @@ pub fn set_embeddings_secret(slot: String, value: String) -> Result<(), String> 
     write_blob(&blob)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_embeddings_secret(slot: String) -> Result<(), String> {
     validate_slot(&slot)?;
     let mut blob = read_blob()?;

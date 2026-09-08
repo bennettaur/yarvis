@@ -1,37 +1,23 @@
 import { useCallback, useEffect, useState } from "react";
-import { getHealth, waitForSidecarReady } from "../lib/api";
 import {
   deleteSecret,
   listSecretStatus,
-  restartSidecar,
   SECRETS,
   type SecretKey,
   type SecretStatus,
   setSecret,
 } from "../lib/keychain";
+import { restartAndWait } from "../lib/restart";
 import { StatusDot } from "./Dashboard";
 import { MaskedInput } from "./MaskedInput";
-
-/** Trigger a sidecar restart and wait for it to come back ready. */
-async function restartAndWait(): Promise<void> {
-  let priorUptimeMs: number | undefined;
-  try {
-    priorUptimeMs = (await getHealth()).uptimeMs;
-  } catch {
-    // already down — the readiness poll will catch the new process anyway.
-  }
-  await restartSidecar();
-  await waitForSidecarReady({ minUptimeMsBefore: priorUptimeMs });
-}
 
 /**
  * Manages the built-in app secrets (database URL, provider API keys, GitHub
  * token, Google OAuth client secret). Values live in whichever store
  * `SecretBackendSection` selects; saving reloads the sidecar so changes take
- * effect immediately. Telegram's
- * secrets have their own dedicated `TelegramSection`, and the non-secret
- * settings that ride alongside these into the sidecar's environment live in
- * `IntegrationSettingsSection`.
+ * effect immediately. Telegram's secrets have their own dedicated
+ * `TelegramSection`, and the non-secret settings that ride alongside these into
+ * the sidecar's environment live in `IntegrationSettingsSection`.
  */
 export default function KeychainSection() {
   const [secrets, setSecrets] = useState<SecretStatus[]>([]);
@@ -51,23 +37,37 @@ export default function KeychainSection() {
     void refresh();
   }, [refresh]);
 
+  // A store can refuse a write — a locked 1Password, a dismissed Touch ID
+  // prompt — so both of these report rather than leaving the user looking at a
+  // cleared field that never saved. The input is cleared only once the write
+  // has actually landed.
   const onSave = useCallback(
     async (key: SecretKey) => {
       const value = inputs[key]?.trim();
       if (!value) return;
-      await setSecret(key, value);
-      setInputs((prev) => ({ ...prev, [key]: "" }));
-      await restartAndWait();
-      await refresh();
+      setError(null);
+      try {
+        await setSecret(key, value);
+        setInputs((prev) => ({ ...prev, [key]: "" }));
+        await restartAndWait();
+        await refresh();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     },
     [inputs, refresh],
   );
 
   const onClear = useCallback(
     async (key: SecretKey) => {
-      await deleteSecret(key);
-      await restartAndWait();
-      await refresh();
+      setError(null);
+      try {
+        await deleteSecret(key);
+        await restartAndWait();
+        await refresh();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     },
     [refresh],
   );

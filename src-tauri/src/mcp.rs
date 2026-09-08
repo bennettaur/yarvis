@@ -167,7 +167,7 @@ fn presence_map(entry: &Map<String, Value>, field: &str) -> BTreeMap<String, boo
     out
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_mcp_secret_status() -> Result<Vec<McpSecretStatus>, String> {
     let blob = read_blob()?;
     let obj = blob.as_object().cloned().unwrap_or_default();
@@ -183,7 +183,7 @@ pub fn list_mcp_secret_status() -> Result<Vec<McpSecretStatus>, String> {
     Ok(out)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_mcp_secret(server_id: String, slot: String, value: String) -> Result<(), String> {
     validate_slot(&slot)?;
     let mut blob = read_blob()?;
@@ -265,7 +265,7 @@ pub fn store_oauth(server_id: &str, oauth: Option<Value>) -> Result<(), String> 
     write_blob(&blob)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_mcp_secret(server_id: String, slot: String) -> Result<(), String> {
     validate_slot(&slot)?;
     let mut blob = read_blob()?;
@@ -291,7 +291,7 @@ pub fn delete_mcp_secret(server_id: String, slot: String) -> Result<(), String> 
 
 /// Deletes every secret slot belonging to the given server id. Called from the
 /// frontend when an MCP server is removed so no orphan credentials linger.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_mcp_all_secrets(server_id: String) -> Result<(), String> {
     let mut blob = read_blob()?;
     let Some(root) = blob.as_object_mut() else {

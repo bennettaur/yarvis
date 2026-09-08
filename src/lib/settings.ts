@@ -88,6 +88,21 @@ export const setGoogleClientId = (value: string | null) =>
 export const setTelegramOtpWindowMinutes = (value: number | null) =>
   invoke<Settings>("set_telegram_otp_window_minutes", { value });
 
+/** What became of the secrets during a backend switch. */
+export type Copied =
+  /** They were carried into the new store. */
+  | "secrets"
+  /** The old store held nothing to carry. */
+  | "nothingToCopy"
+  /** The new store already held secrets and was left exactly as it was — so
+   *  the app is now running on a different set of credentials. */
+  | "targetAlreadyHadSecrets";
+
+export interface BackendSwitch {
+  settings: Settings;
+  copied: Copied;
+}
+
 /**
  * Points the app at a different secret store, copying the stored secrets into
  * it first. Rejects when the new store can't be reached, leaving the current
@@ -100,4 +115,4 @@ export const setSecretBackend = (
   backend: SecretBackend,
   vault: string | null,
   item: string | null,
-) => invoke<Settings>("set_secret_backend", { backend, vault, item });
+) => invoke<BackendSwitch>("set_secret_backend", { backend, vault, item });

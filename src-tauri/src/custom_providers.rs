@@ -126,7 +126,7 @@ pub struct CustomProviderSecretStatus {
     pub headers: BTreeMap<String, bool>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_custom_provider_secret_status() -> Result<Vec<CustomProviderSecretStatus>, String> {
     let blob = read_blob()?;
     let obj = blob.as_object().cloned().unwrap_or_default();
@@ -154,7 +154,7 @@ pub fn list_custom_provider_secret_status() -> Result<Vec<CustomProviderSecretSt
     Ok(out)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_custom_provider_secret(
     provider_id: String,
     slot: String,
@@ -184,7 +184,7 @@ pub fn set_custom_provider_secret(
     write_blob(&blob)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_custom_provider_secret(provider_id: String, slot: String) -> Result<(), String> {
     validate_slot(&slot)?;
     let mut blob = read_blob()?;
@@ -222,7 +222,7 @@ pub fn delete_custom_provider_secret(provider_id: String, slot: String) -> Resul
 /// Deletes every secret slot belonging to the given provider id. Called from
 /// the frontend when a custom provider is removed from the database so no
 /// orphan credentials linger in the Keychain.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_custom_provider_all_secrets(provider_id: String) -> Result<(), String> {
     let mut blob = read_blob()?;
     let Some(root) = blob.as_object_mut() else {
