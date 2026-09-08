@@ -11,9 +11,8 @@ daily/weekly work tracking. See the roadmap in
 Three processes with a clean ownership split:
 
 - **Rust core** (`src-tauri/`) — native OS integration (window, tray,
-  notifications), secret storage (macOS Keychain or 1Password), and supervision
-  of the
-  sidecar process (it picks a free loopback port, generates a bearer token, and
+  notifications), secret storage (macOS Keychain or 1Password), and
+  supervision of the sidecar process (it picks a free loopback port, generates a bearer token, and
   injects secrets as environment variables).
 - **React frontend** (`src/`) — Vite + TypeScript + Tailwind. Talks to the Rust
   core via `invoke` (native + secrets) and to the sidecar over authenticated
@@ -94,9 +93,10 @@ DATABASE_URL="postgres://localhost:5432/yarvis" bun run --cwd sidecar db:migrate
 Secrets are entered in the app's **Settings** screen and stored in the app's
 secret store — the macOS Keychain by default, or 1Password instead (see
 "1Password instead of the Keychain" below) — never in env files: the database
-URL, provider keys (Anthropic, Gemini, Cerebras), a GitHub token and/or an Azure DevOps token (for the
-PR dashboard + embedded review — either provider can back it, selected with a
-toggle in the PRs tab), a JIRA API token (for the JIRA
+URL, provider keys (Anthropic, Gemini, Cerebras), a GitHub token and/or an
+Azure DevOps token (for the PR dashboard + embedded review — either provider
+can back it, selected with a toggle in the PRs tab), a JIRA API token (for the
+JIRA
 issues integration on the Issues tab), a Google Cloud OAuth client secret (for the Calendar
 integration), an optional Hugging Face token (for speech-to-text; see
 Settings → Voice — the Gemini key covers both speech halves on its own), an
