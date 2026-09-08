@@ -11,7 +11,8 @@ daily/weekly work tracking. See the roadmap in
 Three processes with a clean ownership split:
 
 - **Rust core** (`src-tauri/`) — native OS integration (window, tray,
-  notifications), secret storage (macOS Keychain or 1Password), and supervision of the
+  notifications), secret storage (macOS Keychain or 1Password), and supervision
+  of the
   sidecar process (it picks a free loopback port, generates a bearer token, and
   injects secrets as environment variables).
 - **React frontend** (`src/`) — Vite + TypeScript + Tailwind. Talks to the Rust
@@ -70,6 +71,9 @@ changes.
 - [GitHub CLI](https://cli.github.com) plus `gh extension install github/gh-stack`
   — only for the workspace Stack tab's grouping and its merge action; the stack
   itself is still derived from the API without them
+- [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) — only if
+  you keep secrets in 1Password rather than the macOS Keychain; see "1Password
+  instead of the Keychain"
 
 ## Setup
 
@@ -87,9 +91,10 @@ psql -d yarvis -c "CREATE EXTENSION IF NOT EXISTS vector;"
 DATABASE_URL="postgres://localhost:5432/yarvis" bun run --cwd sidecar db:migrate
 ```
 
-Secrets are entered in the app's **Settings** screen and stored in the macOS
-Keychain — not in env files: the database URL, provider keys (Anthropic,
-Gemini, Cerebras), a GitHub token and/or an Azure DevOps token (for the
+Secrets are entered in the app's **Settings** screen and stored in the app's
+secret store — the macOS Keychain by default, or 1Password instead (see
+"1Password instead of the Keychain" below) — never in env files: the database
+URL, provider keys (Anthropic, Gemini, Cerebras), a GitHub token and/or an Azure DevOps token (for the
 PR dashboard + embedded review — either provider can back it, selected with a
 toggle in the PRs tab), a JIRA API token (for the JIRA
 issues integration on the Issues tab), a Google Cloud OAuth client secret (for the Calendar
@@ -376,6 +381,13 @@ access-control check while OTP is off.
 > 1Password store below is the way to get a biometric gate today, since the
 > desktop app supplies it rather than the app's own signature.
 
+For Google Calendar, create a **Desktop app** OAuth client in Google Cloud
+Console and register the loopback redirect
+`http://127.0.0.1:<sidecar-port>/oauth/google/callback` (any port is accepted
+for Desktop clients), then enter the client id (Settings, non-secret) and
+client secret (Settings, Keychain) and connect from the Calendar tab. See
+`ROADMAP.md` for the full verification steps.
+
 ### 1Password instead of the Keychain
 
 **Settings → Credentials → Secret store** switches that single item from the
@@ -394,21 +406,23 @@ looks for `op` in `/opt/homebrew/bin` and `/usr/local/bin` as well; set
 Saving verifies the vault is reachable, copies the current secrets into the
 target item, and only then records the choice — a mistyped vault leaves the app
 on the store it was already using. The item is created as a Secure Note on the
-first save if it doesn't exist, and the previous store's copy is deliberately
-left in place, so switching back is just switching back. An existing target
-that already holds secrets is never overwritten.
+first save if it doesn't exist.
 
-The trade-off to know about: a read is authorized by 1Password, but a write
-passes the blob to `op` as a command-line argument, where it is visible in the
-process table with no prompt for the duration of that one call. Closing that
-means storing the blob as a 1Password document rather than a note field.
+**A store that already holds something is never overwritten**, and the previous
+store's copy is always left in place. That makes the switch safe, but it also
+means switching back does not re-copy: the store you return to still holds
+whatever it held when you left it, so any secret changed in the meantime is the
+older value. Settings says which of the three happened after every switch —
+copied, nothing to copy, or target already occupied — because the last case
+leaves the app authenticating with a different set of credentials than it had a
+moment before.
 
-For Google Calendar, create a **Desktop app** OAuth client in Google Cloud
-Console and register the loopback redirect
-`http://127.0.0.1:<sidecar-port>/oauth/google/callback` (any port is accepted
-for Desktop clients), then enter the client id (Settings, non-secret) and
-client secret (Settings, Keychain) and connect from the Calendar tab. See
-`ROADMAP.md` for the full verification steps.
+The trade-off to know about: a read is authorized by 1Password, but `op item
+edit` takes field values only as command-line arguments, so a write puts the
+blob in the process table — readable, with no prompt, by anything running as
+you for the duration of that one call, including subprocesses this app spawns
+such as the sidecar and stdio MCP servers. Closing it means storing the blob
+where `op` accepts stdin: a 1Password document rather than a note field.
 
 ### Connected MCP servers
 
@@ -1033,7 +1047,8 @@ down from the hotkeys and background workers below, but leaves the bundle
 identifier alone — so it shares the primary's `alarms.json` and control socket,
 and the single-instance guard still redirects the launch. Use `dev:instance`.
 
-Both instances read the **same Keychain item** and the **same
+Both instances read the **same secrets item** (Keychain or 1Password, as
+selected in the shared settings file) and the **same
 `~/.yarvis/settings.json`**, so provider keys, tokens, the database URL, the PTY
 session cap and the workspace agent command are entered once and shared. That
 means the second instance is looking at your real data and preferences by

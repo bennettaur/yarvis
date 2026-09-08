@@ -28,8 +28,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// Field of the Secure Note that carries the JSON blob. The one 1Password-
-/// specific fact the whole backend rests on, so it is named once.
+/// Field of the Secure Note that carries the JSON blob.
 const NOTES_FIELD: &str = "notesPlain";
 
 /// Item category created when the configured item does not exist yet.
@@ -57,9 +56,9 @@ pub struct ItemRef {
 
 impl ItemRef {
     /// Validates and builds a reference. Both parts become path segments of an
-    /// `op://` secret reference and arguments to `op`, so a `/` or a control
-    /// character would silently address something other than what the user
-    /// typed rather than failing.
+    /// `op://` secret reference and arguments to `op`, so a separator or a
+    /// control character would silently address something other than what the
+    /// user typed rather than failing.
     pub fn new(vault: &str, item: &str) -> Result<Self, String> {
         let vault = vault.trim();
         let item = item.trim();
@@ -67,9 +66,12 @@ impl ItemRef {
             if value.is_empty() {
                 return Err(format!("the 1Password {label} is required"));
             }
-            if value.contains('/') || value.chars().any(char::is_control) {
+            // `/` separates the segments of the `op://` reference and `?`/`#`
+            // start its query and fragment, so any of them would address
+            // something other than the name that was typed.
+            if value.contains(['/', '?', '#']) || value.chars().any(char::is_control) {
                 return Err(format!(
-                    "the 1Password {label} must not contain '/' or control characters"
+                    "the 1Password {label} must not contain '/', '?', '#' or control characters"
                 ));
             }
             if value.starts_with('-') {
@@ -91,10 +93,14 @@ impl ItemRef {
 /// What an `op` invocation produced.
 enum Outcome {
     Ok(String),
-    /// The vault or item named does not exist. Distinguished from a failure
-    /// because a missing item is how a first run looks, and the caller creates
-    /// it rather than reporting an error.
-    Missing,
+    /// The item named does not exist. Distinguished from a failure because a
+    /// missing item is how a first run looks, and the caller creates it rather
+    /// than reporting an error. A missing *vault* is not this — it stays an
+    /// error, since creating an item in a vault the user mistyped would put
+    /// their secrets somewhere they will not look for them.
+    MissingItem,
+    /// The vault named does not exist.
+    MissingVault,
 }
 
 /// The `op` binary to run: the override, else the first candidate path that
@@ -113,20 +119,35 @@ fn op_bin() -> OsString {
     OsString::from("op")
 }
 
-/// True when `op`'s stderr says the vault or item was not found, as opposed to
-/// any other failure. Matched on text because the CLI reports both through the
-/// same non-zero exit status; kept pure so the phrasings we accept are
-/// testable without the CLI present.
-fn is_not_found(stderr: &str) -> bool {
+/// True when `op`'s stderr says the *item* was not found, as opposed to any
+/// other failure. Matched on text because the CLI reports both through the same
+/// non-zero exit status.
+///
+/// Every phrase here names an item, and deliberately so — the classification is
+/// dangerously asymmetric. A false negative only shows the user an error; a
+/// false positive turns a read into `Ok(None)`, which the next read-modify-write
+/// saves as a blob holding one key, erasing every other secret. Bare phrases
+/// like "not found" match connection, session and plugin failures too, so they
+/// are not enough to conclude the item is simply absent.
+fn item_not_found(stderr: &str) -> bool {
     let stderr = stderr.to_ascii_lowercase();
     stderr.contains("isn't an item")
-        || stderr.contains("isn't a vault")
         || stderr.contains("no item matches")
-        || stderr.contains("not found")
-        || stderr.contains("doesn't exist")
+        || stderr.contains("item not found")
+        || stderr.contains("item doesn't exist")
 }
 
-/// Arguments that read the blob out of `item`'s notes field.
+/// True when `op`'s stderr says the *vault* was not found. Kept apart from
+/// [`item_not_found`] because only a missing item may be created; a missing
+/// vault is the user's typo and must be reported.
+fn vault_not_found(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    stderr.contains("isn't a vault")
+        || stderr.contains("no vault matches")
+        || stderr.contains("vault not found")
+        || stderr.contains("vault doesn't exist")
+}
+
 fn read_args(item: &ItemRef) -> Vec<String> {
     vec![
         "read".to_string(),
@@ -135,7 +156,6 @@ fn read_args(item: &ItemRef) -> Vec<String> {
     ]
 }
 
-/// Arguments that overwrite the notes field of an existing item.
 fn edit_args(item: &ItemRef, blob: &str) -> Vec<String> {
     vec![
         "item".to_string(),
@@ -147,7 +167,8 @@ fn edit_args(item: &ItemRef, blob: &str) -> Vec<String> {
     ]
 }
 
-/// Arguments that create the item with the blob already in place.
+/// Creates the item with the blob already in its notes field, so a first write
+/// never leaves an empty item behind.
 fn create_args(item: &ItemRef, blob: &str) -> Vec<String> {
     vec![
         "item".to_string(),
@@ -162,6 +183,22 @@ fn create_args(item: &ItemRef, blob: &str) -> Vec<String> {
     ]
 }
 
+/// Whether an invocation's stderr may be shown to the user.
+///
+/// A write carries the blob as an argv element, and `op` echoes the offending
+/// argument in its own diagnostics — so relaying stderr from a write would put
+/// the entire secrets object into an error string that is rendered in Settings
+/// and pasted into bug reports. That is strictly worse than the argv window
+/// itself, which is transient and same-user; an error string is durable and
+/// shareable.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Detail {
+    /// Relay `op`'s message. Only for invocations whose arguments carry no
+    /// secret material.
+    Show,
+    Redact,
+}
+
 /// Runs `op` with `args`, enforcing [`OP_TIMEOUT`].
 ///
 /// The child's stdout and stderr are pipes read only after it exits, so a
@@ -169,7 +206,7 @@ fn create_args(item: &ItemRef, blob: &str) -> Vec<String> {
 /// time out. Everything here is one JSON blob or one short error, well inside
 /// that buffer. stdin is closed so `op` fails rather than waiting on a prompt
 /// when it cannot reach the desktop app.
-fn run_op(args: &[String]) -> Result<Outcome, String> {
+fn run_op(args: &[String], detail: Detail) -> Result<Outcome, String> {
     let mut child = Command::new(op_bin())
         .args(args)
         .stdin(Stdio::null())
@@ -208,34 +245,52 @@ fn run_op(args: &[String]) -> Result<Outcome, String> {
     if status.success() {
         return Ok(Outcome::Ok(stdout));
     }
-    if is_not_found(&stderr) {
-        return Ok(Outcome::Missing);
+    if vault_not_found(&stderr) {
+        return Ok(Outcome::MissingVault);
     }
-    let detail = stderr.trim();
-    Err(if detail.is_empty() {
-        format!("the 1Password CLI failed ({status})")
-    } else {
-        format!("1Password: {detail}")
+    if item_not_found(&stderr) {
+        return Ok(Outcome::MissingItem);
+    }
+    let message = stderr.trim();
+    Err(match (detail, message.is_empty()) {
+        (Detail::Show, false) => format!("1Password: {message}"),
+        _ => format!("the 1Password CLI failed ({status})"),
     })
+}
+
+fn no_such_vault(item: &ItemRef) -> String {
+    format!("1Password has no vault named '{}'", item.vault)
 }
 
 /// Reads the secrets blob, or `None` when the item does not exist yet. An
 /// unreachable or locked 1Password is an `Err`, never `None` — the caller
 /// writes back what it reads, so the two must not be confused.
 pub fn read_blob(item: &ItemRef) -> Result<Option<String>, String> {
-    match run_op(&read_args(item))? {
+    match run_op(&read_args(item), Detail::Show)? {
         Outcome::Ok(blob) => Ok(Some(blob)),
-        Outcome::Missing => Ok(None),
+        Outcome::MissingItem => Ok(None),
+        Outcome::MissingVault => Err(no_such_vault(item)),
     }
 }
 
 /// Writes the secrets blob, creating the item on first use.
 pub fn write_blob(item: &ItemRef, blob: &str) -> Result<(), String> {
-    match run_op(&edit_args(item, blob))? {
+    write_blob_with(|args| run_op(args, Detail::Redact), item, blob)
+}
+
+/// The edit-then-create sequence, over an injected runner so the ordering can
+/// be exercised without the CLI.
+fn write_blob_with(
+    run: impl Fn(&[String]) -> Result<Outcome, String>,
+    item: &ItemRef,
+    blob: &str,
+) -> Result<(), String> {
+    match run(&edit_args(item, blob))? {
         Outcome::Ok(_) => Ok(()),
-        Outcome::Missing => match run_op(&create_args(item, blob))? {
+        Outcome::MissingVault => Err(no_such_vault(item)),
+        Outcome::MissingItem => match run(&create_args(item, blob))? {
             Outcome::Ok(_) => Ok(()),
-            Outcome::Missing => Err(format!("1Password has no vault named '{}'", item.vault)),
+            Outcome::MissingVault | Outcome::MissingItem => Err(no_such_vault(item)),
         },
     }
 }
@@ -245,21 +300,26 @@ pub fn write_blob(item: &ItemRef, blob: &str) -> Result<(), String> {
 /// A missing *item* is fine — the first write creates it — but a missing vault
 /// is the user's typo.
 pub fn probe(item: &ItemRef) -> Result<(), String> {
-    match run_op(&[
+    let args = [
         "vault".to_string(),
         "get".to_string(),
         item.vault.clone(),
         "--format".to_string(),
         "json".to_string(),
-    ])? {
+    ];
+    match run_op(&args, Detail::Show)? {
         Outcome::Ok(_) => Ok(()),
-        Outcome::Missing => Err(format!("1Password has no vault named '{}'", item.vault)),
+        Outcome::MissingVault | Outcome::MissingItem => Err(no_such_vault(item)),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{create_args, edit_args, is_not_found, read_args, ItemRef};
+    use super::{
+        create_args, edit_args, item_not_found, read_args, vault_not_found, write_blob_with,
+        ItemRef, Outcome,
+    };
+    use std::cell::RefCell;
 
     fn item() -> ItemRef {
         ItemRef::new("Private", "Yarvis Secrets").unwrap()
@@ -274,11 +334,13 @@ mod tests {
     }
 
     #[test]
-    fn a_blank_or_slashed_part_is_rejected() {
+    fn a_blank_or_reference_separating_part_is_rejected() {
         assert!(ItemRef::new("", "Yarvis").is_err());
         assert!(ItemRef::new("Private", "  ").is_err());
         assert!(ItemRef::new("Private/Nested", "Yarvis").is_err());
         assert!(ItemRef::new("Private", "Yar\nvis").is_err());
+        assert!(ItemRef::new("Private", "Yarvis?attribute=otp").is_err());
+        assert!(ItemRef::new("Private", "Yarvis#section").is_err());
     }
 
     /// A leading dash would be parsed by `op` as a flag rather than a name.
@@ -342,15 +404,87 @@ mod tests {
     }
 
     #[test]
-    fn only_a_missing_vault_or_item_reads_as_not_found() {
-        assert!(is_not_found("\"Yarvis\" isn't an item. Specify the item"));
-        assert!(is_not_found(
-            "ERROR: \"Nope\" isn't a vault in this account"
-        ));
-        assert!(is_not_found("error: item not found"));
-        assert!(!is_not_found(
-            "error: authorization prompt dismissed, please try again"
-        ));
-        assert!(!is_not_found("error: could not connect to 1Password app"));
+    fn an_absent_item_is_recognised() {
+        assert!(item_not_found("\"Yarvis\" isn't an item. Specify the item"));
+        assert!(item_not_found("error: no item matches \"Yarvis\""));
+        assert!(item_not_found("ERROR: item not found"));
+    }
+
+    #[test]
+    fn an_absent_vault_is_recognised_and_is_not_an_absent_item() {
+        let stderr = "ERROR: \"Nope\" isn't a vault in this account";
+        assert!(vault_not_found(stderr));
+        assert!(!item_not_found(stderr));
+    }
+
+    /// The asymmetry that matters: misreading a failure as "the item isn't
+    /// there" makes the read return an empty blob, and the next save writes
+    /// that empty blob over every stored secret. Bare "not found" and "doesn't
+    /// exist" appear in failures that have nothing to do with the item, so
+    /// they must not classify.
+    #[test]
+    fn a_failure_that_is_not_about_the_item_never_reads_as_absent() {
+        for stderr in [
+            "error: authorization prompt dismissed, please try again",
+            "error: could not connect to 1Password app",
+            "error: connect: /Users/x/.1password/agent.sock: file not found",
+            "error: account not found; run 'op signin'",
+            "error: field \"notesPlain\" doesn't exist on this item",
+            "error: the CLI plugin was not found",
+        ] {
+            assert!(!item_not_found(stderr), "classified as missing: {stderr}");
+            assert!(!vault_not_found(stderr), "classified as missing: {stderr}");
+        }
+    }
+
+    /// Records what the injected runner was asked to do, so the sequencing
+    /// assertions read against real calls rather than a call count.
+    fn recording_run(
+        outcomes: Vec<Outcome>,
+        log: &RefCell<Vec<Vec<String>>>,
+    ) -> impl Fn(&[String]) -> Result<Outcome, String> + '_ {
+        let outcomes = RefCell::new(outcomes.into_iter());
+        move |args: &[String]| {
+            log.borrow_mut().push(args.to_vec());
+            Ok(outcomes.borrow_mut().next().expect("an unexpected op call"))
+        }
+    }
+
+    #[test]
+    fn an_existing_item_is_edited_and_never_created() {
+        let log = RefCell::new(Vec::new());
+        let run = recording_run(vec![Outcome::Ok(String::new())], &log);
+        write_blob_with(run, &item(), "{}").unwrap();
+
+        let calls = log.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], edit_args(&item(), "{}"));
+    }
+
+    #[test]
+    fn a_missing_item_is_created_carrying_the_same_blob() {
+        let log = RefCell::new(Vec::new());
+        let run = recording_run(vec![Outcome::MissingItem, Outcome::Ok(String::new())], &log);
+        write_blob_with(run, &item(), "{\"a\":1}").unwrap();
+
+        let calls = log.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1], create_args(&item(), "{\"a\":1}"));
+    }
+
+    /// A mistyped vault must not be papered over by creating the item there:
+    /// the secrets would land somewhere the user will never look.
+    #[test]
+    fn a_missing_vault_is_reported_rather_than_created_into() {
+        let log = RefCell::new(Vec::new());
+        let run = recording_run(vec![Outcome::MissingVault], &log);
+        let err = write_blob_with(run, &item(), "{}").unwrap_err();
+
+        assert!(err.contains("Private"), "{err}");
+        assert_eq!(
+            log.borrow().len(),
+            1,
+            "no create should have been attempted"
+        );
     }
 }

@@ -353,24 +353,31 @@ impl SettingsState {
         backend: &str,
         vault: Option<String>,
         item: Option<String>,
-    ) -> Result<(), String> {
+    ) -> Result<Copied, String> {
         let vault = non_blank(vault);
         let item = non_blank(item);
         let target = secret_store::store_from(Some(backend), vault.as_deref(), item.as_deref())?;
-        let current = secret_store::active();
+        // The store this instance is leaving, derived from this state's own
+        // file rather than `secret_store::active()`'s global, so the method
+        // cannot disagree with the path it will write the selection back to.
+        let settings = Self::read_from_disk(&self.path);
+        let current = secret_store::store_from(
+            settings.secret_backend.as_deref(),
+            settings.one_password_vault.as_deref(),
+            settings.one_password_item.as_deref(),
+        )
+        .unwrap_or(Store::Keychain);
+        let mut copied = Copied::NothingToCopy;
         if target != current {
-            if let Store::OnePassword(ref item_ref) = target {
+            if let Store::OnePassword(item_ref) = &target {
                 onepassword::probe(item_ref)?;
             }
-            copy_secrets(&current, &target)?;
+            copied = copy_secrets(&current, &target)?;
         }
         {
             let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
             *settings = Self::read_from_disk(&self.path);
-            settings.secret_backend = match target {
-                Store::Keychain => None,
-                Store::OnePassword(_) => Some(ONEPASSWORD.to_string()),
-            };
+            settings.secret_backend = target.backend_setting().map(str::to_string);
             // Kept even when switching back to the Keychain, so returning to
             // 1Password doesn't mean retyping the vault and item.
             if vault.is_some() {
@@ -380,24 +387,51 @@ impl SettingsState {
                 settings.one_password_item = item;
             }
         }
-        self.save()
+        self.save()?;
+        Ok(copied)
     }
 }
 
-/// Copies the secrets blob from `from` into `to`, unless `to` already holds
-/// secrets — a store with contents is one the user has used before, and
-/// overwriting it would lose whatever is only there. Copying nothing is fine
-/// and silent: a first run has nothing to carry.
-fn copy_secrets(from: &Store, to: &Store) -> Result<(), String> {
-    let existing = keychain::read_root_from(to)?;
-    if existing.as_object().map(|o| !o.is_empty()).unwrap_or(false) {
-        return Ok(());
+/// What [`copy_secrets`] did, so the caller can say so rather than leaving the
+/// user to infer it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Copied {
+    /// The secrets were carried into the new store.
+    Secrets,
+    /// The old store held nothing to carry.
+    NothingToCopy,
+    /// The new store already held secrets and was left exactly as it was.
+    TargetAlreadyHadSecrets,
+}
+
+/// True when `root` carries at least one entry.
+fn has_secrets(root: &Value) -> bool {
+    root.as_object().map(|o| !o.is_empty()).unwrap_or(false)
+}
+
+/// Copies the secrets blob from `from` into `to`, unless `to` is already
+/// occupied — its contents are something the user put there, and overwriting
+/// them would lose whatever exists only in that copy.
+///
+/// Occupancy is judged on the *raw* stored text, not on the parsed root:
+/// `read_root_from` reads anything unparseable as an empty object, so a
+/// 1Password note the user wrote by hand — an item they can see and edit,
+/// unlike the Keychain's — would otherwise look empty and be overwritten.
+fn copy_secrets(from: &Store, to: &Store) -> Result<Copied, String> {
+    let occupied = to
+        .read()
+        .map_err(|e| format!("could not read secrets from {}: {e}", to.label()))?
+        .is_some_and(|raw| !raw.trim().is_empty());
+    if occupied {
+        return Ok(Copied::TargetAlreadyHadSecrets);
     }
     let source = keychain::read_root_from(from)?;
-    if source.as_object().map(|o| o.is_empty()).unwrap_or(true) {
-        return Ok(());
+    if !has_secrets(&source) {
+        return Ok(Copied::NothingToCopy);
     }
-    keychain::write_root_to(to, &source)
+    keychain::write_root_to(to, &source)?;
+    Ok(Copied::Secrets)
 }
 
 /// The trimmed value, or `None` when it is absent or blank — an emptied field in
@@ -467,7 +501,13 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
     let dir = yarvis_dir(app)?;
     let path = dir.join("settings.json");
     migrate_legacy_app_data_file(app, &path);
-    let _ = SETTINGS_PATH.set(path.clone());
+    // Must stay ahead of anything that can reach `keychain::read_root`: until
+    // this is set, `secret_store::active` sees default settings and answers
+    // "Keychain", so a 1Password user would silently read — and then write —
+    // the wrong store.
+    if SETTINGS_PATH.set(path.clone()).is_err() {
+        eprintln!("[settings] init ran twice; the first settings path stands");
+    }
     let state = SettingsState::load(path);
     migrate_keychain_settings(&state);
     app.manage(state);
@@ -599,23 +639,40 @@ pub fn set_telegram_otp_window_minutes(
 /// Points the app at the macOS Keychain or at a 1Password item, copying the
 /// stored secrets into the new store first. See
 /// `SettingsState::set_secret_backend` for the ordering and what is rejected.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_secret_backend(
     state: tauri::State<'_, SettingsState>,
     backend: String,
     vault: Option<String>,
     item: Option<String>,
-) -> Result<SettingsView, String> {
+) -> Result<BackendSwitch, String> {
     if backend != KEYCHAIN && backend != ONEPASSWORD {
         return Err(format!("unknown secret backend: {backend}"));
     }
-    state.set_secret_backend(&backend, vault, item)?;
-    Ok(state.snapshot().into())
+    let copied = state.set_secret_backend(&backend, vault, item)?;
+    Ok(BackendSwitch {
+        settings: state.snapshot().into(),
+        copied,
+    })
+}
+
+/// The result of a backend switch: the new settings, plus what became of the
+/// secrets. The second half is not cosmetic — a switch onto an item that
+/// already held secrets leaves the app authenticating with a *different* set
+/// of credentials, which the user has no other way to notice.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackendSwitch {
+    settings: SettingsView,
+    copied: Copied,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_legacy_migration, Settings, SettingsState, SettingsView};
+    use super::{
+        apply_legacy_migration, copy_secrets, Copied, Settings, SettingsState, SettingsView,
+    };
+    use crate::secret_store::{MemoryStore, Store};
     use serde_json::json;
 
     /// A settings store over a unique path under the temp dir, so tests touch a
@@ -907,5 +964,91 @@ mod tests {
 
         let reloaded = SettingsState::load(store.path.clone());
         assert_eq!(reloaded.snapshot().keychain_settings_migrated, Some(true));
+    }
+
+    /// The switch carries the secrets when the new store has room for them.
+    #[test]
+    fn an_empty_target_receives_the_source_blob() {
+        let source = MemoryStore::holding(r#"{"github_token":"t"}"#);
+        let target = MemoryStore::empty();
+
+        let copied = copy_secrets(&Store::Memory(source), &Store::Memory(target.clone())).unwrap();
+
+        assert_eq!(copied, Copied::Secrets);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&target.contents().unwrap()).unwrap(),
+            json!({ "github_token": "t" })
+        );
+    }
+
+    #[test]
+    fn a_first_run_with_nothing_stored_copies_nothing() {
+        let target = MemoryStore::empty();
+
+        let copied = copy_secrets(
+            &Store::Memory(MemoryStore::empty()),
+            &Store::Memory(target.clone()),
+        )
+        .unwrap();
+
+        assert_eq!(copied, Copied::NothingToCopy);
+        assert!(target.writes().is_empty());
+    }
+
+    #[test]
+    fn a_target_that_already_holds_secrets_is_left_alone() {
+        let target = MemoryStore::holding(r#"{"github_token":"theirs"}"#);
+
+        let copied = copy_secrets(
+            &Store::Memory(MemoryStore::holding(r#"{"github_token":"ours"}"#)),
+            &Store::Memory(target.clone()),
+        )
+        .unwrap();
+
+        assert_eq!(copied, Copied::TargetAlreadyHadSecrets);
+        assert!(target.writes().is_empty());
+    }
+
+    /// Occupancy is judged on the raw stored text: a 1Password note the user
+    /// wrote by hand doesn't parse as JSON, and reading it as an empty object
+    /// would have the copy overwrite what they wrote.
+    #[test]
+    fn a_target_holding_text_we_did_not_write_is_left_alone() {
+        let target = MemoryStore::holding("my recovery codes");
+
+        let copied = copy_secrets(
+            &Store::Memory(MemoryStore::holding(r#"{"github_token":"ours"}"#)),
+            &Store::Memory(target.clone()),
+        )
+        .unwrap();
+
+        assert_eq!(copied, Copied::TargetAlreadyHadSecrets);
+        assert_eq!(target.contents().unwrap(), "my recovery codes");
+    }
+
+    /// Verify-then-copy-then-persist: a target that can't be reached must not
+    /// leave the app pointed at it.
+    #[test]
+    fn an_unreachable_target_is_reported_and_copies_nothing() {
+        let source = MemoryStore::holding(r#"{"github_token":"t"}"#);
+
+        let err = copy_secrets(
+            &Store::Memory(source),
+            &Store::Memory(MemoryStore::unreadable()),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("the fake store"), "{err}");
+    }
+
+    #[test]
+    fn a_target_that_cannot_be_written_is_reported() {
+        let source = MemoryStore::holding(r#"{"github_token":"t"}"#);
+
+        assert!(copy_secrets(
+            &Store::Memory(source),
+            &Store::Memory(MemoryStore::unwritable()),
+        )
+        .is_err());
     }
 }

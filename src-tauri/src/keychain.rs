@@ -25,6 +25,11 @@
 //! values back after entry. The Rust core reads values only to inject them into
 //! the sidecar's environment when spawning it (see [`read_root`]).
 //!
+//! Every command here is `#[tauri::command(async)]`, so it runs off the main
+//! thread: a store access can block on an authorization prompt the user has not
+//! answered, and a sync command would freeze the window while it waited
+//! (`clipboard.rs` marks its one blocking command the same way).
+//!
 //! A read that fails is *not* an empty store. Every write here is a
 //! read-modify-write of the shared blob, so treating an unreachable store as
 //! empty — which is what a locked 1Password or a dismissed Touch ID prompt
@@ -111,7 +116,7 @@ pub fn secret_from_root(root: &Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_secret(key: String, value: String) -> Result<(), String> {
     if !is_known(&key) {
         return Err(format!("unknown secret key: {key}"));
@@ -124,7 +129,7 @@ pub fn set_secret(key: String, value: String) -> Result<(), String> {
     write_root(&root)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_secret_status(key: String) -> Result<bool, String> {
     if !is_known(&key) {
         return Err(format!("unknown secret key: {key}"));
@@ -132,7 +137,7 @@ pub fn get_secret_status(key: String) -> Result<bool, String> {
     Ok(secret_from_root(&read_root()?, &key).is_some())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_secret(key: String) -> Result<(), String> {
     if !is_known(&key) {
         return Err(format!("unknown secret key: {key}"));
@@ -144,7 +149,7 @@ pub fn delete_secret(key: String) -> Result<(), String> {
     write_root(&root)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_secret_status() -> Result<Vec<SecretStatus>, String> {
     // One read covers every key's presence, so Settings loads with a single
     // store access rather than one per secret.
@@ -160,7 +165,8 @@ pub fn list_secret_status() -> Result<Vec<SecretStatus>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_root;
+    use super::{parse_root, read_root_from, write_root_to};
+    use crate::secret_store::{MemoryStore, Store};
     use serde_json::json;
 
     #[test]
@@ -175,6 +181,52 @@ mod tests {
         assert_eq!(
             parse_root(Some(r#"{"github_token":"t"}"#.to_string())),
             json!({ "github_token": "t" })
+        );
+    }
+
+    /// The invariant the whole fallible-read change exists for: a store that
+    /// cannot be read must never let a write proceed, because every write here
+    /// is a read-modify-write of one shared blob and would save the caller's
+    /// single key over everything else.
+    #[test]
+    fn an_unreadable_store_yields_an_error_naming_it() {
+        let store = Store::Memory(MemoryStore::unreadable());
+        let err = read_root_from(&store).unwrap_err();
+        assert!(err.contains("the fake store"), "{err}");
+    }
+
+    /// The other half of that invariant, stated where a future refactor would
+    /// trip over it: nothing was written on the failed read above.
+    #[test]
+    fn a_failed_read_leaves_the_store_untouched() {
+        let fake = MemoryStore::unreadable();
+        let store = Store::Memory(fake.clone());
+        assert!(read_root_from(&store).is_err());
+        assert!(fake.writes().is_empty());
+    }
+
+    #[test]
+    fn a_reachable_empty_store_reads_as_an_empty_root() {
+        let store = Store::Memory(MemoryStore::empty());
+        assert_eq!(read_root_from(&store).unwrap(), json!({}));
+    }
+
+    /// Writing one key must carry the rest of the blob with it — the nested
+    /// subtrees `mcp` and `custom_providers` own live in here too.
+    #[test]
+    fn writing_one_key_preserves_every_other() {
+        let fake = MemoryStore::holding(r#"{"mcpServers":{"a":{}},"github_token":"old"}"#);
+        let store = Store::Memory(fake.clone());
+
+        let mut root = read_root_from(&store).unwrap();
+        root.as_object_mut()
+            .unwrap()
+            .insert("github_token".to_string(), json!("new"));
+        write_root_to(&store, &root).unwrap();
+
+        assert_eq!(
+            read_root_from(&store).unwrap(),
+            json!({ "mcpServers": { "a": {} }, "github_token": "new" })
         );
     }
 }

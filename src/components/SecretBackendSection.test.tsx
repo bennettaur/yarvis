@@ -1,8 +1,8 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
-import type { Settings } from "../lib/settings";
+import type { Copied, Settings } from "../lib/settings";
 import { nativeInvoke } from "../test/nativeInvoke";
-import { renderToHtml } from "../test/render";
+import { mountForInteraction, renderToHtml } from "../test/render";
 
 /**
  * Covers the backend switch end to end through `invoke` rather than stubbing
@@ -16,6 +16,8 @@ let stored: Settings;
 /** Error the next `set_secret_backend` rejects with, mimicking an unreachable
  * 1Password. */
 let rejectSaveWith: string | null = null;
+/** What the core reports became of the secrets on the next switch. */
+let copiedResult: Copied = "secrets";
 
 function defaultSettings(): Settings {
   return {
@@ -55,7 +57,7 @@ mock.module("@tauri-apps/api/core", () => ({
         onePasswordVault: vault ?? stored.onePasswordVault,
         onePasswordItem: item ?? stored.onePasswordItem,
       };
-      return stored;
+      return { settings: stored, copied: copiedResult };
     }
     if (command === "get_settings") return stored;
     if (command === "restart_sidecar") return undefined;
@@ -70,20 +72,14 @@ mock.module("../lib/api", () => ({
 
 const SecretBackendSection = (await import("./SecretBackendSection")).default;
 
-async function mount(): Promise<{ host: HTMLElement; cleanup: () => void }> {
-  const host = document.createElement("div");
-  document.body.appendChild(host);
-  const { createRoot } = await import("react-dom/client");
-  const root = createRoot(host);
-  root.render(createElement(SecretBackendSection));
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  return {
-    host,
-    cleanup: () => {
-      root.unmount();
-      host.remove();
-    },
-  };
+/** Torn down from `afterEach` rather than each test body, so a failing
+ * expectation can't leak a live component into the next test. */
+let unmount: (() => void) | undefined;
+
+async function mount(): Promise<HTMLElement> {
+  const mounted = await mountForInteraction(createElement(SecretBackendSection));
+  unmount = mounted.unmount;
+  return mounted.host;
 }
 
 /** Picks one of the backend radios by its value. */
@@ -101,16 +97,24 @@ function type(host: HTMLElement, id: string, value: string): void {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
 async function clickSave(host: HTMLElement): Promise<void> {
   (host.querySelector("button") as HTMLButtonElement).click();
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await settle();
 }
 
 describe("SecretBackendSection", () => {
   beforeEach(() => {
     invoked.length = 0;
     rejectSaveWith = null;
+    copiedResult = "secrets";
     stored = defaultSettings();
+  });
+
+  afterEach(() => {
+    unmount?.();
+    unmount = undefined;
   });
 
   it("reports the Keychain while no backend is stored", async () => {
@@ -131,10 +135,10 @@ describe("SecretBackendSection", () => {
     expect(html).toContain('value="Yarvis Secrets"');
   });
 
-  it("sends the vault and item to the core and restarts the sidecar", async () => {
-    const { host, cleanup } = await mount();
+  it("sends the vault and item to the core, then restarts the sidecar", async () => {
+    const host = await mount();
     choose(host, "onepassword");
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await settle();
     type(host, "op-vault", "Private");
     type(host, "op-item", "Yarvis Secrets");
     await clickSave(host);
@@ -144,14 +148,40 @@ describe("SecretBackendSection", () => {
       args: { backend: "onepassword", vault: "Private", item: "Yarvis Secrets" },
     });
     expect(invoked.map((c) => c.command)).toContain("restart_sidecar");
-    cleanup();
+  });
+
+  it("reports the new store as in use once the switch succeeds", async () => {
+    const host = await mount();
+    choose(host, "onepassword");
+    await settle();
+    type(host, "op-vault", "Private");
+    type(host, "op-item", "Yarvis Secrets");
+    await clickSave(host);
+
+    expect(host.textContent).toContain("In use: 1Password");
+    expect(host.textContent).toContain("Secrets copied into 1Password");
+  });
+
+  // The case the user could not otherwise detect: the app is now
+  // authenticating with a different set of credentials than a moment ago.
+  it("says so when the new store already held secrets and nothing was copied", async () => {
+    copiedResult = "targetAlreadyHadSecrets";
+    const host = await mount();
+    choose(host, "onepassword");
+    await settle();
+    type(host, "op-vault", "Private");
+    type(host, "op-item", "Yarvis Secrets");
+    await clickSave(host);
+
+    expect(host.textContent).toContain("already held secrets");
+    expect(host.textContent).toContain("nothing was copied");
   });
 
   it("leaves the store unchanged and shows why when the switch is refused", async () => {
     rejectSaveWith = "1Password has no vault named 'Typo'";
-    const { host, cleanup } = await mount();
+    const host = await mount();
     choose(host, "onepassword");
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await settle();
     type(host, "op-vault", "Typo");
     type(host, "op-item", "Yarvis Secrets");
     await clickSave(host);
@@ -159,7 +189,6 @@ describe("SecretBackendSection", () => {
     expect(host.textContent).toContain("1Password has no vault named 'Typo'");
     expect(host.textContent).toContain("In use: macOS Keychain");
     expect(invoked.map((c) => c.command)).not.toContain("restart_sidecar");
-    cleanup();
   });
 
   it("switches back to the Keychain without needing the vault fields", async () => {
@@ -169,15 +198,15 @@ describe("SecretBackendSection", () => {
       onePasswordVault: "Private",
       onePasswordItem: "Yarvis Secrets",
     };
-    const { host, cleanup } = await mount();
+    const host = await mount();
     choose(host, "keychain");
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await settle();
     await clickSave(host);
 
     expect(invoked).toContainEqual({
       command: "set_secret_backend",
       args: { backend: "keychain", vault: "Private", item: "Yarvis Secrets" },
     });
-    cleanup();
+    expect(host.textContent).toContain("In use: macOS Keychain");
   });
 });
