@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type { IssueRepo, IssueSummary } from "../../lib/issues/types";
 import { type OpenWorkspaceRequest, onOpenWorkspace } from "../../lib/nav";
@@ -36,6 +37,9 @@ let failing: string | null = null;
 /** When set, `/detail` hangs until this resolves, so a start can be observed
  *  mid-flight (the busy row) rather than only after it settles. */
 let holdDetail: Promise<void> | null = null;
+/** When set, every route hangs on it, so a revisit can be inspected knowing
+ *  nothing it shows came off the wire. */
+let holdResponses: Promise<void> | null = null;
 
 /** What the fake sidecar answers each route with. */
 function responseFor(path: string): unknown {
@@ -69,6 +73,7 @@ mock.module("../../lib/api", () => ({
     fetched.push(path);
     if (init.method && init.method !== "GET")
       sent.push({ path, body: init.body ? JSON.parse(String(init.body)) : null });
+    if (holdResponses) await holdResponses;
     if (holdDetail && path.startsWith("/api/issues/github/detail")) await holdDetail;
     if (failing && path.startsWith(failing)) return new Response("nope", { status: 500 });
     return new Response(JSON.stringify(responseFor(path)), { status: 200 });
@@ -117,6 +122,28 @@ const { default: GithubIssuesView } = await import("./GithubIssuesView");
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 60));
 
+/**
+ * Mounts and returns the text of the first frame React commits. `mount` waits
+ * for everything to settle, which is exactly what a test about *not* having to
+ * wait cannot do.
+ */
+function firstPaintOf(): { text: string; cleanup: () => void } {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  // Forced synchronous so what is read below really is the first commit: let
+  // React schedule it and a resolved-from-cache microtask could land first,
+  // hiding the very frame this is about.
+  flushSync(() => root.render(createElement(GithubIssuesView)));
+  return {
+    text: host.textContent ?? "",
+    cleanup: () => {
+      root.unmount();
+      host.remove();
+    },
+  };
+}
+
 async function mount() {
   const host = document.createElement("div");
   document.body.appendChild(host);
@@ -154,9 +181,30 @@ beforeEach(() => {
   assigned = [];
   failing = null;
   holdDetail = null;
+  holdResponses = null;
 });
 
 describe("GithubIssuesView", () => {
+  it("paints the issues from the cache when the tab is revisited", async () => {
+    // The ticket's own example: create an issue, leave, come back seconds later
+    // and the list reloads from scratch. Every route is held open for the second
+    // visit, and the assertion is on the very first frame — so what it shows can
+    // only have come from the cache.
+    assigned = [issue];
+    const first = await mount();
+    expect(first.host.textContent).toContain(issue.title);
+    first.cleanup();
+
+    let release = () => {};
+    holdResponses = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const revisit = firstPaintOf();
+    expect(revisit.text).toContain(issue.title);
+    release();
+    revisit.cleanup();
+  });
+
   it("re-pulls the lists when Refresh is clicked", async () => {
     const { host, cleanup } = await mount();
     fetched.length = 0;

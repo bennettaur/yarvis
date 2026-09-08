@@ -18,7 +18,7 @@ import {
 import { jiraAssigned, jiraCreated, jiraSearch, jiraViewer } from "../../lib/jira/api";
 import { useJiraStartWork } from "../../lib/jira/useJiraStartWork";
 import { useOmniChatContext } from "../../lib/omniChatContext";
-import { invalidatePrefix, useCachedResource } from "../../lib/resourceCache";
+import { invalidatePrefix, PROVIDER_TTL_MS, useCachedResource } from "../../lib/resourceCache";
 import { openExternal } from "../../lib/url";
 import RefreshingIndicator from "../RefreshingIndicator";
 import JiraCreateIssueModal from "./JiraCreateIssueModal";
@@ -45,6 +45,23 @@ const NO_ISSUES: IssueSummary[] = [];
 const NO_STARS: IssueStar[] = [];
 const NO_FILTERS: IssueFilter[] = [];
 const NO_LINKS: IssueLink[] = [];
+
+/**
+ * The gate answers a 400 "jira not configured" when the secrets are missing.
+ * That is a state to explain rather than an error to report, and returning it as
+ * data means it is cached like any other answer — a remount of an unconfigured
+ * JIRA paints the explanation straight away instead of an empty list first.
+ */
+async function probeJira(): Promise<{ configured: boolean }> {
+  try {
+    await jiraViewer();
+    return { configured: true };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (/not configured/i.test(message)) return { configured: false };
+    throw e;
+  }
+}
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "assigned", label: "Assigned to me" },
@@ -254,11 +271,11 @@ export default function JiraIssuesView() {
   const [creating, setCreating] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
-  // Probed first so the "not configured" state (a 400 from the gate) reads
-  // precisely, distinct from an upstream failure, and so the lists below aren't
-  // asked for at all until JIRA is reachable.
-  const viewerRes = useCachedResource(VIEWER_KEY, jiraViewer);
-  const configured = viewerRes.data !== null;
+  // Probed first so the "not configured" state reads precisely, distinct from an
+  // upstream failure, and so the lists below aren't asked for at all until JIRA
+  // is reachable.
+  const viewerRes = useCachedResource(VIEWER_KEY, probeJira, PROVIDER_TTL_MS);
+  const configured = viewerRes.data?.configured === true;
   const assignedRes = useCachedResource<IssueSummary[]>(
     configured ? ASSIGNED_KEY : null,
     jiraAssigned,
@@ -295,11 +312,8 @@ export default function JiraIssuesView() {
   const sources = [viewerRes, assignedRes, createdRes, filtersRes, starsRes, linksRes];
   const refreshing = sources.some((s) => s.refreshing);
   const loading = sources.some((s) => s.loading);
-  // The gate answers a 400 "jira not configured" when the secrets are missing;
-  // that is a state to explain, not an error to report.
-  const notConfigured = viewerRes.error !== null && /not configured/i.test(viewerRes.error);
-  const listError = notConfigured ? null : (sources.find((s) => s.error !== null)?.error ?? null);
-  const error = searchError ?? listError;
+  const notConfigured = viewerRes.data?.configured === false;
+  const error = searchError ?? sources.find((s) => s.error !== null)?.error ?? null;
 
   const starredKeys = useMemo(
     () => new Set(stars.map((s) => issueKey(s.provider, s.sourceKey, s.externalId))),

@@ -22,7 +22,7 @@ import {
 import { defaultPrsPlace, type PrsTabKey, readPrsPlace, writePrsPlace } from "../lib/pr/panelState";
 import { refDisplayRepo, refKey, refNumber } from "../lib/pr/ref";
 import type { AzFilter, GhFilter, Provider, PrSummary, ReviewingList } from "../lib/pr/types";
-import { useCachedResource } from "../lib/resourceCache";
+import { PROVIDER_TTL_MS, useCachedResource } from "../lib/resourceCache";
 import PrDetailView from "./PrDetailView";
 import PrGroupedList from "./pr/PrGroupedList";
 import PrLocator from "./pr/PrLocator";
@@ -38,6 +38,15 @@ const GH_MY = "is:open is:pr author:@me";
  * the cache on the first paint instead of settling into place.
  */
 const PROBE_TTL_MS = 10 * 60_000;
+
+const probeGithub = () =>
+  ghViewer()
+    .then(() => true)
+    .catch(() => false);
+const probeAzure = () =>
+  azViewer()
+    .then(() => true)
+    .catch(() => false);
 
 /** The lists this panel shows for one provider, loaded together. */
 interface ProviderLists {
@@ -124,10 +133,15 @@ export default function PrsPanel({
    * than the toggle flashing both and hiding the bad one once the slowest probe
    * loses. `probeComplete` distinguishes "still checking, none confirmed yet"
    * from "checked, found nothing", so the empty state can't flash on first
-   * paint; both are answered from the cache on a remount.
+   * paint.
+   *
+   * A probe that fails resolves to `false` rather than rejecting: "this provider
+   * isn't configured" is an answer worth caching, and errors are not cached. A
+   * user with only GitHub set up would otherwise re-probe Azure on every remount
+   * and hold `probeComplete` — and with it the lists — behind that round trip.
    */
-  const ghProbe = useCachedResource("prs:viewer:github", ghViewer, PROBE_TTL_MS);
-  const azProbe = useCachedResource("prs:viewer:azure", azViewer, PROBE_TTL_MS);
+  const ghProbe = useCachedResource("prs:viewer:github", probeGithub, PROBE_TTL_MS);
+  const azProbe = useCachedResource("prs:viewer:azure", probeAzure, PROBE_TTL_MS);
   const availableProviders = useMemo(() => {
     const set = new Set<Provider>();
     if (ghProbe.data) set.add("github");
@@ -140,8 +154,10 @@ export default function PrsPanel({
   // round trip and search straight away. Credentials invalidated mid-session
   // surface as this resource's error instead.
   const listsReady = probeComplete && availableProviders.has(provider);
-  const listsRes = useCachedResource(listsReady ? `prs:${provider}:lists` : null, () =>
-    loadProviderLists(provider),
+  const listsRes = useCachedResource(
+    listsReady ? `prs:${provider}:lists` : null,
+    () => loadProviderLists(provider),
+    PROVIDER_TTL_MS,
   );
   const {
     mine,
@@ -166,15 +182,13 @@ export default function PrsPanel({
       ? "prs:github:reviewing"
       : null,
     ghReviewing,
+    PROVIDER_TTL_MS,
   );
   const reviewing = reviewingRes.data;
 
   const sources = [ghProbe, azProbe, listsRes, starsRes, reviewingRes];
   const refreshing = sources.some((s) => s.refreshing);
-  // A probe that fails means that provider isn't configured, which the toggle
-  // and the empty state already say — only a failure to load what the user is
-  // actually looking at is worth reporting as an error.
-  const error = [listsRes, starsRes, reviewingRes].find((s) => s.error !== null)?.error ?? null;
+  const error = sources.find((s) => s.error !== null)?.error ?? null;
 
   const tabs = useMemo(() => tabsFor(provider), [provider]);
 

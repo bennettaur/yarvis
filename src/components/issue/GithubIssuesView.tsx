@@ -21,7 +21,7 @@ import {
 } from "../../lib/issues/types";
 import { useGithubStartWork } from "../../lib/issues/useGithubStartWork";
 import { useOmniChatContext } from "../../lib/omniChatContext";
-import { invalidatePrefix, useCachedResource } from "../../lib/resourceCache";
+import { invalidatePrefix, PROVIDER_TTL_MS, useCachedResource } from "../../lib/resourceCache";
 import { formatRelativeTime } from "../../lib/time";
 import { openExternal } from "../../lib/url";
 import RefreshingIndicator from "../RefreshingIndicator";
@@ -233,11 +233,18 @@ export default function GithubIssuesView({
   // stay unkeyed until that is known rather than costing a round trip to learn
   // nothing.
   const hasRepos = (configuredRepos?.length ?? 0) > 0;
+  // The two searches go to GitHub; the repos, filters, stars and links behind
+  // them are the sidecar's own rows and refresh on the shorter default.
   const assignedRes = useCachedResource<IssueSummary[]>(
     hasRepos ? ASSIGNED_KEY : null,
     issuesAssigned,
+    PROVIDER_TTL_MS,
   );
-  const allRes = useCachedResource<IssueSummary[]>(hasRepos ? ALL_KEY : null, issuesAll);
+  const allRes = useCachedResource<IssueSummary[]>(
+    hasRepos ? ALL_KEY : null,
+    issuesAll,
+    PROVIDER_TTL_MS,
+  );
   const filtersRes = useCachedResource<IssueFilter[]>(hasRepos ? FILTERS_KEY : null, issueFilters);
   const starsRes = useCachedResource(STARS_KEY, issueStars);
   const linksRes = useCachedResource<IssueLink[]>(LINKS_KEY, issueLinks);

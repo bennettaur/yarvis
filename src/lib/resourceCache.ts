@@ -22,12 +22,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
  */
 
 /**
- * How long a cached value is served without a network round trip at all. Short
- * enough that a tab the user keeps flicking between still tracks reality, long
- * enough that flicking between them doesn't re-hit a rate-limited provider once
- * per switch.
+ * How long a cached value is served without a load at all. The default suits a
+ * read the sidecar answers from its own Postgres: it is a dedupe window rather
+ * than a freshness window, so returning to a tab does refresh in the background
+ * — which is the whole point — without a double fetch on a remount that happens
+ * to straddle one.
  */
-export const DEFAULT_TTL_MS = 30_000;
+export const DEFAULT_TTL_MS = 3_000;
+
+/**
+ * For a resource whose load costs a call to GitHub, Azure DevOps or JIRA, all of
+ * which rate-limit. Flicking between tabs must not spend the user's quota once
+ * per switch, so these are held long enough to make that free.
+ */
+export const PROVIDER_TTL_MS = 30_000;
 
 interface CacheEntry<T> {
   value?: T;
@@ -133,9 +141,13 @@ export function invalidatePrefix(prefix: string): void {
   }
 }
 
-/** Discards the whole cache. Exists so tests don't leak entries into each other. */
+/**
+ * Discards the whole cache and every subscription. Exists so tests don't leak
+ * entries — or a root a failing case left mounted — into each other.
+ */
 export function clearResourceCache(): void {
   cache.clear();
+  listeners.clear();
 }
 
 export interface Resource<T> {

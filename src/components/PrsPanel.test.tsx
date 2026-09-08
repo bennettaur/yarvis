@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { flushSync } from "react-dom";
+import { createRoot } from "react-dom/client";
 import type { PrsPlace } from "../lib/pr/panelState";
 import { renderToHtml } from "../test/render";
 import PrsPanel from "./PrsPanel";
@@ -36,6 +38,13 @@ const json = (body: unknown, status = 200) =>
 
 /** UI event types posted during a render, so tests can assert on `pr.viewed`. */
 let recordedEvents: string[] = [];
+
+/**
+ * When set, every sidecar call blocks on it. A remount can then be inspected
+ * knowing nothing it shows came off the wire — the whole point of the cache is
+ * that it doesn't have to wait for one.
+ */
+let holdResponses: Promise<void> | null = null;
 
 // GitHub is the configured provider throughout; Azure is not, which is what
 // lets the last test exercise a remembered Azure place going stale.
@@ -93,6 +102,7 @@ mock.module("../lib/api", () => ({
   }),
   getDbHealth: async () => ({ configured: true, reachable: true }),
   sidecarFetch: async (path: string, init?: RequestInit) => {
+    if (holdResponses) await holdResponses;
     if (path === "/api/events") {
       recordedEvents.push(JSON.parse(String(init?.body)).type);
       return json({ ok: true });
@@ -149,6 +159,28 @@ function storePlace(place: PrsPlace): void {
 
 const readPlace = (): PrsPlace => JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null");
 
+/**
+ * Mounts and returns the text of the first frame React commits. `renderToHtml`
+ * waits for everything to settle, which is exactly what a test about *not*
+ * having to wait cannot do.
+ */
+function firstPaintOf(element: React.ReactElement): { text: string; unmount: () => void } {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  // Forced synchronous so what is read below really is the first commit: let
+  // React schedule it and a resolved-from-cache microtask could land first,
+  // hiding the very frame this is about.
+  flushSync(() => root.render(element));
+  return {
+    text: host.textContent ?? "",
+    unmount: () => {
+      root.unmount();
+      host.remove();
+    },
+  };
+}
+
 /** The list nav is absent while the detail view is up, so it tells the two apart. */
 const LIST_NAV = "Needs review";
 
@@ -156,6 +188,25 @@ describe("PrsPanel place", () => {
   beforeEach(() => {
     localStorage.clear();
     recordedEvents = [];
+    holdResponses = null;
+  });
+
+  it("paints the lists from the cache when the tab is revisited", async () => {
+    // The ticket's complaint: leaving a tab and coming back moments later used
+    // to blank the list and reload it. Every sidecar call is held open for the
+    // second visit, and the assertion is on the very first frame — so the list
+    // it shows can only have come from the cache.
+    await renderToHtml(<PrsPanel />);
+
+    let release = () => {};
+    holdResponses = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const revisit = firstPaintOf(<PrsPanel />);
+    expect(revisit.text).toContain(LIST_NAV);
+    expect(revisit.text).toContain(MY_PR.title);
+    release();
+    revisit.unmount();
   });
 
   it("opens on 'My PRs' when there's no remembered place", async () => {

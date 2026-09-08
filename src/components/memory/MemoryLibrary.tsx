@@ -11,7 +11,7 @@ import {
   memSearch,
   type RecapResult,
 } from "../../lib/memory";
-import { useCachedResource } from "../../lib/resourceCache";
+import { primeCache, useCachedResource } from "../../lib/resourceCache";
 import Markdown from "../Markdown";
 import RefreshingIndicator from "../RefreshingIndicator";
 
@@ -93,7 +93,8 @@ export default function MemoryLibrary() {
 
   // Both values the browse loader reads are in the key, so changing the kind
   // filter or the page names a different resource rather than reusing the last.
-  const browseRes = useCachedResource<MemoryPage>(`memory:list:${kind}:${offset}`, () =>
+  const browseKey = `memory:list:${kind}:${offset}`;
+  const browseRes = useCachedResource<MemoryPage>(browseKey, () =>
     memList({ kinds: kind ? [kind] : undefined, limit: PAGE_SIZE, offset }),
   );
   const { items: browsed, total } = browseRes.data ?? NO_PAGE;
@@ -121,9 +122,19 @@ export default function MemoryLibrary() {
     async (id: string) => {
       await memDelete(id);
       setSearchResults((prev) => prev?.filter((m) => m.id !== id) ?? null);
+      // Drop the row straight away rather than leaving it under the cursor for
+      // a round trip. The total goes with it, or the pager's range drifts from
+      // what is shown.
+      const page = browseRes.data;
+      if (page) {
+        primeCache<MemoryPage>(browseKey, {
+          items: page.items.filter((m) => m.id !== id),
+          total: Math.max(0, page.total - 1),
+        });
+      }
       await reload();
     },
-    [reload],
+    [reload, browseKey, browseRes.data],
   );
 
   const addNote = useCallback(async () => {
