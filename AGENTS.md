@@ -253,6 +253,28 @@ back to ad-hoc.
   "ask", since consent was given for the tool as it was described then. Neither
   mechanism gives MCP tools to a surface that cannot prompt: that still requires
   `approval` hooks to exist at all.
+- A list a tab shows is read through `lib/resourceCache`, not fetched into local
+  state on mount. `App` renders one panel at a time, so every tab switch unmounts
+  a page outright, and the fetch-on-mount shape meant coming back always painted
+  an empty list first (#275). `useCachedResource` seeds a remount from the cache
+  synchronously and revalidates behind it, which is why `Resource` distinguishes
+  `refreshing` — a load running behind data already on screen, what
+  `RefreshingIndicator` shows — from `loading`, which means there is nothing to
+  show yet. Three rules come with it. Every value a loader reads goes in its key,
+  or the surface keeps an answer to a question it is no longer asking. A load
+  that costs a call to GitHub, Azure or JIRA passes `PROVIDER_TTL_MS` rather than
+  the short default, which is a dedupe window for the sidecar's own Postgres
+  reads. And a setting that changes what a cached panel may show invalidates it
+  where it is saved — `ReposSection` for the issue lists, `PrReviewSection` for
+  the needs-review query, and the whole cache from `KeychainSection`, since the
+  sidecar it restarts answered everything in there. A long hold with no way out
+  is how a user ends up staring at an answer they already fixed.
+- An answer worth keeping resolves; only a failure rethrows. Errors are
+  deliberately not cached, so a loader that treats "this provider isn't
+  configured" as an error re-asks on every remount and holds the surface behind
+  that round trip. The probes in `PrsPanel` and `JiraIssuesView` return it as
+  data instead, and rethrow what they can't tell apart from the sidecar still
+  starting up — which is the case that must *not* stick.
 - A pending approval is answered in one place per surface: `ToolApprovalBar`
   above the composer, showing the front of the queue with a count, rather than a
   card per call inside the thread. Its `A`/`D` shortcuts are on `window`, so a
