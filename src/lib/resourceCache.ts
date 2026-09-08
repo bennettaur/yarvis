@@ -2,23 +2,23 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
  * A request cache keyed by a string derived from the resource (e.g.
- * `issues:github` or `detail:<refKey>`). It does two jobs.
+ * `issues:github:assigned` or `detail:<refKey>`). It does two jobs.
  *
  * Several components naming the same key share one network request rather than
  * each calling the sidecar, and components naming different keys stay isolated.
  *
  * And the cache outlives the components reading it, which is what makes moving
  * between app tabs cheap: `App` renders one panel at a time, so every tab switch
- * unmounts a page outright and the old shape — local `useState` plus a
- * fetch-on-mount effect — meant coming back always painted an empty list first.
- * A remount is seeded from the cache synchronously, then revalidates behind the
- * data already on screen; {@link Resource.refreshing} is what a surface shows
- * while that happens, distinct from {@link Resource.loading}, which means there
- * is genuinely nothing to show yet.
+ * unmounts a page outright. A remount is seeded from the cache synchronously,
+ * then revalidates behind the data already on screen; {@link Resource.refreshing}
+ * is what a surface shows while that happens, distinct from
+ * {@link Resource.loading}, which means there is genuinely nothing to show yet.
  *
- * Three states per entry: an in-flight `promise` (so concurrent callers join
- * it), a resolved `value` with a timestamp (served until it goes stale), or an
- * `error`. Errors are not cached — the next caller retries.
+ * An entry is either an in-flight `promise`, which concurrent callers join, or a
+ * resolved `value` with the timestamp it landed at, served until it goes stale.
+ * A rejection is neither: the entry is dropped so the next caller retries. A
+ * loader with an answer worth keeping — "this provider isn't configured" — has
+ * to resolve to it rather than throw.
  */
 
 /**
@@ -28,14 +28,22 @@ import { useCallback, useEffect, useRef, useState } from "react";
  * — which is the whole point — without a double fetch on a remount that happens
  * to straddle one.
  */
-export const DEFAULT_TTL_MS = 3_000;
+const DEFAULT_TTL_MS = 3_000;
 
 /**
  * For a resource whose load costs a call to GitHub, Azure DevOps or JIRA, all of
  * which rate-limit. Flicking between tabs must not spend the user's quota once
  * per switch, so these are held long enough to make that free.
  */
-export const PROVIDER_TTL_MS = 30_000;
+export const PROVIDER_TTL_MS = 60_000;
+
+/**
+ * For a probe of whether a provider is configured at all. Held far longer than
+ * the lists, because the answer changes only when the user edits their
+ * credentials — and when they do, `KeychainSection` drops the whole cache, so
+ * nothing waits this out.
+ */
+export const PROBE_TTL_MS = 10 * 60_000;
 
 interface CacheEntry<T> {
   value?: T;
@@ -70,27 +78,33 @@ export function cachedFetch<T>(
   loader: () => Promise<T>,
   ttlMs: number = DEFAULT_TTL_MS,
 ): Promise<T> {
-  const entry = cache.get(key) as CacheEntry<T> | undefined;
-  if (entry) {
-    if (entry.promise) return entry.promise;
+  const current = cache.get(key) as CacheEntry<T> | undefined;
+  if (current) {
+    if (current.promise) return current.promise;
     // Gate on the timestamp, not the value, so a loader that legitimately
     // resolves to `undefined` is still served from cache until it goes stale.
-    if (entry.ts !== undefined && Date.now() - entry.ts < ttlMs) {
-      return Promise.resolve(entry.value as T);
+    if (current.ts !== undefined && Date.now() - current.ts < ttlMs) {
+      return Promise.resolve(current.value as T);
     }
   }
-  const promise = loader()
+  // Both handlers write only while this load is still the one the cache is
+  // waiting on. An `invalidate` during a load starts a second one, and without
+  // the identity check the first to resolve — which may be the older — would
+  // install its value under a fresh timestamp, or its rejection would drop the
+  // newer load's entry and send the next caller back to the provider.
+  const entry: CacheEntry<T> = {};
+  entry.promise = loader()
     .then((value) => {
-      cache.set(key, { value, ts: Date.now() });
+      if (cache.get(key) === entry) cache.set(key, { value, ts: Date.now() });
       return value;
     })
     .catch((err) => {
       // Don't cache failures; let the next caller retry.
-      cache.delete(key);
+      if (cache.get(key) === entry) cache.delete(key);
       throw err;
     });
-  cache.set(key, { promise });
-  return promise;
+  cache.set(key, entry);
+  return entry.promise;
 }
 
 /** A resolved entry and when it landed, or null if there is nothing to serve. */
@@ -106,7 +120,14 @@ function peek<T>(key: string): { value: T; ts: number } | null {
  * schedule — the workspaces list polls its PR badges — so its result outlives
  * the panel rather than being thrown away on the next tab switch.
  */
-export function primeCache<T>(key: string, value: T): void {
+export function primeCache<T>(key: string, next: T | ((current: T | null) => T)): void {
+  // The updater form is the `setState` one, and exists for the same reason: a
+  // caller adding to a list it read at render time would otherwise overwrite a
+  // load that landed in between.
+  const value =
+    typeof next === "function"
+      ? (next as (current: T | null) => T)(peek<T>(key)?.value ?? null)
+      : next;
   cache.set(key, { value, ts: Date.now() });
   const subscribers = listeners.get(key);
   if (subscribers) for (const notify of subscribers) notify();
@@ -142,8 +163,10 @@ export function invalidatePrefix(prefix: string): void {
 }
 
 /**
- * Discards the whole cache and every subscription. Exists so tests don't leak
- * entries — or a root a failing case left mounted — into each other.
+ * Discards the whole cache and every subscription. For a change that invalidates
+ * everything at once rather than one key — the sidecar restarting under new
+ * credentials — and so tests don't leak entries, or a root a failing case left
+ * mounted, into each other.
  */
 export function clearResourceCache(): void {
   cache.clear();
@@ -160,6 +183,24 @@ export interface Resource<T> {
   refreshing: boolean;
   /** Forces a reload past the TTL, resolving when it settles. */
   refresh: () => Promise<void>;
+}
+
+/**
+ * The combined state of several resources a surface shows together: it is
+ * refreshing while any of them is, has nothing to show while any of them has,
+ * and reports the first error in the order given — so callers list the resources
+ * in the order they would want a failure attributed.
+ */
+export function combineResources(resources: Resource<unknown>[]): {
+  loading: boolean;
+  refreshing: boolean;
+  error: string | null;
+} {
+  return {
+    loading: resources.some((r) => r.loading),
+    refreshing: resources.some((r) => r.refreshing),
+    error: resources.find((r) => r.error !== null)?.error ?? null,
+  };
 }
 
 /**

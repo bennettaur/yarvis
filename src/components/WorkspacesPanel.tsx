@@ -320,13 +320,15 @@ export default function WorkspacesPanel({
     setSelectedId(id);
   };
 
-  const onRepoAdded = useCallback(
-    (repo: Repo) => {
-      if (repos.some((r) => r.id === repo.id)) return;
-      primeCache(REPOS_KEY, [...repos, repo]);
-    },
-    [repos],
-  );
+  const onRepoAdded = useCallback((repo: Repo) => {
+    // Through the updater form for the same reason the `setState` one was used
+    // before: a load landing between this render and the click would otherwise
+    // be overwritten by the list this closure captured.
+    primeCache<Repo[]>(REPOS_KEY, (current) => {
+      const list = current ?? [];
+      return list.some((r) => r.id === repo.id) ? list : [...list, repo];
+    });
+  }, []);
 
   return (
     <div className="flex h-full min-h-0">

@@ -1,10 +1,4 @@
-import {
-  cachedFetch,
-  invalidate,
-  PROVIDER_TTL_MS,
-  type Resource,
-  useCachedResource,
-} from "../resourceCache";
+import { invalidate, PROVIDER_TTL_MS, type Resource, useCachedResource } from "../resourceCache";
 import {
   fetchPrDetail,
   fetchPrFileContent,
@@ -26,7 +20,7 @@ import type { PrDetail, PrFile, PrRef, PrStack, PrStatus } from "./types";
 
 // Re-exported because the PR components reach the cache through this module,
 // which owns the key names they would be invalidating.
-export { cachedFetch, invalidate, type Resource };
+export { invalidate };
 
 /**
  * Ceiling on provider requests in flight at once. Both providers throttle, and

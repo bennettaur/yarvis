@@ -21,7 +21,12 @@ import {
 } from "../../lib/issues/types";
 import { useGithubStartWork } from "../../lib/issues/useGithubStartWork";
 import { useOmniChatContext } from "../../lib/omniChatContext";
-import { invalidatePrefix, PROVIDER_TTL_MS, useCachedResource } from "../../lib/resourceCache";
+import {
+  combineResources,
+  invalidatePrefix,
+  PROVIDER_TTL_MS,
+  useCachedResource,
+} from "../../lib/resourceCache";
 import { formatRelativeTime } from "../../lib/time";
 import { openExternal } from "../../lib/url";
 import RefreshingIndicator from "../RefreshingIndicator";
@@ -32,16 +37,18 @@ import StartWorkButton from "./StartWorkButton";
 type TabKey = "assigned" | "all" | "filters";
 
 /**
- * Cache keys for everything this view reads. They share the `issues:` prefix so
- * a write that moves more than one of them — creating an issue changes both the
- * assigned and the all-open list — invalidates them in one call.
+ * Cache keys for everything this view reads. They share the `issues:github:`
+ * prefix so a write that moves more than one of them — creating an issue changes
+ * both the assigned and the all-open list — invalidates them in one call, and
+ * JIRA's own entries, which cost a call to a different rate-limited provider,
+ * are left alone.
  */
 const REPOS_KEY = "issues:github:repos";
 const ASSIGNED_KEY = "issues:github:assigned";
 const ALL_KEY = "issues:github:all";
 const FILTERS_KEY = "issues:github:filters";
-const STARS_KEY = "issues:stars";
-const LINKS_KEY = "issues:links";
+const STARS_KEY = "issues:github:stars";
+const LINKS_KEY = "issues:github:links";
 
 /** Stable identities so an unloaded resource doesn't re-render the lists. */
 const NO_ISSUES: IssueSummary[] = [];
@@ -265,12 +272,17 @@ export default function GithubIssuesView({
     [linksRes.data],
   );
 
-  const sources = [reposRes, assignedRes, allRes, filtersRes, starsRes, linksRes];
   // Only a load running behind data already on screen is a *re*fresh; a cold
   // one leaves the lists empty and has nothing to keep up to date.
-  const refreshing = sources.some((s) => s.refreshing);
-  const busy = refreshing || sources.some((s) => s.loading);
-  const error = sources.find((s) => s.error !== null)?.error ?? null;
+  const { loading, refreshing, error } = combineResources([
+    reposRes,
+    assignedRes,
+    allRes,
+    filtersRes,
+    starsRes,
+    linksRes,
+  ]);
+  const busy = refreshing || loading;
 
   // Open an issue another view asked for directly (attention/WIP panel). The
   // detail view re-fetches from the (provider, sourceKey, externalId) triple, so
@@ -295,9 +307,9 @@ export default function GithubIssuesView({
 
   const loadLinks = linksRes.refresh;
 
-  /** Drops every issue resource at once; each mounted hook reloads itself. */
-  const refresh = useCallback(() => {
-    invalidatePrefix("issues:");
+  /** Drops every GitHub issue resource at once; each mounted hook reloads itself. */
+  const dropCaches = useCallback(() => {
+    invalidatePrefix("issues:github:");
   }, []);
 
   const onToggleStar = useCallback(
@@ -347,7 +359,7 @@ export default function GithubIssuesView({
         summary={selected}
         onBack={() => setSelected(null)}
         onStarted={() => void loadLinks()}
-        onChanged={refresh}
+        onChanged={dropCaches}
       />
     );
   }
@@ -362,7 +374,7 @@ export default function GithubIssuesView({
         {/* Reachable refresh: flipping the toggle in Settings doesn't remount this view. */}
         <button
           type="button"
-          onClick={refresh}
+          onClick={dropCaches}
           disabled={busy}
           className="mt-3 rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
         >
@@ -409,7 +421,7 @@ export default function GithubIssuesView({
             <RefreshingIndicator active={refreshing} />
             <button
               type="button"
-              onClick={refresh}
+              onClick={dropCaches}
               disabled={busy}
               className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
               title="Refresh issues"
@@ -505,7 +517,7 @@ export default function GithubIssuesView({
           onClose={() => setCreating(false)}
           onCreated={(issue) => {
             setSelected(issue);
-            void refresh();
+            dropCaches();
           }}
         />
       )}

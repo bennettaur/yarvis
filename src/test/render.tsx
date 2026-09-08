@@ -1,4 +1,5 @@
 import type { ReactElement } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 
 /**
@@ -53,6 +54,33 @@ export async function mountForInteraction(
   await new Promise((resolve) => setTimeout(resolve, settleMs));
   return {
     host,
+    unmount: () => {
+      root.unmount();
+      host.remove();
+    },
+  };
+}
+
+/**
+ * Mounts and returns the text of the first frame React commits, still mounted so
+ * the caller can tear it down once whatever it was holding open is released.
+ * `renderToHtml` waits for everything to settle, which is exactly what a test
+ * about *not* having to wait cannot do — a cached list must be on screen before
+ * the sidecar answers.
+ *
+ * Forced synchronous: let React schedule the commit and a resolved-from-cache
+ * microtask could land first, hiding the very frame this is about.
+ */
+export function firstPaintOf(element: ReactElement): {
+  text: string;
+  unmount: () => void;
+} {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  flushSync(() => root.render(element));
+  return {
+    text: host.textContent ?? "",
     unmount: () => {
       root.unmount();
       host.remove();

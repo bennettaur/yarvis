@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
-import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type { IssueRepo, IssueSummary } from "../../lib/issues/types";
 import { type OpenWorkspaceRequest, onOpenWorkspace } from "../../lib/nav";
 import { invalidatePrefix } from "../../lib/resourceCache";
+import { firstPaintOf } from "../../test/render";
 
 const repos: IssueRepo[] = [{ id: "r1", owner: "octo", repo: "web", name: "web" }];
 
@@ -122,28 +122,6 @@ const { default: GithubIssuesView } = await import("./GithubIssuesView");
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 60));
 
-/**
- * Mounts and returns the text of the first frame React commits. `mount` waits
- * for everything to settle, which is exactly what a test about *not* having to
- * wait cannot do.
- */
-function firstPaintOf(): { text: string; cleanup: () => void } {
-  const host = document.createElement("div");
-  document.body.appendChild(host);
-  const root = createRoot(host);
-  // Forced synchronous so what is read below really is the first commit: let
-  // React schedule it and a resolved-from-cache microtask could land first,
-  // hiding the very frame this is about.
-  flushSync(() => root.render(createElement(GithubIssuesView)));
-  return {
-    text: host.textContent ?? "",
-    cleanup: () => {
-      root.unmount();
-      host.remove();
-    },
-  };
-}
-
 async function mount() {
   const host = document.createElement("div");
   document.body.appendChild(host);
@@ -186,8 +164,8 @@ beforeEach(() => {
 
 describe("GithubIssuesView", () => {
   it("paints the issues from the cache when the tab is revisited", async () => {
-    // The ticket's own example: create an issue, leave, come back seconds later
-    // and the list reloads from scratch. Every route is held open for the second
+    // Issue #275's own example: leave the tab, come back seconds later, and the
+    // list must not reload from scratch. Every route is held open for the second
     // visit, and the assertion is on the very first frame — so what it shows can
     // only have come from the cache.
     assigned = [issue];
@@ -199,10 +177,10 @@ describe("GithubIssuesView", () => {
     holdResponses = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const revisit = firstPaintOf();
+    const revisit = firstPaintOf(createElement(GithubIssuesView));
     expect(revisit.text).toContain(issue.title);
     release();
-    revisit.cleanup();
+    revisit.unmount();
   });
 
   it("re-pulls the lists when Refresh is clicked", async () => {
@@ -292,7 +270,7 @@ describe("GithubIssuesView", () => {
     configured = [];
     // Settings drops the cached issue resources when a repo's "Pull issues"
     // changes, so the remount sees the new answer rather than the cached one.
-    invalidatePrefix("issues:");
+    invalidatePrefix("issues:github:");
     const empty = await mount();
     expect(button(empty.host, "+ New issue")).toBeUndefined();
     empty.cleanup();

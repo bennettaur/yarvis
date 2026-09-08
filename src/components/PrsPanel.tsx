@@ -22,7 +22,12 @@ import {
 import { defaultPrsPlace, type PrsTabKey, readPrsPlace, writePrsPlace } from "../lib/pr/panelState";
 import { refDisplayRepo, refKey, refNumber } from "../lib/pr/ref";
 import type { AzFilter, GhFilter, Provider, PrSummary, ReviewingList } from "../lib/pr/types";
-import { PROVIDER_TTL_MS, useCachedResource } from "../lib/resourceCache";
+import {
+  combineResources,
+  PROBE_TTL_MS,
+  PROVIDER_TTL_MS,
+  useCachedResource,
+} from "../lib/resourceCache";
 import PrDetailView from "./PrDetailView";
 import PrGroupedList from "./pr/PrGroupedList";
 import PrLocator from "./pr/PrLocator";
@@ -32,21 +37,25 @@ import RefreshingIndicator from "./RefreshingIndicator";
 const GH_MY = "is:open is:pr author:@me";
 
 /**
- * Whether a provider's credentials work changes only when the user edits them
- * in Settings, so the probes are held far longer than the lists — long enough
- * that moving between app tabs never re-probes, and the toggle is drawn from
- * the cache on the first paint instead of settling into place.
+ * Whether one provider's credentials work. A 4xx is a definite "these don't",
+ * worth caching for as long as the credentials themselves last. Anything else —
+ * a sidecar still starting up, a network blip — is rethrown so it is not cached
+ * at all: a transient failure must not take a provider off the toggle until the
+ * probe's long TTL expires.
  */
-const PROBE_TTL_MS = 10 * 60_000;
+async function probe(viewer: () => Promise<unknown>): Promise<boolean> {
+  try {
+    await viewer();
+    return true;
+  } catch (e) {
+    const status = (e as { status?: unknown }).status;
+    if (typeof status === "number" && status >= 400 && status < 500) return false;
+    throw e;
+  }
+}
 
-const probeGithub = () =>
-  ghViewer()
-    .then(() => true)
-    .catch(() => false);
-const probeAzure = () =>
-  azViewer()
-    .then(() => true)
-    .catch(() => false);
+const probeGithub = () => probe(ghViewer);
+const probeAzure = () => probe(azViewer);
 
 /** The lists this panel shows for one provider, loaded together. */
 interface ProviderLists {
@@ -135,10 +144,11 @@ export default function PrsPanel({
    * from "checked, found nothing", so the empty state can't flash on first
    * paint.
    *
-   * A probe that fails resolves to `false` rather than rejecting: "this provider
-   * isn't configured" is an answer worth caching, and errors are not cached. A
-   * user with only GitHub set up would otherwise re-probe Azure on every remount
-   * and hold `probeComplete` — and with it the lists — behind that round trip.
+   * A probe that finds no working credentials resolves to `false` rather than
+   * rejecting: "this provider isn't configured" is an answer worth caching, and
+   * errors are not cached. A user with only GitHub set up would otherwise
+   * re-probe Azure on every remount and hold `probeComplete` — and with it the
+   * lists — behind that round trip.
    */
   const ghProbe = useCachedResource("prs:viewer:github", probeGithub, PROBE_TTL_MS);
   const azProbe = useCachedResource("prs:viewer:azure", probeAzure, PROBE_TTL_MS);
@@ -186,9 +196,11 @@ export default function PrsPanel({
   );
   const reviewing = reviewingRes.data;
 
-  const sources = [ghProbe, azProbe, listsRes, starsRes, reviewingRes];
-  const refreshing = sources.some((s) => s.refreshing);
-  const error = sources.find((s) => s.error !== null)?.error ?? null;
+  // A probe error is left out of `error` on purpose: it says one provider is
+  // unreachable, which the toggle already shows by leaving it out, and the user
+  // asked to see the provider they are on rather than a report on the other.
+  const { refreshing } = combineResources([ghProbe, azProbe, listsRes, starsRes, reviewingRes]);
+  const { error } = combineResources([listsRes, starsRes, reviewingRes]);
 
   const tabs = useMemo(() => tabsFor(provider), [provider]);
 

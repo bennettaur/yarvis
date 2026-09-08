@@ -1,8 +1,6 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
-import { flushSync } from "react-dom";
-import { createRoot } from "react-dom/client";
 import type { PrsPlace } from "../lib/pr/panelState";
-import { renderToHtml } from "../test/render";
+import { firstPaintOf, renderToHtml } from "../test/render";
 import PrsPanel from "./PrsPanel";
 
 const STORAGE_KEY = "yarvis.prs.place";
@@ -159,28 +157,6 @@ function storePlace(place: PrsPlace): void {
 
 const readPlace = (): PrsPlace => JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null");
 
-/**
- * Mounts and returns the text of the first frame React commits. `renderToHtml`
- * waits for everything to settle, which is exactly what a test about *not*
- * having to wait cannot do.
- */
-function firstPaintOf(element: React.ReactElement): { text: string; unmount: () => void } {
-  const host = document.createElement("div");
-  document.body.appendChild(host);
-  const root = createRoot(host);
-  // Forced synchronous so what is read below really is the first commit: let
-  // React schedule it and a resolved-from-cache microtask could land first,
-  // hiding the very frame this is about.
-  flushSync(() => root.render(element));
-  return {
-    text: host.textContent ?? "",
-    unmount: () => {
-      root.unmount();
-      host.remove();
-    },
-  };
-}
-
 /** The list nav is absent while the detail view is up, so it tells the two apart. */
 const LIST_NAV = "Needs review";
 
@@ -192,10 +168,9 @@ describe("PrsPanel place", () => {
   });
 
   it("paints the lists from the cache when the tab is revisited", async () => {
-    // The ticket's complaint: leaving a tab and coming back moments later used
-    // to blank the list and reload it. Every sidecar call is held open for the
-    // second visit, and the assertion is on the very first frame — so the list
-    // it shows can only have come from the cache.
+    // Issue #275: a revisit must not blank the list and reload it. Every sidecar
+    // call is held open for the second visit, and the assertion is on the very
+    // first frame — so the list it shows can only have come from the cache.
     await renderToHtml(<PrsPanel />);
 
     let release = () => {};

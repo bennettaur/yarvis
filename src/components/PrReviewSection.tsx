@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ghPrConfig, ghSavePrConfig } from "../lib/pr/github";
 import type { GhPrConfig } from "../lib/pr/types";
+import { invalidatePrefix } from "../lib/resourceCache";
 import { openExternal } from "../lib/url";
 
 const SEARCH_DOCS =
@@ -67,6 +68,10 @@ export default function PrReviewSection() {
           reviewingLookbackDays: config.reviewingLookbackDays,
         }),
       );
+      // The needs-review query decides what one of the PR tab's lists holds, and
+      // that tab is cached across navigation — so its copy has to be dropped
+      // here rather than waiting for the cache to go stale.
+      invalidatePrefix("prs:");
       setSaved(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

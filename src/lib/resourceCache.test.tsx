@@ -3,9 +3,11 @@ import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
   clearResourceCache,
+  combineResources,
   invalidate,
   invalidatePrefix,
   primeCache,
+  type Resource,
   useCachedResource,
 } from "./resourceCache";
 
@@ -16,12 +18,21 @@ let fetchCount = 0;
 let loadMs = 0;
 /** When set, the loader rejects with this message instead of resolving. */
 let failWith: string | null = null;
+/**
+ * Per-call answers, consumed in order, for a case that needs two loads of the
+ * same key to differ — a slow one overtaken by a fast one, say. Falls back to
+ * the flags above once exhausted.
+ */
+let script: { value?: string; ms?: number; fail?: string }[] = [];
 
 async function load(): Promise<string> {
   fetchCount++;
-  if (loadMs > 0) await new Promise((resolve) => setTimeout(resolve, loadMs));
-  if (failWith !== null) throw new Error(failWith);
-  return value;
+  const step = script.shift();
+  const ms = step?.ms ?? loadMs;
+  if (ms > 0) await new Promise((resolve) => setTimeout(resolve, ms));
+  const fail = step?.fail ?? failWith;
+  if (fail) throw new Error(fail);
+  return step?.value ?? value;
 }
 
 /** Every state the probe has rendered, in order. React commits asynchronously,
@@ -63,6 +74,7 @@ beforeEach(() => {
   fetchCount = 0;
   loadMs = 0;
   failWith = null;
+  script = [];
   rendered.length = 0;
 });
 
@@ -169,6 +181,20 @@ describe("useCachedResource", () => {
     b.root.unmount();
   });
 
+  it("primes through an updater, so a load landing in between isn't clobbered", async () => {
+    primeCache("k", ["a"]);
+    primeCache<string[]>("k", (current) => [...(current ?? []), "b"]);
+    const { host, root } = mount(
+      createElement(function Probe2() {
+        const { data } = useCachedResource<string[]>("k", async () => []);
+        return createElement("span", null, (data ?? []).join(","));
+      }),
+    );
+    await settle();
+    expect(host.textContent).toBe("a,b");
+    root.unmount();
+  });
+
   it("primes a value a caller already has, without a load", async () => {
     primeCache("k", "polled");
     const { host, root } = mount(createElement(Probe, { subject: "k" }));
@@ -177,6 +203,49 @@ describe("useCachedResource", () => {
     expect(host.textContent).toBe("polled/idle/-");
     expect(fetchCount).toBe(0);
     root.unmount();
+  });
+
+  it("ignores a superseded load's value, however late it lands", async () => {
+    // The first load is still in flight when the key is invalidated, and it
+    // resolves after the load that replaced it. Writing it back would leave the
+    // cache holding the older answer under a fresh timestamp — so the next
+    // visit would paint stale data, which is what this cache exists to avoid.
+    script = [
+      { value: "slow", ms: 60 },
+      { value: "fast", ms: 0 },
+    ];
+    const first = mount(createElement(Probe, { subject: "k" }));
+    await settle(10);
+    invalidate("k");
+    await settle(100);
+    first.root.unmount();
+
+    const revisit = mount(createElement(Probe, { subject: "k" }));
+    await settle();
+    expect(revisit.host.textContent).toBe("fast/idle/-");
+    revisit.root.unmount();
+  });
+
+  it("ignores a superseded load's failure, however late it lands", async () => {
+    // The mirror case: the stale load rejects, and dropping the entry on its way
+    // out would discard the newer load's value and send the next caller back to
+    // the provider this cache exists to spare.
+    script = [
+      { fail: "gone", ms: 60 },
+      { value: "fast", ms: 0 },
+    ];
+    const first = mount(createElement(Probe, { subject: "k" }));
+    await settle(10);
+    invalidate("k");
+    await settle(100);
+    first.root.unmount();
+
+    fetchCount = 0;
+    const revisit = mount(createElement(Probe, { subject: "k" }));
+    await settle();
+    expect(revisit.host.textContent).toBe("fast/idle/-");
+    expect(fetchCount).toBe(0);
+    revisit.root.unmount();
   });
 
   it("reloads every mounted key under an invalidated prefix", async () => {
@@ -193,5 +262,31 @@ describe("useCachedResource", () => {
     a.root.unmount();
     b.root.unmount();
     other.root.unmount();
+  });
+});
+
+describe("combineResources", () => {
+  const resource = (over: Partial<Resource<unknown>>): Resource<unknown> => ({
+    data: null,
+    error: null,
+    loading: false,
+    refreshing: false,
+    refresh: async () => {},
+    ...over,
+  });
+
+  it("is loading or refreshing while any one of them is", () => {
+    const combined = combineResources([resource({}), resource({ refreshing: true })]);
+    expect(combined.loading).toBe(false);
+    expect(combined.refreshing).toBe(true);
+  });
+
+  it("reports the first error in the order given", () => {
+    const combined = combineResources([
+      resource({}),
+      resource({ error: "first" }),
+      resource({ error: "second" }),
+    ]);
+    expect(combined.error).toBe("first");
   });
 });

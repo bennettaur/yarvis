@@ -18,7 +18,13 @@ import {
 import { jiraAssigned, jiraCreated, jiraSearch, jiraViewer } from "../../lib/jira/api";
 import { useJiraStartWork } from "../../lib/jira/useJiraStartWork";
 import { useOmniChatContext } from "../../lib/omniChatContext";
-import { invalidatePrefix, PROVIDER_TTL_MS, useCachedResource } from "../../lib/resourceCache";
+import {
+  combineResources,
+  invalidatePrefix,
+  PROBE_TTL_MS,
+  PROVIDER_TTL_MS,
+  useCachedResource,
+} from "../../lib/resourceCache";
 import { openExternal } from "../../lib/url";
 import RefreshingIndicator from "../RefreshingIndicator";
 import JiraCreateIssueModal from "./JiraCreateIssueModal";
@@ -44,13 +50,17 @@ const LINKS_KEY = "issues:jira:links";
 const NO_ISSUES: IssueSummary[] = [];
 const NO_STARS: IssueStar[] = [];
 const NO_FILTERS: IssueFilter[] = [];
-const NO_LINKS: IssueLink[] = [];
 
 /**
  * The gate answers a 400 "jira not configured" when the secrets are missing.
  * That is a state to explain rather than an error to report, and returning it as
  * data means it is cached like any other answer — a remount of an unconfigured
  * JIRA paints the explanation straight away instead of an empty list first.
+ *
+ * Unlike the PR tab's probes, which collapse every failure into "not available",
+ * this rethrows anything else: JIRA is the only provider this tab can show, so
+ * "your credentials are missing" and "JIRA is down" send the user to different
+ * places and must not read the same.
  */
 async function probeJira(): Promise<{ configured: boolean }> {
   try {
@@ -274,15 +284,19 @@ export default function JiraIssuesView() {
   // Probed first so the "not configured" state reads precisely, distinct from an
   // upstream failure, and so the lists below aren't asked for at all until JIRA
   // is reachable.
-  const viewerRes = useCachedResource(VIEWER_KEY, probeJira, PROVIDER_TTL_MS);
+  const viewerRes = useCachedResource(VIEWER_KEY, probeJira, PROBE_TTL_MS);
   const configured = viewerRes.data?.configured === true;
+  // The two searches go to JIRA; the filters, stars and links behind them are
+  // the sidecar's own rows and refresh on the shorter default.
   const assignedRes = useCachedResource<IssueSummary[]>(
     configured ? ASSIGNED_KEY : null,
     jiraAssigned,
+    PROVIDER_TTL_MS,
   );
   const createdRes = useCachedResource<IssueSummary[]>(
     configured ? CREATED_KEY : null,
     jiraCreated,
+    PROVIDER_TTL_MS,
   );
   const filtersRes = useCachedResource<IssueFilter[]>(configured ? FILTERS_KEY : null, () =>
     issueFilters("jira"),
@@ -301,19 +315,22 @@ export default function JiraIssuesView() {
   const links = useMemo(
     () =>
       new Map(
-        (linksRes.data ?? NO_LINKS).map((l) => [
-          issueKey(l.provider, l.sourceKey, l.externalId),
-          l,
-        ]),
+        (linksRes.data ?? []).map((l) => [issueKey(l.provider, l.sourceKey, l.externalId), l]),
       ),
     [linksRes.data],
   );
 
-  const sources = [viewerRes, assignedRes, createdRes, filtersRes, starsRes, linksRes];
-  const refreshing = sources.some((s) => s.refreshing);
-  const loading = sources.some((s) => s.loading);
+  const combined = combineResources([
+    viewerRes,
+    assignedRes,
+    createdRes,
+    filtersRes,
+    starsRes,
+    linksRes,
+  ]);
+  const { loading, refreshing } = combined;
   const notConfigured = viewerRes.data?.configured === false;
-  const error = searchError ?? sources.find((s) => s.error !== null)?.error ?? null;
+  const error = searchError ?? combined.error;
 
   const starredKeys = useMemo(
     () => new Set(stars.map((s) => issueKey(s.provider, s.sourceKey, s.externalId))),
@@ -345,7 +362,7 @@ export default function JiraIssuesView() {
   const loadLinks = linksRes.refresh;
 
   /** Drops every JIRA resource at once; each mounted hook reloads itself. */
-  const refresh = useCallback(() => {
+  const dropCaches = useCallback(() => {
     invalidatePrefix("issues:jira:");
   }, []);
 
@@ -358,6 +375,7 @@ export default function JiraIssuesView() {
       return;
     }
     let live = true;
+    setSearchError(null);
     jiraSearch(`issuekey in (${keys.join(",")}) ORDER BY updated DESC`)
       .then((rows) => live && setStarredIssues(rows))
       .catch((e) => live && setSearchError(e instanceof Error ? e.message : String(e)));
@@ -409,6 +427,10 @@ export default function JiraIssuesView() {
   );
 
   const runSearch = useCallback(async (jql: string) => {
+    // Cleared up front, or a search that failed once keeps its banner for the
+    // life of the view — and hides every list error behind it, since it takes
+    // precedence over them.
+    setSearchError(null);
     setSearchResults(await jiraSearch(jql));
   }, []);
 
@@ -627,7 +649,9 @@ export default function JiraIssuesView() {
         />
       )}
 
-      {creating && <JiraCreateIssueModal onClose={() => setCreating(false)} onCreated={refresh} />}
+      {creating && (
+        <JiraCreateIssueModal onClose={() => setCreating(false)} onCreated={dropCaches} />
+      )}
     </div>
   );
 }

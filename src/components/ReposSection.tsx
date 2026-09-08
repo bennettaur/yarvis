@@ -92,8 +92,10 @@ export default function ReposSection() {
       }
       // Which repos pull issues decides what the Issues tab may ask for, and
       // that tab is cached across navigation — so its view of this list has to
-      // be dropped here rather than waiting for the cache to go stale.
-      invalidatePrefix("issues:");
+      // be dropped here rather than waiting for the cache to go stale. Only
+      // GitHub's: repo config says nothing about JIRA, or about the stars and
+      // links that are keyed by issue rather than by repo.
+      invalidatePrefix("issues:github:");
       await refresh();
       setEditingId(null);
       setDraft(blankDraft());
@@ -109,7 +111,7 @@ export default function ReposSection() {
       }
       try {
         await deleteRepo(id);
-        invalidatePrefix("issues:");
+        invalidatePrefix("issues:github:");
         await refresh();
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));

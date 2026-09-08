@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { type EventRecord, listEvents, listEventTypes } from "../../lib/events";
 import { useCachedResource } from "../../lib/resourceCache";
+import RefreshingIndicator from "../RefreshingIndicator";
 
 /**
  * The raw activity log. Paginated and searchable because it is append-only and
@@ -78,7 +79,6 @@ export default function EventsTab() {
     }),
   );
   const page = pageRes.data ?? NO_PAGE;
-  const loading = pageRes.loading || pageRes.refreshing;
   const error = typesError ?? pageRes.error;
 
   const domains = [...new Set(types.map(domainOf))].sort();
@@ -119,14 +119,15 @@ export default function EventsTab() {
             setOffset(0);
             setApplied(query.trim());
           }}
-          className="rounded-md border border-zinc-700 px-2 py-1 text-sm hover:bg-zinc-800"
+          className="ml-auto rounded-md border border-zinc-700 px-2 py-1 text-sm hover:bg-zinc-800"
         >
           Search
         </button>
-        <span className="ml-auto text-xs text-zinc-500">
+        <RefreshingIndicator active={pageRes.refreshing} />
+        <span className="text-xs text-zinc-500">
           {page.total === 0
             ? "no events"
-            : `${offset + 1}–${shownTo} of ${page.total}${loading ? " · loading…" : ""}`}
+            : `${offset + 1}–${shownTo} of ${page.total}${pageRes.loading ? " · loading…" : ""}`}
         </span>
       </div>
 
