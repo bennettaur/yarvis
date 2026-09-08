@@ -12,6 +12,7 @@ import McpServerSection from "./McpServerSection";
 import ModelCatalogSection from "./ModelCatalogSection";
 import PrReviewSection from "./PrReviewSection";
 import ReposSection from "./ReposSection";
+import SecretBackendSection from "./SecretBackendSection";
 import SpecialistSection from "./SpecialistSection";
 import TelegramSection from "./TelegramSection";
 import TerminalSection from "./TerminalSection";
@@ -85,6 +86,7 @@ export default function SettingsPanel() {
 
       {active === "credentials" && (
         <div className="space-y-5">
+          <SecretBackendSection />
           <KeychainSection />
           <IntegrationSettingsSection />
         </div>

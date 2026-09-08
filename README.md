@@ -11,7 +11,7 @@ daily/weekly work tracking. See the roadmap in
 Three processes with a clean ownership split:
 
 - **Rust core** (`src-tauri/`) — native OS integration (window, tray,
-  notifications), secret storage in the macOS Keychain, and supervision of the
+  notifications), secret storage (macOS Keychain or 1Password), and supervision of the
   sidecar process (it picks a free loopback port, generates a bearer token, and
   injects secrets as environment variables).
 - **React frontend** (`src/`) — Vite + TypeScript + Tailwind. Talks to the Rust
@@ -372,7 +372,36 @@ access-control check while OTP is off.
 > code-signed with an application-identifier entitlement so it can use the macOS
 > data-protection keychain — unsigned dev builds fall back to the login-password
 > prompt. That signing work is tracked separately; once it lands, the single
-> authorization becomes a single Touch ID tap with no further change here.
+> authorization becomes a single Touch ID tap with no further change here. The
+> 1Password store below is the way to get a biometric gate today, since the
+> desktop app supplies it rather than the app's own signature.
+
+### 1Password instead of the Keychain
+
+**Settings → Credentials → Secret store** switches that single item from the
+macOS Keychain to a 1Password item, addressed by vault and item title. The
+same JSON object is stored either way, in the item's notes field
+(`op://<vault>/<item>/notesPlain`), so every secret the app manages — including
+the MCP-server, custom-provider and embeddings credentials nested inside it —
+moves together.
+
+It needs the [1Password CLI](https://developer.1password.com/docs/cli/)
+(`op`) with the desktop app's CLI integration turned on, which is what puts
+each access behind Touch ID. A GUI launch inherits a minimal `PATH`, so the app
+looks for `op` in `/opt/homebrew/bin` and `/usr/local/bin` as well; set
+`YARVIS_OP_BIN` for an install somewhere else.
+
+Saving verifies the vault is reachable, copies the current secrets into the
+target item, and only then records the choice — a mistyped vault leaves the app
+on the store it was already using. The item is created as a Secure Note on the
+first save if it doesn't exist, and the previous store's copy is deliberately
+left in place, so switching back is just switching back. An existing target
+that already holds secrets is never overwritten.
+
+The trade-off to know about: a read is authorized by 1Password, but a write
+passes the blob to `op` as a command-line argument, where it is visible in the
+process table with no prompt for the duration of that one call. Closing that
+means storing the blob as a 1Password document rather than a note field.
 
 For Google Calendar, create a **Desktop app** OAuth client in Google Cloud
 Console and register the loopback redirect
@@ -1109,7 +1138,9 @@ src/            React frontend (Vite + TS + Tailwind)
     find/       find-on-page bar (Cmd+F), hosted by the shell over the content region
   omni/         json-render component catalog, registry, layout primitives
 src-tauri/      Rust core (Tauri v2)
-  src/keychain.rs   Keychain-backed secret commands (single consolidated item)
+  src/keychain.rs   secret commands over the single consolidated item
+  src/secret_store.rs  which store that item lives in: macOS Keychain or 1Password
+  src/onepassword.rs   the 1Password store, driven through the `op` CLI
   src/settings.rs   non-secret settings, persisted to ~/.yarvis/settings.json;
                     migrates the non-secret values that used to live in the Keychain
   src/instance.rs   which instance this process is, and what it therefore owns
