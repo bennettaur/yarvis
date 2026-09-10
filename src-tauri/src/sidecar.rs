@@ -195,7 +195,21 @@ async fn supervise(app: AppHandle, port: u16, token: String, restart: Arc<Notify
         if let Some(path) = &log {
             rotate_if_large(path);
         }
-        let mut command = build_command(&app, port, &token);
+        // Off the async runtime's worker: reading the secrets can block on a
+        // 1Password authorization prompt for as long as `OP_TIMEOUT`, and a
+        // supervisor restart must not hold a worker thread for a minute.
+        let (build_app, build_token) = (app.clone(), token.clone());
+        let mut command = match tauri::async_runtime::spawn_blocking(move || {
+            build_command(&build_app, port, &build_token)
+        })
+        .await
+        {
+            Ok(command) => command,
+            Err(e) => {
+                eprintln!("[sidecar] could not prepare the launch command: {e}");
+                return;
+            }
+        };
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         match command.spawn() {
             Ok(mut child) => {

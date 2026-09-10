@@ -13,17 +13,24 @@
 //! each access with Touch ID, which is the reason to prefer this over the
 //! Keychain in the first place.
 //!
-//! **Known weakness:** a write passes the blob as a command-line argument, so
-//! it is visible in the process table for as long as `op` runs. That is *not*
-//! equivalent to what a read exposes: `op read` is gated behind the desktop
-//! app's authorization prompt, while argv is readable by any process running as
-//! the user with no prompt at all. `op item edit` has no stdin form for field
-//! assignments, so closing this means changing how the blob is stored (a
-//! document rather than a note field). Every write goes through [`run_op`] so
-//! that change lands in one place.
+//! A write hands `op` the blob on **stdin**, as a JSON item template, never as
+//! a command-line argument. 1Password's own guidance is to use a template for
+//! sensitive values because "command arguments can be visible to other
+//! processes on your machine" — and argv is worse than it first sounds here,
+//! since a read is gated behind the desktop app's authorization prompt while
+//! argv is readable, with no prompt at all, by anything running as the user,
+//! including the subprocesses this app spawns.
+//!
+//! The channel is fussy, and the shape below is what `op` 2.39 actually
+//! accepts: the template must arrive on a real pipe. A shell redirect from a
+//! regular file is not detected as stdin at all — `op` reports success and
+//! silently applies nothing — and `--template=/dev/stdin` fails outright on a
+//! pipe with "cannot edit an item from template and stdin at the same time".
+//! Passing the template as a *file* would work, but only by putting the blob
+//! on disk, which is what this avoids.
 
 use std::ffi::OsString;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -135,6 +142,10 @@ fn item_not_found(stderr: &str) -> bool {
         || stderr.contains("no item matches")
         || stderr.contains("item not found")
         || stderr.contains("item doesn't exist")
+        // What `op item edit` says when the template arrives on stdin, which
+        // is the phrasing the create fallback actually depends on — a read
+        // failing the same way says "isn't an item" instead.
+        || stderr.contains("could not find item to edit")
 }
 
 /// True when `op`'s stderr says the *vault* was not found. Kept apart from
@@ -156,20 +167,19 @@ fn read_args(item: &ItemRef) -> Vec<String> {
     ]
 }
 
-fn edit_args(item: &ItemRef, blob: &str) -> Vec<String> {
+fn edit_args(item: &ItemRef) -> Vec<String> {
     vec![
         "item".to_string(),
         "edit".to_string(),
         item.item.clone(),
         "--vault".to_string(),
         item.vault.clone(),
-        format!("{NOTES_FIELD}={blob}"),
     ]
 }
 
-/// Creates the item with the blob already in its notes field, so a first write
-/// never leaves an empty item behind.
-fn create_args(item: &ItemRef, blob: &str) -> Vec<String> {
+/// Creates the item, taking the blob from the template on stdin so a first
+/// write never leaves an empty item behind.
+fn create_args(item: &ItemRef) -> Vec<String> {
     vec![
         "item".to_string(),
         "create".to_string(),
@@ -179,43 +189,85 @@ fn create_args(item: &ItemRef, blob: &str) -> Vec<String> {
         item.item.clone(),
         "--vault".to_string(),
         item.vault.clone(),
-        format!("{NOTES_FIELD}={blob}"),
+        // Tells `op item create` to read the template from stdin. `op item
+        // edit` takes no such marker and rejects the command if given one.
+        "-".to_string(),
     ]
+}
+
+/// The item template carrying the blob, for stdin.
+///
+/// Only the one field is named. `op` merges it into the existing item, so a
+/// partial template is enough and there is no need to fetch the whole item
+/// first just to write one field back.
+fn notes_template(blob: &str) -> String {
+    serde_json::json!({
+        "fields": [{
+            "id": NOTES_FIELD,
+            "type": "STRING",
+            "purpose": "NOTES",
+            "label": NOTES_FIELD,
+            "value": blob,
+        }]
+    })
+    .to_string()
 }
 
 /// Whether an invocation's stderr may be shown to the user.
 ///
-/// A write carries the blob as an argv element, and `op` echoes the offending
-/// argument in its own diagnostics — so relaying stderr from a write would put
-/// the entire secrets object into an error string that is rendered in Settings
-/// and pasted into bug reports. That is strictly worse than the argv window
-/// itself, which is transient and same-user; an error string is durable and
-/// shareable.
+/// `op` quotes the input it could not process in its own diagnostics, so
+/// relaying stderr from a write risks putting the secrets object into an error
+/// string that Settings renders and a user pastes into a bug report — durable
+/// and shareable, unlike anything the process itself holds.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Detail {
-    /// Relay `op`'s message. Only for invocations whose arguments carry no
-    /// secret material.
+    /// Relay `op`'s message. Only for invocations that were handed no secret
+    /// material on stdin or in their arguments.
     Show,
     Redact,
 }
 
-/// Runs `op` with `args`, enforcing [`OP_TIMEOUT`].
+/// Runs `op` with `args`, writing `stdin_data` to its standard input and
+/// enforcing [`OP_TIMEOUT`].
 ///
 /// The child's stdout and stderr are pipes read only after it exits, so a
 /// command whose output could exceed the pipe buffer would deadlock rather than
 /// time out. Everything here is one JSON blob or one short error, well inside
-/// that buffer. stdin is closed so `op` fails rather than waiting on a prompt
-/// when it cannot reach the desktop app.
-fn run_op(args: &[String], detail: Detail) -> Result<Outcome, String> {
+/// that buffer; the same reasoning covers the template written below, which
+/// goes in before the wait begins.
+///
+/// With no template to send, stdin is closed rather than left open, so `op`
+/// fails instead of waiting on a prompt when it cannot reach the desktop app.
+fn run_op(args: &[String], stdin_data: Option<&str>, detail: Detail) -> Result<Outcome, String> {
     let mut child = Command::new(op_bin())
         .args(args)
-        .stdin(Stdio::null())
+        .stdin(if stdin_data.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| {
             format!("could not run the 1Password CLI ('op'): {e}. Install it, or set {OP_BIN_ENV}.")
         })?;
+
+    if let Some(data) = stdin_data {
+        // Dropped immediately after writing: `op` reads the template to EOF,
+        // so leaving the pipe open would hang until the timeout.
+        let mut pipe = child
+            .stdin
+            .take()
+            .ok_or_else(|| "the 1Password CLI gave no stdin to write to".to_string())?;
+        let written = pipe.write_all(data.as_bytes()).and_then(|()| pipe.flush());
+        drop(pipe);
+        if let Err(e) = written {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("could not send the item to the 1Password CLI: {e}"));
+        }
+    }
 
     let deadline = Instant::now() + OP_TIMEOUT;
     let status = loop {
@@ -266,7 +318,7 @@ fn no_such_vault(item: &ItemRef) -> String {
 /// unreachable or locked 1Password is an `Err`, never `None` — the caller
 /// writes back what it reads, so the two must not be confused.
 pub fn read_blob(item: &ItemRef) -> Result<Option<String>, String> {
-    match run_op(&read_args(item), Detail::Show)? {
+    match run_op(&read_args(item), None, Detail::Show)? {
         Outcome::Ok(blob) => Ok(Some(blob)),
         Outcome::MissingItem => Ok(None),
         Outcome::MissingVault => Err(no_such_vault(item)),
@@ -275,20 +327,27 @@ pub fn read_blob(item: &ItemRef) -> Result<Option<String>, String> {
 
 /// Writes the secrets blob, creating the item on first use.
 pub fn write_blob(item: &ItemRef, blob: &str) -> Result<(), String> {
-    write_blob_with(|args| run_op(args, Detail::Redact), item, blob)
+    write_blob_with(
+        |args, template| run_op(args, Some(template), Detail::Redact),
+        item,
+        blob,
+    )
 }
 
 /// The edit-then-create sequence, over an injected runner so the ordering can
-/// be exercised without the CLI.
+/// be exercised without the CLI. The runner receives the arguments and the
+/// template that goes to stdin, keeping the blob out of both the argument list
+/// and any error `op` produces.
 fn write_blob_with(
-    run: impl Fn(&[String]) -> Result<Outcome, String>,
+    run: impl Fn(&[String], &str) -> Result<Outcome, String>,
     item: &ItemRef,
     blob: &str,
 ) -> Result<(), String> {
-    match run(&edit_args(item, blob))? {
+    let template = notes_template(blob);
+    match run(&edit_args(item), &template)? {
         Outcome::Ok(_) => Ok(()),
         Outcome::MissingVault => Err(no_such_vault(item)),
-        Outcome::MissingItem => match run(&create_args(item, blob))? {
+        Outcome::MissingItem => match run(&create_args(item), &template)? {
             Outcome::Ok(_) => Ok(()),
             Outcome::MissingVault | Outcome::MissingItem => Err(no_such_vault(item)),
         },
@@ -307,7 +366,7 @@ pub fn probe(item: &ItemRef) -> Result<(), String> {
         "--format".to_string(),
         "json".to_string(),
     ];
-    match run_op(&args, Detail::Show)? {
+    match run_op(&args, None, Detail::Show)? {
         Outcome::Ok(_) => Ok(()),
         Outcome::MissingVault | Outcome::MissingItem => Err(no_such_vault(item)),
     }
@@ -316,8 +375,8 @@ pub fn probe(item: &ItemRef) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        create_args, edit_args, item_not_found, read_args, vault_not_found, write_blob_with,
-        ItemRef, Outcome,
+        create_args, edit_args, item_not_found, notes_template, read_args, vault_not_found,
+        write_blob_with, ItemRef, Outcome,
     };
     use std::cell::RefCell;
 
@@ -373,22 +432,15 @@ mod tests {
     #[test]
     fn a_write_addresses_the_item_by_title_within_its_vault() {
         assert_eq!(
-            edit_args(&item(), "{\"a\":1}"),
-            vec![
-                "item",
-                "edit",
-                "Yarvis Secrets",
-                "--vault",
-                "Private",
-                "notesPlain={\"a\":1}",
-            ]
+            edit_args(&item()),
+            vec!["item", "edit", "Yarvis Secrets", "--vault", "Private"]
         );
     }
 
     #[test]
-    fn a_created_item_is_a_secure_note_carrying_the_blob() {
+    fn a_created_item_is_a_secure_note_reading_its_template_from_stdin() {
         assert_eq!(
-            create_args(&item(), "{}"),
+            create_args(&item()),
             vec![
                 "item",
                 "create",
@@ -398,13 +450,47 @@ mod tests {
                 "Yarvis Secrets",
                 "--vault",
                 "Private",
-                "notesPlain={}",
+                "-",
             ]
         );
     }
 
+    /// The point of the template: the blob must never reach the argument
+    /// list, where any process running as this user could read it out of the
+    /// process table with no authorization prompt.
+    #[test]
+    fn no_argument_of_either_write_carries_the_blob() {
+        let blob = "{\"github_token\":\"sekrit\"}";
+        for args in [edit_args(&item()), create_args(&item())] {
+            assert!(
+                !args.iter().any(|a| a.contains("sekrit")),
+                "the blob reached argv: {args:?}"
+            );
+        }
+        assert!(notes_template(blob).contains("sekrit"));
+    }
+
+    /// The shape `op` 2.39 accepts: a partial template naming just the notes
+    /// field, which it merges into the item.
+    #[test]
+    fn the_template_names_only_the_notes_field() {
+        let template: serde_json::Value =
+            serde_json::from_str(&notes_template("{\"a\":1}")).unwrap();
+        let fields = template["fields"].as_array().unwrap();
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0]["id"], "notesPlain");
+        assert_eq!(fields[0]["purpose"], "NOTES");
+        assert_eq!(fields[0]["value"], "{\"a\":1}");
+    }
+
+    /// Verified against `op` 2.39: a missing item reports differently
+    /// depending on how the write arrived, and the create fallback hangs off
+    /// the stdin phrasing.
     #[test]
     fn an_absent_item_is_recognised() {
+        assert!(item_not_found(
+            "[ERROR] unable to process line 1: could not find item to edit"
+        ));
         assert!(item_not_found("\"Yarvis\" isn't an item. Specify the item"));
         assert!(item_not_found("error: no item matches \"Yarvis\""));
         assert!(item_not_found("ERROR: item not found"));
@@ -439,13 +525,15 @@ mod tests {
 
     /// Records what the injected runner was asked to do, so the sequencing
     /// assertions read against real calls rather than a call count.
-    fn recording_run(
+    fn recording_run<'a>(
         outcomes: Vec<Outcome>,
-        log: &RefCell<Vec<Vec<String>>>,
-    ) -> impl Fn(&[String]) -> Result<Outcome, String> + '_ {
+        log: &'a RefCell<Vec<Vec<String>>>,
+        templates: &'a RefCell<Vec<String>>,
+    ) -> impl Fn(&[String], &str) -> Result<Outcome, String> + 'a {
         let outcomes = RefCell::new(outcomes.into_iter());
-        move |args: &[String]| {
+        move |args: &[String], template: &str| {
             log.borrow_mut().push(args.to_vec());
+            templates.borrow_mut().push(template.to_string());
             Ok(outcomes.borrow_mut().next().expect("an unexpected op call"))
         }
     }
@@ -453,23 +541,34 @@ mod tests {
     #[test]
     fn an_existing_item_is_edited_and_never_created() {
         let log = RefCell::new(Vec::new());
-        let run = recording_run(vec![Outcome::Ok(String::new())], &log);
+        let sent = RefCell::new(Vec::new());
+        let run = recording_run(vec![Outcome::Ok(String::new())], &log, &sent);
         write_blob_with(run, &item(), "{}").unwrap();
 
         let calls = log.borrow();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0], edit_args(&item(), "{}"));
+        assert_eq!(calls[0], edit_args(&item()));
     }
 
     #[test]
     fn a_missing_item_is_created_carrying_the_same_blob() {
         let log = RefCell::new(Vec::new());
-        let run = recording_run(vec![Outcome::MissingItem, Outcome::Ok(String::new())], &log);
+        let sent = RefCell::new(Vec::new());
+        let run = recording_run(
+            vec![Outcome::MissingItem, Outcome::Ok(String::new())],
+            &log,
+            &sent,
+        );
         write_blob_with(run, &item(), "{\"a\":1}").unwrap();
 
         let calls = log.borrow();
         assert_eq!(calls.len(), 2);
-        assert_eq!(calls[1], create_args(&item(), "{\"a\":1}"));
+        assert_eq!(calls[1], create_args(&item()));
+        // The create must carry the same blob the failed edit did, or a first
+        // run would leave an item holding nothing.
+        let templates = sent.borrow();
+        assert_eq!(templates[0], templates[1]);
+        assert!(templates[1].contains("{\\\"a\\\":1}"));
     }
 
     /// A mistyped vault must not be papered over by creating the item there:
@@ -477,7 +576,8 @@ mod tests {
     #[test]
     fn a_missing_vault_is_reported_rather_than_created_into() {
         let log = RefCell::new(Vec::new());
-        let run = recording_run(vec![Outcome::MissingVault], &log);
+        let sent = RefCell::new(Vec::new());
+        let run = recording_run(vec![Outcome::MissingVault], &log, &sent);
         let err = write_blob_with(run, &item(), "{}").unwrap_err();
 
         assert!(err.contains("Private"), "{err}");

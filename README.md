@@ -417,12 +417,13 @@ copied, nothing to copy, or target already occupied — because the last case
 leaves the app authenticating with a different set of credentials than it had a
 moment before.
 
-The trade-off to know about: a read is authorized by 1Password, but `op item
-edit` takes field values only as command-line arguments, so a write puts the
-blob in the process table — readable, with no prompt, by anything running as
-you for the duration of that one call, including subprocesses this app spawns
-such as the sidecar and stdio MCP servers. Closing it means storing the blob
-where `op` accepts stdin: a 1Password document rather than a note field.
+Writes hand `op` the blob on standard input, as a JSON item template, so it
+never appears in the process table — 1Password's own guidance is to use a
+template for sensitive values, since command arguments are visible to other
+processes. That matters more than it sounds: a read is gated behind the
+desktop app's authorization prompt, while an argument is readable with no
+prompt at all by anything running as you, including the subprocesses this app
+spawns.
 
 ### Connected MCP servers
 
