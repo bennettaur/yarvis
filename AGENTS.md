@@ -237,6 +237,14 @@ back to ad-hoc.
   establish is *what the agent is showing*, so a send is reported as delivered,
   never as done. Anything new that forwards text into a session owes the same
   three.
+- A workspace root's `.claude` directory is jointly owned. Provisioning copies
+  each repo's skills and agents up into it (`workspaces/claudeAssets.ts`) because
+  Claude Code discovers them only under the directory it starts in and the
+  `skills.paths`/`agents.paths` settings keys load nothing. What Yarvis wrote is
+  recorded in `.claude/.yarvis-copied.json` and removed by name on the next
+  provision; everything else in there is the user's and must survive. Anything
+  new that writes into that directory clears its own entries by name, never the
+  directory.
 - Built-in agent tools come from one builder — `chat/builtinTools.ts` — which
   both `runAgentTurn` and `agentTools/registry.ts` read. This is not tidiness:
   the *active* tool set for a step is computed from registry policy, so a

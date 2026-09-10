@@ -137,6 +137,13 @@ describe("buildClaudeSettings", () => {
     expect(settings.agents).toEqual({ enabled: true });
   });
 
+  it("removes the skills key entirely when paths was all it held", () => {
+    const settings = buildClaudeSettings(WORKSPACE_ID, {
+      skills: { paths: ["/ws/repo/.claude/skills"] },
+    }) as Record<string, unknown>;
+    expect(settings.skills).toBeUndefined();
+  });
+
   it("leaves a skills key the user set by hand alone", () => {
     // `enabled` is a real toggle even though `paths` is not.
     const settings = buildClaudeSettings(WORKSPACE_ID, {

@@ -1,6 +1,8 @@
+import type { Dirent } from "node:fs";
 import {
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -34,53 +36,86 @@ export type AssetKind = (typeof KINDS)[number];
  */
 const MANIFEST_FILE = ".yarvis-copied.json";
 
+export interface AssetEntry {
+  /** Name on disk: a skill directory, or an agent `.md` file. */
+  entry: string;
+  /**
+   * What Claude Code addresses the entry by — a skill's directory name, an
+   * agent's declared `name`. Collisions are decided on this, not on the
+   * filename: two repos can ship `reviewer.md` and `code-reviewer.md` that both
+   * declare `name: reviewer`, and only one of them can answer to it.
+   */
+  id: string;
+}
+
 export interface RepoAssets {
   /** The repo's worktree directory name, prepended to disambiguate a clash. */
   prefix: string;
   /** Absolute path of the repo's `.claude/<kind>` directory. */
   sourceDir: string;
-  /** Entry names inside `sourceDir`: skill directories, or agent `.md` files. */
-  entries: string[];
+  entries: AssetEntry[];
 }
 
-export interface PlannedCopy extends Omit<RepoAssets, "entries"> {
-  entry: string;
+export interface PlannedCopy extends AssetEntry {
+  prefix: string;
+  sourceDir: string;
   /** Name the entry gets in the workspace root — `entry`, or a prefixed form. */
   name: string;
+  /** Identity the copy answers to — `id`, prefixed alongside `name`. */
+  declaredId: string;
 }
 
 /**
  * Decides what each repo's entries are called once they all live in one
- * directory. A name offered by more than one repo, or already claimed by an
+ * directory. An identity offered by more than one repo, or already claimed by an
  * entry we don't manage, is prefixed with the repo's directory name — for *every*
  * repo offering it, not just the losers, so the outcome doesn't depend on the
- * order the repos arrive in and a name stays stable across provisions. An entry
- * whose prefixed name is taken too is reported as skipped rather than silently
- * overwriting the copy that got there first.
+ * order the repos arrive in. A contested identity renames the copy on disk too,
+ * since a file renamed but still declaring the old identity would collide
+ * exactly as before; a contested *filename* alone renames only the file, because
+ * two agents whose identities never clashed still have to fit in one directory
+ * and renaming one would break whatever referenced it. An entry whose prefixed
+ * name is taken too is reported as skipped rather than silently overwriting the
+ * copy that got there first.
  */
 export function planAssetCopies(
   repos: RepoAssets[],
-  taken: ReadonlySet<string> = new Set(),
+  taken: readonly AssetEntry[] = [],
 ): { copies: PlannedCopy[]; skipped: PlannedCopy[] } {
-  const offerCounts = new Map<string, number>();
+  const idOffers = new Map<string, number>();
+  const nameOffers = new Map<string, number>();
   for (const repo of repos) {
-    for (const entry of repo.entries) offerCounts.set(entry, (offerCounts.get(entry) ?? 0) + 1);
+    for (const { entry, id } of repo.entries) {
+      idOffers.set(id, (idOffers.get(id) ?? 0) + 1);
+      nameOffers.set(entry, (nameOffers.get(entry) ?? 0) + 1);
+    }
   }
 
-  const claimed = new Set(taken);
+  const takenIds = new Set(taken.map((e) => e.id));
+  const takenNames = new Set(taken.map((e) => e.entry));
+  const claimedNames = new Set(takenNames);
+  const claimedIds = new Set(takenIds);
   const copies: PlannedCopy[] = [];
   const skipped: PlannedCopy[] = [];
 
   for (const { prefix, sourceDir, entries } of repos) {
-    for (const entry of entries) {
-      const contested = (offerCounts.get(entry) ?? 0) > 1 || taken.has(entry);
-      const name = contested ? `${prefix}-${entry}` : entry;
-      const planned: PlannedCopy = { prefix, sourceDir, entry, name };
-      if (claimed.has(name)) {
+    for (const { entry, id } of entries) {
+      const idContested = (idOffers.get(id) ?? 0) > 1 || takenIds.has(id);
+      const nameContested = (nameOffers.get(entry) ?? 0) > 1 || takenNames.has(entry);
+      const planned: PlannedCopy = {
+        prefix,
+        sourceDir,
+        entry,
+        id,
+        name: idContested || nameContested ? `${prefix}-${entry}` : entry,
+        declaredId: idContested ? `${prefix}-${id}` : id,
+      };
+      if (claimedNames.has(planned.name) || claimedIds.has(planned.declaredId)) {
         skipped.push(planned);
         continue;
       }
-      claimed.add(name);
+      claimedNames.add(planned.name);
+      claimedIds.add(planned.declaredId);
       copies.push(planned);
     }
   }
@@ -88,27 +123,85 @@ export function planAssetCopies(
   return { copies, skipped };
 }
 
-/** Entries of `dir`, or none when it is missing or unreadable. */
-function readEntries(dir: string): string[] {
+/**
+ * Entries of `dir` that are shaped like the kind asks for, or none when it is
+ * missing or unreadable. Dotfiles are skipped — neither a skill nor an agent is
+ * one, and our own manifest lives in the directory we copy into.
+ *
+ * A symlink is refused outright. `cpSync` preserves one rather than following
+ * it, so the copy would still point at the source's target: writing the copy's
+ * frontmatter would then rewrite that target — any file the user can write —
+ * and reading through it would leave the copied tree reaching outside the
+ * workspace. The entries come out of a checked-out repo, so this is reachable
+ * by anyone who can push to one.
+ */
+function readEntries(dir: string, kind: AssetKind): string[] {
+  let entries: Dirent[];
   try {
-    return readdirSync(dir).filter((entry) => !entry.startsWith("."));
+    entries = readdirSync(dir, { withFileTypes: true });
   } catch {
     return [];
   }
+  return entries
+    .filter((e) => !e.name.startsWith(".") && !e.isSymbolicLink())
+    .filter((e) => (kind === "skills" ? e.isDirectory() : e.isFile() && e.name.endsWith(".md")))
+    .map((e) => e.name);
 }
 
-type Manifest = Record<AssetKind, string[]>;
+/** The `name` an agent definition declares, or none when it declares one. */
+function declaredName(file: string): string | null {
+  try {
+    const fields = readFileSync(file, "utf8").match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1];
+    const name = fields?.match(/^name:\s*(.+?)\s*$/m)?.[1]?.replace(/^["']|["']$/g, "");
+    return name || null;
+  } catch {
+    return null;
+  }
+}
 
-function emptyManifest(): Manifest {
+/** Entries of an asset directory paired with the identity each answers to. */
+function readAssetEntries(dir: string, kind: AssetKind): AssetEntry[] {
+  return readEntries(dir, kind).map((entry) => ({
+    entry,
+    id: kind === "skills" ? entry : (declaredName(`${dir}/${entry}`) ?? entry.replace(/\.md$/, "")),
+  }));
+}
+
+/** What each kind's directory holds after a sync, keyed by kind. */
+export type CopiedAssets = Record<AssetKind, string[]>;
+
+function emptyManifest(): CopiedAssets {
   return { skills: [], agents: [] };
 }
 
 /**
- * Reads the previous run's manifest. Names containing a path separator are
- * dropped: they can only come from a hand-edited file, and every name here is
- * about to be handed to `rm -r`.
+ * The disambiguating prefix for a repo: its worktree directory name, reduced to
+ * the character set Claude Code accepts in a skill name — a repo called
+ * `docs.site` would otherwise produce a copy that exists but never loads.
  */
-function readManifest(file: string): Manifest {
+function prefixFor(worktree: string): string {
+  return (
+    basename(worktree)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "repo"
+  );
+}
+
+/** True for a name that stays inside the directory it is resolved against. */
+function isPlainEntryName(name: string): boolean {
+  return (
+    name.length > 0 && name !== "." && name !== ".." && !name.includes("/") && !name.includes("\\")
+  );
+}
+
+/**
+ * Reads the previous run's manifest. Anything but a plain entry name is dropped:
+ * it can only come from a hand-edited file, and every name here is about to be
+ * handed to `rm -r` — `..` alone would take the whole `.claude` directory,
+ * settings and all.
+ */
+function readManifest(file: string): CopiedAssets {
   const manifest = emptyManifest();
   let parsed: unknown;
   try {
@@ -124,8 +217,7 @@ function readManifest(file: string): Manifest {
     const names = (parsed as Record<string, unknown>)[kind];
     if (!Array.isArray(names)) continue;
     manifest[kind] = names.filter(
-      (name): name is string =>
-        typeof name === "string" && name.length > 0 && !name.includes("/") && !name.includes("\\"),
+      (name): name is string => typeof name === "string" && isPlainEntryName(name),
     );
   }
   return manifest;
@@ -137,18 +229,28 @@ function readManifest(file: string): Manifest {
  * `name`, so this is cosmetic for skills and load-bearing for agents — without
  * it two same-named agents from different repos still collide after the copy.
  */
-function alignFrontmatterName(path: string, kind: AssetKind, name: string): void {
-  const file = kind === "skills" ? `${path}/SKILL.md` : path;
-  const declared = kind === "skills" ? name : name.replace(/\.md$/, "");
+function alignFrontmatterName(copiedPath: string, kind: AssetKind, declared: string): void {
+  const file = kind === "skills" ? `${copiedPath}/SKILL.md` : copiedPath;
   try {
-    if (!existsSync(file)) return;
+    // The copy's own SKILL.md can still be a symlink even when the directory
+    // holding it was not, and writing through one rewrites its target.
+    if (!existsSync(file) || lstatSync(file).isSymbolicLink()) return;
     const content = readFileSync(file, "utf8");
-    const [frontmatter, fields = "", closer = ""] =
-      content.match(/^---\r?\n([\s\S]*?)(\r?\n---)/) ?? [];
-    if (frontmatter === undefined) return;
-    const renamed = fields.replace(/^name:.*$/m, `name: ${declared}`);
+    const match = content.match(/^(---\r?\n)([\s\S]*?)(\r?\n---)/);
+    if (!match) return;
+    const [block, opener, fields, closingFence] = match as unknown as [
+      string,
+      string,
+      string,
+      string,
+    ];
+    // A definition that declares no name is given one rather than left to
+    // whatever the loader falls back to, so the copies are distinct either way.
+    const renamed = /^name:/m.test(fields)
+      ? fields.replace(/^name:.*$/m, `name: ${declared}`)
+      : `name: ${declared}\n${fields}`;
     if (renamed === fields) return;
-    writeFileSync(file, `---\n${renamed}${closer}${content.slice(frontmatter.length)}`);
+    writeFileSync(file, `${opener}${renamed}${closingFence}${content.slice(block.length)}`);
   } catch (e) {
     console.error(`[workspaces] could not rename ${kind} entry in ${file}:`, e);
   }
@@ -161,35 +263,42 @@ function alignFrontmatterName(path: string, kind: AssetKind, name: string): void
  * skills with it. Best-effort — a failure is logged, never fatal to
  * provisioning.
  */
-export function syncClaudeAssets(rootPath: string, repoWorktreePaths: string[] = []): Manifest {
+export function syncClaudeAssets(rootPath: string, repoWorktreePaths: string[] = []): CopiedAssets {
   const written = emptyManifest();
+  const claudeDir = `${rootPath}/.claude`;
+  const manifestFile = `${claudeDir}/${MANIFEST_FILE}`;
   try {
-    const claudeDir = `${rootPath}/.claude`;
-    const manifestFile = `${claudeDir}/${MANIFEST_FILE}`;
     const previous = readManifest(manifestFile);
     mkdirSync(claudeDir, { recursive: true });
 
     for (const kind of KINDS) {
       const destDir = `${claudeDir}/${kind}`;
       for (const name of previous[kind]) {
-        rmSync(`${destDir}/${name}`, { recursive: true, force: true });
+        try {
+          rmSync(`${destDir}/${name}`, { recursive: true, force: true });
+        } catch (e) {
+          // Keep it in the manifest so the next run tries again. Dropped, it
+          // would read back as one of the user's own and outlive its repo.
+          console.error(`[workspaces] could not remove stale ${kind} entry ${name}:`, e);
+          written[kind].push(name);
+        }
       }
 
       const repos: RepoAssets[] = [];
       for (const worktree of repoWorktreePaths) {
         const sourceDir = `${worktree}/.claude/${kind}`;
-        const entries = readEntries(sourceDir);
-        if (entries.length > 0) repos.push({ prefix: basename(worktree), sourceDir, entries });
+        const entries = readAssetEntries(sourceDir, kind);
+        if (entries.length > 0) repos.push({ prefix: prefixFor(worktree), sourceDir, entries });
       }
       if (repos.length === 0) continue;
 
       // Whatever survived the removal above is the user's own; it keeps its name.
-      const { copies, skipped } = planAssetCopies(repos, new Set(readEntries(destDir)));
+      const { copies, skipped } = planAssetCopies(repos, readAssetEntries(destDir, kind));
       mkdirSync(destDir, { recursive: true });
       for (const copy of copies) {
         const dest = `${destDir}/${copy.name}`;
-        cpSync(`${copy.sourceDir}/${copy.entry}`, dest, { recursive: true });
-        if (copy.name !== copy.entry) alignFrontmatterName(dest, kind, copy.name);
+        cpSync(`${copy.sourceDir}/${copy.entry}`, dest, { recursive: true, dereference: false });
+        if (copy.declaredId !== copy.id) alignFrontmatterName(dest, kind, copy.declaredId);
         written[kind].push(copy.name);
       }
       for (const copy of skipped) {
@@ -198,10 +307,16 @@ export function syncClaudeAssets(rootPath: string, repoWorktreePaths: string[] =
         );
       }
     }
-
-    writeFileSync(manifestFile, `${JSON.stringify(written, null, 2)}\n`);
   } catch (e) {
     console.error("[workspaces] failed to copy repo skills/agents:", e);
+  } finally {
+    // Written even when a copy threw part-way: an unrecorded copy is never
+    // cleaned up, and the next run reads it back as one of the user's own.
+    try {
+      writeFileSync(manifestFile, `${JSON.stringify(written, null, 2)}\n`);
+    } catch (e) {
+      console.error(`[workspaces] failed to record copied skills/agents in ${manifestFile}:`, e);
+    }
   }
   return written;
 }

@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
@@ -71,8 +71,8 @@ const fakeGit: GitRunner = async (args) => {
   return { stdout: "", stderr: "", exitCode: 0 };
 };
 
-/** Like fakeGit, but also lays down a .claude/skills entry in the worktree, as a
- * checkout of a repo carrying one would. */
+/** Like fakeGit, but also lays down .claude/skills and .claude/agents entries in
+ * the worktree, as a checkout of a repo carrying them would. */
 const skillsGit: GitRunner = async (args, opts) => {
   const res = await fakeGit(args, opts);
   if (args[0] === "worktree" && args[1] === "add") {
@@ -81,6 +81,9 @@ const skillsGit: GitRunner = async (args, opts) => {
       const skill = join(path, ".claude", "skills", "deploy");
       mkdirSync(skill, { recursive: true });
       writeFileSync(join(skill, "SKILL.md"), "---\nname: deploy\ndescription: Deploy.\n---\n");
+      const agents = join(path, ".claude", "agents");
+      mkdirSync(agents, { recursive: true });
+      writeFileSync(join(agents, "reviewer.md"), "---\nname: reviewer\ndescription: R.\n---\n");
     }
   }
   return res;
@@ -968,7 +971,28 @@ describe("provision + archive (injected git runner)", () => {
     expect(readFileSync(join(root, ".claude", "skills", "deploy", "SKILL.md"), "utf-8")).toContain(
       "name: deploy",
     );
+    expect(existsSync(join(root, ".claude", "agents", "reviewer.md"))).toBe(true);
     expect(readFileSync(join(root, "AGENTS.md"), "utf-8")).toContain("## Skills and agents");
+  });
+
+  it("prefixes with the worktree directory name when two repos ship the same skill", async () => {
+    const db = getDb(url).db;
+    const first = await addRepo();
+    const second = await addRepo("git@github.com:acme/gadget.git");
+    const ws = await createWorkspace(db, config, {
+      name: "two repo ws",
+      repoIds: [first.id, second.id],
+    });
+
+    await provisionWorkspace(db, ws.id, () => {}, { runner: skillsGit });
+
+    const detail = await getWorkspace(db, ws.id);
+    const skills = join(detail?.rootPath ?? "", ".claude", "skills");
+    // The prefix is the worktree's directory name, so this pins the copier to
+    // the naming scheme createWorkspace actually gives a worktree.
+    const expected = (detail?.repos ?? []).map((wr) => `${basename(wr.worktreePath)}-deploy`);
+    expect(expected).toHaveLength(2);
+    for (const name of expected) expect(existsSync(join(skills, name))).toBe(true);
   });
 
   it("points a Claude session at the Yarvis MCP endpoint via .mcp.json", async () => {
@@ -993,7 +1017,11 @@ describe("provision + archive (injected git runner)", () => {
     const detail = await getWorkspace(db, ws.id);
     const root = detail?.rootPath ?? "";
     expect(existsSync(join(root, ".claude", "skills"))).toBe(false);
-    expect(readFileSync(join(root, "AGENTS.md"), "utf-8")).not.toContain("## Skills and agents");
+    const agents = readFileSync(join(root, "AGENTS.md"), "utf-8");
+    expect(agents).not.toContain("## Skills and agents");
+    // The repo is still there, so the tool-manager guidance stays.
+    expect(agents).toContain("## Running a repo's tools");
+    expect(agents).toContain("mise");
   });
 
   it("keeps the attention hooks and the copied skills in the same .claude dir", async () => {

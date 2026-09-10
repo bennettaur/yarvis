@@ -504,14 +504,16 @@ branch, and a `.claude/settings.json` carrying the attention hooks. Each repo's
 `.claude` directory, since Claude Code only discovers skills and agents under
 the directory it starts in and the `skills.paths`/`agents.paths` settings keys
 load nothing. Where two repos ship the same name, both copies are prefixed with
-the repo's directory name (and a renamed agent's frontmatter `name` is rewritten
-to match, since that — not the filename — is what an agent answers to). The
+the repo's directory name — as is a repo's entry whose name is already taken by
+one you put in the workspace root yourself (and a renamed agent's frontmatter
+`name` is rewritten to match, since that — not the filename — is what an agent
+answers to). The
 copies are refreshed on every provision, and a `.claude/.yarvis-copied.json`
 manifest records them so a repo leaving the workspace takes its skills with it
 and anything you added by hand is left alone. It also writes a
 `.mcp.json` pointing the session at Yarvis's own MCP endpoint (see "Yarvis as an
-MCP server"). Both files are merged, not overwritten, so any other keys — or
-other MCP servers — already present are left intact. A
+MCP server"). The settings and MCP files are both merged, not overwritten, so
+any other keys — or other MCP servers — already present are left intact. A
 workspace started on something — an issue's "Start work", a task, or a brief
 handed to the in-app agent — also gets that work written to `.yarvis/brief.md`,
 the file its agent session is launched to read, as the last step of

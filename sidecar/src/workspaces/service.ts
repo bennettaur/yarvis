@@ -1229,8 +1229,9 @@ function writeWorkspaceFiles(detail: WorkspaceDetail): void {
       "Each repo's `.claude/skills` and `.claude/agents` have been copied into",
       "this workspace root's `.claude` directory, because Claude Code only",
       "discovers them under the directory it starts in. They are available from",
-      "here — no need to change into a repo to reach one. Where two repos shipped",
-      "the same name, both copies carry that repo's directory name as a prefix.",
+      "here — no need to change into a repo to reach one. A name two repos share,",
+      "or one already taken by something you put in this root yourself, arrives",
+      "prefixed with the repo's directory name.",
       "The copies are a snapshot taken when the workspace was provisioned; edit",
       "the original under the repo, not the copy.",
     );
