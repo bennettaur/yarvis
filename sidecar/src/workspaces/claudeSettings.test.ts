@@ -126,36 +126,22 @@ describe("buildClaudeSettings", () => {
     expect(twice.hooks.Stop).toHaveLength(1);
   });
 
-  it("registers skills/agents paths alongside the hooks", () => {
-    const settings = buildClaudeSettings(
-      WORKSPACE_ID,
-      {},
-      ["/ws/repo-a/.claude/skills", "/ws/repo-b/.claude/skills"],
-      ["/ws/repo-a/.claude/agents"],
-    ) as {
-      hooks: Record<string, unknown[]>;
-      skills: { enabled: boolean; paths: string[] };
-      agents: { enabled: boolean; paths: string[] };
-    };
-    // The hooks are still written; skills/agents are additive keys.
-    expect(settings.hooks.Stop).toHaveLength(1);
-    expect(settings.skills).toEqual({
-      enabled: true,
-      paths: ["/ws/repo-a/.claude/skills", "/ws/repo-b/.claude/skills"],
-    });
-    expect(settings.agents).toEqual({ enabled: true, paths: ["/ws/repo-a/.claude/agents"] });
+  it("strips the skills/agents paths an earlier version wrote", () => {
+    // Claude Code ignores those keys; the repos' skills are copied to the root
+    // instead, so leaving the paths behind would only mislead a reader.
+    const settings = buildClaudeSettings(WORKSPACE_ID, {
+      skills: { enabled: true, paths: ["/ws/repo/.claude/skills"] },
+      agents: { enabled: true, paths: ["/ws/repo/.claude/agents"] },
+    }) as Record<string, unknown>;
+    expect(settings.skills).toEqual({ enabled: true });
+    expect(settings.agents).toEqual({ enabled: true });
   });
 
-  it("drops stale skills/agents keys when no paths are given", () => {
-    // A prior run left skills/agents; a re-provision that finds none must clear them.
-    const prior = buildClaudeSettings(
-      WORKSPACE_ID,
-      {},
-      ["/ws/repo/.claude/skills"],
-      ["/ws/repo/.claude/agents"],
-    );
-    const cleared = buildClaudeSettings(WORKSPACE_ID, prior) as Record<string, unknown>;
-    expect(cleared.skills).toBeUndefined();
-    expect(cleared.agents).toBeUndefined();
+  it("leaves a skills key the user set by hand alone", () => {
+    // `enabled` is a real toggle even though `paths` is not.
+    const settings = buildClaudeSettings(WORKSPACE_ID, {
+      skills: { enabled: false },
+    }) as Record<string, unknown>;
+    expect(settings.skills).toEqual({ enabled: false });
   });
 });

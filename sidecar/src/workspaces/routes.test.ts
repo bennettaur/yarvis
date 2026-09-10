@@ -71,15 +71,16 @@ const fakeGit: GitRunner = async (args) => {
   return { stdout: "", stderr: "", exitCode: 0 };
 };
 
-/** Like fakeGit, but also lays down .claude/skills and .claude/agents in the
- * worktree, as a checkout of a repo carrying them would. */
+/** Like fakeGit, but also lays down a .claude/skills entry in the worktree, as a
+ * checkout of a repo carrying one would. */
 const skillsGit: GitRunner = async (args, opts) => {
   const res = await fakeGit(args, opts);
   if (args[0] === "worktree" && args[1] === "add") {
     const path = args[2] === "-b" ? args[4] : args[2];
     if (path) {
-      mkdirSync(join(path, ".claude", "skills"), { recursive: true });
-      mkdirSync(join(path, ".claude", "agents"), { recursive: true });
+      const skill = join(path, ".claude", "skills", "deploy");
+      mkdirSync(skill, { recursive: true });
+      writeFileSync(join(skill, "SKILL.md"), "---\nname: deploy\ndescription: Deploy.\n---\n");
     }
   }
   return res;
@@ -953,7 +954,7 @@ describe("provision + archive (injected git runner)", () => {
     expect(claude).toContain("AGENTS.md");
   });
 
-  it("registers each repo's .claude skills and agents in the root settings.json", async () => {
+  it("copies each repo's .claude skills into the workspace root", async () => {
     const db = getDb(url).db;
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "skills ws", repoIds: [repo.id] });
@@ -961,14 +962,13 @@ describe("provision + archive (injected git runner)", () => {
     await provisionWorkspace(db, ws.id, () => {}, { runner: skillsGit });
 
     const detail = await getWorkspace(db, ws.id);
-    const worktree = detail?.repos[0]?.worktreePath ?? "";
-    const settings = JSON.parse(
-      readFileSync(join(detail?.rootPath ?? "", ".claude", "settings.json"), "utf-8"),
+    const root = detail?.rootPath ?? "";
+    // Claude starts at the root and only discovers skills there, so the copy —
+    // not a settings path — is what makes the repo's skill reachable.
+    expect(readFileSync(join(root, ".claude", "skills", "deploy", "SKILL.md"), "utf-8")).toContain(
+      "name: deploy",
     );
-    expect(settings.skills.enabled).toBe(true);
-    expect(settings.skills.paths).toContain(join(worktree, ".claude", "skills"));
-    expect(settings.agents.enabled).toBe(true);
-    expect(settings.agents.paths).toContain(join(worktree, ".claude", "agents"));
+    expect(readFileSync(join(root, "AGENTS.md"), "utf-8")).toContain("## Skills and agents");
   });
 
   it("points a Claude session at the Yarvis MCP endpoint via .mcp.json", async () => {
@@ -984,21 +984,19 @@ describe("provision + archive (injected git runner)", () => {
     expect(JSON.stringify(mcp)).toContain("YARVIS_MCP_TOKEN");
   });
 
-  it("omits skills/agents keys when a repo has no .claude directory", async () => {
+  it("copies nothing when a repo has no .claude directory", async () => {
     const db = getDb(url).db;
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "bare ws", repoIds: [repo.id] });
     await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const detail = await getWorkspace(db, ws.id);
-    const settings = JSON.parse(
-      readFileSync(join(detail?.rootPath ?? "", ".claude", "settings.json"), "utf-8"),
-    );
-    expect(settings.skills).toBeUndefined();
-    expect(settings.agents).toBeUndefined();
+    const root = detail?.rootPath ?? "";
+    expect(existsSync(join(root, ".claude", "skills"))).toBe(false);
+    expect(readFileSync(join(root, "AGENTS.md"), "utf-8")).not.toContain("## Skills and agents");
   });
 
-  it("registers skills alongside the attention hooks in the same settings.json", async () => {
+  it("keeps the attention hooks and the copied skills in the same .claude dir", async () => {
     const db = getDb(url).db;
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "merge ws", repoIds: [repo.id] });
@@ -1006,13 +1004,12 @@ describe("provision + archive (injected git runner)", () => {
     await provisionWorkspace(db, ws.id, () => {}, { runner: skillsGit });
 
     const detail = await getWorkspace(db, ws.id);
-    const settings = JSON.parse(
-      readFileSync(join(detail?.rootPath ?? "", ".claude", "settings.json"), "utf-8"),
-    );
-    // Both the attention hooks and the registered skills coexist in one file.
+    const claudeDir = join(detail?.rootPath ?? "", ".claude");
+    const settings = JSON.parse(readFileSync(join(claudeDir, "settings.json"), "utf-8"));
+    // The copies write into the same directory the hooks file lives in; neither
+    // step may clobber the other's output.
     expect(settings.hooks.Stop).toBeDefined();
-    expect(settings.skills.enabled).toBe(true);
-    expect(settings.agents.enabled).toBe(true);
+    expect(existsSync(join(claudeDir, "skills", "deploy"))).toBe(true);
   });
 
   it("archives by removing worktrees and recording a summary", async () => {
