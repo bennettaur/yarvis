@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 /**
  * Generates the `.claude/settings.json` hook config that makes a Yarvis-launched
@@ -80,25 +80,33 @@ function isOurEntry(entry: unknown): boolean {
 }
 
 /**
+ * Removes the `paths` an earlier version wrote under `settings[key]`, and the key
+ * itself once nothing else is left in it — a `skills: { enabled: false }` the
+ * user set by hand is a real toggle and has to survive.
+ */
+function dropPathsKey(settings: Record<string, unknown>, key: string): void {
+  const value = settings[key];
+  if (!value || typeof value !== "object" || !("paths" in value)) return;
+  const { paths: _paths, ...rest } = value as Record<string, unknown>;
+  if (Object.keys(rest).length === 0) delete settings[key];
+  else settings[key] = rest;
+}
+
+/**
  * Merges our three attention hooks into any existing settings. Unrelated
  * top-level keys and the user's own hooks for these events are preserved — our
  * entry is *appended* alongside them, not substituted for the array. Idempotent:
  * a prior Yarvis entry for an event is dropped before ours is re-added, so
  * re-provisioning never stacks duplicates.
  *
- * Also registers repo-level skills/agents: Claude starts in the workspace root,
- * one directory above the repos, so it only auto-discovers `.claude` at that
- * root — a repo's own skills and agents would otherwise stay invisible. Pointing
- * `skills.paths`/`agents.paths` at each repo's `.claude` dirs loads them in place
- * (no copy or symlink). These keys are fully owned here: they are recomputed from
- * the paths passed in and dropped when none remain, so a re-provision that loses
- * a repo leaves no stale path behind.
+ * Also strips the `skills.paths`/`agents.paths` an earlier version wrote to
+ * register each repo's `.claude` dirs. Claude Code ignores those keys, so the
+ * repos' skills and agents are copied into the workspace root instead (see
+ * `claudeAssets.ts`); left behind, the paths would only mislead a reader.
  */
 export function buildClaudeSettings(
   workspaceId: string,
   existing: Record<string, unknown> = {},
-  skillPaths: string[] = [],
-  agentPaths: string[] = [],
 ): Record<string, unknown> {
   const fallbackSessionKey = `ws-claude:${workspaceId}`;
   const command = (kind: AttentionHookKind) => ({
@@ -129,10 +137,7 @@ export function buildClaudeSettings(
     },
   };
 
-  if (skillPaths.length > 0) settings.skills = { enabled: true, paths: skillPaths };
-  else delete settings.skills;
-  if (agentPaths.length > 0) settings.agents = { enabled: true, paths: agentPaths };
-  else delete settings.agents;
+  for (const key of ["skills", "agents"]) dropPathsKey(settings, key);
 
   return settings;
 }
@@ -142,16 +147,10 @@ export function buildClaudeSettings(
  * session launched there signals Yarvis when it needs the user (blocked on a
  * permission, idle waiting for input, or finished). Both launch flows start
  * Claude with cwd = the workspace root, so a project settings file here covers
- * them. Also registers each workspace repo's `.claude/skills` and `.claude/agents`
- * (those that exist) so Claude loads them despite starting above the repos.
- * Best-effort: a corrupt existing file is overwritten and any failure is logged,
- * never fatal to provisioning.
+ * them. Best-effort: a corrupt existing file is overwritten and any failure is
+ * logged, never fatal to provisioning.
  */
-export function writeClaudeSettings(
-  rootPath: string,
-  workspaceId: string,
-  repoWorktreePaths: string[] = [],
-): void {
+export function writeClaudeSettings(rootPath: string, workspaceId: string): void {
   try {
     const dir = `${rootPath}/.claude`;
     const file = `${dir}/settings.json`;
@@ -170,20 +169,8 @@ export function writeClaudeSettings(
       }
     }
 
-    const skillPaths: string[] = [];
-    const agentPaths: string[] = [];
-    for (const worktree of repoWorktreePaths) {
-      const skillsDir = `${worktree}/.claude/skills`;
-      const agentsDir = `${worktree}/.claude/agents`;
-      if (existsSync(skillsDir)) skillPaths.push(skillsDir);
-      if (existsSync(agentsDir)) agentPaths.push(agentsDir);
-    }
-
     mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      file,
-      `${JSON.stringify(buildClaudeSettings(workspaceId, existing, skillPaths, agentPaths), null, 2)}\n`,
-    );
+    writeFileSync(file, `${JSON.stringify(buildClaudeSettings(workspaceId, existing), null, 2)}\n`);
   } catch (e) {
     console.error("[workspaces] failed to write .claude/settings.json:", e);
   }

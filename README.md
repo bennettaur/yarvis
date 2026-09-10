@@ -503,12 +503,21 @@ isn't handed a flag it doesn't understand.
 Provisioning also writes a few context files into the workspace root, since
 Claude starts there rather than inside a single repo: `AGENTS.md` (plus a
 `CLAUDE.md` that includes it) describing which repos are present and on what
-branch, and a `.claude/settings.json` that registers each repo's
-`.claude/skills` and `.claude/agents` so those skills and agents still load
-even though Claude runs one directory above the repos. It also writes a
+branch, and a `.claude/settings.json` carrying the attention hooks. Each repo's
+`.claude/skills` and `.claude/agents` are *copied* into the workspace root's own
+`.claude` directory, since Claude Code only discovers skills and agents under
+the directory it starts in and the `skills.paths`/`agents.paths` settings keys
+load nothing. Where two repos ship the same name, both copies are prefixed with
+the repo's directory name — as is a repo's entry whose name is already taken by
+one you put in the workspace root yourself (and a renamed agent's frontmatter
+`name` is rewritten to match, since that — not the filename — is what an agent
+answers to). The
+copies are refreshed on every provision, and a `.claude/.yarvis-copied.json`
+manifest records them so a repo leaving the workspace takes its skills with it
+and anything you added by hand is left alone. It also writes a
 `.mcp.json` pointing the session at Yarvis's own MCP endpoint (see "Yarvis as an
-MCP server"). Both files are merged, not overwritten, so any other keys — or
-other MCP servers — already present are left intact. A
+MCP server"). The settings and MCP files are both merged, not overwritten, so
+any other keys — or other MCP servers — already present are left intact. A
 workspace started on something — an issue's "Start work", a task, or a brief
 handed to the in-app agent — also gets that work written to `.yarvis/brief.md`,
 the file its agent session is launched to read, as the last step of
