@@ -2,6 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { builtinToolMetadata } from "../chat/builtinTools.ts";
+import { COMPLEXITY_TIERS, type ComplexityTier, isComplexityTier } from "../llm/complexity.ts";
 import activityConsolidator from "./definitions/activity-consolidator.md" with { type: "text" };
 import planner from "./definitions/planner.md" with { type: "text" };
 import projectManager from "./definitions/project-manager.md" with { type: "text" };
@@ -53,6 +54,8 @@ export interface SpecialistDefinition {
   unattended: string[];
   provider: string | null;
   model: string | null;
+  /** A complexity tier to resolve its model from, in place of a literal `model:`. */
+  complexityTier: ComplexityTier | null;
   maxSteps: number;
   enabled: boolean;
   source: SpecialistSource;
@@ -105,6 +108,7 @@ const KNOWN_KEYS = [
   "tools",
   "unattended",
   "model",
+  "complexity",
   "maxSteps",
   "enabled",
 ] as const;
@@ -165,6 +169,27 @@ export function parseSpecialist(
     model = modelRef.slice(slash + 1);
   }
 
+  // `complexity: low|medium|max` picks its model from the configured tier
+  // instead of a literal one, so a shipped definition can stay cheap (or get
+  // more capable) as the user's tier settings change rather than as a release.
+  // Mutually exclusive with `model:` — a file setting both would leave which one
+  // wins to resolve time rather than to a reader of the file.
+  const complexityRef = asString(path, data, "complexity");
+  let complexityTier: ComplexityTier | null = null;
+  if (complexityRef) {
+    if (modelRef) {
+      throw new FrontmatterError(path, "'complexity' and 'model' cannot both be set", 1);
+    }
+    if (!isComplexityTier(complexityRef)) {
+      throw new FrontmatterError(
+        path,
+        `'complexity' must be one of: ${COMPLEXITY_TIERS.join(", ")}`,
+        1,
+      );
+    }
+    complexityTier = complexityRef;
+  }
+
   const maxSteps = asInteger(path, data, "maxSteps") ?? DEFAULT_MAX_STEPS;
   if (maxSteps > MAX_STEPS_CEILING) {
     throw new FrontmatterError(path, `'maxSteps' cannot exceed ${MAX_STEPS_CEILING}`, 1);
@@ -178,6 +203,7 @@ export function parseSpecialist(
     unattended,
     provider,
     model,
+    complexityTier,
     maxSteps,
     enabled: asBoolean(path, data, "enabled") ?? true,
     source,

@@ -9,6 +9,7 @@ import {
 } from "../chat/destructiveTools.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
+import { resolveComplexityModel } from "../llm/complexity.ts";
 import { describeError } from "../llm/errors.ts";
 import { defaultProviderModel, resolveModel } from "../llm/providers.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
@@ -169,6 +170,25 @@ export function materialBlock(material: string, nonce: string): string {
   return `<material-${nonce}>\n${safe}\n</material-${nonce}>`;
 }
 
+/**
+ * Resolves a specialist's own choice of model, from whichever of `provider`/
+ * `model` or `complexityTier` its file set — `catalog.ts` rejects a file that
+ * sets both, so this never has to choose between them. Falls back to the
+ * default chat model when the specialist named neither.
+ */
+export async function specialistModel(
+  config: Config,
+  specialist: SpecialistDefinition,
+): Promise<{ provider: string; model: string } | null> {
+  if (specialist.provider && specialist.model) {
+    return { provider: specialist.provider, model: specialist.model };
+  }
+  if (specialist.complexityTier) {
+    return resolveComplexityModel(config, specialist.complexityTier);
+  }
+  return defaultProviderModel(config);
+}
+
 export async function runSpecialist(input: RunSpecialistInput): Promise<SpecialistRun> {
   const { config, db, name, task, material, signal } = input;
   const specialist = await findSpecialist(name);
@@ -178,9 +198,7 @@ export async function runSpecialist(input: RunSpecialistInput): Promise<Speciali
   const chosen =
     input.provider && input.model
       ? { provider: input.provider, model: input.model }
-      : specialist.provider && specialist.model
-        ? { provider: specialist.provider, model: specialist.model }
-        : await defaultProviderModel(config);
+      : await specialistModel(config, specialist);
   if (!chosen) throw new Error("no chat model is configured");
   const model = await resolveModel(config, chosen.provider, chosen.model);
 

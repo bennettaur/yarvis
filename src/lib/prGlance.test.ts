@@ -18,9 +18,33 @@ describe("prGlance", () => {
     expect(prGlance(PR)).toBe("open");
   });
 
-  it("reports an approved PR with settled checks as approved", () => {
-    expect(prGlance({ ...PR, reviewDecision: "approved" })).toBe("approved");
-    expect(prGlance({ ...PR, reviewDecision: "approved", checkRollup: "none" })).toBe("approved");
+  it("reports an approved PR the provider calls clean as ready to merge", () => {
+    expect(prGlance({ ...PR, reviewDecision: "approved" })).toBe("ready_to_merge");
+    expect(prGlance({ ...PR, reviewDecision: "approved", checkRollup: "none" })).toBe(
+      "ready_to_merge",
+    );
+    // Case-insensitive for the same reason hasConflicts is: the column holds
+    // whatever casing a provider writes, and one already writes uppercase.
+    expect(prGlance({ ...PR, reviewDecision: "approved", mergeable: "CLEAN" })).toBe(
+      "ready_to_merge",
+    );
+  });
+
+  // Only "clean" is a green light — every other value, GitHub's not-yet-known
+  // "unknown" and Azure's conflicts-only enum included, leaves the merge
+  // unpromised.
+  it("keeps every other merge state as approved rather than ready", () => {
+    for (const mergeable of [
+      "blocked",
+      "behind",
+      "unstable",
+      "unknown",
+      "has_hooks",
+      "MERGEABLE",
+      null,
+    ]) {
+      expect(prGlance({ ...PR, reviewDecision: "approved", mergeable })).toBe("approved");
+    }
   });
 
   // Every Azure PR and every row written before the verdict was cached carries
@@ -66,9 +90,17 @@ describe("prGlance", () => {
 
 describe("prGlanceBadge", () => {
   it("names the repo and PR number in the tooltip", () => {
-    const badge = prGlanceBadge({ ...PR, reviewDecision: "approved" });
+    const badge = prGlanceBadge({ ...PR, reviewDecision: "approved", mergeable: "blocked" });
     expect(badge.label).toBe("web #12 approved");
     expect(badge.icon).toBe("✓");
+    expect(badge.className).toBe("text-emerald-400");
+  });
+
+  it("gives a ready-to-merge PR its own glyph", () => {
+    const badge = prGlanceBadge({ ...PR, reviewDecision: "approved" });
+    expect(badge.label).toBe("web #12 ready to merge");
+    expect(badge.icon).toBe("★");
+    expect(badge.className).toBe("text-emerald-300");
   });
 });
 

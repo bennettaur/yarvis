@@ -66,8 +66,9 @@ export default function SpecialistSection() {
         The assistant hands multi-step work to these, each in its own context with only the tools
         its file lists. Add your own by dropping a markdown file in{" "}
         <code className="text-zinc-400">{catalog?.userDir ?? "~/.yarvis/agents"}</code> — YAML
-        frontmatter for <code>tools</code>, <code>model</code> and <code>maxSteps</code>, and the
-        body as the prompt. A file named after one that ships replaces it.
+        frontmatter for <code>tools</code>, <code>model</code> (or <code>complexity</code>) and{" "}
+        <code>maxSteps</code>, and the body as the prompt. A file named after one that ships
+        replaces it.
         {catalog?.userDir && (
           <button
             type="button"
@@ -101,7 +102,9 @@ export default function SpecialistSection() {
               <span className="text-xs text-zinc-600">
                 {specialist.provider && specialist.model
                   ? `${specialist.provider}/${specialist.model}`
-                  : "default model"}
+                  : specialist.complexityTier
+                    ? `${specialist.complexityTier} complexity`
+                    : "default model"}
               </span>
               <span className="text-xs text-zinc-600">{specialist.maxSteps} steps</span>
               {!specialist.enabled && (

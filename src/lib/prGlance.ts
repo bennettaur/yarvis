@@ -18,6 +18,7 @@ export type PrGlance =
   | "checks_failing"
   | "changes_requested"
   | "checks_running"
+  | "ready_to_merge"
   | "approved"
   | "open"
   | "no_pr"
@@ -44,6 +45,26 @@ export function hasConflicts(mergeable: string | null): boolean {
   return m === "dirty" || m === "conflicting";
 }
 
+/**
+ * True only when the provider itself says nothing is holding the merge back.
+ * GitHub's `mergeable_state` says `clean` for that: `blocked` is an unmet
+ * branch-protection rule (required reviewers, CODEOWNERS, required checks),
+ * `behind` a branch a strict rule wants updated first, `unstable` a check that
+ * failed without blocking, and `unknown` GitHub still recomputing after a
+ * push. `has_hooks` is mergeable too, but it is a GitHub Enterprise
+ * pre-receive-hook setup we have no way to try here, so it keeps the weaker
+ * verdict rather than widen this to a value nobody can confirm. Azure's mapped
+ * enum only ever answers the conflict question, so its PRs never reach this
+ * verdict and stay on the review-only reading the rest of their status has.
+ *
+ * An allow-list, unlike {@link hasConflicts}: "ready to merge" is a green
+ * light we assert, so an unrecognized or not-yet-known value has to fall back
+ * to the weaker claim rather than default into the stronger one.
+ */
+function mergeUnblocked(mergeable: string | null): boolean {
+  return (mergeable ?? "").toLowerCase() === "clean";
+}
+
 export function prGlance(pr: WorkspaceSummaryPr): PrGlance {
   // A row only reaches here with a PR number, so an unset state is a provider
   // that didn't say — which for a PR that exists means open.
@@ -58,7 +79,9 @@ export function prGlance(pr: WorkspaceSummaryPr): PrGlance {
   if (pr.reviewDecision === "changes_requested") return "changes_requested";
   if (pr.checkRollup === "pending") return "checks_running";
   // Whatever reaches here has settled checks — failure and pending returned above.
-  if (pr.reviewDecision === "approved") return "approved";
+  if (pr.reviewDecision === "approved") {
+    return mergeUnblocked(pr.mergeable) ? "ready_to_merge" : "approved";
+  }
   return "open";
 }
 
@@ -71,9 +94,10 @@ const GLANCE_BADGES: Record<PrGlance, { icon: string; label: string; className: 
   checks_failing: { icon: "✗", label: "checks failing", className: "text-red-400" },
   changes_requested: { icon: "✎", label: "changes requested", className: "text-amber-400" },
   checks_running: { icon: "●", label: "checks running", className: "text-amber-400" },
-  // "approved", not "ready to merge": one approval is all the poller knows
-  // about, and a repo's own rules (required reviewers, CODEOWNERS) can still
-  // hold the merge.
+  ready_to_merge: { icon: "★", label: "ready to merge", className: "text-emerald-300" },
+  // Approved with settled checks, but not the green light ★ is: the merge is
+  // held or not yet worked out ({@link mergeUnblocked}), or — on Azure and on
+  // a stack layer — there is no merge state to read at all.
   approved: { icon: "✓", label: "approved", className: "text-emerald-400" },
   open: { icon: "◇", label: "open — awaiting review", className: "text-sky-400" },
   // Only a stack layer reaches these two. `gh stack` tracks a branch from the
@@ -100,10 +124,11 @@ export function prGlanceBadge(pr: WorkspaceSummaryPr): PrGlanceBadge {
  * the workspace list deliberately: a stack is read the same way, scanning for
  * the layer that is holding the rest up.
  *
- * Conflicts are absent because a stack entry carries no mergeable state — the
- * stack's equivalent, "the layer below moved", is rendered beside the badge
- * rather than folded into it, since a layer can need restacking and be failing
- * checks at once and the reader needs both.
+ * Conflicts and "ready to merge" are absent because a stack entry carries no
+ * mergeable state, so an approved layer can only be reported as approved. The
+ * stack's equivalent of a conflict, "the layer below moved", is rendered
+ * beside the badge rather than folded into it, since a layer can need
+ * restacking and be failing checks at once and the reader needs both.
  */
 export function stackEntryGlance(entry: StackEntry): PrGlance {
   if (entry.merged) return "merged";

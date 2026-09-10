@@ -86,11 +86,13 @@ interface Group {
 
 /**
  * Groups single-repo workspaces under their repo's name; multi-repo workspaces
- * each form their own group, labeled by their repo set.
+ * share a group per repo set, labeled by that set. The set is sorted by name so
+ * "femr + llm-service" and "llm-service + femr" land in the same group.
+ * Single-repo groups come first, then multi-repo groups, each ordered by label.
  */
-function groupWorkspaces(items: WorkspaceSummary[]): Group[] {
+export function groupWorkspaces(items: WorkspaceSummary[]): Group[] {
   const singleByRepo = new Map<string, WorkspaceSummary[]>();
-  const multi: Group[] = [];
+  const multiByRepoSet = new Map<string, WorkspaceSummary[]>();
   for (const ws of items) {
     if (ws.repoNames.length <= 1) {
       const repo = ws.repoNames[0] ?? "Scratch";
@@ -98,11 +100,19 @@ function groupWorkspaces(items: WorkspaceSummary[]): Group[] {
       arr.push(ws);
       singleByRepo.set(repo, arr);
     } else {
-      multi.push({ key: `ws:${ws.id}`, label: ws.repoNames.join(" + "), items: [ws] });
+      // Codepoint order, not `localeCompare`: this label is the grouping key, and
+      // a collation that ties two distinct names would split the set into two groups.
+      const label = [...ws.repoNames].sort().join(" + ");
+      const arr = multiByRepoSet.get(label) ?? [];
+      arr.push(ws);
+      multiByRepoSet.set(label, arr);
     }
   }
   const single = [...singleByRepo.entries()]
     .map(([repo, ws]) => ({ key: `repo:${repo}`, label: repo, items: ws }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+  const multi = [...multiByRepoSet.entries()]
+    .map(([label, ws]) => ({ key: `multiRepo:${label}`, label, items: ws }))
     .sort((a, b) => a.label.localeCompare(b.label));
   return [...single, ...multi];
 }

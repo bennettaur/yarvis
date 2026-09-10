@@ -69,7 +69,29 @@ describe("parsing one definition", () => {
     expect(parsed.enabled).toBe(true);
     expect(parsed.provider).toBeNull();
     expect(parsed.model).toBeNull();
+    expect(parsed.complexityTier).toBeNull();
     expect(parsed.tools).toEqual([]);
+  });
+
+  it("reads a complexity tier in place of a literal model", () => {
+    const parsed = parse("---\nname: a\ndescription: d\ncomplexity: low\n---\np");
+    expect(parsed.complexityTier).toBe("low");
+    expect(parsed.provider).toBeNull();
+    expect(parsed.model).toBeNull();
+  });
+
+  it("rejects an unknown complexity tier", () => {
+    expect(() => parse("---\nname: a\ndescription: d\ncomplexity: cheap\n---\np")).toThrow(
+      "'complexity' must be one of: low, medium, max",
+    );
+  });
+
+  it("rejects setting both 'complexity' and 'model'", () => {
+    expect(() =>
+      parse(
+        "---\nname: a\ndescription: d\nmodel: anthropic/claude-sonnet-5\ncomplexity: low\n---\np",
+      ),
+    ).toThrow("'complexity' and 'model' cannot both be set");
   });
 
   /**
@@ -141,6 +163,12 @@ describe("the catalogue", () => {
     const granted = specialists.filter((s) => s.unattended.length > 0);
     expect(granted.map((s) => s.name)).toEqual(["project-manager"]);
     expect(granted[0]!.unattended).toEqual(["jira_create_issue"]);
+    // The two shipped specialists cheap enough to opt into a tier rather than
+    // the chat default.
+    expect(specialists.find((s) => s.name === "session-summarizer")?.complexityTier).toBe("low");
+    expect(specialists.find((s) => s.name === "activity-consolidator")?.complexityTier).toBe(
+      "medium",
+    );
   });
 
   it("picks up a user definition beside the built-ins", async () => {
