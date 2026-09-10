@@ -149,7 +149,7 @@ function readEntries(dir: string, kind: AssetKind): string[] {
     .map((e) => e.name);
 }
 
-/** The `name` an agent definition declares, or none when it declares one. */
+/** The `name` an agent definition declares, or none when it declares none. */
 function declaredName(file: string): string | null {
   try {
     const fields = readFileSync(file, "utf8").match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1];
@@ -320,9 +320,13 @@ export function syncClaudeAssets(rootPath: string, repoWorktreePaths: string[] =
       mkdirSync(destDir, { recursive: true });
       for (const copy of copies) {
         const dest = `${destDir}/${copy.name}`;
+        // Recorded before the copy, not after: a `cpSync` that throws part-way
+        // leaves a partial entry behind, and one missing from the manifest reads
+        // back next run as the user's own and outlives its repo. Recording a
+        // name that never landed costs nothing — the removal loop forces.
+        written[kind].push(copy.name);
         cpSync(`${copy.sourceDir}/${copy.entry}`, dest, { recursive: true, dereference: false });
         if (copy.declaredId !== copy.id) alignFrontmatterName(dest, kind, copy.declaredId);
-        written[kind].push(copy.name);
       }
       warnOnShadowedGlobals(kind, copies);
       for (const copy of skipped) {
@@ -334,8 +338,8 @@ export function syncClaudeAssets(rootPath: string, repoWorktreePaths: string[] =
   } catch (e) {
     console.error("[workspaces] failed to copy repo skills/agents:", e);
   } finally {
-    // Written even when a copy threw part-way: an unrecorded copy is never
-    // cleaned up, and the next run reads it back as one of the user's own.
+    // Written even when the run threw part-way, so the copies already recorded
+    // are still cleaned up next time.
     try {
       writeFileSync(manifestFile, `${JSON.stringify(written, null, 2)}\n`);
     } catch (e) {
