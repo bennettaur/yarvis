@@ -17,6 +17,8 @@ export interface Specialist {
   unattended: string[];
   provider: string | null;
   model: string | null;
+  /** A complexity tier to resolve its model from, in place of a literal model. */
+  complexityTier: "low" | "medium" | "max" | null;
   maxSteps: number;
   enabled: boolean;
   /** "builtin" ships with the app; "user" comes from the agents directory. */

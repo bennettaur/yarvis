@@ -446,14 +446,18 @@ Settings tab's Repositories section.
 Each row in the workspace list carries a badge per repo that has a pull
 request, beside the workspace status, so a list of "active" workspaces still
 says which one wants you: `◇` open and awaiting review, `◌` draft, `●` checks
-running, `✗` checks failing, `⚠` merge conflicts, `✎` changes requested, `✓`
-approved, `◆` merged, `⊘` closed. Hovering names the repo, the PR number and
-the state. The badge shows whatever needs acting on first, so a red build on an
-approved PR still reads as failing, and `✓` means someone with write access
-signed off — the repo's own rules (required reviewers, CODEOWNERS) can still
-hold the merge. Azure DevOps PRs report no check state here, so theirs reflects
-the review only. The badges come from the same background PR poll the workspace
-page uses, so they lag a change by up to a minute.
+running, `✗` checks failing, `⚠` merge conflicts, `✎` changes requested, `★`
+ready to merge, `✓` approved, `◆` merged, `⊘` closed. Hovering names the repo,
+the PR number and the state. The badge shows whatever needs acting on first,
+so a red build on an approved PR still reads as failing. `★` is the one that
+needs nothing from anyone: signed off, and the provider itself calls the merge
+clean. `✓` is an approval that isn't a green light yet — an unmet
+branch-protection rule (required reviewers, CODEOWNERS, required checks), a
+base the branch has to be updated against first, or a merge state the provider
+hasn't worked out. Azure DevOps PRs report neither check state nor a merge
+verdict here, so theirs reflects the review only and never reaches `★`. The
+badges come from the same background PR poll the workspace page uses, so they
+lag a change by up to a minute.
 
 Every provisioned workspace opens with an agent tab and nothing else — opening
 one starts a Claude Code session in it (or attaches to the one already running)
@@ -942,7 +946,7 @@ tools:
   - work_summary
   - search_events
   - recall
-model: anthropic/claude-sonnet-5   # optional; omit for the default chat model
+model: anthropic/claude-sonnet-5   # optional; or complexity: low|medium|max
 maxSteps: 8                         # optional, default 8, hard cap 30
 ---
 
@@ -960,6 +964,13 @@ right for anything that works purely from material handed to it.
 `enabled: false` turns one off, including a built-in you would rather not have.
 A misspelled key is an error too — `tool:` where `tools:` was meant would
 otherwise be a specialist with no tools and no complaint.
+
+`complexity: low | medium | max` is an alternative to `model:` — it resolves to
+whichever provider/model you've set for that tier in **Settings → Assistant →
+Complexity tiers**, so a cheap specialist stays cheap (or gets more capable) as
+that setting changes rather than as a release. The two are mutually exclusive;
+a file setting both is an error. Leaving both unset falls back to the default
+chat model, same as today.
 
 Two things a definition deliberately cannot do. It cannot delegate — a specialist
 that could would eventually delegate to itself. And a tool that writes where other

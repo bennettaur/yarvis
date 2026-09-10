@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
+import type { WorkspaceSummary } from "../lib/workspaces";
 import { renderToHtml } from "../test/render";
-import WorkspacesPanel from "./WorkspacesPanel";
+import WorkspacesPanel, { groupWorkspaces } from "./WorkspacesPanel";
 
 const EXISTING = {
   id: "ws-old",
@@ -131,5 +132,46 @@ describe("WorkspacesPanel", () => {
     const html = await renderToHtml(<WorkspacesPanel requested={{ id: "ws-missing" }} />);
 
     expect(html).toContain(EMPTY_STATE);
+  });
+});
+
+describe("groupWorkspaces", () => {
+  const summary = (id: string, repoNames: string[]) =>
+    ({ ...EXISTING, id, repoNames, prs: [] }) as WorkspaceSummary;
+
+  it("puts multi-repo workspaces holding the same repos in one group", () => {
+    const groups = groupWorkspaces([
+      summary("ws-a", ["femr", "llm-service"]),
+      summary("ws-b", ["llm-service", "femr"]),
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.label).toBe("femr + llm-service");
+    expect(new Set(groups[0]?.items.map((w) => w.id))).toEqual(new Set(["ws-a", "ws-b"]));
+  });
+
+  it("keeps multi-repo workspaces holding different repos in separate groups", () => {
+    const groups = groupWorkspaces([
+      summary("ws-a", ["femr", "llm-service"]),
+      summary("ws-c", ["femr", "web"]),
+    ]);
+
+    expect(groups.map((g) => g.label)).toEqual(["femr + llm-service", "femr + web"]);
+  });
+
+  it("orders single-repo groups before multi-repo groups, each by label", () => {
+    const items = [
+      summary("ws-zebra", ["zebra", "alpha"]),
+      summary("ws-beta", ["beta", "alpha"]),
+      summary("ws-single", ["web"]),
+      summary("ws-scratch", []),
+    ];
+
+    const labels = (list: WorkspaceSummary[]) => groupWorkspaces(list).map((g) => g.label);
+
+    expect(labels(items)).toEqual(["Scratch", "web", "alpha + beta", "alpha + zebra"]);
+    // Group order must not follow the list's arrival order, or it would shuffle
+    // between the panel's periodic refetches.
+    expect(labels([...items].reverse())).toEqual(labels(items));
   });
 });

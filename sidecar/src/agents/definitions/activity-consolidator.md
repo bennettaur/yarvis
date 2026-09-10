@@ -4,6 +4,7 @@ description: >-
   Turns a window of raw activity events into one short summary of what the user
   actually did. Used by the consolidation jobs.
 tools: search_events
+complexity: medium
 maxSteps: 4
 ---
 

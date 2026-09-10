@@ -1,6 +1,7 @@
 import { useState } from "react";
 import AgentSection from "./AgentSection";
 import ChatBudgetSection from "./ChatBudgetSection";
+import ComplexityModelSection from "./ComplexityModelSection";
 import CustomProviderSection from "./CustomProviderSection";
 import DiagnosticsSection from "./DiagnosticsSection";
 import EmbeddingsSection from "./EmbeddingsSection";
@@ -112,6 +113,7 @@ export default function SettingsPanel() {
       {active === "assistant" && (
         <div className="space-y-5">
           <ChatBudgetSection />
+          <ComplexityModelSection />
           <SpecialistSection />
           <JobsSection />
         </div>

@@ -6,6 +6,7 @@ description: >-
 # No tools on purpose: the transcript arrives as material in the prompt, and a
 # summarizer that could act on what it reads is one that can be told to.
 tools:
+complexity: low
 maxSteps: 2
 ---
 
