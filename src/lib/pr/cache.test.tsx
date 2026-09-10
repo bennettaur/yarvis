@@ -128,8 +128,9 @@ describe("cache invalidation", () => {
   // Clicking a layer of a stack points this hook at another pull request. The
   // detail already on screen belongs to the layer just left, so keeping it
   // would title the new review page with the old PR — which reads as a click
-  // that did nothing (#268).
-  it("drops the value it was showing when the key changes", async () => {
+  // that did nothing (#268). A layer with a cached detail of its own is seeded
+  // from that instead; this one has none.
+  it("blanks the value it was showing for a key with nothing cached", async () => {
     const { host, root } = mount(createElement(Numbered, { subject: ref }));
     await settle();
     expect(host.textContent).toBe("#7");

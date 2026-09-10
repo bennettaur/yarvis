@@ -3,8 +3,9 @@
 // zone — CI runners default to UTC, which has no DST transitions to exercise.
 process.env.TZ = "America/Toronto";
 
-import { mock } from "bun:test";
+import { beforeEach, mock } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { clearResourceCache } from "../lib/resourceCache";
 import { nativeInvoke } from "./nativeInvoke";
 
 /**
@@ -14,6 +15,12 @@ import { nativeInvoke } from "./nativeInvoke";
  * the desktop shell — with inert defaults. Tests that need specific sidecar
  * data mock `src/lib/api` (sidecarFetch) themselves.
  */
+
+// `lib/resourceCache` outlives the components reading it on purpose, which in a
+// test run means one case's sidecar responses would be served to the next.
+beforeEach(() => {
+  clearResourceCache();
+});
 
 if (!("happyDOM" in globalThis)) {
   GlobalRegistrator.register();

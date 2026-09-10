@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import type { PrsPlace } from "../lib/pr/panelState";
-import { renderToHtml } from "../test/render";
+import { firstPaintOf, renderToHtml } from "../test/render";
 import PrsPanel from "./PrsPanel";
 
 const STORAGE_KEY = "yarvis.prs.place";
@@ -36,6 +36,13 @@ const json = (body: unknown, status = 200) =>
 
 /** UI event types posted during a render, so tests can assert on `pr.viewed`. */
 let recordedEvents: string[] = [];
+
+/**
+ * When set, every sidecar call blocks on it. A remount can then be inspected
+ * knowing nothing it shows came off the wire — the whole point of the cache is
+ * that it doesn't have to wait for one.
+ */
+let holdResponses: Promise<void> | null = null;
 
 // GitHub is the configured provider throughout; Azure is not, which is what
 // lets the last test exercise a remembered Azure place going stale.
@@ -93,6 +100,7 @@ mock.module("../lib/api", () => ({
   }),
   getDbHealth: async () => ({ configured: true, reachable: true }),
   sidecarFetch: async (path: string, init?: RequestInit) => {
+    if (holdResponses) await holdResponses;
     if (path === "/api/events") {
       recordedEvents.push(JSON.parse(String(init?.body)).type);
       return json({ ok: true });
@@ -156,6 +164,24 @@ describe("PrsPanel place", () => {
   beforeEach(() => {
     localStorage.clear();
     recordedEvents = [];
+    holdResponses = null;
+  });
+
+  it("paints the lists from the cache when the tab is revisited", async () => {
+    // Issue #275: a revisit must not blank the list and reload it. Every sidecar
+    // call is held open for the second visit, and the assertion is on the very
+    // first frame — so the list it shows can only have come from the cache.
+    await renderToHtml(<PrsPanel />);
+
+    let release = () => {};
+    holdResponses = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const revisit = firstPaintOf(<PrsPanel />);
+    expect(revisit.text).toContain(LIST_NAV);
+    expect(revisit.text).toContain(MY_PR.title);
+    release();
+    revisit.unmount();
   });
 
   it("opens on 'My PRs' when there's no remembered place", async () => {
