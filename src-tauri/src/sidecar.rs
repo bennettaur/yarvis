@@ -195,7 +195,21 @@ async fn supervise(app: AppHandle, port: u16, token: String, restart: Arc<Notify
         if let Some(path) = &log {
             rotate_if_large(path);
         }
-        let mut command = build_command(&app, port, &token);
+        // Off the async runtime's worker: reading the secrets can block on a
+        // 1Password authorization prompt for as long as `OP_TIMEOUT`, and a
+        // supervisor restart must not hold a worker thread for a minute.
+        let (build_app, build_token) = (app.clone(), token.clone());
+        let mut command = match tauri::async_runtime::spawn_blocking(move || {
+            build_command(&build_app, port, &build_token)
+        })
+        .await
+        {
+            Ok(command) => command,
+            Err(e) => {
+                eprintln!("[sidecar] could not prepare the launch command: {e}");
+                return;
+            }
+        };
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         match command.spawn() {
             Ok(mut child) => {
@@ -274,9 +288,15 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
         cmd.env("YARVIS_DEBUG_MCP", value);
     }
 
-    // Read the single secrets item once; one Keychain access covers every
-    // value injected below.
-    let secrets = read_root();
+    // Read the single secrets item once; one store access covers every value
+    // injected below. A failed read is loud but not fatal: the sidecar still
+    // starts, so the user can reach Settings and fix the store rather than
+    // facing an app that won't come up. Everything below is simply absent,
+    // which is what the sidecar already handles for an unconfigured install.
+    let secrets = read_root().unwrap_or_else(|e| {
+        eprintln!("[sidecar] starting without secrets: {e}");
+        serde_json::Value::Object(serde_json::Map::new())
+    });
     if let Some(url) = database_url(
         crate::instance::database_url_override(),
         secret_from_root(&secrets, "database_url"),

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { getHealth, waitForSidecarReady } from "../lib/api";
-import { restartSidecar } from "../lib/keychain";
+import { restartAndWait } from "../lib/restart";
 import {
   getSettings,
   type Settings,
@@ -9,18 +8,6 @@ import {
   setJiraBaseUrl,
   setJiraEmail,
 } from "../lib/settings";
-
-/** Trigger a sidecar restart and wait for it to come back ready. */
-async function restartAndWait(): Promise<void> {
-  let priorUptimeMs: number | undefined;
-  try {
-    priorUptimeMs = (await getHealth()).uptimeMs;
-  } catch {
-    // already down — the readiness poll will catch the new process anyway.
-  }
-  await restartSidecar();
-  await waitForSidecarReady({ minUptimeMsBefore: priorUptimeMs });
-}
 
 interface SettingMeta {
   key: keyof Pick<Settings, "azureDevopsOrgUrl" | "jiraBaseUrl" | "jiraEmail" | "googleClientId">;

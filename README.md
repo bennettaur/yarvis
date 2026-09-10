@@ -11,8 +11,8 @@ daily/weekly work tracking. See the roadmap in
 Three processes with a clean ownership split:
 
 - **Rust core** (`src-tauri/`) — native OS integration (window, tray,
-  notifications), secret storage in the macOS Keychain, and supervision of the
-  sidecar process (it picks a free loopback port, generates a bearer token, and
+  notifications), secret storage (macOS Keychain or 1Password), and
+  supervision of the sidecar process (it picks a free loopback port, generates a bearer token, and
   injects secrets as environment variables).
 - **React frontend** (`src/`) — Vite + TypeScript + Tailwind. Talks to the Rust
   core via `invoke` (native + secrets) and to the sidecar over authenticated
@@ -70,6 +70,9 @@ changes.
 - [GitHub CLI](https://cli.github.com) plus `gh extension install github/gh-stack`
   — only for the workspace Stack tab's grouping and its merge action; the stack
   itself is still derived from the API without them
+- [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) — only if
+  you keep secrets in 1Password rather than the macOS Keychain; see "1Password
+  instead of the Keychain"
 
 ## Setup
 
@@ -87,11 +90,13 @@ psql -d yarvis -c "CREATE EXTENSION IF NOT EXISTS vector;"
 DATABASE_URL="postgres://localhost:5432/yarvis" bun run --cwd sidecar db:migrate
 ```
 
-Secrets are entered in the app's **Settings** screen and stored in the macOS
-Keychain — not in env files: the database URL, provider keys (Anthropic,
-Gemini, Cerebras), a GitHub token and/or an Azure DevOps token (for the
-PR dashboard + embedded review — either provider can back it, selected with a
-toggle in the PRs tab), a JIRA API token (for the JIRA
+Secrets are entered in the app's **Settings** screen and stored in the app's
+secret store — the macOS Keychain by default, or 1Password instead (see
+"1Password instead of the Keychain" below) — never in env files: the database
+URL, provider keys (Anthropic, Gemini, Cerebras), a GitHub token and/or an
+Azure DevOps token (for the PR dashboard + embedded review — either provider
+can back it, selected with a toggle in the PRs tab), a JIRA API token (for the
+JIRA
 issues integration on the Issues tab), a Google Cloud OAuth client secret (for the Calendar
 integration), an optional Hugging Face token (for speech-to-text; see
 Settings → Voice — the Gemini key covers both speech halves on its own), an
@@ -372,7 +377,9 @@ access-control check while OTP is off.
 > code-signed with an application-identifier entitlement so it can use the macOS
 > data-protection keychain — unsigned dev builds fall back to the login-password
 > prompt. That signing work is tracked separately; once it lands, the single
-> authorization becomes a single Touch ID tap with no further change here.
+> authorization becomes a single Touch ID tap with no further change here. The
+> 1Password store below is the way to get a biometric gate today, since the
+> desktop app supplies it rather than the app's own signature.
 
 For Google Calendar, create a **Desktop app** OAuth client in Google Cloud
 Console and register the loopback redirect
@@ -380,6 +387,43 @@ Console and register the loopback redirect
 for Desktop clients), then enter the client id (Settings, non-secret) and
 client secret (Settings, Keychain) and connect from the Calendar tab. See
 `ROADMAP.md` for the full verification steps.
+
+### 1Password instead of the Keychain
+
+**Settings → Credentials → Secret store** switches that single item from the
+macOS Keychain to a 1Password item, addressed by vault and item title. The
+same JSON object is stored either way, in the item's notes field
+(`op://<vault>/<item>/notesPlain`), so every secret the app manages — including
+the MCP-server, custom-provider and embeddings credentials nested inside it —
+moves together.
+
+It needs the [1Password CLI](https://developer.1password.com/docs/cli/)
+(`op`) with the desktop app's CLI integration turned on, which is what puts
+each access behind Touch ID. A GUI launch inherits a minimal `PATH`, so the app
+looks for `op` in `/opt/homebrew/bin` and `/usr/local/bin` as well; set
+`YARVIS_OP_BIN` for an install somewhere else.
+
+Saving verifies the vault is reachable, copies the current secrets into the
+target item, and only then records the choice — a mistyped vault leaves the app
+on the store it was already using. The item is created as a Secure Note on the
+first save if it doesn't exist.
+
+**A store that already holds something is never overwritten**, and the previous
+store's copy is always left in place. That makes the switch safe, but it also
+means switching back does not re-copy: the store you return to still holds
+whatever it held when you left it, so any secret changed in the meantime is the
+older value. Settings says which of the three happened after every switch —
+copied, nothing to copy, or target already occupied — because the last case
+leaves the app authenticating with a different set of credentials than it had a
+moment before.
+
+Writes hand `op` the blob on standard input, as a JSON item template, so it
+never appears in the process table — 1Password's own guidance is to use a
+template for sensitive values, since command arguments are visible to other
+processes. That matters more than it sounds: a read is gated behind the
+desktop app's authorization prompt, while an argument is readable with no
+prompt at all by anything running as you, including the subprocesses this app
+spawns.
 
 ### Connected MCP servers
 
@@ -1015,7 +1059,8 @@ down from the hotkeys and background workers below, but leaves the bundle
 identifier alone — so it shares the primary's `alarms.json` and control socket,
 and the single-instance guard still redirects the launch. Use `dev:instance`.
 
-Both instances read the **same Keychain item** and the **same
+Both instances read the **same secrets item** (Keychain or 1Password, as
+selected in the shared settings file) and the **same
 `~/.yarvis/settings.json`**, so provider keys, tokens, the database URL, the PTY
 session cap and the workspace agent command are entered once and shared. That
 means the second instance is looking at your real data and preferences by
@@ -1120,7 +1165,9 @@ src/            React frontend (Vite + TS + Tailwind)
     find/       find-on-page bar (Cmd+F), hosted by the shell over the content region
   omni/         json-render component catalog, registry, layout primitives
 src-tauri/      Rust core (Tauri v2)
-  src/keychain.rs   Keychain-backed secret commands (single consolidated item)
+  src/keychain.rs   secret commands over the single consolidated item
+  src/secret_store.rs  which store that item lives in: macOS Keychain or 1Password
+  src/onepassword.rs   the 1Password store, driven through the `op` CLI
   src/settings.rs   non-secret settings, persisted to ~/.yarvis/settings.json;
                     migrates the non-secret values that used to live in the Keychain
   src/instance.rs   which instance this process is, and what it therefore owns

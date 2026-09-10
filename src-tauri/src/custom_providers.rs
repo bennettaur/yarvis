@@ -21,8 +21,8 @@ use crate::keychain;
 const CUSTOM_PROVIDERS_KEY: &str = "customProviders";
 
 /// Reads the custom-provider credential map out of the shared secrets blob.
-fn read_blob() -> Value {
-    providers_from_root(&keychain::read_root())
+fn read_blob() -> Result<Value, String> {
+    Ok(providers_from_root(&keychain::read_root()?))
 }
 
 /// Extracts the custom-provider subtree from an already-read secrets blob.
@@ -33,7 +33,7 @@ fn providers_from_root(root: &Value) -> Value {
 }
 
 fn write_blob(value: &Value) -> Result<(), String> {
-    let mut root = keychain::read_root();
+    let mut root = keychain::read_root()?;
     let obj = root
         .as_object_mut()
         .ok_or_else(|| "secrets store is not a JSON object".to_string())?;
@@ -126,9 +126,9 @@ pub struct CustomProviderSecretStatus {
     pub headers: BTreeMap<String, bool>,
 }
 
-#[tauri::command]
-pub fn list_custom_provider_secret_status() -> Vec<CustomProviderSecretStatus> {
-    let blob = read_blob();
+#[tauri::command(async)]
+pub fn list_custom_provider_secret_status() -> Result<Vec<CustomProviderSecretStatus>, String> {
+    let blob = read_blob()?;
     let obj = blob.as_object().cloned().unwrap_or_default();
     let mut out = Vec::with_capacity(obj.len());
     for (id, entry) in obj {
@@ -151,17 +151,17 @@ pub fn list_custom_provider_secret_status() -> Vec<CustomProviderSecretStatus> {
             headers,
         });
     }
-    out
+    Ok(out)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_custom_provider_secret(
     provider_id: String,
     slot: String,
     value: String,
 ) -> Result<(), String> {
     validate_slot(&slot)?;
-    let mut blob = read_blob();
+    let mut blob = read_blob()?;
     if !blob.is_object() {
         blob = Value::Object(Map::new());
     }
@@ -184,10 +184,10 @@ pub fn set_custom_provider_secret(
     write_blob(&blob)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_custom_provider_secret(provider_id: String, slot: String) -> Result<(), String> {
     validate_slot(&slot)?;
-    let mut blob = read_blob();
+    let mut blob = read_blob()?;
     let Some(root) = blob.as_object_mut() else {
         return Ok(());
     };
@@ -222,9 +222,9 @@ pub fn delete_custom_provider_secret(provider_id: String, slot: String) -> Resul
 /// Deletes every secret slot belonging to the given provider id. Called from
 /// the frontend when a custom provider is removed from the database so no
 /// orphan credentials linger in the Keychain.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_custom_provider_all_secrets(provider_id: String) -> Result<(), String> {
-    let mut blob = read_blob();
+    let mut blob = read_blob()?;
     let Some(root) = blob.as_object_mut() else {
         return Ok(());
     };

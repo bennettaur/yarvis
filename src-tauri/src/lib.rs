@@ -6,7 +6,9 @@ mod embeddings_secrets;
 mod instance;
 mod keychain;
 mod mcp;
+mod onepassword;
 mod pty;
+mod secret_store;
 mod settings;
 mod sidecar;
 
@@ -191,6 +193,7 @@ pub fn run() {
             settings::set_jira_email,
             settings::set_google_client_id,
             settings::set_telegram_otp_window_minutes,
+            settings::set_secret_backend,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
