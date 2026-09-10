@@ -1,13 +1,18 @@
 import type { Dirent } from "node:fs";
 import {
+  closeSync,
+  constants,
   cpSync,
-  existsSync,
-  lstatSync,
+  fstatSync,
+  ftruncateSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   rmSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename } from "node:path";
@@ -232,11 +237,29 @@ function readManifest(file: string): CopiedAssets {
  */
 function alignFrontmatterName(copiedPath: string, kind: AssetKind, declared: string): void {
   const file = kind === "skills" ? `${copiedPath}/SKILL.md` : copiedPath;
+
+  // `O_NOFOLLOW` rather than an lstat first: the copy's own SKILL.md can be a
+  // symlink even when the directory holding it was not, and a check by path
+  // followed by a write by path lets the leaf be swapped in between — the write
+  // would then land on whatever it points at. Refusing at open is the same
+  // decision with no window in the middle, and every later step reads the
+  // descriptor rather than looking the path up again. `O_NONBLOCK` so a fifo
+  // committed to a repo cannot wedge provisioning on the open.
+  let fd: number;
   try {
-    // The copy's own SKILL.md can still be a symlink even when the directory
-    // holding it was not, and writing through one rewrites its target.
-    if (!existsSync(file) || lstatSync(file).isSymbolicLink()) return;
-    const content = readFileSync(file, "utf8");
+    fd = openSync(file, constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch {
+    // Missing, a symlink, or not something we may write: nothing to rename.
+    return;
+  }
+
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) return;
+    const current = Buffer.alloc(stat.size);
+    if (readSync(fd, current, 0, stat.size, 0) !== stat.size) return;
+
+    const content = current.toString("utf8");
     const match = content.match(/^(---\r?\n)([\s\S]*?)(\r?\n---)/);
     if (!match) return;
     const [block, opener, fields, closingFence] = match as unknown as [
@@ -251,9 +274,17 @@ function alignFrontmatterName(copiedPath: string, kind: AssetKind, declared: str
       ? fields.replace(/^name:.*$/m, `name: ${declared}`)
       : `name: ${declared}\n${fields}`;
     if (renamed === fields) return;
-    writeFileSync(file, `${opener}${renamed}${closingFence}${content.slice(block.length)}`);
+
+    const bytes = Buffer.from(
+      `${opener}${renamed}${closingFence}${content.slice(block.length)}`,
+      "utf8",
+    );
+    ftruncateSync(fd, 0);
+    writeSync(fd, bytes, 0, bytes.length, 0);
   } catch (e) {
     console.error(`[workspaces] could not rename ${kind} entry in ${file}:`, e);
+  } finally {
+    closeSync(fd);
   }
 }
 
