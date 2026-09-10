@@ -9,6 +9,7 @@ import {
   azStars,
   azViewer,
 } from "../lib/pr/azure";
+import { PRS_PROBE_PREFIX, prsListPrefix } from "../lib/pr/cacheKeys";
 import {
   ghCreateFilter,
   ghDeleteFilter,
@@ -150,8 +151,8 @@ export default function PrsPanel({
    * re-probe Azure on every remount and hold `probeComplete` — and with it the
    * lists — behind that round trip.
    */
-  const ghProbe = useCachedResource("prs:viewer:github", probeGithub, PROBE_TTL_MS);
-  const azProbe = useCachedResource("prs:viewer:azure", probeAzure, PROBE_TTL_MS);
+  const ghProbe = useCachedResource(`${PRS_PROBE_PREFIX}github`, probeGithub, PROBE_TTL_MS);
+  const azProbe = useCachedResource(`${PRS_PROBE_PREFIX}azure`, probeAzure, PROBE_TTL_MS);
   const availableProviders = useMemo(() => {
     const set = new Set<Provider>();
     if (ghProbe.data) set.add("github");
@@ -165,7 +166,7 @@ export default function PrsPanel({
   // surface as this resource's error instead.
   const listsReady = probeComplete && availableProviders.has(provider);
   const listsRes = useCachedResource(
-    listsReady ? `prs:${provider}:lists` : null,
+    listsReady ? `${prsListPrefix(provider)}lists` : null,
     () => loadProviderLists(provider),
     PROVIDER_TTL_MS,
   );
@@ -176,7 +177,7 @@ export default function PrsPanel({
     azFilters: azFilterList,
   } = listsRes.data ?? NO_LISTS;
 
-  const starsRes = useCachedResource(listsReady ? `prs:${provider}:stars` : null, () =>
+  const starsRes = useCachedResource(listsReady ? `${prsListPrefix(provider)}stars` : null, () =>
     provider === "github" ? ghStars() : azStars(),
   );
   const starredKeys = useMemo(
@@ -189,7 +190,7 @@ export default function PrsPanel({
   // unkeyed until the tab is opened rather than loading beside the cheap ones.
   const reviewingRes = useCachedResource<ReviewingList>(
     activeTab === "reviewing" && provider === "github" && listsReady
-      ? "prs:github:reviewing"
+      ? `${prsListPrefix("github")}reviewing`
       : null,
     ghReviewing,
     PROVIDER_TTL_MS,

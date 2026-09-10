@@ -12,6 +12,7 @@ import {
   issuesSearch,
   removeIssueStar,
 } from "../../lib/issues/api";
+import { GITHUB_ISSUES_PREFIX } from "../../lib/issues/cacheKeys";
 import {
   type IssueFilter,
   type IssueLink,
@@ -43,12 +44,12 @@ type TabKey = "assigned" | "all" | "filters";
  * JIRA's own entries, which cost a call to a different rate-limited provider,
  * are left alone.
  */
-const REPOS_KEY = "issues:github:repos";
-const ASSIGNED_KEY = "issues:github:assigned";
-const ALL_KEY = "issues:github:all";
-const FILTERS_KEY = "issues:github:filters";
-const STARS_KEY = "issues:github:stars";
-const LINKS_KEY = "issues:github:links";
+const REPOS_KEY = `${GITHUB_ISSUES_PREFIX}repos`;
+const ASSIGNED_KEY = `${GITHUB_ISSUES_PREFIX}assigned`;
+const ALL_KEY = `${GITHUB_ISSUES_PREFIX}all`;
+const FILTERS_KEY = `${GITHUB_ISSUES_PREFIX}filters`;
+const STARS_KEY = `${GITHUB_ISSUES_PREFIX}stars`;
+const LINKS_KEY = `${GITHUB_ISSUES_PREFIX}links`;
 
 /** Stable identities so an unloaded resource doesn't re-render the lists. */
 const NO_ISSUES: IssueSummary[] = [];
@@ -309,7 +310,7 @@ export default function GithubIssuesView({
 
   /** Drops every GitHub issue resource at once; each mounted hook reloads itself. */
   const dropCaches = useCallback(() => {
-    invalidatePrefix("issues:github:");
+    invalidatePrefix(GITHUB_ISSUES_PREFIX);
   }, []);
 
   const onToggleStar = useCallback(

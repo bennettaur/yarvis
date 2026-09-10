@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
+import { GITHUB_ISSUES_PREFIX } from "../../lib/issues/cacheKeys";
 import type { IssueRepo, IssueSummary } from "../../lib/issues/types";
 import { type OpenWorkspaceRequest, onOpenWorkspace } from "../../lib/nav";
 import { invalidatePrefix } from "../../lib/resourceCache";
@@ -270,7 +271,7 @@ describe("GithubIssuesView", () => {
     configured = [];
     // Settings drops the cached issue resources when a repo's "Pull issues"
     // changes, so the remount sees the new answer rather than the cached one.
-    invalidatePrefix("issues:github:");
+    invalidatePrefix(GITHUB_ISSUES_PREFIX);
     const empty = await mount();
     expect(button(empty.host, "+ New issue")).toBeUndefined();
     empty.cleanup();

@@ -8,6 +8,7 @@ import {
   issueStars,
   removeIssueStar,
 } from "../../lib/issues/api";
+import { JIRA_ISSUES_PREFIX } from "../../lib/issues/cacheKeys";
 import {
   type IssueFilter,
   type IssueLink,
@@ -39,12 +40,12 @@ type TabKey = "assigned" | "created" | "search" | "starred";
  * Cache keys for the JIRA lists, under the same `issues:` prefix the GitHub
  * view uses so a write that moves both providers' views drops them together.
  */
-const VIEWER_KEY = "issues:jira:viewer";
-const ASSIGNED_KEY = "issues:jira:assigned";
-const CREATED_KEY = "issues:jira:created";
-const FILTERS_KEY = "issues:jira:filters";
-const STARS_KEY = "issues:jira:stars";
-const LINKS_KEY = "issues:jira:links";
+const VIEWER_KEY = `${JIRA_ISSUES_PREFIX}viewer`;
+const ASSIGNED_KEY = `${JIRA_ISSUES_PREFIX}assigned`;
+const CREATED_KEY = `${JIRA_ISSUES_PREFIX}created`;
+const FILTERS_KEY = `${JIRA_ISSUES_PREFIX}filters`;
+const STARS_KEY = `${JIRA_ISSUES_PREFIX}stars`;
+const LINKS_KEY = `${JIRA_ISSUES_PREFIX}links`;
 
 /** Stable identities so an unloaded resource doesn't re-render the lists. */
 const NO_ISSUES: IssueSummary[] = [];
@@ -362,7 +363,7 @@ export default function JiraIssuesView() {
 
   /** Drops every JIRA resource at once; each mounted hook reloads itself. */
   const dropCaches = useCallback(() => {
-    invalidatePrefix("issues:jira:");
+    invalidatePrefix(JIRA_ISSUES_PREFIX);
   }, []);
 
   // Resolve starred issues to full rows (status/labels/assignee) via one JQL.

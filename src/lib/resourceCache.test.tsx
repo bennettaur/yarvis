@@ -50,9 +50,16 @@ function statesSeen(): string[] {
  * Renders the three states a surface distinguishes — nothing to show, data with
  * a load behind it, settled data — so a case can read them out of the DOM.
  */
-function Probe({ subject }: { subject: string | null }) {
-  const { data, loading, refreshing, error } = useCachedResource(subject, load);
-  const state = loading ? "loading" : refreshing ? "refreshing" : "idle";
+/** The `refresh` the probe was last handed, so a case can call the real one. */
+let lastRefresh: (() => Promise<void>) | null = null;
+
+function Probe({ subject, ttl }: { subject: string | null; ttl?: number }) {
+  const { data, loading, refreshing, error, refresh } = useCachedResource(subject, load, ttl);
+  lastRefresh = refresh;
+  // Both flags are rendered rather than one chosen between them: a surface reads
+  // them independently, and collapsing them here would hide a mutation that let
+  // a cold load call itself a refresh.
+  const state = `${loading ? "loading" : "-"}:${refreshing ? "refreshing" : "-"}`;
   const text = `${data ?? "-"}/${state}/${error ?? "-"}`;
   rendered.push(text);
   return createElement("span", null, text);
@@ -76,6 +83,7 @@ beforeEach(() => {
   failWith = null;
   script = [];
   rendered.length = 0;
+  lastRefresh = null;
 });
 
 describe("useCachedResource", () => {
@@ -83,9 +91,9 @@ describe("useCachedResource", () => {
     loadMs = 40;
     const { host, root } = mount(createElement(Probe, { subject: "k" }));
     await settle(10);
-    expect(host.textContent).toBe("-/loading/-");
+    expect(host.textContent).toBe("-/loading:-/-");
     await settle(60);
-    expect(host.textContent).toBe("first/idle/-");
+    expect(host.textContent).toBe("first/-:-/-");
     root.unmount();
   });
 
@@ -99,7 +107,7 @@ describe("useCachedResource", () => {
     const second = mount(createElement(Probe, { subject: "k" }));
     await settle();
     // The point of the cache: not one frame of the remount is empty.
-    expect(statesSeen()).toEqual(["first/idle/-"]);
+    expect(statesSeen()).toEqual(["first/-:-/-"]);
     second.root.unmount();
   });
 
@@ -115,7 +123,7 @@ describe("useCachedResource", () => {
     const warm = mount(createElement(Probe, { subject: "k" }));
     await settle(10);
     expect(fetchCount).toBe(1);
-    expect(warm.host.textContent).toBe("first/idle/-");
+    expect(warm.host.textContent).toBe("first/-:-/-");
     warm.root.unmount();
 
     // Forcing past the TTL is what a stale entry does: the old value stays on
@@ -124,30 +132,110 @@ describe("useCachedResource", () => {
     await settle(10);
     invalidate("k");
     await settle(10);
-    expect(stale.host.textContent).toBe("first/refreshing/-");
+    expect(stale.host.textContent).toBe("first/-:refreshing/-");
     await settle(60);
-    expect(stale.host.textContent).toBe("second/idle/-");
+    expect(stale.host.textContent).toBe("second/-:-/-");
     stale.root.unmount();
+  });
+
+  it("calls a cold load loading, never refreshing", async () => {
+    // The code says twice that labelling a cold load a *re*fresh would be a lie:
+    // there is nothing on screen to be keeping up to date.
+    loadMs = 40;
+    const { host, root } = mount(createElement(Probe, { subject: "k" }));
+    await settle(10);
+    expect(host.textContent).toBe("-/loading:-/-");
+    await settle(60);
+    root.unmount();
+  });
+
+  it("seeds a key it has been to before, and revalidates behind it", async () => {
+    // Paging back, or flipping a filter back off: the key changes twice and the
+    // one returned to has its own cached answer, which must be on the first
+    // frame the way a remount's is. The short TTL makes that answer stale, so
+    // this is also the ticket's literal scenario — the old list, the indicator,
+    // then fresh data — with a real load behind it rather than an invalidation.
+    script = [{ value: "page-a" }, { value: "page-b" }];
+    const { host, root } = mount(createElement(Probe, { subject: "a", ttl: 5 }));
+    await settle();
+    root.render(createElement(Probe, { subject: "b", ttl: 5 }));
+    await settle();
+    expect(host.textContent).toBe("page-b/-:-/-");
+
+    value = "page-a refreshed";
+    loadMs = 60;
+    rendered.length = 0;
+    root.render(createElement(Probe, { subject: "a", ttl: 5 }));
+    await settle(20);
+    // The frame before the effect runs still holds the key just left — React
+    // renders with the state it has. What must never appear is an empty one.
+    expect(statesSeen().some((state) => state.startsWith("-/"))).toBe(false);
+    expect(host.textContent).toBe("page-a/-:refreshing/-");
+    await settle(100);
+    expect(host.textContent).toBe("page-a refreshed/-:-/-");
+    root.unmount();
+  });
+
+  it("reloads a mounted subscriber when a caller primes its key", async () => {
+    // What the workspaces poller does: it fetches on its own schedule and writes
+    // the result in, and the panel on screen has to pick it up.
+    const { host, root } = mount(createElement(Probe, { subject: "k" }));
+    await settle();
+    expect(host.textContent).toBe("first/-:-/-");
+
+    primeCache("k", "polled");
+    await settle();
+    expect(host.textContent).toBe("polled/-:-/-");
+    root.unmount();
+  });
+
+  it("reloads through the refresh the hook hands back", async () => {
+    const { host, root } = mount(createElement(Probe, { subject: "k" }));
+    await settle();
+    expect(fetchCount).toBe(1);
+
+    value = "second";
+    await lastRefresh?.();
+    await settle();
+    expect(fetchCount).toBe(2);
+    expect(host.textContent).toBe("second/-:-/-");
+    root.unmount();
+  });
+
+  it("reloads a key under an invalidated prefix whose last load failed", async () => {
+    // The entry is gone — a rejection is not cached — so only the subscriber is
+    // left to find, which is the branch the second pass over the listeners exists
+    // for. Without it the surface sits on its error until something remounts it.
+    failWith = "sidecar down";
+    const { host, root } = mount(createElement(Probe, { subject: "issues:a" }));
+    await settle();
+    expect(host.textContent).toBe("-/-:-/sidecar down");
+
+    failWith = null;
+    invalidatePrefix("issues:");
+    await settle();
+    expect(host.textContent).toBe("first/-:-/-");
+    root.unmount();
   });
 
   it("keeps the cached data on screen when a refresh fails", async () => {
     const { host, root } = mount(createElement(Probe, { subject: "k" }));
     await settle();
-    expect(host.textContent).toBe("first/idle/-");
+    expect(host.textContent).toBe("first/-:-/-");
 
     // A failed background refresh is no reason to take the list away — the
     // error is reported beside the data the user was already reading.
     failWith = "sidecar down";
     invalidate("k");
     await settle();
-    expect(host.textContent).toBe("first/idle/sidecar down");
+    expect(host.textContent).toBe("first/-:-/sidecar down");
     root.unmount();
   });
 
   it("seeds a key change from that key's own cache, not the previous key's", async () => {
     const { host, root } = mount(createElement(Probe, { subject: "a" }));
     await settle();
-    expect(host.textContent).toBe("first/idle/-");
+    expect(host.textContent).toBe("first/-:-/-");
 
     value = "second";
     loadMs = 40;
@@ -155,9 +243,9 @@ describe("useCachedResource", () => {
     await settle(10);
     // "a"'s value must not be shown under "b" — a different key is a different
     // resource, and there is nothing cached for it yet.
-    expect(host.textContent).toBe("-/loading/-");
+    expect(host.textContent).toBe("-/loading:-/-");
     await settle(60);
-    expect(host.textContent).toBe("second/idle/-");
+    expect(host.textContent).toBe("second/-:-/-");
     root.unmount();
   });
 
@@ -165,7 +253,7 @@ describe("useCachedResource", () => {
     const { host, root } = mount(createElement(Probe, { subject: null }));
     await settle();
     expect(fetchCount).toBe(0);
-    expect(host.textContent).toBe("-/idle/-");
+    expect(host.textContent).toBe("-/-:-/-");
     root.unmount();
   });
 
@@ -175,8 +263,8 @@ describe("useCachedResource", () => {
     const b = mount(createElement(Probe, { subject: "k" }));
     await settle(60);
     expect(fetchCount).toBe(1);
-    expect(a.host.textContent).toBe("first/idle/-");
-    expect(b.host.textContent).toBe("first/idle/-");
+    expect(a.host.textContent).toBe("first/-:-/-");
+    expect(b.host.textContent).toBe("first/-:-/-");
     a.root.unmount();
     b.root.unmount();
   });
@@ -216,8 +304,8 @@ describe("useCachedResource", () => {
     primeCache("k", "polled");
     const { host, root } = mount(createElement(Probe, { subject: "k" }));
     await settle();
-    expect(statesSeen()).toEqual(["polled/idle/-"]);
-    expect(host.textContent).toBe("polled/idle/-");
+    expect(statesSeen()).toEqual(["polled/-:-/-"]);
+    expect(host.textContent).toBe("polled/-:-/-");
     expect(fetchCount).toBe(0);
     root.unmount();
   });
@@ -239,7 +327,7 @@ describe("useCachedResource", () => {
 
     const revisit = mount(createElement(Probe, { subject: "k" }));
     await settle();
-    expect(revisit.host.textContent).toBe("fast/idle/-");
+    expect(revisit.host.textContent).toBe("fast/-:-/-");
     revisit.root.unmount();
   });
 
@@ -260,7 +348,7 @@ describe("useCachedResource", () => {
     fetchCount = 0;
     const revisit = mount(createElement(Probe, { subject: "k" }));
     await settle();
-    expect(revisit.host.textContent).toBe("fast/idle/-");
+    expect(revisit.host.textContent).toBe("fast/-:-/-");
     expect(fetchCount).toBe(0);
     revisit.root.unmount();
   });

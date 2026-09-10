@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { GITHUB_ISSUES_PREFIX } from "../lib/issues/cacheKeys";
 import {
   type CreateRepoInput,
   createRepo,
@@ -95,7 +96,7 @@ export default function ReposSection() {
       // be dropped here rather than waiting for the cache to go stale. Only
       // GitHub's: repo config says nothing about JIRA, or about the stars and
       // links that are keyed by issue rather than by repo.
-      invalidatePrefix("issues:github:");
+      invalidatePrefix(GITHUB_ISSUES_PREFIX);
       await refresh();
       setEditingId(null);
       setDraft(blankDraft());
@@ -111,7 +112,7 @@ export default function ReposSection() {
       }
       try {
         await deleteRepo(id);
-        invalidatePrefix("issues:github:");
+        invalidatePrefix(GITHUB_ISSUES_PREFIX);
         await refresh();
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
