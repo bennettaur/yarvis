@@ -22,8 +22,8 @@ import { useOmniChatContext } from "../../lib/omniChatContext";
 import {
   combineResources,
   invalidatePrefix,
-  PROBE_TTL_MS,
-  PROVIDER_TTL_MS,
+  PROBE_FRESHNESS,
+  PROVIDER_FRESHNESS,
   useCachedResource,
 } from "../../lib/resourceCache";
 import { openExternal } from "../../lib/url";
@@ -284,19 +284,19 @@ export default function JiraIssuesView() {
   // Probed first so the "not configured" state reads precisely, distinct from an
   // upstream failure, and so the lists below aren't asked for at all until JIRA
   // is reachable.
-  const viewerRes = useCachedResource(VIEWER_KEY, probeJira, PROBE_TTL_MS);
+  const viewerRes = useCachedResource(VIEWER_KEY, probeJira, PROBE_FRESHNESS);
   const configured = viewerRes.data?.configured === true;
   // The two searches go to JIRA; the filters, stars and links behind them are
   // the sidecar's own rows and refresh on the shorter default.
   const assignedRes = useCachedResource<IssueSummary[]>(
     configured ? ASSIGNED_KEY : null,
     jiraAssigned,
-    PROVIDER_TTL_MS,
+    PROVIDER_FRESHNESS,
   );
   const createdRes = useCachedResource<IssueSummary[]>(
     configured ? CREATED_KEY : null,
     jiraCreated,
-    PROVIDER_TTL_MS,
+    PROVIDER_FRESHNESS,
   );
   const filtersRes = useCachedResource<IssueFilter[]>(configured ? FILTERS_KEY : null, () =>
     issueFilters("jira"),

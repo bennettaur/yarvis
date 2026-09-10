@@ -4,10 +4,12 @@ import { createRoot, type Root } from "react-dom/client";
 import {
   clearResourceCache,
   combineResources,
+  type Freshness,
   invalidate,
   invalidatePrefix,
   primeCache,
   type Resource,
+  resourceCacheSize,
   useCachedResource,
 } from "./resourceCache";
 
@@ -53,8 +55,8 @@ function statesSeen(): string[] {
 /** The `refresh` the probe was last handed, so a case can call the real one. */
 let lastRefresh: (() => Promise<void>) | null = null;
 
-function Probe({ subject, ttl }: { subject: string | null; ttl?: number }) {
-  const { data, loading, refreshing, error, refresh } = useCachedResource(subject, load, ttl);
+function Probe({ subject, freshness }: { subject: string | null; freshness?: Freshness }) {
+  const { data, loading, refreshing, error, refresh } = useCachedResource(subject, load, freshness);
   lastRefresh = refresh;
   // Both flags are rendered rather than one chosen between them: a surface reads
   // them independently, and collapsing them here would hide a mutation that let
@@ -66,6 +68,9 @@ function Probe({ subject, ttl }: { subject: string | null; ttl?: number }) {
 }
 
 const settle = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Goes stale inside a test's patience, so staleness is exercised for real. */
+const BRIEF: Freshness = { ttlMs: 5, hardMs: 60_000 };
 
 function mount(element: ReturnType<typeof createElement>): { host: HTMLElement; root: Root } {
   const host = document.createElement("div");
@@ -156,16 +161,16 @@ describe("useCachedResource", () => {
     // this is also the ticket's literal scenario — the old list, the indicator,
     // then fresh data — with a real load behind it rather than an invalidation.
     script = [{ value: "page-a" }, { value: "page-b" }];
-    const { host, root } = mount(createElement(Probe, { subject: "a", ttl: 5 }));
+    const { host, root } = mount(createElement(Probe, { subject: "a", freshness: BRIEF }));
     await settle();
-    root.render(createElement(Probe, { subject: "b", ttl: 5 }));
+    root.render(createElement(Probe, { subject: "b", freshness: BRIEF }));
     await settle();
     expect(host.textContent).toBe("page-b/-:-/-");
 
     value = "page-a refreshed";
     loadMs = 60;
     rendered.length = 0;
-    root.render(createElement(Probe, { subject: "a", ttl: 5 }));
+    root.render(createElement(Probe, { subject: "a", freshness: BRIEF }));
     await settle(20);
     // The frame before the effect runs still holds the key just left — React
     // renders with the state it has. What must never appear is an empty one.
@@ -215,6 +220,71 @@ describe("useCachedResource", () => {
     invalidatePrefix("issues:");
     await settle();
     expect(host.textContent).toBe("first/-:-/-");
+    root.unmount();
+  });
+
+  it("blanks a value past the hard ceiling instead of showing it as current", async () => {
+    // A desktop app is left open for days. Friday's list under a small
+    // "Refreshing…" pill reads as Monday's, which is worse than a loading state.
+    const stales: Freshness = { ttlMs: 5, hardMs: 20 };
+    const first = mount(createElement(Probe, { subject: "k", freshness: stales }));
+    await settle();
+    first.root.unmount();
+
+    value = "second";
+    loadMs = 60;
+    rendered.length = 0;
+    const revisit = mount(createElement(Probe, { subject: "k", freshness: stales }));
+    await settle(10);
+    // Not "first/-:refreshing/-": past the ceiling there is nothing to show.
+    expect(revisit.host.textContent).toBe("-/loading:-/-");
+    await settle(100);
+    expect(revisit.host.textContent).toBe("second/-:-/-");
+    revisit.root.unmount();
+  });
+
+  it("keeps the object identity when a stale reload came back unchanged", async () => {
+    // The churn this removes is the tab switch: every revisit past the TTL used
+    // to hand every list a fresh array, re-rendering it to draw the same rows.
+    const seen: unknown[] = [];
+    const listProbe = () =>
+      createElement(function ListProbe() {
+        const { data } = useCachedResource<string[]>(
+          "k",
+          async () => {
+            fetchCount++;
+            return ["a", "b"];
+          },
+          { ttlMs: 5, hardMs: 60_000 },
+        );
+        if (data) seen.push(data);
+        return createElement("span", null, (data ?? []).join(","));
+      });
+
+    const first = mount(listProbe());
+    await settle();
+    first.root.unmount();
+
+    // Past the TTL, so the revisit really reloads rather than being served.
+    await settle(20);
+    const revisit = mount(listProbe());
+    await settle();
+
+    expect(fetchCount).toBe(2);
+    expect(seen.length).toBeGreaterThan(1);
+    // Two loads, same rows: every render across both mounts saw one array.
+    expect(new Set(seen).size).toBe(1);
+    revisit.root.unmount();
+  });
+
+  it("hands back the new value when a reload actually changed", async () => {
+    script = [{ value: "before" }, { value: "after" }];
+    const { host, root } = mount(createElement(Probe, { subject: "k", freshness: BRIEF }));
+    await settle();
+    await settle(20);
+    invalidate("k");
+    await settle();
+    expect(host.textContent).toBe("after/-:-/-");
     root.unmount();
   });
 
@@ -367,6 +437,29 @@ describe("useCachedResource", () => {
     a.root.unmount();
     b.root.unmount();
     other.root.unmount();
+  });
+});
+
+describe("eviction", () => {
+  it("drops the least recently read once over the cap, keeping what is mounted", async () => {
+    // Paged keys accumulate one entry per filter and offset the user visits, in
+    // an app left open for days.
+    const { root } = mount(createElement(Probe, { subject: "mounted" }));
+    await settle();
+
+    for (let i = 0; i < 400; i++) primeCache(`page:${i}`, i);
+    expect(resourceCacheSize()).toBeLessThanOrEqual(200);
+
+    // The mounted key survives however cold it is: evicting it would reload it
+    // on the spot, which is churn rather than a bound. It is still served with
+    // no load, so nothing dropped it.
+    fetchCount = 0;
+    const revisit = mount(createElement(Probe, { subject: "mounted" }));
+    await settle();
+    expect(revisit.host.textContent).toBe("first/-:-/-");
+    expect(fetchCount).toBe(0);
+    revisit.root.unmount();
+    root.unmount();
   });
 });
 

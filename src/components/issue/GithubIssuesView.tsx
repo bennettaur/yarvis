@@ -25,7 +25,7 @@ import { useOmniChatContext } from "../../lib/omniChatContext";
 import {
   combineResources,
   invalidatePrefix,
-  PROVIDER_TTL_MS,
+  PROVIDER_FRESHNESS,
   useCachedResource,
 } from "../../lib/resourceCache";
 import { formatRelativeTime } from "../../lib/time";
@@ -246,12 +246,12 @@ export default function GithubIssuesView({
   const assignedRes = useCachedResource<IssueSummary[]>(
     hasRepos ? ASSIGNED_KEY : null,
     issuesAssigned,
-    PROVIDER_TTL_MS,
+    PROVIDER_FRESHNESS,
   );
   const allRes = useCachedResource<IssueSummary[]>(
     hasRepos ? ALL_KEY : null,
     issuesAll,
-    PROVIDER_TTL_MS,
+    PROVIDER_FRESHNESS,
   );
   const filtersRes = useCachedResource<IssueFilter[]>(hasRepos ? FILTERS_KEY : null, issueFilters);
   const starsRes = useCachedResource(STARS_KEY, issueStars);

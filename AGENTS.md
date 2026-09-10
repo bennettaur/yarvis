@@ -260,14 +260,20 @@ back to ad-hoc.
   synchronously and revalidates behind it, which is why `Resource` distinguishes
   `refreshing` — a load running behind data already on screen, what
   `RefreshingIndicator` shows — from `loading`, which means there is nothing to
-  show yet. Three rules come with it. Every value a loader reads goes in its key,
-  or the surface keeps an answer to a question it is no longer asking. A load
-  that costs a call to GitHub, Azure or JIRA passes `PROVIDER_TTL_MS` rather than
-  the short default, which is a dedupe window for the sidecar's own Postgres
-  reads. And a setting that changes what a cached panel may show invalidates it
-  where it is saved — `ReposSection` for the issue lists, `PrReviewSection` for
+  show yet. How long a value may stand in for the truth is a `Freshness`, not a
+  number: inside `ttlMs` it is served with no load at all, past it behind a
+  refresh, and past `hardMs` not at all — a list from Friday painted on Monday
+  under a small pill reads as current, which is worse than a loading screen.
+  Pick `SIDECAR_FRESHNESS`, `PROVIDER_FRESHNESS` (a call to GitHub, Azure or
+  JIRA, all of which rate-limit) or `PROBE_FRESHNESS`, rather than inventing
+  numbers. Two more rules come with it. Every value a loader reads goes in its
+  key, or the surface keeps an answer to a question it is no longer asking. And a
+  setting that changes what a cached panel may show invalidates it where it is
+  saved — `ReposSection` for the issue lists, `PrReviewSection` for
   the needs-review query, and the whole cache from `KeychainSection`, since the
-  sidecar it restarts answered everything in there. A long hold with no way out
+  sidecar it restarts answered everything in there — the prefix is a shared
+  constant at both ends (`lib/issues/cacheKeys`, `lib/pr/cacheKeys`) because
+  getting it wrong fails silently in both directions. A long hold with no way out
   is how a user ends up staring at an answer they already fixed.
 - An answer worth keeping resolves; only a failure rethrows. Errors are
   deliberately not cached, so a loader that treats "this provider isn't

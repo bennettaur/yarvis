@@ -1,4 +1,4 @@
-import { invalidate, PROVIDER_TTL_MS, type Resource, useCachedResource } from "../resourceCache";
+import { invalidate, PROVIDER_FRESHNESS, type Resource, useCachedResource } from "../resourceCache";
 import {
   fetchPrDetail,
   fetchPrFileContent,
@@ -64,7 +64,7 @@ export function usePrDetail(ref: PrRef | null): Resource<PrDetail> {
   return useCachedResource(
     ref ? prDetailKey(ref) : null,
     () => fetchPrDetail(ref!),
-    PROVIDER_TTL_MS,
+    PROVIDER_FRESHNESS,
   );
 }
 
@@ -72,7 +72,7 @@ export function usePrFiles(ref: PrRef | null): Resource<PrFile[]> {
   return useCachedResource(
     ref ? `files:${refKey(ref)}` : null,
     () => fetchPrFiles(ref!),
-    PROVIDER_TTL_MS,
+    PROVIDER_FRESHNESS,
   );
 }
 
@@ -80,7 +80,7 @@ export function usePrStatus(ref: PrRef | null): Resource<PrStatus> {
   return useCachedResource(
     ref ? `status:${refKey(ref)}` : null,
     () => fetchPrStatus(ref!),
-    PROVIDER_TTL_MS,
+    PROVIDER_FRESHNESS,
   );
 }
 
@@ -90,7 +90,11 @@ export function usePrStatus(ref: PrRef | null): Resource<PrStatus> {
  * than being refetched by each surface that shows it.
  */
 export function usePrStack(ref: PrRef | null): Resource<PrStack | null> {
-  return useCachedResource(ref ? prStackKey(ref) : null, () => fetchPrStack(ref!), PROVIDER_TTL_MS);
+  return useCachedResource(
+    ref ? prStackKey(ref) : null,
+    () => fetchPrStack(ref!),
+    PROVIDER_FRESHNESS,
+  );
 }
 
 /**
@@ -104,7 +108,7 @@ export function usePrStack(ref: PrRef | null): Resource<PrStack | null> {
  */
 export function usePrFileDiff(ref: PrRef, file: PrFile, enabled: boolean): Resource<PrFile> {
   const key = enabled ? `filediff:${refKey(ref)}:${file.filename}` : null;
-  return useCachedResource(key, () => queued(() => fetchPrFileDiff(ref, file)), PROVIDER_TTL_MS);
+  return useCachedResource(key, () => queued(() => fetchPrFileDiff(ref, file)), PROVIDER_FRESHNESS);
 }
 
 /**
@@ -122,6 +126,6 @@ export function usePrFileContent(
   return useCachedResource(
     key,
     () => queued(() => fetchPrFileContent(ref, path, sha)),
-    PROVIDER_TTL_MS,
+    PROVIDER_FRESHNESS,
   );
 }

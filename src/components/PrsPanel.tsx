@@ -25,8 +25,8 @@ import { refDisplayRepo, refKey, refNumber } from "../lib/pr/ref";
 import type { AzFilter, GhFilter, Provider, PrSummary, ReviewingList } from "../lib/pr/types";
 import {
   combineResources,
-  PROBE_TTL_MS,
-  PROVIDER_TTL_MS,
+  PROBE_FRESHNESS,
+  PROVIDER_FRESHNESS,
   useCachedResource,
 } from "../lib/resourceCache";
 import PrDetailView from "./PrDetailView";
@@ -151,8 +151,8 @@ export default function PrsPanel({
    * re-probe Azure on every remount and hold `probeComplete` — and with it the
    * lists — behind that round trip.
    */
-  const ghProbe = useCachedResource(`${PRS_PROBE_PREFIX}github`, probeGithub, PROBE_TTL_MS);
-  const azProbe = useCachedResource(`${PRS_PROBE_PREFIX}azure`, probeAzure, PROBE_TTL_MS);
+  const ghProbe = useCachedResource(`${PRS_PROBE_PREFIX}github`, probeGithub, PROBE_FRESHNESS);
+  const azProbe = useCachedResource(`${PRS_PROBE_PREFIX}azure`, probeAzure, PROBE_FRESHNESS);
   const availableProviders = useMemo(() => {
     const set = new Set<Provider>();
     if (ghProbe.data) set.add("github");
@@ -168,7 +168,7 @@ export default function PrsPanel({
   const listsRes = useCachedResource(
     listsReady ? `${prsListPrefix(provider)}lists` : null,
     () => loadProviderLists(provider),
-    PROVIDER_TTL_MS,
+    PROVIDER_FRESHNESS,
   );
   const {
     mine,
@@ -193,7 +193,7 @@ export default function PrsPanel({
       ? `${prsListPrefix("github")}reviewing`
       : null,
     ghReviewing,
-    PROVIDER_TTL_MS,
+    PROVIDER_FRESHNESS,
   );
   const reviewing = reviewingRes.data;
 

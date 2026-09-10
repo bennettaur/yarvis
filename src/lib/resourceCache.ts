@@ -21,34 +21,65 @@ import { useCallback, useEffect, useRef, useState } from "react";
  * to resolve to it rather than throw.
  */
 
-/**
- * How long a cached value is served without a load at all. The default suits a
- * read the sidecar answers from its own Postgres: it is a dedupe window rather
- * than a freshness window, so returning to a tab does refresh in the background
- * — which is the whole point — without a double fetch on a remount that happens
- * to straddle one.
- */
-const DEFAULT_TTL_MS = 3_000;
+const DAY_MS = 24 * 60 * 60_000;
 
 /**
- * For a resource whose load costs a call to GitHub, Azure DevOps or JIRA, all of
- * which rate-limit. Flicking between tabs must not spend the user's quota once
- * per switch, so these are held long enough to make that free.
+ * How long a cached value may stand in for the truth, in two steps.
+ *
+ * Inside `ttlMs` it is served with no load at all — a dedupe window rather than
+ * a freshness window, so returning to a tab still refreshes in the background
+ * without a second fetch on a remount that happens to straddle one. Past it the
+ * value stays on screen while a load runs behind it, which is what
+ * {@link Resource.refreshing} reports.
+ *
+ * Past `hardMs` it is no longer allowed to stand in at all: the surface blanks
+ * and loads cold. A desktop app stays open for days, and a list from Friday
+ * painted on Monday under a small "Refreshing…" pill reads as current when it
+ * isn't — the one thing worse than a loading screen.
  */
-export const PROVIDER_TTL_MS = 60_000;
+export interface Freshness {
+  ttlMs: number;
+  hardMs: number;
+}
+
+/** A read the sidecar answers from its own Postgres. Nothing to ration. */
+export const SIDECAR_FRESHNESS: Freshness = { ttlMs: 3_000, hardMs: DAY_MS };
 
 /**
- * For a probe of whether a provider is configured at all. Held far longer than
- * the lists, because the answer changes only when the user edits their
- * credentials — and when they do, `KeychainSection` drops the whole cache, so
- * nothing waits this out.
+ * A read that costs a call to GitHub, Azure DevOps or JIRA, all of which
+ * rate-limit. Flicking between tabs must not spend the user's quota once per
+ * switch, so these are held long enough to make that free.
  */
-export const PROBE_TTL_MS = 10 * 60_000;
+export const PROVIDER_FRESHNESS: Freshness = { ttlMs: 60_000, hardMs: DAY_MS };
+
+/**
+ * Whether a provider is configured at all. Held far longer than the lists,
+ * because the answer changes only when the user edits their credentials — and
+ * when they do, `KeychainSection` drops the whole cache, so nothing waits it out.
+ *
+ * No hard ceiling on purpose. A day-old "GitHub works" is almost certainly still
+ * true, and blanking it would empty the provider toggle and strand the user on
+ * the "nothing configured" screen until two viewer round trips came back.
+ */
+export const PROBE_FRESHNESS: Freshness = {
+  ttlMs: 10 * 60_000,
+  hardMs: Number.POSITIVE_INFINITY,
+};
+
+/**
+ * Entries the cache holds before it starts dropping the least recently read.
+ * Paged keys — a memory page per offset, an events page per filter — accumulate
+ * one entry per combination the user ever visits, and this app is left open for
+ * days. High enough that ordinary use never reaches it.
+ */
+const MAX_ENTRIES = 200;
 
 interface CacheEntry<T> {
   value?: T;
   ts?: number;
   promise?: Promise<T>;
+  /** When this entry was last read, for the eviction order. */
+  lastRead?: number;
 }
 
 const cache = new Map<string, CacheEntry<unknown>>();
@@ -78,30 +109,72 @@ function subscribe(key: string, notify: () => void): () => void {
   };
 }
 
+/**
+ * Keeps the previous object when a load came back with the same content, so a
+ * revalidation that changed nothing doesn't hand every list a fresh array to
+ * re-render from. Only structural values are compared — a string or a number is
+ * already its own identity — which also keeps the large file bodies the PR
+ * review reads out of the serialiser.
+ *
+ * This covers the age-driven reload, which is the one that repeats: an
+ * `invalidate` drops the entry, so a write has nothing to compare against and
+ * re-renders, which is what a write should do.
+ */
+function retain<T>(previous: T | undefined, next: T): T {
+  if (previous === undefined) return next;
+  if (previous === next) return previous;
+  if (previous === null || typeof previous !== "object") return next;
+  try {
+    return JSON.stringify(previous) === JSON.stringify(next) ? previous : next;
+  } catch {
+    // Not serialisable — a cycle, a function. Assume it changed.
+    return next;
+  }
+}
+
+/**
+ * Drops the least recently read entries once the cache is over its cap. Keys a
+ * surface is currently mounted against are never evicted: they would be reloaded
+ * on the spot, and the point is to bound growth rather than to churn.
+ */
+function evictOverflow(): void {
+  if (cache.size <= MAX_ENTRIES) return;
+  const evictable = [...cache.entries()]
+    .filter(([key]) => !listeners.has(key))
+    .sort((a, b) => (a[1].lastRead ?? 0) - (b[1].lastRead ?? 0));
+  for (const [key] of evictable.slice(0, cache.size - MAX_ENTRIES)) cache.delete(key);
+}
+
 export function cachedFetch<T>(
   key: string,
   loader: () => Promise<T>,
-  ttlMs: number = DEFAULT_TTL_MS,
+  { ttlMs, hardMs }: Freshness = SIDECAR_FRESHNESS,
 ): Promise<T> {
   const current = cache.get(key) as CacheEntry<T> | undefined;
+  const age = current?.ts === undefined ? undefined : Date.now() - current.ts;
   if (current) {
+    current.lastRead = Date.now();
     if (current.promise) return current.promise;
     // Gate on the timestamp, not the value, so a loader that legitimately
     // resolves to `undefined` is still served from cache until it goes stale.
-    if (current.ts !== undefined && Date.now() - current.ts < ttlMs) {
-      return Promise.resolve(current.value as T);
-    }
+    if (age !== undefined && age < ttlMs) return Promise.resolve(current.value as T);
   }
+  // A value past the hard ceiling is not something to compare a fresh load
+  // against — reusing its identity would keep a day-old array alive on screen.
+  const previous = age !== undefined && age < hardMs ? (current?.value as T) : undefined;
   // Both handlers write only while this load is still the one the cache is
   // waiting on. An `invalidate` during a load starts a second one, and without
   // the identity check the first to resolve — which may be the older — would
   // install its value under a fresh timestamp, or its rejection would drop the
   // newer load's entry and send the next caller back to the provider.
-  const entry: CacheEntry<T> = {};
+  const entry: CacheEntry<T> = { lastRead: Date.now() };
   entry.promise = loader()
     .then((value) => {
-      if (cache.get(key) === entry) cache.set(key, { value, ts: Date.now() });
-      return value;
+      const settled = retain(previous, value);
+      if (cache.get(key) === entry) {
+        cache.set(key, { value: settled, ts: Date.now(), lastRead: Date.now() });
+      }
+      return settled;
     })
     .catch((err) => {
       // Don't cache failures; let the next caller retry.
@@ -109,13 +182,20 @@ export function cachedFetch<T>(
       throw err;
     });
   cache.set(key, entry);
+  evictOverflow();
   return entry.promise;
 }
 
-/** A resolved entry and when it landed, or null if there is nothing to serve. */
-function peek<T>(key: string): { value: T; ts: number } | null {
+/**
+ * A resolved entry and when it landed, or null if there is nothing a surface may
+ * show — including a value past `hardMs`, which is too old to stand in for the
+ * truth even behind a refreshing indicator.
+ */
+function peek<T>(key: string, hardMs = Number.POSITIVE_INFINITY): { value: T; ts: number } | null {
   const entry = cache.get(key) as CacheEntry<T> | undefined;
   if (!entry || entry.ts === undefined) return null;
+  entry.lastRead = Date.now();
+  if (Date.now() - entry.ts >= hardMs) return null;
   return { value: entry.value as T, ts: entry.ts };
 }
 
@@ -131,12 +211,14 @@ export function primeCache<T>(key: string, next: T | ((current: T | null) => T))
   // load that landed in between. It is handed `null` when there is no *resolved*
   // value — including while a load is in flight — so an updater that edits an
   // existing value has to say what an absent one means rather than treating it
-  // as empty.
+  // as empty. Age is not consulted: this asks what is stored, not what a surface
+  // may show, and refusing to edit an old value would silently drop it instead.
   const value =
     typeof next === "function"
       ? (next as (current: T | null) => T)(peek<T>(key)?.value ?? null)
       : next;
-  cache.set(key, { value, ts: Date.now() });
+  cache.set(key, { value, ts: Date.now(), lastRead: Date.now() });
+  evictOverflow();
   const subscribers = listeners.get(key);
   if (subscribers) for (const notify of subscribers) notify();
 }
@@ -168,6 +250,11 @@ export function invalidatePrefix(prefix: string): void {
   for (const key of [...listeners.keys()]) {
     if (key.startsWith(prefix) && !cache.has(key)) invalidate(key);
   }
+}
+
+/** How many entries the cache holds. Exposed so a test can assert eviction. */
+export function resourceCacheSize(): number {
+  return cache.size;
 }
 
 /**
@@ -222,21 +309,23 @@ export function combineResources(resources: Resource<unknown>[]): {
 export function useCachedResource<T>(
   key: string | null,
   loader: () => Promise<T>,
-  ttlMs: number = DEFAULT_TTL_MS,
+  freshness: Freshness = SIDECAR_FRESHNESS,
 ): Resource<T> {
   const [data, setData] = useState<T | null>(() =>
-    key === null ? null : (peek<T>(key)?.value ?? null),
+    key === null ? null : (peek<T>(key, freshness.hardMs)?.value ?? null),
   );
   const [error, setError] = useState<string | null>(null);
-  const [pending, setPending] = useState<boolean>(() => key !== null && peek(key) === null);
+  const [pending, setPending] = useState<boolean>(
+    () => key !== null && peek(key, freshness.hardMs) === null,
+  );
 
   // `loader` is recreated each render but closes over the same values `key`
   // encodes (see the contract above), so we read it through a ref and key the
   // effect on `key` alone — no re-subscribe on every render.
   const loaderRef = useRef(loader);
   loaderRef.current = loader;
-  const ttlRef = useRef(ttlMs);
-  ttlRef.current = ttlMs;
+  const freshnessRef = useRef(freshness);
+  freshnessRef.current = freshness;
 
   useEffect(() => {
     if (key === null) {
@@ -250,20 +339,21 @@ export function useCachedResource<T>(
     // describe it. Seed from that key's own cached value where there is one —
     // that *is* the resource — and blank the view otherwise, rather than
     // leaving the review header titled with the layer the reader just left.
-    setData(peek<T>(key)?.value ?? null);
+    setData(peek<T>(key, freshnessRef.current.hardMs)?.value ?? null);
     // An invalidation can fire `load` while a prior load is still in flight;
     // track the latest so an out-of-order resolution can't write back a stale
     // value over the newer one.
     let latest = 0;
     const load = () => {
       const seq = ++latest;
-      const hit = peek<T>(key);
+      const { ttlMs, hardMs } = freshnessRef.current;
+      const hit = peek<T>(key, hardMs);
       // Announce a load only when one will actually reach the network: a hit
       // inside the TTL resolves on a microtask, and flashing the refreshing
       // indicator for it is the jank this is meant to remove.
-      if (hit === null || Date.now() - hit.ts >= ttlRef.current) setPending(true);
+      if (hit === null || Date.now() - hit.ts >= ttlMs) setPending(true);
       setError(null);
-      cachedFetch(key, loaderRef.current, ttlRef.current)
+      cachedFetch(key, loaderRef.current, freshnessRef.current)
         .then((value) => {
           if (!active || seq !== latest) return;
           setData(value);
@@ -293,7 +383,7 @@ export function useCachedResource<T>(
     // and owns the resulting state; joining the same in-flight promise here is
     // only so callers can await the settle.
     invalidate(key);
-    await cachedFetch(key, loaderRef.current, ttlRef.current).catch(() => {});
+    await cachedFetch(key, loaderRef.current, freshnessRef.current).catch(() => {});
   }, [key]);
 
   return {
