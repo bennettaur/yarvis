@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { planAssetCopies, syncClaudeAssets } from "./claudeAssets.ts";
+import { planAssetCopies, syncClaudeAssets, warnOnShadowedGlobals } from "./claudeAssets.ts";
 
 const root = mkdtempSync(join(tmpdir(), "yarvis-claude-assets-"));
 const workspace = join(root, "workspace");
@@ -88,6 +88,46 @@ describe("planAssetCopies", () => {
     );
     expect(copies).toEqual([]);
     expect(skipped.map((c) => c.entry)).toEqual(["deploy"]);
+  });
+});
+
+describe("warnOnShadowedGlobals", () => {
+  it("names a copy that takes the place of one of the user's own", () => {
+    const globalRoot = join(root, "global-claude");
+    mkdirSync(join(globalRoot, "skills", "deploy"), { recursive: true });
+    const logged: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => void logged.push(args.join(" "));
+
+    try {
+      warnOnShadowedGlobals(
+        "skills",
+        [
+          {
+            prefix: "api",
+            sourceDir: "/api",
+            entry: "deploy",
+            id: "deploy",
+            declaredId: "deploy",
+            name: "deploy",
+          },
+          {
+            prefix: "api",
+            sourceDir: "/api",
+            entry: "lint",
+            id: "lint",
+            declaredId: "lint",
+            name: "lint",
+          },
+        ],
+        globalRoot,
+      );
+    } finally {
+      console.error = original;
+    }
+
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toContain("deploy");
   });
 });
 

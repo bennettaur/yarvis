@@ -9,6 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import { basename } from "node:path";
 
 /**
@@ -257,6 +258,28 @@ function alignFrontmatterName(copiedPath: string, kind: AssetKind, declared: str
 }
 
 /**
+ * Names a copy that hides one of the user's own global definitions. Claude Code
+ * prefers the project's over `~/.claude`'s, so a repo shipping a skill the user
+ * already has by that name quietly takes its place for the whole workspace —
+ * worth a line in the log, since nothing else would say so. `globalRoot` is a
+ * parameter so a test can point it somewhere other than the running user's home.
+ */
+export function warnOnShadowedGlobals(
+  kind: AssetKind,
+  copies: PlannedCopy[],
+  globalRoot = `${homedir()}/.claude`,
+): void {
+  const globalIds = new Set(readAssetEntries(`${globalRoot}/${kind}`, kind).map((e) => e.id));
+  for (const copy of copies) {
+    if (globalIds.has(copy.declaredId)) {
+      console.error(
+        `[workspaces] ${kind} ${copy.declaredId} from ${copy.prefix} shadows the one in ~/.claude`,
+      );
+    }
+  }
+}
+
+/**
  * (Re)copies every repo's skills and agents into `<rootPath>/.claude` and
  * answers with what now lives there, keyed by kind. Idempotent: the previous
  * run's copies are removed first, so a repo dropped from the workspace takes its
@@ -301,6 +324,7 @@ export function syncClaudeAssets(rootPath: string, repoWorktreePaths: string[] =
         if (copy.declaredId !== copy.id) alignFrontmatterName(dest, kind, copy.declaredId);
         written[kind].push(copy.name);
       }
+      warnOnShadowedGlobals(kind, copies);
       for (const copy of skipped) {
         console.error(
           `[workspaces] skipped ${kind} entry ${copy.entry} from ${copy.prefix}: ${copy.name} is taken`,
