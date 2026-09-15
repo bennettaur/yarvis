@@ -83,6 +83,15 @@ describe("DiffBody comment-container rendering", () => {
   });
 });
 
+describe("DiffBody scrolling", () => {
+  // Issue #296: a diff is rendered at full height, so it has nothing of its own
+  // to scroll vertically.
+  it("leaves vertical scrolling to the review pane", async () => {
+    const html = await render(["@@ -1,1 +1,1 @@", "+x"].join("\n"));
+    expect(html).toContain("overflow-y-hidden");
+  });
+});
+
 describe("DiffBody guided-review highlighting", () => {
   const patch = ["@@ -1,4 +1,4 @@", " a", "+b", "+c", " d"].join("\n");
 
