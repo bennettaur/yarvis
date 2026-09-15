@@ -101,6 +101,5 @@ describe("PrFileDiffs jump to file", () => {
     await settle();
 
     expect(host.scrollTop).toBe(300);
-    host.dispatchEvent(new Event("wheel"));
   });
 });
