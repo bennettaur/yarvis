@@ -83,6 +83,15 @@ describe("DiffBody comment-container rendering", () => {
   });
 });
 
+describe("DiffBody scrolling", () => {
+  // A diff is rendered at full height, so a vertical scroller here only catches
+  // the first wheel gesture that should have scrolled the review pane.
+  it("scrolls sideways but leaves vertical scrolling to the review pane", async () => {
+    const html = await render(["@@ -1,1 +1,1 @@", "+x"].join("\n"));
+    expect(html).toContain("overflow-x-auto overflow-y-hidden");
+  });
+});
+
 describe("DiffBody guided-review highlighting", () => {
   const patch = ["@@ -1,4 +1,4 @@", " a", "+b", "+c", " d"].join("\n");
 

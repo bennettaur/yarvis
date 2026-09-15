@@ -168,7 +168,9 @@ export default function SplitDiffBody({
   const syntax = useSyntaxHighlight(prRef, file.filename, file.patch ?? "", headSha);
 
   return (
-    <div className="relative overflow-x-auto rounded-b-lg bg-zinc-950 font-mono text-xs leading-relaxed">
+    // Held to horizontal scrolling for the same reason as `DiffBody`: the review
+    // pane owns vertical scroll.
+    <div className="relative overflow-x-auto overflow-y-hidden rounded-b-lg bg-zinc-950 font-mono text-xs leading-relaxed">
       <div className="grid w-full grid-cols-[3rem_minmax(0,1fr)_3rem_minmax(0,1fr)]">
         {rows.map((row, i) => {
           if (row.kind === "gap") {
