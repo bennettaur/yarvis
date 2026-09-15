@@ -267,7 +267,7 @@ function missingTourMessage(
     const shown = issues.slice(0, MAX_ISSUES_SHOWN);
     return `The review agent submitted a tour ${after}, but it was rejected for not matching the expected shape${
       shown.length ? ` (${shown.join("; ")})` : ""
-    }. Try again.`;
+    }. Try again, or generate one for a smaller change.`;
   }
   // Checked before the budget: a last step cut off by the token limit or a
   // filter is the more specific cause.
