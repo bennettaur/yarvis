@@ -32,6 +32,9 @@ function defaultSettings(): Settings {
     googleClientId: null,
     telegramOtpWindowMinutes: null,
     defaultTelegramOtpWindowMinutes: 120,
+    secretBackend: null,
+    onePasswordVault: null,
+    onePasswordItem: null,
   };
 }
 
