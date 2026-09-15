@@ -35,8 +35,11 @@ export function changeBands(rows: ExpandedRow[], totalLines: number): Band[] {
 
   const close = () => {
     if (start === null) return;
-    const top = ((start - 1) / totalLines) * 100;
-    bands.push({ top, height: Math.max(((end - start + 1) / totalLines) * 100, MIN_BAND), added });
+    const height = Math.max(((end - start + 1) / totalLines) * 100, MIN_BAND);
+    // Pulled up so a floored band at the end of the file stays inside the strip;
+    // spilling past it would give the diff body vertical overflow to scroll.
+    const top = Math.min(((start - 1) / totalLines) * 100, 100 - height);
+    bands.push({ top, height, added });
     start = null;
     added = false;
   };

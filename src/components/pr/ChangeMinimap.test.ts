@@ -34,6 +34,13 @@ describe("changeBands", () => {
     expect(bands[0]!.height).toBeGreaterThan(0.5);
   });
 
+  // Issue #296: a floored band on the last line would otherwise run past the
+  // strip and leave the diff body with vertical overflow.
+  it("keeps a floored band at the end of the file inside the strip", () => {
+    const bands = bandsFor(["@@ -5000,1 +5000,1 @@", "+x"].join("\n"), 5000);
+    expect(bands[0]!.top + bands[0]!.height).toBeLessThanOrEqual(100);
+  });
+
   // A run that only deletes still marks the spot, coloured to say so.
   it("marks a deletion-only change in red", () => {
     const bands = bandsFor(["@@ -10,2 +9,0 @@", "-a", "-b"].join("\n"), 100);
