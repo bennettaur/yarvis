@@ -3,8 +3,7 @@ import { createElement } from "react";
 import type { PrFile, PrRef } from "../../lib/pr/types";
 import { prFile as file, setPrFiles } from "../../test/prFiles";
 import { mountForInteraction, renderToHtml } from "../../test/render";
-import { FLASH_ATTR } from "./flashFile";
-import { prFileAnchorId } from "./shared";
+import { JUMP_TO_FILE_EVENT, prFileAnchorId } from "./shared";
 
 // Imported after the shared stub so its usePrFiles mock is in place.
 const { default: PrFileList } = await import("./PrFileList");
@@ -87,11 +86,15 @@ describe("PrFileList jump", () => {
     document.getElementById(prFileAnchorId(prRef, "src/deep/a.ts"))?.remove();
   });
 
-  it("flashes the diff it scrolled to", async () => {
+  // The list only asks: the diff opens and scrolls itself, since it alone knows
+  // when its expansion has laid out (PrFileDiffs.jump.render.test.tsx).
+  it("asks the matching diff to bring itself into view", async () => {
     const diff = document.createElement("details");
     diff.id = prFileAnchorId(prRef, "src/deep/a.ts");
     diff.innerHTML = "<summary>src/deep/a.ts</summary>";
     document.body.appendChild(diff);
+    let jumps = 0;
+    diff.addEventListener(JUMP_TO_FILE_EVENT, () => jumps++);
 
     setPrFiles([file("src/deep/a.ts")]);
     const mounted = await mountForInteraction(
@@ -111,6 +114,6 @@ describe("PrFileList jump", () => {
     expect(row).toBeDefined();
     row?.click();
 
-    expect(diff.querySelector("summary")?.hasAttribute(FLASH_ATTR)).toBe(true);
+    expect(jumps).toBe(1);
   });
 });

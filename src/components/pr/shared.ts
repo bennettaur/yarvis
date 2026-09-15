@@ -24,6 +24,14 @@ export function prFileAnchorId(ref: PrRef, path: string): string {
 }
 
 /**
+ * Dispatched on a file's diff element (found by {@link prFileAnchorId}) to ask
+ * that file to open and bring itself into view. A request rather than a scroll
+ * from outside: only the diff knows when its own expansion has laid out, and
+ * `PrFileList` can be a separate Omni widget with no parent to pass state through.
+ */
+export const JUMP_TO_FILE_EVENT = "yarvis:pr-jump-to-file";
+
+/**
  * A place in the diff the review wants the reader's eyes on — currently the
  * step of a guided review. The file is opened, scrolled to, and the lines are
  * marked.

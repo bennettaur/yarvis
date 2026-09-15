@@ -5,8 +5,7 @@ import type { PrFile, PrRef } from "../../lib/pr/types";
 import FileTreeRows, { treeRowPaddingLeft } from "../files/FileTreeRows";
 import CopyFileLinkButton from "./CopyFileLinkButton";
 import CopyPathButton from "./CopyPathButton";
-import { flashFile } from "./flashFile";
-import { prFileAnchorId } from "./shared";
+import { JUMP_TO_FILE_EVENT, prFileAnchorId } from "./shared";
 
 const STATUS_LETTER: Record<string, { letter: string; color: string }> = {
   added: { letter: "A", color: "text-emerald-400" },
@@ -17,10 +16,10 @@ const STATUS_LETTER: Record<string, { letter: string; color: string }> = {
 
 /**
  * Compact tree of a PR's changed files. Files nest under collapsible folders
- * (native `<details>`, open by default). Clicking a file scrolls the matching
- * `PrFileDiffs` entry into view (by shared anchor id, so it works whether the
- * diffs sit beside it or elsewhere on the page) and flashes its header to show
- * where the scroll landed. A per-row checkbox marks the file as viewed; clicks
+ * (native `<details>`, open by default). Clicking a file asks the matching
+ * `PrFileDiffs` entry to open and scroll itself into view (by shared anchor id,
+ * so it works whether the diffs sit beside it or elsewhere on the page — see
+ * {@link JUMP_TO_FILE_EVENT}). A per-row checkbox marks the file as viewed; clicks
  * on the checkbox don't trigger the scroll so toggling never moves focus away.
  * Rows only show a basename, so each also carries a copy button for the full
  * path.
@@ -61,9 +60,9 @@ export default function PrFileList({
 
   const onClick = (path: string) => {
     setSelected(path);
-    const fileEl = document.getElementById(prFileAnchorId(prRef, path));
-    fileEl?.scrollIntoView({ behavior: "smooth", block: "start" });
-    flashFile(fileEl);
+    document
+      .getElementById(prFileAnchorId(prRef, path))
+      ?.dispatchEvent(new Event(JUMP_TO_FILE_EVENT));
   };
 
   return (

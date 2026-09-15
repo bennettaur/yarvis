@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildFileTree, flattenFileTree } from "../../lib/fileTree";
 import { usePrDetail, usePrFileDiff, usePrFiles } from "../../lib/pr/cache";
 import { rowHtml } from "../../lib/pr/highlight";
@@ -10,6 +10,7 @@ import CopyFileLinkButton from "./CopyFileLinkButton";
 import CopyPathButton from "./CopyPathButton";
 import { flashFile } from "./flashFile";
 import GapMarker from "./GapMarker";
+import { holdInPlace, releaseHold } from "./holdInPlace";
 import InsightBlock from "./InsightCards";
 import {
   AddCommentButton,
@@ -19,7 +20,14 @@ import {
   useLineComments,
 } from "./LineComments";
 import SplitDiffBody from "./SplitDiffBody";
-import { type DiffFocus, FOCUS_ATTR, FOCUS_STYLE, focusRange, prFileAnchorId } from "./shared";
+import {
+  type DiffFocus,
+  FOCUS_ATTR,
+  FOCUS_STYLE,
+  focusRange,
+  JUMP_TO_FILE_EVENT,
+  prFileAnchorId,
+} from "./shared";
 import { useAskSelection } from "./useAskSelection";
 import { useExpandOnApproach } from "./useExpandOnApproach";
 import { type FileExpansion, useFileExpansion } from "./useFileExpansion";
@@ -272,26 +280,52 @@ function FileDiff({
     setClosedDeliberately(!foldAll.open);
   }, [foldAll?.epoch]);
 
-  // A guided review pointing here opens the file and scrolls to its lines,
-  // overriding a deliberate collapse — the reader asked to be taken to this
-  // code, which outranks having folded it away earlier.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: re-runs per landing, not per value change
-  useEffect(() => {
-    if (!focus) return;
+  // Opens this file, then scrolls to it with `land` and flashes the header. Two
+  // frames: the first commits the expansion, the second lets the diff rows lay
+  // out, so anything inside the diff exists to scroll to.
+  const reveal = useCallback((land: (fileEl: HTMLDetailsElement) => void) => {
     setOpen(true);
     setClosedDeliberately(false);
-    // Two frames: the first commits the expansion, the second lets the diff
-    // rows lay out, so the marked line exists to scroll to. Without the diff
-    // rendered the scroll would land on the file header instead.
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
         const fileEl = detailsRef.current;
-        const line = fileEl?.querySelector(`[${FOCUS_ATTR}]`);
-        (line ?? fileEl)?.scrollIntoView({ behavior: "smooth", block: "center" });
+        if (!fileEl) return;
+        releaseHold(fileEl);
+        land(fileEl);
         flashFile(fileEl);
       }),
     );
+  }, []);
+
+  // A guided review pointing here opens the file and scrolls to its lines,
+  // overriding a deliberate collapse — the reader asked to be taken to this
+  // code, which outranks having folded it away earlier. Without the diff
+  // rendered the scroll would land on the file header instead.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-runs per landing, not per value change
+  useEffect(() => {
+    if (!focus) return;
+    reveal((fileEl) => {
+      const line = fileEl.querySelector(`[${FOCUS_ATTR}]`);
+      (line ?? fileEl).scrollIntoView({ behavior: "smooth", block: "center" });
+    });
   }, [focus?.nonce]);
+
+  // A jump from the file list opens the file for the same reason. Its scroll is
+  // instant, unlike the guide's: a smooth scroll carries every file between here
+  // and the target into `useExpandOnApproach`'s reach, and each one that opens
+  // mid-flight pushes the target past where the animation is headed. The flash
+  // does the orienting the animation would have.
+  useEffect(() => {
+    const el = detailsRef.current;
+    if (!el) return;
+    const onJump = () =>
+      reveal((fileEl) => {
+        fileEl.scrollIntoView({ block: "start" });
+        holdInPlace(fileEl);
+      });
+    el.addEventListener(JUMP_TO_FILE_EVENT, onJump);
+    return () => el.removeEventListener(JUMP_TO_FILE_EVENT, onJump);
+  }, [reveal]);
 
   const { data: loaded, loading } = usePrFileDiff(prRef, file, open);
   const patch = loaded?.patch ?? file.patch;
