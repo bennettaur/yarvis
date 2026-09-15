@@ -209,6 +209,80 @@ function buildSubmitTool(sink: TourSink, changed: Set<string>) {
   };
 }
 
+/** The SDK wraps a schema error twice: invalid tool input, then type validation. */
+const MAX_CAUSE_DEPTH = 3;
+
+/** Most schema complaints a message lists; the first few say what went wrong. */
+const MAX_ISSUES_SHOWN = 3;
+
+/** A path segment safe to repeat: an array index or a plain field name. */
+const PLAIN_SEGMENT = /^(?:\d+|[A-Za-z_]+)$/;
+
+/**
+ * The validator's complaints about a rejected submission, as `path: message`,
+ * or null when the input never reached the validator (it was not valid JSON).
+ *
+ * Only the schema's own wording is kept, never the rejected input: that was
+ * written by the model from text the pull request's author controls. The
+ * messages are safe only while the schema stays as it is — a `z.record`, a
+ * strict object (which names unknown keys) or a refine message built from the
+ * value would put model-chosen text here — so path segments are held to plain
+ * names as well.
+ */
+function validationIssues(error: unknown): string[] | null {
+  let current = error;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current && typeof current === "object"; depth++) {
+    const { issues, cause } = current as { issues?: unknown; cause?: unknown };
+    if (Array.isArray(issues)) {
+      return issues.map((issue: { path?: unknown[]; message?: unknown }) => {
+        const path = (issue.path ?? [])
+          .map((segment) => (PLAIN_SEGMENT.test(String(segment)) ? String(segment) : "?"))
+          .join(".");
+        return `${path || "input"}: ${String(issue.message)}`;
+      });
+    }
+    current = cause;
+  }
+  return null;
+}
+
+/**
+ * Why a run ended without a tour. A submission the schema rejects still counts
+ * as the submit call, so it stops the run exactly as a good one would; without
+ * naming it, the error would look like a model that ran out of budget or gave up.
+ *
+ * `issues` is undefined when no submission was rejected, null when one was but
+ * could not be parsed at all.
+ */
+function missingTourMessage(
+  finishReason: string,
+  stepsUsed: number,
+  issues: string[] | null | undefined,
+): string {
+  const after = `after ${stepsUsed} step${stepsUsed === 1 ? "" : "s"}`;
+  if (issues === null) {
+    return `The review agent submitted a tour ${after}, but it could not be read as valid tool input. Try again.`;
+  }
+  if (issues) {
+    const shown = issues.slice(0, MAX_ISSUES_SHOWN);
+    return `The review agent submitted a tour ${after}, but it was rejected for not matching the expected shape${
+      shown.length ? ` (${shown.join("; ")})` : ""
+    }. Try again, or generate one for a smaller change.`;
+  }
+  // Checked before the budget: a last step cut off by the token limit or a
+  // filter is the more specific cause.
+  switch (finishReason) {
+    case "length":
+      return `The review agent was cut off by the model's output token limit ${after}, before it submitted a tour.`;
+    case "content-filter":
+      return "The provider's content filter blocked the review agent before it submitted a tour.";
+  }
+  if (stepsUsed >= STEP_BUDGET) {
+    return `The review agent used all ${STEP_BUDGET} of its steps exploring the change and never submitted a tour. Try again, or generate one for a smaller change.`;
+  }
+  return `The review agent stopped ${after} without submitting a tour (finish reason: ${finishReason}). Try again, or generate one for a smaller change.`;
+}
+
 export interface GenerateTourResult {
   steps: PrGuideStep[];
   headSha: string;
@@ -242,30 +316,36 @@ export async function generateTour(
     `</pr-${nonce}>`,
   ].join("\n");
 
-  try {
-    // Unlike `streamText`, `generateText` throws provider failures rather than
-    // routing them to a callback, so they surface here.
-    await generateText({
-      model,
-      system: systemPrompt(),
-      messages: [{ role: "user", content: brief }],
-      tools: { ...buildPrCodeTools(source, graph), ...buildSubmitTool(sink, changed) },
-      // Without the tool condition the run keeps going after the tour is in
-      // hand, spending the rest of the budget on exploration nobody reads.
-      stopWhen: [stepCountIs(STEP_BUDGET), hasToolCall("submit_tour")],
-      abortSignal: signal,
-    });
-  } catch (e) {
+  // Unlike `streamText`, `generateText` throws provider failures (and aborts)
+  // rather than routing them to a callback, so they surface here.
+  const result = await generateText({
+    model,
+    system: systemPrompt(),
+    messages: [{ role: "user", content: brief }],
+    tools: { ...buildPrCodeTools(source, graph), ...buildSubmitTool(sink, changed) },
+    // Without the tool condition the run keeps going after the tour is in
+    // hand, spending the rest of the budget on exploration nobody reads.
+    stopWhen: [stepCountIs(STEP_BUDGET), hasToolCall("submit_tour")],
+    abortSignal: signal,
+  }).catch((e) => {
     console.error("[pr] tour model error:", describeError(e));
     // A run that was cut short may still have submitted a tour on an earlier
     // step; that is worth keeping rather than discarding over a late failure.
     if (!sink.steps) throw new Error(clientError(e));
-  }
+    return null;
+  });
 
-  if (!sink.steps) {
-    throw new Error(
-      "The review agent finished without producing a tour. Try again, or generate one for a smaller change.",
-    );
-  }
-  return { steps: sink.steps, headSha: detail.headSha };
+  if (sink.steps) return { steps: sink.steps, headSha: detail.headSha };
+  // A failed run without a tour rethrew above, so this one returned normally.
+  const { finishReason, steps, totalUsage } = result as NonNullable<typeof result>;
+
+  const rejectedSubmit = steps
+    .flatMap((step) => step.toolCalls)
+    .find((call) => call.toolName === "submit_tour" && call.invalid);
+  const issues = rejectedSubmit ? validationIssues(rejectedSubmit.error) : undefined;
+  console.error(
+    "[pr] tour not submitted:",
+    JSON.stringify({ finishReason, steps: steps.length, usage: totalUsage, issues }),
+  );
+  throw new Error(missingTourMessage(finishReason, steps.length, issues));
 }
