@@ -129,7 +129,7 @@ describe("generateTour", () => {
         content: [{ type: "text" as const, text: "I had a look around." }],
       }),
     });
-    expect(generateTour(silent, fakeSource())).rejects.toThrow(
+    await expect(generateTour(silent, fakeSource())).rejects.toThrow(
       "stopped after 1 step without submitting a tour (finish reason: stop)",
     );
   });
@@ -139,19 +139,50 @@ describe("generateTour", () => {
   it("names the schema problems when the submitted tour is rejected", async () => {
     const tooMany = Array.from({ length: 16 }, () => step("a.ts"));
     const { model, calls } = submittingModel(() => tooMany);
-    const failure = generateTour(model, fakeSource());
-    expect(failure).rejects.toThrow("submitted a tour after 1 step, but it was rejected");
-    expect(failure).rejects.toThrow("steps: Too big: expected array to have <=15 items");
-    await failure.catch(() => {});
+    const message = await generateTour(model, fakeSource()).catch((e: Error) => e.message);
+    expect(message).toContain("submitted a tour after 1 step, but it was rejected");
+    expect(message).toContain("steps: Too big: expected array to have <=15 items");
     expect(calls()).toBe(1);
   });
 
+  it("lists only the first few schema problems", async () => {
+    const badLines = Array.from({ length: 5 }, () => ({ ...step("a.ts"), startLine: 0 }));
+    const { model } = submittingModel(() => badLines);
+    const message = await generateTour(model, fakeSource()).catch((e: Error) => e.message);
+    expect(String(message).match(/startLine/g)).toHaveLength(3);
+  });
+
+  // The input was composed from text the pull request's author controls, so
+  // whatever the validator complains about, none of the values come back out.
   it("does not echo the rejected input back in the message", async () => {
-    const secret = "planted-text-".repeat(60);
-    const { model } = submittingModel(() => [{ ...step("a.ts"), explanation: secret }]);
+    const { model } = submittingModel(() => [
+      { ...step("a.ts"), explanation: "planted-long-".repeat(60) },
+      { ...step("b.ts"), kind: "planted-kind" },
+      { ...step("src/api.ts"), startLine: "planted-line", "planted-key": "planted-value" },
+    ]);
     const message = await generateTour(model, fakeSource()).catch((e: Error) => e.message);
     expect(message).toContain("steps.0.explanation");
-    expect(message).not.toContain("planted-text-");
+    expect(message).not.toContain("planted");
+  });
+
+  it("reports a submission that was not valid JSON", async () => {
+    const garbled = new MockLanguageModelV3({
+      doGenerate: async (): Promise<GenerateResult> => ({
+        ...boilerplate,
+        finishReason: finished("tool-calls"),
+        content: [
+          {
+            type: "tool-call" as const,
+            toolCallId: "c1",
+            toolName: "submit_tour",
+            input: "{steps",
+          },
+        ],
+      }),
+    });
+    await expect(generateTour(garbled, fakeSource())).rejects.toThrow(
+      "could not be read as valid tool input",
+    );
   });
 
   it("reports a run that spent its whole step budget exploring", async () => {
@@ -170,8 +201,8 @@ describe("generateTour", () => {
         ],
       }),
     });
-    expect(generateTour(exploring, fakeSource())).rejects.toThrow(
-      "used all 60 of its steps exploring the change",
+    await expect(generateTour(exploring, fakeSource())).rejects.toThrow(
+      /used all \d+ of its steps exploring the change/,
     );
   });
 
@@ -183,7 +214,18 @@ describe("generateTour", () => {
         content: [{ type: "text" as const, text: "The first step is" }],
       }),
     });
-    expect(generateTour(truncated, fakeSource())).rejects.toThrow("output token limit");
+    await expect(generateTour(truncated, fakeSource())).rejects.toThrow("output token limit");
+  });
+
+  it("reports a run blocked by the provider's content filter", async () => {
+    const filtered = new MockLanguageModelV3({
+      doGenerate: async (): Promise<GenerateResult> => ({
+        ...boilerplate,
+        finishReason: { unified: "content-filter", raw: undefined },
+        content: [],
+      }),
+    });
+    await expect(generateTour(filtered, fakeSource())).rejects.toThrow("content filter blocked");
   });
 
   it("omits an absent context rather than storing it as undefined", async () => {
