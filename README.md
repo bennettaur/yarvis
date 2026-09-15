@@ -761,7 +761,9 @@ a prompt, and the provider's link to that file at the commit the PR points at,
 for anyone you're pasting to (see "Copy buttons"). Both are always shown in the
 diff header, and appear in the file list on hovering a row, where only the
 basename is visible. Clicking a row scrolls its diff into view and flashes the
-file's header, so a jump lands somewhere you can see it arrived.
+file's header, so a jump lands somewhere you can see it arrived. A row whose
+file has review comments shows a speech bubble with their count — replies and
+resolved threads included, the same comments you'll find in that file's diff.
 
 #### Where a PR sits in its stack
 
