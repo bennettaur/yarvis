@@ -97,9 +97,10 @@ export default function ChangeMinimap({
       title={`${bands.length} changed ${bands.length === 1 ? "region" : "regions"} across ${totalLines} lines`}
       className="pointer-events-none absolute inset-y-0 right-0 w-1.5 bg-zinc-900/60"
     >
-      {bands.map((band) => (
+      {bands.map((band, i) => (
         <div
-          key={`${band.top}-${band.height}`}
+          // biome-ignore lint/suspicious/noArrayIndexKey: bands clamped to the strip's end can share a position, and the list is rebuilt whole from the rows
+          key={i}
           style={{ top: `${band.top}%`, height: `${band.height}%` }}
           className={`absolute inset-x-0 ${band.added ? "bg-emerald-500/70" : "bg-red-500/70"}`}
         />

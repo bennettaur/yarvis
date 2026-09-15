@@ -1,7 +1,9 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
+import { createElement } from "react";
 import { parsePatch } from "../../lib/pr/diff";
 import { expandAllGaps, expandRows, toFileLines } from "../../lib/pr/expand";
-import { changeBands } from "./ChangeMinimap";
+import { renderToHtml } from "../../test/render";
+import ChangeMinimap, { changeBands } from "./ChangeMinimap";
 
 const bandsFor = (patch: string, totalLines: number) =>
   changeBands(expandRows(parsePatch(patch), [], new Map()), totalLines);
@@ -39,6 +41,20 @@ describe("changeBands", () => {
   it("keeps a floored band at the end of the file inside the strip", () => {
     const bands = bandsFor(["@@ -5000,1 +5000,1 @@", "+x"].join("\n"), 5000);
     expect(bands[0]!.top + bands[0]!.height).toBeLessThanOrEqual(100);
+  });
+
+  // Two small changes in the last lines clamp to the same position, so the
+  // bands can't be keyed by where they sit.
+  it("renders clamped bands that share a position without a key collision", async () => {
+    const patch = ["@@ -4997,4 +4997,4 @@", "+a", " b", " c", "+d"].join("\n");
+    const rows = expandRows(parsePatch(patch), [], new Map());
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await renderToHtml(createElement(ChangeMinimap, { rows, totalLines: 5000 }));
+      expect(errors.mock.calls.flat().join(" ")).not.toContain("same key");
+    } finally {
+      errors.mockRestore();
+    }
   });
 
   // A run that only deletes still marks the spot, coloured to say so.
