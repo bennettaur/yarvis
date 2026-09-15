@@ -319,13 +319,17 @@ function FileDiff({
   useEffect(() => {
     const detailsEl = detailsRef.current;
     if (!detailsEl) return;
+    let releaseLanding = () => {};
     const onJump = () =>
       reveal((fileEl) => {
         fileEl.scrollIntoView({ block: "start" });
-        holdInPlace(fileEl);
+        releaseLanding = holdInPlace(fileEl);
       });
     detailsEl.addEventListener(JUMP_TO_FILE_EVENT, onJump);
-    return () => detailsEl.removeEventListener(JUMP_TO_FILE_EVENT, onJump);
+    return () => {
+      detailsEl.removeEventListener(JUMP_TO_FILE_EVENT, onJump);
+      releaseLanding();
+    };
   }, [reveal]);
 
   const { data: loaded, loading } = usePrFileDiff(prRef, file, open);
