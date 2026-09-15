@@ -5,9 +5,19 @@ interface FilesResource {
   data: PrFile[] | null;
   error: string | null;
   loading: boolean;
+  refreshing: boolean;
+  refresh: () => Promise<void>;
 }
 
-let filesResource: FilesResource = { data: null, error: null, loading: false };
+const inertRefresh = async () => {};
+
+let filesResource: FilesResource = {
+  data: null,
+  error: null,
+  loading: false,
+  refreshing: false,
+  refresh: inertRefresh,
+};
 let fileContent: string | null = null;
 
 /**
@@ -28,7 +38,13 @@ export function setPrFiles(
   data: PrFile[] | null,
   over: Partial<Omit<FilesResource, "data">> = {},
 ): void {
-  filesResource = { data, error: over.error ?? null, loading: over.loading ?? false };
+  filesResource = {
+    data,
+    error: over.error ?? null,
+    loading: over.loading ?? false,
+    refreshing: over.refreshing ?? false,
+    refresh: inertRefresh,
+  };
 }
 
 /** A changed file with the boring fields filled in. */

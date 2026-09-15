@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
+import { GITHUB_ISSUES_PREFIX } from "../../lib/issues/cacheKeys";
 import type { IssueRepo, IssueSummary } from "../../lib/issues/types";
 import { type OpenWorkspaceRequest, onOpenWorkspace } from "../../lib/nav";
+import { invalidatePrefix } from "../../lib/resourceCache";
+import { firstPaintOf } from "../../test/render";
 
 const repos: IssueRepo[] = [{ id: "r1", owner: "octo", repo: "web", name: "web" }];
 
@@ -35,6 +38,9 @@ let failing: string | null = null;
 /** When set, `/detail` hangs until this resolves, so a start can be observed
  *  mid-flight (the busy row) rather than only after it settles. */
 let holdDetail: Promise<void> | null = null;
+/** When set, every route hangs on it, so a revisit can be inspected knowing
+ *  nothing it shows came off the wire. */
+let holdResponses: Promise<void> | null = null;
 
 /** What the fake sidecar answers each route with. */
 function responseFor(path: string): unknown {
@@ -68,6 +74,7 @@ mock.module("../../lib/api", () => ({
     fetched.push(path);
     if (init.method && init.method !== "GET")
       sent.push({ path, body: init.body ? JSON.parse(String(init.body)) : null });
+    if (holdResponses) await holdResponses;
     if (holdDetail && path.startsWith("/api/issues/github/detail")) await holdDetail;
     if (failing && path.startsWith(failing)) return new Response("nope", { status: 500 });
     return new Response(JSON.stringify(responseFor(path)), { status: 200 });
@@ -153,9 +160,30 @@ beforeEach(() => {
   assigned = [];
   failing = null;
   holdDetail = null;
+  holdResponses = null;
 });
 
 describe("GithubIssuesView", () => {
+  it("paints the issues from the cache when the tab is revisited", async () => {
+    // Issue #275's own example: leave the tab, come back seconds later, and the
+    // list must not reload from scratch. Every route is held open for the second
+    // visit, and the assertion is on the very first frame — so what it shows can
+    // only have come from the cache.
+    assigned = [issue];
+    const first = await mount();
+    expect(first.host.textContent).toContain(issue.title);
+    first.cleanup();
+
+    let release = () => {};
+    holdResponses = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const revisit = firstPaintOf(createElement(GithubIssuesView));
+    expect(revisit.text).toContain(issue.title);
+    release();
+    revisit.unmount();
+  });
+
   it("re-pulls the lists when Refresh is clicked", async () => {
     const { host, cleanup } = await mount();
     fetched.length = 0;
@@ -241,6 +269,9 @@ describe("GithubIssuesView", () => {
     cleanup();
 
     configured = [];
+    // Settings drops the cached issue resources when a repo's "Pull issues"
+    // changes, so the remount sees the new answer rather than the cached one.
+    invalidatePrefix(GITHUB_ISSUES_PREFIX);
     const empty = await mount();
     expect(button(empty.host, "+ New issue")).toBeUndefined();
     empty.cleanup();

@@ -1,0 +1,490 @@
+import { beforeEach, describe, expect, it } from "bun:test";
+import { createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import {
+  clearResourceCache,
+  combineResources,
+  type Freshness,
+  invalidate,
+  invalidatePrefix,
+  primeCache,
+  type Resource,
+  resourceCacheSize,
+  useCachedResource,
+} from "./resourceCache";
+
+/** What the stub loader resolves to, and how many times it has been called. */
+let value = "first";
+let fetchCount = 0;
+/** Holds a load open so a case can look at what the hook renders mid-flight. */
+let loadMs = 0;
+/** When set, the loader rejects with this message instead of resolving. */
+let failWith: string | null = null;
+/**
+ * Per-call answers, consumed in order, for a case that needs two loads of the
+ * same key to differ — a slow one overtaken by a fast one, say. Falls back to
+ * the flags above once exhausted.
+ */
+let script: { value?: string; ms?: number; fail?: string }[] = [];
+
+async function load(): Promise<string> {
+  fetchCount++;
+  const step = script.shift();
+  const ms = step?.ms ?? loadMs;
+  if (ms > 0) await new Promise((resolve) => setTimeout(resolve, ms));
+  const fail = step?.fail ?? failWith;
+  if (fail) throw new Error(fail);
+  return step?.value ?? value;
+}
+
+/** Every state the probe has rendered, in order. React commits asynchronously,
+ *  so "what did the user actually see" is a question about the sequence rather
+ *  than about the DOM at any one instant. */
+const rendered: string[] = [];
+
+/** The sequence with consecutive repeats collapsed — React is free to re-render
+ *  a component that produced the same output, and that is not a state change. */
+function statesSeen(): string[] {
+  return rendered.filter((state, i) => state !== rendered[i - 1]);
+}
+
+/**
+ * Renders the three states a surface distinguishes — nothing to show, data with
+ * a load behind it, settled data — so a case can read them out of the DOM.
+ */
+/** The `refresh` the probe was last handed, so a case can call the real one. */
+let lastRefresh: (() => Promise<void>) | null = null;
+
+function Probe({ subject, freshness }: { subject: string | null; freshness?: Freshness }) {
+  const { data, loading, refreshing, error, refresh } = useCachedResource(subject, load, freshness);
+  lastRefresh = refresh;
+  // Both flags are rendered rather than one chosen between them: a surface reads
+  // them independently, and collapsing them here would hide a mutation that let
+  // a cold load call itself a refresh.
+  const state = `${loading ? "loading" : "-"}:${refreshing ? "refreshing" : "-"}`;
+  const text = `${data ?? "-"}/${state}/${error ?? "-"}`;
+  rendered.push(text);
+  return createElement("span", null, text);
+}
+
+const settle = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Goes stale inside a test's patience, so staleness is exercised for real. */
+const BRIEF: Freshness = { ttlMs: 5, hardMs: 60_000 };
+
+function mount(element: ReturnType<typeof createElement>): { host: HTMLElement; root: Root } {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  root.render(element);
+  return { host, root };
+}
+
+beforeEach(() => {
+  clearResourceCache();
+  value = "first";
+  fetchCount = 0;
+  loadMs = 0;
+  failWith = null;
+  script = [];
+  rendered.length = 0;
+  lastRefresh = null;
+});
+
+describe("useCachedResource", () => {
+  it("reports a first load as loading, with nothing to show", async () => {
+    loadMs = 40;
+    const { host, root } = mount(createElement(Probe, { subject: "k" }));
+    await settle(10);
+    expect(host.textContent).toBe("-/loading:-/-");
+    await settle(60);
+    expect(host.textContent).toBe("first/-:-/-");
+    root.unmount();
+  });
+
+  it("paints a remount from the cache instead of an empty first frame", async () => {
+    const first = mount(createElement(Probe, { subject: "k" }));
+    await settle();
+    first.root.unmount();
+
+    // What a tab switch does: the panel is gone and comes back a moment later.
+    rendered.length = 0;
+    const second = mount(createElement(Probe, { subject: "k" }));
+    await settle();
+    // The point of the cache: not one frame of the remount is empty.
+    expect(statesSeen()).toEqual(["first/-:-/-"]);
+    second.root.unmount();
+  });
+
+  it("refreshes behind the cached data once it goes stale", async () => {
+    const { root } = mount(createElement(Probe, { subject: "k" }));
+    await settle();
+    expect(fetchCount).toBe(1);
+
+    value = "second";
+    loadMs = 40;
+    // A remount inside the TTL serves the cache without reaching the network.
+    root.unmount();
+    const warm = mount(createElement(Probe, { subject: "k" }));
+    await settle(10);
+    expect(fetchCount).toBe(1);
+    expect(warm.host.textContent).toBe("first/-:-/-");
+    warm.root.unmount();
+
+    // Forcing past the TTL is what a stale entry does: the old value stays on
+    // screen, marked as refreshing, until the new one lands.
+    const stale = mount(createElement(Probe, { subject: "k" }));
+    await settle(10);
+    invalidate("k");
+    await settle(10);
+    expect(stale.host.textContent).toBe("first/-:refreshing/-");
+    await settle(60);
+    expect(stale.host.textContent).toBe("second/-:-/-");
+    stale.root.unmount();
+  });
+
+  it("calls a cold load loading, never refreshing", async () => {
+    // The code says twice that labelling a cold load a *re*fresh would be a lie:
+    // there is nothing on screen to be keeping up to date.
+    loadMs = 40;
+    const { host, root } = mount(createElement(Probe, { subject: "k" }));
+    await settle(10);
+    expect(host.textContent).toBe("-/loading:-/-");
+    await settle(60);
+    root.unmount();
+  });
+
+  it("seeds a key it has been to before, and revalidates behind it", async () => {
+    // Paging back, or flipping a filter back off: the key changes twice and the
+    // one returned to has its own cached answer, which must be on the first
+    // frame the way a remount's is. The short TTL makes that answer stale, so
+    // this is also the ticket's literal scenario — the old list, the indicator,
+    // then fresh data — with a real load behind it rather than an invalidation.
+    script = [{ value: "page-a" }, { value: "page-b" }];
+    const { host, root } = mount(createElement(Probe, { subject: "a", freshness: BRIEF }));
+    await settle();
+    root.render(createElement(Probe, { subject: "b", freshness: BRIEF }));
+    await settle();
+    expect(host.textContent).toBe("page-b/-:-/-");
+
+    value = "page-a refreshed";
+    loadMs = 60;
+    rendered.length = 0;
+    root.render(createElement(Probe, { subject: "a", freshness: BRIEF }));
+    await settle(20);
+    // The frame before the effect runs still holds the key just left — React
+    // renders with the state it has. What must never appear is an empty one.
+    expect(statesSeen().some((state) => state.startsWith("-/"))).toBe(false);
+    expect(host.textContent).toBe("page-a/-:refreshing/-");
+    await settle(100);
+    expect(host.textContent).toBe("page-a refreshed/-:-/-");
+    root.unmount();
+  });
+
+  it("reloads a mounted subscriber when a caller primes its key", async () => {
+    // What the workspaces poller does: it fetches on its own schedule and writes
+    // the result in, and the panel on screen has to pick it up.
+    const { host, root } = mount(createElement(Probe, { subject: "k" }));
+    await settle();
+    expect(host.textContent).toBe("first/-:-/-");
+
+    primeCache("k", "polled");
+    await settle();
+    expect(host.textContent).toBe("polled/-:-/-");
+    root.unmount();
+  });
+
+  it("reloads through the refresh the hook hands back", async () => {
+    const { host, root } = mount(createElement(Probe, { subject: "k" }));
+    await settle();
+    expect(fetchCount).toBe(1);
+
+    value = "second";
+    await lastRefresh?.();
+    await settle();
+    expect(fetchCount).toBe(2);
+    expect(host.textContent).toBe("second/-:-/-");
+    root.unmount();
+  });
+
+  it("reloads a key under an invalidated prefix whose last load failed", async () => {
+    // The entry is gone — a rejection is not cached — so only the subscriber is
+    // left to find, which is the branch the second pass over the listeners exists
+    // for. Without it the surface sits on its error until something remounts it.
+    failWith = "sidecar down";
+    const { host, root } = mount(createElement(Probe, { subject: "issues:a" }));
+    await settle();
+    expect(host.textContent).toBe("-/-:-/sidecar down");
+
+    failWith = null;
+    invalidatePrefix("issues:");
+    await settle();
+    expect(host.textContent).toBe("first/-:-/-");
+    root.unmount();
+  });
+
+  it("blanks a value past the hard ceiling instead of showing it as current", async () => {
+    // A desktop app is left open for days. Friday's list under a small
+    // "Refreshing…" pill reads as Monday's, which is worse than a loading state.
+    const stales: Freshness = { ttlMs: 5, hardMs: 20 };
+    const first = mount(createElement(Probe, { subject: "k", freshness: stales }));
+    await settle();
+    first.root.unmount();
+
+    value = "second";
+    loadMs = 60;
+    rendered.length = 0;
+    const revisit = mount(createElement(Probe, { subject: "k", freshness: stales }));
+    await settle(10);
+    // Not "first/-:refreshing/-": past the ceiling there is nothing to show.
+    expect(revisit.host.textContent).toBe("-/loading:-/-");
+    await settle(100);
+    expect(revisit.host.textContent).toBe("second/-:-/-");
+    revisit.root.unmount();
+  });
+
+  it("keeps the object identity when a stale reload came back unchanged", async () => {
+    // The churn this removes is the tab switch: every revisit past the TTL used
+    // to hand every list a fresh array, re-rendering it to draw the same rows.
+    const seen: unknown[] = [];
+    const listProbe = () =>
+      createElement(function ListProbe() {
+        const { data } = useCachedResource<string[]>(
+          "k",
+          async () => {
+            fetchCount++;
+            return ["a", "b"];
+          },
+          { ttlMs: 5, hardMs: 60_000 },
+        );
+        if (data) seen.push(data);
+        return createElement("span", null, (data ?? []).join(","));
+      });
+
+    const first = mount(listProbe());
+    await settle();
+    first.root.unmount();
+
+    // Past the TTL, so the revisit really reloads rather than being served.
+    await settle(20);
+    const revisit = mount(listProbe());
+    await settle();
+
+    expect(fetchCount).toBe(2);
+    expect(seen.length).toBeGreaterThan(1);
+    // Two loads, same rows: every render across both mounts saw one array.
+    expect(new Set(seen).size).toBe(1);
+    revisit.root.unmount();
+  });
+
+  it("hands back the new value when a reload actually changed", async () => {
+    script = [{ value: "before" }, { value: "after" }];
+    const { host, root } = mount(createElement(Probe, { subject: "k", freshness: BRIEF }));
+    await settle();
+    await settle(20);
+    invalidate("k");
+    await settle();
+    expect(host.textContent).toBe("after/-:-/-");
+    root.unmount();
+  });
+
+  it("keeps the cached data on screen when a refresh fails", async () => {
+    const { host, root } = mount(createElement(Probe, { subject: "k" }));
+    await settle();
+    expect(host.textContent).toBe("first/-:-/-");
+
+    // A failed background refresh is no reason to take the list away — the
+    // error is reported beside the data the user was already reading.
+    failWith = "sidecar down";
+    invalidate("k");
+    await settle();
+    expect(host.textContent).toBe("first/-:-/sidecar down");
+    root.unmount();
+  });
+
+  it("seeds a key change from that key's own cache, not the previous key's", async () => {
+    const { host, root } = mount(createElement(Probe, { subject: "a" }));
+    await settle();
+    expect(host.textContent).toBe("first/-:-/-");
+
+    value = "second";
+    loadMs = 40;
+    root.render(createElement(Probe, { subject: "b" }));
+    await settle(10);
+    // "a"'s value must not be shown under "b" — a different key is a different
+    // resource, and there is nothing cached for it yet.
+    expect(host.textContent).toBe("-/loading:-/-");
+    await settle(60);
+    expect(host.textContent).toBe("second/-:-/-");
+    root.unmount();
+  });
+
+  it("fetches nothing while the key is null", async () => {
+    const { host, root } = mount(createElement(Probe, { subject: null }));
+    await settle();
+    expect(fetchCount).toBe(0);
+    expect(host.textContent).toBe("-/-:-/-");
+    root.unmount();
+  });
+
+  it("joins one in-flight load for concurrent subscribers on a key", async () => {
+    loadMs = 40;
+    const a = mount(createElement(Probe, { subject: "k" }));
+    const b = mount(createElement(Probe, { subject: "k" }));
+    await settle(60);
+    expect(fetchCount).toBe(1);
+    expect(a.host.textContent).toBe("first/-:-/-");
+    expect(b.host.textContent).toBe("first/-:-/-");
+    a.root.unmount();
+    b.root.unmount();
+  });
+
+  it("primes through an updater, so a load landing in between isn't clobbered", async () => {
+    primeCache("k", ["a"]);
+    primeCache<string[]>("k", (current) => [...(current ?? []), "b"]);
+    const { host, root } = mount(
+      createElement(function Probe2() {
+        const { data } = useCachedResource<string[]>("k", async () => []);
+        return createElement("span", null, (data ?? []).join(","));
+      }),
+    );
+    await settle();
+    expect(host.textContent).toBe("a,b");
+    root.unmount();
+  });
+
+  it("hands the updater null while a load is in flight, not the value it will get", async () => {
+    // The trap this pins: an updater that treats null as "empty" would write an
+    // empty value over a load about to fill it, and the identity guard in
+    // `cachedFetch` means that load can no longer put it back.
+    loadMs = 60;
+    const { root } = mount(createElement(Probe, { subject: "k" }));
+    await settle(10);
+    let seen: string | null | undefined;
+    primeCache<string>("k", (current) => {
+      seen = current;
+      return "primed";
+    });
+    expect(seen).toBeNull();
+    await settle(100);
+    root.unmount();
+  });
+
+  it("primes a value a caller already has, without a load", async () => {
+    primeCache("k", "polled");
+    const { host, root } = mount(createElement(Probe, { subject: "k" }));
+    await settle();
+    expect(statesSeen()).toEqual(["polled/-:-/-"]);
+    expect(host.textContent).toBe("polled/-:-/-");
+    expect(fetchCount).toBe(0);
+    root.unmount();
+  });
+
+  it("ignores a superseded load's value, however late it lands", async () => {
+    // The first load is still in flight when the key is invalidated, and it
+    // resolves after the load that replaced it. Writing it back would leave the
+    // cache holding the older answer under a fresh timestamp — so the next
+    // visit would paint stale data, which is what this cache exists to avoid.
+    script = [
+      { value: "slow", ms: 60 },
+      { value: "fast", ms: 0 },
+    ];
+    const first = mount(createElement(Probe, { subject: "k" }));
+    await settle(10);
+    invalidate("k");
+    await settle(100);
+    first.root.unmount();
+
+    const revisit = mount(createElement(Probe, { subject: "k" }));
+    await settle();
+    expect(revisit.host.textContent).toBe("fast/-:-/-");
+    revisit.root.unmount();
+  });
+
+  it("ignores a superseded load's failure, however late it lands", async () => {
+    // The mirror case: the stale load rejects, and dropping the entry on its way
+    // out would discard the newer load's value and send the next caller back to
+    // the provider this cache exists to spare.
+    script = [
+      { fail: "gone", ms: 60 },
+      { value: "fast", ms: 0 },
+    ];
+    const first = mount(createElement(Probe, { subject: "k" }));
+    await settle(10);
+    invalidate("k");
+    await settle(100);
+    first.root.unmount();
+
+    fetchCount = 0;
+    const revisit = mount(createElement(Probe, { subject: "k" }));
+    await settle();
+    expect(revisit.host.textContent).toBe("fast/-:-/-");
+    expect(fetchCount).toBe(0);
+    revisit.root.unmount();
+  });
+
+  it("reloads every mounted key under an invalidated prefix", async () => {
+    const a = mount(createElement(Probe, { subject: "issues:a" }));
+    const b = mount(createElement(Probe, { subject: "issues:b" }));
+    const other = mount(createElement(Probe, { subject: "prs:a" }));
+    await settle();
+    expect(fetchCount).toBe(3);
+
+    invalidatePrefix("issues:");
+    await settle();
+    expect(fetchCount).toBe(5);
+
+    a.root.unmount();
+    b.root.unmount();
+    other.root.unmount();
+  });
+});
+
+describe("eviction", () => {
+  it("drops the least recently read once over the cap, keeping what is mounted", async () => {
+    // Paged keys accumulate one entry per filter and offset the user visits, in
+    // an app left open for days.
+    const { root } = mount(createElement(Probe, { subject: "mounted" }));
+    await settle();
+
+    for (let i = 0; i < 400; i++) primeCache(`page:${i}`, i);
+    expect(resourceCacheSize()).toBeLessThanOrEqual(200);
+
+    // The mounted key survives however cold it is: evicting it would reload it
+    // on the spot, which is churn rather than a bound. It is still served with
+    // no load, so nothing dropped it.
+    fetchCount = 0;
+    const revisit = mount(createElement(Probe, { subject: "mounted" }));
+    await settle();
+    expect(revisit.host.textContent).toBe("first/-:-/-");
+    expect(fetchCount).toBe(0);
+    revisit.root.unmount();
+    root.unmount();
+  });
+});
+
+describe("combineResources", () => {
+  const resource = (over: Partial<Resource<unknown>>): Resource<unknown> => ({
+    data: null,
+    error: null,
+    loading: false,
+    refreshing: false,
+    refresh: async () => {},
+    ...over,
+  });
+
+  it("is loading or refreshing while any one of them is", () => {
+    const combined = combineResources([resource({}), resource({ refreshing: true })]);
+    expect(combined.loading).toBe(false);
+    expect(combined.refreshing).toBe(true);
+  });
+
+  it("reports the first error in the order given", () => {
+    const combined = combineResources([
+      resource({}),
+      resource({ error: "first" }),
+      resource({ error: "second" }),
+    ]);
+    expect(combined.error).toBe("first");
+  });
+});

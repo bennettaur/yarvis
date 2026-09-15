@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
+import { useCachedResource } from "../../lib/resourceCache";
 import {
   type AgentTodo,
   deleteTodo,
@@ -6,6 +7,7 @@ import {
   type TodoStatus,
   updateTodo,
 } from "../../lib/todos";
+import RefreshingIndicator from "../RefreshingIndicator";
 
 /**
  * The assistant's own todo list, shown so the user can see what it believes it
@@ -40,25 +42,19 @@ const PRIORITY_COLOR: Record<string, string> = {
 const OPEN_STATUSES: TodoStatus[] = ["pending", "in_progress", "blocked"];
 const CLOSED_STATUSES: TodoStatus[] = ["done", "wont_do"];
 
+/** Stable identity so an unloaded resource doesn't re-render the list. */
+const NO_TODOS: AgentTodo[] = [];
+
 export default function TodosTab() {
-  const [todos, setTodos] = useState<AgentTodo[]>([]);
   const [showClosed, setShowClosed] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
-    try {
-      setTodos(
-        await listTodos(showClosed ? [...OPEN_STATUSES, ...CLOSED_STATUSES] : OPEN_STATUSES),
-      );
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, [showClosed]);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
+  // Which statuses are asked for is in the key, so flipping "Show closed" names
+  // a different resource rather than silently reusing the open-only list.
+  const todosRes = useCachedResource<AgentTodo[]>(`memory:todos:${showClosed}`, () =>
+    listTodos(showClosed ? [...OPEN_STATUSES, ...CLOSED_STATUSES] : OPEN_STATUSES),
+  );
+  const todos = todosRes.data ?? NO_TODOS;
+  const { error, refresh: reload } = todosRes;
 
   const setStatus = async (id: string, status: TodoStatus) => {
     await updateTodo(id, { status });
@@ -73,13 +69,14 @@ export default function TodosTab() {
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
-        <p className="text-sm text-zinc-500">
+        <p className="mr-auto text-sm text-zinc-500">
           What the assistant has taken on. Its own list — your tasks live on the Tasks tab.
         </p>
+        <RefreshingIndicator active={todosRes.refreshing} />
         <button
           type="button"
           onClick={() => setShowClosed(!showClosed)}
-          className="ml-auto rounded-md border border-zinc-700 px-2 py-1 text-sm hover:bg-zinc-800"
+          className="rounded-md border border-zinc-700 px-2 py-1 text-sm hover:bg-zinc-800"
         >
           {showClosed ? "Hide closed" : "Show closed"}
         </button>
