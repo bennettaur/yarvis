@@ -209,6 +209,57 @@ function buildSubmitTool(sink: TourSink, changed: Set<string>) {
   };
 }
 
+/**
+ * The validator's complaints about a rejected submission, as `path: message`.
+ * Only the schema's own wording is kept, never the rejected input: that was
+ * written by the model from text the pull request's author controls.
+ */
+function validationIssues(error: unknown): string[] {
+  let current = error;
+  // The SDK wraps the schema error twice: invalid tool input, then type validation.
+  for (let depth = 0; depth < 4 && current && typeof current === "object"; depth++) {
+    const { issues, cause } = current as { issues?: unknown; cause?: unknown };
+    if (Array.isArray(issues)) {
+      return issues.map(
+        (issue: { path?: unknown[]; message?: unknown }) =>
+          `${(issue.path ?? []).join(".") || "input"}: ${String(issue.message)}`,
+      );
+    }
+    current = cause;
+  }
+  return [];
+}
+
+/**
+ * Why a run ended without a tour. A submission the schema rejects still counts
+ * as the submit call, so it stops the run exactly as a good one would; unnamed,
+ * that is indistinguishable from a model that ran out of budget or gave up.
+ */
+function missingTourMessage(
+  finishReason: string,
+  stepsUsed: number,
+  rejectedSubmit: { error?: unknown } | undefined,
+): string {
+  const after = `after ${stepsUsed} step${stepsUsed === 1 ? "" : "s"}`;
+  if (rejectedSubmit) {
+    const issues = validationIssues(rejectedSubmit.error).slice(0, 3);
+    return `The review agent submitted a tour ${after}, but it was rejected for not matching the expected shape${
+      issues.length ? ` (${issues.join("; ")})` : ""
+    }. Try again.`;
+  }
+  if (stepsUsed >= STEP_BUDGET) {
+    return `The review agent used all ${STEP_BUDGET} of its steps exploring the change and never submitted a tour. Try again, or generate one for a smaller change.`;
+  }
+  switch (finishReason) {
+    case "length":
+      return `The review agent was cut off by the model's output token limit ${after}, before it submitted a tour.`;
+    case "content-filter":
+      return "The provider's content filter blocked the review agent before it submitted a tour.";
+    default:
+      return `The review agent stopped ${after} without submitting a tour (finish reason: ${finishReason}). Try again, or generate one for a smaller change.`;
+  }
+}
+
 export interface GenerateTourResult {
   steps: PrGuideStep[];
   headSha: string;
@@ -242,10 +293,11 @@ export async function generateTour(
     `</pr-${nonce}>`,
   ].join("\n");
 
+  let missing = "";
   try {
     // Unlike `streamText`, `generateText` throws provider failures rather than
     // routing them to a callback, so they surface here.
-    await generateText({
+    const result = await generateText({
       model,
       system: systemPrompt(),
       messages: [{ role: "user", content: brief }],
@@ -255,6 +307,10 @@ export async function generateTour(
       stopWhen: [stepCountIs(STEP_BUDGET), hasToolCall("submit_tour")],
       abortSignal: signal,
     });
+    const rejectedSubmit = result.steps
+      .flatMap((s) => s.toolCalls)
+      .find((call) => call.toolName === "submit_tour" && "invalid" in call && call.invalid);
+    missing = missingTourMessage(result.finishReason, result.steps.length, rejectedSubmit);
   } catch (e) {
     console.error("[pr] tour model error:", describeError(e));
     // A run that was cut short may still have submitted a tour on an earlier
@@ -262,10 +318,6 @@ export async function generateTour(
     if (!sink.steps) throw new Error(clientError(e));
   }
 
-  if (!sink.steps) {
-    throw new Error(
-      "The review agent finished without producing a tour. Try again, or generate one for a smaller change.",
-    );
-  }
+  if (!sink.steps) throw new Error(missing);
   return { steps: sink.steps, headSha: detail.headSha };
 }

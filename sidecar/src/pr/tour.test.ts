@@ -129,7 +129,61 @@ describe("generateTour", () => {
         content: [{ type: "text" as const, text: "I had a look around." }],
       }),
     });
-    expect(generateTour(silent, fakeSource())).rejects.toThrow("without producing a tour");
+    expect(generateTour(silent, fakeSource())).rejects.toThrow(
+      "stopped after 1 step without submitting a tour (finish reason: stop)",
+    );
+  });
+
+  // A submission the schema rejects still stops the run, so without naming it
+  // the failure reads like a model that never tried.
+  it("names the schema problems when the submitted tour is rejected", async () => {
+    const tooMany = Array.from({ length: 16 }, () => step("a.ts"));
+    const { model, calls } = submittingModel(() => tooMany);
+    const failure = generateTour(model, fakeSource());
+    expect(failure).rejects.toThrow("submitted a tour after 1 step, but it was rejected");
+    expect(failure).rejects.toThrow("steps: Too big: expected array to have <=15 items");
+    await failure.catch(() => {});
+    expect(calls()).toBe(1);
+  });
+
+  it("does not echo the rejected input back in the message", async () => {
+    const secret = "planted-text-".repeat(60);
+    const { model } = submittingModel(() => [{ ...step("a.ts"), explanation: secret }]);
+    const message = await generateTour(model, fakeSource()).catch((e: Error) => e.message);
+    expect(message).toContain("steps.0.explanation");
+    expect(message).not.toContain("planted-text-");
+  });
+
+  it("reports a run that spent its whole step budget exploring", async () => {
+    let calls = 0;
+    const exploring = new MockLanguageModelV3({
+      doGenerate: async (): Promise<GenerateResult> => ({
+        ...boilerplate,
+        finishReason: finished("tool-calls"),
+        content: [
+          {
+            type: "tool-call" as const,
+            toolCallId: `c${++calls}`,
+            toolName: "list_changed_files",
+            input: "{}",
+          },
+        ],
+      }),
+    });
+    expect(generateTour(exploring, fakeSource())).rejects.toThrow(
+      "used all 60 of its steps exploring the change",
+    );
+  });
+
+  it("reports a run cut off by the output token limit", async () => {
+    const truncated = new MockLanguageModelV3({
+      doGenerate: async (): Promise<GenerateResult> => ({
+        ...boilerplate,
+        finishReason: { unified: "length", raw: undefined },
+        content: [{ type: "text" as const, text: "The first step is" }],
+      }),
+    });
+    expect(generateTour(truncated, fakeSource())).rejects.toThrow("output token limit");
   });
 
   it("omits an absent context rather than storing it as undefined", async () => {
