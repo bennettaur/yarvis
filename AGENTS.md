@@ -237,6 +237,28 @@ back to ad-hoc.
   establish is *what the agent is showing*, so a send is reported as delivered,
   never as done. Anything new that forwards text into a session owes the same
   three.
+- A workspace root's `.claude` directory is jointly owned. Provisioning copies
+  each repo's skills and agents up into it (`workspaces/claudeAssets.ts`) because
+  Claude Code discovers them only under the directory it starts in and the
+  `skills.paths`/`agents.paths` settings keys load nothing. What Yarvis wrote is
+  recorded in `.claude/.yarvis-copied.json` and removed by name on the next
+  provision; everything else in there is the user's and must survive. Anything
+  new that writes into that directory clears its own entries by name, never the
+  directory.
+  - This does not reopen the `~/.yarvis/agents` rule above. That governs Yarvis's
+    own specialists, which a repo may never contribute. A repo's `.claude` is
+    Claude Code's, and Claude Code already loads it whenever a session starts
+    inside that repo — copying it up restores what the user would have had one
+    directory down, rather than granting something new. What it does widen is
+    reach: the session has every repo in the workspace beside it. That is
+    accepted because the repos are a list the user registered and a fork's
+    branch is refused (`PrWorkspaceAction`), making this a collaborator
+    boundary, not a drive-by one.
+  - What is copied is never trusted to be well-formed: a symlinked entry is
+    refused rather than copied (`cpSync` preserves one, so writing the copy
+    would rewrite whatever it points at), entries must be shaped like the kind
+    expects, and a name read back out of the manifest must be a plain entry
+    name before it reaches `rmSync`.
 - Built-in agent tools come from one builder — `chat/builtinTools.ts` — which
   both `runAgentTurn` and `agentTools/registry.ts` read. This is not tidiness:
   the *active* tool set for a step is computed from registry policy, so a
