@@ -248,6 +248,28 @@ back to ad-hoc.
   establish is *what the agent is showing*, so a send is reported as delivered,
   never as done. Anything new that forwards text into a session owes the same
   three.
+- A workspace root's `.claude` directory is jointly owned. Provisioning copies
+  each repo's skills and agents up into it (`workspaces/claudeAssets.ts`) because
+  Claude Code discovers them only under the directory it starts in and the
+  `skills.paths`/`agents.paths` settings keys load nothing. What Yarvis wrote is
+  recorded in `.claude/.yarvis-copied.json` and removed by name on the next
+  provision; everything else in there is the user's and must survive. Anything
+  new that writes into that directory clears its own entries by name, never the
+  directory.
+  - This does not reopen the `~/.yarvis/agents` rule above. That governs Yarvis's
+    own specialists, which a repo may never contribute. A repo's `.claude` is
+    Claude Code's, and Claude Code already loads it whenever a session starts
+    inside that repo — copying it up restores what the user would have had one
+    directory down, rather than granting something new. What it does widen is
+    reach: the session has every repo in the workspace beside it. That is
+    accepted because the repos are a list the user registered and a fork's
+    branch is refused (`PrWorkspaceAction`), making this a collaborator
+    boundary, not a drive-by one.
+  - What is copied is never trusted to be well-formed: a symlinked entry is
+    refused rather than copied (`cpSync` preserves one, so writing the copy
+    would rewrite whatever it points at), entries must be shaped like the kind
+    expects, and a name read back out of the manifest must be a plain entry
+    name before it reaches `rmSync`.
 - Built-in agent tools come from one builder — `chat/builtinTools.ts` — which
   both `runAgentTurn` and `agentTools/registry.ts` read. This is not tidiness:
   the *active* tool set for a step is computed from registry policy, so a
@@ -264,6 +286,34 @@ back to ad-hoc.
   "ask", since consent was given for the tool as it was described then. Neither
   mechanism gives MCP tools to a surface that cannot prompt: that still requires
   `approval` hooks to exist at all.
+- A list a tab shows is read through `lib/resourceCache`, not fetched into local
+  state on mount. `App` renders one panel at a time, so every tab switch unmounts
+  a page outright, and the fetch-on-mount shape meant coming back always painted
+  an empty list first (#275). `useCachedResource` seeds a remount from the cache
+  synchronously and revalidates behind it, which is why `Resource` distinguishes
+  `refreshing` — a load running behind data already on screen, what
+  `RefreshingIndicator` shows — from `loading`, which means there is nothing to
+  show yet. How long a value may stand in for the truth is a `Freshness`, not a
+  number: inside `ttlMs` it is served with no load at all, past it behind a
+  refresh, and past `hardMs` not at all — a list from Friday painted on Monday
+  under a small pill reads as current, which is worse than a loading screen.
+  Pick `SIDECAR_FRESHNESS`, `PROVIDER_FRESHNESS` (a call to GitHub, Azure or
+  JIRA, all of which rate-limit) or `PROBE_FRESHNESS`, rather than inventing
+  numbers. Two more rules come with it. Every value a loader reads goes in its
+  key, or the surface keeps an answer to a question it is no longer asking. And a
+  setting that changes what a cached panel may show invalidates it where it is
+  saved — `ReposSection` for the issue lists, `PrReviewSection` for
+  the needs-review query, and the whole cache from `KeychainSection`, since the
+  sidecar it restarts answered everything in there — the prefix is a shared
+  constant at both ends (`lib/issues/cacheKeys`, `lib/pr/cacheKeys`) because
+  getting it wrong fails silently in both directions. A long hold with no way out
+  is how a user ends up staring at an answer they already fixed.
+- An answer worth keeping resolves; only a failure rethrows. Errors are
+  deliberately not cached, so a loader that treats "this provider isn't
+  configured" as an error re-asks on every remount and holds the surface behind
+  that round trip. The probes in `PrsPanel` and `JiraIssuesView` return it as
+  data instead, and rethrow what they can't tell apart from the sidecar still
+  starting up — which is the case that must *not* stick.
 - A pending approval is answered in one place per surface: `ToolApprovalBar`
   above the composer, showing the front of the queue with a count, rather than a
   card per call inside the thread. Its `A`/`D` shortcuts are on `window`, so a

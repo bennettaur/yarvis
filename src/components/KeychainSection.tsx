@@ -7,6 +7,7 @@ import {
   type SecretStatus,
   setSecret,
 } from "../lib/keychain";
+import { clearResourceCache } from "../lib/resourceCache";
 import { restartAndWait } from "../lib/restart";
 import { StatusDot } from "./Dashboard";
 import { MaskedInput } from "./MaskedInput";
@@ -50,6 +51,10 @@ export default function KeychainSection() {
         await setSecret(key, value);
         setInputs((prev) => ({ ...prev, [key]: "" }));
         await restartAndWait();
+        // Every cached answer was given by the sidecar that just went away,
+        // under the credentials that just changed — including which providers
+        // are configured at all, which the PR tab holds for ten minutes.
+        clearResourceCache();
         await refresh();
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -64,6 +69,7 @@ export default function KeychainSection() {
       try {
         await deleteSecret(key);
         await restartAndWait();
+        clearResourceCache();
         await refresh();
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
