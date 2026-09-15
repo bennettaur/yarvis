@@ -33,6 +33,7 @@ import {
 } from "../issues/service.ts";
 import { completeTasksByWorkspace, tasksForWorkspace } from "../tasks/service.ts";
 import { WORKSPACE_BRIEF_FILE, writeWorkspaceBrief } from "./brief.ts";
+import { syncClaudeAssets } from "./claudeAssets.ts";
 import {
   type ClaudeSessionStarter,
   startClaudeSession,
@@ -1189,15 +1190,21 @@ function aborted(signal?: AbortSignal): Promise<void> {
 
 /**
  * (Re)writes the files a workspace root needs before an agent runs there: the
- * AGENTS.md/CLAUDE.md pair, the Claude settings, and the MCP config. Claude is
- * started in the workspace root rather than inside a single repo — so it can
- * work across every repo checked out there — but that's not its usual layout,
- * and without help it can assume the workspace root itself is the project. The
- * context files spell out which repos are present, where, and on what branch.
- * Best-effort throughout: a write failure is logged but must not fail
- * provisioning.
+ * AGENTS.md/CLAUDE.md pair, the Claude settings, the copies of each repo's
+ * skills and agents, and the MCP config. Claude is started in the workspace root
+ * rather than inside a single repo — so it can work across every repo checked
+ * out there — but that's not its usual layout, and without help it can assume
+ * the workspace root itself is the project. The context files spell out which
+ * repos are present, where, and on what branch. Best-effort throughout: a write
+ * failure is logged but must not fail provisioning.
  */
 function writeWorkspaceFiles(detail: WorkspaceDetail): void {
+  // Copied first so AGENTS.md can say whether there is anything to mention.
+  const copied = syncClaudeAssets(
+    detail.rootPath,
+    detail.repos.map((wr) => wr.worktreePath),
+  );
+
   const lines = [
     `# Workspace: ${detail.name}`,
     "",
@@ -1213,6 +1220,36 @@ function writeWorkspaceFiles(detail: WorkspaceDetail): void {
       return `- **${wr.repo.name}** (${wr.repo.owner}/${wr.repo.repo}): \`${path}\`, checked out on branch \`${wr.branch}\` (base \`${wr.baseBranch}\`)`;
     }),
   ];
+
+  if (copied.skills.length > 0 || copied.agents.length > 0) {
+    lines.push(
+      "",
+      "## Skills and agents",
+      "",
+      "Each repo's `.claude/skills` and `.claude/agents` have been copied into",
+      "this workspace root's `.claude` directory, because Claude Code only",
+      "discovers them under the directory it starts in. They are available from",
+      "here — no need to change into a repo to reach one. A name two repos share,",
+      "or one already taken by something you put in this root yourself, arrives",
+      "prefixed with the repo's directory name.",
+      "The copies are a snapshot taken when the workspace was provisioned; edit",
+      "the original under the repo, not the copy.",
+    );
+  }
+
+  if (detail.repos.length > 0) {
+    lines.push(
+      "",
+      "## Running a repo's tools",
+      "",
+      "Tooling belongs to a repo, not to this root: change into the repo's",
+      "directory before running its commands. Check what pins its runtime",
+      "versions first — a `mise.toml`, `.tool-versions`, `.nvmrc`, `.python-version`",
+      "or `Gemfile` — and go through that manager rather than whatever happens to",
+      "be on `PATH` here. With mise that is `mise install` once, then",
+      "`mise exec -- <command>`.",
+    );
+  }
 
   if (detail.tasks.length > 0) {
     lines.push("", "## Associated tasks", "");
@@ -1230,11 +1267,7 @@ function writeWorkspaceFiles(detail: WorkspaceDetail): void {
     console.error("[workspaces] failed to write AGENTS.md/CLAUDE.md:", e);
   }
 
-  writeClaudeSettings(
-    detail.rootPath,
-    detail.id,
-    detail.repos.map((wr) => wr.worktreePath),
-  );
+  writeClaudeSettings(detail.rootPath, detail.id);
   writeMcpConfig(detail.rootPath);
 }
 

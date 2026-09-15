@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { clearResourceCache } from "../lib/resourceCache";
 import { restartAndWait } from "../lib/restart";
 import {
   type Copied,
@@ -75,9 +76,14 @@ export default function SecretBackendSection() {
       setNotice(copyNotice(result.copied, selectedBackend));
       // Secrets reach the sidecar only at spawn, so a real switch has to
       // restart it. Re-saving the same selection moved nothing, and restarting
-      // for that would drop a running turn for no reason.
+      // for that would drop a running turn for no reason — nor is there a new
+      // sidecar underneath to have answered anything differently.
       if (result.copied !== "unchanged") {
         await restartAndWait();
+        // Every cached answer was given by the sidecar that just went away,
+        // under whichever secrets it had then — including which providers are
+        // configured at all, which the PR tab holds for ten minutes.
+        clearResourceCache();
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
