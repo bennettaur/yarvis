@@ -91,7 +91,6 @@ describe("PrFileList jump", () => {
   it("asks the matching diff to bring itself into view", async () => {
     const diff = document.createElement("details");
     diff.id = prFileAnchorId(prRef, "src/deep/a.ts");
-    diff.innerHTML = "<summary>src/deep/a.ts</summary>";
     document.body.appendChild(diff);
     let jumps = 0;
     diff.addEventListener(JUMP_TO_FILE_EVENT, () => jumps++);

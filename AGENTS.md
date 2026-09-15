@@ -303,8 +303,8 @@ back to ad-hoc.
   holds the landing (`holdInPlace`) while files above it finish opening (#298).
   A smooth scroll from outside travels past collapsed files that
   `useExpandOnApproach` opens mid-flight, and each one moves the target out from
-  under the animation. The event rather than a prop is because the list and the
-  diffs can be separate Omni widgets. Anything new that navigates to a file owes
+  under the animation. It is an event rather than a prop because the list and
+  the diffs can be separate Omni widgets, where there is no scroll pane to hold. Anything new that navigates to a file owes
   the same route.
 - An answer worth keeping resolves; only a failure rethrows. Errors are
   deliberately not cached, so a loader that treats "this provider isn't

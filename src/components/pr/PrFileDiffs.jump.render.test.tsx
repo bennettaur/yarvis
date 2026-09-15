@@ -18,6 +18,8 @@ afterEach(() => {
   cleanup = null;
 });
 
+const settle = () => new Promise((resolve) => setTimeout(resolve, 100));
+
 /** Mounts the diffs, then returns the target's `<details>` with its scroll calls recorded. */
 async function mountDiffs(data: PrFile[], target: string, viewed = new Set<string>()) {
   setPrFiles(data);
@@ -28,18 +30,18 @@ async function mountDiffs(data: PrFile[], target: string, viewed = new Set<strin
   const details = document.getElementById(prFileAnchorId(prRef, target)) as HTMLDetailsElement;
   const scrolls: (ScrollIntoViewOptions | boolean | undefined)[] = [];
   details.scrollIntoView = (options) => scrolls.push(options);
-  return { details, scrolls };
+  return { host: mounted.host, details, scrolls };
 }
 
 async function jump(details: HTMLElement): Promise<void> {
   details.dispatchEvent(new Event(JUMP_TO_FILE_EVENT));
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  await settle();
 }
 
 describe("PrFileDiffs jump to file", () => {
   // A viewed file starts collapsed and has no approach observer, so nothing but
   // the jump itself would ever open it.
-  it("opens a collapsed file it was asked to jump to", async () => {
+  it("opens a viewed file it was asked to jump to", async () => {
     const { details } = await mountDiffs([file("a.ts")], "a.ts", new Set(["a.ts"]));
     expect(details.open).toBe(false);
 
@@ -48,8 +50,20 @@ describe("PrFileDiffs jump to file", () => {
     expect(details.open).toBe(true);
   });
 
-  // Smooth travel is what dragged the files in between into expanding and moved
-  // the target out from under the animation.
+  it("opens a file folded by Collapse all", async () => {
+    const { host, details } = await mountDiffs([file("a.ts")], "a.ts");
+    const collapseAll = [...host.querySelectorAll("button")].find(
+      (b) => b.textContent === "Collapse all",
+    );
+    collapseAll?.click();
+    await settle();
+    expect(details.open).toBe(false);
+
+    await jump(details);
+
+    expect(details.open).toBe(true);
+  });
+
   it("scrolls the file's top into view without animating", async () => {
     const { details, scrolls } = await mountDiffs([file("a.ts"), file("b.ts")], "b.ts");
 
@@ -64,5 +78,29 @@ describe("PrFileDiffs jump to file", () => {
     await jump(details);
 
     expect(details.querySelector("summary")?.hasAttribute(FLASH_ATTR)).toBe(true);
+  });
+
+  // Files opening above the target after it lands are what pushed it away; the
+  // jump has to keep it pinned, not only arrive.
+  it("holds the landing while content above it grows", async () => {
+    const { host, details } = await mountDiffs([file("a.ts"), file("b.ts")], "b.ts");
+    host.setAttribute("data-pr-scroll", "");
+    const layout = { above: 0 };
+    let scrollTop = 0;
+    Object.defineProperty(host, "scrollTop", {
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value;
+      },
+    });
+    host.getBoundingClientRect = () => ({ top: 0 }) as DOMRect;
+    details.getBoundingClientRect = () => ({ top: layout.above - scrollTop }) as DOMRect;
+
+    await jump(details);
+    layout.above = 300;
+    await settle();
+
+    expect(host.scrollTop).toBe(300);
+    host.dispatchEvent(new Event("wheel"));
   });
 });

@@ -20,7 +20,7 @@ const STATUS_LETTER: Record<string, { letter: string; color: string }> = {
  * `PrFileDiffs` entry to open and scroll itself into view (by shared anchor id,
  * so it works whether the diffs sit beside it or elsewhere on the page — see
  * {@link JUMP_TO_FILE_EVENT}). A per-row checkbox marks the file as viewed; clicks
- * on the checkbox don't trigger the scroll so toggling never moves focus away.
+ * on the checkbox don't trigger the jump so toggling never moves focus away.
  * Rows only show a basename, so each also carries a copy button for the full
  * path.
  */
@@ -140,7 +140,7 @@ function FileRow({
         type="checkbox"
         checked={isViewed}
         onChange={(e) => {
-          // Toggling viewed must never trigger the row's file-select scroll.
+          // Toggling viewed must never trigger the row's file-select jump.
           // The checkbox is a sibling of that button today, but stop the event
           // defensively so a future row-level handler can't hijack the toggle.
           e.stopPropagation();
