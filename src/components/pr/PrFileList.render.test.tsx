@@ -92,8 +92,32 @@ describe("PrFileList comment counts", () => {
     })),
   });
 
+  const detail = (overrides: Partial<PrDetail> = {}): PrDetail => ({
+    number: 1,
+    title: "Add a thing",
+    body: "",
+    state: "open",
+    draft: false,
+    author: "me",
+    baseRef: "main",
+    headRef: "feat",
+    fromFork: false,
+    headSha: "",
+    additions: 0,
+    deletions: 0,
+    mergeable: "MERGEABLE",
+    mergeMethods: [],
+    autoMergeEnabled: false,
+    canEnableAutoMerge: false,
+    canDisableAutoMerge: false,
+    checks: [],
+    reviewThreads: [],
+    reviewers: [],
+    ...overrides,
+  });
+
   const primeThreads = (reviewThreads: ReviewThread[]) =>
-    primeCache(prDetailKey(prRef), { reviewThreads, headSha: "" } as unknown as PrDetail);
+    primeCache(prDetailKey(prRef), detail({ reviewThreads }));
 
   afterEach(() => clearResourceCache());
 
