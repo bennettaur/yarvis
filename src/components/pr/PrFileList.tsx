@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { buildFileTree, type FileTreeFile } from "../../lib/fileTree";
 import { usePrDetail, usePrFiles } from "../../lib/pr/cache";
-import type { PrFile, PrRef } from "../../lib/pr/types";
+import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import FileTreeRows, { treeRowPaddingLeft } from "../files/FileTreeRows";
 import CopyFileLinkButton from "./CopyFileLinkButton";
 import CopyPathButton from "./CopyPathButton";
@@ -23,7 +23,8 @@ const STATUS_LETTER: Record<string, { letter: string; color: string }> = {
  * where the scroll landed. A per-row checkbox marks the file as viewed; clicks
  * on the checkbox don't trigger the scroll so toggling never moves focus away.
  * Rows only show a basename, so each also carries a copy button for the full
- * path.
+ * path. A file with review comments shows their count, so they can be found
+ * without scrolling the diffs.
  */
 export default function PrFileList({
   prRef,
@@ -42,16 +43,20 @@ export default function PrFileList({
   onToggleViewed: (path: string) => void;
 }) {
   const { data, error, loading } = usePrFiles(prRef);
-  // Only for the head commit the file links are pinned to, so it is skipped
-  // where there are no links to pin (an Omni widget passes no PR URL). Where
-  // there are, the rest of the review already subscribes, so this costs no fetch.
-  const detail = usePrDetail(prUrl ? prRef : null);
+  // Review threads for the per-file comment counts, and the head commit the file
+  // links are pinned to. In the review the diffs beside this list already
+  // subscribe, so it costs no extra fetch there.
+  const detail = usePrDetail(prRef);
   const [selected, setSelected] = useState<string | null>(null);
 
   // Hoisted above the early returns to keep hook order stable.
   const viewedCount = useMemo(
     () => (data ? data.filter((f) => viewed.has(f.filename)).length : 0),
     [data, viewed],
+  );
+  const commentCounts = useMemo(
+    () => countCommentsByPath(detail.data?.reviewThreads ?? []),
+    [detail.data],
   );
   const tree = useMemo(() => (data ? buildFileTree(data, (f) => f.filename) : []), [data]);
 
@@ -98,11 +103,48 @@ export default function PrFileList({
               prRef={prRef}
               prUrl={prUrl}
               headSha={detail.data?.headSha ?? ""}
+              commentCount={commentCounts.get(node.file.filename) ?? 0}
             />
           )}
         />
       </ul>
     </div>
+  );
+}
+
+/**
+ * Comments per file across every review thread, replies included, so the count
+ * matches what the reader finds when they open the diff. Resolved threads still
+ * count: the diff still shows them.
+ */
+function countCommentsByPath(threads: ReviewThread[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const thread of threads) {
+    if (!thread.path) continue;
+    counts.set(thread.path, (counts.get(thread.path) ?? 0) + thread.comments.length);
+  }
+  return counts;
+}
+
+function CommentCount({ count }: { count: number }) {
+  const label = `${count} ${count === 1 ? "comment" : "comments"}`;
+  return (
+    <span
+      className="flex shrink-0 items-center gap-0.5 text-xs text-sky-400"
+      title={label}
+      role="img"
+      aria-label={label}
+    >
+      <svg aria-hidden="true" viewBox="0 0 16 16" className="h-3 w-3" fill="none">
+        <path
+          d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinejoin="round"
+        />
+      </svg>
+      {count}
+    </span>
   );
 }
 
@@ -116,6 +158,7 @@ function FileRow({
   prRef,
   prUrl,
   headSha,
+  commentCount,
 }: {
   node: FileTreeFile<PrFile>;
   depth: number;
@@ -126,6 +169,7 @@ function FileRow({
   prRef: PrRef;
   prUrl: string;
   headSha: string;
+  commentCount: number;
 }) {
   const { file, name } = node;
   const status = STATUS_LETTER[file.status] ?? { letter: "•", color: "text-zinc-500" };
@@ -166,6 +210,7 @@ function FileRow({
         >
           {name}
         </span>
+        {commentCount > 0 && <CommentCount count={commentCount} />}
         {file.additions + file.deletions > 0 && (
           <>
             <span className="shrink-0 text-xs text-emerald-400">+{file.additions}</span>

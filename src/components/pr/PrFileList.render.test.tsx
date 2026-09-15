@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
-import type { PrFile, PrRef } from "../../lib/pr/types";
+import { prDetailKey } from "../../lib/pr/cache";
+import type { PrDetail, PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
+import { clearResourceCache, primeCache } from "../../lib/resourceCache";
 import { prFile as file, setPrFiles } from "../../test/prFiles";
 import { mountForInteraction, renderToHtml } from "../../test/render";
 import { FLASH_ATTR } from "./flashFile";
@@ -75,6 +77,38 @@ describe("PrFileList", () => {
     expect(await render([])).toContain("No file changes.");
     expect(await render(null, { loading: true })).toContain("Loading files…");
     expect(await render(null, { error: "boom" })).toContain("boom");
+  });
+});
+
+describe("PrFileList comment counts", () => {
+  const thread = (path: string | null, comments: number, isResolved = false): ReviewThread => ({
+    path,
+    line: 1,
+    isResolved,
+    comments: Array.from({ length: comments }, () => ({
+      author: "octocat",
+      body: "hm",
+      createdAt: "2026-01-01T00:00:00Z",
+    })),
+  });
+
+  const primeThreads = (reviewThreads: ReviewThread[]) =>
+    primeCache(prDetailKey(prRef), { reviewThreads, headSha: "" } as unknown as PrDetail);
+
+  afterEach(() => clearResourceCache());
+
+  // Replies and resolved threads both count: the diff still shows every one.
+  it("totals every comment on a file across its threads", async () => {
+    primeThreads([thread("src/a.ts", 2), thread("src/a.ts", 1, true), thread("b.ts", 1)]);
+    const html = await render([file("src/a.ts"), file("b.ts")]);
+    expect(html).toContain('aria-label="3 comments"');
+    expect(html).toContain('aria-label="1 comment"');
+  });
+
+  it("shows no count on a file without comments", async () => {
+    primeThreads([thread("src/a.ts", 2), thread(null, 4)]);
+    const html = await render([file("src/a.ts"), file("b.ts")]);
+    expect(html.match(/aria-label="\d+ comments?"/g)).toEqual(['aria-label="2 comments"']);
   });
 });
 
