@@ -44,8 +44,8 @@ export default function PrFileList({
 }) {
   const { data, error, loading } = usePrFiles(prRef);
   // Review threads for the per-file comment counts, and the head commit the file
-  // links are pinned to. In the review the diffs beside this list already
-  // subscribe, so it costs no extra fetch there.
+  // links are pinned to. Beside the diffs this is already subscribed; a standalone
+  // Omni widget pays one detail fetch so its counts show too.
   const detail = usePrDetail(prRef);
   const [selected, setSelected] = useState<string | null>(null);
 
@@ -113,14 +113,14 @@ export default function PrFileList({
 }
 
 /**
- * Comments per file across every review thread, replies included, so the count
- * matches what the reader finds when they open the diff. Resolved threads still
- * count: the diff still shows them.
+ * Comments per file, replies and resolved threads included, so the count matches
+ * what the diff shows. Threads with no line are skipped for the same reason: the
+ * diff has nowhere to anchor them, so they appear in the PR description instead.
  */
 function countCommentsByPath(threads: ReviewThread[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const thread of threads) {
-    if (!thread.path) continue;
+    if (!thread.path || thread.line == null) continue;
     counts.set(thread.path, (counts.get(thread.path) ?? 0) + thread.comments.length);
   }
   return counts;
@@ -128,10 +128,11 @@ function countCommentsByPath(threads: ReviewThread[]): Map<string, number> {
 
 function CommentCount({ count }: { count: number }) {
   const label = `${count} ${count === 1 ? "comment" : "comments"}`;
+  // No `title`: it would cover the row's full-path tooltip, which the basename-only
+  // row relies on.
   return (
     <span
       className="flex shrink-0 items-center gap-0.5 text-xs text-sky-400"
-      title={label}
       role="img"
       aria-label={label}
     >

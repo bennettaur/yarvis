@@ -81,11 +81,15 @@ describe("PrFileList", () => {
 });
 
 describe("PrFileList comment counts", () => {
-  const thread = (path: string | null, comments: number, isResolved = false): ReviewThread => ({
+  const thread = (
+    path: string | null,
+    commentCount: number,
+    { isResolved = false, line = 1 as number | null } = {},
+  ): ReviewThread => ({
     path,
-    line: 1,
+    line,
     isResolved,
-    comments: Array.from({ length: comments }, () => ({
+    comments: Array.from({ length: commentCount }, () => ({
       author: "octocat",
       body: "hm",
       createdAt: "2026-01-01T00:00:00Z",
@@ -121,16 +125,24 @@ describe("PrFileList comment counts", () => {
 
   afterEach(() => clearResourceCache());
 
-  // Replies and resolved threads both count: the diff still shows every one.
-  it("totals every comment on a file across its threads", async () => {
-    primeThreads([thread("src/a.ts", 2), thread("src/a.ts", 1, true), thread("b.ts", 1)]);
+  it("totals every comment on a file across its threads, resolved ones included", async () => {
+    primeThreads([
+      thread("src/a.ts", 2),
+      thread("src/a.ts", 1, { isResolved: true }),
+      thread("b.ts", 1),
+    ]);
     const html = await render([file("src/a.ts"), file("b.ts")]);
     expect(html).toContain('aria-label="3 comments"');
     expect(html).toContain('aria-label="1 comment"');
   });
 
-  it("shows no count on a file without comments", async () => {
-    primeThreads([thread("src/a.ts", 2), thread(null, 4)]);
+  it("ignores threads the diff can't anchor: no path, or no line", async () => {
+    primeThreads([
+      thread("src/a.ts", 2),
+      thread(null, 4),
+      thread("src/a.ts", 5, { line: null }),
+      thread("b.ts", 3, { line: null }),
+    ]);
     const html = await render([file("src/a.ts"), file("b.ts")]);
     expect(html.match(/aria-label="\d+ comments?"/g)).toEqual(['aria-label="2 comments"']);
   });
