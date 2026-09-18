@@ -10,7 +10,7 @@ export const FLASH_ATTR = "data-yarvis-flash";
 /**
  * Marks the file a jump just landed on with a brief flash.
  *
- * A smooth scroll ends with the target somewhere in a page of near-identical
+ * A jump ends with the target somewhere in a page of near-identical
  * file headers, and nothing about the landing says which one was asked for. The
  * flash is on the header rather than the whole `<details>`: the header sticks to
  * the top of the review pane, so it stays on screen whether the scroll aimed at

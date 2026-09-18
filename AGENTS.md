@@ -297,6 +297,18 @@ back to ad-hoc.
   constant at both ends (`lib/issues/cacheKeys`, `lib/pr/cacheKeys`) because
   getting it wrong fails silently in both directions. A long hold with no way out
   is how a user ends up staring at an answer they already fixed.
+- A jump to a file in a PR review is asked of the file, not done to it.
+  `PrFileList` dispatches `JUMP_TO_FILE_EVENT` on the diff's anchor element and
+  `FileDiff` opens itself, waits for its rows to lay out, scrolls instantly and
+  holds the landing (`holdInPlace`) while the review settles (#298). The hold
+  pauses expand-on-approach, since its own scroll corrections would otherwise
+  pull more files open, and the observers are rebuilt when it ends so what is
+  in reach by then still opens.
+  A smooth scroll from outside travels past collapsed files that
+  `useExpandOnApproach` opens mid-flight, and each one moves the target out from
+  under the animation. It is an event rather than a prop because the list and
+  the diffs can be separate Omni widgets, where there is no scroll pane to hold.
+  Anything new that navigates to a file owes the same route.
 - An answer worth keeping resolves; only a failure rethrows. Errors are
   deliberately not cached, so a loader that treats "this provider isn't
   configured" as an error re-asks on every remount and holds the surface behind
