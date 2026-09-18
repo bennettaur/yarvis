@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { holdInPlace, releaseHold } from "./holdInPlace";
+import { expansionPaused, holdInPlace, releaseHold } from "./holdInPlace";
 
 const mounted: HTMLElement[] = [];
 const releases: (() => void)[] = [];
@@ -109,6 +109,28 @@ describe("holdInPlace", () => {
     await waitForFrames();
 
     expect(pane.scrollTop).toBe(0);
+  });
+
+  // Files opening while the hold corrects the scroll are drift it would then
+  // have to chase, so they wait until it lets go.
+  it("pauses expand-on-approach for as long as it runs", async () => {
+    const { target } = mountHeldTarget();
+    expect(expansionPaused()).toBe(false);
+
+    const release = holdInPlace(target);
+    expect(expansionPaused()).toBe(true);
+
+    release();
+    expect(expansionPaused()).toBe(false);
+    // Releasing twice must not leave expansion paused for the rest of the review.
+    release();
+    expect(expansionPaused()).toBe(false);
+  });
+
+  it("pauses nothing outside a review scroll pane", () => {
+    const { target } = mountHeldTarget({ inPane: false });
+    hold(target);
+    expect(expansionPaused()).toBe(false);
   });
 
   it("does nothing outside a review scroll pane", async () => {

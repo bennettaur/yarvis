@@ -9,16 +9,40 @@ const PANE_SELECTOR = "[data-pr-scroll]";
 /** The running hold's release, per scroll pane, so a second jump replaces the first. */
 const holds = new WeakMap<Element, () => void>();
 
+let runningHolds = 0;
+const pauseListeners = new Set<() => void>();
+
+/**
+ * Whether a jump is holding its landing, which pauses expand-on-approach (see
+ * {@link useExpandOnApproach}). A hold corrects the pane's scroll, and every
+ * correction can bring more collapsed files within reach — each one opening is
+ * fresh drift for the hold to chase. They open when it ends instead.
+ *
+ * Global rather than per-pane because only `PrDetailView` marks a pane, so at
+ * most one hold can ever be running.
+ */
+export function expansionPaused(): boolean {
+  return runningHolds > 0;
+}
+
+/** Subscribes to {@link expansionPaused} changes. */
+export function subscribeExpansionPause(listener: () => void): () => void {
+  pauseListeners.add(listener);
+  return () => {
+    pauseListeners.delete(listener);
+  };
+}
+
 /**
  * Keeps `el` at its current offset inside the review scroll pane for `holdMs`,
  * or until the reader scrolls on their own or `el` leaves the page.
  *
- * A jump lands before the review has settled: collapsed files visible above the
- * target open as they come into reach, and an open file's diff arrives after its
- * fetch. Each grows the page above the target while the scroll position stays
- * put, so the target drifts from where the jump put it. The drift is corrected
- * every frame rather than left to the browser's scroll anchoring, which the
- * webview can't be relied on to provide.
+ * A jump lands before the review has settled: an open file's diff arrives after
+ * its fetch, and files can open above the target where it sits too close to the
+ * end of the review to reach the top of the pane. Each grows the page above the
+ * target while the scroll position stays put, so the target drifts from where
+ * the jump put it. The drift is corrected every frame rather than left to the
+ * browser's scroll anchoring, which the webview can't be relied on to provide.
  *
  * Does nothing outside a `data-pr-scroll` pane, which only `PrDetailView` sets.
  *
@@ -33,11 +57,16 @@ export function holdInPlace(el: HTMLElement, holdMs = JUMP_HOLD_MS): () => void 
   const anchor = offset();
   const deadline = performance.now() + holdMs;
   let frame = 0;
+  let released = false;
 
   const release = () => {
+    if (released) return;
+    released = true;
     cancelAnimationFrame(frame);
     for (const type of READER_SCROLL_EVENTS) pane.removeEventListener(type, release);
     if (holds.get(pane) === release) holds.delete(pane);
+    runningHolds--;
+    for (const listener of pauseListeners) listener();
   };
   const tick = () => {
     // A detached target measures at the viewport's top forever, which would
@@ -55,6 +84,8 @@ export function holdInPlace(el: HTMLElement, holdMs = JUMP_HOLD_MS): () => void 
     pane.addEventListener(type, release, { passive: true });
   }
   holds.set(pane, release);
+  runningHolds++;
+  for (const listener of pauseListeners) listener();
   frame = requestAnimationFrame(tick);
   return release;
 }

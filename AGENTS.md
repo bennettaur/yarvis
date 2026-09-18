@@ -300,7 +300,10 @@ back to ad-hoc.
 - A jump to a file in a PR review is asked of the file, not done to it.
   `PrFileList` dispatches `JUMP_TO_FILE_EVENT` on the diff's anchor element and
   `FileDiff` opens itself, waits for its rows to lay out, scrolls instantly and
-  holds the landing (`holdInPlace`) while files above it finish opening (#298).
+  holds the landing (`holdInPlace`) while the review settles (#298). The hold
+  pauses expand-on-approach, since its own scroll corrections would otherwise
+  pull more files open, and the observers are rebuilt when it ends so what is
+  in reach by then still opens.
   A smooth scroll from outside travels past collapsed files that
   `useExpandOnApproach` opens mid-flight, and each one moves the target out from
   under the animation. It is an event rather than a prop because the list and
