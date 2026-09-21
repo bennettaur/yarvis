@@ -210,7 +210,8 @@ export default function PrDetailView({
           edge, letting diff content scroll up into the gap above the header.
           `data-pr-scroll` marks this element as the scroll pane so a collapsing
           file diff can re-anchor its header to the top (see PrFileDiffs'
-          `toggleViewed`); keep the attribute if this markup moves. */}
+          `toggleViewed`), files can expand on approach, and a jump can hold its
+          landing (`holdInPlace`); keep the attribute if this markup moves. */}
       <div ref={scrollPane} data-pr-scroll className="min-h-0 flex-1 overflow-y-auto px-6">
         <div className="space-y-5 py-5">
           {error && <p className="text-sm text-red-400">{error}</p>}

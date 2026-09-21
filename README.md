@@ -760,8 +760,10 @@ copy buttons sit beside each filename — the repo-relative path, for an editor 
 a prompt, and the provider's link to that file at the commit the PR points at,
 for anyone you're pasting to (see "Copy buttons"). Both are always shown in the
 diff header, and appear in the file list on hovering a row, where only the
-basename is visible. Clicking a row scrolls its diff into view and flashes the
-file's header, so a jump lands somewhere you can see it arrived. A row whose
+basename is visible. Clicking a row opens its diff — even one marked viewed or
+folded away — jumps straight to it and flashes the file's header, so you can see
+where it arrived. The landing holds in place for a moment while files above it
+finish opening, and lets go as soon as you scroll. A row whose
 file has review comments shows a speech bubble with their count — replies and
 resolved threads included, the same comments you'll find in that file's diff.
 

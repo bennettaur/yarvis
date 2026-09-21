@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createElement, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { holdInPlace } from "./holdInPlace";
 import { EXPAND_AHEAD_PX, useExpandOnApproach } from "./useExpandOnApproach";
 
 /**
@@ -141,6 +142,30 @@ describe("useExpandOnApproach", () => {
     installFakeObserver();
     await mount(true, () => {});
     expect(observers[0]!.options?.root).toBe(null);
+  });
+
+  // A jump's hold corrects the pane's scroll, which would otherwise sweep more
+  // files into reach; they open once it lets go instead.
+  it("stops observing while a jump holds its landing, and observes again after", async () => {
+    installFakeObserver();
+    let approached = 0;
+    await mount(true, () => approached++, "<div data-pr-scroll></div>");
+    const target = host?.querySelector("[data-pr-scroll] > div") as HTMLElement;
+
+    const release = holdInPlace(target);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(observers).toHaveLength(1);
+    expect(observers[0]?.disconnected).toBe(true);
+
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // A fresh observer, not the old one resumed: observing again is what reports
+    // where a file stands now, rather than only what changed since.
+    expect(observers).toHaveLength(2);
+    expect(observers[1]?.disconnected).toBe(false);
+
+    fire(observers[1]!, true);
+    expect(approached).toBe(1);
   });
 
   it("does nothing when the environment has no IntersectionObserver", async () => {

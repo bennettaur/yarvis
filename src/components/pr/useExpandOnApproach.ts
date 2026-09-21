@@ -1,4 +1,5 @@
-import { type RefObject, useEffect, useRef } from "react";
+import { type RefObject, useEffect, useRef, useSyncExternalStore } from "react";
+import { expansionPaused, subscribeExpansionPause } from "./holdInPlace";
 
 /** How far below the review pane a file starts opening, in pixels. */
 export const EXPAND_AHEAD_PX = 600;
@@ -15,6 +16,12 @@ export const EXPAND_AHEAD_PX = 600;
  * file the reader has already scrolled past would grow the page above them and
  * shove the line they were reading off screen.
  *
+ * A jump holding its landing (see {@link holdInPlace}) pauses this entirely.
+ * The observer is torn down for the hold and built again after, because an
+ * `IntersectionObserver` reports changes: one left running would have nothing
+ * to report for a file that came into reach while paused, whereas observing
+ * afresh reports where everything stands now.
+ *
  * Pass `enabled: false` once the element has nothing left to reveal; the
  * observer is torn down rather than left running for the rest of the review.
  */
@@ -28,12 +35,14 @@ export function useExpandOnApproach(
   const handler = useRef(onApproach);
   handler.current = onApproach;
 
+  const paused = useSyncExternalStore(subscribeExpansionPause, expansionPaused, () => false);
+
   useEffect(() => {
     const el = ref.current;
     // happy-dom (the test environment) has no IntersectionObserver, and neither
     // does any environment without a viewport. Approach is a scroll affordance;
     // with no scrolling there is nothing to respond to.
-    if (!enabled || !el || typeof IntersectionObserver === "undefined") return;
+    if (!enabled || paused || !el || typeof IntersectionObserver === "undefined") return;
     const observer = new IntersectionObserver(
       (entries) => {
         if (!entries.some((e) => e.isIntersecting)) return;
@@ -47,5 +56,5 @@ export function useExpandOnApproach(
     );
     observer.observe(el);
     return () => observer.disconnect();
-  }, [ref, enabled]);
+  }, [ref, enabled, paused]);
 }
