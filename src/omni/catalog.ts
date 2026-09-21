@@ -165,7 +165,7 @@ export const catalog = defineCatalog(schema, {
     PrFileList: {
       props: prRef,
       description:
-        "Collapsible folder tree of a pull request's changed files (with +/− counts); clicking a file scrolls to its diff. Pairs with PrFileDiffs for the same owner/repo/number.",
+        "Collapsible folder tree of a pull request's changed files (with +/− and review-comment counts); clicking a file scrolls to its diff. Pairs with PrFileDiffs for the same owner/repo/number.",
     },
     PrFileDiffs: {
       props: prRef,
