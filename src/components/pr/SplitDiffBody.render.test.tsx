@@ -106,6 +106,13 @@ describe("SplitDiffBody", () => {
     expect(html).toContain("bg-zinc-900/40");
   });
 
+  // Issue #296: a diff is rendered at full height, so it has nothing of its own
+  // to scroll vertically.
+  it("leaves vertical scrolling to the review pane", async () => {
+    const html = await render(["@@ -1,1 +1,1 @@", "+a"].join("\n"));
+    expect(html).toContain("overflow-y-hidden");
+  });
+
   const CONTAINER_MARKER = "font-sans";
 
   it("renders no comment container on lines without comments", async () => {

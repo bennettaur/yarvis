@@ -80,7 +80,10 @@ export function DiffBody({
   const syntax = useSyntaxHighlight(prRef, file.filename, file.patch ?? "", headSha);
 
   return (
-    <div className="relative overflow-x-auto rounded-b-lg bg-zinc-950 font-mono text-xs leading-relaxed">
+    // `overflow-y-hidden` because `overflow-x-auto` alone computes y to `auto`,
+    // turning every file into a vertical scroller that swallows the first wheel
+    // gesture before it reaches the review pane.
+    <div className="relative overflow-x-auto overflow-y-hidden rounded-b-lg bg-zinc-950 font-mono text-xs leading-relaxed">
       {expansion.rows.map((item, i) => {
         if (item.kind === "gap") {
           return (

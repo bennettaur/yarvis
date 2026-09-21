@@ -35,8 +35,11 @@ export function changeBands(rows: ExpandedRow[], totalLines: number): Band[] {
 
   const close = () => {
     if (start === null) return;
-    const top = ((start - 1) / totalLines) * 100;
-    bands.push({ top, height: Math.max(((end - start + 1) / totalLines) * 100, MIN_BAND), added });
+    const height = Math.max(((end - start + 1) / totalLines) * 100, MIN_BAND);
+    // Pulled up so a floored band at the end of the file stays inside the strip;
+    // spilling past it would give the diff body vertical overflow to scroll.
+    const top = Math.min(((start - 1) / totalLines) * 100, 100 - height);
+    bands.push({ top, height, added });
     start = null;
     added = false;
   };
@@ -94,9 +97,10 @@ export default function ChangeMinimap({
       title={`${bands.length} changed ${bands.length === 1 ? "region" : "regions"} across ${totalLines} lines`}
       className="pointer-events-none absolute inset-y-0 right-0 w-1.5 bg-zinc-900/60"
     >
-      {bands.map((band) => (
+      {bands.map((band, i) => (
         <div
-          key={`${band.top}-${band.height}`}
+          // biome-ignore lint/suspicious/noArrayIndexKey: bands clamped to the strip's end can share a position, and the list is rebuilt whole from the rows
+          key={i}
           style={{ top: `${band.top}%`, height: `${band.height}%` }}
           className={`absolute inset-x-0 ${band.added ? "bg-emerald-500/70" : "bg-red-500/70"}`}
         />
