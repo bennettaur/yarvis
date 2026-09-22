@@ -49,15 +49,28 @@ const RUNS = [
 /** Paths the panel asked for, so a test can assert what it did. */
 const requested: string[] = [];
 
+/** Bodies the panel sent, so a write test can read what it submitted. */
+const sent: unknown[] = [];
+/** Set by a test that wants the next write to fail. */
+let writeFailure: string | null = null;
+
 mock.module("../lib/api", () => ({
   sidecarInfo: async () => ({ port: 0, token: "test-token" }),
   sidecarFetch: async (path: string, init?: RequestInit) => {
-    requested.push(`${init?.method ?? "GET"} ${path}`);
-    const json = (body: unknown) =>
+    const method = init?.method ?? "GET";
+    requested.push(`${method} ${path}`);
+    const json = (body: unknown, status = 200) =>
       new Response(JSON.stringify(body), {
-        status: 200,
+        status,
         headers: { "content-type": "application/json" },
       });
+    if (method !== "GET" && !path.endsWith("/run")) {
+      if (typeof init?.body === "string") sent.push(JSON.parse(init.body));
+      if (writeFailure) return json({ error: writeFailure }, 409);
+      if (method === "DELETE") return json({ deleted: true });
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
+      return json({ job: { ...JOB, ...body } }, method === "POST" ? 201 : 200);
+    }
     if (path.endsWith("/runs")) return json({ runs: RUNS });
     if (path.endsWith("/run")) return json({ ran: true, status: "ok", detail: "done" });
     if (path.startsWith("/api/specialists")) {
@@ -83,7 +96,32 @@ const ScheduledJobsPanel = (await import("./ScheduledJobsPanel")).default;
 afterEach(() => {
   clearResourceCache();
   requested.length = 0;
+  sent.length = 0;
+  writeFailure = null;
 });
+
+/** Clicks the first button whose label contains `label`. */
+function click(host: HTMLElement, label: string): void {
+  [...host.querySelectorAll("button")].find((b) => b.textContent?.includes(label))?.click();
+}
+
+/** Types into the input or textarea whose placeholder contains `placeholder`. */
+function type(host: HTMLElement, placeholder: string, value: string): void {
+  const field = [...host.querySelectorAll("input, textarea")].find((f) =>
+    (f as HTMLInputElement).placeholder?.includes(placeholder),
+  ) as HTMLInputElement | HTMLTextAreaElement | undefined;
+  if (!field) throw new Error(`no field with placeholder ${placeholder}`);
+  const setter = Object.getOwnPropertyDescriptor(
+    field instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype
+      : HTMLInputElement.prototype,
+    "value",
+  )?.set;
+  setter?.call(field, value);
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+const settle = (ms = 80) => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe("ScheduledJobsPanel", () => {
   it("lists each job with its agent and when it next runs", async () => {
@@ -137,6 +175,102 @@ describe("ScheduledJobsPanel", () => {
 
       expect(requested).toContain(`POST /api/jobs/agent-jobs/${JOB.id}/run`);
       expect(host.textContent).toContain("Finished.");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("creates a job from the editor", async () => {
+    const { host, unmount } = await mountForInteraction(createElement(ScheduledJobsPanel));
+    try {
+      click(host, "New job");
+      await settle(40);
+      type(host, "Morning sweep", "Nightly audit");
+      type(host, "What the agent should do", "check the release notes");
+      await settle(40);
+      click(host, "Create job");
+      await settle();
+
+      expect(requested).toContain("POST /api/jobs/agent-jobs");
+      expect(sent[0]).toMatchObject({ name: "Nightly audit", prompt: "check the release notes" });
+    } finally {
+      unmount();
+    }
+  });
+
+  it("refuses to submit a job with no prompt", async () => {
+    const { host, unmount } = await mountForInteraction(createElement(ScheduledJobsPanel));
+    try {
+      click(host, "New job");
+      await settle(40);
+      type(host, "Morning sweep", "Nameless");
+      await settle(40);
+      const create = [...host.querySelectorAll("button")].find(
+        (b) => b.textContent === "Create job",
+      ) as HTMLButtonElement;
+      expect(create.disabled).toBe(true);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("saves an edit to an existing job", async () => {
+    const { host, unmount } = await mountForInteraction(createElement(ScheduledJobsPanel));
+    try {
+      click(host, "Morning sweep");
+      await settle();
+      click(host, "Save changes");
+      await settle();
+      expect(requested).toContain(`PUT /api/jobs/agent-jobs/${JOB.id}`);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("shows why a save was refused", async () => {
+    const { host, unmount } = await mountForInteraction(createElement(ScheduledJobsPanel));
+    try {
+      click(host, "Morning sweep");
+      await settle();
+      writeFailure = "a job with that name already exists";
+      click(host, "Save changes");
+      await settle();
+      expect(host.textContent).toContain("a job with that name already exists");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("asks twice before deleting a job", async () => {
+    const { host, unmount } = await mountForInteraction(createElement(ScheduledJobsPanel));
+    try {
+      click(host, "Morning sweep");
+      await settle();
+      click(host, "Delete");
+      await settle(40);
+      expect(requested.some((r) => r.startsWith("DELETE"))).toBe(false);
+      click(host, "Delete for good?");
+      await settle();
+      expect(requested).toContain(`DELETE /api/jobs/agent-jobs/${JOB.id}`);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("warns when a headless job is set to ask for nothing", async () => {
+    const { host, unmount } = await mountForInteraction(createElement(ScheduledJobsPanel));
+    try {
+      click(host, "Repo audit");
+      await settle();
+      expect(host.textContent).not.toContain("unsupervised");
+
+      const select = [...host.querySelectorAll("select")].find((s) =>
+        [...s.options].some((o) => o.value === "bypassPermissions"),
+      ) as HTMLSelectElement;
+      select.value = "bypassPermissions";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      await settle(40);
+      expect(host.textContent).toContain("unsupervised");
     } finally {
       unmount();
     }

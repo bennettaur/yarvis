@@ -1,11 +1,12 @@
-import { describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import type { AgentJobTarget } from "./agentJobs.ts";
 import {
+  claudeProgram,
   createClaudeCodeRunner,
   parseClaudeOutput,
   programOf,
@@ -15,6 +16,27 @@ import {
 
 const config = {} as Config;
 const db = {} as Db;
+
+// The program is read from `~/.yarvis/settings.json`; point the whole suite at a
+// temporary one so it neither reads nor depends on the developer's own.
+let settingsDir: string;
+const previousSettingsPath = process.env.YARVIS_SETTINGS_PATH;
+
+beforeEach(() => {
+  settingsDir = mkdtempSync(join(tmpdir(), "yarvis-runners-settings-"));
+  process.env.YARVIS_SETTINGS_PATH = join(settingsDir, "settings.json");
+});
+
+afterEach(() => {
+  if (previousSettingsPath === undefined) delete process.env.YARVIS_SETTINGS_PATH;
+  else process.env.YARVIS_SETTINGS_PATH = previousSettingsPath;
+  rmSync(settingsDir, { recursive: true, force: true });
+});
+
+/** Writes an `agentCommand` into the suite's temporary settings file. */
+function writeAgentCommand(command: string): void {
+  writeFileSync(join(settingsDir, "settings.json"), JSON.stringify({ agentCommand: command }));
+}
 
 function claudeTarget(cwd: string): AgentJobTarget {
   return { kind: "claude-code", cwd, model: null, permissionMode: null };
@@ -75,6 +97,17 @@ describe("the working directory", () => {
   });
 });
 
+describe("the program a job launches", () => {
+  it("falls back to claude when nothing is configured", async () => {
+    expect(await claudeProgram()).toBe("claude");
+  });
+
+  it("takes the configured build, without the flags meant for a terminal", async () => {
+    writeAgentCommand("/opt/claude-next --permission-mode auto");
+    expect(await claudeProgram()).toBe("/opt/claude-next");
+  });
+});
+
 describe("the Claude Code runner", () => {
   const dir = mkdtempSync(join(tmpdir(), "yarvis-job-run-"));
 
@@ -89,13 +122,27 @@ describe("the Claude Code runner", () => {
       signal: AbortSignal.timeout(1_000),
     });
     expect(result.output).toBe("ok");
-    expect(fake.calls[0].args).toEqual([
+    expect(fake.calls[0].args.slice(0, 4)).toEqual([
       "-p",
       "check the deploy; rm -rf /",
       "--output-format",
       "json",
     ]);
     expect(fake.calls[0].cwd).toBe(dir);
+  });
+
+  it("denies the headless run the MCP servers and the delegation tool", async () => {
+    const fake = fakeLauncher({ code: 0, stdout: '{"result":"ok"}', stderr: "" });
+    await createClaudeCodeRunner(fake.launch)({
+      config,
+      db,
+      target: claudeTarget(dir),
+      prompt: "go",
+      signal: AbortSignal.timeout(1_000),
+    });
+    expect(fake.calls[0].args).toContain("--strict-mcp-config");
+    expect(fake.calls[0].args).toContain("--disallowed-tools");
+    expect(fake.calls[0].args).toContain("Task");
   });
 
   it("adds the model and permission mode when the job sets them", async () => {

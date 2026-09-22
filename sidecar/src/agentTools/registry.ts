@@ -67,6 +67,25 @@ function builtinDescriptors(): ToolDescriptor[] {
 }
 
 /**
+ * The built-in tools in the families carried in every turn by default — the
+ * user's tasks, memory, projects, todos, the activity log, the planner.
+ *
+ * Exported for a caller that has to compose a tool list without a definition
+ * file to read one from (a scheduled job that names no specialist): starting
+ * from the always-on families gives it the surface a turn already has, rather
+ * than every built-in there is. Delegation is left out — no unattended run may
+ * delegate — and the caller still filters for what needs an explicit grant.
+ */
+export function alwaysOnBuiltinToolNames(): string[] {
+  const names: string[] = [];
+  for (const [family, tools] of Object.entries(builtinToolMetadataByFamily())) {
+    if (FAMILY_POLICY[family] !== "always" || family === "delegation") continue;
+    names.push(...Object.keys(tools));
+  }
+  return names;
+}
+
+/**
  * Maps between a built-in tool's name — what an agent definition file writes —
  * and its registry id.
  */

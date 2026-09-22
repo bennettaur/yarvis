@@ -2,9 +2,11 @@ import { useState } from "react";
 import type { Specialist } from "../../lib/agents";
 import {
   type AgentJobKind,
-  type ClaudePermissionMode,
-  cronPresets,
+  type AgentJobTarget,
+  CLAUDE_PERMISSION_MODES,
+  CRON_PRESETS,
   type ScheduledJobInput,
+  UNATTENDED_PERMISSION_MODES,
 } from "../../lib/scheduledJobs";
 
 /**
@@ -16,18 +18,84 @@ import {
  * fields swap rather than both being shown greyed out.
  */
 
-const PERMISSION_MODES: ClaudePermissionMode[] = [
-  "acceptEdits",
-  "auto",
-  "bypassPermissions",
-  "manual",
-  "dontAsk",
-  "plan",
-];
-
 const FIELD =
   "w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-zinc-600 focus:outline-none";
 const LABEL = "block text-xs font-medium uppercase tracking-wide text-zinc-500";
+
+type ClaudeTarget = Extract<AgentJobTarget, { kind: "claude-code" }>;
+
+/**
+ * What a Claude Code job needs beyond its prompt. Split out so the target is
+ * narrowed once, by the caller's branch, rather than re-asserted in every
+ * handler.
+ */
+function ClaudeCodeFields({
+  target,
+  onChange,
+}: {
+  target: ClaudeTarget;
+  onChange: (next: ClaudeTarget) => void;
+}) {
+  const unattended = target.permissionMode
+    ? UNATTENDED_PERMISSION_MODES.has(target.permissionMode)
+    : false;
+
+  return (
+    <div className="grid gap-3 sm:grid-cols-2">
+      <label className="space-y-1 sm:col-span-2">
+        <span className={LABEL}>Working directory</span>
+        <input
+          className={FIELD}
+          value={target.cwd}
+          placeholder="/Users/you/dev/project"
+          onChange={(e) => onChange({ ...target, cwd: e.target.value })}
+        />
+      </label>
+      <label className="space-y-1">
+        <span className={LABEL}>Model</span>
+        <input
+          className={FIELD}
+          value={target.model ?? ""}
+          placeholder="default"
+          onChange={(e) => onChange({ ...target, model: e.target.value || null })}
+        />
+      </label>
+      <label className="space-y-1">
+        <span className={LABEL}>Permissions</span>
+        <select
+          className={FIELD}
+          value={target.permissionMode ?? ""}
+          onChange={(e) =>
+            onChange({
+              ...target,
+              permissionMode:
+                CLAUDE_PERMISSION_MODES.find((mode) => mode === e.target.value) ?? null,
+            })
+          }
+        >
+          <option value="">Claude Code's default</option>
+          {CLAUDE_PERMISSION_MODES.map((mode) => (
+            <option key={mode} value={mode}>
+              {mode}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="text-xs text-zinc-500 sm:col-span-2">
+        The session runs headless with nobody to answer a permission prompt, so it can only do what
+        this mode allows without asking. It starts in this directory as you, and reads the
+        directory's own Claude Code configuration — point it somewhere you trust.
+      </p>
+      {unattended ? (
+        <p className="rounded-lg border border-amber-900 bg-amber-950/40 px-3 py-2 text-xs text-amber-200 sm:col-span-2">
+          This mode asks for nothing at all: on every scheduled run the agent can edit files and run
+          commands in that directory unsupervised, including whatever a file it reads there tells it
+          to.
+        </p>
+      ) : null}
+    </div>
+  );
+}
 
 export interface JobEditorProps {
   value: ScheduledJobInput;
@@ -71,10 +139,6 @@ export default function JobEditor({
 
   const canSave = Boolean(value.name.trim() && value.cron.trim() && value.prompt.trim()) && !saving;
 
-  // Narrowed once here: inside a JSX callback the union widens again, and every
-  // spread of it would have to be re-asserted.
-  const claude = value.target.kind === "claude-code" ? value.target : null;
-
   return (
     <div className="space-y-4">
       {error ? (
@@ -105,7 +169,7 @@ export default function JobEditor({
       </div>
 
       <div className="flex flex-wrap gap-2">
-        {cronPresets().map((preset) => (
+        {CRON_PRESETS.map((preset) => (
           <button
             key={preset.cron}
             type="button"
@@ -172,59 +236,10 @@ export default function JobEditor({
             </select>
           </label>
         ) : (
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="space-y-1 sm:col-span-2">
-              <span className={LABEL}>Working directory</span>
-              <input
-                className={FIELD}
-                value={claude?.cwd ?? ""}
-                placeholder="/Users/you/dev/project"
-                onChange={(e) =>
-                  claude && onChange({ ...value, target: { ...claude, cwd: e.target.value } })
-                }
-              />
-            </label>
-            <label className="space-y-1">
-              <span className={LABEL}>Model</span>
-              <input
-                className={FIELD}
-                value={claude?.model ?? ""}
-                placeholder="default"
-                onChange={(e) =>
-                  claude &&
-                  onChange({ ...value, target: { ...claude, model: e.target.value || null } })
-                }
-              />
-            </label>
-            <label className="space-y-1">
-              <span className={LABEL}>Permissions</span>
-              <select
-                className={FIELD}
-                value={claude?.permissionMode ?? ""}
-                onChange={(e) =>
-                  claude &&
-                  onChange({
-                    ...value,
-                    target: {
-                      ...claude,
-                      permissionMode: (e.target.value || null) as ClaudePermissionMode | null,
-                    },
-                  })
-                }
-              >
-                <option value="">Claude Code's default</option>
-                {PERMISSION_MODES.map((mode) => (
-                  <option key={mode} value={mode}>
-                    {mode}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <p className="text-xs text-zinc-500 sm:col-span-2">
-              The session runs headless with nobody to answer a permission prompt, so it can only do
-              what this mode allows without asking.
-            </p>
-          </div>
+          <ClaudeCodeFields
+            target={value.target}
+            onChange={(target) => onChange({ ...value, target })}
+          />
         )}
       </div>
 

@@ -10,7 +10,6 @@ import {
   createAgentJob,
   deleteAgentJob,
   getAgentJob,
-  getAgentJobRun,
   jobSchedulerName,
   listAgentJobRuns,
   updateAgentJob,
@@ -37,6 +36,19 @@ const configSchema = z.object({
     )
     .max(200),
 });
+
+/**
+ * Whether a thrown value is Postgres's unique-violation. Drizzle wraps the
+ * driver error, so the code is on a `cause` rather than on what is caught.
+ */
+function isUniqueViolation(error: unknown): boolean {
+  for (let current: unknown = error, depth = 0; current && depth < 4; depth++) {
+    if (typeof current === "object" && (current as { code?: unknown }).code === "23505")
+      return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
 
 /**
  * A user-defined scheduled job, as the panel submits it.
@@ -68,7 +80,15 @@ const agentJobSchema = z.object({
       // to check anyway, and refusing to save a path that is temporarily
       // unmounted would be the wrong call.
       cwd: z.string().trim().min(1).max(1_000),
-      model: z.string().trim().max(200).nullish(),
+      // Constrained rather than free text: it becomes an argv element beside
+      // `--model`, and a value opening with a dash reads as another flag.
+      model: z
+        .string()
+        .trim()
+        .max(200)
+        .regex(/^[A-Za-z0-9._:-]*$/)
+        .refine((value) => !value.startsWith("-"), { message: "model cannot start with '-'" })
+        .nullish(),
       permissionMode: z.enum(CLAUDE_PERMISSION_MODES).nullish(),
     }),
   ]),
@@ -128,24 +148,52 @@ export function createJobRoutes(config: Config): Hono {
     return c.json({ config: await saveJobConfig(parsed.data) });
   });
 
+  // Ids land in a uuid column, so a malformed one would otherwise surface as a
+  // Postgres type error — a 500 carrying internal detail, for what is a bad
+  // request. Same guard the workspace routes use.
+  const uuidParam = (name: string): string | null =>
+    z.string().uuid().safeParse(name).success ? name : null;
+
+  /**
+   * Answers 409 for the unique name, rather than letting a duplicate surface as
+   * a Postgres error. Two jobs called "morning sweep" is ordinary use.
+   */
+  const saved = async <T>(write: () => Promise<T>): Promise<T | "duplicate-name"> => {
+    try {
+      return await write();
+    } catch (e) {
+      if (isUniqueViolation(e)) return "duplicate-name";
+      throw e;
+    }
+  };
+
   router.get("/agent-jobs", async (c) => c.json({ jobs: await agentJobStatuses(db()) }));
 
   router.post("/agent-jobs", async (c) => {
     const parsed = agentJobSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    return c.json({ job: await createAgentJob(db(), toInput(parsed.data)) }, 201);
+    const job = await saved(() => createAgentJob(db(), toInput(parsed.data)));
+    if (job === "duplicate-name")
+      return c.json({ error: "a job with that name already exists" }, 409);
+    return c.json({ job }, 201);
   });
 
   router.put("/agent-jobs/:id", async (c) => {
+    const id = uuidParam(c.req.param("id"));
+    if (!id) return c.json({ error: "invalid job id" }, 400);
     const parsed = agentJobSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const job = await updateAgentJob(db(), c.req.param("id"), toInput(parsed.data));
+    const job = await saved(() => updateAgentJob(db(), id, toInput(parsed.data)));
+    if (job === "duplicate-name")
+      return c.json({ error: "a job with that name already exists" }, 409);
     if (!job) return c.json({ error: "unknown job" }, 404);
     return c.json({ job });
   });
 
   router.delete("/agent-jobs/:id", async (c) => {
-    const deleted = await deleteAgentJob(db(), c.req.param("id"));
+    const id = uuidParam(c.req.param("id"));
+    if (!id) return c.json({ error: "invalid job id" }, 400);
+    const deleted = await deleteAgentJob(db(), id);
     if (!deleted) return c.json({ error: "unknown job" }, 404);
     return c.json({ deleted: true });
   });
@@ -153,22 +201,20 @@ export function createJobRoutes(config: Config): Hono {
   // The runs a job has had, newest first. The output itself rides along: a run's
   // answer is the reason the history exists, and the panel shows it inline.
   router.get("/agent-jobs/:id/runs", async (c) => {
-    const job = await getAgentJob(db(), c.req.param("id"));
+    const id = uuidParam(c.req.param("id"));
+    if (!id) return c.json({ error: "invalid job id" }, 400);
+    const job = await getAgentJob(db(), id);
     if (!job) return c.json({ error: "unknown job" }, 404);
     return c.json({ runs: await listAgentJobRuns(db(), job.id) });
-  });
-
-  router.get("/agent-jobs/runs/:runId", async (c) => {
-    const run = await getAgentJobRun(db(), c.req.param("runId"));
-    if (!run) return c.json({ error: "unknown run" }, 404);
-    return c.json({ run });
   });
 
   // Runs a user's job now, schedule or not — trying a job before putting it on
   // one is the point. The outcome includes "busy" when the job is already in
   // flight: a second copy is refused by the lease, not queued.
   router.post("/agent-jobs/:id/run", async (c) => {
-    const definition = await findAnyJob(db(), jobSchedulerName(c.req.param("id")));
+    const id = uuidParam(c.req.param("id"));
+    if (!id) return c.json({ error: "invalid job id" }, 400);
+    const definition = await findAnyJob(db(), jobSchedulerName(id));
     if (!definition) return c.json({ error: "unknown job" }, 404);
     const result = await runJob(definition, config, db(), new Date(), "manual");
     return c.json(result, result.status === "busy" ? 409 : 200);

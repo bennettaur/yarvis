@@ -1,6 +1,7 @@
 import { and, desc, eq, lt, sql } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import {
+  jobRuns,
   type NewScheduledJob,
   type ScheduledJob,
   type ScheduledJobRun,
@@ -10,7 +11,7 @@ import {
 import { redactSecrets } from "../llm/errors.ts";
 import { isValidCron, nextCronRun } from "./cron.ts";
 import { type AgentJobRunner, defaultRunners, type RunnerSet } from "./runners.ts";
-import type { JobContext, JobDefinition, JobResult } from "./scheduler.ts";
+import type { JobContext, JobDefinition, JobResult, JobTrigger } from "./scheduler.ts";
 
 /**
  * User-defined scheduled jobs: a cron schedule, a prompt, and the agent that
@@ -63,6 +64,14 @@ export type AgentJobTarget =
       permissionMode: ClaudePermissionMode | null;
     };
 
+/**
+ * Specialist name given to a row whose `agentKind` is not one this build knows.
+ * No specialist can be called this (`findSpecialist` reads file names), so the
+ * run fails with a readable error instead of falling through to a backend the
+ * row never asked for.
+ */
+export const UNREADABLE_TARGET = "\u0000unreadable";
+
 /** A stored job with its config read back as a target. */
 export interface AgentJob extends Omit<ScheduledJob, "agentKind" | "agentConfig"> {
   target: AgentJobTarget;
@@ -82,8 +91,10 @@ export interface AgentJobInput {
  *
  * Tolerant by design: the column is jsonb, and a row written by an older build
  * (or edited by hand) must still list and still be deletable rather than
- * breaking the whole panel. A shape that can't be understood becomes a yarvis
- * job with no specialist, which is the least-privileged interpretation.
+ * breaking the whole panel. A shape that can't be understood reads as a yarvis
+ * job with an empty specialist name, which `runYarvisJob` refuses to run — a row
+ * nobody can interpret is listed and deletable but never executed, rather than
+ * silently running against the default agent's whole tool surface.
  */
 export function readTarget(kind: string, config: Record<string, unknown>): AgentJobTarget {
   if (kind === "claude-code") {
@@ -97,6 +108,7 @@ export function readTarget(kind: string, config: Record<string, unknown>): Agent
         : null,
     };
   }
+  if (kind !== "yarvis") return { kind: "yarvis", specialist: UNREADABLE_TARGET };
   const specialist = config.specialist;
   return {
     kind: "yarvis",
@@ -137,23 +149,53 @@ export async function createAgentJob(db: Db, input: AgentJobInput): Promise<Agen
   return toAgentJob(row);
 }
 
+/**
+ * Saves an edit, and re-anchors the schedule when the edit changes what "due"
+ * means.
+ *
+ * `isCronDue` asks whether a firing fell between the last start and now, so a
+ * job paused for a month — or one whose expression just changed — would be due
+ * the instant it is saved, firing 08:45's prompt at 17:00. Stamping the lease's
+ * `lastStartedAt` at the moment of the edit makes the next firing the first one
+ * after it, which is the same rule a newly created job gets.
+ */
 export async function updateAgentJob(
   db: Db,
   id: string,
   input: AgentJobInput,
 ): Promise<AgentJob | null> {
+  const before = await getAgentJob(db, id);
   const [row] = await db
     .update(scheduledJobs)
     .set({ ...toRow(input), updatedAt: new Date() })
     .where(eq(scheduledJobs.id, id))
     .returning();
-  return row ? toAgentJob(row) : null;
+  if (!row) return null;
+  const resumed = before ? !before.enabled && input.enabled : false;
+  const rescheduled = before ? before.cron !== input.cron : false;
+  if (resumed || rescheduled) await anchorSchedule(db, id);
+  return toAgentJob(row);
 }
 
-/** Deletes a job and, by the runs table's cascade, its history. */
+/** Moves a job's schedule anchor to now without recording a run. */
+async function anchorSchedule(db: Db, id: string, now: Date = new Date()): Promise<void> {
+  const name = jobSchedulerName(id);
+  await db
+    .insert(jobRuns)
+    .values({ name, lastStartedAt: now, updatedAt: now })
+    .onConflictDoUpdate({ target: jobRuns.name, set: { lastStartedAt: now, updatedAt: now } });
+}
+
+/**
+ * Deletes a job, its history (by the runs table's cascade), and its lease row —
+ * which has no foreign key to cascade through, so a delete that skipped it would
+ * leave `job_runs` accumulating names that resolve to nothing.
+ */
 export async function deleteAgentJob(db: Db, id: string): Promise<boolean> {
   const rows = await db.delete(scheduledJobs).where(eq(scheduledJobs.id, id)).returning();
-  return rows.length > 0;
+  if (rows.length === 0) return false;
+  await db.delete(jobRuns).where(eq(jobRuns.name, jobSchedulerName(id)));
+  return true;
 }
 
 /** Most recent runs first. */
@@ -174,8 +216,6 @@ export async function getAgentJobRun(db: Db, runId: string): Promise<ScheduledJo
   const [row] = await db.select().from(scheduledJobRuns).where(eq(scheduledJobRuns.id, runId));
   return row ?? null;
 }
-
-export type JobTrigger = "schedule" | "manual";
 
 /** Opens a run row so a job in flight is visible before it finishes. */
 export async function startAgentJobRun(
@@ -244,12 +284,29 @@ export async function failStaleRuns(db: Db, jobId: string, olderThan: Date): Pro
 /** Runs kept per job; older ones are dropped as new ones are recorded. */
 export const MAX_RUNS_KEPT = 100;
 
+/**
+ * How long a run is kept regardless of the count. An answer can quote whatever
+ * the agent read — file contents, a ticket, an inbox — so a weekly job should
+ * not still be holding what it saw two years ago merely because it has run
+ * fewer than {@link MAX_RUNS_KEPT} times.
+ */
+export const MAX_RUN_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+
 /** Drops a job's oldest runs beyond {@link MAX_RUNS_KEPT}. */
 export async function pruneAgentJobRuns(
   db: Db,
   jobId: string,
   keep = MAX_RUNS_KEPT,
+  now: Date = new Date(),
 ): Promise<void> {
+  await db
+    .delete(scheduledJobRuns)
+    .where(
+      and(
+        eq(scheduledJobRuns.jobId, jobId),
+        lt(scheduledJobRuns.startedAt, new Date(now.getTime() - MAX_RUN_AGE_MS)),
+      ),
+    );
   await db.delete(scheduledJobRuns).where(
     and(
       eq(scheduledJobRuns.jobId, jobId),
@@ -323,7 +380,13 @@ async function runAgentJob(
   timeoutMs: number,
 ): Promise<JobResult> {
   await failStaleRuns(ctx.db, job.id, new Date(ctx.now.getTime() - timeoutMs));
-  const run = await startAgentJobRun(ctx.db, job.id, ctx.trigger ?? "schedule", ctx.now);
+  const run = await startAgentJobRun(ctx.db, job.id, ctx.trigger, ctx.now);
+  if (job.target.kind === "yarvis" && job.target.specialist === UNREADABLE_TARGET) {
+    const message =
+      "this job's agent configuration was written by another version and can't be read";
+    await finishAgentJobRun(ctx.db, run.id, { status: "error", error: message });
+    throw new Error(message);
+  }
   const runner: AgentJobRunner = runners[job.target.kind];
   try {
     const result = await runner({
@@ -364,12 +427,17 @@ export async function agentJobStatuses(db: Db, now: Date = new Date()): Promise<
   return Promise.all(
     jobs.map(async (job) => {
       const [lastRun] = await listAgentJobRuns(db, job.id, 1);
+      // A run row is closed by the job's *next* run, so a job that was
+      // interrupted and then paused would otherwise read "running" forever. Past
+      // the timeout it cannot still be going, whatever the row says.
+      const stale =
+        lastRun?.startedAt && now.getTime() - lastRun.startedAt.getTime() > RUN_TIMEOUT_MS;
       return {
         job,
         cronValid: isValidCron(job.cron),
         nextRunAt: job.enabled ? nextCronRun(job.cron, now) : null,
         lastRun: lastRun ?? null,
-        running: lastRun?.status === "running",
+        running: lastRun?.status === "running" && !stale,
       };
     }),
   );

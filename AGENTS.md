@@ -387,9 +387,16 @@ back to ad-hoc.
     has nobody watching it and its whole product is the text it answers with,
     which a PTY session has no way to hand back. Its prompt and directory reach
     the child as argv with no shell, and the directory is checked to be an
-    existing absolute path before anything is spawned. Output is redacted and
-    truncated before it is stored — it is model-composed text that is kept and
-    displayed, the same class of string as the error text `runJob` redacts.
+    existing absolute path before anything is spawned. The child is given a
+    built environment rather than the sidecar's: that one holds the provider
+    keys and `YARVIS_SIDECAR_TOKEN`, and the loopback API it opens now includes
+    the route that creates scheduled jobs — a run that followed an instruction
+    planted in the directory it was pointed at could otherwise write itself a
+    new job. `--strict-mcp-config` and `--disallowed-tools Task` hold the same
+    two lines `selectTools` holds for an in-app run: no MCP tools, no
+    delegation. Output goes through `redactSecrets` (credential *shapes*, not
+    general scrubbing) and is truncated before it is stored — it is
+    model-composed text that is kept and displayed.
 - Delegation is files, not rows. A specialist (`sidecar/src/agents/`) is a
   markdown file: frontmatter for its tools, model (or complexity tier — see
   `sidecar/src/llm/complexity.ts`) and step budget, body as its system prompt.

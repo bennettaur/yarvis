@@ -12,6 +12,11 @@ import { dirname, join } from "node:path";
  * touched only by its own section, so a read-modify-write here never clobbers
  * the core's fields (or another section's) even though they live in one file.
  *
+ * One core-owned key is *read* through here and never written: `agentCommand`,
+ * so a scheduled Claude Code job launches the same build as the core's PTY
+ * sessions (`jobs/runners.ts`). A read cannot clobber anything, which is what
+ * keeps the rule above intact.
+ *
  * This is a straight port of the read-modify-write discipline
  * `src-tauri/src/settings.rs` and `src-tauri/src/custom_providers.rs` already
  * use for the Keychain blob: read the whole document, mutate only the one

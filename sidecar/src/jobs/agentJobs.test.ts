@@ -103,12 +103,13 @@ describe("storing a scheduled agent job", () => {
   });
 });
 
-describe("running a scheduled agent job", () => {
-  async function run(job: AgentJob, runner: AgentJobRunner, trigger: "schedule" | "manual") {
-    const definition = toJobDefinition(job, { runners: runners(runner) });
-    return runJob(definition, config, db, new Date(), trigger);
-  }
+/** Runs a job through the scheduler with a runner that answers immediately. */
+async function run(job: AgentJob, runner: AgentJobRunner, trigger: "schedule" | "manual") {
+  const definition = toJobDefinition(job, { runners: runners(runner) });
+  return runJob(definition, config, db, new Date(), trigger);
+}
 
+describe("running a scheduled agent job", () => {
   it("records the agent's answer as the run's output", async () => {
     const job = await createAgentJob(db, input());
     const result = await run(job, async () => ({ output: "three PRs need review" }), "manual");
@@ -179,6 +180,76 @@ describe("running a scheduled agent job", () => {
   });
 });
 
+describe("a stored config this build can't read", () => {
+  it("lists but refuses to run, rather than falling back to the widest agent", async () => {
+    const job = await createAgentJob(db, input());
+    await sql`update scheduled_jobs set agent_kind = 'somebody-elses-agent' where id = ${job.id}`;
+
+    const [listed] = await listAgentJobs(db);
+    expect(listed.target.kind).toBe("yarvis");
+
+    const definition = toJobDefinition(listed, {
+      runners: runners(async () => ({ output: "should never run" })),
+    });
+    const result = await runJob(definition, config, db, new Date(), "manual");
+    expect(result.status).toBe("error");
+    const [stored] = await listAgentJobRuns(db, job.id);
+    expect(stored.error).toContain("can't be read");
+  });
+});
+
+describe("what a run stores", () => {
+  it("scrubs a credential out of the agent's answer before keeping it", async () => {
+    const job = await createAgentJob(db, input());
+    const definition = toJobDefinition(job, {
+      runners: runners(async () => ({
+        output: "the deploy used authorization: bearer abc123def456secret",
+      })),
+    });
+    await runJob(definition, config, db, new Date(), "manual");
+
+    const [stored] = await listAgentJobRuns(db, job.id);
+    expect(stored.output).not.toContain("abc123def456secret");
+    expect(stored.output).toContain("[redacted]");
+  });
+});
+
+describe("editing a job", () => {
+  it("re-anchors the schedule when a paused job is switched back on", async () => {
+    const job = await createAgentJob(db, input({ enabled: false, cron: "0 9 * * *" }));
+    // A month-old start would otherwise make the 09:00 firing overdue the
+    // instant the job is re-enabled.
+    await sql`insert into job_runs (name, last_started_at, updated_at)
+              values (${jobSchedulerName(job.id)}, now() - interval '30 days', now())`;
+
+    await updateAgentJob(db, job.id, input({ enabled: true, cron: "0 9 * * *" }));
+
+    const [lease] =
+      await sql`select last_started_at from job_runs where name = ${jobSchedulerName(job.id)}`;
+    expect(Date.now() - new Date(lease.last_started_at).getTime()).toBeLessThan(60_000);
+  });
+
+  it("re-anchors when the schedule itself changes", async () => {
+    const job = await createAgentJob(db, input());
+    await sql`insert into job_runs (name, last_started_at, updated_at)
+              values (${jobSchedulerName(job.id)}, now() - interval '30 days', now())`;
+
+    await updateAgentJob(db, job.id, input({ cron: "0 18 * * *" }));
+
+    const [lease] =
+      await sql`select last_started_at from job_runs where name = ${jobSchedulerName(job.id)}`;
+    expect(Date.now() - new Date(lease.last_started_at).getTime()).toBeLessThan(60_000);
+  });
+
+  it("takes the lease row with the job when it is deleted", async () => {
+    const job = await createAgentJob(db, input());
+    await run(job, async () => ({ output: "ok" }), "manual");
+    await deleteAgentJob(db, job.id);
+    const leases = await sql`select name from job_runs where name = ${jobSchedulerName(job.id)}`;
+    expect(leases).toHaveLength(0);
+  });
+});
+
 describe("run history housekeeping", () => {
   it("closes a run left open by an app that stopped mid-run", async () => {
     const job = await createAgentJob(db, input());
@@ -186,6 +257,19 @@ describe("run history housekeeping", () => {
     expect(await failStaleRuns(db, job.id, new Date(Date.now() - 60_000))).toBe(1);
     const [stored] = await listAgentJobRuns(db, job.id);
     expect(stored.status).toBe("error");
+  });
+
+  it("drops runs past the age ceiling even when few have been kept", async () => {
+    const job = await createAgentJob(db, input());
+    await startAgentJobRun(
+      db,
+      job.id,
+      "schedule",
+      new Date(Date.now() - 200 * 24 * 60 * 60 * 1000),
+    );
+    await startAgentJobRun(db, job.id, "schedule");
+    await pruneAgentJobRuns(db, job.id);
+    expect(await listAgentJobRuns(db, job.id)).toHaveLength(1);
   });
 
   it("keeps only the most recent runs", async () => {
@@ -213,6 +297,13 @@ describe("what the panel is shown", () => {
     expect(status.cronValid).toBe(true);
     expect(status.nextRunAt).not.toBeNull();
     expect(status.running).toBe(true);
+  });
+
+  it('stops calling a run "running" once it cannot still be going', async () => {
+    const job = await createAgentJob(db, input());
+    await startAgentJobRun(db, job.id, "schedule", new Date(Date.now() - 60 * 60 * 1000));
+    const [status] = await agentJobStatuses(db);
+    expect(status.running).toBe(false);
   });
 
   it("has no next firing for a disabled job", async () => {

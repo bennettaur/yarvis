@@ -4,7 +4,7 @@ import { isAbsolute } from "node:path";
 import type { SpecialistDefinition } from "../agents/catalog.ts";
 import { findSpecialist } from "../agents/catalog.ts";
 import { runSpecialistDefinition } from "../agents/run.ts";
-import { builtinToolMetadata } from "../chat/builtinTools.ts";
+import { alwaysOnBuiltinToolNames } from "../agentTools/registry.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { readSection } from "../settings/store.ts";
@@ -40,13 +40,15 @@ export interface AgentJobRunResult {
 export type AgentJobRunner = (input: AgentJobRunInput) => Promise<AgentJobRunResult>;
 
 /**
- * Tools the composed default definition holds. `selectTools` still drops the
- * ones no delegated run may have (delegation) and the ones needing an explicit
- * grant (anything destructive or publicly visible), so this is the read-mostly
- * surface rather than everything.
+ * Tools the composed default definition holds: the families a chat turn carries
+ * by default. Starting from every built-in instead would hand an unattended run
+ * a wider surface than any written specialist asks for, and put 57 schemas in
+ * front of the model — which `agentTools/registry.ts` records as measurably
+ * degrading which tool it picks. `selectTools` still drops delegation and
+ * anything needing an explicit grant.
  */
 function defaultAgentTools(): string[] {
-  return Object.keys(builtinToolMetadata());
+  return alwaysOnBuiltinToolNames();
 }
 
 /** Steps the composed default definition gets; a written specialist sets its own. */
@@ -170,12 +172,45 @@ export type ClaudeLauncher = (input: {
   signal: AbortSignal;
 }) => Promise<SpawnedRun>;
 
+/**
+ * The environment a headless run is given.
+ *
+ * Deliberately built rather than inherited. The sidecar's own environment holds
+ * every provider key, the database URL, and `YARVIS_SIDECAR_TOKEN` — the bearer
+ * for the loopback API, which now includes the route that creates scheduled
+ * jobs. A headless run that followed an instruction planted in the repository it
+ * was pointed at could otherwise use that token to write itself a new job with
+ * whatever permissions it liked, so the token must not be in reach. Claude Code
+ * authenticates from its own configuration under `HOME`.
+ */
+function childEnv(): NodeJS.ProcessEnv {
+  const allowed = [
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "LANG",
+    "LC_ALL",
+    "TERM",
+    "TZ",
+    "TMPDIR",
+  ];
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of allowed) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
+}
+
 /** Runs the binary, capturing both streams up to {@link MAX_CAPTURED_CHARS}. */
 const spawnClaude: ClaudeLauncher = ({ program, args, cwd, signal }) =>
   new Promise<SpawnedRun>((resolve, reject) => {
     const child = spawn(program, args, {
       cwd,
       signal,
+      env: childEnv(),
       // No shell: the prompt and the directory are user-supplied, and passing
       // them as argv means nothing in them is ever interpreted as a command.
       shell: false,
@@ -241,7 +276,20 @@ export function createClaudeCodeRunner(launch: ClaudeLauncher = spawnClaude): Ag
     if (input.target.kind !== "claude-code") throw new Error("not a claude-code job");
     const cwd = validateWorkingDir(input.target.cwd);
     const program = await claudeProgram();
-    const args = ["-p", input.prompt, "--output-format", "json"];
+    // The two rules `selectTools` enforces for an in-app delegated run hold here
+    // too, and Claude Code has to be told: without `--strict-mcp-config` it
+    // loads the user's MCP servers plus any `.mcp.json` in the directory the job
+    // names, and `Task` is delegation by another name. Neither belongs in a run
+    // with nobody to approve a tool call.
+    const args = [
+      "-p",
+      input.prompt,
+      "--output-format",
+      "json",
+      "--strict-mcp-config",
+      "--disallowed-tools",
+      "Task",
+    ];
     if (input.target.model) args.push("--model", input.target.model);
     if (input.target.permissionMode) args.push("--permission-mode", input.target.permissionMode);
     const { code, stdout, stderr } = await launch({ program, args, cwd, signal: input.signal });

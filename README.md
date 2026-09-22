@@ -1011,9 +1011,19 @@ run the 08:45 sweep.
 
 A Claude Code job runs `claude -p` with no terminal attached, so nobody is there
 to answer a permission prompt: what it can do without asking is whatever the
-permission mode on the job allows. It runs as you, in the directory you gave it.
-A run is abandoned after fifteen minutes, and its output is truncated before it
-is stored — a hundred runs are kept per job, oldest dropped first.
+permission mode on the job allows, and `bypassPermissions`/`dontAsk` mean an
+unsupervised agent editing files and running commands there on every firing. It
+runs as you, in the directory you named, and reads that directory's own Claude
+Code configuration — so the directory is a trust decision, not just a location.
+Like an in-app delegated run it gets no MCP servers and cannot spawn subagents.
+It launches the program from **Settings → Workspaces → agent command** (the
+flags there are for interactive sessions and are not reused), and it does not
+inherit the app's environment: the provider keys and the sidecar's own token
+stay out of its reach.
+
+A run is abandoned after fifteen minutes. Output is scrubbed of credential-shaped
+strings and truncated to 20k characters before it is stored; a hundred runs are
+kept per job, and anything older than ninety days is dropped.
 
 These are separate from the jobs in **Settings → Assistant** (event
 consolidation, the nightly rollup, the transcript digest), which are code, ship

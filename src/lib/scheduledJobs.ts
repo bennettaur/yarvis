@@ -9,13 +9,28 @@ import { sidecarFetch } from "./api";
  * the user's own work, created and read from the Jobs panel.
  */
 
-export type ClaudePermissionMode =
-  | "acceptEdits"
-  | "auto"
-  | "bypassPermissions"
-  | "manual"
-  | "dontAsk"
-  | "plan";
+/** The modes `claude --permission-mode` accepts, in the order the editor offers
+ *  them. Mirrors `CLAUDE_PERMISSION_MODES` in the sidecar, which validates. */
+export const CLAUDE_PERMISSION_MODES = [
+  "acceptEdits",
+  "auto",
+  "bypassPermissions",
+  "manual",
+  "dontAsk",
+  "plan",
+] as const;
+
+export type ClaudePermissionMode = (typeof CLAUDE_PERMISSION_MODES)[number];
+
+/**
+ * Modes that let a headless run act without asking anyone. The editor says so
+ * beside the choice: on a schedule, with nobody watching, this is the setting
+ * that decides how much a poisoned file in the working directory can do.
+ */
+export const UNATTENDED_PERMISSION_MODES: ReadonlySet<string> = new Set([
+  "bypassPermissions",
+  "dontAsk",
+]);
 
 /** Which agent runs the job, and what that agent needs to know. */
 export type AgentJobTarget =
@@ -146,11 +161,9 @@ export function runDurationMs(run: ScheduledJobRun): number | null {
   return new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime();
 }
 
-const CRON_PRESETS: { label: string; cron: string }[] = [
+export const CRON_PRESETS: { label: string; cron: string }[] = [
   { label: "Hourly", cron: "0 * * * *" },
   { label: "Weekday mornings", cron: "0 9 * * 1-5" },
   { label: "Daily at 18:00", cron: "0 18 * * *" },
   { label: "Monday mornings", cron: "0 9 * * 1" },
 ];
-
-export const cronPresets = (): { label: string; cron: string }[] => CRON_PRESETS;

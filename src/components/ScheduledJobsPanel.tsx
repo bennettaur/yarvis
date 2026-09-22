@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { listSpecialists, type Specialist } from "../lib/agents";
-import { invalidate, useCachedResource } from "../lib/resourceCache";
+import { useCachedResource } from "../lib/resourceCache";
 import {
   createScheduledJob,
   deleteScheduledJob,
@@ -56,13 +56,13 @@ export default function ScheduledJobsPanel() {
 
   const runsRes = useCachedResource<ScheduledJobRun[]>(
     selectedId ? runsKey(selectedId) : null,
-    () => listScheduledJobRuns(selectedId as string),
+    // The key is null whenever there is no selection, so the loader only runs
+    // with one — but it closes over the state, not the key, hence the guard.
+    async () => (selectedId ? listScheduledJobRuns(selectedId) : []),
   );
 
-  const reloadJobs = useCallback(async () => {
-    invalidate(JOBS_KEY);
-    await jobsRes.refresh();
-  }, [jobsRes]);
+  // `refresh` invalidates its own key first, so there is nothing to clear here.
+  const reloadJobs = useCallback(() => jobsRes.refresh(), [jobsRes]);
 
   const select = (status: ScheduledJobStatus) => {
     setSelectedId(status.job.id);
@@ -121,7 +121,6 @@ export default function ScheduledJobsPanel() {
             ? `Failed: ${outcome.detail ?? "no detail"}`
             : "Finished.",
       );
-      invalidate(runsKey(id));
       await Promise.all([runsRes.refresh(), reloadJobs()]);
     } catch (e) {
       setRunNotice(e instanceof Error ? e.message : String(e));
