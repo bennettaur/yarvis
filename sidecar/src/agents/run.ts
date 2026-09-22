@@ -190,10 +190,27 @@ export async function specialistModel(
 }
 
 export async function runSpecialist(input: RunSpecialistInput): Promise<SpecialistRun> {
-  const { config, db, name, task, material, signal } = input;
-  const specialist = await findSpecialist(name);
-  if (!specialist) throw new Error(`no specialist named "${name}"`);
+  const specialist = await findSpecialist(input.name);
+  if (!specialist) throw new Error(`no specialist named "${input.name}"`);
   if (!specialist.enabled) throw new Error(`specialist "${specialist.name}" is disabled`);
+  return runSpecialistDefinition({ ...input, specialist });
+}
+
+export interface RunDefinitionInput extends Omit<RunSpecialistInput, "name"> {
+  /** The definition to run, already resolved (or composed) by the caller. */
+  specialist: SpecialistDefinition;
+}
+
+/**
+ * Runs a definition the caller already holds, skipping the catalogue lookup and
+ * the enabled check.
+ *
+ * Exists for callers that have no name to look up: a scheduled job configured
+ * with no specialist runs its prompt against a definition composed on the spot,
+ * and going through the catalogue would mean inventing a file for it.
+ */
+export async function runSpecialistDefinition(input: RunDefinitionInput): Promise<SpecialistRun> {
+  const { config, db, specialist, task, material, signal } = input;
 
   const chosen =
     input.provider && input.model

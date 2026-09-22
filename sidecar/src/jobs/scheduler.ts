@@ -16,6 +16,9 @@ import { claimJob, DEFAULT_LEASE_MS, finishJob, getJobRun, listJobRuns } from ".
  * instance owns background work.
  */
 
+/** Whether a run came round on the schedule or someone pressed Run now. */
+export type JobTrigger = "schedule" | "manual";
+
 export interface JobContext {
   db: Db;
   config: Config;
@@ -23,6 +26,8 @@ export interface JobContext {
   cursor: unknown;
   /** The run's reference instant; injected so a job's window is testable. */
   now: Date;
+  /** How the run was started. Recorded by jobs that keep their own history. */
+  trigger: JobTrigger;
 }
 
 export interface JobResult {
@@ -60,12 +65,13 @@ export async function runJob(
   config: Config,
   db: Db,
   now: Date = new Date(),
+  trigger: JobTrigger = "schedule",
 ): Promise<{ ran: boolean; status: "ok" | "error" | "skipped" | "busy"; detail?: string }> {
   const claimed = await claimJob(db, job.name, job.leaseMs ?? DEFAULT_LEASE_MS);
   if (!claimed) return { ran: false, status: "busy", detail: "already running" };
 
   try {
-    const result = await job.run({ db, config, cursor: claimed.cursor, now });
+    const result = await job.run({ db, config, cursor: claimed.cursor, now, trigger });
     const status = result.skipped ? "skipped" : "ok";
     await finishJob(db, job.name, { status, cursor: result.cursor });
     if (result.detail) console.log(`[jobs] ${job.name}: ${result.detail}`);
@@ -102,13 +108,20 @@ export interface SchedulerHandle {
 }
 
 /**
+ * What a tick should consider. A function rather than an array because the
+ * user's own jobs are rows: one added from the panel has to be picked up by the
+ * next tick, not by the next restart.
+ */
+export type JobProvider = (db: Db) => Promise<JobDefinition[]>;
+
+/**
  * Starts the tick loop. A no-op without a database, mirroring the other
  * background workers. Jobs run sequentially within a tick: they share an LLM
  * budget and a database, and none of them is latency-sensitive.
  */
 export function startJobScheduler(
   config: Config,
-  jobs: JobDefinition[],
+  jobs: JobProvider,
   tickMs: number = TICK_MS,
 ): SchedulerHandle {
   if (!config.databaseUrl) {
@@ -124,7 +137,7 @@ export function startJobScheduler(
     if (running) return;
     running = true;
     try {
-      await tick(jobs, config, db);
+      await tick(await jobs(db), config, db);
     } catch (e) {
       console.error("[jobs] tick failed:", redactSecrets(String(e)));
     } finally {
@@ -140,7 +153,7 @@ export function startJobScheduler(
   // app was closed rather than waiting out a tick.
   void runTick();
 
-  console.log(`[jobs] scheduler started with ${jobs.length} job(s)`);
+  console.log("[jobs] scheduler started");
   return { stop: () => clearInterval(timer) };
 }
 

@@ -372,6 +372,24 @@ back to ad-hoc.
   its input consumed only after its output is stored — `consolidate-events`
   claims a window of events after the summary memory exists, so a failed run
   leaves the window for the next one instead of losing it.
+  - The user's own scheduled jobs are rows rather than code, and they reach the
+    tick as `JobDefinition`s too (`jobs/agentJobs.ts`): the scheduler takes a
+    provider rather than an array, so a job saved in the panel runs on the next
+    tick, and each one leases under `agent-job:<id>` — derived from the id, so
+    renaming a job doesn't orphan its lease. `job_runs` still holds only the
+    latest outcome; a user job's *history* is its own table, because its output
+    is the product rather than a memory written somewhere else. Their cron
+    schedules deliberately do not backfill a first run: a prompt saved at 17:00
+    must not immediately fire the 08:45 sweep.
+  - A job's backend is an `AgentJobRunner` (`jobs/runners.ts`), and adding one is
+    adding a runner, not a branch in the job. Claude Code runs headless
+    (`claude -p --output-format json`) rather than in a core PTY: a scheduled run
+    has nobody watching it and its whole product is the text it answers with,
+    which a PTY session has no way to hand back. Its prompt and directory reach
+    the child as argv with no shell, and the directory is checked to be an
+    existing absolute path before anything is spawned. Output is redacted and
+    truncated before it is stored — it is model-composed text that is kept and
+    displayed, the same class of string as the error text `runJob` redacts.
 - Delegation is files, not rows. A specialist (`sidecar/src/agents/`) is a
   markdown file: frontmatter for its tools, model (or complexity tier — see
   `sidecar/src/llm/complexity.ts`) and step budget, body as its system prompt.
