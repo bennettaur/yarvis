@@ -518,10 +518,25 @@ const STATUS_LETTERS: Record<string, string> = {
 };
 
 /**
+ * Splits a NUL-terminated git list into fields, dropping the empty one the
+ * final NUL leaves behind.
+ */
+function splitNulFields(out: string): string[] {
+  const fields = out.split("\0");
+  if (fields[fields.length - 1] === "") fields.pop();
+  return fields;
+}
+
+/**
  * Files changed on this branch versus its base, including uncommitted work and
  * untracked files. Diffs the working tree against the branch's start ref (the
  * merge-base with `origin/<baseBranch>`, two-dot so committed + uncommitted are
  * both captured), then appends untracked files.
+ *
+ * Every git list here is read with `-z`. In its line-oriented output git
+ * compacts a rename into a single `dir/{old => new}` path and C-quotes any
+ * name with a special character, both of which reach the UI as a filename that
+ * no file has.
  */
 export async function listChangedFiles(
   runner: GitRunner,
@@ -532,15 +547,21 @@ export async function listChangedFiles(
   const byPath = new Map<string, ChangedFile>();
 
   // name-status gives the change kind (A/M/D/R…).
-  const nameStatus = await git(runner, ["diff", "--name-status", base], worktreePath);
-  for (const line of nameStatus.split("\n").filter(Boolean)) {
-    const parts = line.split("\t");
-    const code = parts[0] ?? "";
-    // Renames/copies are "R100\told\tnew" — the new path is the last column.
-    const path = parts[parts.length - 1] ?? "";
-    if (!path) continue;
-    byPath.set(path, {
-      path,
+  const nameStatus = splitNulFields(
+    await git(runner, ["diff", "--name-status", "-z", base], worktreePath),
+  );
+  let statusField = 0;
+  while (statusField < nameStatus.length) {
+    const code = nameStatus[statusField];
+    // A rename or copy carries its source path before its destination; every
+    // other kind carries one path. Either way the file is listed where it
+    // ended up, so it's always the last path of the record we want.
+    const pathCount = code.startsWith("R") || code.startsWith("C") ? 2 : 1;
+    const destination = nameStatus[statusField + pathCount] ?? "";
+    statusField += pathCount + 1;
+    if (!destination) continue;
+    byPath.set(destination, {
+      path: destination,
       status: STATUS_LETTERS[code[0] ?? ""] ?? "modified",
       additions: 0,
       deletions: 0,
@@ -548,20 +569,39 @@ export async function listChangedFiles(
   }
 
   // numstat gives line counts ("-" for binary).
-  const numstat = await git(runner, ["diff", "--numstat", base], worktreePath);
-  for (const line of numstat.split("\n").filter(Boolean)) {
-    const [add, del, ...rest] = line.split("\t");
-    const path = rest[rest.length - 1] ?? "";
-    if (!path) continue;
-    const entry = byPath.get(path) ?? { path, status: "modified", additions: 0, deletions: 0 };
+  const numstat = splitNulFields(
+    await git(runner, ["diff", "--numstat", "-z", base], worktreePath),
+  );
+  let countsField = 0;
+  while (countsField < numstat.length) {
+    // Only the first two tabs are delimiters — a tab is legal in a filename and
+    // `-z` leaves it raw, so the path is everything after them.
+    const [add, del, ...rest] = numstat[countsField].split("\t");
+    const pathInRecord = rest.join("\t");
+    // A rename or copy leaves the path column empty and puts the source and
+    // destination in the two fields that follow.
+    const isSplitRecord = !pathInRecord;
+    const destination = (isSplitRecord ? numstat[countsField + 2] : pathInRecord) ?? "";
+    countsField += isSplitRecord ? 3 : 1;
+    if (!destination) continue;
+    const entry = byPath.get(destination) ?? {
+      path: destination,
+      status: "modified",
+      additions: 0,
+      deletions: 0,
+    };
     entry.additions = add === "-" ? 0 : Number(add) || 0;
     entry.deletions = del === "-" ? 0 : Number(del) || 0;
-    byPath.set(path, entry);
+    byPath.set(destination, entry);
   }
 
-  const untracked = await git(runner, ["ls-files", "--others", "--exclude-standard"], worktreePath);
-  for (const path of untracked.split("\n").filter(Boolean)) {
-    if (!byPath.has(path)) {
+  const untracked = await git(
+    runner,
+    ["ls-files", "--others", "--exclude-standard", "-z"],
+    worktreePath,
+  );
+  for (const path of splitNulFields(untracked)) {
+    if (path && !byPath.has(path)) {
       byPath.set(path, { path, status: "untracked", additions: 0, deletions: 0 });
     }
   }
