@@ -62,6 +62,11 @@ interface GhRawInvolvement extends Omit<PrInvolvement, "summary"> {
   summary: GhRawSummary;
 }
 
+interface GhRawReviewingList {
+  inProgress: GhRawInvolvement[];
+  complete: GhRawInvolvement[];
+}
+
 function toInvolvement(raw: GhRawInvolvement): PrInvolvement {
   return { ...raw, summary: toSummary(raw.summary) };
 }
@@ -89,9 +94,7 @@ export async function ghPrSummary(ref: PrRef): Promise<PrSummary> {
 
 /** PRs the user is part-way through reviewing, split into outstanding and done. */
 export async function ghReviewing(): Promise<ReviewingList> {
-  const raw = await get<{ inProgress: GhRawInvolvement[]; complete: GhRawInvolvement[] }>(
-    "/api/github/reviewing",
-  );
+  const raw = await get<GhRawReviewingList>("/api/github/reviewing");
   return {
     inProgress: raw.inProgress.map(toInvolvement),
     complete: raw.complete.map(toInvolvement),
