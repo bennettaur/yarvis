@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clipboardSafePath, clipboardSafeText, clipboardSafeUrl } from "../lib/clipboard";
 import { buildFileTree } from "../lib/fileTree";
 import { requestOpenPr } from "../lib/nav";
@@ -668,27 +668,35 @@ function WorktreeChecksView({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // Switching worktrees, or pressing Refresh twice, can leave an older lookup in
+  // flight; only the newest one may write back, as in `WorkspaceStackView`.
+  const latest = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++latest.current;
     setLoading(true);
     setError(null);
     try {
       const result = await worktreePr(workspaceId, repo.id, worktree);
+      if (seq !== latest.current) return;
       // ChecksView reads a null `lastPolledAt` as "Not polled yet", so the read
       // is stamped with the time it happened.
       setPr(result.pr && { ...result.pr, lastPolledAt: new Date().toISOString(), lastError: null });
     } catch (e) {
       // A PR already on screen stays: a failed refresh is a reason to say so,
       // not to take away what the reader was looking at.
-      setError(e instanceof Error ? e.message : String(e));
+      if (seq === latest.current) setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (seq === latest.current) setLoading(false);
     }
   }, [workspaceId, repo.id, worktree]);
 
   useEffect(() => {
     setPr(undefined);
-    // A detached HEAD has no branch to look a PR up by.
+    setError(null);
+    // A detached HEAD has no branch to look a PR up by; bumping the counter
+    // still drops a lookup started for the worktree picked before it.
     if (branch) void load();
+    else latest.current++;
   }, [load, branch]);
 
   if (!branch) {
