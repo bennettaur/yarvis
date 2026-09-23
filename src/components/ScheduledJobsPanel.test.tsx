@@ -54,7 +54,13 @@ const sent: unknown[] = [];
 /** Set by a test that wants the next write to fail. */
 let writeFailure: string | null = null;
 
+// Only the two transport functions are stubbed. `mock.module` replaces the
+// whole module and stays installed for the rest of the `bun test` process, so
+// naming just these two would strip `ensureOk` and friends from every file
+// that runs after this one.
+const actualApi = await import("../lib/api");
 mock.module("../lib/api", () => ({
+  ...actualApi,
   sidecarInfo: async () => ({ port: 0, token: "test-token" }),
   sidecarFetch: async (path: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
@@ -76,18 +82,25 @@ mock.module("../lib/api", () => ({
     if (path.startsWith("/api/specialists")) {
       return json({ specialists: [{ name: "planner", enabled: true }], problems: [], userDir: "" });
     }
-    return json({
-      jobs: [
-        {
-          job: JOB,
-          nextRunAt: "2026-09-22T09:00:00.000Z",
-          cronValid: true,
-          lastRun: RUNS[0],
-          running: false,
-        },
-        { job: PAUSED_JOB, nextRunAt: null, cronValid: true, lastRun: null, running: false },
-      ],
-    });
+    if (path.startsWith("/api/jobs/agent-jobs")) {
+      return json({
+        jobs: [
+          {
+            job: JOB,
+            nextRunAt: "2026-09-22T09:00:00.000Z",
+            cronValid: true,
+            lastRun: RUNS[0],
+            running: false,
+          },
+          { job: PAUSED_JOB, nextRunAt: null, cronValid: true, lastRun: null, running: false },
+        ],
+      });
+    }
+    // `mock.module` stays installed for the rest of the `bun test` process, so
+    // this stub also answers files that run after this one. Anything it does
+    // not recognise has to fail rather than be handed the job list, which a
+    // caller expecting its own shape would then read as valid data.
+    return json({ error: `unexpected path: ${path}` }, 404);
   },
 }));
 
