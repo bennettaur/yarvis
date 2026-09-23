@@ -1,10 +1,12 @@
 import type { JobRun } from "../db/schema.ts";
+import { isCronDue } from "./cron.ts";
 
 /**
- * When a background job wants to run. Two shapes, because the jobs here divide
- * cleanly: an interval suits work whose value is freshness (consolidate the last
- * few hours of events), while a daily anchor suits work that summarizes a
- * finished day and would produce a half-day summary if it fired at any hour.
+ * When a background job wants to run. Three shapes: an interval suits work
+ * whose value is freshness (consolidate the last few hours of events), a daily
+ * anchor suits work that summarizes a finished day and would produce a half-day
+ * summary if it fired at any hour, and a cron expression carries the timing a
+ * user picked for a job they wrote — see `cron.ts`.
  */
 export type JobSchedule =
   | { kind: "interval"; everyMs: number }
@@ -12,7 +14,8 @@ export type JobSchedule =
       kind: "daily";
       /** Local hour (0–23) the job becomes eligible on each new day. */
       hour: number;
-    };
+    }
+  | { kind: "cron"; expression: string };
 
 /** Convenience for the common interval shape. */
 export const everyHours = (hours: number): JobSchedule => ({
@@ -50,6 +53,9 @@ export function isDue(
   now: Date = new Date(),
 ): boolean {
   const last = run?.lastStartedAt ?? null;
+  // Cron carries its own "never run" rule, so it is answered before the shared
+  // one below: a user's job waits for its next scheduled time.
+  if (schedule.kind === "cron") return isCronDue(schedule.expression, last, now);
   if (!last) return true;
   if (schedule.kind === "interval") {
     return now.getTime() - last.getTime() >= schedule.everyMs;

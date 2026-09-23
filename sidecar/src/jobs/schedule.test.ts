@@ -22,6 +22,13 @@ describe("job schedules", () => {
     expect(isDue(schedule, ran("2026-08-23T03:10:00"), at("2026-08-24T03:00:00"))).toBe(true);
   });
 
+  it("hands a cron schedule to the cron rules, which wait for a first firing", () => {
+    const schedule = { kind: "cron", expression: "0 9 * * *" } as const;
+    // Unlike the built-in shapes, a job the user wrote does not backfill.
+    expect(isDue(schedule, null, at("2026-08-24T09:30:00"))).toBe(false);
+    expect(isDue(schedule, ran("2026-08-23T09:00:00"), at("2026-08-24T09:00:10"))).toBe(true);
+  });
+
   it("runs a daily job once per day even when it fires late", () => {
     const schedule = dailyAt(3);
     // Machine asleep at 03:00; the job is still due when it wakes at noon.

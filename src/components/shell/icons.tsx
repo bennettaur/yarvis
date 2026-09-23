@@ -18,6 +18,7 @@ export type IconName =
   | "memory"
   | "calendar"
   | "alarms"
+  | "jobs"
   | "sessions"
   | "dashboard"
   | "settings"
@@ -114,6 +115,13 @@ const PATHS: Record<IconName, React.ReactNode> = {
       <path d="m22 6-3-3" />
       <path d="M6.38 18.7 4 21" />
       <path d="M17.64 18.67 20 21" />
+    </>
+  ),
+  jobs: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+      <path d="M12 3v2" />
     </>
   ),
   sessions: (

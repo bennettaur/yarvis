@@ -1369,3 +1369,72 @@ export type NewCcSessionDigest = typeof ccSessionDigests.$inferInsert;
 export type JobConfigRow = typeof jobConfig.$inferSelect;
 export type SuggestionDismissal = typeof suggestionDismissals.$inferSelect;
 export type NewSuggestionDismissal = typeof suggestionDismissals.$inferInsert;
+
+/**
+ * A scheduled agent job: a cron schedule, a prompt, and the agent that runs it.
+ *
+ * Distinct from `job_runs`, which is the scheduler's bookkeeping for the jobs
+ * this repo ships as code. These are defined by the user at runtime, so the
+ * definition is a row; the scheduler still leases them through `job_runs` under
+ * the synthetic name `agent-job:<id>`, which keeps one lease mechanism for both
+ * kinds of job.
+ *
+ * `agentConfig` is discriminated by `agentKind` — see `AgentJobTarget` in
+ * `jobs/agentJobs.ts`. It is a jsonb column rather than columns per backend
+ * because each backend needs different fields (a specialist name, a working
+ * directory) and more backends are expected.
+ */
+export const scheduledJobs = pgTable(
+  "scheduled_jobs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(),
+    description: text("description"),
+    /** Cron expression, evaluated in the machine's local time zone. */
+    cron: text("cron").notNull(),
+    /** "yarvis" | "claude-code". */
+    agentKind: text("agent_kind").notNull(),
+    agentConfig: jsonb("agent_config").$type<Record<string, unknown>>().notNull().default({}),
+    /** The instructions handed to the agent on every run. */
+    prompt: text("prompt").notNull(),
+    /** A disabled job is never due, but can still be run by hand. */
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("scheduled_jobs_name_unique_idx").on(t.name)],
+);
+
+/**
+ * History for the scheduled agent jobs: one row per run, holding what the agent
+ * answered.
+ *
+ * `job_runs` keeps only the latest outcome, which is enough for a job whose
+ * product is written elsewhere (a memory, a rollup). A job whose product *is*
+ * its output needs the runs kept, so a failing schedule can be read back to the
+ * run where it started.
+ */
+export const scheduledJobRuns = pgTable(
+  "scheduled_job_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    jobId: uuid("job_id")
+      .notNull()
+      .references(() => scheduledJobs.id, { onDelete: "cascade" }),
+    /** "schedule" | "manual". */
+    trigger: text("trigger").notNull(),
+    /** "running" | "ok" | "error". */
+    status: text("status").notNull(),
+    /** The agent's answer, redacted and truncated before it is stored. */
+    output: text("output"),
+    error: text("error"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+  },
+  (t) => [index("scheduled_job_runs_job_idx").on(t.jobId, t.startedAt.desc())],
+);
+
+export type ScheduledJob = typeof scheduledJobs.$inferSelect;
+export type NewScheduledJob = typeof scheduledJobs.$inferInsert;
+export type ScheduledJobRun = typeof scheduledJobRuns.$inferSelect;
+export type NewScheduledJobRun = typeof scheduledJobRuns.$inferInsert;

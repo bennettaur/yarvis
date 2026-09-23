@@ -19,6 +19,7 @@ const MY_PR = {
 };
 
 const REVIEWING_PR = { ...MY_PR, number: 9, title: "Drop the legacy shim" };
+const REVIEWED_PR = { ...MY_PR, number: 11, title: "Retire the old parser" };
 
 const summaryOf = (raw: typeof MY_PR) => ({
   ref: { provider: "github" as const, owner: raw.owner, repo: raw.repo, number: raw.number },
@@ -111,8 +112,8 @@ mock.module("../lib/api", () => ({
       return json({ reviewQuery: "is:open", reviewingLookbackDays: 7 });
     if (path === "/api/github/reviewing")
       return json({
-        inProgress: [{ summary: summaryOf(REVIEWING_PR), merged: false, myReviewStates: [] }],
-        complete: [],
+        inProgress: [{ summary: REVIEWING_PR, merged: false, myReviewStates: [] }],
+        complete: [{ summary: REVIEWED_PR, merged: true, myReviewStates: [] }],
       });
     // The PR status route is `refApiPath` itself, with no suffix.
     if (/^\/api\/github\/pr\/[^/]+\/[^/]+\/\d+$/.test(path))
@@ -197,6 +198,7 @@ describe("PrsPanel place", () => {
     const html = await renderToHtml(<PrsPanel persistPlace />);
 
     expect(html).toContain(REVIEWING_PR.title);
+    expect(html).toContain(REVIEWED_PR.title);
   });
 
   it("reopens the PR the user was reading", async () => {

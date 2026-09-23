@@ -992,6 +992,43 @@ endpoint, so a Claude Code session can read and write memory but not edit the
 assistant's plan; and the calendar integration can create an event but has no
 update or delete — moving or cancelling a meeting stays yours.
 
+### Scheduled jobs
+
+The **Jobs** tab holds jobs you write: a cron schedule, a prompt, and the agent
+that runs it. Two agents today — Yarvis itself (the default agent, or one of your
+specialists) and a headless Claude Code session in a directory you name. Every
+run is kept with what the agent answered, so the panel is both the schedule and
+the log: **Run now** runs a job off-schedule and its output appears in the same
+history a moment later.
+
+The schedule is a cron expression in this machine's local time (`0 9 * * 1-5` is
+weekday mornings), and the editor offers a few presets. A job saved with an
+expression that doesn't parse is refused rather than stored; a job that is
+switched off keeps its history and can still be run by hand. Unlike the jobs the
+app ships as code, a new job does **not** backfill — it waits for its next
+scheduled time, because a prompt you just saved at 17:00 should not immediately
+run the 08:45 sweep.
+
+A Claude Code job runs `claude -p` with no terminal attached, so nobody is there
+to answer a permission prompt: what it can do without asking is whatever the
+permission mode on the job allows, and `bypassPermissions`/`dontAsk` mean an
+unsupervised agent editing files and running commands there on every firing. It
+runs as you, in the directory you named, and reads that directory's own Claude
+Code configuration — so the directory is a trust decision, not just a location.
+Like an in-app delegated run it gets no MCP servers and cannot spawn subagents.
+It launches the program from **Settings → Workspaces → agent command** (the
+flags there are for interactive sessions and are not reused), and it does not
+inherit the app's environment: the provider keys and the sidecar's own token
+stay out of its reach.
+
+A run is abandoned after fifteen minutes. Output is scrubbed of credential-shaped
+strings and truncated to 20k characters before it is stored; a hundred runs are
+kept per job, and anything older than ninety days is dropped.
+
+These are separate from the jobs in **Settings → Assistant** (event
+consolidation, the nightly rollup, the transcript digest), which are code, ship
+with the app, and write memory rather than output you read.
+
 ## Development
 
 ```bash
@@ -1065,7 +1102,7 @@ primary one by default:
 | Workspace/PR poller | Doubles provider API traffic and writes the same rows twice | `YARVIS_BACKGROUND_WORKERS=1` |
 | Resuming interrupted kick-offs | Would launch two agent sessions in one workspace | `YARVIS_BACKGROUND_WORKERS=1` |
 | Stale PR-guide sweep | Deletes rows on a schedule; once is enough | `YARVIS_BACKGROUND_WORKERS=1` |
-| Background jobs (event consolidation, nightly rollup, transcript digest) | Write memories and call an LLM provider on a schedule; two processes duplicate both | `YARVIS_BACKGROUND_WORKERS=1` |
+| Background jobs (event consolidation, nightly rollup, transcript digest, scheduled agent jobs) | Write memories and call an LLM provider on a schedule; two processes duplicate both | `YARVIS_BACKGROUND_WORKERS=1` |
 | Seeding the built-in specialists | Inserts the shipped rows once into the shared table | `YARVIS_BACKGROUND_WORKERS=1` |
 | Global hotkeys (`Control + Shift + Space`, `Control + Shift + V`) | One process holds an accelerator machine-wide | `YARVIS_GLOBAL_SHORTCUTS=1` |
 
@@ -1166,7 +1203,9 @@ sidecar/        Bun + TS service (Hono)
   src/agents/   delegation: the configured specialists and the bounded runs the
                 orchestrator and the jobs both go through
   src/jobs/     background scheduler (lease + schedule) and the jobs themselves:
-                event consolidation, the nightly rollup, the Claude Code session digest
+                event consolidation, the nightly rollup, the Claude Code session
+                digest, and the user's own cron-scheduled agent jobs (agentJobs.ts,
+                runners.ts) with their run history
   src/digest/   dangling work, next-work ranking, weekly summary material, dismissals
   src/github/   GitHub PR dashboard + embedded review (REST + GraphQL), dashboard config, in-progress review roll-up
   src/azure/    Azure DevOps PR dashboard + embedded review (REST; diffs built with jsdiff)
