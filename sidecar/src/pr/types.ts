@@ -63,12 +63,9 @@ export interface PrSummary {
   state: string;
   createdAt: string;
   updatedAt: string;
-  /**
-   * The branch the PR targets and the branch it merges from. Only the PR lists
-   * fill these in, so they can nest a stack's layers under its bottom PR.
-   * `headRef` stays unset for a PR from a fork.
-   */
+  /** The branch this PR targets. Only the PR lists fill it in, to nest stacks. */
   baseRef?: string;
+  /** The branch this PR merges from. Unset for a PR from a fork. */
   headRef?: string;
 }
 

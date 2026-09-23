@@ -21,11 +21,11 @@ export interface PrSummary {
   createdAt: string;
   updatedAt: string;
   /**
-   * The branch the PR targets and the branch it merges from, when the list that
-   * produced this summary looked them up. They are how a list spots a stack.
-   * `headRef` stays unset for a PR from a fork.
+   * The branch this PR targets, when the list that produced this summary looked
+   * it up. It is how a list spots a stack.
    */
   baseRef?: string;
+  /** The branch this PR merges from. Unset for a PR from a fork. */
   headRef?: string;
 }
 

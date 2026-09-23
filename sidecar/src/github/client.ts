@@ -524,8 +524,15 @@ function buildPrLookupQuery(count: number): string {
 }
 
 /**
- * The branch pair for every ref, by alias, in one request. Built the same way as
- * {@link buildPrLookupQuery}, so nothing from a ref reaches the query text.
+ * How long the PR lists wait for branch names before rendering without them.
+ * Nesting is a nicety, so it must not hold the list itself hostage.
+ */
+const BRANCH_LOOKUP_TIMEOUT_MS = 5_000;
+
+/**
+ * Builds one aliased query that fetches each PR's base and head branch. Built
+ * the same way as {@link buildPrLookupQuery}, so nothing from a ref reaches the
+ * query text.
  */
 function buildBranchLookupQuery(count: number): string {
   const varDecls = Array.from(
@@ -629,10 +636,11 @@ export class GitHubClient {
   private async graphql<T>(
     query: string,
     variables: Record<string, unknown>,
-    { allowPartial = false }: { allowPartial?: boolean } = {},
+    { allowPartial = false, signal }: { allowPartial?: boolean; signal?: AbortSignal } = {},
   ): Promise<T> {
     const res = await this.fetchImpl("https://api.github.com/graphql", {
       method: "POST",
+      signal,
       headers: {
         Authorization: `Bearer ${this.token}`,
         "Content-Type": "application/json",
@@ -661,10 +669,10 @@ export class GitHubClient {
   /**
    * Fills in each PR's base and head branch, which the REST search omits, so a
    * list can tell which PRs are stacked on one another. One batched request for
-   * the whole list. A failed lookup returns the PRs unchanged: the list still
-   * renders, just without its stacks nested.
+   * the whole list. A failed or slow lookup returns the PRs unchanged: the list
+   * still renders, just without its stacks nested.
    */
-  async withBranches(prs: PrSummary[]): Promise<PrSummary[]> {
+  async lookupBranches(prs: PrSummary[]): Promise<PrSummary[]> {
     if (prs.length === 0) return prs;
     const variables: Record<string, unknown> = {};
     prs.forEach((pr, i) => {
@@ -672,22 +680,23 @@ export class GitHubClient {
       variables[`r${i}`] = pr.repo;
       variables[`n${i}`] = pr.number;
     });
-    let data: Record<string, { pullRequest?: any } | null>;
+    let data: Record<string, { pullRequest?: any } | null> | undefined;
     try {
       data = await this.graphql(buildBranchLookupQuery(prs.length), variables, {
         allowPartial: true,
+        signal: AbortSignal.timeout(BRANCH_LOOKUP_TIMEOUT_MS),
       });
     } catch (e) {
       console.error("[github] could not look up PR branches:", e);
       return prs;
     }
     return prs.map((pr, i) => {
-      const node = data[`pr${i}`]?.pullRequest;
+      const node = data?.[`pr${i}`]?.pullRequest;
       if (!node) return pr;
       // A fork's branch lives outside this repo, so no PR here can sit on it,
       // and a fork's `main` would otherwise claim every PR targeting this `main`.
-      const headRef = node.isCrossRepository ? undefined : (node.headRefName ?? "");
-      return { ...pr, baseRef: node.baseRefName ?? "", headRef };
+      const headRef = node.isCrossRepository ? undefined : node.headRefName || undefined;
+      return { ...pr, baseRef: node.baseRefName || undefined, headRef };
     });
   }
 

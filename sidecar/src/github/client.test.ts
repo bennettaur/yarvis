@@ -105,7 +105,7 @@ describe("github client", () => {
     });
   });
 
-  describe("withBranches", () => {
+  describe("lookupBranches", () => {
     const summary = (number: number) => ({
       number,
       title: `PR ${number}`,
@@ -131,7 +131,7 @@ describe("github client", () => {
           },
         }),
       );
-      const prs = await gh.withBranches([summary(1), summary(2)]);
+      const prs = await gh.lookupBranches([summary(1), summary(2)]);
       expect(prs[0]).toMatchObject({ number: 1, baseRef: "main", headRef: "one" });
       expect(prs[1]).toEqual(summary(2));
     });
@@ -149,14 +149,32 @@ describe("github client", () => {
           },
         }),
       );
-      const [pr] = await gh.withBranches([summary(1)]);
+      const [pr] = await gh.lookupBranches([summary(1)]);
       expect(pr?.baseRef).toBe("main");
       expect(pr?.headRef).toBeUndefined();
     });
 
+    it("keeps the branches it resolved when the response also carries errors", async () => {
+      const gh = new GitHubClient(
+        "t",
+        fakeFetch({
+          "/graphql": {
+            data: {
+              pr0: { pullRequest: { baseRefName: "main", headRefName: "one" } },
+              pr1: null,
+            },
+            errors: [{ message: "Could not resolve to a Repository" }],
+          },
+        }),
+      );
+      const prs = await gh.lookupBranches([summary(1), summary(2)]);
+      expect(prs[0]).toMatchObject({ baseRef: "main", headRef: "one" });
+      expect(prs[1]).toEqual(summary(2));
+    });
+
     it("returns the PRs unchanged when the lookup fails", async () => {
       const gh = new GitHubClient("t", fakeFetch({}));
-      expect(await gh.withBranches([summary(1)])).toEqual([summary(1)]);
+      expect(await gh.lookupBranches([summary(1)])).toEqual([summary(1)]);
     });
   });
 

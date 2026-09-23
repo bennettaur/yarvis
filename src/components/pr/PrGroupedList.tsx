@@ -104,18 +104,18 @@ function PrRow({
   pr,
   starred,
   note,
-  stackSize = 0,
-  stacked = false,
+  layersAbove = 0,
+  isStackLayer = false,
   onToggleStar,
   onReview,
 }: {
   pr: PrSummary;
   starred: boolean;
   note: string | null;
-  /** How many PRs the stack holds, when this row is its bottom. */
-  stackSize?: number;
+  /** How many PRs are stacked on this one. Only a stack's bottom has any. */
+  layersAbove?: number;
   /** A layer above a stack's bottom, drawn indented under it. */
-  stacked?: boolean;
+  isStackLayer?: boolean;
   onToggleStar: (pr: PrSummary, starred: boolean) => void;
   onReview: (pr: PrSummary) => void;
 }) {
@@ -129,10 +129,10 @@ function PrRow({
     <li
       onClick={() => onReview(pr)}
       className={`flex cursor-pointer items-center gap-3 py-3 pr-4 hover:bg-zinc-800/50 ${
-        stacked ? "bg-zinc-900/80 pl-10" : "pl-4"
+        isStackLayer ? "bg-zinc-900/80 pl-10" : "pl-4"
       }`}
     >
-      {stacked && (
+      {isStackLayer && (
         <span className="-ml-5 text-zinc-600" aria-hidden="true">
           ↳
         </span>
@@ -154,12 +154,12 @@ function PrRow({
           {note && ` · ${note}`}
         </div>
       </div>
-      {stackSize > 1 && (
+      {layersAbove > 0 && (
         <span
           className="rounded bg-indigo-950 px-1.5 py-0.5 text-xs text-indigo-300"
           title="The PRs below are stacked on this one"
         >
-          stack of {stackSize}
+          stack of {layersAbove + 1}
         </span>
       )}
       {pr.draft && <DraftBadge />}
@@ -198,7 +198,10 @@ export default function PrGroupedList({
   prs: PrSummary[];
   note?: PrRowNote;
 }) {
-  const groups = useMemo(() => groupByRepo(prs), [prs]);
+  const groups = useMemo(
+    () => groupByRepo(prs).map((group) => ({ ...group, items: nestStacks(group.prs) })),
+    [prs],
+  );
   const { isCollapsed, toggle } = useCollapsedRepos();
   if (prs.length === 0) return <p className="text-sm text-zinc-600">None.</p>;
   return (
@@ -218,13 +221,13 @@ export default function PrGroupedList({
             </button>
             {!collapsed && (
               <ul className="divide-y divide-zinc-800 rounded-xl border border-zinc-800 bg-zinc-900/50">
-                {nestStacks(group.prs).flatMap(({ pr, layers }) => [
+                {group.items.flatMap(({ pr, layers }) => [
                   <PrRow
                     key={pr.url}
                     pr={pr}
                     starred={isStarred(pr)}
                     note={note?.(pr) ?? null}
-                    stackSize={layers.length + 1}
+                    layersAbove={layers.length}
                     onToggleStar={onToggleStar}
                     onReview={onReview}
                   />,
@@ -234,7 +237,7 @@ export default function PrGroupedList({
                       pr={layer}
                       starred={isStarred(layer)}
                       note={note?.(layer) ?? null}
-                      stacked
+                      isStackLayer
                       onToggleStar={onToggleStar}
                       onReview={onReview}
                     />

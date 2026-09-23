@@ -704,6 +704,13 @@ PR you can already name — paste a `https://github.com/owner/repo/pull/123` lin
 or type `owner/repo#123`; a bare `repo#123` resolves against your registered
 repos, and if the name matches several owners you're asked which one.
 
+On GitHub, **My PRs**, **Needs review** and **Filters** nest a stack under its
+bottom PR, marked **stack of N**, with the layers indented beneath it
+bottom-first. A PR counts as stacked on another when it targets that PR's head
+branch, and only PRs in the same list are linked, so a stack whose middle layer
+isn't in the list shows as two. If the branch lookup fails or is slow, the list
+loads without nesting.
+
 Two things are configurable under **Settings → PR review**:
 
 - **"Needs review" search** — the GitHub issue search behind that tab, run

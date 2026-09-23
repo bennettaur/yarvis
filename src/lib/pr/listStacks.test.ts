@@ -53,9 +53,32 @@ describe("nestStacks", () => {
     expect(items).toHaveLength(2);
   });
 
-  it("ends the walk when two PRs target each other's branches", () => {
+  it("orders a branching stack depth-first, oldest branch first", () => {
+    // 2 and 3 both sit on 1; 3 is older, and 4 sits on 2.
+    const items = shape([
+      pr(4, "two", "four", 9),
+      pr(2, "one", "two", 8),
+      pr(3, "one", "three", 5),
+      pr(1, "main", "one", 1),
+    ]);
+    expect(items).toMatchObject([
+      { pr: { number: 1 }, layers: [{ number: 3 }, { number: 2 }, { number: 4 }] },
+    ]);
+  });
+
+  it("cuts a loop of PRs at the first one listed", () => {
     const items = shape([pr(2, "one", "two"), pr(1, "two", "one")]);
+    expect(items).toMatchObject([{ pr: { number: 2 }, layers: [{ number: 1 }] }]);
+  });
+
+  it("ends the walk for a longer loop and a PR leading into it", () => {
+    const items = shape([
+      pr(4, "three", "four"),
+      pr(3, "two", "three"),
+      pr(2, "one", "two"),
+      pr(1, "three", "one"),
+    ]);
     expect(items).toHaveLength(1);
-    expect(items[0]?.layers).toHaveLength(1);
+    expect(items[0]?.layers).toHaveLength(3);
   });
 });

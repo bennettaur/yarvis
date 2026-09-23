@@ -93,6 +93,21 @@ describe("PrGroupedList", () => {
     expect(html).toContain("↳");
   });
 
+  it("shows no stack badge on PRs that are not stacked", async () => {
+    const html = await render([
+      { ...pr("acme", 1, "2026-07-01T00:00:00Z"), baseRef: "main", headRef: "one" },
+    ]);
+    expect(html).not.toContain("stack of");
+  });
+
+  it("does not nest PRs from different repos that share branch names", async () => {
+    const html = await render([
+      { ...pr("acme", 2, "2026-07-02T00:00:00Z"), baseRef: "one", headRef: "two" },
+      { ...pr("other", 1, "2026-07-01T00:00:00Z"), baseRef: "main", headRef: "one" },
+    ]);
+    expect(html).not.toContain("stack of");
+  });
+
   it("ignores a corrupt collapse record rather than failing to render", async () => {
     localStorage.setItem(COLLAPSED_STORAGE_KEY, "not json");
     const html = await render([pr("acme", 1, "2026-07-01T00:00:00Z")]);
