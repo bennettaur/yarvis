@@ -14,6 +14,7 @@ import MemoryPanel from "./components/MemoryPanel";
 import OmniView from "./components/omni/OmniView";
 import OmniChat from "./components/omnichat/OmniChat";
 import PrsPanel from "./components/PrsPanel";
+import ScheduledJobsPanel from "./components/ScheduledJobsPanel";
 import SessionsPanel from "./components/SessionsPanel";
 import SettingsPanel from "./components/SettingsPanel";
 import AppShell from "./components/shell/AppShell";
@@ -322,6 +323,7 @@ export default function App() {
             {tab === "memory" && <MemoryPanel />}
             {tab === "calendar" && <CalendarView />}
             {tab === "alarms" && <AlarmsPanel />}
+            {tab === "jobs" && <ScheduledJobsPanel />}
             {tab === "sessions" && <SessionsPanel />}
             {tab === "dashboard" && <Dashboard />}
             {tab === "settings" && <SettingsPanel />}
