@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { usePrStatus } from "../../lib/pr/cache";
+import { nestStacks } from "../../lib/pr/listStacks";
 import { refDisplayRepo, refNumber } from "../../lib/pr/ref";
 import type { PrStatus, PrSummary } from "../../lib/pr/types";
 import { formatRelativeTime } from "../../lib/time";
@@ -103,12 +104,18 @@ function PrRow({
   pr,
   starred,
   note,
+  stackSize = 0,
+  stacked = false,
   onToggleStar,
   onReview,
 }: {
   pr: PrSummary;
   starred: boolean;
   note: string | null;
+  /** How many PRs the stack holds, when this row is its bottom. */
+  stackSize?: number;
+  /** A layer above a stack's bottom, drawn indented under it. */
+  stacked?: boolean;
   onToggleStar: (pr: PrSummary, starred: boolean) => void;
   onReview: (pr: PrSummary) => void;
 }) {
@@ -121,8 +128,15 @@ function PrRow({
   return (
     <li
       onClick={() => onReview(pr)}
-      className="flex cursor-pointer items-center gap-3 px-4 py-3 hover:bg-zinc-800/50"
+      className={`flex cursor-pointer items-center gap-3 py-3 pr-4 hover:bg-zinc-800/50 ${
+        stacked ? "bg-zinc-900/80 pl-10" : "pl-4"
+      }`}
     >
+      {stacked && (
+        <span className="-ml-5 text-zinc-600" aria-hidden="true">
+          ↳
+        </span>
+      )}
       <button
         onClick={(e) => {
           e.stopPropagation();
@@ -140,6 +154,14 @@ function PrRow({
           {note && ` · ${note}`}
         </div>
       </div>
+      {stackSize > 1 && (
+        <span
+          className="rounded bg-indigo-950 px-1.5 py-0.5 text-xs text-indigo-300"
+          title="The PRs below are stacked on this one"
+        >
+          stack of {stackSize}
+        </span>
+      )}
       {pr.draft && <DraftBadge />}
       <StatusBadge status={status} />
       <span className="shrink-0 text-xs text-zinc-600" title={`Updated ${pr.updatedAt}`}>
@@ -196,16 +218,28 @@ export default function PrGroupedList({
             </button>
             {!collapsed && (
               <ul className="divide-y divide-zinc-800 rounded-xl border border-zinc-800 bg-zinc-900/50">
-                {group.prs.map((pr) => (
+                {nestStacks(group.prs).flatMap(({ pr, layers }) => [
                   <PrRow
                     key={pr.url}
                     pr={pr}
                     starred={isStarred(pr)}
                     note={note?.(pr) ?? null}
+                    stackSize={layers.length + 1}
                     onToggleStar={onToggleStar}
                     onReview={onReview}
-                  />
-                ))}
+                  />,
+                  ...layers.map((layer) => (
+                    <PrRow
+                      key={layer.url}
+                      pr={layer}
+                      starred={isStarred(layer)}
+                      note={note?.(layer) ?? null}
+                      stacked
+                      onToggleStar={onToggleStar}
+                      onReview={onReview}
+                    />
+                  )),
+                ])}
               </ul>
             )}
           </section>

@@ -83,6 +83,16 @@ describe("PrGroupedList", () => {
     expect(html).toContain("PR other#2");
   });
 
+  it("draws a stack's layers indented under its bottom PR", async () => {
+    const html = await render([
+      { ...pr("acme", 2, "2026-07-02T00:00:00Z"), baseRef: "one", headRef: "two" },
+      { ...pr("acme", 1, "2026-07-01T00:00:00Z"), baseRef: "main", headRef: "one" },
+    ]);
+    expect(html).toContain("stack of 2");
+    expect(html.indexOf("PR acme#1")).toBeLessThan(html.indexOf("PR acme#2"));
+    expect(html).toContain("↳");
+  });
+
   it("ignores a corrupt collapse record rather than failing to render", async () => {
     localStorage.setItem(COLLAPSED_STORAGE_KEY, "not json");
     const html = await render([pr("acme", 1, "2026-07-01T00:00:00Z")]);

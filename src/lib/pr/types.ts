@@ -20,6 +20,13 @@ export interface PrSummary {
   state: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * The branch the PR targets and the branch it merges from, when the list that
+   * produced this summary looked them up. They are how a list spots a stack.
+   * `headRef` stays unset for a PR from a fork.
+   */
+  baseRef?: string;
+  headRef?: string;
 }
 
 export interface PrStatus {
