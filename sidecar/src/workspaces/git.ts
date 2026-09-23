@@ -350,12 +350,53 @@ export interface ExistingWorktree {
  * workspaces root can sit behind one (`/var` on macOS) and git reports what it
  * resolved. Falls back to the path itself when there is nothing on disk yet.
  */
-function canonicalPath(path: string): string {
+export function canonicalPath(path: string): string {
   try {
     return realpathSync(path);
   } catch {
     return resolve(path);
   }
+}
+
+/** One worktree registered with a clone, as `git worktree list` reports it. */
+export interface WorktreeEntry {
+  path: string;
+  /** The branch it has checked out, or null on a detached HEAD. */
+  branch: string | null;
+}
+
+/**
+ * Every worktree registered with the clone at `primaryClonePath`, the clone's
+ * own checkout included. A bare entry has no files to show, so it is left out.
+ */
+export async function listWorktrees(
+  runner: GitRunner,
+  primaryClonePath: string,
+): Promise<WorktreeEntry[]> {
+  // `-z` NUL-terminates every field and closes a record with a second NUL, so a
+  // worktree path containing a newline can't be misread as a record boundary.
+  // Fields are matched by prefix rather than position, since a record can carry
+  // `bare`, `locked` or `prunable` lines as well.
+  const out = await git(runner, ["worktree", "list", "--porcelain", "-z"], primaryClonePath);
+  const entries: WorktreeEntry[] = [];
+  let path: string | null = null;
+  let ref: string | null = null;
+  let bare = false;
+  for (const field of out.split("\0")) {
+    if (field === "") {
+      if (path && !bare) entries.push({ path, branch: ref?.replace(/^refs\/heads\//, "") ?? null });
+      path = null;
+      ref = null;
+      bare = false;
+    } else if (field.startsWith("worktree ")) {
+      path = field.slice("worktree ".length);
+    } else if (field.startsWith("branch ")) {
+      ref = field.slice("branch ".length);
+    } else if (field === "bare") {
+      bare = true;
+    }
+  }
+  return entries;
 }
 
 /**
@@ -374,27 +415,11 @@ export async function existingWorktree(
   worktreePath: string,
 ): Promise<ExistingWorktree | null> {
   await git(runner, ["worktree", "prune"], primaryClonePath);
-  // `-z` NUL-terminates every field and closes a record with a second NUL, so a
-  // worktree path containing a newline can't be misread as a record boundary.
-  // Fields are matched by prefix rather than position, since a record can carry
-  // `bare`, `locked` or `prunable` lines as well.
-  const out = await git(runner, ["worktree", "list", "--porcelain", "-z"], primaryClonePath);
   const target = canonicalPath(worktreePath);
-  let path: string | null = null;
-  let ref: string | null = null;
-  for (const field of out.split("\0")) {
-    if (field === "") {
-      if (path && canonicalPath(path) === target) {
-        return { branch: ref?.replace(/^refs\/heads\//, "") ?? null };
-      }
-      path = null;
-      ref = null;
-    } else if (field.startsWith("worktree ")) {
-      path = field.slice("worktree ".length);
-    } else if (field.startsWith("branch ")) {
-      ref = field.slice("branch ".length);
-    }
-  }
+  const match = (await listWorktrees(runner, primaryClonePath)).find(
+    (entry) => canonicalPath(entry.path) === target,
+  );
+  if (match) return { branch: match.branch };
 
   // `statSync` rather than a bare `readdirSync`: a plain file on the path would
   // otherwise raise ENOTDIR in place of the message this block exists to give.
@@ -463,24 +488,66 @@ export async function removeWorktree(
 
 /**
  * Resolves the ref to diff a worktree's branch against: the merge-base of
- * `origin/<baseBranch>` and the worktree's `HEAD` — i.e. the commit the branch
- * was cut from. Diffing against this start ref rather than `origin/<baseBranch>`
- * directly keeps the "files changed" view stable when origin advances past the
- * branch point: new upstream commits aren't ancestors of HEAD, so the merge-base
- * doesn't move and they never show up as spurious deletions.
+ * `baseRef` (usually `origin/<baseBranch>`) and the worktree's `HEAD` — i.e. the
+ * commit the branch was cut from. Diffing against this start ref rather than
+ * `baseRef` directly keeps the "files changed" view stable when the base
+ * advances past the branch point: new upstream commits aren't ancestors of
+ * HEAD, so the merge-base doesn't move and they never show up as spurious
+ * deletions.
  *
- * Falls back to `origin/<baseBranch>` when no merge-base exists (unrelated
- * histories) so callers always get a usable ref.
+ * Falls back to `baseRef` when no merge-base exists (unrelated histories) so
+ * callers always get a usable ref.
  */
 async function resolveDiffBase(
   runner: GitRunner,
   worktreePath: string,
-  baseBranch: string,
+  baseRef: string,
 ): Promise<string> {
-  const remoteBase = `origin/${baseBranch}`;
-  const result = await runner(["merge-base", remoteBase, "HEAD"], { cwd: worktreePath });
-  if (result.exitCode !== 0) return remoteBase;
-  return result.stdout.trim() || remoteBase;
+  const result = await runner(["merge-base", baseRef, "HEAD"], { cwd: worktreePath });
+  if (result.exitCode !== 0) return baseRef;
+  return result.stdout.trim() || baseRef;
+}
+
+/**
+ * Which ref a worktree's branch is stacked on: the candidate whose fork point
+ * with `HEAD` is closest to it, or `baseRef` when no candidate is closer.
+ *
+ * This is what lets a stacked branch's "files changed" view show only its own
+ * layer, the way its pull request does, rather than every layer below it too.
+ * It reads local git only, because the views that ask poll every few seconds
+ * and `gh stack view` is a network call. A candidate already containing `HEAD`
+ * is skipped: that is this branch itself, or one stacked on top of it. On a tie
+ * the base wins, so two unrelated branches cut from the same commit don't read
+ * as stacked on each other.
+ */
+export async function nearestBaseRef(
+  runner: GitRunner,
+  worktreePath: string,
+  baseRef: string,
+  candidateRefs: string[],
+): Promise<string> {
+  const commitsSinceForkPoint = async (ref: string): Promise<number | null> => {
+    const forkPoint = await runner(["merge-base", ref, "HEAD"], { cwd: worktreePath });
+    const sha = forkPoint.stdout.trim();
+    if (forkPoint.exitCode !== 0 || !sha) return null;
+    const count = await runner(["rev-list", "--count", `${sha}..HEAD`], { cwd: worktreePath });
+    return count.exitCode === 0 ? Number(count.stdout.trim()) : null;
+  };
+
+  let best = baseRef;
+  let bestDistance = (await commitsSinceForkPoint(baseRef)) ?? Number.POSITIVE_INFINITY;
+  for (const ref of candidateRefs) {
+    const contains = await runner(["merge-base", "--is-ancestor", "HEAD", ref], {
+      cwd: worktreePath,
+    });
+    if (contains.exitCode === 0) continue;
+    const distance = await commitsSinceForkPoint(ref);
+    if (distance !== null && distance < bestDistance) {
+      best = ref;
+      bestDistance = distance;
+    }
+  }
+  return best;
 }
 
 /**
@@ -520,15 +587,15 @@ const STATUS_LETTERS: Record<string, string> = {
 /**
  * Files changed on this branch versus its base, including uncommitted work and
  * untracked files. Diffs the working tree against the branch's start ref (the
- * merge-base with `origin/<baseBranch>`, two-dot so committed + uncommitted are
- * both captured), then appends untracked files.
+ * merge-base with `baseRef`, two-dot so committed + uncommitted are both
+ * captured), then appends untracked files.
  */
 export async function listChangedFiles(
   runner: GitRunner,
   worktreePath: string,
-  baseBranch: string,
+  baseRef: string,
 ): Promise<ChangedFile[]> {
-  const base = await resolveDiffBase(runner, worktreePath, baseBranch);
+  const base = await resolveDiffBase(runner, worktreePath, baseRef);
   const byPath = new Map<string, ChangedFile>();
 
   // name-status gives the change kind (A/M/D/R…).
@@ -571,7 +638,7 @@ export async function listChangedFiles(
 
 /**
  * The unified-diff patch for a single changed file versus the branch's start ref
- * (the merge-base with `origin/<baseBranch>`), matching the two-dot range used by
+ * (the merge-base with `baseRef`), matching the two-dot range used by
  * `listChangedFiles` so committed and uncommitted work both show. Untracked files
  * have no base to diff against, so they fall back to a `--no-index` diff of
  * `/dev/null` against the file, which renders their whole contents as additions.
@@ -582,10 +649,10 @@ export async function listChangedFiles(
 export async function fileDiff(
   runner: GitRunner,
   worktreePath: string,
-  baseBranch: string,
+  baseRef: string,
   path: string,
 ): Promise<string> {
-  const base = await resolveDiffBase(runner, worktreePath, baseBranch);
+  const base = await resolveDiffBase(runner, worktreePath, baseRef);
   const tracked = await git(runner, ["diff", base, "--", path], worktreePath);
   if (tracked.trim()) return tracked;
 

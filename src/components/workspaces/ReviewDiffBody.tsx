@@ -128,7 +128,8 @@ export default function ReviewDiffBody({
   workspaceRepoId: string;
   /** This file's comments only; the caller filters by path. */
   comments: ReviewComment[];
-  onAdd: (input: CreateReviewCommentInput) => Promise<void>;
+  /** Leaving this out renders the diff with no way to start a comment. */
+  onAdd?: (input: CreateReviewCommentInput) => Promise<void>;
   onToggleResolved: (comment: ReviewComment) => void;
   onDelete: (comment: ReviewComment) => void;
 }) {
@@ -186,6 +187,7 @@ export default function ReviewDiffBody({
   }
 
   const save = async (range: LineRange, body: string) => {
+    if (!onAdd) return;
     await onAdd({
       workspaceRepoId,
       path,
@@ -200,6 +202,7 @@ export default function ReviewDiffBody({
     <div className="h-full overflow-auto bg-zinc-950 font-mono text-xs leading-relaxed">
       {rows.map((row, i) => {
         const line = row.rightLine;
+        const commentLine = onAdd ? line : null;
         const selected = covers(dragging, line) || covers(draft, line);
         const lineComments = line === null ? undefined : byLine.get(line);
         const composing = draft !== null && line === draft.end;
@@ -216,21 +219,23 @@ export default function ReviewDiffBody({
               {/* biome-ignore lint/a11y/noStaticElementInteractions: a pointer-only shortcut for the "+" button it contains, which is the keyboard and screen-reader path */}
               <span
                 className={`relative flex w-12 shrink-0 select-none items-center justify-end pr-2 text-zinc-600 ${
-                  line === null ? "" : "cursor-ns-resize"
+                  commentLine === null ? "" : "cursor-ns-resize"
                 }`}
                 onMouseDown={
-                  line === null
+                  commentLine === null
                     ? undefined
                     : (e) => {
                         e.preventDefault();
-                        startDrag(line);
+                        startDrag(commentLine);
                       }
                 }
-                onMouseEnter={line === null ? undefined : () => extendDrag(line)}
+                onMouseEnter={commentLine === null ? undefined : () => extendDrag(commentLine)}
               >
-                {line !== null && (
+                {commentLine !== null && (
                   <LineActions>
-                    <AddCommentButton onClick={() => setDraft({ start: line, end: line })} />
+                    <AddCommentButton
+                      onClick={() => setDraft({ start: commentLine, end: commentLine })}
+                    />
                   </LineActions>
                 )}
                 <span>{line ?? ""}</span>

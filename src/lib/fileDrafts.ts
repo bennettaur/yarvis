@@ -36,13 +36,20 @@ export interface FileDraft {
 const SEPARATOR = "\u0000";
 
 /** Identifies one file within a workspace — and, unchanged, is how a terminal
- *  surface names the editor tab showing it (`editorTabKey`). */
-export const fileKey = (repoId: string, path: string): string => `${repoId}${SEPARATOR}${path}`;
+ *  surface names the editor tab showing it (`editorTabKey`). `worktree` is set
+ *  for a file in one of the repo's other worktrees, where the same path is a
+ *  different file. */
+export const fileKey = (repoId: string, path: string, worktree?: string): string =>
+  worktree ? `${repoId}${SEPARATOR}${path}${SEPARATOR}${worktree}` : `${repoId}${SEPARATOR}${path}`;
 
 /** Identifies one file's buffer. Composed from `fileKey` so the half of the key
  *  the tab strip matches on cannot drift from what this produces. */
-export const draftKey = (workspaceId: string, repoId: string, path: string): string =>
-  `${workspaceId}${SEPARATOR}${fileKey(repoId, path)}`;
+export const draftKey = (
+  workspaceId: string,
+  repoId: string,
+  path: string,
+  worktree?: string,
+): string => `${workspaceId}${SEPARATOR}${fileKey(repoId, path, worktree)}`;
 
 let drafts: ReadonlyMap<string, FileDraft> = new Map();
 /**

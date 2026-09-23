@@ -204,20 +204,67 @@ export async function ignoreWorkspaceError(id: string): Promise<WorkspaceDetail>
   return res.json();
 }
 
+/**
+ * One of a workspace repo's worktrees. `primary` is the one provisioning cut;
+ * the rest are worktrees an agent added inside the workspace folder, typically
+ * one per layer of a stack of pull requests.
+ */
+export interface WorkspaceWorktree {
+  path: string;
+  /** Null on a detached HEAD. */
+  branch: string | null;
+  primary: boolean;
+}
+
+export interface WorkspaceRepoWorktrees {
+  workspaceRepoId: string;
+  worktrees: WorkspaceWorktree[];
+  /** Why only the primary worktree is listed, when git couldn't be asked. */
+  error: string | null;
+}
+
+/** Every ready repo's worktrees inside the workspace folder, primary first. */
+export async function listWorkspaceWorktrees(
+  workspaceId: string,
+): Promise<WorkspaceRepoWorktrees[]> {
+  const res = await sidecarFetch(`/api/workspaces/${workspaceId}/worktrees`);
+  if (!res.ok) return readError(res, "list worktrees");
+  return res.json();
+}
+
+/**
+ * The query string that points a per-repo read at one of its other worktrees.
+ * Empty for the primary worktree, which the sidecar reads by default.
+ */
+function worktreeQuery(worktree: string | undefined, prefix: "?" | "&"): string {
+  return worktree ? `${prefix}worktree=${encodeURIComponent(worktree)}` : "";
+}
+
 export async function workspaceRepoFiles(
   workspaceId: string,
   workspaceRepoId: string,
+  worktree?: string,
 ): Promise<string[]> {
-  const res = await sidecarFetch(`/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/files`);
+  const res = await sidecarFetch(
+    `/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/files${worktreeQuery(worktree, "?")}`,
+  );
   if (!res.ok) return readError(res, "list files");
   return res.json();
 }
 
+/**
+ * Files changed on a worktree's branch. For a worktree stacked on another one
+ * in the workspace, that is measured from the branch below it, so each layer
+ * shows only its own changes.
+ */
 export async function workspaceRepoChanges(
   workspaceId: string,
   workspaceRepoId: string,
+  worktree?: string,
 ): Promise<ChangedFile[]> {
-  const res = await sidecarFetch(`/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/changes`);
+  const res = await sidecarFetch(
+    `/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/changes${worktreeQuery(worktree, "?")}`,
+  );
   if (!res.ok) return readError(res, "list changes");
   return res.json();
 }
@@ -233,9 +280,10 @@ export async function workspaceRepoFileDiff(
   workspaceId: string,
   workspaceRepoId: string,
   path: string,
+  worktree?: string,
 ): Promise<FileDiff> {
   const res = await sidecarFetch(
-    `/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/diff?path=${encodeURIComponent(path)}`,
+    `/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/diff?path=${encodeURIComponent(path)}${worktreeQuery(worktree, "&")}`,
   );
   if (!res.ok) return readError(res, "load file diff");
   return res.json();
@@ -277,9 +325,10 @@ export async function workspaceRepoFile(
   workspaceId: string,
   workspaceRepoId: string,
   path: string,
+  worktree?: string,
 ): Promise<WorkspaceFile> {
   const res = await sidecarFetch(
-    `/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/file?path=${encodeURIComponent(path)}`,
+    `/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/file?path=${encodeURIComponent(path)}${worktreeQuery(worktree, "&")}`,
   );
   if (!res.ok) return readError(res, "load file");
   return res.json();
@@ -293,11 +342,12 @@ export async function saveWorkspaceRepoFile(
   path: string,
   content: string,
   expectedHash: string,
+  worktree?: string,
 ): Promise<SaveFileResult> {
   const res = await sidecarFetch(`/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/file`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path, content, expectedHash }),
+    body: JSON.stringify({ path, content, expectedHash, worktree }),
   });
   if (res.status === 409) {
     throw new FileConflictError("This file changed on disk since you opened it.");
@@ -333,9 +383,42 @@ export interface WorkspaceStack {
 export async function workspaceRepoStack(
   workspaceId: string,
   workspaceRepoId: string,
+  worktree?: string,
 ): Promise<WorkspaceStack> {
-  const res = await sidecarFetch(`/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/stack`);
+  const res = await sidecarFetch(
+    `/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/stack${worktreeQuery(worktree, "?")}`,
+  );
   if (!res.ok) return readError(res, "load stack");
+  return res.json();
+}
+
+/** The PR on a worktree's branch, as the poller would cache it. */
+export type BranchPr = Pick<
+  WorkspaceRepoPr,
+  | "prNumber"
+  | "prUrl"
+  | "prState"
+  | "isDraft"
+  | "mergeable"
+  | "checkRollup"
+  | "checks"
+  | "reviewDecision"
+>;
+
+/**
+ * The PR on one of a repo's other worktrees, read live from the provider. The
+ * poller only watches the primary branch, so this is what the Checks tab asks
+ * for any other one. `pr` is null when no configured provider covers the repo.
+ */
+export async function worktreePr(
+  workspaceId: string,
+  workspaceRepoId: string,
+  worktree: string,
+): Promise<{ branch: string | null; pr: BranchPr | null }> {
+  const res = await sidecarFetch(
+    `/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/pr${worktreeQuery(worktree, "?")}`,
+  );
+  if (!res.ok) return readError(res, "load pull request");
   return res.json();
 }
 
@@ -360,13 +443,14 @@ export async function mergeWorkspaceRepoStack(
   upTo: number,
   expect: number[],
   method?: MergeMethod,
+  worktree?: string,
 ): Promise<StackMergeResult> {
   const res = await sidecarFetch(
     `/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/stack/merge`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ upTo, expect, method }),
+      body: JSON.stringify({ upTo, expect, method, worktree }),
     },
   );
   if (!res.ok) return readError(res, "merge stack");

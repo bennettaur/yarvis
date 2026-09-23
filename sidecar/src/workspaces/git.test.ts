@@ -7,6 +7,7 @@ import {
   branchExists,
   branchSync,
   createWorktree,
+  defaultGitRunner,
   detectDefaultBranch,
   existingWorktree,
   fetchBranch,
@@ -16,7 +17,9 @@ import {
   listChangedFiles,
   listFiles,
   listRemoteBranches,
+  listWorktrees,
   mergeBaseIntoWorktree,
+  nearestBaseRef,
   pushBranch,
   removeWorktree,
   updateDefaultBranch,
@@ -210,6 +213,79 @@ describe("existingWorktree", () => {
   });
 });
 
+describe("listWorktrees", () => {
+  const record = (...fields: string[]) => `${fields.join("\0")}\0\0`;
+
+  it("lists each worktree with its branch, leaving out a bare entry", async () => {
+    const stdout =
+      record("worktree /repo.git", "bare") +
+      record("worktree /ws/api", "HEAD abc", "branch refs/heads/stack/api") +
+      record("worktree /ws/scratch", "HEAD def", "detached");
+    const { runner } = fakeRunner((args) => (args[0] === "worktree" ? { stdout } : {}));
+
+    expect(await listWorktrees(runner, "/repo.git")).toEqual([
+      { path: "/ws/api", branch: "stack/api" },
+      { path: "/ws/scratch", branch: null },
+    ]);
+  });
+});
+
+describe("nearestBaseRef", () => {
+  /**
+   * A real repo, since the answer is a property of the commit graph: `main`,
+   * `auth` stacked on it, `api` stacked on `auth`, and `docs` cut from `main`
+   * beside them.
+   */
+  async function stackedRepo(): Promise<{ dir: string; checkout: (b: string) => Promise<void> }> {
+    const dir = mkdtempSync(join(tmpdir(), "yarvis-stack-"));
+    tmpDirs.push(dir);
+    const git = async (...args: string[]) => {
+      const result = await defaultGitRunner(
+        ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args],
+        { cwd: dir },
+      );
+      if (result.exitCode !== 0) throw new Error(result.stderr);
+    };
+    const commit = async (file: string) => {
+      writeFileSync(join(dir, file), file);
+      await git("add", file);
+      await git("commit", "-m", file);
+    };
+    await git("init", "-b", "main");
+    await commit("base");
+    await git("checkout", "-b", "auth");
+    await commit("auth-1");
+    await commit("auth-2");
+    await git("checkout", "-b", "api");
+    await commit("api-1");
+    await git("checkout", "-b", "docs", "main");
+    await commit("docs-1");
+    return { dir, checkout: (branch) => git("checkout", branch) };
+  }
+
+  const candidates = ["refs/heads/auth", "refs/heads/api", "refs/heads/docs"];
+
+  it("picks the branch a layer is stacked on", async () => {
+    const { dir, checkout } = await stackedRepo();
+    await checkout("api");
+    expect(await nearestBaseRef(defaultGitRunner, dir, "main", candidates)).toBe("refs/heads/auth");
+  });
+
+  it("falls back to the base for the bottom layer, skipping the layer above it", async () => {
+    const { dir, checkout } = await stackedRepo();
+    await checkout("auth");
+    expect(await nearestBaseRef(defaultGitRunner, dir, "main", candidates)).toBe("main");
+  });
+
+  // Two branches cut from the same commit fork from each other exactly where
+  // they fork from main, and neither is stacked on the other.
+  it("prefers the base over an unrelated branch cut from the same commit", async () => {
+    const { dir, checkout } = await stackedRepo();
+    await checkout("docs");
+    expect(await nearestBaseRef(defaultGitRunner, dir, "main", candidates)).toBe("main");
+  });
+});
+
 describe("fetchBranch", () => {
   it("fetches a single branch with no checkout", async () => {
     const { runner, calls } = fakeRunner(() => ({}));
@@ -267,7 +343,7 @@ describe("listChangedFiles", () => {
       if (args[0] === "merge-base") return { stdout: "abc123\n" };
       return {};
     });
-    await listChangedFiles(runner, "/wt", "main");
+    await listChangedFiles(runner, "/wt", "origin/main");
     expect(calls[0]).toEqual(["merge-base", "origin/main", "HEAD"]);
     // Both the name-status and numstat diffs use the resolved start ref.
     expect(calls.filter((c) => c[0] === "diff").every((c) => c[2] === "abc123")).toBe(true);
@@ -278,7 +354,7 @@ describe("listChangedFiles", () => {
       if (args[0] === "merge-base") return { exitCode: 1 };
       return {};
     });
-    await listChangedFiles(runner, "/wt", "main");
+    await listChangedFiles(runner, "/wt", "origin/main");
     expect(calls.filter((c) => c[0] === "diff").every((c) => c[2] === "origin/main")).toBe(true);
   });
 
@@ -295,7 +371,7 @@ describe("listChangedFiles", () => {
       return {};
     });
 
-    const changed = await listChangedFiles(runner, "/wt", "main");
+    const changed = await listChangedFiles(runner, "/wt", "origin/main");
     const byPath = new Map(changed.map((c) => [c.path, c]));
 
     expect(byPath.get("src/a.ts")).toEqual({
@@ -323,7 +399,7 @@ describe("fileDiff", () => {
       if (args[0] === "merge-base") return { stdout: "abc123\n" };
       return args[0] === "diff" ? { stdout: "@@ -1 +1 @@\n-old\n+new\n" } : {};
     });
-    expect(await fileDiff(runner, "/wt", "main", "src/a.ts")).toContain("+new");
+    expect(await fileDiff(runner, "/wt", "origin/main", "src/a.ts")).toContain("+new");
     expect(calls[0]).toEqual(["merge-base", "origin/main", "HEAD"]);
     expect(calls[1]).toEqual(["diff", "abc123", "--", "src/a.ts"]);
   });
@@ -335,7 +411,7 @@ describe("fileDiff", () => {
         return { stdout: "@@ -0,0 +1 @@\n+brand new\n", exitCode: 1 };
       return { stdout: "" }; // tracked diff is empty for an untracked path
     });
-    const patch = await fileDiff(runner, "/wt", "main", "new.ts");
+    const patch = await fileDiff(runner, "/wt", "origin/main", "new.ts");
     expect(patch).toContain("+brand new");
     expect(calls[2]).toEqual(["diff", "--no-index", "--", "/dev/null", "new.ts"]);
   });
@@ -346,7 +422,7 @@ describe("fileDiff", () => {
       if (args.includes("--no-index")) return { stderr: "boom", exitCode: 128 };
       return { stdout: "" };
     });
-    await expect(fileDiff(runner, "/wt", "main", "missing.ts")).rejects.toThrow("boom");
+    await expect(fileDiff(runner, "/wt", "origin/main", "missing.ts")).rejects.toThrow("boom");
   });
 });
 

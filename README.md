@@ -601,6 +601,33 @@ it once the worktrees are actually gone: they were scaffolding for work that is
 done. An archive that stops partway (a worktree that won't remove) is still
 reopenable, so its comments are left where they are.
 
+#### Other worktrees in the workspace
+
+An agent building a stack of pull requests usually gives each branch a worktree
+of its own, and the branch the workspace started on isn't always one of the
+layers. The right column finds every worktree of a repo's clone that sits inside
+the workspace folder — `<workspace>/widget-api`, `widget/.claude/worktrees/x`,
+wherever the agent put it — and a picker at the top of the column switches
+between them. With more than one repo the picker groups them by repo. The line
+under it always names the branch you are looking at.
+
+Switching runs no `git checkout`: each worktree already has its branch checked
+out, and the agent may be working in any of them. **All files**, **Changed**,
+**PR checks** and **Stack** read the picked worktree, and a file opened from it
+gets its own tab, titled with the branch. **Changed** measures a stacked branch
+from the branch below it rather than from the trunk, so each layer shows only
+its own changes, the way its pull request does. The layer below is found from
+local git history among the workspace's worktree branches. A layer whose parent
+has no worktree here is measured from the next one down that does, or from the
+trunk.
+
+The workspace's own branch keeps its polled PR checks and header badges. For
+any other worktree, **PR checks** looks the PR up when you open it and offers
+**Refresh**. A diff from another worktree takes no review comments: comments
+are filed by repo and path, so one left there would turn up on the workspace
+branch's copy of the file. In the **Stack** tab, a layer checked out in another
+worktree has a **View** button that switches the column to it.
+
 #### Stacked pull requests
 
 The **Stack** tab in the right column shows the chain of pull requests this

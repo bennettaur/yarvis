@@ -1332,8 +1332,13 @@ function WorkspaceDetailView({
                   initialTab="none"
                   openFileDiff={diffRequest}
                   onFileDiffOpened={() => setDiffRequest(null)}
-                  renderFileDiff={({ repoId, path }) => (
-                    <WorkspaceFileDiff workspaceId={detail.id} repoId={repoId} path={path} />
+                  renderFileDiff={({ repoId, path, worktree }) => (
+                    <WorkspaceFileDiff
+                      workspaceId={detail.id}
+                      repoId={repoId}
+                      path={path}
+                      worktree={worktree}
+                    />
                   )}
                   openFileEditor={editorRequest}
                   onFileEditorOpened={() => setEditorRequest(null)}
@@ -1342,19 +1347,20 @@ function WorkspaceDetailView({
                   // conflict state on screen under the new file's name — and
                   // "Overwrite with mine" would then write those contents to
                   // this file, with a hash fresh enough to pass the guard.
-                  renderFileEditor={({ repoId, path }) => (
+                  renderFileEditor={({ repoId, path, worktree }) => (
                     <Suspense fallback={<p className="p-3 text-xs text-zinc-500">Loading…</p>}>
                       <WorkspaceFileEditor
-                        key={fileKey(repoId, path)}
+                        key={fileKey(repoId, path, worktree)}
                         workspaceId={detail.id}
                         repoId={repoId}
                         path={path}
+                        worktree={worktree}
                       />
                     </Suspense>
                   )}
                   dirtyEditorKeys={dirtyEditorKeys}
-                  onDiscardEditor={({ repoId, path }) =>
-                    clearDraft(draftKey(detail.id, repoId, path))
+                  onDiscardEditor={({ repoId, path, worktree }) =>
+                    clearDraft(draftKey(detail.id, repoId, path, worktree))
                   }
                   openSetupLog={setupLogRequest}
                   onSetupLogOpened={() => setSetupLogRequest(null)}
@@ -1415,8 +1421,8 @@ function WorkspaceDetailView({
             <WorkspaceSidePanel
               workspaceId={detail.id}
               repos={detail.repos}
-              onOpenFile={(repoId, path) => setDiffRequest({ repoId, path })}
-              onEditFile={(repoId, path) => setEditorRequest({ repoId, path })}
+              onOpenFile={setDiffRequest}
+              onEditFile={setEditorRequest}
             />
           }
         />

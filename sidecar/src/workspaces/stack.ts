@@ -21,7 +21,9 @@ import { GitHubClient } from "../github/client.ts";
 import { redactSecrets } from "../llm/errors.ts";
 import { type MergeMethod, NO_PULL_REQUEST, type PrStack, type StackEntry } from "../pr/types.ts";
 import { type RunResult, run } from "./exec.ts";
+import { defaultGitRunner, type GitRunner } from "./git.ts";
 import { parseRepoRemote } from "./service.ts";
+import { resolveWorktree } from "./worktrees.ts";
 
 /** Runs `gh <args>` in a worktree. Injectable so tests never shell out. */
 export type GhRunner = (
@@ -302,9 +304,8 @@ export async function mergeStack(
 }
 
 /**
- * Everything reading or merging a workspace repo's stack needs: where the
- * worktree is, which GitHub repo it belongs to, and the pull request the poller
- * last found on its branch.
+ * Everything reading or merging a workspace repo's stack needs: which worktree
+ * to run `gh` in, which GitHub repo it belongs to, and the branch there.
  *
  * The repo is matched on its workspace as well as its own id. The sibling
  * read-only routes here trust the repo id alone, but this one leads to an
@@ -319,7 +320,16 @@ async function stackContext(
   db: Db,
   workspaceId: string,
   workspaceRepoId: string,
-): Promise<{ worktreePath: string; owner: string; repo: string; prNumber: number | null }> {
+  worktree: string | undefined,
+  git: GitRunner,
+): Promise<{
+  worktreePath: string;
+  owner: string;
+  repo: string;
+  branch: string | null;
+  /** The PR the poller last found, which it only looks for on the primary branch. */
+  polledPrNumber: number | null;
+}> {
   const [row] = await db
     .select({ wr: workspaceRepos, repo: repos, pr: workspaceRepoPr })
     .from(workspaceRepos)
@@ -334,13 +344,15 @@ async function stackContext(
   if (remote && remote.provider !== "github") {
     throw new Error("stacked pull requests are a GitHub feature");
   }
+  const target = await resolveWorktree(db, workspaceRepoId, worktree, git);
   return {
-    worktreePath: row.wr.worktreePath,
+    worktreePath: target.path,
     // The clone URL is the source of truth for a repo that has one; the
     // registration columns are the fallback, as in the poller.
     owner: remote?.provider === "github" ? remote.owner : row.repo.owner,
     repo: remote?.provider === "github" ? remote.repo : row.repo.repo,
-    prNumber: row.pr?.prNumber ?? null,
+    branch: target.branch,
+    polledPrNumber: target.primary ? (row.pr?.prNumber ?? null) : null,
   };
 }
 
@@ -350,16 +362,38 @@ async function readStack(
   config: Config,
   workspaceId: string,
   workspaceRepoId: string,
+  worktree: string | undefined,
   gh: GhRunner,
+  git: GitRunner,
 ): Promise<WorkspaceStack & { worktreePath: string }> {
-  const context = await stackContext(db, workspaceId, workspaceRepoId);
+  const { polledPrNumber, branch, ...context } = await stackContext(
+    db,
+    workspaceId,
+    workspaceRepoId,
+    worktree,
+    git,
+  );
   const token = config.secrets.githubToken;
-  const loaded = await loadWorkspaceStack({
-    gh,
-    client: token ? new GitHubClient(token) : null,
-    ...context,
-  });
-  return { ...loaded, worktreePath: context.worktreePath };
+  const client = token ? new GitHubClient(token) : null;
+
+  // The poller watches only the primary branch, so another worktree's PR is
+  // looked up here. Failing to find it still leaves the CLI's half to show.
+  let prNumber = polledPrNumber;
+  let lookupError: string | null = null;
+  if (prNumber === null && client && branch) {
+    try {
+      prNumber = (await client.findPrByBranch(context.owner, context.repo, branch))?.number ?? null;
+    } catch (e) {
+      lookupError = redactSecrets(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  const loaded = await loadWorkspaceStack({ gh, client, ...context, prNumber });
+  return {
+    ...loaded,
+    prStackError: loaded.prStackError ?? lookupError,
+    worktreePath: context.worktreePath,
+  };
 }
 
 /** The stack for one workspace repo, as the right-column Stack tab reads it. */
@@ -368,14 +402,18 @@ export async function workspaceRepoStack(
   config: Config,
   workspaceId: string,
   workspaceRepoId: string,
+  worktree?: string,
   gh: GhRunner = ghRunner(config.secrets.githubToken),
+  git: GitRunner = defaultGitRunner,
 ): Promise<WorkspaceStack> {
   const { stack, ghStackError, prStackError } = await readStack(
     db,
     config,
     workspaceId,
     workspaceRepoId,
+    worktree,
     gh,
+    git,
   );
   return { stack, ghStackError, prStackError };
 }
@@ -401,14 +439,18 @@ export async function mergeWorkspaceRepoStack(
   upToPrNumber: number,
   expected: number[],
   method?: MergeMethod,
+  worktree?: string,
   gh: GhRunner = ghRunner(config.secrets.githubToken),
+  git: GitRunner = defaultGitRunner,
 ): Promise<StackMergeResult> {
   const { stack, ghStackError, worktreePath } = await readStack(
     db,
     config,
     workspaceId,
     workspaceRepoId,
+    worktree,
     gh,
+    git,
   );
   if (ghStackError) throw new Error(`gh stack is not available here: ${ghStackError}`);
   if (!stack?.entries.some((entry) => entry.number === upToPrNumber)) {

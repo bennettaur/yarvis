@@ -34,10 +34,13 @@ export default function WorkspaceFileEditor({
   workspaceId,
   repoId,
   path,
+  worktree,
 }: {
   workspaceId: string;
   repoId: string;
   path: string;
+  /** One of the repo's other worktrees; the primary one when unset. */
+  worktree?: string;
 }) {
   const [file, setFile] = useState<WorkspaceFile | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -51,7 +54,7 @@ export default function WorkspaceFileEditor({
    *  reloading or by an explicit overwrite. */
   const [conflict, setConflict] = useState(false);
 
-  const key = draftKey(workspaceId, repoId, path);
+  const key = draftKey(workspaceId, repoId, path, worktree);
   const draft = useDraft(key);
 
   /** `live` is false once a newer read has been asked for, so two reads that
@@ -59,7 +62,7 @@ export default function WorkspaceFileEditor({
   const load = useCallback(
     async (live: () => boolean = () => true) => {
       try {
-        const next = await workspaceRepoFile(workspaceId, repoId, path);
+        const next = await workspaceRepoFile(workspaceId, repoId, path, worktree);
         if (!live()) return;
         setFile(next);
         setLoadError(null);
@@ -74,7 +77,7 @@ export default function WorkspaceFileEditor({
         setLoadError(e instanceof Error ? e.message : String(e));
       }
     },
-    [workspaceId, repoId, path, key],
+    [workspaceId, repoId, path, worktree, key],
   );
 
   useEffect(() => {
@@ -116,7 +119,14 @@ export default function WorkspaceFileEditor({
       setSaving(true);
       setSaveError(null);
       try {
-        const result = await saveWorkspaceRepoFile(workspaceId, repoId, path, text, baseHash);
+        const result = await saveWorkspaceRepoFile(
+          workspaceId,
+          repoId,
+          path,
+          text,
+          baseHash,
+          worktree,
+        );
         setFile({ ...file, content: text, hash: result.hash, size: result.size });
         // Anything typed while the write was in flight is a newer edit than what
         // landed, so it stays a draft rather than being dropped on the return.
@@ -130,7 +140,7 @@ export default function WorkspaceFileEditor({
         setSaving(false);
       }
     },
-    [file, editable, dirty, text, workspaceId, repoId, path, key],
+    [file, editable, dirty, text, workspaceId, repoId, path, worktree, key],
   );
 
   /** Re-reads the file, throwing away the unsaved buffer — the way out of a

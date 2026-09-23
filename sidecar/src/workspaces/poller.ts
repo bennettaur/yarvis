@@ -12,6 +12,7 @@ import { AzureDevOpsClient, isAllowedAzureOrgUrl } from "../azure/client.ts";
 import type { Config } from "../config.ts";
 import { type Db, getDb } from "../db/client.ts";
 import {
+  type Repo,
   repos,
   type WorkspaceRepoPr,
   workspaceRepoPr,
@@ -75,22 +76,30 @@ const NO_PR = {
   reviewDecision: null,
 } as const;
 
-/** Refreshes the PR cache for one GitHub repo's branch. */
-async function pollGithubRepo(
-  db: Db,
+/** What the PR cache holds for a branch, minus the bookkeeping columns. */
+export type BranchPr = Pick<
+  WorkspaceRepoPr,
+  | "prNumber"
+  | "prUrl"
+  | "prState"
+  | "isDraft"
+  | "mergeable"
+  | "checkRollup"
+  | "checks"
+  | "reviewDecision"
+>;
+
+/** The PR on one GitHub branch and where its checks stand. */
+async function githubBranchPr(
   gh: GitHubClient,
-  workspaceRepoId: string,
   owner: string,
   repo: string,
   branch: string,
-): Promise<void> {
+): Promise<BranchPr> {
   const pr = await gh.findPrByBranch(owner, repo, branch);
-  if (!pr) {
-    // No PR yet is the common early state — represent it explicitly so the UI
-    // can show "no PR" rather than "not polled".
-    await upsertPr(db, workspaceRepoId, { ...NO_PR, lastPolledAt: new Date(), lastError: null });
-    return;
-  }
+  // No PR yet is the common early state — represent it explicitly so the UI
+  // can show "no PR" rather than "not polled".
+  if (!pr) return NO_PR;
   const status = await gh.prStatus(owner, repo, pr.number);
   // The verdict costs an extra request, so only ask where it can change what
   // the user does next: a draft or an already-closed PR isn't waiting on review.
@@ -102,7 +111,7 @@ async function pollGithubRepo(
   const reviewDecision = awaitingReview
     ? await gh.prReviewDecision(owner, repo, pr.number).catch(() => null)
     : null;
-  await upsertPr(db, workspaceRepoId, {
+  return {
     prNumber: pr.number,
     prUrl: pr.url,
     prState: status.merged ? "merged" : status.state,
@@ -111,29 +120,22 @@ async function pollGithubRepo(
     checkRollup: deriveRollup(status.checks),
     checks: status.checks,
     reviewDecision,
-    lastPolledAt: new Date(),
-    lastError: null,
-  });
+  };
 }
 
-/** Refreshes the PR cache for one Azure DevOps repo's branch. Azure check
- *  rollups aren't fetched here (policy evaluations need a per-PR call), so the
- *  row records the PR identity/state with an empty check summary. */
-async function pollAzureRepo(
-  db: Db,
+/** The PR on one Azure DevOps branch. Azure check rollups aren't fetched here
+ *  (policy evaluations need a per-PR call), so it carries the PR identity and
+ *  state with an empty check summary. */
+async function azureBranchPr(
   az: AzureDevOpsClient,
-  workspaceRepoId: string,
   project: string,
   repo: string,
   branch: string,
-): Promise<void> {
+): Promise<BranchPr> {
   const pr = await az.findPrByBranch(project, repo, branch);
-  if (!pr) {
-    await upsertPr(db, workspaceRepoId, { ...NO_PR, lastPolledAt: new Date(), lastError: null });
-    return;
-  }
+  if (!pr) return NO_PR;
   const awaitingReview = pr.state === "open" && !pr.draft;
-  await upsertPr(db, workspaceRepoId, {
+  return {
     prNumber: pr.number,
     prUrl: pr.url,
     prState: pr.state,
@@ -142,9 +144,51 @@ async function pollAzureRepo(
     checkRollup: "none",
     checks: null,
     reviewDecision: awaitingReview ? pr.reviewDecision : null,
-    lastPolledAt: new Date(),
-    lastError: null,
-  });
+  };
+}
+
+/**
+ * The PR on one of a repo's branches, from whichever provider its clone URL
+ * names. Null when no client can reach that provider: no token, or an Azure
+ * org other than the configured one, where a lookup would only 404.
+ */
+function branchPr(clients: PollerClients, repo: Repo, branch: string): Promise<BranchPr> | null {
+  const remote = parseRepoRemote(repo.cloneUrl);
+  if (remote?.provider === "azure") {
+    if (!clients.azure || clients.azure.org.toLowerCase() !== remote.org.toLowerCase()) return null;
+    return azureBranchPr(clients.azure, remote.project, remote.repo, branch);
+  }
+  if (!clients.github) return null;
+  // GitHub owner/repo are stored on the row at registration; fall back to
+  // them when the clone URL doesn't parse.
+  const owner = remote?.provider === "github" ? remote.owner : repo.owner;
+  const repoName = remote?.provider === "github" ? remote.repo : repo.repo;
+  return githubBranchPr(clients.github, owner, repoName, branch);
+}
+
+/** The provider clients the configured tokens allow. */
+export function pollerClients(config: Config): PollerClients {
+  const { githubToken, azureDevopsToken, azureDevopsOrgUrl } = config.secrets;
+  return {
+    github: githubToken ? new GitHubClient(githubToken) : undefined,
+    azure:
+      azureDevopsToken && azureDevopsOrgUrl && isAllowedAzureOrgUrl(azureDevopsOrgUrl)
+        ? new AzureDevOpsClient(azureDevopsToken, azureDevopsOrgUrl)
+        : undefined,
+  };
+}
+
+/**
+ * The PR on a branch the poller doesn't watch — a worktree an agent created
+ * beside the workspace's own — read when the user asks rather than cached. Null
+ * when no configured provider can answer for this repo.
+ */
+export function lookupBranchPr(
+  config: Config,
+  repo: Repo,
+  branch: string,
+): Promise<BranchPr | null> {
+  return branchPr(pollerClients(config), repo, branch) ?? Promise.resolve(null);
 }
 
 /** Refreshes the PR cache for every ready repo in an active workspace. */
@@ -158,22 +202,9 @@ export async function pollOnce(db: Db, clients: PollerClients): Promise<void> {
 
   for (const { wr, repo } of rows) {
     try {
-      const remote = parseRepoRemote(repo.cloneUrl);
-      if (remote?.provider === "azure") {
-        // Skip Azure repos we can't reach: no client (token/org unset) or a
-        // different org than this client is configured for (a cross-org lookup
-        // would 404 and just churn lastError).
-        if (!clients.azure || clients.azure.org.toLowerCase() !== remote.org.toLowerCase())
-          continue;
-        await pollAzureRepo(db, clients.azure, wr.id, remote.project, remote.repo, wr.branch);
-        continue;
-      }
-      if (!clients.github) continue;
-      // GitHub owner/repo are stored on the row at registration; fall back to
-      // them when the clone URL doesn't parse.
-      const owner = remote?.provider === "github" ? remote.owner : repo.owner;
-      const repoName = remote?.provider === "github" ? remote.repo : repo.repo;
-      await pollGithubRepo(db, clients.github, wr.id, owner, repoName, wr.branch);
+      const pr = branchPr(clients, repo, wr.branch);
+      if (!pr) continue;
+      await upsertPr(db, wr.id, { ...(await pr), lastPolledAt: new Date(), lastError: null });
     } catch (e) {
       // One repo's failure (rate limit, 5xx) must not abort the cycle.
       const message = e instanceof Error ? e.message : String(e);
@@ -229,16 +260,10 @@ export async function reconcileOrphans(db: Db): Promise<void> {
  * GitHub-only or Azure-only token set still refreshes the repos it can reach.
  */
 export function startWorkspacePoller(config: Config): () => void {
-  const { githubToken, azureDevopsToken, azureDevopsOrgUrl } = config.secrets;
+  const { githubToken, azureDevopsToken } = config.secrets;
   if (!config.databaseUrl || (!githubToken && !azureDevopsToken)) return () => {};
   const db = getDb(config.databaseUrl).db;
-  const clients: PollerClients = {
-    github: githubToken ? new GitHubClient(githubToken) : undefined,
-    azure:
-      azureDevopsToken && azureDevopsOrgUrl && isAllowedAzureOrgUrl(azureDevopsOrgUrl)
-        ? new AzureDevOpsClient(azureDevopsToken, azureDevopsOrgUrl)
-        : undefined,
-  };
+  const clients = pollerClients(config);
 
   let running = false;
   const tick = async () => {
