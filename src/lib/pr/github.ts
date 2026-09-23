@@ -7,6 +7,7 @@ import type {
   NewComment,
   PrDetail,
   PrFile,
+  PrInvolvement,
   PrRef,
   PrStatus,
   PrSummary,
@@ -57,6 +58,14 @@ function toSummary(raw: GhRawSummary): PrSummary {
   };
 }
 
+interface GhRawInvolvement extends Omit<PrInvolvement, "summary"> {
+  summary: GhRawSummary;
+}
+
+function toInvolvement(raw: GhRawInvolvement): PrInvolvement {
+  return { ...raw, summary: toSummary(raw.summary) };
+}
+
 /** Narrows a ref to its GitHub variant (callers only pass GitHub refs here). */
 function gh(ref: PrRef): Extract<PrRef, { provider: "github" }> {
   if (ref.provider !== "github") throw new Error("expected a github ref");
@@ -79,7 +88,15 @@ export async function ghPrSummary(ref: PrRef): Promise<PrSummary> {
 }
 
 /** PRs the user is part-way through reviewing, split into outstanding and done. */
-export const ghReviewing = () => get<ReviewingList>("/api/github/reviewing");
+export async function ghReviewing(): Promise<ReviewingList> {
+  const raw = await get<{ inProgress: GhRawInvolvement[]; complete: GhRawInvolvement[] }>(
+    "/api/github/reviewing",
+  );
+  return {
+    inProgress: raw.inProgress.map(toInvolvement),
+    complete: raw.complete.map(toInvolvement),
+  };
+}
 
 export const ghPrConfig = () => get<GhPrConfig>("/api/github/config");
 export const ghSavePrConfig = (config: GhPrConfig) =>

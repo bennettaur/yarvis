@@ -111,7 +111,7 @@ mock.module("../lib/api", () => ({
       return json({ reviewQuery: "is:open", reviewingLookbackDays: 7 });
     if (path === "/api/github/reviewing")
       return json({
-        inProgress: [{ summary: summaryOf(REVIEWING_PR), merged: false, myReviewStates: [] }],
+        inProgress: [{ summary: REVIEWING_PR, merged: false, myReviewStates: [] }],
         complete: [],
       });
     // The PR status route is `refApiPath` itself, with no suffix.
