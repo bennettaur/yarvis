@@ -152,7 +152,11 @@ async function azureBranchPr(
  * names. Null when no client can reach that provider: no token, or an Azure
  * org other than the configured one, where a lookup would only 404.
  */
-function branchPr(clients: PollerClients, repo: Repo, branch: string): Promise<BranchPr> | null {
+async function branchPr(
+  clients: PollerClients,
+  repo: Repo,
+  branch: string,
+): Promise<BranchPr | null> {
   const remote = parseRepoRemote(repo.cloneUrl);
   if (remote?.provider === "azure") {
     if (!clients.azure || clients.azure.org.toLowerCase() !== remote.org.toLowerCase()) return null;
@@ -188,7 +192,7 @@ export function lookupBranchPr(
   repo: Repo,
   branch: string,
 ): Promise<BranchPr | null> {
-  return branchPr(pollerClients(config), repo, branch) ?? Promise.resolve(null);
+  return branchPr(pollerClients(config), repo, branch);
 }
 
 /** Refreshes the PR cache for every ready repo in an active workspace. */
@@ -202,9 +206,9 @@ export async function pollOnce(db: Db, clients: PollerClients): Promise<void> {
 
   for (const { wr, repo } of rows) {
     try {
-      const pr = branchPr(clients, repo, wr.branch);
+      const pr = await branchPr(clients, repo, wr.branch);
       if (!pr) continue;
-      await upsertPr(db, wr.id, { ...(await pr), lastPolledAt: new Date(), lastError: null });
+      await upsertPr(db, wr.id, { ...pr, lastPolledAt: new Date(), lastError: null });
     } catch (e) {
       // One repo's failure (rate limit, 5xx) must not abort the cycle.
       const message = e instanceof Error ? e.message : String(e);

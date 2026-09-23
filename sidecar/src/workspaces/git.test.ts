@@ -232,11 +232,15 @@ describe("listWorktrees", () => {
 
 describe("nearestBaseRef", () => {
   /**
-   * A real repo, since the answer is a property of the commit graph: `main`,
+   * A real repo, since which branch is nearest depends on the commit graph: `main`,
    * `auth` stacked on it, `api` stacked on `auth`, and `docs` cut from `main`
    * beside them.
    */
-  async function stackedRepo(): Promise<{ dir: string; checkout: (b: string) => Promise<void> }> {
+  async function stackedRepo(): Promise<{
+    dir: string;
+    checkout: (b: string) => Promise<void>;
+    commit: (file: string) => Promise<void>;
+  }> {
     const dir = mkdtempSync(join(tmpdir(), "yarvis-stack-"));
     tmpDirs.push(dir);
     const git = async (...args: string[]) => {
@@ -260,7 +264,7 @@ describe("nearestBaseRef", () => {
     await commit("api-1");
     await git("checkout", "-b", "docs", "main");
     await commit("docs-1");
-    return { dir, checkout: (branch) => git("checkout", branch) };
+    return { dir, checkout: (branch) => git("checkout", branch), commit };
   }
 
   const candidates = ["refs/heads/auth", "refs/heads/api", "refs/heads/docs"];
@@ -275,6 +279,16 @@ describe("nearestBaseRef", () => {
     const { dir, checkout } = await stackedRepo();
     await checkout("auth");
     expect(await nearestBaseRef(defaultGitRunner, dir, "main", candidates)).toBe("main");
+  });
+
+  // A layer below that gained commits since isn't an ancestor any more, but its
+  // fork point is still the closest — the state `gh stack rebase` exists for.
+  it("still finds a parent that moved on after the layer was cut", async () => {
+    const { dir, checkout, commit } = await stackedRepo();
+    await checkout("auth");
+    await commit("auth-3");
+    await checkout("api");
+    expect(await nearestBaseRef(defaultGitRunner, dir, "main", candidates)).toBe("refs/heads/auth");
   });
 
   // Two branches cut from the same commit fork from each other exactly where

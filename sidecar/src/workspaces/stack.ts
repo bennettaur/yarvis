@@ -377,7 +377,8 @@ async function readStack(
   const client = token ? new GitHubClient(token) : null;
 
   // The poller watches only the primary branch, so another worktree's PR is
-  // looked up here. Failing to find it still leaves the CLI's half to show.
+  // looked up here. A failed lookup is reported as `prStackError`; the stack
+  // from `gh stack view` still shows.
   let prNumber = polledPrNumber;
   let lookupError: string | null = null;
   if (prNumber === null && client && branch) {
@@ -396,15 +397,26 @@ async function readStack(
   };
 }
 
+/** Which worktree a stack call runs in, and the runners it uses — injectable so
+ *  tests never shell out. */
+export interface StackOptions {
+  /** One of the repo's other worktrees; the primary one when unset. */
+  worktree?: string;
+  gh?: GhRunner;
+  git?: GitRunner;
+}
+
 /** The stack for one workspace repo, as the right-column Stack tab reads it. */
 export async function workspaceRepoStack(
   db: Db,
   config: Config,
   workspaceId: string,
   workspaceRepoId: string,
-  worktree?: string,
-  gh: GhRunner = ghRunner(config.secrets.githubToken),
-  git: GitRunner = defaultGitRunner,
+  {
+    worktree,
+    gh = ghRunner(config.secrets.githubToken),
+    git = defaultGitRunner,
+  }: StackOptions = {},
 ): Promise<WorkspaceStack> {
   const { stack, ghStackError, prStackError } = await readStack(
     db,
@@ -438,10 +450,12 @@ export async function mergeWorkspaceRepoStack(
   workspaceRepoId: string,
   upToPrNumber: number,
   expected: number[],
-  method?: MergeMethod,
-  worktree?: string,
-  gh: GhRunner = ghRunner(config.secrets.githubToken),
-  git: GitRunner = defaultGitRunner,
+  {
+    method,
+    worktree,
+    gh = ghRunner(config.secrets.githubToken),
+    git = defaultGitRunner,
+  }: StackOptions & { method?: MergeMethod } = {},
 ): Promise<StackMergeResult> {
   const { stack, ghStackError, worktreePath } = await readStack(
     db,

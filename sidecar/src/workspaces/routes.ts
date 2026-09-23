@@ -3,7 +3,7 @@ import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import { redactSecrets } from "../llm/errors.ts";
+import { clientError, describeError } from "../llm/errors.ts";
 import { resolveWorkspaceBrief } from "./brief.ts";
 import { CONTROL_CHARACTERS, MAX_FILE_BYTES, WorktreeFileError } from "./files.ts";
 import { defaultGitRunner } from "./git.ts";
@@ -342,8 +342,9 @@ export function createWorkspaceRoutes(config: Config): Hono {
   const errorStatus = (e: unknown): 400 | 404 =>
     e instanceof Error && e.message.includes("not found") ? 404 : 400;
 
-  /** The `worktree` query parameter, or a 400 response when it is malformed. */
-  const worktreeQuery = (c: {
+  /** The parsed `worktree` query parameter, or the validation error for the
+   *  caller to answer 400 with. */
+  const parseWorktreeQuery = (c: {
     req: { query: (name: string) => string | undefined };
   }): { worktree: string | undefined } | { error: z.ZodError } => {
     const parsed = worktreeParam.safeParse(c.req.query("worktree"));
@@ -357,11 +358,15 @@ export function createWorkspaceRoutes(config: Config): Hono {
     if (!z.string().uuid().safeParse(id).success) {
       return c.json({ error: "invalid workspace id" }, 400);
     }
-    return c.json(await listWorkspaceWorktrees(db(), id, defaultGitRunner));
+    try {
+      return c.json(await listWorkspaceWorktrees(db(), id, defaultGitRunner));
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
+    }
   });
 
   router.get("/:id/repos/:wrId/files", async (c) => {
-    const query = worktreeQuery(c);
+    const query = parseWorktreeQuery(c);
     if ("error" in query) return c.json({ error: query.error.flatten() }, 400);
     try {
       return c.json(await workspaceRepoFiles(db(), c.req.param("wrId"), query.worktree));
@@ -371,7 +376,7 @@ export function createWorkspaceRoutes(config: Config): Hono {
   });
 
   router.get("/:id/repos/:wrId/changes", async (c) => {
-    const query = worktreeQuery(c);
+    const query = parseWorktreeQuery(c);
     if ("error" in query) return c.json({ error: query.error.flatten() }, 400);
     try {
       return c.json(await workspaceRepoChanges(db(), c.req.param("wrId"), query.worktree));
@@ -381,22 +386,28 @@ export function createWorkspaceRoutes(config: Config): Hono {
   });
 
   // The PR on a worktree's branch, read live. The primary worktree's is already
-  // cached by the poller; this is for the ones it doesn't watch.
+  // cached by the poller; this is for the ones it doesn't watch. Resolving the
+  // worktree fails locally (400/404); the provider call is the one that reaches
+  // out, so its failure is a 502 and is logged, as the PR routes do.
   router.get("/:id/repos/:wrId/pr", async (c) => {
-    const query = worktreeQuery(c);
+    if (!z.string().uuid().safeParse(c.req.param("wrId")).success) {
+      return c.json({ error: "invalid workspace repo id" }, 400);
+    }
+    const query = parseWorktreeQuery(c);
     if ("error" in query) return c.json({ error: query.error.flatten() }, 400);
+    let target: Awaited<ReturnType<typeof resolveWorktree>>;
     try {
-      const target = await resolveWorktree(
-        db(),
-        c.req.param("wrId"),
-        query.worktree,
-        defaultGitRunner,
-      );
-      const pr = target.branch ? await lookupBranchPr(config, target.repo, target.branch) : null;
+      target = await resolveWorktree(db(), c.req.param("wrId"), query.worktree, defaultGitRunner);
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
+    }
+    if (!target.branch) return c.json({ branch: null, pr: null });
+    try {
+      const pr = await lookupBranchPr(config, target.repo, target.branch);
       return c.json({ branch: target.branch, pr });
     } catch (e) {
-      const message = redactSecrets(e instanceof Error ? e.message : String(e));
-      return c.json({ error: message }, errorStatus(e));
+      console.error("[workspaces] PR lookup failed:", describeError(e));
+      return c.json({ error: clientError(e) }, 502);
     }
   });
 
@@ -434,17 +445,13 @@ export function createWorkspaceRoutes(config: Config): Hono {
   router.get("/:id/repos/:wrId/stack", async (c) => {
     const ids = stackIds(c);
     if (!ids) return c.json({ error: "invalid workspace or repo id" }, 400);
-    const query = worktreeQuery(c);
+    const query = parseWorktreeQuery(c);
     if ("error" in query) return c.json({ error: query.error.flatten() }, 400);
     try {
       return c.json(
-        await workspaceRepoStack(
-          db(),
-          config,
-          ids.workspaceId,
-          ids.workspaceRepoId,
-          query.worktree,
-        ),
+        await workspaceRepoStack(db(), config, ids.workspaceId, ids.workspaceRepoId, {
+          worktree: query.worktree,
+        }),
       );
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
@@ -466,8 +473,7 @@ export function createWorkspaceRoutes(config: Config): Hono {
         ids.workspaceRepoId,
         parsed.data.upTo,
         parsed.data.expect,
-        parsed.data.method,
-        parsed.data.worktree,
+        { method: parsed.data.method, worktree: parsed.data.worktree },
       );
       return c.json(result);
     } catch (e) {
@@ -479,7 +485,7 @@ export function createWorkspaceRoutes(config: Config): Hono {
   router.get("/:id/repos/:wrId/diff", async (c) => {
     const path = c.req.query("path");
     if (!path) return c.json({ error: "path query parameter is required" }, 400);
-    const query = worktreeQuery(c);
+    const query = parseWorktreeQuery(c);
     if ("error" in query) return c.json({ error: query.error.flatten() }, 400);
     try {
       return c.json(await workspaceRepoFileDiff(db(), c.req.param("wrId"), path, query.worktree));
@@ -499,7 +505,7 @@ export function createWorkspaceRoutes(config: Config): Hono {
     // about what a path is. `resolveInWorktree` is still the boundary.
     const path = worktreePath.safeParse(c.req.query("path"));
     if (!path.success) return c.json({ error: path.error.flatten() }, 400);
-    const query = worktreeQuery(c);
+    const query = parseWorktreeQuery(c);
     if ("error" in query) return c.json({ error: query.error.flatten() }, 400);
     try {
       return c.json(await workspaceRepoFile(db(), c.req.param("wrId"), path.data, query.worktree));

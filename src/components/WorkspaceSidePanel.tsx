@@ -87,7 +87,11 @@ export default function WorkspaceSidePanel({
   const openComments = comments.filter((c) => !isResolved(c)).length;
 
   const loadWorktrees = useCallback(() => listWorkspaceWorktrees(workspaceId), [workspaceId]);
-  const { data: discovered } = usePolled(loadWorktrees, sameWorktrees);
+  const { data: discovered } = usePolled(
+    loadWorktrees,
+    sameWorktrees,
+    WORKTREE_REFRESH_INTERVAL_MS,
+  );
   // A repo the listing hasn't answered for — not ready yet, or still loading —
   // offers its primary worktree alone.
   const worktreesFor = (r: WorkspaceRepoDetail): WorkspaceWorktree[] =>
@@ -98,20 +102,26 @@ export default function WorkspaceSidePanel({
   const repo = repos.find((r) => r.id === selection.repoId) ?? repos[0];
   if (!repo) return null;
   const repoWorktrees = worktreesFor(repo);
+  const primaryWorktree = repoWorktrees.find((w) => w.primary) ?? {
+    path: repo.worktreePath,
+    branch: repo.branch,
+    primary: true,
+  };
   // A worktree removed since it was picked falls back to the primary one.
   const worktree =
-    repoWorktrees.find((w) => (selection.worktree ? w.path === selection.worktree : w.primary)) ??
-    repoWorktrees[0]!;
+    (selection.worktree && repoWorktrees.find((w) => w.path === selection.worktree)) ||
+    primaryWorktree;
+  const listingError = discovered?.find((d) => d.workspaceRepoId === repo.id)?.error ?? null;
   const worktreePath = worktree.primary ? undefined : worktree.path;
   const optionCount = repos.reduce((n, r) => n + worktreesFor(r).length, 0);
 
-  const openTarget = (path: string): OpenFileDiff => ({
+  const fileRequest = (path: string): OpenFileDiff => ({
     repoId: repo.id,
     path,
     ...(worktreePath ? { worktree: worktreePath, worktreeLabel: worktreeLabel(worktree) } : {}),
   });
 
-  const options = (r: WorkspaceRepoDetail) =>
+  const worktreeOptions = (r: WorkspaceRepoDetail) =>
     worktreesFor(r).map((w) => (
       <option key={w.path} value={optionValue(r.id, w)}>
         {worktreeLabel(w)}
@@ -134,10 +144,10 @@ export default function WorkspaceSidePanel({
           {repos.length > 1
             ? repos.map((r) => (
                 <optgroup key={r.id} label={r.repo.name}>
-                  {options(r)}
+                  {worktreeOptions(r)}
                 </optgroup>
               ))
-            : options(repo)}
+            : worktreeOptions(repo)}
         </select>
       )}
       <div className="flex shrink-0 items-center gap-1 px-3 pt-1.5 text-xs text-zinc-500">
@@ -149,6 +159,11 @@ export default function WorkspaceSidePanel({
         </span>
         {!worktree.primary && <CopyPathButton path={worktree.path} />}
       </div>
+      {listingError && (
+        <p className="px-3 pt-1 text-xs text-zinc-600" title={listingError}>
+          Couldn't look for other worktrees of this repo.
+        </p>
+      )}
 
       <div className="flex shrink-0 gap-1 border-b border-zinc-800 px-2 pt-1">
         {VIEWS.map((v) => (
@@ -175,7 +190,7 @@ export default function WorkspaceSidePanel({
             workspaceId={workspaceId}
             repoId={repo.id}
             worktree={worktreePath}
-            onEditFile={(path) => onEditFile(openTarget(path))}
+            onEditFile={(path) => onEditFile(fileRequest(path))}
           />
         )}
         {view === "changes" && (
@@ -183,8 +198,8 @@ export default function WorkspaceSidePanel({
             workspaceId={workspaceId}
             repoId={repo.id}
             worktree={worktreePath}
-            onOpenFile={(path) => onOpenFile(openTarget(path))}
-            onEditFile={(path) => onEditFile(openTarget(path))}
+            onOpenFile={(path) => onOpenFile(fileRequest(path))}
+            onEditFile={(path) => onEditFile(fileRequest(path))}
           />
         )}
         {view === "comments" && (
@@ -225,16 +240,24 @@ export default function WorkspaceSidePanel({
 /**
  * How often the files / changes views refresh while the workspace is visible.
  * Picked to feel live without hammering git on every keystroke; the call is
- * already cheap (a single git command per repo).
+ * already cheap (a handful of local git commands per repo).
  */
 const REFRESH_INTERVAL_MS = 5_000;
+
+/**
+ * How often the worktree list refreshes. Slower than the file views: worktrees
+ * come and go only when an agent adds or removes one, and a picked worktree that
+ * disappears already falls back to the primary one.
+ */
+const WORKTREE_REFRESH_INTERVAL_MS = 15_000;
 
 /**
  * Subscribes to a worktree-derived list (files, changes, or the worktrees
  * themselves) and refreshes it on a fixed interval. Skips polling while the
  * tab/window is hidden so a backgrounded app doesn't keep firing git commands;
- * resumes on visibility. `load` is memoized by the caller on everything it
- * reads, so a change of repo or worktree starts a fresh poll. `same` lets the
+ * resumes on visibility. Callers must memoize `load` on everything it reads: a
+ * new identity restarts the poll, which is how a change of repo or worktree
+ * takes effect. `same` lets the
  * caller skip a re-render when the freshly-fetched data is deep-equal to what's
  * already shown, which keeps the list from flickering and holds the array's
  * identity steady so a view can memoize off it.
@@ -242,6 +265,7 @@ const REFRESH_INTERVAL_MS = 5_000;
 function usePolled<T>(
   load: () => Promise<T>,
   same: (prev: T | null, next: T) => boolean,
+  intervalMs: number = REFRESH_INTERVAL_MS,
 ): { data: T | null; error: string | null } {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -261,7 +285,7 @@ function usePolled<T>(
         setError(e instanceof Error ? e.message : String(e));
       } finally {
         if (live && !document.hidden) {
-          timer = setTimeout(tick, REFRESH_INTERVAL_MS);
+          timer = setTimeout(tick, intervalMs);
         }
       }
     };
@@ -282,7 +306,7 @@ function usePolled<T>(
       if (timer !== null) clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [load, same]);
+  }, [load, same, intervalMs]);
 
   return { data, error };
 }
@@ -518,7 +542,8 @@ function describeChecks(checks: {
 }
 
 /**
- * Builds a minimal PrSummary from the workspace poller's cache. Fields the
+ * Builds a minimal PrSummary from a repo's PR row, whether it came from the
+ * poller's cache or a live lookup. Fields the
  * poller doesn't store (title, author, timestamps) are filled with placeholders
  * — PrDetailView refetches the full detail anyway, so the only visible gap is
  * a brief blank title while the detail loads. The ref's provider comes from the
@@ -638,7 +663,8 @@ function WorktreeChecksView({
   worktree: string;
   branch: string | null;
 }) {
-  const [loaded, setLoaded] = useState<{ pr: WorkspaceRepoDetail["pr"] } | null>(null);
+  /** Undefined until the first read lands; null when no provider covers the repo. */
+  const [pr, setPr] = useState<WorkspaceRepoDetail["pr"] | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -647,10 +673,12 @@ function WorktreeChecksView({
     setError(null);
     try {
       const result = await worktreePr(workspaceId, repo.id, worktree);
-      setLoaded({
-        pr: result.pr && { ...result.pr, lastPolledAt: new Date().toISOString(), lastError: null },
-      });
+      // ChecksView reads a null `lastPolledAt` as "Not polled yet", so the read
+      // is stamped with the time it happened.
+      setPr(result.pr && { ...result.pr, lastPolledAt: new Date().toISOString(), lastError: null });
     } catch (e) {
+      // A PR already on screen stays: a failed refresh is a reason to say so,
+      // not to take away what the reader was looking at.
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
@@ -658,23 +686,24 @@ function WorktreeChecksView({
   }, [workspaceId, repo.id, worktree]);
 
   useEffect(() => {
-    setLoaded(null);
-    void load();
-  }, [load]);
+    setPr(undefined);
+    // A detached HEAD has no branch to look a PR up by.
+    if (branch) void load();
+  }, [load, branch]);
 
   if (!branch) {
     return <p className="text-xs text-zinc-500">This worktree is on a detached HEAD.</p>;
   }
-  if (error) return <p className="text-xs text-red-400">{error}</p>;
-  if (!loaded) return <p className="text-xs text-zinc-500">Loading…</p>;
-  if (!loaded.pr) {
-    return (
-      <p className="text-xs text-zinc-500">No provider is configured that can look up this PR.</p>
-    );
-  }
   return (
     <div className="space-y-2">
-      <ChecksView repo={{ ...repo, branch, pr: loaded.pr }} />
+      {error && <p className="text-xs text-red-400">{error}</p>}
+      {pr === undefined ? (
+        !error && <p className="text-xs text-zinc-500">Loading…</p>
+      ) : pr === null ? (
+        <p className="text-xs text-zinc-500">No provider is configured that can look up this PR.</p>
+      ) : (
+        <ChecksView repo={{ ...repo, branch, pr }} />
+      )}
       <button
         type="button"
         onClick={() => void load()}

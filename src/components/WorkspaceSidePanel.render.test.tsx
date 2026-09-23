@@ -8,6 +8,9 @@ let changes: ChangedFile[] = [];
 let worktrees: WorkspaceRepoWorktrees[] = [];
 /** The worktree each changes read asked for; undefined is the primary one. */
 let changesReadFrom: (string | undefined)[] = [];
+/** The worktrees a live PR lookup was asked for, and what it answers. */
+let prLookups: string[] = [];
+let prLookup: () => Promise<unknown> = async () => ({ branch: null, pr: null });
 
 // Only the worktree readers are stubbed; the rest of the module stays real so
 // sibling tests of `lib/workspaces` still see the actual implementations.
@@ -20,6 +23,10 @@ mock.module("../lib/workspaces", () => ({
     return changes;
   },
   listWorkspaceWorktrees: async () => worktrees,
+  worktreePr: async (_workspaceId: string, _repoId: string, worktree: string) => {
+    prLookups.push(worktree);
+    return prLookup();
+  },
 }));
 
 const { default: WorkspaceSidePanel } = await import("./WorkspaceSidePanel");
@@ -81,6 +88,8 @@ beforeEach(() => {
   resetClipboardWrites();
   worktrees = [];
   changesReadFrom = [];
+  prLookups = [];
+  prLookup = async () => ({ branch: "stack/api", pr: null });
   files = ["src/components/a.tsx", "src/components/b.tsx", "README.md"];
   changes = [
     { path: "src/components/a.tsx", status: "modified", additions: 3, deletions: 1 },
@@ -282,6 +291,42 @@ describe("WorkspaceSidePanel", () => {
       expect(opened).toEqual([
         { repoId: REPO.id, path: "README.md", worktree: STACKED, worktreeLabel: "stack/api" },
       ]);
+    });
+
+    // The poller only caches the workspace branch's PR, so another worktree's
+    // checks are a live lookup — and a failed one must still offer a retry.
+    it("looks the picked worktree's PR up live, and keeps Refresh after a failure", async () => {
+      prLookup = async () => {
+        throw new Error("load pull request failed (502)");
+      };
+      const host = await mount();
+      await pick(host, "stack/api");
+      await clickTab(host, "PR checks");
+
+      expect(prLookups).toEqual([STACKED]);
+      expect(host.textContent).toContain("load pull request failed (502)");
+      expect([...host.querySelectorAll("button")].some((b) => b.textContent === "Refresh")).toBe(
+        true,
+      );
+    });
+
+    it("asks no provider about a worktree on a detached HEAD", async () => {
+      worktrees = [
+        {
+          workspaceRepoId: REPO.id,
+          worktrees: [
+            { path: REPO.worktreePath, branch: "feature", primary: true },
+            { path: STACKED, branch: null, primary: false },
+          ],
+          error: null,
+        },
+      ];
+      const host = await mount();
+      await pick(host, "detached HEAD");
+      await clickTab(host, "PR checks");
+
+      expect(host.textContent).toContain("detached HEAD");
+      expect(prLookups).toEqual([]);
     });
   });
 

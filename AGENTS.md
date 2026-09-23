@@ -227,9 +227,9 @@ back to ad-hoc.
   underneath. Anything new that reaches into a worktree owes all of this. Which
   worktree is itself a client choice — the right column can read any worktree an
   agent added inside the workspace folder — so a worktree path from a request
-  becomes one only through `resolveWorktree` in `workspaces/worktrees.ts`, which
-  matches it against a fresh `git worktree list` of that repo's clone and hands
-  back git's path, not the caller's.
+  is used only after `resolveWorktree` in `workspaces/worktrees.ts` matches it
+  against a fresh `git worktree list` of that repo's clone, and what is used is
+  git's path, not the caller's.
 - Text a *model* composes that will be typed into another agent's prompt is the
   sharpest form of that, since the receiving agent acts on it with its own
   permissions. `claude.send` is the only such path and it is guarded on both

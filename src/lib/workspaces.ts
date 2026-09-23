@@ -408,7 +408,8 @@ export type BranchPr = Pick<
 /**
  * The PR on one of a repo's other worktrees, read live from the provider. The
  * poller only watches the primary branch, so this is what the Checks tab asks
- * for any other one. `pr` is null when no configured provider covers the repo.
+ * for any other one. `pr` is null when the worktree is on a detached HEAD or no
+ * configured provider covers the repo.
  */
 export async function worktreePr(
   workspaceId: string,

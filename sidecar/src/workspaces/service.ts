@@ -648,7 +648,8 @@ export async function workspaceRepoFiles(
   return listFiles(runner, target.path);
 }
 
-/** Files changed on a worktree's branch versus the branch it is stacked on. */
+/** Files changed on a worktree's branch versus the branch it is stacked on, or
+ *  the repo's base branch. */
 export async function workspaceRepoChanges(
   db: Db,
   workspaceRepoId: string,

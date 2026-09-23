@@ -35,10 +35,10 @@ export interface FileDraft {
  *  no pair of parts can spell out another pair's key. */
 const SEPARATOR = "\u0000";
 
-/** Identifies one file within a workspace — and, unchanged, is how a terminal
- *  surface names the editor tab showing it (`editorTabKey`). `worktree` is set
- *  for a file in one of the repo's other worktrees, where the same path is a
- *  different file. */
+/** Identifies one file within a workspace, and is how a terminal surface
+ *  matches an editor tab to its unsaved buffer (`dirtyEditorKeys`). `worktree`
+ *  is set for a file in one of the repo's other worktrees, where the same path
+ *  is a different file. */
 export const fileKey = (repoId: string, path: string, worktree?: string): string =>
   worktree ? `${repoId}${SEPARATOR}${path}${SEPARATOR}${worktree}` : `${repoId}${SEPARATOR}${path}`;
 

@@ -488,12 +488,12 @@ export async function removeWorktree(
 
 /**
  * Resolves the ref to diff a worktree's branch against: the merge-base of
- * `baseRef` (usually `origin/<baseBranch>`) and the worktree's `HEAD` — i.e. the
- * commit the branch was cut from. Diffing against this start ref rather than
- * `baseRef` directly keeps the "files changed" view stable when the base
- * advances past the branch point: new upstream commits aren't ancestors of
- * HEAD, so the merge-base doesn't move and they never show up as spurious
- * deletions.
+ * `baseRef` (`origin/<baseBranch>`, or the local branch a stacked layer sits on)
+ * and the worktree's `HEAD` — i.e. the commit the branch was cut from. Diffing
+ * against this start ref rather than `baseRef` directly keeps the "files
+ * changed" view stable when the base advances past the branch point: new
+ * commits on the base aren't ancestors of HEAD, so the merge-base doesn't move
+ * and they never show up as spurious deletions.
  *
  * Falls back to `baseRef` when no merge-base exists (unrelated histories) so
  * callers always get a usable ref.
@@ -509,14 +509,15 @@ async function resolveDiffBase(
 }
 
 /**
- * Which ref a worktree's branch is stacked on: the candidate whose fork point
- * with `HEAD` is closest to it, or `baseRef` when no candidate is closer.
+ * Which ref a worktree's branch is stacked on: the candidate with the fewest
+ * commits between it and `HEAD`, or `baseRef` when no candidate is closer.
  *
  * This is what lets a stacked branch's "files changed" view show only its own
  * layer, the way its pull request does, rather than every layer below it too.
  * It reads local git only, because the views that ask poll every few seconds
- * and `gh stack view` is a network call. A candidate already containing `HEAD`
- * is skipped: that is this branch itself, or one stacked on top of it. On a tie
+ * and `gh stack view` is a network call. `ref..HEAD` counts the commits since
+ * the fork point, so a count of 0 means the candidate already contains `HEAD` —
+ * this branch itself, or one stacked on top of it — and it is skipped. On a tie
  * the base wins, so two unrelated branches cut from the same commit don't read
  * as stacked on each other.
  */
@@ -526,28 +527,26 @@ export async function nearestBaseRef(
   baseRef: string,
   candidateRefs: string[],
 ): Promise<string> {
-  const commitsSinceForkPoint = async (ref: string): Promise<number | null> => {
-    const forkPoint = await runner(["merge-base", ref, "HEAD"], { cwd: worktreePath });
-    const sha = forkPoint.stdout.trim();
-    if (forkPoint.exitCode !== 0 || !sha) return null;
-    const count = await runner(["rev-list", "--count", `${sha}..HEAD`], { cwd: worktreePath });
+  if (candidateRefs.length === 0) return baseRef;
+  const commitsAhead = async (ref: string): Promise<number | null> => {
+    const count = await runner(["rev-list", "--count", `${ref}..HEAD`], { cwd: worktreePath });
     return count.exitCode === 0 ? Number(count.stdout.trim()) : null;
   };
 
-  let best = baseRef;
-  let bestDistance = (await commitsSinceForkPoint(baseRef)) ?? Number.POSITIVE_INFINITY;
-  for (const ref of candidateRefs) {
-    const contains = await runner(["merge-base", "--is-ancestor", "HEAD", ref], {
-      cwd: worktreePath,
-    });
-    if (contains.exitCode === 0) continue;
-    const distance = await commitsSinceForkPoint(ref);
-    if (distance !== null && distance < bestDistance) {
-      best = ref;
-      bestDistance = distance;
+  const [baseDistance, ...distances] = await Promise.all(
+    [baseRef, ...candidateRefs].map(commitsAhead),
+  );
+  let nearestRef = baseRef;
+  let nearestDistance = baseDistance ?? Number.POSITIVE_INFINITY;
+  candidateRefs.forEach((ref, i) => {
+    const distance = distances[i];
+    if (distance === null || distance === undefined || distance === 0) return;
+    if (distance < nearestDistance) {
+      nearestRef = ref;
+      nearestDistance = distance;
     }
-  }
-  return best;
+  });
+  return nearestRef;
 }
 
 /**

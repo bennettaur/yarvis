@@ -1,5 +1,6 @@
 /**
- * The worktrees a workspace repo has beyond the one provisioning cut.
+ * Every worktree of a workspace repo's clone that sits inside the workspace
+ * folder: the one provisioning cut, and any an agent added beside it.
  *
  * An agent building a stack of pull requests usually gives each branch its own
  * worktree, and the branch the workspace started on is not always a layer of
@@ -13,10 +14,11 @@
  */
 
 import { existsSync } from "node:fs";
-import { sep } from "node:path";
-import { and, eq } from "drizzle-orm";
+import { relative, sep } from "node:path";
+import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { type Repo, repos, type WorkspaceRepo, workspaceRepos, workspaces } from "../db/schema.ts";
+import { redactSecrets } from "../llm/errors.ts";
 import { canonicalPath, type GitRunner, listWorktrees, nearestBaseRef } from "./git.ts";
 
 export interface WorkspaceWorktree {
@@ -39,10 +41,24 @@ function isInside(path: string, root: string): boolean {
 }
 
 /**
+ * A worktree root inside a `.git` directory would let the editor routes reach
+ * that repo's config and hooks, which `resolveInWorktree` only refuses below
+ * the root. The listing comes from `.git/worktrees/*` in the clone, which an
+ * agent can write, so it is not trusted to have ruled this out.
+ */
+function underGitDir(path: string, root: string): boolean {
+  return relative(root, path)
+    .split(sep)
+    .some((segment) => segment.toLowerCase() === ".git");
+}
+
+/**
  * The repo's worktrees inside `workspaceRoot`, primary first.
  *
  * A worktree whose folder is gone is left out: git keeps listing it until the
- * next prune, but it has nothing left to show.
+ * next prune, but it has nothing left to show. A discovered worktree's path is
+ * the canonical one its containment was checked on, so a folder swapped for a
+ * symlink afterwards doesn't move where the caller ends up.
  */
 async function discoverWorktrees(
   runner: GitRunner,
@@ -54,17 +70,20 @@ async function discoverWorktrees(
   const primaryPath = canonicalPath(wr.worktreePath);
   const entries = await listWorktrees(runner, repo.primaryClonePath);
 
-  const primaryEntry = entries.find((entry) => canonicalPath(entry.path) === primaryPath);
+  const canonical = entries.map((entry) => ({ ...entry, path: canonicalPath(entry.path) }));
+  const primaryEntry = canonical.find((entry) => entry.path === primaryPath);
   const found: WorkspaceWorktree[] = [
     {
       path: wr.worktreePath,
+      // Not `?.branch ?? wr.branch`: a null branch here is a detached HEAD,
+      // which is worth showing, not a missing entry.
       branch: primaryEntry ? primaryEntry.branch : wr.branch,
       primary: true,
     },
   ];
-  for (const entry of entries) {
-    const path = canonicalPath(entry.path);
-    if (path === primaryPath || !isInside(path, root) || !existsSync(entry.path)) continue;
+  for (const entry of canonical) {
+    if (entry.path === primaryPath || !isInside(entry.path, root)) continue;
+    if (underGitDir(entry.path, root) || !existsSync(entry.path)) continue;
     found.push({ path: entry.path, branch: entry.branch, primary: false });
   }
   return found;
@@ -74,7 +93,7 @@ const primaryOnly = (wr: WorkspaceRepo): WorkspaceWorktree[] => [
   { path: wr.worktreePath, branch: wr.branch, primary: true },
 ];
 
-const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+const errorText = (e: unknown): string => redactSecrets(e instanceof Error ? e.message : String(e));
 
 /**
  * Every ready repo's worktrees in one workspace, for the right column's picker.
@@ -120,10 +139,16 @@ export interface ResolvedWorktree {
 /**
  * Resolves which worktree of a workspace repo a request means.
  *
- * With no `requested` path this is the primary worktree, and a clone that can't
- * be listed still answers with it so the views that worked before discovery
- * existed keep working. A requested path must match a discovered worktree; the
- * path returned is git's, not the caller's.
+ * With no `requested` path this is the primary worktree, returned even when the
+ * clone can't be listed, so the default views don't depend on `git worktree
+ * list` succeeding. A requested path must match a discovered worktree; the path
+ * returned is git's, not the caller's.
+ *
+ * A torn-down repo or an archived workspace doesn't resolve: an archived
+ * workspace's folder name can be reused by a new one, and its stale repo id
+ * must not reach the new workspace's worktrees. A repo whose setup failed still
+ * does, since "Ignore and use anyway" leaves it in `error` with a usable
+ * worktree.
  */
 export async function resolveWorktree(
   db: Db,
@@ -136,7 +161,13 @@ export async function resolveWorktree(
     .from(workspaceRepos)
     .innerJoin(repos, eq(workspaceRepos.repoId, repos.id))
     .innerJoin(workspaces, eq(workspaceRepos.workspaceId, workspaces.id))
-    .where(eq(workspaceRepos.id, workspaceRepoId));
+    .where(
+      and(
+        eq(workspaceRepos.id, workspaceRepoId),
+        ne(workspaceRepos.status, "removed"),
+        ne(workspaces.status, "archived"),
+      ),
+    );
   if (!row) throw new Error("workspace repo not found");
   const { wr, repo, rootPath } = row;
 
@@ -149,7 +180,9 @@ export async function resolveWorktree(
   }
 
   const target = requested ? canonicalPath(requested) : null;
-  const match = target ? all.find((w) => canonicalPath(w.path) === target) : all[0];
+  const match = target
+    ? all.find((w) => canonicalPath(w.path) === target)
+    : all.find((w) => w.primary);
   if (!match) throw new Error("worktree not found in this workspace");
   return { workspaceRepo: wr, repo, ...match, all };
 }

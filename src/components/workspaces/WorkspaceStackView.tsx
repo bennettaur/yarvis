@@ -19,9 +19,9 @@ import PrStackList from "../pr/PrStackList";
  * and a layer checked out in another of them can be switched to from its row —
  * which is how a stack built one worktree per branch is walked.
  *
- * Unlike the other right-column views this one isn't polled. Reading it costs a
+ * Unlike the file views beside it this one isn't polled. Reading it costs a
  * `gh stack view` subprocess plus provider round trips, where those views cost
- * one git command, and a stack changes on the user's own actions rather than on
+ * a few local git commands, and a stack changes on the user's own actions rather than on
  * its own — so it loads on open and offers a refresh.
  */
 
@@ -159,8 +159,9 @@ export default function WorkspaceStackView({
       <PrStackList
         stack={stack}
         rowAction={(entry) => {
-          const layerWorktree = worktrees.find((w) => w.branch && w.branch === entry.headRef);
-          if (!layerWorktree || entry.headRef === branch) return null;
+          if (entry.headRef === branch) return null;
+          const layerWorktree = worktrees.find((w) => w.branch === entry.headRef);
+          if (!layerWorktree) return null;
           return (
             <button
               type="button"
