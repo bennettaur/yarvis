@@ -8,7 +8,7 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { HashEmbedder } from "../memory/embedder.ts";
 import { resolveApproval } from "./approvals.ts";
-import { assembleAgentToolset } from "./chatTools.ts";
+import { assembleAgentToolset, modelToolKey } from "./chatTools.ts";
 import type { McpClientTool } from "./connectionManager.ts";
 
 /**
@@ -114,7 +114,7 @@ describe("auto-approved MCP tools", () => {
       },
     });
 
-    await tools[ASK_ID]?.execute?.({}, executeOptions);
+    await tools[modelToolKey(ASK_ID)]?.execute?.({}, executeOptions);
     expect(asked).toEqual([ASK_ID]);
   });
 
@@ -127,7 +127,7 @@ describe("auto-approved MCP tools", () => {
       },
     });
 
-    const result = await tools[AUTO_ID]?.execute?.({}, executeOptions);
+    const result = await tools[modelToolKey(AUTO_ID)]?.execute?.({}, executeOptions);
     expect(result).toEqual({ ran: "search_pages" });
     expect(asked).toEqual([]);
   });
@@ -142,7 +142,7 @@ describe("auto-approved MCP tools", () => {
       },
     });
 
-    await tools[ASK_ID]?.execute?.({}, executeOptions);
+    await tools[modelToolKey(ASK_ID)]?.execute?.({}, executeOptions);
     expect(asked).toEqual([ASK_ID]);
   });
 
@@ -162,7 +162,7 @@ describe("auto-approved MCP tools", () => {
       false,
     );
 
-    await tools[AUTO_ID]?.execute?.({}, executeOptions);
+    await tools[modelToolKey(AUTO_ID)]?.execute?.({}, executeOptions);
     expect(asked).toEqual([AUTO_ID]);
   });
 
@@ -171,8 +171,8 @@ describe("auto-approved MCP tools", () => {
   it("does not reach a surface that could never have asked", async () => {
     await setToolSettings(db, AUTO_ID, { approval: "auto" });
     const { tools } = await assemble(undefined);
-    expect(Object.keys(tools)).not.toContain(AUTO_ID);
-    expect(Object.keys(tools)).not.toContain(ASK_ID);
+    expect(Object.keys(tools)).not.toContain(modelToolKey(AUTO_ID));
+    expect(Object.keys(tools)).not.toContain(modelToolKey(ASK_ID));
   });
 
   // Consent was given for the tool as it was described then.
@@ -201,7 +201,7 @@ describe("auto-approved MCP tools", () => {
         resolveApproval(toolCallId, false);
       },
     });
-    await tools[AUTO_ID]?.execute?.({}, executeOptions);
+    await tools[modelToolKey(AUTO_ID)]?.execute?.({}, executeOptions);
     expect(asked).toEqual([AUTO_ID]);
   });
 });

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { type Tool, type ToolExecutionOptions, tool } from "ai";
 import { z } from "zod";
 import { listRegistryTools, searchRegistry } from "../agentTools/store.ts";
@@ -14,10 +15,26 @@ import { activeMounted, mountTools, unmountAll, unmountTools } from "./mountedTo
  * the per-request assembly of the full tool set + the policy-driven active set.
  */
 
-/** A registry id maps to the model-facing tool key: built-ins use their bare
- * name; MCP tools use the full registry id. */
-function idToKey(id: string): string {
-  return id.startsWith("builtin:") ? id.slice("builtin:".length) : id;
+/**
+ * Providers cap a tool name at 64 characters of `[A-Za-z0-9_-]` (Bedrock and
+ * OpenAI both do), and an MCP registry id spends 41 of those on
+ * `mcp:<serverId>:` before the tool's own name starts.
+ */
+const MAX_TOOL_KEY_LENGTH = 64;
+
+/**
+ * The model-facing tool key for a registry id. Built-ins use their bare name.
+ * An MCP tool is `mcp_<hash>_<toolName>`, with the name made provider-safe and
+ * cut to fit; the hash is over the whole registry id, so two tools whose names
+ * only differ past the cut, or only in a replaced character, still get distinct
+ * keys.
+ */
+export function modelToolKey(id: string): string {
+  if (id.startsWith("builtin:")) return id.slice("builtin:".length);
+  const toolName = id.split(":").slice(2).join(":");
+  const digest = createHash("sha256").update(id).digest("hex").slice(0, 8);
+  const safeName = toolName.replace(/[^A-Za-z0-9_-]/g, "_");
+  return `mcp_${digest}_${safeName}`.slice(0, MAX_TOOL_KEY_LENGTH);
 }
 
 export interface ApprovalHooks {
@@ -154,6 +171,8 @@ export interface AgentToolset {
   tools: Record<string, Tool>;
   /** Recomputes the active tool keys for a step: always ∪ mounted ∪ meta. */
   computeActiveTools: () => string[];
+  /** Model-facing key to registry id, for every MCP tool in `tools`. */
+  registryIds: ReadonlyMap<string, string>;
 }
 
 /**
@@ -205,6 +224,7 @@ export async function assembleAgentToolset(opts: {
   const approvalById = new Map(registry.map((r) => [r.id, r.approval]));
 
   const tools: Record<string, Tool> = {};
+  const registryIds = new Map<string, string>();
 
   // Built-ins: keyed by bare name; excluded only when explicitly disabled.
   // A built-in this turn wants confirmed is wrapped like an MCP tool — but only
@@ -221,7 +241,7 @@ export async function assembleAgentToolset(opts: {
     tools[name] = t;
   }
 
-  // Live MCP tools: keyed by registry id, wrapped with approval, excluded when
+  // Live MCP tools: keyed by `modelToolKey`, wrapped with approval, excluded when
   // disabled. (Tools whose server is disconnected simply aren't present here.)
   // With no approval channel they are skipped outright — see the note above.
   //
@@ -234,7 +254,9 @@ export async function assembleAgentToolset(opts: {
     const liveTools = opts.liveTools ?? getMcpManager().getLiveTools();
     for (const [id, t] of Object.entries(liveTools)) {
       if (policyById.get(id) === "disabled") continue;
-      tools[id] =
+      const key = modelToolKey(id);
+      registryIds.set(key, id);
+      tools[key] =
         honourStandingConsent && approvalById.get(id) === "auto"
           ? (t as unknown as Tool)
           : wrapToolWithApproval(id, t, approval);
@@ -249,15 +271,15 @@ export async function assembleAgentToolset(opts: {
   // MCP tool whose server is offline is skipped).
   const alwaysKeys = registry
     .filter((r) => r.policy === "always")
-    .map((r) => idToKey(r.id))
+    .map((r) => modelToolKey(r.id))
     .filter((key) => key in tools);
 
   const computeActiveTools = () => {
     const mountedKeys = activeMounted(sessionId)
-      .map(idToKey)
+      .map(modelToolKey)
       .filter((key) => key in tools);
     return Array.from(new Set([...alwaysKeys, ...mountedKeys, ...metaNames]));
   };
 
-  return { tools, computeActiveTools };
+  return { tools, computeActiveTools, registryIds };
 }

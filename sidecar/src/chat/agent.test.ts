@@ -1,9 +1,13 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { tool } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import postgres from "postgres";
+import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { resolveApproval } from "../mcp/approvals.ts";
+import { modelToolKey } from "../mcp/chatTools.ts";
+import type { McpClientTool } from "../mcp/connectionManager.ts";
 import { type AgentEvent, runAgentTurn } from "./agent.ts";
 import { createSession, getMessages } from "./service.ts";
 
@@ -96,6 +100,7 @@ async function collect(
   approval?: { onRequest: (info: { toolCallId: string }) => Promise<void> },
   signal?: AbortSignal,
   budget?: { maxSteps?: number; maxOutputTokens?: number | null },
+  liveTools?: Record<string, McpClientTool>,
 ): Promise<AgentEvent[]> {
   const events: AgentEvent[] = [];
   for await (const event of runAgentTurn({
@@ -108,6 +113,7 @@ async function collect(
     approval,
     signal,
     budget,
+    liveTools,
   })) {
     events.push(event);
   }
@@ -223,16 +229,28 @@ describe("runAgentTurn", () => {
 
   it("names the MCP server a tool belongs to", async () => {
     const session = await createSession(db, null);
+    const id = "mcp:server-uuid:search_pages";
+    const liveTools = {
+      [id]: tool({
+        description: "search_pages",
+        inputSchema: z.object({ query: z.string() }),
+        execute: async () => ({ pages: [] }),
+      }) as unknown as McpClientTool,
+    };
     const events = await collect(
       streamingModel(
-        [toolCall("c1", "mcp:server-uuid:search_pages", { query: "notion" }), finish("tool-calls")],
+        [toolCall("c1", modelToolKey(id), { query: "notion" }), finish("tool-calls")],
         [...text("done"), finish("stop")],
       ),
       session.id,
+      denyingApproval,
+      undefined,
+      undefined,
+      liveTools,
     );
 
-    // The model-facing key of an MCP tool is its registry id; only the tool's
-    // own name means anything to a reader.
+    // The model calls the tool by a provider-safe key; the reader sees the
+    // tool's own name and the server it lives on.
     expect(events.find((e) => e.type === "tool_call")).toMatchObject({
       name: "search_pages",
       server: "Notion",

@@ -8,7 +8,7 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { HashEmbedder } from "../memory/embedder.ts";
 import { resolveApproval } from "./approvals.ts";
-import { assembleAgentToolset } from "./chatTools.ts";
+import { assembleAgentToolset, modelToolKey } from "./chatTools.ts";
 import { mountTools, unmountAll } from "./mountedTools.ts";
 
 /**
@@ -47,6 +47,38 @@ beforeEach(async () => {
 
 afterAll(async () => {
   await sql.end();
+});
+
+describe("modelToolKey", () => {
+  const SERVER_ID = "907bd56b-f417-419e-92db-2f1e4e1aa0ce";
+
+  it("keeps a built-in's bare name", () => {
+    expect(modelToolKey("builtin:create_task")).toBe("create_task");
+  });
+
+  // Bedrock rejects a whole turn over one tool name it can't accept (#321).
+  it("fits a long MCP tool name inside what Bedrock and OpenAI accept", () => {
+    const key = modelToolKey(`mcp:${SERVER_ID}:github__update_pull_request`);
+    expect(key).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+    expect(key).toEndWith("_github__update_pull_request");
+  });
+
+  it("replaces characters providers refuse in a tool name", () => {
+    expect(modelToolKey(`mcp:${SERVER_ID}:pages.search`)).toMatch(/^mcp_[0-9a-f]{8}_pages_search$/);
+  });
+
+  it("gives distinct keys to names that only differ past the cut", () => {
+    const stem = "x".repeat(60);
+    expect(modelToolKey(`mcp:${SERVER_ID}:${stem}_a`)).not.toBe(
+      modelToolKey(`mcp:${SERVER_ID}:${stem}_b`),
+    );
+  });
+
+  it("gives distinct keys to the same tool name on two servers", () => {
+    expect(modelToolKey(`mcp:${SERVER_ID}:search`)).not.toBe(
+      modelToolKey("mcp:11111111-1111-4111-8111-111111111111:search"),
+    );
+  });
 });
 
 describe("assembleAgentToolset", () => {
