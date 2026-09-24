@@ -601,10 +601,37 @@ it once the worktrees are actually gone: they were scaffolding for work that is
 done. An archive that stops partway (a worktree that won't remove) is still
 reopenable, so its comments are left where they are.
 
+#### Other worktrees in the workspace
+
+An agent building a stack of pull requests usually gives each branch a worktree
+of its own, and the branch the workspace started on isn't always one of the
+layers. The right column finds every worktree of a repo's clone that sits inside
+the workspace folder — `<workspace>/widget-api`, `<workspace>/widget/.claude/worktrees/x`,
+wherever the agent put it — and a picker at the top of the column switches
+between them. With more than one repo the picker groups them by repo. The line
+under it always names the branch you are looking at.
+
+Switching runs no `git checkout`: each worktree already has its branch checked
+out, and the agent may be working in any of them. **All files**, **Changed**,
+**PR checks** and **Stack** read the picked worktree, and a file opened from it
+gets its own tab, titled with the branch. **Changed** measures a stacked branch
+from the branch below it rather than from the trunk, so each layer shows only
+its own changes, the way its pull request does. The layer below is found from
+local git history among the workspace's worktree branches. A layer whose parent
+has no worktree here is measured from the next one down that does, or from the
+trunk.
+
+The workspace's own branch keeps its polled PR checks and header badges. For
+any other worktree, **PR checks** looks the PR up when you open it and offers
+**Refresh**. A diff from another worktree takes no review comments: comments
+are filed by repo and path, so one left there would turn up on the workspace
+branch's copy of the file. In the **Stack** tab, a layer checked out in another
+worktree has a **View** button that switches the column to it.
+
 #### Stacked pull requests
 
-The **Stack** tab in the right column shows the chain of pull requests this
-repo's branch belongs to — each layer targeting the one below it, rooted on the
+The **Stack** tab in the right column shows the chain of pull requests the
+branch picked at the top of the column belongs to — each layer targeting the one below it, rooted on the
 trunk — drawn top-down with the trunk at the bottom. Every layer carries a
 one-glyph state, the same vocabulary the workspace list uses: merged, queued,
 draft, checks failing, changes requested, approved, plus two only a stack has —
@@ -626,12 +653,15 @@ there is one and its own `gh auth login` otherwise — and merging needs a token
 that may write to the repo, which the read-only scopes above don't grant.
 
 Unlike its sibling views the tab isn't polled: a `gh stack view` subprocess plus
-a provider round trip is a lot more than the single git command those cost, and
+a provider round trip is a lot more than the few git commands those cost, and
 a stack changes on your own actions. It loads when you open it and offers
-**Refresh** — worth pressing after a `gh stack rebase` in the terminal.
+**Refresh** — worth pressing after a `gh stack rebase` in the terminal. For a
+worktree other than the workspace's own, the branch's pull request is looked up
+when the tab loads as well, since the background poll only watches the
+workspace branch.
 
 **Merge stack up to #N** merges every layer from the trunk up to and including
-this repo's own pull request — the layers above it, being furthest from done,
+the picked branch's own pull request — the layers above it, being furthest from done,
 are left alone. It takes a second press, which spells out how many pull requests
 that is, because they aren't all on screen. The strategy dropdown defaults to
 whatever the repo last used, as running the command by hand would; squash, merge
@@ -652,7 +682,8 @@ than quietly landing a different set than the one you agreed to. It runs
 Referencing something from Yarvis elsewhere — Slack, a ticket, an agent prompt —
 shouldn't mean opening a browser to fetch the link first, so the things worth
 quoting carry a copy button next to them. In a workspace: the workspace folder,
-each repo's worktree path, the PR link on the status line and in the PR checks
+each repo's worktree path (and the picked one, when the column shows another
+worktree), the PR link on the status line and in the PR checks
 view, that view's check summary, and both file lists — each row's full path, or
 the whole list one path per line. In a PR review: the provider's link to the PR,
 to each file (pinned to the commit the PR points at, so it still shows the code
@@ -1228,7 +1259,9 @@ sidecar/        Bun + TS service (Hono)
   src/workspaces/ repo registry + git-worktree provisioning, bulk base-branch sync, and
                   teardown (/api/repos, /api/workspaces), plus local self-review
                   comments on a workspace's own diffs (reviewComments.ts), the
-                  `gh stack` bridge that reads and merges a stack in a worktree (stack.ts)
+                  `gh stack` bridge that reads and merges a stack in a worktree (stack.ts),
+                  finding the other worktrees an agent added inside the workspace folder
+                  and resolving a requested one against `git worktree list` (worktrees.ts),
                   and reading/writing a worktree file for the editor (files.ts)
   src/mcp/      MCP client: connected servers, OAuth, tool registry sync, approvals
   src/mcpServer/  the MCP endpoint Yarvis serves (memory tools over /mcp)

@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { run } from "./exec.ts";
 import {
   addExistingBranchWorktree,
   branchExists,
   branchSync,
   createWorktree,
+  defaultGitRunner,
   detectDefaultBranch,
   existingWorktree,
   fetchBranch,
@@ -16,7 +19,9 @@ import {
   listChangedFiles,
   listFiles,
   listRemoteBranches,
+  listWorktrees,
   mergeBaseIntoWorktree,
+  nearestBaseRef,
   pushBranch,
   removeWorktree,
   updateDefaultBranch,
@@ -41,6 +46,20 @@ const tmpDirs: string[] = [];
 afterEach(() => {
   for (const d of tmpDirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
+
+/**
+ * Enough identity to commit in a throwaway repo, with the developer's own
+ * config kept out: commit signing would prompt, and `core.quotePath` would
+ * change the very output under test.
+ */
+const GIT_TEST_ENV = {
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_SYSTEM: "/dev/null",
+  GIT_AUTHOR_NAME: "t",
+  GIT_AUTHOR_EMAIL: "t@example.com",
+  GIT_COMMITTER_NAME: "t",
+  GIT_COMMITTER_EMAIL: "t@example.com",
+};
 
 describe("detectDefaultBranch", () => {
   it("reads and strips the origin/HEAD symbolic ref", async () => {
@@ -210,6 +229,93 @@ describe("existingWorktree", () => {
   });
 });
 
+describe("listWorktrees", () => {
+  const record = (...fields: string[]) => `${fields.join("\0")}\0\0`;
+
+  it("lists each worktree with its branch, leaving out a bare entry", async () => {
+    const stdout =
+      record("worktree /repo.git", "bare") +
+      record("worktree /ws/api", "HEAD abc", "branch refs/heads/stack/api") +
+      record("worktree /ws/scratch", "HEAD def", "detached");
+    const { runner } = fakeRunner((args) => (args[0] === "worktree" ? { stdout } : {}));
+
+    expect(await listWorktrees(runner, "/repo.git")).toEqual([
+      { path: "/ws/api", branch: "stack/api" },
+      { path: "/ws/scratch", branch: null },
+    ]);
+  });
+});
+
+describe("nearestBaseRef", () => {
+  /**
+   * A real repo, since which branch is nearest depends on the commit graph: `main`,
+   * `auth` stacked on it, `api` stacked on `auth`, and `docs` cut from `main`
+   * beside them.
+   */
+  async function stackedRepo(): Promise<{
+    dir: string;
+    checkout: (b: string) => Promise<void>;
+    commit: (file: string) => Promise<void>;
+  }> {
+    const dir = mkdtempSync(join(tmpdir(), "yarvis-stack-"));
+    tmpDirs.push(dir);
+    const git = async (...args: string[]) => {
+      const result = await defaultGitRunner(
+        ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args],
+        { cwd: dir },
+      );
+      if (result.exitCode !== 0) throw new Error(result.stderr);
+    };
+    const commit = async (file: string) => {
+      writeFileSync(join(dir, file), file);
+      await git("add", file);
+      await git("commit", "-m", file);
+    };
+    await git("init", "-b", "main");
+    await commit("base");
+    await git("checkout", "-b", "auth");
+    await commit("auth-1");
+    await commit("auth-2");
+    await git("checkout", "-b", "api");
+    await commit("api-1");
+    await git("checkout", "-b", "docs", "main");
+    await commit("docs-1");
+    return { dir, checkout: (branch) => git("checkout", branch), commit };
+  }
+
+  const candidates = ["refs/heads/auth", "refs/heads/api", "refs/heads/docs"];
+
+  it("picks the branch a layer is stacked on", async () => {
+    const { dir, checkout } = await stackedRepo();
+    await checkout("api");
+    expect(await nearestBaseRef(defaultGitRunner, dir, "main", candidates)).toBe("refs/heads/auth");
+  });
+
+  it("falls back to the base for the bottom layer, skipping the layer above it", async () => {
+    const { dir, checkout } = await stackedRepo();
+    await checkout("auth");
+    expect(await nearestBaseRef(defaultGitRunner, dir, "main", candidates)).toBe("main");
+  });
+
+  // A layer below that gained commits since isn't an ancestor any more, but its
+  // fork point is still the closest — the state `gh stack rebase` exists for.
+  it("still finds a parent that moved on after the layer was cut", async () => {
+    const { dir, checkout, commit } = await stackedRepo();
+    await checkout("auth");
+    await commit("auth-3");
+    await checkout("api");
+    expect(await nearestBaseRef(defaultGitRunner, dir, "main", candidates)).toBe("refs/heads/auth");
+  });
+
+  // Two branches cut from the same commit fork from each other exactly where
+  // they fork from main, and neither is stacked on the other.
+  it("prefers the base over an unrelated branch cut from the same commit", async () => {
+    const { dir, checkout } = await stackedRepo();
+    await checkout("docs");
+    expect(await nearestBaseRef(defaultGitRunner, dir, "main", candidates)).toBe("main");
+  });
+});
+
 describe("fetchBranch", () => {
   it("fetches a single branch with no checkout", async () => {
     const { runner, calls } = fakeRunner(() => ({}));
@@ -267,10 +373,10 @@ describe("listChangedFiles", () => {
       if (args[0] === "merge-base") return { stdout: "abc123\n" };
       return {};
     });
-    await listChangedFiles(runner, "/wt", "main");
+    await listChangedFiles(runner, "/wt", "origin/main");
     expect(calls[0]).toEqual(["merge-base", "origin/main", "HEAD"]);
     // Both the name-status and numstat diffs use the resolved start ref.
-    expect(calls.filter((c) => c[0] === "diff").every((c) => c[2] === "abc123")).toBe(true);
+    expect(calls.filter((c) => c[0] === "diff").every((c) => c.at(-1) === "abc123")).toBe(true);
   });
 
   it("falls back to origin/<base> when there is no merge-base", async () => {
@@ -278,42 +384,166 @@ describe("listChangedFiles", () => {
       if (args[0] === "merge-base") return { exitCode: 1 };
       return {};
     });
-    await listChangedFiles(runner, "/wt", "main");
-    expect(calls.filter((c) => c[0] === "diff").every((c) => c[2] === "origin/main")).toBe(true);
+    await listChangedFiles(runner, "/wt", "origin/main");
+    expect(calls.filter((c) => c[0] === "diff").every((c) => c.at(-1) === "origin/main")).toBe(
+      true,
+    );
+  });
+
+  it("asks for -z on every list it parses", async () => {
+    const { runner, calls } = fakeRunner((args) =>
+      args[0] === "merge-base" ? { stdout: "abc123\n" } : {},
+    );
+    await listChangedFiles(runner, "/wt", "origin/main");
+    // The fixtures below are all hand-written NUL strings, so nothing else here
+    // would notice `-z` going missing and #308 coming back.
+    const parsed = calls.filter((c) => c[0] === "diff" || c[0] === "ls-files");
+    expect(parsed).toHaveLength(3);
+    expect(parsed.every((c) => c.includes("-z"))).toBe(true);
+  });
+
+  it("returns nothing when the branch matches its base", async () => {
+    const { runner } = fakeRunner((args) =>
+      args[0] === "merge-base" ? { stdout: "abc123\n" } : { stdout: "" },
+    );
+    expect(await listChangedFiles(runner, "/wt", "origin/main")).toEqual([]);
   });
 
   it("merges name-status, numstat, and untracked files", async () => {
     const { runner } = fakeRunner((args) => {
       if (args[0] === "merge-base") return { stdout: "abc123\n" };
       if (args[1] === "--name-status") {
-        return { stdout: "M\tsrc/a.ts\nA\tsrc/b.ts\nR100\told.ts\tnew.ts\n" };
+        return {
+          stdout:
+            "M\0src/a.ts\0" +
+            "A\0src/b.ts\0" +
+            "D\0src/gone.ts\0" +
+            "R085\0old.ts\0new.ts\0" +
+            "C088\0src/a.ts\0src/copy.ts\0" +
+            "R100\0pic.png\0moved.png\0" +
+            "M\0bin.png\0",
+        };
       }
       if (args[1] === "--numstat") {
-        return { stdout: "3\t1\tsrc/a.ts\n10\t0\tsrc/b.ts\n2\t2\tnew.ts\n-\t-\tbin.png\n" };
+        return {
+          stdout:
+            "3\t1\tsrc/a.ts\0" +
+            "10\t0\tsrc/b.ts\0" +
+            "0\t4\tsrc/gone.ts\0" +
+            "2\t2\t\0old.ts\0new.ts\0" +
+            "1\t0\t\0src/a.ts\0src/copy.ts\0" +
+            "-\t-\t\0pic.png\0moved.png\0" +
+            "-\t-\tbin.png\0",
+        };
       }
-      if (args[0] === "ls-files") return { stdout: "src/c.ts\n" };
+      if (args[0] === "ls-files") return { stdout: "src/c.ts\0" };
       return {};
     });
 
-    const changed = await listChangedFiles(runner, "/wt", "main");
-    const byPath = new Map(changed.map((c) => [c.path, c]));
+    // Asserted whole and in order: a record the parser mis-sizes shifts every
+    // record after it, which point lookups would miss.
+    expect(await listChangedFiles(runner, "/wt", "origin/main")).toEqual([
+      { path: "bin.png", status: "modified", additions: 0, deletions: 0 },
+      { path: "moved.png", status: "renamed", additions: 0, deletions: 0 },
+      { path: "new.ts", status: "renamed", additions: 2, deletions: 2 },
+      { path: "src/a.ts", status: "modified", additions: 3, deletions: 1 },
+      { path: "src/b.ts", status: "added", additions: 10, deletions: 0 },
+      { path: "src/c.ts", status: "untracked", additions: 0, deletions: 0 },
+      { path: "src/copy.ts", status: "copied", additions: 1, deletions: 0 },
+      { path: "src/gone.ts", status: "deleted", additions: 0, deletions: 4 },
+    ]);
+  });
 
-    expect(byPath.get("src/a.ts")).toEqual({
-      path: "src/a.ts",
-      status: "modified",
-      additions: 3,
-      deletions: 1,
+  it("keeps a rename that moves directories as one file at its new path", async () => {
+    const { runner } = fakeRunner((args) => {
+      if (args[0] === "merge-base") return { stdout: "abc123\n" };
+      if (args[1] === "--name-status") {
+        return {
+          stdout: "R050\0llm/graphql/rate_limit/ip_extractor.py\0llm/common/client_ip.py\0",
+        };
+      }
+      // Without -z git would compact this to
+      // "llm/{graphql/rate_limit/ip_extractor.py => common/client_ip.py}",
+      // which splits into folders that don't exist (#308).
+      if (args[1] === "--numstat") {
+        return {
+          stdout: "1\t0\t\0llm/graphql/rate_limit/ip_extractor.py\0llm/common/client_ip.py\0",
+        };
+      }
+      return {};
     });
-    expect(byPath.get("src/b.ts")?.status).toBe("added");
-    expect(byPath.get("new.ts")?.status).toBe("renamed");
-    // Binary files report "-" counts as zero.
-    expect(byPath.get("bin.png")).toEqual({
-      path: "bin.png",
-      status: "modified",
-      additions: 0,
-      deletions: 0,
+
+    expect(await listChangedFiles(runner, "/wt", "origin/main")).toEqual([
+      { path: "llm/common/client_ip.py", status: "renamed", additions: 1, deletions: 0 },
+    ]);
+  });
+
+  it("keeps a path with a special character intact", async () => {
+    const { runner } = fakeRunner((args) => {
+      if (args[0] === "merge-base") return { stdout: "abc123\n" };
+      // -z leaves the path raw; the line-oriented output would C-quote it.
+      if (args[1] === "--name-status") return { stdout: 'M\0src/say "hi".ts\0' };
+      if (args[1] === "--numstat") return { stdout: '1\t1\tsrc/say "hi".ts\0' };
+      return {};
     });
-    expect(byPath.get("src/c.ts")?.status).toBe("untracked");
+
+    expect(await listChangedFiles(runner, "/wt", "origin/main")).toEqual([
+      { path: 'src/say "hi".ts', status: "modified", additions: 1, deletions: 1 },
+    ]);
+  });
+
+  it("keeps a path containing a tab whole", async () => {
+    const { runner } = fakeRunner((args) => {
+      if (args[0] === "merge-base") return { stdout: "abc123\n" };
+      // A tab is legal in a filename and -z leaves it raw, so numstat's third
+      // column is not the end of the path.
+      if (args[1] === "--name-status") return { stdout: "M\0src/my\tfile.ts\0" };
+      if (args[1] === "--numstat") return { stdout: "1\t1\tsrc/my\tfile.ts\0" };
+      return {};
+    });
+
+    expect(await listChangedFiles(runner, "/wt", "origin/main")).toEqual([
+      { path: "src/my\tfile.ts", status: "modified", additions: 1, deletions: 1 },
+    ]);
+  });
+});
+
+describe("listChangedFiles against a real repo", () => {
+  /**
+   * The fake-runner tests above feed the parser hand-written fixtures, so they
+   * still pass if `-z` is dropped from the git commands. Only a real `git` can
+   * show that #308 stays fixed.
+   */
+  it("reports a cross-directory rename at its destination, not as a {old => new} path", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "yarvis-changed-"));
+    tmpDirs.push(repo);
+    const git = (...args: string[]) =>
+      spawnSync("git", args, {
+        cwd: repo,
+        encoding: "utf8",
+        env: { ...process.env, ...GIT_TEST_ENV },
+      });
+
+    git("init", "-q");
+    mkdirSync(join(repo, "llm/graphql/rate_limit"), { recursive: true });
+    mkdirSync(join(repo, "llm/common"), { recursive: true });
+    writeFileSync(join(repo, "llm/graphql/rate_limit/ip_extractor.py"), "a\nb\nc\n");
+    git("add", "-A");
+    git("commit", "-qm", "init");
+    git("mv", "llm/graphql/rate_limit/ip_extractor.py", "llm/common/client_ip.py");
+    writeFileSync(join(repo, "llm/common/client_ip.py"), "a\nb\nc\nd\n");
+    git("add", "-A");
+
+    // There is no origin here, so stand in for the merge-base with the commit
+    // the rename sits on top of.
+    const runner: GitRunner = async (args, opts) =>
+      args[0] === "merge-base"
+        ? { stdout: "HEAD\n", stderr: "", exitCode: 0 }
+        : run(["git", ...args], { ...opts, env: GIT_TEST_ENV });
+
+    expect(await listChangedFiles(runner, repo, "main")).toEqual([
+      { path: "llm/common/client_ip.py", status: "renamed", additions: 1, deletions: 0 },
+    ]);
   });
 });
 
@@ -323,7 +553,7 @@ describe("fileDiff", () => {
       if (args[0] === "merge-base") return { stdout: "abc123\n" };
       return args[0] === "diff" ? { stdout: "@@ -1 +1 @@\n-old\n+new\n" } : {};
     });
-    expect(await fileDiff(runner, "/wt", "main", "src/a.ts")).toContain("+new");
+    expect(await fileDiff(runner, "/wt", "origin/main", "src/a.ts")).toContain("+new");
     expect(calls[0]).toEqual(["merge-base", "origin/main", "HEAD"]);
     expect(calls[1]).toEqual(["diff", "abc123", "--", "src/a.ts"]);
   });
@@ -335,7 +565,7 @@ describe("fileDiff", () => {
         return { stdout: "@@ -0,0 +1 @@\n+brand new\n", exitCode: 1 };
       return { stdout: "" }; // tracked diff is empty for an untracked path
     });
-    const patch = await fileDiff(runner, "/wt", "main", "new.ts");
+    const patch = await fileDiff(runner, "/wt", "origin/main", "new.ts");
     expect(patch).toContain("+brand new");
     expect(calls[2]).toEqual(["diff", "--no-index", "--", "/dev/null", "new.ts"]);
   });
@@ -346,7 +576,7 @@ describe("fileDiff", () => {
       if (args.includes("--no-index")) return { stderr: "boom", exitCode: 128 };
       return { stdout: "" };
     });
-    await expect(fileDiff(runner, "/wt", "main", "missing.ts")).rejects.toThrow("boom");
+    await expect(fileDiff(runner, "/wt", "origin/main", "missing.ts")).rejects.toThrow("boom");
   });
 });
 

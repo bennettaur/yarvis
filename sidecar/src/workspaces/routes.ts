@@ -3,8 +3,11 @@ import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { clientError, describeError } from "../llm/errors.ts";
 import { resolveWorkspaceBrief } from "./brief.ts";
 import { CONTROL_CHARACTERS, MAX_FILE_BYTES, WorktreeFileError } from "./files.ts";
+import { defaultGitRunner } from "./git.ts";
+import { lookupBranchPr } from "./poller.ts";
 import {
   createReviewComment,
   deleteReviewComment,
@@ -38,6 +41,7 @@ import {
   workspaceRepoSync,
 } from "./service.ts";
 import { mergeWorkspaceRepoStack, workspaceRepoStack } from "./stack.ts";
+import { listWorkspaceWorktrees, resolveWorktree } from "./worktrees.ts";
 
 const createRepoSchema = z.object({
   cloneUrl: z.string().min(1),
@@ -69,6 +73,17 @@ const createWorkspaceSchema = z.object({
   startWork: z.boolean().optional().default(false),
 });
 
+// Which of a repo's worktrees a request means, when it isn't the one the
+// workspace was provisioned with. Only a shape check: `resolveWorktree` is the
+// boundary, and it accepts nothing git doesn't list inside the workspace.
+const worktreeParam = z
+  .string()
+  .min(1)
+  .max(4096)
+  .refine((p) => p.startsWith("/"), "worktree must be an absolute path")
+  .refine((p) => !CONTROL_CHARACTERS.test(p), "worktree must not contain control characters")
+  .optional();
+
 // Which layers of a stack to merge, and how. `expect` is the plan the user was
 // shown; the sidecar recomputes it from a fresh read and refuses a mismatch, so
 // a stack that moved between the confirmation and the call is never merged to a
@@ -77,6 +92,7 @@ const stackMergeSchema = z.object({
   upTo: z.number().int().min(1),
   expect: z.array(z.number().int().min(1)).max(64),
   method: z.enum(["MERGE", "SQUASH", "REBASE"]).optional(),
+  worktree: worktreeParam,
 });
 
 const archiveSchema = z.object({
@@ -126,6 +142,7 @@ const saveFileSchema = z.object({
   path: worktreePath,
   content: z.string().max(MAX_FILE_BYTES),
   expectedHash: z.string().length(64),
+  worktree: worktreeParam,
 });
 
 // A self-review note on a diff line range. The body is capped like the other
@@ -325,19 +342,72 @@ export function createWorkspaceRoutes(config: Config): Hono {
   const errorStatus = (e: unknown): 400 | 404 =>
     e instanceof Error && e.message.includes("not found") ? 404 : 400;
 
-  router.get("/:id/repos/:wrId/files", async (c) => {
+  /** The parsed `worktree` query parameter, or the validation error for the
+   *  caller to answer 400 with. */
+  const parseWorktreeQuery = (c: {
+    req: { query: (name: string) => string | undefined };
+  }): { worktree: string | undefined } | { error: z.ZodError } => {
+    const parsed = worktreeParam.safeParse(c.req.query("worktree"));
+    return parsed.success ? { worktree: parsed.data } : { error: parsed.error };
+  };
+
+  // Every worktree of each repo that sits inside the workspace folder — the
+  // provisioned one and any an agent added, e.g. one per layer of a stack.
+  router.get("/:id/worktrees", async (c) => {
+    const id = c.req.param("id");
+    if (!z.string().uuid().safeParse(id).success) {
+      return c.json({ error: "invalid workspace id" }, 400);
+    }
     try {
-      return c.json(await workspaceRepoFiles(db(), c.req.param("wrId")));
+      return c.json(await listWorkspaceWorktrees(db(), id, defaultGitRunner));
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
+    }
+  });
+
+  router.get("/:id/repos/:wrId/files", async (c) => {
+    const query = parseWorktreeQuery(c);
+    if ("error" in query) return c.json({ error: query.error.flatten() }, 400);
+    try {
+      return c.json(await workspaceRepoFiles(db(), c.req.param("wrId"), query.worktree));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
     }
   });
 
   router.get("/:id/repos/:wrId/changes", async (c) => {
+    const query = parseWorktreeQuery(c);
+    if ("error" in query) return c.json({ error: query.error.flatten() }, 400);
     try {
-      return c.json(await workspaceRepoChanges(db(), c.req.param("wrId")));
+      return c.json(await workspaceRepoChanges(db(), c.req.param("wrId"), query.worktree));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
+    }
+  });
+
+  // The PR on a worktree's branch, read live. The primary worktree's is already
+  // cached by the poller; this is for the ones it doesn't watch. Resolving the
+  // worktree fails locally (400/404); the provider call is the one that reaches
+  // out, so its failure is a 502 and is logged, as the PR routes do.
+  router.get("/:id/repos/:wrId/pr", async (c) => {
+    if (!z.string().uuid().safeParse(c.req.param("wrId")).success) {
+      return c.json({ error: "invalid workspace repo id" }, 400);
+    }
+    const query = parseWorktreeQuery(c);
+    if ("error" in query) return c.json({ error: query.error.flatten() }, 400);
+    let target: Awaited<ReturnType<typeof resolveWorktree>>;
+    try {
+      target = await resolveWorktree(db(), c.req.param("wrId"), query.worktree, defaultGitRunner);
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
+    }
+    if (!target.branch) return c.json({ branch: null, pr: null });
+    try {
+      const pr = await lookupBranchPr(config, target.repo, target.branch);
+      return c.json({ branch: target.branch, pr });
+    } catch (e) {
+      console.error("[workspaces] PR lookup failed:", describeError(e));
+      return c.json({ error: clientError(e) }, 502);
     }
   });
 
@@ -375,8 +445,14 @@ export function createWorkspaceRoutes(config: Config): Hono {
   router.get("/:id/repos/:wrId/stack", async (c) => {
     const ids = stackIds(c);
     if (!ids) return c.json({ error: "invalid workspace or repo id" }, 400);
+    const query = parseWorktreeQuery(c);
+    if ("error" in query) return c.json({ error: query.error.flatten() }, 400);
     try {
-      return c.json(await workspaceRepoStack(db(), config, ids.workspaceId, ids.workspaceRepoId));
+      return c.json(
+        await workspaceRepoStack(db(), config, ids.workspaceId, ids.workspaceRepoId, {
+          worktree: query.worktree,
+        }),
+      );
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
     }
@@ -397,7 +473,7 @@ export function createWorkspaceRoutes(config: Config): Hono {
         ids.workspaceRepoId,
         parsed.data.upTo,
         parsed.data.expect,
-        parsed.data.method,
+        { method: parsed.data.method, worktree: parsed.data.worktree },
       );
       return c.json(result);
     } catch (e) {
@@ -409,8 +485,10 @@ export function createWorkspaceRoutes(config: Config): Hono {
   router.get("/:id/repos/:wrId/diff", async (c) => {
     const path = c.req.query("path");
     if (!path) return c.json({ error: "path query parameter is required" }, 400);
+    const query = parseWorktreeQuery(c);
+    if ("error" in query) return c.json({ error: query.error.flatten() }, 400);
     try {
-      return c.json(await workspaceRepoFileDiff(db(), c.req.param("wrId"), path));
+      return c.json(await workspaceRepoFileDiff(db(), c.req.param("wrId"), path, query.worktree));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e));
     }
@@ -427,8 +505,10 @@ export function createWorkspaceRoutes(config: Config): Hono {
     // about what a path is. `resolveInWorktree` is still the boundary.
     const path = worktreePath.safeParse(c.req.query("path"));
     if (!path.success) return c.json({ error: path.error.flatten() }, 400);
+    const query = parseWorktreeQuery(c);
+    if ("error" in query) return c.json({ error: query.error.flatten() }, 400);
     try {
-      return c.json(await workspaceRepoFile(db(), c.req.param("wrId"), path.data));
+      return c.json(await workspaceRepoFile(db(), c.req.param("wrId"), path.data, query.worktree));
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, fileErrorStatus(e));
     }
@@ -438,10 +518,17 @@ export function createWorkspaceRoutes(config: Config): Hono {
     const body = await c.req.json().catch(() => null);
     const parsed = saveFileSchema.safeParse(body);
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const { path, content, expectedHash } = parsed.data;
+    const { path, content, expectedHash, worktree } = parsed.data;
     try {
       return c.json(
-        await saveWorkspaceRepoFile(db(), c.req.param("wrId"), path, content, expectedHash),
+        await saveWorkspaceRepoFile(
+          db(),
+          c.req.param("wrId"),
+          path,
+          content,
+          expectedHash,
+          worktree,
+        ),
       );
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, fileErrorStatus(e));

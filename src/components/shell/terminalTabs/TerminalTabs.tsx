@@ -53,19 +53,34 @@ import {
  *  - Cmd+Shift+D:  split focused pane horizontally (new pane below)
  */
 
-/** Tab title for a diff tab: the file's basename, which is short and unique enough. */
-const fileTitle = (path: string) => path.split("/").pop() || path;
+/**
+ * Tab title for a file tab: the file's basename, which is short and unique
+ * enough — plus the worktree's label when it isn't the repo's primary one, since
+ * the same file is then legitimately open once per branch.
+ */
+const fileTitle = (file: OpenFileDiff) => {
+  const name = file.path.split("/").pop() || file.path;
+  return file.worktree && file.worktreeLabel ? `${name} · ${file.worktreeLabel}` : name;
+};
 
 /** A request to open (or re-focus) a diff tab for a changed file. */
 export interface OpenFileDiff {
   repoId: string;
   path: string;
+  /** Another of the repo's worktrees to read from; the primary one when unset. */
+  worktree?: string;
+  /** How the tab title names that worktree, typically its branch. */
+  worktreeLabel?: string;
 }
 
 /** A request to open (or re-focus) an editor tab for a file in a repo's worktree. */
-export interface OpenFileEditor {
+export type OpenFileEditor = OpenFileDiff;
+
+/** The file a diff or editor tab shows, as handed back to its renderer. */
+export interface FileTabTarget {
   repoId: string;
   path: string;
+  worktree?: string;
 }
 
 /** A request to open (or re-focus) a setup-log tab for a workspace repo. */
@@ -130,7 +145,7 @@ export default function TerminalTabs({
   /** Called once an `openFileDiff` request has been handled. */
   onFileDiffOpened?: () => void;
   /** Supplies a diff tab's body. When omitted, diff tabs are not used. */
-  renderFileDiff?: (file: OpenFileDiff) => ReactNode;
+  renderFileDiff?: (file: FileTabTarget) => ReactNode;
   /**
    * A file to open in an editor tab, using the same request/consume pattern as
    * `openFileDiff`. The same file may be open as both a diff and an editor tab.
@@ -139,7 +154,7 @@ export default function TerminalTabs({
   /** Called once an `openFileEditor` request has been handled. */
   onFileEditorOpened?: () => void;
   /** Supplies an editor tab's body. When omitted, editor tabs are not used. */
-  renderFileEditor?: (file: OpenFileEditor) => ReactNode;
+  renderFileEditor?: (file: FileTabTarget) => ReactNode;
   /**
    * Files with unsaved edits, keyed by `fileKey`. The buffer lives
    * with the surface's owner (it has to outlive the tab, which unmounts when
@@ -149,7 +164,7 @@ export default function TerminalTabs({
   dirtyEditorKeys?: ReadonlySet<string>;
   /** Called when an editor tab with unsaved edits is closed and the user
    *  confirmed losing them, so the owner can drop the buffer it is holding. */
-  onDiscardEditor?: (file: OpenFileEditor) => void;
+  onDiscardEditor?: (file: FileTabTarget) => void;
   /**
    * A workspace repo's setup log to open in a tab, using the same
    * request/consume pattern as `openFileDiff`. Setting this opens a new tab or
@@ -229,7 +244,10 @@ export default function TerminalTabs({
     const dirty = new Set<string>();
     if (!dirtyEditorKeys?.size) return dirty;
     for (const tab of state.tabs) {
-      if (tab.kind === "editor" && dirtyEditorKeys.has(fileKey(tab.repoId, tab.path))) {
+      if (
+        tab.kind === "editor" &&
+        dirtyEditorKeys.has(fileKey(tab.repoId, tab.path, tab.worktree))
+      ) {
         dirty.add(tab.id);
       }
     }
@@ -314,7 +332,11 @@ export default function TerminalTabs({
   const openDiff = useCallback((file: OpenFileDiff) => {
     setState((prev) => {
       const existing = prev.tabs.find(
-        (t) => t.kind === "diff" && t.repoId === file.repoId && t.path === file.path,
+        (t) =>
+          t.kind === "diff" &&
+          t.repoId === file.repoId &&
+          t.path === file.path &&
+          t.worktree === file.worktree,
       );
       if (existing) {
         return prev.activeTabId === existing.id ? prev : { ...prev, activeTabId: existing.id };
@@ -322,10 +344,11 @@ export default function TerminalTabs({
       const tabId = uid("t");
       const tab: DiffTab = {
         id: tabId,
-        title: fileTitle(file.path),
+        title: fileTitle(file),
         kind: "diff",
         repoId: file.repoId,
         path: file.path,
+        ...(file.worktree ? { worktree: file.worktree } : {}),
       };
       return { ...prev, tabs: [...prev.tabs, tab], activeTabId: tabId };
     });
@@ -341,7 +364,7 @@ export default function TerminalTabs({
 
   // Open an editor tab for a file, or re-focus the tab already editing it.
   const openEditor = useCallback((file: OpenFileEditor) => {
-    setState((prev) => stateAfterOpenEditor(prev, file, fileTitle(file.path)));
+    setState((prev) => stateAfterOpenEditor(prev, file, fileTitle(file)));
   }, []);
 
   // Consume an open-editor request, mirroring the open-diff flow above.
@@ -452,7 +475,7 @@ export default function TerminalTabs({
       if (tab.kind === "editor" && dirtyTabIds.has(tabId)) {
         const ok = window.confirm(`“${tab.title}” has unsaved changes. Close it and lose them?`);
         if (!ok) return;
-        onDiscardEditor?.({ repoId: tab.repoId, path: tab.path });
+        onDiscardEditor?.({ repoId: tab.repoId, path: tab.path, worktree: tab.worktree });
       }
       // Only terminal tabs own PTYs; the rest close with no busy check or kill.
       const leafIds = tab.kind === "terminal" ? allLeafIds(tab.root) : [];
@@ -606,9 +629,17 @@ export default function TerminalTabs({
             embedded
           />
         ) : activeTab?.kind === "diff" ? (
-          (renderFileDiff?.({ repoId: activeTab.repoId, path: activeTab.path }) ?? null)
+          (renderFileDiff?.({
+            repoId: activeTab.repoId,
+            path: activeTab.path,
+            worktree: activeTab.worktree,
+          }) ?? null)
         ) : activeTab?.kind === "editor" ? (
-          (renderFileEditor?.({ repoId: activeTab.repoId, path: activeTab.path }) ?? null)
+          (renderFileEditor?.({
+            repoId: activeTab.repoId,
+            path: activeTab.path,
+            worktree: activeTab.worktree,
+          }) ?? null)
         ) : activeTab?.kind === "setup" ? (
           (renderSetupLog?.({ workspaceRepoId: activeTab.workspaceRepoId }) ?? null)
         ) : activeTab ? (

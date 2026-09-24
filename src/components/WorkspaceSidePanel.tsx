@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clipboardSafePath, clipboardSafeText, clipboardSafeUrl } from "../lib/clipboard";
 import { buildFileTree } from "../lib/fileTree";
 import { requestOpenPr } from "../lib/nav";
@@ -8,14 +8,19 @@ import { openExternal } from "../lib/url";
 import { isResolved, useReviewComments } from "../lib/workspaceReview";
 import {
   type ChangedFile,
+  listWorkspaceWorktrees,
   type WorkspaceRepoDetail,
+  type WorkspaceRepoWorktrees,
+  type WorkspaceWorktree,
   workspaceRepoChanges,
   workspaceRepoFiles,
+  worktreePr,
 } from "../lib/workspaces";
 import CopyButton from "./CopyButton";
 import CopyLinkButton from "./CopyLinkButton";
 import FileTreeRows, { treeRowPaddingLeft } from "./files/FileTreeRows";
 import CopyPathButton from "./pr/CopyPathButton";
+import type { OpenFileDiff } from "./shell/terminalTabs/TerminalTabs";
 import WorkspaceReviewComments from "./workspaces/WorkspaceReviewComments";
 import WorkspaceStackView from "./workspaces/WorkspaceStackView";
 
@@ -29,15 +34,34 @@ const VIEWS: { key: View; label: string }[] = [
   { key: "stack", label: "Stack" },
 ];
 
+/** Which repo, and which of its worktrees, the column is showing. A null
+ *  worktree is the primary one. */
+interface Selection {
+  repoId: string;
+  worktree: string | null;
+}
+
+/** A picker option's value. JSON rather than a joined string, since a path can
+ *  hold any separator a join would use. */
+const optionValue = (repoId: string, worktree: WorkspaceWorktree): string =>
+  JSON.stringify([repoId, worktree.primary ? null : worktree.path]);
+
+const worktreeLabel = (worktree: WorkspaceWorktree): string => worktree.branch ?? "detached HEAD";
+
 /**
  * The workspace detail's right column: per-repo views of all tracked files,
- * changed files (with line counts), the cached PR checks, and the stack of pull
+ * changed files (with line counts), the PR checks, and the stack of pull
  * requests the branch belongs to, plus the self-review comments left on the
- * diffs. Files/changes are read live from the worktree; PR checks come from the
- * background poller's cache; the stack is read on demand, since it costs a
- * provider call per layer. The comments view spans the whole workspace rather
- * than the selected repo — a review is read as one list, and each entry names
- * the repo it belongs to.
+ * diffs. Files/changes are read live from the worktree; the primary branch's PR
+ * checks come from the background poller's cache; the stack is read on demand,
+ * since it costs a provider call per layer. The comments view spans the whole
+ * workspace rather than the selected repo — a review is read as one list, and
+ * each entry names the repo it belongs to.
+ *
+ * Every per-repo view can be pointed at any of the repo's worktrees inside the
+ * workspace folder, not only the one provisioning cut: an agent building a
+ * stack usually gives each layer a worktree of its own, and the branch the
+ * workspace started on need not be one of them.
  */
 export default function WorkspaceSidePanel({
   workspaceId,
@@ -47,35 +71,98 @@ export default function WorkspaceSidePanel({
 }: {
   workspaceId: string;
   repos: WorkspaceRepoDetail[];
-  /** Open a changed file's diff in a tab (the repo it belongs to, and its path). */
-  onOpenFile: (repoId: string, path: string) => void;
-  /** Open a file in an editor tab, for the same repo/path pair. */
-  onEditFile: (repoId: string, path: string) => void;
+  /** Open a changed file's diff in a tab. */
+  onOpenFile: (file: OpenFileDiff) => void;
+  /** Open a file in an editor tab. */
+  onEditFile: (file: OpenFileDiff) => void;
 }) {
-  const [repoId, setRepoId] = useState(repos[0]?.id ?? "");
+  const [selection, setSelection] = useState<Selection>({
+    repoId: repos[0]?.id ?? "",
+    worktree: null,
+  });
   const [view, setView] = useState<View>("changes");
   // Read here as well as inside the comments view so the tab can carry the open
   // count — the reason to switch to it is knowing there is something in it.
   const { comments } = useReviewComments(workspaceId);
   const openComments = comments.filter((c) => !isResolved(c)).length;
 
-  const repo = repos.find((r) => r.id === repoId) ?? repos[0];
+  const loadWorktrees = useCallback(() => listWorkspaceWorktrees(workspaceId), [workspaceId]);
+  const { data: discovered } = usePolled(
+    loadWorktrees,
+    sameWorktrees,
+    WORKTREE_REFRESH_INTERVAL_MS,
+  );
+  // A repo the listing hasn't answered for — not ready yet, or still loading —
+  // offers its primary worktree alone.
+  const worktreesFor = (r: WorkspaceRepoDetail): WorkspaceWorktree[] =>
+    discovered?.find((d) => d.workspaceRepoId === r.id)?.worktrees ?? [
+      { path: r.worktreePath, branch: r.branch, primary: true },
+    ];
+
+  const repo = repos.find((r) => r.id === selection.repoId) ?? repos[0];
   if (!repo) return null;
+  const repoWorktrees = worktreesFor(repo);
+  const primaryWorktree = repoWorktrees.find((w) => w.primary) ?? {
+    path: repo.worktreePath,
+    branch: repo.branch,
+    primary: true,
+  };
+  // A worktree removed since it was picked falls back to the primary one.
+  const worktree =
+    (selection.worktree && repoWorktrees.find((w) => w.path === selection.worktree)) ||
+    primaryWorktree;
+  const listingError = discovered?.find((d) => d.workspaceRepoId === repo.id)?.error ?? null;
+  const worktreePath = worktree.primary ? undefined : worktree.path;
+  const optionCount = repos.reduce((n, r) => n + worktreesFor(r).length, 0);
+
+  const fileRequest = (path: string): OpenFileDiff => ({
+    repoId: repo.id,
+    path,
+    ...(worktreePath ? { worktree: worktreePath, worktreeLabel: worktreeLabel(worktree) } : {}),
+  });
+
+  const worktreeOptions = (r: WorkspaceRepoDetail) =>
+    worktreesFor(r).map((w) => (
+      <option key={w.path} value={optionValue(r.id, w)}>
+        {worktreeLabel(w)}
+        {w.primary ? " (workspace branch)" : ""}
+      </option>
+    ));
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col">
-      {repos.length > 1 && (
+      {optionCount > 1 && (
         <select
-          value={repo.id}
-          onChange={(e) => setRepoId(e.target.value)}
-          className="m-2 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs outline-none"
+          aria-label="Repo and worktree to show"
+          value={optionValue(repo.id, worktree)}
+          onChange={(e) => {
+            const [repoId, path] = JSON.parse(e.target.value) as [string, string | null];
+            setSelection({ repoId, worktree: path });
+          }}
+          className="mx-2 mt-2 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs outline-none"
         >
-          {repos.map((r) => (
-            <option key={r.id} value={r.id}>
-              {r.repo.name}
-            </option>
-          ))}
+          {repos.length > 1
+            ? repos.map((r) => (
+                <optgroup key={r.id} label={r.repo.name}>
+                  {worktreeOptions(r)}
+                </optgroup>
+              ))
+            : worktreeOptions(repo)}
         </select>
+      )}
+      <div className="flex shrink-0 items-center gap-1 px-3 pt-1.5 text-xs text-zinc-500">
+        {/* The trailing space keeps these two words apart for a screen reader. */}
+        <span className="shrink-0">Viewing </span>
+        <span className="min-w-0 truncate font-mono text-zinc-300" title={worktree.path}>
+          {repos.length > 1 ? `${repo.repo.name} · ` : ""}
+          {worktreeLabel(worktree)}
+        </span>
+        {!worktree.primary && <CopyPathButton path={worktree.path} />}
+      </div>
+      {listingError && (
+        <p className="px-3 pt-1 text-xs text-zinc-600" title={listingError}>
+          Couldn't look for other worktrees of this repo.
+        </p>
       )}
 
       <div className="flex shrink-0 gap-1 border-b border-zinc-800 px-2 pt-1">
@@ -102,26 +189,49 @@ export default function WorkspaceSidePanel({
           <FilesView
             workspaceId={workspaceId}
             repoId={repo.id}
-            onEditFile={(path) => onEditFile(repo.id, path)}
+            worktree={worktreePath}
+            onEditFile={(path) => onEditFile(fileRequest(path))}
           />
         )}
         {view === "changes" && (
           <ChangesView
             workspaceId={workspaceId}
             repoId={repo.id}
-            onOpenFile={(path) => onOpenFile(repo.id, path)}
-            onEditFile={(path) => onEditFile(repo.id, path)}
+            worktree={worktreePath}
+            onOpenFile={(path) => onOpenFile(fileRequest(path))}
+            onEditFile={(path) => onEditFile(fileRequest(path))}
           />
         )}
         {view === "comments" && (
           <WorkspaceReviewComments
             workspaceId={workspaceId}
             repos={repos}
-            onOpenFile={onOpenFile}
+            onOpenFile={(repoId, path) => onOpenFile({ repoId, path })}
           />
         )}
-        {view === "checks" && <ChecksView repo={repo} />}
-        {view === "stack" && <WorkspaceStackView workspaceId={workspaceId} repo={repo} />}
+        {view === "checks" &&
+          (worktreePath ? (
+            <WorktreeChecksView
+              workspaceId={workspaceId}
+              repo={repo}
+              worktree={worktreePath}
+              branch={worktree.branch}
+            />
+          ) : (
+            <ChecksView repo={repo} />
+          ))}
+        {view === "stack" && (
+          <WorkspaceStackView
+            workspaceId={workspaceId}
+            repo={repo}
+            worktree={worktreePath}
+            branch={worktree.branch}
+            worktrees={repoWorktrees}
+            onViewWorktree={(w) =>
+              setSelection({ repoId: repo.id, worktree: w.primary ? null : w.path })
+            }
+          />
+        )}
       </div>
     </div>
   );
@@ -130,23 +240,32 @@ export default function WorkspaceSidePanel({
 /**
  * How often the files / changes views refresh while the workspace is visible.
  * Picked to feel live without hammering git on every keystroke; the call is
- * already cheap (a single git command per repo).
+ * already cheap (a handful of local git commands per repo).
  */
 const REFRESH_INTERVAL_MS = 5_000;
 
 /**
- * Subscribes to a worktree-derived list (files or changes) and refreshes it on
- * a fixed interval. Skips polling while the tab/window is hidden so a
- * backgrounded app doesn't keep firing git commands; resumes on visibility.
- * `same` lets the caller skip a re-render when the freshly-fetched data is
- * deep-equal to what's already shown, which keeps the list from flickering and
- * holds the array's identity steady so a view can memoize off it.
+ * How often the worktree list refreshes. Slower than the file views: worktrees
+ * come and go only when an agent adds or removes one, and a picked worktree that
+ * disappears already falls back to the primary one.
  */
-function usePolledRepoList<T>(
-  workspaceId: string,
-  repoId: string,
-  load: (workspaceId: string, repoId: string) => Promise<T>,
+const WORKTREE_REFRESH_INTERVAL_MS = 15_000;
+
+/**
+ * Subscribes to a worktree-derived list (files, changes, or the worktrees
+ * themselves) and refreshes it on a fixed interval. Skips polling while the
+ * tab/window is hidden so a backgrounded app doesn't keep firing git commands;
+ * resumes on visibility. Callers must memoize `load` on everything it reads: a
+ * new identity restarts the poll, which is how a change of repo or worktree
+ * takes effect. `same` lets the
+ * caller skip a re-render when the freshly-fetched data is deep-equal to what's
+ * already shown, which keeps the list from flickering and holds the array's
+ * identity steady so a view can memoize off it.
+ */
+function usePolled<T>(
+  load: () => Promise<T>,
   same: (prev: T | null, next: T) => boolean,
+  intervalMs: number = REFRESH_INTERVAL_MS,
 ): { data: T | null; error: string | null } {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -157,7 +276,7 @@ function usePolledRepoList<T>(
 
     const tick = async () => {
       try {
-        const next = await load(workspaceId, repoId);
+        const next = await load();
         if (!live) return;
         setError(null);
         setData((prev) => (prev !== null && same(prev, next) ? prev : next));
@@ -166,7 +285,7 @@ function usePolledRepoList<T>(
         setError(e instanceof Error ? e.message : String(e));
       } finally {
         if (live && !document.hidden) {
-          timer = setTimeout(tick, REFRESH_INTERVAL_MS);
+          timer = setTimeout(tick, intervalMs);
         }
       }
     };
@@ -187,7 +306,7 @@ function usePolledRepoList<T>(
       if (timer !== null) clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [workspaceId, repoId, load, same]);
+  }, [load, same, intervalMs]);
 
   return { data, error };
 }
@@ -199,6 +318,11 @@ const sameStringArray = (prev: string[] | null, next: string[]): boolean => {
   }
   return true;
 };
+
+const sameWorktrees = (
+  prev: WorkspaceRepoWorktrees[] | null,
+  next: WorkspaceRepoWorktrees[],
+): boolean => prev !== null && JSON.stringify(prev) === JSON.stringify(next);
 
 const sameChangedFiles = (prev: ChangedFile[] | null, next: ChangedFile[]): boolean => {
   if (prev === null || prev.length !== next.length) return false;
@@ -241,18 +365,19 @@ function FileListHeader({ paths, noun }: { paths: string[]; noun: string }) {
 function FilesView({
   workspaceId,
   repoId,
+  worktree,
   onEditFile,
 }: {
   workspaceId: string;
   repoId: string;
+  worktree: string | undefined;
   onEditFile: (path: string) => void;
 }) {
-  const { data, error } = usePolledRepoList(
-    workspaceId,
-    repoId,
-    workspaceRepoFiles,
-    sameStringArray,
+  const load = useCallback(
+    () => workspaceRepoFiles(workspaceId, repoId, worktree),
+    [workspaceId, repoId, worktree],
   );
+  const { data, error } = usePolled(load, sameStringArray);
 
   // Hoisted above the early returns to keep hook order stable. Memoized because
   // this list is the whole worktree and the poll re-runs every few seconds.
@@ -304,20 +429,21 @@ const CHANGE_COLORS: Record<string, string> = {
 function ChangesView({
   workspaceId,
   repoId,
+  worktree,
   onOpenFile,
   onEditFile,
 }: {
   workspaceId: string;
   repoId: string;
+  worktree: string | undefined;
   onOpenFile: (path: string) => void;
   onEditFile: (path: string) => void;
 }) {
-  const { data, error } = usePolledRepoList(
-    workspaceId,
-    repoId,
-    workspaceRepoChanges,
-    sameChangedFiles,
+  const load = useCallback(
+    () => workspaceRepoChanges(workspaceId, repoId, worktree),
+    [workspaceId, repoId, worktree],
   );
+  const { data, error } = usePolled(load, sameChangedFiles);
 
   // Hoisted above the early returns to keep hook order stable.
   const tree = useMemo(() => (data ? buildFileTree(data, (file) => file.path) : []), [data]);
@@ -416,7 +542,8 @@ function describeChecks(checks: {
 }
 
 /**
- * Builds a minimal PrSummary from the workspace poller's cache. Fields the
+ * Builds a minimal PrSummary from a repo's PR row, whether it came from the
+ * poller's cache or a live lookup. Fields the
  * poller doesn't store (title, author, timestamps) are filled with placeholders
  * — PrDetailView refetches the full detail anyway, so the only visible gap is
  * a brief blank title while the detail loads. The ref's provider comes from the
@@ -515,6 +642,84 @@ function ChecksView({ repo }: { repo: WorkspaceRepoDetail }) {
       )}
       {pr.mergeable && <div className="text-zinc-500">mergeable: {pr.mergeable}</div>}
       {pr.lastError && <div className="text-red-400">{pr.lastError}</div>}
+    </div>
+  );
+}
+
+/**
+ * The checks view for one of a repo's other worktrees. The poller only caches
+ * the primary branch's PR, so this one is read from the provider when the view
+ * opens — on demand rather than polled, since each read is a rate-limited API
+ * call — and handed to the same view the cached row renders through.
+ */
+function WorktreeChecksView({
+  workspaceId,
+  repo,
+  worktree,
+  branch,
+}: {
+  workspaceId: string;
+  repo: WorkspaceRepoDetail;
+  worktree: string;
+  branch: string | null;
+}) {
+  /** Undefined until the first read lands; null when no provider covers the repo. */
+  const [pr, setPr] = useState<WorkspaceRepoDetail["pr"] | undefined>(undefined);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  // Switching worktrees, or pressing Refresh twice, can leave an older lookup in
+  // flight; only the newest one may write back, as in `WorkspaceStackView`.
+  const latest = useRef(0);
+  const load = useCallback(async () => {
+    const seq = ++latest.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await worktreePr(workspaceId, repo.id, worktree);
+      if (seq !== latest.current) return;
+      // ChecksView reads a null `lastPolledAt` as "Not polled yet", so the read
+      // is stamped with the time it happened.
+      setPr(result.pr && { ...result.pr, lastPolledAt: new Date().toISOString(), lastError: null });
+    } catch (e) {
+      // A PR already on screen stays: a failed refresh is a reason to say so,
+      // not to take away what the reader was looking at.
+      if (seq === latest.current) setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (seq === latest.current) setLoading(false);
+    }
+  }, [workspaceId, repo.id, worktree]);
+
+  useEffect(() => {
+    setPr(undefined);
+    setError(null);
+    // A detached HEAD has no branch to look a PR up by; bumping the counter
+    // still drops a lookup started for the worktree picked before it.
+    if (branch) void load();
+    else latest.current++;
+  }, [load, branch]);
+
+  if (!branch) {
+    return <p className="text-xs text-zinc-500">This worktree is on a detached HEAD.</p>;
+  }
+  return (
+    <div className="space-y-2">
+      {error && <p className="text-xs text-red-400">{error}</p>}
+      {pr === undefined ? (
+        !error && <p className="text-xs text-zinc-500">Loading…</p>
+      ) : pr === null ? (
+        <p className="text-xs text-zinc-500">No provider is configured that can look up this PR.</p>
+      ) : (
+        <ChecksView repo={{ ...repo, branch, pr }} />
+      )}
+      <button
+        type="button"
+        onClick={() => void load()}
+        disabled={loading}
+        className="rounded border border-zinc-700 px-1.5 py-0.5 text-xs text-zinc-400 hover:bg-zinc-800 disabled:opacity-50"
+      >
+        {loading ? "Refreshing…" : "Refresh"}
+      </button>
     </div>
   );
 }

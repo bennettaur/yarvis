@@ -19,6 +19,13 @@ beforeEach(() => {
 });
 
 describe("draftKey", () => {
+  // The same path in two worktrees of one repo is two files, each with its own
+  // unsaved buffer — and the primary worktree's key must not change shape.
+  it("keeps a file in another worktree apart from the primary one's copy", () => {
+    expect(draftKey("ws", "r", "a.ts", "/ws/web-api")).not.toBe(draftKey("ws", "r", "a.ts"));
+    expect(fileKey("r", "a.ts", undefined)).toBe(fileKey("r", "a.ts"));
+  });
+
   it("keeps two files apart that would collide if the parts were concatenated", () => {
     // "a/b" in repo "r" vs "b" in a repo named "r/a": the same characters in the
     // same order, and a different file.
