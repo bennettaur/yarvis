@@ -27,6 +27,8 @@ interface GhRawSummary {
   state: string;
   createdAt: string;
   updatedAt: string;
+  baseRef?: string;
+  headRef?: string;
 }
 
 async function get<T>(path: string): Promise<T> {
@@ -55,6 +57,8 @@ function toSummary(raw: GhRawSummary): PrSummary {
     state: raw.state,
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
+    baseRef: raw.baseRef,
+    headRef: raw.headRef,
   };
 }
 

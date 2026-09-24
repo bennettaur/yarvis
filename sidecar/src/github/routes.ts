@@ -148,7 +148,7 @@ export function createGithubRoutes(config: Config): Hono {
     const q = c.req.query("q");
     if (!q) return c.json({ error: "missing q" }, 400);
     try {
-      return c.json(await gh.search(q));
+      return c.json(await gh.lookupBranches(await gh.search(q)));
     } catch (e) {
       return c.json({ error: String(e) }, 502);
     }

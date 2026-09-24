@@ -105,6 +105,79 @@ describe("github client", () => {
     });
   });
 
+  describe("lookupBranches", () => {
+    const summary = (number: number) => ({
+      number,
+      title: `PR ${number}`,
+      url: `https://github.com/o/r/pull/${number}`,
+      owner: "o",
+      repo: "r",
+      author: "me",
+      draft: false,
+      state: "open",
+      createdAt: "",
+      updatedAt: "",
+    });
+
+    it("adds each PR's base and head branch, leaving unresolved PRs as they were", async () => {
+      const gh = new GitHubClient(
+        "t",
+        fakeFetch({
+          "/graphql": {
+            data: {
+              pr0: { pullRequest: { baseRefName: "main", headRefName: "one" } },
+              pr1: null,
+            },
+          },
+        }),
+      );
+      const prs = await gh.lookupBranches([summary(1), summary(2)]);
+      expect(prs[0]).toMatchObject({ number: 1, baseRef: "main", headRef: "one" });
+      expect(prs[1]).toEqual(summary(2));
+    });
+
+    it("leaves a fork PR's head branch unset", async () => {
+      const gh = new GitHubClient(
+        "t",
+        fakeFetch({
+          "/graphql": {
+            data: {
+              pr0: {
+                pullRequest: { baseRefName: "main", headRefName: "main", isCrossRepository: true },
+              },
+            },
+          },
+        }),
+      );
+      const [pr] = await gh.lookupBranches([summary(1)]);
+      expect(pr?.baseRef).toBe("main");
+      expect(pr?.headRef).toBeUndefined();
+    });
+
+    it("keeps the branches it resolved when the response also carries errors", async () => {
+      const gh = new GitHubClient(
+        "t",
+        fakeFetch({
+          "/graphql": {
+            data: {
+              pr0: { pullRequest: { baseRefName: "main", headRefName: "one" } },
+              pr1: null,
+            },
+            errors: [{ message: "Could not resolve to a Repository" }],
+          },
+        }),
+      );
+      const prs = await gh.lookupBranches([summary(1), summary(2)]);
+      expect(prs[0]).toMatchObject({ baseRef: "main", headRef: "one" });
+      expect(prs[1]).toEqual(summary(2));
+    });
+
+    it("returns the PRs unchanged when the lookup fails", async () => {
+      const gh = new GitHubClient("t", fakeFetch({}));
+      expect(await gh.lookupBranches([summary(1)])).toEqual([summary(1)]);
+    });
+  });
+
   it("combines mergeability and checks for PR status", async () => {
     const gh = new GitHubClient(
       "t",

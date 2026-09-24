@@ -73,12 +73,12 @@ async function loadProviderLists(provider: Provider): Promise<ProviderLists> {
     // The needs-review query is user-configurable (Settings → PR review), since
     // what counts as needing your attention varies by team.
     const config = await ghPrConfig();
-    return {
-      ...NO_LISTS,
-      mine: await ghSearch(GH_MY),
-      review: await ghSearch(config.reviewQuery),
-      ghFilters: await ghFilters(),
-    };
+    const [mine, review, filters] = await Promise.all([
+      ghSearch(GH_MY),
+      ghSearch(config.reviewQuery),
+      ghFilters(),
+    ]);
+    return { ...NO_LISTS, mine, review, ghFilters: filters };
   }
   return {
     ...NO_LISTS,
