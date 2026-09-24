@@ -8,6 +8,7 @@ import type { Db } from "../db/client.ts";
 import type { ChatMessageMetadata, ToolActivity } from "../db/schema.ts";
 import { clientError, describeError, errorDetail, redactSecrets } from "../llm/errors.ts";
 import { type ApprovalHooks, assembleAgentToolset } from "../mcp/chatTools.ts";
+import type { McpClientTool } from "../mcp/connectionManager.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
 import { newAttentionState } from "./attentionTools.ts";
@@ -53,18 +54,18 @@ const TOOL_RESULT_CHARS = 400;
 const TOOL_ARGS_CHARS = 1000;
 
 /**
- * The model-facing key of an MCP tool is its registry id,
- * `mcp:<serverId>:<toolName>`. Only the last part means anything to a reader.
+ * An MCP tool's registry id is `mcp:<serverId>:<toolName>`. Only the last part
+ * means anything to a reader.
  */
-function toolLabel(key: string): string {
-  if (!key.startsWith("mcp:")) return key;
-  const [, , ...rest] = key.split(":");
-  return rest.join(":") || key;
+function toolLabel(id: string): string {
+  if (!id.startsWith("mcp:")) return id;
+  const [, , ...rest] = id.split(":");
+  return rest.join(":") || id;
 }
 
-function serverOf(key: string, names?: ReadonlyMap<string, string>): string | undefined {
-  if (!key.startsWith("mcp:")) return undefined;
-  const serverId = key.split(":")[1] ?? "";
+function serverOf(id: string, names?: ReadonlyMap<string, string>): string | undefined {
+  if (!id.startsWith("mcp:")) return undefined;
+  const serverId = id.split(":")[1] ?? "";
   return names?.get(serverId) ?? serverId;
 }
 
@@ -242,6 +243,8 @@ export interface AgentTurnParams {
    * it from, which then get the defaults.
    */
   budget?: Partial<ChatConfig>;
+  /** The connected MCP tools to offer; defaults to whatever is live. */
+  liveTools?: Record<string, McpClientTool>;
 }
 
 /**
@@ -271,6 +274,7 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
     approval,
     serverNames,
     providerOptions,
+    liveTools,
   } = params;
   const budget: ChatConfig = { ...DEFAULT_CHAT_CONFIG, ...params.budget };
 
@@ -321,7 +325,7 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
   // assistant. The tools that can't be taken back therefore ask first.
   const spoken = userMetadata?.source === "voice";
 
-  const { tools, computeActiveTools } = await assembleAgentToolset({
+  const { tools, computeActiveTools, registryIdByKey } = await assembleAgentToolset({
     config,
     db,
     sessionId,
@@ -342,6 +346,7 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
     // Standing consent for an MCP tool was given about typed turns. A spoken one
     // was never read back, so it asks again for everything.
     honourStandingConsent: !spoken,
+    liveTools,
   });
 
   let streamError: unknown = null;
@@ -407,10 +412,12 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
           yield { type: "reasoning", text: part.text };
           break;
         case "tool-call": {
+          // Built-ins aren't in the map; their key is already their name.
+          const registryId = registryIdByKey.get(part.toolName) ?? part.toolName;
           const entry: ToolActivity = {
             id: part.toolCallId,
-            name: toolLabel(part.toolName),
-            server: serverOf(part.toolName, serverNames),
+            name: toolLabel(registryId),
+            server: serverOf(registryId, serverNames),
             args: truncateArgs(part.input),
             status: "pending",
           };
