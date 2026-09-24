@@ -230,6 +230,10 @@ describe("runAgentTurn", () => {
   it("names the MCP server a tool belongs to", async () => {
     const session = await createSession(db, null);
     const id = "mcp:server-uuid:search_pages";
+    await sql`
+      INSERT INTO agent_tools (id, source, server_id, name, description, policy, content_hash)
+      VALUES (${id}, 'mcp', NULL, 'search_pages', '', 'always', '')
+    `;
     const liveTools = {
       [id]: tool({
         description: "search_pages",
@@ -243,6 +247,7 @@ describe("runAgentTurn", () => {
         [...text("done"), finish("stop")],
       ),
       session.id,
+      // MCP tools are only offered to a turn that has an approval channel.
       denyingApproval,
       undefined,
       undefined,
@@ -255,6 +260,33 @@ describe("runAgentTurn", () => {
       name: "search_pages",
       server: "Notion",
     });
+    // Denied proves the key reached the approval-wrapped MCP tool.
+    expect(events.find((e) => e.type === "tool_result")).toMatchObject({ status: "denied" });
+  });
+
+  // Bedrock rejects the whole turn over one tool name it can't accept (#321).
+  it("offers every tool to the provider under a name it accepts", async () => {
+    const session = await createSession(db, null);
+    const serverId = "907bd56b-f417-419e-92db-2f1e4e1aa0ce";
+    const id = `mcp:${serverId}:github__update_pull_request`;
+    await sql`
+      INSERT INTO agent_tools (id, source, server_id, name, description, policy, content_hash)
+      VALUES (${id}, 'mcp', ${serverId}, 'github__update_pull_request', '', 'always', '')
+    `;
+    const liveTools = {
+      [id]: tool({
+        description: "github__update_pull_request",
+        inputSchema: z.object({}),
+        execute: async () => ({}),
+      }) as unknown as McpClientTool,
+    };
+    const model = streamingModel([...text("done"), finish("stop")]);
+
+    await collect(model, session.id, denyingApproval, undefined, undefined, liveTools);
+
+    const offered = (model.doStreamCalls[0]?.tools ?? []).map((t) => t.name);
+    expect(offered).toContain(modelToolKey(id));
+    expect(offered.every((name) => /^[A-Za-z0-9_-]{1,64}$/.test(name))).toBe(true);
   });
 
   // The turn changed things outside this app. Losing that record is what makes

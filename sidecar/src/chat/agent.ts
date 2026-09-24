@@ -325,7 +325,7 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
   // assistant. The tools that can't be taken back therefore ask first.
   const spoken = userMetadata?.source === "voice";
 
-  const { tools, computeActiveTools, registryIds } = await assembleAgentToolset({
+  const { tools, computeActiveTools, registryIdByKey } = await assembleAgentToolset({
     config,
     db,
     sessionId,
@@ -412,7 +412,8 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
           yield { type: "reasoning", text: part.text };
           break;
         case "tool-call": {
-          const registryId = registryIds.get(part.toolName) ?? part.toolName;
+          // Built-ins aren't in the map; their key is already their name.
+          const registryId = registryIdByKey.get(part.toolName) ?? part.toolName;
           const entry: ToolActivity = {
             id: part.toolCallId,
             name: toolLabel(registryId),

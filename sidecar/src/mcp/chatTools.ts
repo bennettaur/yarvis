@@ -15,24 +15,26 @@ import { activeMounted, mountTools, unmountAll, unmountTools } from "./mountedTo
  * the per-request assembly of the full tool set + the policy-driven active set.
  */
 
-/**
- * Providers cap a tool name at 64 characters of `[A-Za-z0-9_-]` (Bedrock and
- * OpenAI both do), and an MCP registry id spends 41 of those on
- * `mcp:<serverId>:` before the tool's own name starts.
- */
+/** Bedrock and OpenAI reject tool names over 64 characters or outside `[A-Za-z0-9_-]`. */
 const MAX_TOOL_KEY_LENGTH = 64;
+
+/**
+ * 48 bits, so matching another tool's key takes brute force far beyond what an
+ * MCP server could manage, while leaving 47 characters for the tool's name.
+ */
+const KEY_DIGEST_HEX_CHARS = 12;
 
 /**
  * The model-facing tool key for a registry id. Built-ins use their bare name.
  * An MCP tool is `mcp_<hash>_<toolName>`, with the name made provider-safe and
- * cut to fit; the hash is over the whole registry id, so two tools whose names
- * only differ past the cut, or only in a replaced character, still get distinct
- * keys.
+ * cut to fit. The hash is over the whole registry id and stands in for the
+ * server id, so keys stay distinct across servers and for names that differ
+ * only past the cut or in a replaced character.
  */
 export function modelToolKey(id: string): string {
   if (id.startsWith("builtin:")) return id.slice("builtin:".length);
   const toolName = id.split(":").slice(2).join(":");
-  const digest = createHash("sha256").update(id).digest("hex").slice(0, 8);
+  const digest = createHash("sha256").update(id).digest("hex").slice(0, KEY_DIGEST_HEX_CHARS);
   const safeName = toolName.replace(/[^A-Za-z0-9_-]/g, "_");
   return `mcp_${digest}_${safeName}`.slice(0, MAX_TOOL_KEY_LENGTH);
 }
@@ -133,10 +135,10 @@ export function buildMetaTools(deps: MetaToolDeps): Record<string, Tool> {
         }
         if (toMount.length) mountTools(sessionId, toMount);
         return {
-          mounted: toMount,
+          mounted: toMount.map((id) => ({ id, callAs: modelToolKey(id) })),
           skipped,
           note: toMount.length
-            ? "These tools are now callable. An MCP tool call asks the user to approve it first, unless they have marked that tool as auto-approved."
+            ? "These tools are now callable, each under its callAs name. An MCP tool call asks the user to approve it first, unless they have marked that tool as auto-approved."
             : "No tools were mounted.",
         };
       },
@@ -172,7 +174,7 @@ export interface AgentToolset {
   /** Recomputes the active tool keys for a step: always ∪ mounted ∪ meta. */
   computeActiveTools: () => string[];
   /** Model-facing key to registry id, for every MCP tool in `tools`. */
-  registryIds: ReadonlyMap<string, string>;
+  registryIdByKey: ReadonlyMap<string, string>;
 }
 
 /**
@@ -224,7 +226,7 @@ export async function assembleAgentToolset(opts: {
   const approvalById = new Map(registry.map((r) => [r.id, r.approval]));
 
   const tools: Record<string, Tool> = {};
-  const registryIds = new Map<string, string>();
+  const registryIdByKey = new Map<string, string>();
 
   // Built-ins: keyed by bare name; excluded only when explicitly disabled.
   // A built-in this turn wants confirmed is wrapped like an MCP tool — but only
@@ -252,14 +254,23 @@ export async function assembleAgentToolset(opts: {
   // prompt on a turn nobody proof-read.
   if (approval) {
     const liveTools = opts.liveTools ?? getMcpManager().getLiveTools();
+    const collided = new Set<string>();
     for (const [id, t] of Object.entries(liveTools)) {
       if (policyById.get(id) === "disabled") continue;
       const key = modelToolKey(id);
-      registryIds.set(key, id);
+      if (registryIdByKey.has(key)) collided.add(key);
+      registryIdByKey.set(key, id);
       tools[key] =
         honourStandingConsent && approvalById.get(id) === "auto"
           ? (t as unknown as Tool)
           : wrapToolWithApproval(id, t, approval);
+    }
+    // Neither side of a collision is offered: keeping either would let one
+    // server's tool answer to the name the model has for another's.
+    for (const key of collided) {
+      console.warn(`[mcp] dropping tools that share the model-facing name ${key}`);
+      delete tools[key];
+      registryIdByKey.delete(key);
     }
   }
 
@@ -281,5 +292,5 @@ export async function assembleAgentToolset(opts: {
     return Array.from(new Set([...alwaysKeys, ...mountedKeys, ...metaNames]));
   };
 
-  return { tools, computeActiveTools, registryIds };
+  return { tools, computeActiveTools, registryIdByKey };
 }
