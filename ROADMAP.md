@@ -240,7 +240,13 @@ Status of the build against the original vision. The full V1 plan lives at
   resolve/reopen, and delete; a completed archive deletes them all. Any file in
   the worktree also opens in an editor tab (CodeMirror, grammar from the file's
   name), whose save carries the hash it was read with so it cannot land on top
-  of what the agent session wrote in the meantime.
+  of what the agent session wrote in the meantime. The column also finds every
+  other worktree of a repo's clone inside the workspace folder — the usual shape
+  of a stack built one worktree per branch — and a picker switches All files,
+  Changed, PR checks and Stack between them without a checkout. Changed measures
+  a stacked worktree from the branch below it, so each layer shows only its own
+  changes; another worktree's PR checks are looked up on demand rather than
+  polled, and its diffs take no self-review comments.
 - **Omni Chat + keyboard navigation** — a global `Control+Shift+Space` hotkey
   (registered in the Rust core) raises a centered chat overlay over any tab; Esc
   hides it while the session keeps streaming in the background, and re-summoning

@@ -9,15 +9,22 @@ import ReviewDiffBody from "./ReviewDiffBody";
  * work can be reviewed here rather than on a PR. The diff is fetched live (the
  * worktree keeps changing as work continues), so a manual refresh button lets
  * the user re-pull without reopening the tab.
+ *
+ * A diff from one of the repo's other worktrees has no comment layer: comments
+ * are filed against the workspace repo and a path, so one left here would show
+ * up on the primary worktree's copy of the file instead.
  */
 export default function WorkspaceFileDiff({
   workspaceId,
   repoId,
   path,
+  worktree,
 }: {
   workspaceId: string;
   repoId: string;
   path: string;
+  /** One of the repo's other worktrees; the primary one when unset. */
+  worktree?: string;
 }) {
   const [patch, setPatch] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -27,7 +34,7 @@ export default function WorkspaceFileDiff({
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const diff = await workspaceRepoFileDiff(workspaceId, repoId, path);
+      const diff = await workspaceRepoFileDiff(workspaceId, repoId, path, worktree);
       setPatch(diff.patch);
       setError(null);
     } catch (e) {
@@ -35,15 +42,18 @@ export default function WorkspaceFileDiff({
     } finally {
       setLoading(false);
     }
-  }, [workspaceId, repoId, path]);
+  }, [workspaceId, repoId, path, worktree]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   const fileComments = useMemo(
-    () => review.comments.filter((c) => c.workspaceRepoId === repoId && c.path === path),
-    [review.comments, repoId, path],
+    () =>
+      worktree
+        ? []
+        : review.comments.filter((c) => c.workspaceRepoId === repoId && c.path === path),
+    [review.comments, repoId, path, worktree],
   );
 
   return (
@@ -78,7 +88,7 @@ export default function WorkspaceFileDiff({
             path={path}
             workspaceRepoId={repoId}
             comments={fileComments}
-            onAdd={review.add}
+            onAdd={worktree ? undefined : review.add}
             onToggleResolved={(comment) => void review.toggleResolved(comment)}
             onDelete={(comment) => void review.remove(comment.id)}
           />

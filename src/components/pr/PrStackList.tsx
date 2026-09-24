@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { requestOpenPr } from "../../lib/nav";
 import { refKey } from "../../lib/pr/ref";
 import { hasPullRequest } from "../../lib/pr/stack";
@@ -28,6 +29,7 @@ function StackRow({
   isCurrent,
   isLast,
   onOpen,
+  action,
 }: {
   entry: StackEntry;
   /** The layer the surrounding surface is already showing. */
@@ -35,6 +37,7 @@ function StackRow({
   /** The bottom layer: nothing of the stack is drawn below it. */
   isLast: boolean;
   onOpen?: (entry: StackEntry) => void;
+  action?: ReactNode;
 }) {
   const badge = stackEntryBadge(entry);
   const openable = hasPullRequest(entry);
@@ -80,6 +83,7 @@ function StackRow({
             {isCurrent && <span className="text-indigo-300">you are here</span>}
           </span>
         </button>
+        {action}
         {entry.url && (
           <button
             type="button"
@@ -111,6 +115,7 @@ export default function PrStackList({
   stack,
   currentRef,
   onOpen = (entry) => requestOpenPr(toSummary(entry)),
+  rowAction,
 }: {
   stack: PrStack;
   /**
@@ -124,6 +129,8 @@ export default function PrStackList({
   currentRef?: PrRef;
   /** What clicking a layer does. Defaults to opening it in the PRs tab. */
   onOpen?: (entry: StackEntry) => void;
+  /** An extra control at the end of a layer's row, beside "open externally". */
+  rowAction?: (entry: StackEntry) => ReactNode;
 }) {
   const topDown = [...stack.entries].reverse();
   // The branch the bottom layer actually targets, which for a stack rooted
@@ -144,6 +151,7 @@ export default function PrStackList({
             }
             isLast={i === topDown.length - 1}
             onOpen={onOpen}
+            action={rowAction?.(entry)}
           />
         ))}
       </ul>

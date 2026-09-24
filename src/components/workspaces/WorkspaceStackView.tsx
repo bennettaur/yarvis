@@ -5,6 +5,7 @@ import {
   mergeWorkspaceRepoStack,
   type WorkspaceRepoDetail,
   type WorkspaceStack,
+  type WorkspaceWorktree,
   workspaceRepoStack,
 } from "../../lib/workspaces";
 import PrStackList from "../pr/PrStackList";
@@ -14,9 +15,13 @@ import PrStackList from "../pr/PrStackList";
  * branch sits in, and the one action a stack has that a single PR doesn't —
  * merging the whole thing up to a chosen layer.
  *
- * Unlike the other right-column views this one isn't polled. Reading it costs a
+ * The stack is read in whichever of the repo's worktrees the column is showing,
+ * and a layer checked out in another of them can be switched to from its row —
+ * which is how a stack built one worktree per branch is walked.
+ *
+ * Unlike the file views beside it this one isn't polled. Reading it costs a
  * `gh stack view` subprocess plus provider round trips, where those views cost
- * one git command, and a stack changes on the user's own actions rather than on
+ * a few local git commands, and a stack changes on the user's own actions rather than on
  * its own — so it loads on open and offers a refresh.
  */
 
@@ -36,9 +41,20 @@ const MERGE_METHODS: { value: MergeMethod | ""; label: string }[] = [
 export default function WorkspaceStackView({
   workspaceId,
   repo,
+  worktree,
+  branch,
+  worktrees,
+  onViewWorktree,
 }: {
   workspaceId: string;
   repo: WorkspaceRepoDetail;
+  /** One of the repo's other worktrees to read the stack in; the primary one when unset. */
+  worktree?: string;
+  /** The branch checked out in the worktree being read. */
+  branch: string | null;
+  /** Every worktree of the repo in the workspace, for switching between layers. */
+  worktrees: WorkspaceWorktree[];
+  onViewWorktree: (worktree: WorkspaceWorktree) => void;
 }) {
   const [data, setData] = useState<WorkspaceStack | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -57,14 +73,14 @@ export default function WorkspaceStackView({
     const seq = ++latest.current;
     setError(null);
     try {
-      const next = await workspaceRepoStack(workspaceId, repo.id);
+      const next = await workspaceRepoStack(workspaceId, repo.id, worktree);
       if (seq === latest.current) setData(next);
     } catch (e) {
       // Whatever is on screen stays: a failed refresh is a reason to say so,
       // not to take away the stack the reader was looking at.
       if (seq === latest.current) setError(e instanceof Error ? e.message : String(e));
     }
-  }, [workspaceId, repo.id]);
+  }, [workspaceId, repo.id, worktree]);
 
   useEffect(() => {
     setData(null);
@@ -91,6 +107,7 @@ export default function WorkspaceStackView({
         target.number,
         plan,
         method || undefined,
+        worktree,
       );
       setMergeOutput(result.output || (result.merged ? "Merged." : "Nothing was merged."));
       await load();
@@ -113,7 +130,7 @@ export default function WorkspaceStackView({
     return (
       <div className="space-y-2 text-xs text-zinc-500">
         <p>
-          No stack for <span className="font-mono">{repo.branch}</span>.
+          No stack for <span className="font-mono">{branch ?? "this detached HEAD"}</span>.
         </p>
         {data.ghStackError && <p className="text-zinc-600">gh stack: {data.ghStackError}</p>}
         {data.prStackError && <p className="text-zinc-600">GitHub: {data.prStackError}</p>}
@@ -139,7 +156,24 @@ export default function WorkspaceStackView({
         </button>
       </div>
 
-      <PrStackList stack={stack} />
+      <PrStackList
+        stack={stack}
+        rowAction={(entry) => {
+          if (entry.headRef === branch) return null;
+          const layerWorktree = worktrees.find((w) => w.branch === entry.headRef);
+          if (!layerWorktree) return null;
+          return (
+            <button
+              type="button"
+              onClick={() => onViewWorktree(layerWorktree)}
+              title={`Show the files and changes in ${layerWorktree.path}`}
+              className="shrink-0 pt-1 text-xs text-zinc-500 hover:text-zinc-300"
+            >
+              View
+            </button>
+          );
+        }}
+      />
 
       {data.prStackError && (
         <p className="text-zinc-600">

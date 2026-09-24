@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import type { PrStack, StackEntry } from "../../lib/pr/types";
-import type { StackMergeResult, WorkspaceRepoDetail, WorkspaceStack } from "../../lib/workspaces";
+import type {
+  StackMergeResult,
+  WorkspaceRepoDetail,
+  WorkspaceStack,
+  WorkspaceWorktree,
+} from "../../lib/workspaces";
 import { mountForInteraction, textOf } from "../../test/render";
 
 let stackResult: WorkspaceStack | Error;
@@ -65,7 +70,23 @@ const REPO = {
   repo: { name: "web" },
 } as unknown as WorkspaceRepoDetail;
 
-const view = () => mountForInteraction(<WorkspaceStackView workspaceId="ws-1" repo={REPO} />);
+const WORKTREES: WorkspaceWorktree[] = [
+  { path: "/ws/web", branch: "api", primary: true },
+  { path: "/ws/web-auth", branch: "auth", primary: false },
+];
+
+let viewed: WorkspaceWorktree[] = [];
+
+const view = () =>
+  mountForInteraction(
+    <WorkspaceStackView
+      workspaceId="ws-1"
+      repo={REPO}
+      branch="api"
+      worktrees={WORKTREES}
+      onViewWorktree={(w) => viewed.push(w)}
+    />,
+  );
 
 /** Clicks the button whose text starts with `label`. */
 function click(host: HTMLElement, label: string): void {
@@ -81,6 +102,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 100));
 let unmount: (() => void) | null = null;
 
 beforeEach(() => {
+  viewed = [];
   mergeCalls = [];
   mergeResult = { merged: true, output: "merged" };
   stackResult = { stack: TWO_LAYERS, ghStackError: null, prStackError: null };
@@ -202,6 +224,21 @@ describe("WorkspaceStackView", () => {
 
     expect(text).toContain("No stack for");
     expect(text).toContain("not a stack");
+  });
+
+  // A stack built one worktree per branch is walked from here, so a layer with
+  // a worktree of its own offers to switch to it — and the one already showing
+  // does not.
+  it("switches to the worktree a layer is checked out in", async () => {
+    const mounted = await view();
+    unmount = mounted.unmount;
+    const viewButtons = [...mounted.host.querySelectorAll("button")].filter(
+      (b) => b.textContent === "View",
+    );
+    expect(viewButtons).toHaveLength(1);
+
+    viewButtons[0]?.click();
+    expect(viewed).toEqual([WORKTREES[1]!]);
   });
 
   it("surfaces a failed read", async () => {

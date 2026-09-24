@@ -237,3 +237,25 @@ describe("ReviewDiffBody", () => {
     expect(host.textContent).not.toContain("+++ b/a.ts");
   });
 });
+
+// A diff from one of a repo's other worktrees renders with no `onAdd`: comments
+// are filed by repo and path, so one left there would land on the primary
+// worktree's copy of the file.
+describe("ReviewDiffBody without onAdd", () => {
+  it("offers no way to start a comment", async () => {
+    const mounted = await mountForInteraction(
+      <ReviewDiffBody
+        patch={PATCH}
+        path="src/a.ts"
+        workspaceRepoId="wr-1"
+        comments={[]}
+        onToggleResolved={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+    unmount = mounted.unmount;
+
+    expect(mounted.host.querySelector('[aria-label="Comment on this line"]')).toBeNull();
+    expect(gutters(mounted.host)).toHaveLength(0);
+  });
+});

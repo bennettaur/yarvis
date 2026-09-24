@@ -74,6 +74,7 @@ import {
 } from "./git.ts";
 import { writeMcpConfig } from "./mcpConfig.ts";
 import { deleteWorkspaceReviewComments } from "./reviewComments.ts";
+import { resolveWorktree, worktreeDiffBase } from "./worktrees.ts";
 
 const SETUP_LOG_CAP = 16 * 1024;
 const SETUP_TIMEOUT_MS = 10 * 60 * 1000;
@@ -635,24 +636,28 @@ async function getWorkspaceRepo(db: Db, workspaceRepoId: string): Promise<Worksp
   return row;
 }
 
-/** All tracked files in a workspace repo's worktree. */
+/** All tracked files in a workspace repo's worktree — the primary one, or
+ *  another of the repo's worktrees in the workspace when `worktree` names it. */
 export async function workspaceRepoFiles(
   db: Db,
   workspaceRepoId: string,
+  worktree?: string,
   runner: GitRunner = defaultGitRunner,
 ): Promise<string[]> {
-  const wr = await getWorkspaceRepo(db, workspaceRepoId);
-  return listFiles(runner, wr.worktreePath);
+  const target = await resolveWorktree(db, workspaceRepoId, worktree, runner);
+  return listFiles(runner, target.path);
 }
 
-/** Files changed on a workspace repo's branch versus its base. */
+/** Files changed on a worktree's branch versus the branch it is stacked on, or
+ *  the repo's base branch. */
 export async function workspaceRepoChanges(
   db: Db,
   workspaceRepoId: string,
+  worktree?: string,
   runner: GitRunner = defaultGitRunner,
 ): Promise<ChangedFile[]> {
-  const wr = await getWorkspaceRepo(db, workspaceRepoId);
-  return listChangedFiles(runner, wr.worktreePath, wr.baseBranch);
+  const target = await resolveWorktree(db, workspaceRepoId, worktree, runner);
+  return listChangedFiles(runner, target.path, await worktreeDiffBase(runner, target));
 }
 
 /** One file's current contents in a workspace repo's worktree, for the editor. */
@@ -660,9 +665,11 @@ export async function workspaceRepoFile(
   db: Db,
   workspaceRepoId: string,
   path: string,
+  worktree?: string,
+  runner: GitRunner = defaultGitRunner,
 ): Promise<WorktreeFile> {
-  const wr = await getWorkspaceRepo(db, workspaceRepoId);
-  return readWorktreeFile(wr.worktreePath, path);
+  const target = await resolveWorktree(db, workspaceRepoId, worktree, runner);
+  return readWorktreeFile(target.path, path);
 }
 
 /**
@@ -677,9 +684,11 @@ export async function saveWorkspaceRepoFile(
   path: string,
   content: string,
   expectedHash: string,
+  worktree?: string,
+  runner: GitRunner = defaultGitRunner,
 ): Promise<WriteResult> {
-  const wr = await getWorkspaceRepo(db, workspaceRepoId);
-  return writeWorktreeFile(wr.worktreePath, path, content, expectedHash);
+  const target = await resolveWorktree(db, workspaceRepoId, worktree, runner);
+  return writeWorktreeFile(target.path, path, content, expectedHash);
 }
 
 /** The unified-diff patch for one changed file in a workspace repo's worktree. */
@@ -687,10 +696,11 @@ export async function workspaceRepoFileDiff(
   db: Db,
   workspaceRepoId: string,
   path: string,
+  worktree?: string,
   runner: GitRunner = defaultGitRunner,
 ): Promise<{ path: string; patch: string }> {
-  const wr = await getWorkspaceRepo(db, workspaceRepoId);
-  const patch = await fileDiff(runner, wr.worktreePath, wr.baseBranch, path);
+  const target = await resolveWorktree(db, workspaceRepoId, worktree, runner);
+  const patch = await fileDiff(runner, target.path, await worktreeDiffBase(runner, target), path);
   return { path, patch };
 }
 
