@@ -61,6 +61,11 @@ function decodeSegment(segment: string): string {
   }
 }
 
+// A decoded `.`, `..`, or slash would escape its place in the API paths built from it.
+function isUnsafeSegment(segment: string): boolean {
+  return segment === "." || segment === ".." || /[/\\]/.test(segment);
+}
+
 function splitRemote(url: string): { host: string; segments: string[] } | null {
   const trimmed = url.trim().replace(/\.git$/, "");
   const scp = trimmed.match(/^[^/]+@([^/:]+):(.+)$/);
@@ -79,7 +84,9 @@ function splitRemote(url: string): { host: string; segments: string[] } | null {
     }
   }
   if (!host) return null;
-  return { host, segments: path.split("/").filter(Boolean).map(decodeSegment) };
+  const segments = path.split("/").filter(Boolean).map(decodeSegment);
+  if (segments.some(isUnsafeSegment)) return null;
+  return { host, segments };
 }
 
 /**
@@ -98,13 +105,14 @@ export function parseRepoRemote(url: string): RepoRemote | null {
       return { provider: "azure", org: segments[1]!, project: segments[2]!, repo: segments[3]! };
     }
     const gitIdx = segments.indexOf("_git");
-    if (gitIdx >= 0 && segments.length > gitIdx + 1) {
-      const isLegacy = host.endsWith(".visualstudio.com");
-      const org = isLegacy ? host.split(".")[0]! : segments[0]!;
-      const repo = segments[gitIdx + 1]!;
-      // Azure omits the project from the URL when it has the same name as the repo.
-      if (gitIdx === (isLegacy ? 0 : 1)) return { provider: "azure", org, project: repo, repo };
-      if (gitIdx >= 1) return { provider: "azure", org, project: segments[gitIdx - 1]!, repo };
+    if (gitIdx >= 1 && segments.length > gitIdx + 1) {
+      const org = host.endsWith(".visualstudio.com") ? host.split(".")[0]! : segments[0]!;
+      return {
+        provider: "azure",
+        org,
+        project: segments[gitIdx - 1]!,
+        repo: segments[gitIdx + 1]!,
+      };
     }
     return null;
   }

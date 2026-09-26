@@ -37,13 +37,28 @@ describe("parseRepoRemote", () => {
     });
   });
 
-  it("uses the repo name as the project when the Azure URL omits the project", () => {
-    expect(parseRepoRemote("https://dev.azure.com/myorg/_git/web")).toEqual({
+  it("decodes a percent-encoded project in an Azure DevOps ssh remote", () => {
+    expect(parseRepoRemote("git@ssh.dev.azure.com:v3/myorg/My%20Project/web")).toEqual({
       provider: "azure",
       org: "myorg",
-      project: "web",
+      project: "My Project",
       repo: "web",
     });
+  });
+
+  it("keeps a segment with invalid percent-encoding as written", () => {
+    expect(parseRepoRemote("https://dev.azure.com/myorg/Bad%E0%A4%A/_git/web")).toEqual({
+      provider: "azure",
+      org: "myorg",
+      project: "Bad%E0%A4%A",
+      repo: "web",
+    });
+  });
+
+  it("returns null when a decoded segment would escape its path position", () => {
+    expect(parseRepoRemote("https://dev.azure.com/myorg/%2e%2e/_git/web")).toBeNull();
+    expect(parseRepoRemote("https://dev.azure.com/myorg/MyProject/_git/%2E%2E")).toBeNull();
+    expect(parseRepoRemote("https://dev.azure.com/myorg/My%2FProject/_git/web")).toBeNull();
   });
 
   it("classifies a legacy visualstudio.com remote", () => {

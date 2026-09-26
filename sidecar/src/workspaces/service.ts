@@ -142,10 +142,16 @@ function decodeSegment(segment: string): string {
   }
 }
 
+/** True for a decoded segment that would change the shape of a URL built from it. */
+function isUnsafeSegment(segment: string): boolean {
+  return segment === "." || segment === ".." || /[/\\]/.test(segment);
+}
+
 /** Splits a git remote into its host and path segments, spanning scp-like
  *  (`git@host:path`) and URL (`https://…`, `ssh://…`) forms. Segments are
- *  decoded: Azure clone URLs write a project like "My Project" as `My%20Project`,
- *  and the API calls built from it encode the name themselves. */
+ *  percent-decoded (Azure writes "My Project" as `My%20Project`). Returns null
+ *  when a decoded segment is `.`, `..`, or holds a slash, since those would
+ *  escape their place in the API paths built from them. */
 function splitRemote(url: string): { host: string; segments: string[] } | null {
   const trimmed = url.trim().replace(/\.git$/, "");
   // scp-like syntax (`user@host:path`) has no scheme and a `:` before the path.
@@ -161,7 +167,9 @@ function splitRemote(url: string): { host: string; segments: string[] } | null {
         }
       })();
   if (!host) return null;
-  return { host, segments: path.split("/").filter(Boolean).map(decodeSegment) };
+  const segments = path.split("/").filter(Boolean).map(decodeSegment);
+  if (segments.some(isUnsafeSegment)) return null;
+  return { host, segments };
 }
 
 /**
@@ -184,17 +192,18 @@ export function parseRepoRemote(url: string): RepoRemote | null {
     }
     // HTTPS form: the `_git` marker precedes the repo and follows the project.
     const gitIdx = segments.indexOf("_git");
-    if (gitIdx >= 0 && segments.length > gitIdx + 1) {
+    if (gitIdx >= 1 && segments.length > gitIdx + 1) {
       // Legacy visualstudio.com carries the org in the subdomain; dev.azure.com
       // carries it as the first path segment.
       const isLegacyVisualStudioHost =
         host === "visualstudio.com" || host.endsWith(".visualstudio.com");
       const org = isLegacyVisualStudioHost ? host.split(".")[0]! : segments[0]!;
-      const repo = segments[gitIdx + 1]!;
-      // Azure omits the project from the URL when it has the same name as the repo.
-      const projectOmitted = gitIdx === (isLegacyVisualStudioHost ? 0 : 1);
-      if (projectOmitted) return { provider: "azure", org, project: repo, repo };
-      if (gitIdx >= 1) return { provider: "azure", org, project: segments[gitIdx - 1]!, repo };
+      return {
+        provider: "azure",
+        org,
+        project: segments[gitIdx - 1]!,
+        repo: segments[gitIdx + 1]!,
+      };
     }
     return null;
   }
