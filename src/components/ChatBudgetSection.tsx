@@ -10,7 +10,9 @@ import ErrorNotice from "./ErrorNotice";
  * The step budget is the one users hit: a turn that runs out mid-chain returns
  * no reply at all, having already paid for the tool calls it made, so the
  * useful setting is generous. The output limit is offered as an override rather
- * than a default because the provider already enforces one.
+ * than a default because the provider already enforces one. The compaction
+ * threshold sits here too: it decides when a long chat's older messages are
+ * summarized to stay inside the model's context window.
  */
 export default function ChatBudgetSection() {
   const [config, setConfig] = useState<ChatConfig | null>(null);

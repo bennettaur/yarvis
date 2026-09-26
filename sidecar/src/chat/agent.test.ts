@@ -99,7 +99,7 @@ async function collect(
   sessionId: string,
   approval?: { onRequest: (info: { toolCallId: string }) => Promise<void> },
   signal?: AbortSignal,
-  budget?: { maxSteps?: number; maxOutputTokens?: number | null },
+  budget?: { maxSteps?: number; maxOutputTokens?: number | null; compactAtTokens?: number },
   liveTools?: Record<string, McpClientTool>,
 ): Promise<AgentEvent[]> {
   const events: AgentEvent[] = [];
@@ -425,6 +425,29 @@ describe("runAgentTurn", () => {
       expect(prompt).not.toContain("m0 ");
       // The current message is sent once.
       expect(prompt.match(/"text":"hi"/g)).toHaveLength(1);
+    });
+
+    it("compacts at the configured threshold rather than the default", async () => {
+      const session = await createSession(db, "small");
+      for (let i = 0; i < 12; i++) {
+        await addMessage(db, {
+          sessionId: session.id,
+          role: i % 2 === 0 ? "user" : "assistant",
+          content: `m${i} ${"x".repeat(10_000)}`,
+        });
+      }
+      // About 30k tokens: far under the 200k default, over a 10k setting.
+      const model = chatAndSummarizer("Lower threshold summary.");
+      await collect(model, session.id, undefined, undefined, { compactAtTokens: 10_000 });
+      expect((await getMessages(db, session.id)).some((m) => m.role === "system")).toBe(true);
+    });
+
+    it("leaves a history under a raised threshold alone", async () => {
+      const sessionId = await seedLongSession();
+      const model = chatAndSummarizer("unused");
+      await collect(model, sessionId, undefined, undefined, { compactAtTokens: 1_000_000 });
+      expect((await getMessages(db, sessionId)).some((m) => m.role === "system")).toBe(false);
+      expect(model.doGenerateCalls).toHaveLength(0);
     });
 
     it("still answers from the full history when the summarizer fails", async () => {

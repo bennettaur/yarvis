@@ -37,7 +37,7 @@ export const DEFAULT_CHAT_CONFIG: ChatConfig = {
   compactAtTokens: 200_000,
 };
 
-/** Ceilings the routes validate against, so a typo can't cost a fortune. */
+/** Bounds the routes validate against, so a typo can't cost a fortune. */
 export const MAX_STEPS_CEILING = 500;
 export const MAX_OUTPUT_TOKENS_CEILING = 200_000;
 export const MIN_COMPACT_AT_TOKENS = 10_000;
