@@ -364,6 +364,14 @@ back to ad-hoc.
   raise a limit they already raised. The specialists' own ceiling in
   `agents/catalog.ts` is deliberately separate and lower: a delegated run has no
   approval channel, so it is not covered by a setting the chat surfaces share.
+- A chat that outgrows the model's window is compacted, not truncated.
+  `chat/compaction.ts` summarizes the older messages into a `system` row whose
+  `metadata.compaction.throughMessageId` names the last one it covers, and
+  `runAgentTurn` replays that summary (fenced as data) plus what came after. No
+  row is deleted, and the messages route hides the `system` row, so the thread
+  the user sees is unchanged. A context-window error compacts too, so Retry
+  succeeds. The retry collapse in `runAgentTurn` skips `system` rows when it
+  looks for the last message, since a summary can land after the user's turn.
 - A chat turn reports what it is doing, not only what it concluded.
   `runAgentTurn` drives `fullStream`, so tool calls, their outcomes and any
   reasoning the provider returns reach the surface as they happen; the tool

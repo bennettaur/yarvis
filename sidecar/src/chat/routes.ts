@@ -108,8 +108,9 @@ export function createChatRoutes(config: Config): Hono {
     return c.json(await createSession(db(), parsed.data.title), 201);
   });
 
+  // Compaction summaries are `system` rows meant for the model, not the thread.
   router.get("/sessions/:id/messages", async (c) =>
-    c.json(await getMessages(db(), c.req.param("id"))),
+    c.json((await getMessages(db(), c.req.param("id"))).filter((m) => m.role !== "system")),
   );
 
   router.post("/", async (c) => {

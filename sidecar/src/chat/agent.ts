@@ -13,6 +13,12 @@ import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
 import { newAttentionState } from "./attentionTools.ts";
 import { buildBuiltinTools } from "./builtinTools.ts";
+import {
+  compactSession,
+  isContextWindowError,
+  selectReplay,
+  summaryMessage,
+} from "./compaction.ts";
 import { type ChatConfig, DEFAULT_CHAT_CONFIG } from "./config.ts";
 import { ALWAYS_CONFIRM_BUILTIN_TOOLS, DESTRUCTIVE_BUILTIN_TOOLS } from "./destructiveTools.ts";
 import { addMessage, getMessages } from "./service.ts";
@@ -286,21 +292,42 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
   // (Telegram included) and for a user who retypes rather than pressing Retry;
   // `useChatThread` suppresses the duplicate bubble on the same condition so
   // the surface and the transcript agree.
-  const last = history[history.length - 1];
+  // A compaction row can sit after the user message, so the last real message is
+  // the last one that isn't a `system` row.
+  const lastIdx = history.findLastIndex((m) => m.role !== "system");
+  const last = history[lastIdx];
   const repeatsLastUserMessage = last?.role === "user" && last.content === message;
-  if (repeatsLastUserMessage) history.pop();
+  if (repeatsLastUserMessage) history.splice(lastIdx, 1);
   else await addMessage(db, { sessionId, role: "user", content: message, metadata: userMetadata });
+
+  // Summarize the older part of a long chat before it outgrows the model's window.
+  let replayable = history;
+  if (await compactSession({ db, model, sessionId, history, signal })) {
+    // The reread includes this turn's user row, which is pushed below instead.
+    replayable = await getMessages(db, sessionId);
+    replayable.splice(
+      replayable.findLastIndex((m) => m.role !== "system"),
+      1,
+    );
+  }
 
   // Only user/assistant messages are replayed. A persisted `system` row could
   // otherwise override the application system prompt on the next turn, so
-  // even though the writers in this codebase don't insert them today we
-  // filter them out as a defense in depth.
-  const messages: ModelMessage[] = history
-    .filter((m) => m.role === "user" || m.role === "assistant")
-    .map((m) => ({
+  // apart from the compaction summary — which replays as fenced user-role data —
+  // they are filtered out as a defense in depth.
+  const replay = selectReplay(replayable);
+  const messages: ModelMessage[] = [];
+  if (replay.summary) {
+    messages.push(
+      summaryMessage(replay.summary, crypto.randomUUID().replaceAll("-", "").slice(0, 12)),
+    );
+  }
+  messages.push(
+    ...replay.live.map((m) => ({
       role: m.role as "user" | "assistant",
       content: m.content,
-    }));
+    })),
+  );
   // Attach the summoning screen as an ephemeral user message (not persisted)
   // just before the user's message, so the model has it for this turn without
   // it gaining system-level authority.
@@ -475,7 +502,28 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
   }
 
   if (streamError) {
-    yield { type: "error", message: clientError(streamError), detail: errorDetail(streamError) };
+    const detail = errorDetail(streamError);
+    // The next attempt would fail the same way. Compact now so that Retry, which
+    // re-sends this message, goes through on a shorter history.
+    if (isContextWindowError(`${describeError(streamError)} ${detail ?? ""}`)) {
+      const shortened = await compactSession({
+        db,
+        model,
+        sessionId,
+        history: await getMessages(db, sessionId),
+        force: true,
+      });
+      if (shortened) {
+        yield {
+          type: "error",
+          message:
+            "This conversation was too long for the model, so its older messages were summarized. Send the message again to continue.",
+          detail,
+        };
+        return;
+      }
+    }
+    yield { type: "error", message: clientError(streamError), detail };
     return;
   }
 
