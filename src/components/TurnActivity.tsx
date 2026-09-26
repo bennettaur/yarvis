@@ -34,13 +34,14 @@ export default function TurnActivity({
 
   const rows = (
     <div className="space-y-1">
+      {/* Reasoning stops reading as live once the reply text has started. */}
       {thinking && <ThinkingBlock text={thinking} streaming={running && !collapsed} />}
       {activity.map((entry) => (
         <ToolRow key={entry.id} entry={entry} />
       ))}
     </div>
   );
-  const open = !collapsed || expanded;
+  const showRows = !collapsed || expanded;
 
   return (
     <div className="mb-2">
@@ -59,9 +60,9 @@ export default function TurnActivity({
           mounted while folded so the fold can animate, hence `inert`. */}
       <div
         className={`grid transition-[grid-template-rows,opacity] duration-300 ease-out motion-reduce:transition-none ${
-          open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"
+          showRows ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"
         }`}
-        inert={!open}
+        inert={!showRows}
       >
         <div className={`min-h-0 overflow-hidden ${collapsed ? "mt-1" : ""}`}>{rows}</div>
       </div>
@@ -69,12 +70,11 @@ export default function TurnActivity({
   );
 }
 
-function summarize(activity: ToolActivity[], thought: boolean): string {
-  const calls = `${activity.length} tool call${activity.length === 1 ? "" : "s"}`;
+function summarize(activity: ToolActivity[], hasThinking: boolean): string {
   if (activity.length === 0) return "Thought about it";
+  const count = `${activity.length} tool call${activity.length === 1 ? "" : "s"}`;
   const failed = activity.filter((a) => a.status === "error" || a.status === "denied").length;
-  const tail = failed > 0 ? ` · ${failed} failed` : "";
-  return `${thought ? "Thought, " : "Used "}${calls}${tail}`;
+  return `${hasThinking ? "Thought, " : "Used "}${count}${failed > 0 ? ` · ${failed} failed` : ""}`;
 }
 
 function ThinkingBlock({ text, streaming }: { text: string; streaming?: boolean }) {
