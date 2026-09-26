@@ -5,7 +5,7 @@ import AlarmsPanel from "./components/AlarmsPanel";
 import AlarmTakeover from "./components/AlarmTakeover";
 import AttentionAutoClear from "./components/attention/AttentionAutoClear";
 import AttentionPanel from "./components/attention/AttentionPanel";
-import ChatPanel from "./components/ChatPanel";
+import ChatPanel, { CHAT_TAB_SESSION_KEY } from "./components/ChatPanel";
 import CalendarView from "./components/calendar/CalendarView";
 import ClipboardPalette from "./components/clipboard/ClipboardPalette";
 import Dashboard from "./components/Dashboard";
@@ -281,11 +281,14 @@ export default function App() {
         onOpenAttention={openAttentionPanel}
         attentionPending={attention !== null || ringingAlarms.length > 0}
       >
+        {/* Chat stays mounted while another tab is showing, so a turn keeps
+            streaming instead of being cancelled by the unmount. */}
+        <div className={tab === "chat" ? "h-full" : "hidden"}>
+          <ChatPanel active={tab === "chat"} sessionStorageKey={CHAT_TAB_SESSION_KEY} />
+        </div>
         {/* Chat and Omni fill the region and manage their own layout; page-like
             views scroll as a padded document. */}
-        {tab === "chat" ? (
-          <ChatPanel />
-        ) : tab === "omni" ? (
+        {tab === "chat" ? null : tab === "omni" ? (
           <OmniView />
         ) : tab === "terminal" ? (
           <TerminalTabs
