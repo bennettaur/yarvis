@@ -72,29 +72,45 @@ export function groupByRepo(prs: PrSummary[]): { repo: string; prs: PrSummary[] 
 }
 
 function DraftBadge() {
-  return <span className="rounded bg-zinc-700 px-1.5 py-0.5 text-xs text-zinc-300">draft</span>;
+  return (
+    <span
+      className="rounded bg-zinc-700 px-1.5 py-0.5 text-xs text-zinc-300"
+      title="Draft: the author hasn't marked this PR ready for review"
+    >
+      draft
+    </span>
+  );
 }
 
 /** CI/merge state for a row. Renders nothing while loading or when no signal. */
 function StatusBadge({ status }: { status: PrStatus | null }) {
   if (!status) return null;
   let text: string | null = null;
+  let title = "";
   let color = "";
   if (status.checks.failure > 0) {
     text = "CI failing";
+    title = "At least one check has failed";
     color = "bg-red-900 text-red-200";
   } else if (status.checks.pending > 0) {
     text = "CI running";
+    title = "Some checks are still running";
     color = "bg-amber-900 text-amber-200";
   } else if (status.mergeable === false) {
     text = "conflicts";
+    title = "This PR has merge conflicts with its base branch";
     color = "bg-red-900 text-red-200";
   } else if (status.checks.total > 0) {
     text = "CI passing";
+    title = "All checks have passed";
     color = "bg-emerald-900 text-emerald-200";
   }
   if (!text) return null;
-  return <span className={`rounded px-1.5 py-0.5 text-xs ${color}`}>{text}</span>;
+  return (
+    <span className={`rounded px-1.5 py-0.5 text-xs ${color}`} title={title}>
+      {text}
+    </span>
+  );
 }
 
 /** Optional per-row annotation, e.g. the user's own review verdict. */

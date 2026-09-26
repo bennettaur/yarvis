@@ -27,6 +27,7 @@ import {
   useCachedResource,
 } from "../../lib/resourceCache";
 import { openExternal } from "../../lib/url";
+import DeleteFilterButton from "../DeleteFilterButton";
 import LoadingIndicator from "../LoadingIndicator";
 import RefreshingIndicator from "../RefreshingIndicator";
 import JiraCreateIssueModal from "./JiraCreateIssueModal";
@@ -563,6 +564,7 @@ export default function JiraIssuesView() {
             <div className="flex gap-2">
               <input
                 value={searchText}
+                aria-label="JQL query or issue key"
                 onChange={(e) => setSearchText(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && onSubmitSearch()}
                 placeholder="JQL, e.g. project = PROJ AND status = 'In Progress' — or an issue key like PROJ-45"
@@ -595,15 +597,12 @@ export default function JiraIssuesView() {
                     >
                       {f.name}
                     </button>
-                    <button
-                      onClick={async () => {
+                    <DeleteFilterButton
+                      onDelete={async () => {
                         await deleteIssueFilter(f.id, "jira");
                         await filtersRes.refresh();
                       }}
-                      className="text-zinc-600 hover:text-red-400"
-                    >
-                      ✕
-                    </button>
+                    />
                   </span>
                 ))}
               </div>
@@ -615,6 +614,7 @@ export default function JiraIssuesView() {
                   <input
                     value={newFilterName}
                     placeholder="Save this JQL as…"
+                    aria-label="Name for the saved filter"
                     onChange={(e) => setNewFilterName(e.target.value)}
                     className="w-48 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
                   />
