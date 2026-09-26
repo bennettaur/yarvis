@@ -31,6 +31,15 @@ const pageSchema = z.object({
   truncated: z.boolean().optional(),
 });
 
+/**
+ * A listed URL keeps its origin and path but not its query or fragment: those
+ * carry session tokens and OAuth codes, and picking a tab needs neither.
+ */
+function withoutQuery(url: string): string {
+  const cut = url.search(/[?#]/);
+  return cut === -1 ? url : url.slice(0, cut);
+}
+
 /** What a tool says when the browser side failed; the model can relay it. */
 function failure(result: CommandResult): { error: string } {
   return { error: result.error ?? "The browser returned an error." };
@@ -59,7 +68,11 @@ export function buildBrowserTools(bridge: BrowserBridge = browserBridge) {
         const nonce = newNonce();
         return {
           notice: untrustedWarning(nonce, "browser-tabs"),
-          tabs: fence(JSON.stringify(tabs.data), nonce, "browser-tabs"),
+          tabs: fence(
+            JSON.stringify(tabs.data.map((tab) => ({ ...tab, url: withoutQuery(tab.url) }))),
+            nonce,
+            "browser-tabs",
+          ),
         };
       },
     }),

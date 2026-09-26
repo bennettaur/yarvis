@@ -101,7 +101,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
 
   // The browser bridge is the same shape: the extension's native host holds only
   // this scoped token, checked inside the router, never the full-access bearer.
-  app.route("/browser", createBrowserRoutes());
+  app.route("/browser", createBrowserRoutes(config));
 
   // The MCP endpoint sits outside the bearer wall for the same reason and with
   // the same shape: its own scoped token, checked inside the router, so an MCP

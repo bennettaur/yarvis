@@ -15,7 +15,7 @@ export function discoveryPath(): string {
 
 export async function writeDiscovery(port: number, token: string): Promise<void> {
   const path = discoveryPath();
-  await mkdir(dirname(path), { recursive: true });
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await writeFile(path, JSON.stringify({ port, token }), { mode: 0o600 });
   // `mode` only applies when the file is created; an older file keeps its bits.
   await chmod(path, 0o600);

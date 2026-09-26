@@ -41,6 +41,13 @@ install command (they differ per profile only if loaded from a different path).
 
 Page text is fenced as untrusted data before it reaches the model.
 
+## Privacy
+
+Page text a tool reads goes into the chat turn, so it reaches your LLM provider
+and is kept in the chat history like any other tool result. Listed URLs drop
+their query string and fragment. The extension is not allowed in incognito unless
+you turn that on for it in `chrome://extensions`; leave it off.
+
 ## Limits of this first pass
 
 - The host runs through the checkout's Bun (`scripts/browser/host.ts`), so this

@@ -17,6 +17,12 @@ export function encodeFrame(message: unknown): Buffer {
   return Buffer.concat([header, body]);
 }
 
+/**
+ * Chrome allows a message to the host far larger than this, but a page is capped
+ * well under it — so a length beyond it is a corrupt header, not a big page.
+ */
+export const MAX_INCOMING_BYTES = 8 * 1024 * 1024;
+
 /** Reassembles messages from stdin chunks, which can split or join frames anywhere. */
 export class FrameDecoder {
   private buffered = Buffer.alloc(0);
@@ -26,6 +32,7 @@ export class FrameDecoder {
     const messages: unknown[] = [];
     while (this.buffered.length >= 4) {
       const length = this.buffered.readUInt32LE(0);
+      if (length > MAX_INCOMING_BYTES) throw new Error(`native message of ${length} bytes refused`);
       if (this.buffered.length < 4 + length) break;
       const body = this.buffered.subarray(4, 4 + length);
       this.buffered = this.buffered.subarray(4 + length);

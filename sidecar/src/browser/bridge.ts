@@ -18,6 +18,13 @@ export interface QueuedCommand {
   command: BrowserCommand;
 }
 
+/**
+ * What a poll resolves to. "superseded" is distinct from an idle expiry (null) so
+ * two hosts — two Chrome profiles — don't tight-loop displacing each other: the
+ * displaced one is told, and backs off.
+ */
+export type PollResult = QueuedCommand | null | "superseded";
+
 export interface CommandResult {
   ok: boolean;
   data?: unknown;
@@ -61,7 +68,7 @@ export class BrowserBridge {
   private lastPollAt = 0;
   private readonly queue: QueuedCommand[] = [];
   private readonly inflight = new Map<string, Inflight>();
-  private waiter: ((next: QueuedCommand | null) => void) | null = null;
+  private waiter: ((next: PollResult) => void) | null = null;
 
   constructor(token = randomToken()) {
     this.token = token;
@@ -99,14 +106,14 @@ export class BrowserBridge {
    * supersedes an older one (a restarted host would otherwise leave a dead
    * waiter swallowing the next command).
    */
-  next(holdMs = POLL_HOLD_MS, signal?: AbortSignal): Promise<QueuedCommand | null> {
+  next(holdMs = POLL_HOLD_MS, signal?: AbortSignal): Promise<PollResult> {
     this.lastPollAt = Date.now();
-    this.waiter?.(null);
+    this.waiter?.("superseded");
     this.waiter = null;
     const ready = this.queue.shift();
     if (ready) return Promise.resolve(ready);
     return new Promise((resolve) => {
-      const finish = (value: QueuedCommand | null) => {
+      const finish = (value: PollResult) => {
         clearTimeout(timer);
         signal?.removeEventListener("abort", onAbort);
         if (this.waiter === finish) this.waiter = null;
@@ -118,6 +125,15 @@ export class BrowserBridge {
       signal?.addEventListener("abort", onAbort);
       this.waiter = finish;
     });
+  }
+
+  /**
+   * Puts a command back at the front when the poll it was handed to has gone away
+   * before the response could be written — otherwise it is out of the queue and
+   * in nobody's hands, and the tool waits out its whole timeout.
+   */
+  requeue(item: QueuedCommand): void {
+    if (this.inflight.has(item.id)) this.queue.unshift(item);
   }
 
   /** Delivers an answer. False when nothing is waiting on it (late or unknown id). */

@@ -27,7 +27,14 @@ function discoveryPath(): string {
 async function readDiscovery(): Promise<Discovery | null> {
   try {
     const parsed = JSON.parse(await readFile(discoveryPath(), "utf8"));
-    if (typeof parsed.port === "number" && typeof parsed.token === "string") return parsed;
+    if (
+      Number.isInteger(parsed.port) &&
+      parsed.port > 0 &&
+      parsed.port < 65536 &&
+      typeof parsed.token === "string"
+    ) {
+      return parsed;
+    }
   } catch {
     // Not written yet: Yarvis isn't running.
   }
@@ -51,7 +58,15 @@ async function post(target: Discovery, message: { id: string }): Promise<void> {
 /** Extension → sidecar: the answer to a command. */
 const decoder = new FrameDecoder();
 process.stdin.on("data", (chunk: Buffer) => {
-  for (const message of decoder.push(chunk)) {
+  let messages: unknown[];
+  try {
+    messages = decoder.push(chunk);
+  } catch {
+    // A corrupt frame leaves the stream unrecoverable; end and let the extension reconnect.
+    process.exit(1);
+  }
+  for (const message of messages) {
+    if (typeof (message as { id?: unknown })?.id !== "string") continue;
     readDiscovery()
       .then((target) => target && post(target, message as { id: string }))
       .catch(() => {
@@ -73,8 +88,19 @@ for (;;) {
     const res = await fetch(`http://127.0.0.1:${target.port}/browser/next`, {
       headers: { Authorization: `Bearer ${target.token}` },
     });
-    if (res.status === 200) send({ type: "command", ...(await res.json()) });
-    else if (res.status !== 204) await sleep(RETRY_MS);
+    if (res.status === 200) {
+      const item = (await res.json()) as { id: string };
+      try {
+        send({ type: "command", ...item });
+      } catch (error) {
+        // Say so now rather than leave the tool to wait out its timeout.
+        await post(target, { id: item.id, ok: false, error: String(error) } as { id: string });
+      }
+    } else if (res.status !== 204) {
+      // 409: another host (a second Chrome profile) holds the poll. Back off so
+      // the two don't take it from each other in a tight loop.
+      await sleep(RETRY_MS);
+    }
   } catch {
     await sleep(RETRY_MS);
   }
