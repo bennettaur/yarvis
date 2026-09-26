@@ -183,6 +183,13 @@ describe("chat routes", () => {
   });
 
   it("404s a rewind to a message that isn't a user message in the session", async () => {
+    const row = await createCustomProvider({
+      name: "litellm",
+      baseUrl: "https://litellm.example.invalid/v1",
+      apiKind: "openai",
+      models: ["gpt-4o"],
+      headerNames: [],
+    });
     const session = await app.request("/api/chat/sessions", {
       method: "POST",
       headers: jsonAuth,
@@ -196,11 +203,38 @@ describe("chat routes", () => {
       body: JSON.stringify({
         sessionId: id,
         message: "hello",
-        provider: "anthropic",
-        model: "claude-sonnet-4-6",
+        provider: `custom:${row.id}`,
+        model: "gpt-4o",
         rewindTo: "00000000-0000-4000-8000-000000000000",
       }),
     });
     expect(res.status).toBe(404);
+  });
+
+  it("leaves history alone when a rewind request can't resolve its model", async () => {
+    const session = await app.request("/api/chat/sessions", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ title: "x" }),
+    });
+    const { id } = (await session.json()) as { id: string };
+    const [msg] = await sql`
+      INSERT INTO chat_messages (session_id, role, content) VALUES (${id}, 'user', 'keep me')
+      RETURNING id`;
+
+    const res = await app.request("/api/chat", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        sessionId: id,
+        message: "edited",
+        provider: "anthropic", // no key configured
+        model: "claude-sonnet-4-6",
+        rewindTo: msg!.id,
+      }),
+    });
+    expect(res.status).toBe(400);
+    const rows = await sql`SELECT content FROM chat_messages WHERE session_id = ${id}`;
+    expect(rows.map((r) => r.content)).toEqual(["keep me"]);
   });
 });
