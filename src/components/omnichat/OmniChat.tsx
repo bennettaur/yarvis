@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ProviderId } from "../../lib/chat";
+import { MODEL_HINT, PROVIDER_HINT } from "../../lib/chatControlHints";
 import { OMNI_CHAT_SESSION_KEY } from "../../lib/omniChat";
 import { collectContext, formatContext } from "../../lib/omniChatContext";
 import { useChatThread } from "../../lib/useChatThread";
@@ -135,6 +136,7 @@ export default function OmniChat({
               Thinking
             </label>
             <select
+              title={PROVIDER_HINT}
               value={provider}
               onChange={(e) => {
                 const id = e.target.value as ProviderId;
@@ -151,6 +153,7 @@ export default function OmniChat({
               ))}
             </select>
             <select
+              title={MODEL_HINT}
               value={model}
               onChange={(e) => setModel(e.target.value)}
               className="max-w-[160px] rounded-md border border-zinc-700 bg-zinc-800 px-1.5 py-1 text-xs"

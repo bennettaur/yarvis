@@ -89,6 +89,7 @@ export default function ToolApprovalBar({
             type="button"
             onClick={() => setShowArgs((v) => !v)}
             aria-expanded={showArgs}
+            title="Show or hide the arguments this call will run with."
             className="rounded border border-zinc-700 px-1.5 py-0.5 text-xs text-zinc-400 hover:bg-zinc-800"
           >
             {showArgs ? "Hide arguments" : "Arguments"}
@@ -99,6 +100,7 @@ export default function ToolApprovalBar({
             <button
               type="button"
               onClick={() => onAlwaysAllow?.(current)}
+              title="Approve this call and skip the prompt for this tool on future typed turns (not spoken ones)."
               className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
             >
               Always allow
@@ -107,6 +109,7 @@ export default function ToolApprovalBar({
           <button
             type="button"
             onClick={() => onRespond(current.id, true)}
+            title="Approve this call (press A when not typing in a field)."
             className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium hover:bg-indigo-500"
           >
             Approve <span className="text-indigo-200">A</span>
@@ -114,6 +117,7 @@ export default function ToolApprovalBar({
           <button
             type="button"
             onClick={() => onRespond(current.id, false)}
+            title="Deny this call (press D when not typing in a field)."
             className="rounded-md border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
           >
             Deny <span className="text-zinc-500">D</span>

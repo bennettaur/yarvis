@@ -63,6 +63,7 @@ export default function ChatComposer({
         rows={1}
         value={value}
         placeholder={placeholder}
+        title="Enter sends, Shift+Enter inserts a newline."
         disabled={busy}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
@@ -77,6 +78,7 @@ export default function ChatComposer({
         <button
           type="button"
           onClick={onStop}
+          title="Cancel the reply in progress."
           className="h-fit self-end rounded-md border border-zinc-600 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-zinc-800"
         >
           Stop
