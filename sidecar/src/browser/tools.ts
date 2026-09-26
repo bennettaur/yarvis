@@ -4,11 +4,14 @@ import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
 import { type BrowserBridge, browserBridge, type CommandResult } from "./bridge.ts";
 
 /**
- * Read-only browser tools for the chat model, answered by the Yarvis Chrome
- * extension in whatever profile it is installed in. There is deliberately no
- * click, type or navigate tool: this is for reading a page the user already has
- * open (Slack, a ticket, a doc), and anything that acts through their logged-in
- * sessions would need its own approval story.
+ * Browser tools for the chat model, answered by the Yarvis Chrome extension in
+ * whatever profile it is installed in. The point is reading a site the user
+ * already has open (Slack, a ticket board, a doc) and moving around inside it —
+ * so it can read one channel, open the next and scroll back through history.
+ *
+ * The extension is what holds the line: it refuses to leave the tab's origin,
+ * refuses controls that send or change things, and has no way to type. Nothing
+ * here is trusted to enforce that on its own.
  */
 
 /** Default and ceiling for a page's text, so one tall page can't fill the context. */
@@ -21,6 +24,29 @@ const tabSchema = z.object({
   active: z.boolean(),
   title: z.string(),
   url: z.string(),
+});
+
+const elementsSchema = z.object({
+  url: z.string(),
+  title: z.string(),
+  elements: z.array(
+    z.object({
+      ref: z.number(),
+      kind: z.string(),
+      label: z.string(),
+      href: z.string().optional(),
+    }),
+  ),
+  truncated: z.boolean().optional(),
+});
+
+/** Where the tab ended up after a click, scroll or navigation. */
+const stateSchema = z.object({
+  url: z.string(),
+  title: z.string(),
+  navigated: z.boolean().optional(),
+  atTop: z.boolean().optional(),
+  atBottom: z.boolean().optional(),
 });
 
 const pageSchema = z.object({
@@ -54,33 +80,50 @@ async function ask(bridge: BrowserBridge, command: Parameters<BrowserBridge["req
 }
 
 export function buildBrowserTools(bridge: BrowserBridge = browserBridge) {
+  /**
+   * Asks the browser, validates the answer and fences it. Everything the browser
+   * sends back is text a website wrote (labels, titles, addresses), so it all
+   * goes through the same nonce fence.
+   */
+  async function askFenced<T>(
+    command: Parameters<BrowserBridge["request"]>[0],
+    schema: z.ZodType<T>,
+    tag: string,
+    shape: (data: T) => unknown = (data) => data,
+  ) {
+    const result = await ask(bridge, command);
+    if (!result.ok) return failure(result);
+    const parsed = schema.safeParse(result.data);
+    if (!parsed.success)
+      return { error: "The browser sent back something in an unexpected shape." };
+    const nonce = newNonce();
+    return {
+      notice: untrustedWarning(nonce, tag),
+      [tag.replace("browser-", "")]: fence(JSON.stringify(shape(parsed.data)), nonce, tag),
+    };
+  }
+
+  const tabId = z
+    .number()
+    .int()
+    .optional()
+    .describe("Tab id from list_browser_tabs; default is the active tab");
+
   return {
     list_browser_tabs: tool({
       description:
         "List the tabs open in the user's Chrome (id, window, title, URL, and which one is active). Use it to find the tab to read, e.g. the Slack tab.",
       inputSchema: z.object({}),
-      execute: async () => {
-        const result = await ask(bridge, { type: "list_tabs" });
-        if (!result.ok) return failure(result);
-        const tabs = z.array(tabSchema).safeParse(result.data);
-        if (!tabs.success) return { error: "The browser sent back tabs in an unexpected shape." };
-        // Titles and URLs are written by whoever runs each site.
-        const nonce = newNonce();
-        return {
-          notice: untrustedWarning(nonce, "browser-tabs"),
-          tabs: fence(
-            JSON.stringify(tabs.data.map((tab) => ({ ...tab, url: withoutQuery(tab.url) }))),
-            nonce,
-            "browser-tabs",
-          ),
-        };
-      },
+      execute: () =>
+        askFenced({ type: "list_tabs" }, z.array(tabSchema), "browser-tabs", (tabs) =>
+          tabs.map((tab) => ({ ...tab, url: withoutQuery(tab.url) })),
+        ),
     }),
     read_browser_page: tool({
       description:
-        "Read the visible text of a page open in the user's Chrome — the active tab by default, or a tab id from list_browser_tabs. Returns the URL, title, any text the user has selected, and the page text. Read-only: it cannot click, type or navigate.",
+        "Read the visible text of a page open in the user's Chrome — the active tab by default, or a tab id from list_browser_tabs. Returns the URL, title, any text the user has selected, and the page text. Long pages such as chat channels only include what is loaded, so scroll_browser_page up to load older messages. Read-only.",
       inputSchema: z.object({
-        tabId: z.number().int().optional().describe("Tab id from list_browser_tabs"),
+        tabId,
         maxChars: z
           .number()
           .int()
@@ -90,32 +133,65 @@ export function buildBrowserTools(bridge: BrowserBridge = browserBridge) {
           .describe("Cap on the page text returned"),
       }),
       execute: async ({ tabId, maxChars }) => {
-        const result = await ask(bridge, { type: "read_page", tabId, maxChars });
-        if (!result.ok) return failure(result);
-        const page = pageSchema.safeParse(result.data);
-        if (!page.success) return { error: "The browser sent back a page in an unexpected shape." };
-
-        // Page text is third-party content — a Slack message or a web page can
-        // address whoever reads it — so it is fenced and the model is told so.
         // The extension already caps the text; this is the sidecar's own bound.
-        const nonce = newNonce();
-        const { url, title, selection, text, truncated } = page.data;
-        const body = text.slice(0, maxChars);
-        return {
-          notice: untrustedWarning(nonce, "browser-page"),
-          page: fence(
-            JSON.stringify({
-              url,
-              title,
-              ...(selection ? { selection: selection.slice(0, maxChars) } : {}),
-              text: body,
-              truncated: Boolean(truncated) || text.length > maxChars,
-            }),
-            nonce,
-            "browser-page",
-          ),
-        };
+        return askFenced(
+          { type: "read_page", tabId, maxChars },
+          pageSchema,
+          "browser-page",
+          (page) => ({
+            url: page.url,
+            title: page.title,
+            ...(page.selection ? { selection: page.selection.slice(0, maxChars) } : {}),
+            text: page.text.slice(0, maxChars),
+            truncated: Boolean(page.truncated) || page.text.length > maxChars,
+          }),
+        );
       },
+    }),
+    list_browser_elements: tool({
+      description:
+        "List what can be clicked or scrolled on a page in the user's Chrome: links, buttons, tabs, sidebar items (each with a numeric ref), and scrollable panels (kind 'scroll'). Use the refs with click_browser_element and scroll_browser_page. Refs are only valid until the page changes, so list again after a click. Controls that send or change things (send, delete, leave, ...) are left out.",
+      inputSchema: z.object({
+        tabId,
+        maxElements: z.number().int().min(10).max(300).default(150),
+      }),
+      execute: ({ tabId, maxElements }) =>
+        askFenced(
+          { type: "list_elements", tabId, maxElements },
+          elementsSchema,
+          "browser-elements",
+        ),
+    }),
+    click_browser_element: tool({
+      description:
+        "Click a link, tab or sidebar item on a page in the user's Chrome, by ref from list_browser_elements — for example to open another Slack channel. It only works inside the site the tab is already on: a link to another site is refused, and so is anything that sends, posts, deletes or changes something. It cannot type. Returns the tab's URL and title afterwards; then read_browser_page to see the result.",
+      inputSchema: z.object({
+        tabId,
+        ref: z.number().int().describe("Ref from the latest list_browser_elements"),
+      }),
+      execute: ({ tabId, ref }) =>
+        askFenced({ type: "click", tabId, ref }, stateSchema, "browser-state"),
+    }),
+    scroll_browser_page: tool({
+      description:
+        "Scroll the page, or one scrollable panel (a 'scroll' ref from list_browser_elements), in the user's Chrome. Scrolling a chat channel up loads older messages. Reports whether it is now at the top or bottom.",
+      inputSchema: z.object({
+        tabId,
+        ref: z.number().int().optional().describe("A 'scroll' ref; omit to scroll the whole page"),
+        direction: z.enum(["up", "down", "top", "bottom"]),
+      }),
+      execute: ({ tabId, ref, direction }) =>
+        askFenced({ type: "scroll", tabId, ref, direction }, stateSchema, "browser-state"),
+    }),
+    navigate_browser_tab: tool({
+      description:
+        "Load an address in a tab of the user's Chrome. It must be on the same site (origin) the tab is already on; any other site is refused. Prefer clicking a link when there is one.",
+      inputSchema: z.object({
+        tabId,
+        url: z.string().url().max(2000),
+      }),
+      execute: ({ tabId, url }) =>
+        askFenced({ type: "navigate", tabId, url }, stateSchema, "browser-state"),
     }),
   };
 }

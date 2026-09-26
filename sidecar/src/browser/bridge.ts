@@ -11,7 +11,11 @@
 
 export type BrowserCommand =
   | { type: "list_tabs" }
-  | { type: "read_page"; tabId?: number; maxChars: number };
+  | { type: "read_page"; tabId?: number; maxChars: number }
+  | { type: "list_elements"; tabId?: number; maxElements: number }
+  | { type: "click"; tabId?: number; ref: number }
+  | { type: "scroll"; tabId?: number; ref?: number; direction: "up" | "down" | "top" | "bottom" }
+  | { type: "navigate"; tabId?: number; url: string };
 
 export interface QueuedCommand {
   id: string;

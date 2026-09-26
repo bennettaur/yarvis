@@ -1,8 +1,11 @@
 # Yarvis Chrome extension
 
-Lets Yarvis read the pages open in your Chrome — any profile, no debugging port,
-no Playwright profile. Read-only: it can list tabs and read a page's text, and
-has no way to click, type or navigate.
+Lets Yarvis read the pages open in your Chrome, and move around inside them —
+any profile, no debugging port, no Playwright profile. The aim is reading a site
+like Slack: open a channel, read it, scroll back, open the next one.
+
+It stays on the site the tab is on and it can never type, so it can't compose or
+send anything.
 
 ## How it connects
 
@@ -38,6 +41,26 @@ install command (they differ per profile only if loaded from a different path).
 - `list_browser_tabs` — id, window, title, URL of every open tab.
 - `read_browser_page` — URL, title, selection and visible text of a tab (the
   active one by default), capped in length.
+- `list_browser_elements` — the links, buttons, sidebar items and scrollable
+  panels on a page, each with a numeric ref.
+- `click_browser_element`, `scroll_browser_page`, `navigate_browser_tab` — act on
+  a ref, scroll (to load older messages), or load an address.
+
+### What keeps it on the site
+
+The extension enforces this, not the sidecar:
+
+- **Same origin only.** A link, redirect or address on another scheme, host or
+  port is refused. A click that ends up elsewhere is undone with Back, and a
+  tab a click opens is closed. A sibling subdomain counts as another site.
+- **No typing.** There is no tool for it, so nothing can be composed or sent.
+- **No controls that send or change things.** Buttons and `#` links labelled
+  send, post, delete, leave, edit, save and the like are left out of the list and
+  refused if named. This is a match on the visible label, so treat it as a
+  safety net, not a guarantee. Real links to pages on the site are not screened
+  by label, so a channel called `post-mortems` still opens.
+- **Approval on spoken turns.** `click_browser_element` and `navigate_browser_tab`
+  sit in `chat/destructiveTools.ts`, so a voice turn asks first.
 
 Page text is fenced as untrusted data before it reaches the model.
 
@@ -53,5 +76,7 @@ you turn that on for it in `chrome://extensions`; leave it off.
 - The host runs through the checkout's Bun (`scripts/browser/host.ts`), so this
   is for a dev checkout; a packaged app would need to ship the host.
 - One Yarvis instance owns the browser (the one running background workers).
+- Clicks are not asked about on typed turns. That is what makes reading many
+  channels practical, and it is a decision to revisit if it feels too loose.
 - `<all_urls>` lets a read reach any tab, including signed-in ones; there is no
   per-site allowlist yet.
