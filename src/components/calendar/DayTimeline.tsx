@@ -137,6 +137,7 @@ function Timeline({ orientation, initialDate }: { orientation: Orientation; init
           </button>
           <input
             type="date"
+            aria-label="Pick a day"
             value={dayKey}
             onChange={(e) => {
               const picked = parseDateInput(e.target.value);
