@@ -62,8 +62,23 @@ const STATUS_STYLES: Record<WorkspaceStatus, string> = {
   error: "bg-red-900/40 text-red-200",
 };
 
+const STATUS_HINTS: Record<WorkspaceStatus, string> = {
+  creating: "Setting up the workspace's worktrees.",
+  active: "Set up and ready to work in.",
+  archiving: "Removing the workspace's worktrees; any that could not be removed show an error.",
+  archived: "Archived; its worktrees have been removed.",
+  error: "Something went wrong setting up or archiving the workspace; see its repos for details.",
+};
+
 function StatusBadge({ status }: { status: WorkspaceStatus }) {
-  return <span className={`rounded px-1.5 py-0.5 text-xs ${STATUS_STYLES[status]}`}>{status}</span>;
+  return (
+    <span
+      title={STATUS_HINTS[status]}
+      className={`rounded px-1.5 py-0.5 text-xs ${STATUS_STYLES[status]}`}
+    >
+      {status}
+    </span>
+  );
 }
 
 const REPO_STATUS_STYLES: Record<WorkspaceRepoStatus, string> = {
@@ -74,9 +89,22 @@ const REPO_STATUS_STYLES: Record<WorkspaceRepoStatus, string> = {
   error: "bg-red-900/40 text-red-200",
 };
 
+const REPO_STATUS_HINTS: Record<WorkspaceRepoStatus, string> = {
+  pending: "Waiting for its worktree to be set up.",
+  provisioning: "Creating the worktree and running the setup script.",
+  ready: "The worktree is set up and ready.",
+  removed: "The worktree has been removed.",
+  error: "Setting up or removing the worktree failed.",
+};
+
 function RepoStatusBadge({ status }: { status: WorkspaceRepoStatus }) {
   return (
-    <span className={`rounded px-1.5 py-0.5 text-xs ${REPO_STATUS_STYLES[status]}`}>{status}</span>
+    <span
+      title={REPO_STATUS_HINTS[status]}
+      className={`rounded px-1.5 py-0.5 text-xs ${REPO_STATUS_STYLES[status]}`}
+    >
+      {status}
+    </span>
   );
 }
 
@@ -391,7 +419,10 @@ export default function WorkspacesPanel({
                           {/* Marks a workspace asking for the user while they're
                               looking at a different one. */}
                           {needsAttention && (
-                            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" />
+                            <span
+                              title="Needs you"
+                              className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400"
+                            />
                           )}
                           <span className="truncate">{ws.name}</span>
                         </span>
@@ -746,12 +777,14 @@ function InlineRepoCreator({
     <div className="mt-2 space-y-2 rounded-lg border border-zinc-700 bg-zinc-900 p-3">
       <input
         value={cloneUrl}
+        aria-label="Git clone URL"
         placeholder="git@github.com:owner/repo.git"
         onChange={(e) => setCloneUrl(e.target.value)}
         className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500"
       />
       <input
         value={name}
+        aria-label="Display name"
         placeholder="Display name (optional)"
         onChange={(e) => setName(e.target.value)}
         className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500"

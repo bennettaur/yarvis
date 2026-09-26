@@ -246,7 +246,12 @@ function GithubTab({
             <li key={issueKey("github", i.sourceKey, i.externalId)}>
               <PickRow disabled={disabled} onClick={() => onPick(i)}>
                 <span className="truncate text-zinc-200">{i.title}</span>
-                <span className="shrink-0 font-mono text-[10px] text-zinc-500">{i.displayId}</span>
+                <span
+                  title="GitHub issue number"
+                  className="shrink-0 font-mono text-[10px] text-zinc-500"
+                >
+                  {i.displayId}
+                </span>
               </PickRow>
             </li>
           ))}
