@@ -1,4 +1,4 @@
-import { asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import {
   type ChatMessage,
@@ -67,4 +67,28 @@ export async function addMessage(db: Db, input: AddMessageInput): Promise<ChatMe
     .set({ updatedAt: sql`now()` })
     .where(eq(chatSessions.id, input.sessionId));
   return row!;
+}
+
+/**
+ * Drops a user message and everything after it, so the conversation can restart
+ * from that point. Returns false — deleting nothing — when the id isn't a user
+ * message in this session: only a turn the user wrote can be replayed, and a
+ * client must not be able to reach into another session's history.
+ */
+export async function rewindToMessage(
+  db: Db,
+  sessionId: string,
+  messageId: string,
+): Promise<boolean> {
+  const [target] = await db
+    .select({ role: chatMessages.role, createdAt: chatMessages.createdAt })
+    .from(chatMessages)
+    .where(and(eq(chatMessages.id, messageId), eq(chatMessages.sessionId, sessionId)));
+  if (target?.role !== "user") return false;
+  await db
+    .delete(chatMessages)
+    .where(
+      and(eq(chatMessages.sessionId, sessionId), gte(chatMessages.createdAt, target.createdAt)),
+    );
+  return true;
 }

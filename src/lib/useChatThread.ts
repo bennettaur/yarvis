@@ -130,6 +130,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
         const msgs = await getMessages(id);
         setMessages(
           msgs.map((m: ChatMessage) => ({
+            id: m.id,
             role: m.role,
             content: m.content,
             metadata: m.metadata,
@@ -200,8 +201,27 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     return session;
   }, [onSessionCreated, abandonTurn]);
 
+  /**
+   * Messages added during a turn are shown before the sidecar has told us their
+   * ids, and only a message with an id can be rewound to. Once the turn settles,
+   * copy the ids across by position; the thread is append-only, so they line up.
+   */
+  const adoptPersistedIds = useCallback(async (id: string) => {
+    try {
+      const persisted = await getMessages(id);
+      setMessages((prev) =>
+        prev.map((m, i) => (m.id || !persisted[i] ? m : { ...m, id: persisted[i].id })),
+      );
+    } catch {
+      // Ids only enable rewinding; the thread is fine without them.
+    }
+  }, []);
+
   const send = useCallback(
-    async (text: string, sendOptions: { source?: "voice"; resend?: boolean } = {}) => {
+    async (
+      text: string,
+      sendOptions: { source?: "voice"; resend?: boolean; rewindTo?: string } = {},
+    ) => {
       const trimmed = text.trim();
       // Nothing to send, nothing to send it with, or a turn already running.
       if (!trimmed || !provider || !model || busy) return false;
@@ -219,7 +239,21 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
       // collapses on the text alone, so a message the user retypes after a
       // failure is the same turn to it — show one bubble here too, or a reload
       // would drop the one the transcript never gained.
+      // A rewind first drops the chosen message and everything after it, just as
+      // the sidecar does, then shows the (possibly edited) text as the new turn.
       setMessages((prev) => {
+        if (sendOptions.rewindTo) {
+          const at = prev.findIndex((m) => m.id === sendOptions.rewindTo);
+          const kept = at === -1 ? prev : prev.slice(0, at);
+          return [
+            ...kept,
+            {
+              role: "user",
+              content: trimmed,
+              metadata: sendOptions.source ? { source: "voice" } : null,
+            },
+          ];
+        }
         const last = prev[prev.length - 1];
         if (sendOptions.resend || (last?.role === "user" && last.content === trimmed)) return prev;
         return [
@@ -254,6 +288,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
             // Marks a turn the user spoke rather than typed, which is what puts
             // the agent's irreversible tools behind a confirmation.
             source: sendOptions.source,
+            rewindTo: sendOptions.rewindTo,
           },
           { signal: controller.signal },
         )) {
@@ -337,12 +372,23 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
         }
         setStreaming("");
         setBusy(false);
+        void adoptPersistedIds(activeId);
         // Any approvals not acted on are moot once the turn ends.
         setApprovals([]);
       }
       return true;
     },
-    [provider, model, busy, sessionId, getContext, onAttention, onSessionCreated, reasoning],
+    [
+      provider,
+      model,
+      busy,
+      sessionId,
+      getContext,
+      onAttention,
+      onSessionCreated,
+      reasoning,
+      adoptPersistedIds,
+    ],
   );
 
   /**
@@ -360,6 +406,21 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     const source = last.metadata?.source === "voice" ? "voice" : undefined;
     void send(last.content, { resend: true, source });
   }, [messages, busy, send]);
+
+  /**
+   * Restarts the conversation from a user message: it and everything after it
+   * are dropped, and `text` — the original or an edit — runs as the new turn.
+   * Keeps the original's provenance, for the same reason `retry` does.
+   */
+  const rewind = useCallback(
+    (messageId: string, text: string) => {
+      const target = messages.find((m) => m.id === messageId);
+      if (!target || target.role !== "user" || busy) return;
+      const source = target.metadata?.source === "voice" ? "voice" : undefined;
+      void send(text, { rewindTo: messageId, source });
+    },
+    [messages, busy, send],
+  );
 
   return {
     providers,
@@ -380,6 +441,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     alwaysAllow,
     send,
     retry,
+    rewind,
     stop,
     newChat,
     loadSession,
