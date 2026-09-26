@@ -74,21 +74,18 @@ export default function ChatMessages({
           </div>
         ),
       )}
-      {busy && (activity.length > 0 || thinking || streaming) && (
+      {(busy || streaming) && (activity.length > 0 || thinking || streaming) && (
+        // One element for the whole in-flight turn, so nothing remounts when
+        // `busy` drops before the persisted message arrives.
         <AssistantTurn label={messageLabel("assistant")}>
           {/* Open while tools are landing; folds once the reply text starts. */}
           <TurnActivity
             activity={activity}
             thinking={thinking}
-            running
+            running={busy}
             collapsed={streaming !== ""}
           />
           {streaming && <AssistantReply content={streaming} />}
-        </AssistantTurn>
-      )}
-      {!busy && streaming && (
-        <AssistantTurn label={messageLabel("assistant")}>
-          <AssistantReply content={streaming} />
         </AssistantTurn>
       )}
       {busy && !streaming && !thinking && activity.length === 0 && <ThinkingIndicator />}

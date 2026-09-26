@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import type { ToolActivity } from "../lib/chat";
 
 /**
@@ -30,10 +30,11 @@ export default function TurnActivity({
   collapsed?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const panelId = useId();
   if (activity.length === 0 && !thinking) return null;
 
   const rows = (
-    <div className="space-y-1">
+    <div className={`space-y-1 ${collapsed ? "pt-1" : ""}`}>
       {/* Reasoning stops reading as live once the reply text has started. */}
       {thinking && <ThinkingBlock text={thinking} streaming={running && !collapsed} />}
       {activity.map((entry) => (
@@ -50,6 +51,7 @@ export default function TurnActivity({
           type="button"
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
+          aria-controls={panelId}
           className="flex items-center gap-2 py-0.5 text-xs text-zinc-500 hover:text-zinc-300"
         >
           <Chevron open={expanded} />
@@ -59,12 +61,13 @@ export default function TurnActivity({
       {/* Animating grid rows lets the height go to and from auto. The rows stay
           mounted while folded so the fold can animate, hence `inert`. */}
       <div
+        id={panelId}
         className={`grid transition-[grid-template-rows,opacity] duration-300 ease-out motion-reduce:transition-none ${
           showRows ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"
         }`}
         inert={!showRows}
       >
-        <div className={`min-h-0 overflow-hidden ${collapsed ? "mt-1" : ""}`}>{rows}</div>
+        <div className="min-h-0 overflow-hidden">{rows}</div>
       </div>
     </div>
   );
