@@ -11,9 +11,6 @@ import ErrorNotice from "./ErrorNotice";
 import ToolApprovalBar from "./ToolApprovalBar";
 import VoiceControls from "./voice/VoiceControls";
 
-/** localStorage key under which the Chat tab's open session id is kept. */
-export const CHAT_TAB_SESSION_KEY = "yarvis.chat.sessionId";
-
 const EMPTY_HINT =
   'Start a conversation. Set a provider key in Settings if the picker shows "(no key)".';
 
@@ -71,27 +68,39 @@ export default function ChatPanel({
   const voice = useVoice({ send, streaming, busy });
 
   // The Omni Chat overlay covers this panel and carries an approval bar of its
-  // own, so ours must stop answering the keyboard while it is up — and while the
-  // host keeps it off screen, where an `A` would answer a call nobody can see.
+  // own, so ours must stop answering the keyboard while it is up.
   const overlayOpen = useOmniChatOverlayOpen();
 
+  // A hands-free mic left open behind another tab would send what it hears into
+  // a chat nobody is looking at.
+  const { cancel: cancelVoice } = voice;
+  useEffect(() => {
+    if (!active) cancelVoice();
+  }, [active, cancelVoice]);
+
   // Refetched on each return to the panel: sessions other surfaces created, and
-  // titles the sidecar assigned, arrive while it sits hidden.
+  // titles the sidecar assigned, arrive while it sits hidden. Merged rather than
+  // replaced, so a session this panel created while the fetch was in flight
+  // stays in the picker.
   useEffect(() => {
     if (!active) return;
     void (async () => {
       try {
-        setSessions(await listSessions());
+        const listed = await listSessions();
+        setSessions((prev) => {
+          const ids = new Set(listed.map((s) => s.id));
+          return [...prev.filter((s) => !ids.has(s.id)), ...listed];
+        });
       } catch (e) {
         setSessionsError(formatError(e));
       }
     })();
   }, [active]);
 
-  // Keep the thread pinned to the newest message as it grows. Skip while hidden
-  // so a background stream doesn't run a layout read+write per token off-screen;
-  // re-pins on return. The body doesn't read messages/streaming, but the effect
-  // must re-run as the thread does.
+  // Keep the thread pinned to the newest message as it grows; skipped while
+  // hidden (a layout read+write per streamed token) and re-pinned on return.
+  // The body doesn't read messages/streaming, but the effect must re-run as the
+  // thread does.
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-run on thread growth
   useEffect(() => {
     if (!active) return;
@@ -182,6 +191,7 @@ export default function ChatPanel({
         />
       </div>
 
+      {/* Off screen, an `A` would answer a call nobody can see. */}
       <ToolApprovalBar
         approvals={approvals}
         visible={active && !overlayOpen}

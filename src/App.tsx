@@ -5,7 +5,7 @@ import AlarmsPanel from "./components/AlarmsPanel";
 import AlarmTakeover from "./components/AlarmTakeover";
 import AttentionAutoClear from "./components/attention/AttentionAutoClear";
 import AttentionPanel from "./components/attention/AttentionPanel";
-import ChatPanel, { CHAT_TAB_SESSION_KEY } from "./components/ChatPanel";
+import ChatPanel from "./components/ChatPanel";
 import CalendarView from "./components/calendar/CalendarView";
 import ClipboardPalette from "./components/clipboard/ClipboardPalette";
 import Dashboard from "./components/Dashboard";
@@ -44,6 +44,7 @@ import { onOmniChatSummon } from "./lib/omniChat";
 import { useOmniChatContext } from "./lib/omniChatContext";
 import { OmniChatOverlayProvider } from "./lib/omniChatOverlay";
 import type { PrSummary } from "./lib/pr/types";
+import { CHAT_TAB_SESSION_KEY } from "./lib/useChatThread";
 import { useTelegramSecurityAlerts } from "./lib/useTelegramSecurityAlerts";
 import { getWip, type WipItem } from "./lib/wip";
 
@@ -286,8 +287,8 @@ export default function App() {
         <div className={tab === "chat" ? "h-full" : "hidden"}>
           <ChatPanel active={tab === "chat"} sessionStorageKey={CHAT_TAB_SESSION_KEY} />
         </div>
-        {/* Chat and Omni fill the region and manage their own layout; page-like
-            views scroll as a padded document. */}
+        {/* Omni fills the region and manages its own layout; page-like views
+            scroll as a padded document. Chat is rendered above. */}
         {tab === "chat" ? null : tab === "omni" ? (
           <OmniView />
         ) : tab === "terminal" ? (
