@@ -1,7 +1,10 @@
 /** A small spinning ring, sized to sit inline with a line of text. */
 export function Spinner() {
   return (
-    <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-zinc-600 border-t-indigo-400" />
+    <span
+      aria-hidden="true"
+      className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-zinc-600 border-t-indigo-400"
+    />
   );
 }
 

@@ -1,5 +1,6 @@
 import { usePrDetail } from "../../lib/pr/cache";
 import type { PrRef, ReviewThread } from "../../lib/pr/types";
+import LoadingIndicator from "../LoadingIndicator";
 import Markdown from "../Markdown";
 
 /** One review thread rendered as a card. Reused for inline diff threads too. */
@@ -49,7 +50,7 @@ export default function PrDescription({ prRef }: { prRef: PrRef }) {
   const { data, error, loading } = usePrDetail(prRef);
 
   if (error) return <p className="text-sm text-red-400">{error}</p>;
-  if (loading || !data) return <p className="text-sm text-zinc-500">Loading…</p>;
+  if (loading || !data) return <LoadingIndicator />;
 
   const general = data.reviewThreads.filter((t) => t.path == null || t.line == null);
 

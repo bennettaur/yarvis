@@ -20,6 +20,7 @@ import {
   weekDays,
 } from "../../lib/calendarGrid";
 import { openExternal } from "../../lib/url";
+import LoadingIndicator from "../LoadingIndicator";
 import CalendarConnectionGate from "./CalendarConnectionGate";
 import EventAlarmButton from "./EventAlarmButton";
 import { useNow, useRangeEvents } from "./useRangeEvents";
@@ -218,7 +219,7 @@ function Week() {
       </div>
 
       {error && <p className="py-1 text-sm text-red-400">{error}</p>}
-      {loading && <p className="py-1 text-xs text-zinc-600">Loading…</p>}
+      {loading && <LoadingIndicator className="py-1 text-xs text-zinc-600" />}
 
       {/* Scrollable hourly grid. */}
       <div ref={gridRef} className="flex min-h-0 flex-1 overflow-y-auto border-t border-zinc-800">

@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import { requestNewWorkspace } from "../lib/nav";
 import { useCachedResource } from "../lib/resourceCache";
 import { completeTask, createTask, deleteTask, listTasks, type Task } from "../lib/tasks";
+import LoadingIndicator from "./LoadingIndicator";
 import RefreshingIndicator from "./RefreshingIndicator";
 
 const TASKS_KEY = "tasks:open";
@@ -273,32 +274,38 @@ export default function TasksPanel() {
         </div>
       </div>
 
-      {overdue.length > 0 && (
-        <TaskGroup
-          title="Overdue"
-          caption="Carry over or complete to clear"
-          tasks={overdue}
-          onComplete={onComplete}
-          onDelete={onDelete}
-          accent="zinc"
-        />
-      )}
+      {tasksRes.loading ? (
+        <LoadingIndicator label="Loading tasks…" />
+      ) : (
+        <>
+          {overdue.length > 0 && (
+            <TaskGroup
+              title="Overdue"
+              caption="Carry over or complete to clear"
+              tasks={overdue}
+              onComplete={onComplete}
+              onDelete={onDelete}
+              accent="zinc"
+            />
+          )}
 
-      <TaskGroup
-        title="Today"
-        tasks={daily}
-        onComplete={onComplete}
-        onDelete={onDelete}
-        accent="indigo"
-      />
-      <TaskGroup
-        title="This week"
-        caption="No fixed day"
-        tasks={weekly}
-        onComplete={onComplete}
-        onDelete={onDelete}
-        accent="violet"
-      />
+          <TaskGroup
+            title="Today"
+            tasks={daily}
+            onComplete={onComplete}
+            onDelete={onDelete}
+            accent="indigo"
+          />
+          <TaskGroup
+            title="This week"
+            caption="No fixed day"
+            tasks={weekly}
+            onComplete={onComplete}
+            onDelete={onDelete}
+            accent="violet"
+          />
+        </>
+      )}
 
       {error && <p className="text-sm text-red-400">{error}</p>}
     </div>
