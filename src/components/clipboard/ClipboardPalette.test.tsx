@@ -1,8 +1,8 @@
-import { describe, expect, it, mock } from "bun:test";
+import { afterEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import type { ClipboardEntry } from "../../lib/clipboard";
 import { nativeInvoke } from "../../test/nativeInvoke";
-import { renderToHtml } from "../../test/render";
+import { mountForInteraction, renderToHtml } from "../../test/render";
 import ClipboardPalette from "./ClipboardPalette";
 
 const ENTRIES: ClipboardEntry[] = [
@@ -119,16 +119,39 @@ describe("ClipboardPalette", () => {
     expect(html).toContain('aria-label="Delete entry"');
   });
 
-  it("offers a safe clip from history and withholds a flagged one", async () => {
+  it("keeps history off the Saved tab", async () => {
     const html = await renderToHtml(
       createElement(ClipboardPalette, { open: true, onClose: () => {} }),
       SETTLE_MS,
     );
-    expect(html).toContain("kubectl -n production get pods");
-    expect(html).toContain('aria-label="Save this clip as an entry"');
-    // The credential-shaped clip must not reach the screen at all.
-    expect(html).not.toContain("AKIAIOSFODNN7EXAMPLE");
-    // …and the palette says one was withheld rather than quietly showing less.
-    expect(html).toContain("1 clip hidden");
+    expect(html).not.toContain("kubectl -n production get pods");
+    expect(html).not.toContain("Clear history");
+  });
+
+  describe("History tab", () => {
+    let unmount: (() => void) | undefined;
+    afterEach(() => unmount?.());
+
+    it("offers a safe clip and withholds a flagged one, without saved entries", async () => {
+      const mounted = await mountForInteraction(
+        createElement(ClipboardPalette, { open: true, onClose: () => {} }),
+        SETTLE_MS,
+      );
+      unmount = mounted.unmount;
+      const historyTab = [...mounted.host.querySelectorAll('[role="tab"]')].find(
+        (el) => el.textContent === "History",
+      ) as HTMLElement;
+      historyTab.click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const html = mounted.host.innerHTML;
+      expect(html).toContain("kubectl -n production get pods");
+      expect(html).toContain('aria-label="Save this clip as an entry"');
+      // The credential-shaped clip must not reach the screen at all.
+      expect(html).not.toContain("AKIAIOSFODNN7EXAMPLE");
+      // …and the palette says one was withheld rather than quietly showing less.
+      expect(html).toContain("1 clip hidden");
+      expect(html).not.toContain("Staging identity");
+    });
   });
 });

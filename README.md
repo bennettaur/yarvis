@@ -745,13 +745,14 @@ Where a link can't be derived at all, no button appears.
 
 **Control + Shift + V** (or the clipboard icon in the nav rail) opens the
 clipboard palette: a search box over the things you copy again and again — an
-identity id, a CLI incantation, a link — plus the clipboard history from this run
-of the app. Arrows move the selection, Enter copies the highlighted row and
+identity id, a CLI incantation, a link — on a **Saved** tab, with the clipboard
+history from this run of the app on a separate **History** tab so a long list of
+saved entries never pushes history out of view. Arrows move the selection, Enter copies the highlighted row and
 closes the palette, Esc dismisses it. Entries can be labelled, tagged, and
 pinned; pinned entries sort first, then whatever you have copied most recently,
 so an empty search already offers what you usually want.
 
-A clip out of history can be promoted to a permanent entry with **Save**, and
+A clip on the History tab can be promoted to a permanent entry with **Save**, and
 **Clear history** forgets everything recorded so far. History is never written to
 disk: it lives in memory in the Rust core, capped at the last 100 clips, and goes
 away when the app quits.

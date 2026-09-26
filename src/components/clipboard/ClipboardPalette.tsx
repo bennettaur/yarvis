@@ -20,8 +20,10 @@ import ClipboardEntryForm, { type ClipboardDraft } from "./ClipboardEntryForm";
  *
  * Search is typed straight into the list — arrows move the selection, Enter
  * copies and closes — so the whole flow is one keystroke sequence with no mouse.
- * Saved entries come from the sidecar (which does the matching); history is
- * already in memory, so it is filtered here.
+ * Saved entries and clipboard history sit on separate tabs, so a long list of
+ * saved entries never pushes history out of view. Saved entries come from the
+ * sidecar (which does the matching); history is already in memory, so it is
+ * filtered here.
  *
  * Unlike Omni Chat this unmounts when hidden. There is nothing to keep running
  * in the background, and a fresh mount means a fresh search box every summon.
@@ -32,6 +34,13 @@ const SEARCH_DEBOUNCE_MS = 120;
 
 /** Longest preview shown for a snippet; the rest is one line, whitespace collapsed. */
 const PREVIEW_LENGTH = 140;
+
+type Tab = "saved" | "history";
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: "saved", label: "Saved" },
+  { id: "history", label: "History" },
+];
 
 type Row =
   | { kind: "entry"; key: string; entry: ClipboardEntry }
@@ -59,6 +68,7 @@ export default function ClipboardPalette({
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
+  const [tab, setTab] = useState<Tab>("saved");
   const [entries, setEntries] = useState<ClipboardEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState(0);
@@ -106,6 +116,7 @@ export default function ClipboardPalette({
       return;
     }
     setQuery("");
+    setTab("saved");
     setSelected(0);
     setEditing(null);
     setError(null);
@@ -114,11 +125,11 @@ export default function ClipboardPalette({
   const clips = useMemo(() => filterHistory(history.items, query), [history.items, query]);
 
   const rows = useMemo<Row[]>(
-    () => [
-      ...entries.map((entry): Row => ({ kind: "entry", key: `entry:${entry.id}`, entry })),
-      ...clips.map((item): Row => ({ kind: "clip", key: `clip:${item.id}`, item })),
-    ],
-    [entries, clips],
+    () =>
+      tab === "saved"
+        ? entries.map((entry): Row => ({ kind: "entry", key: `entry:${entry.id}`, entry }))
+        : clips.map((item): Row => ({ kind: "clip", key: `clip:${item.id}`, item })),
+    [tab, entries, clips],
   );
 
   // A shrinking list must not leave the selection past its end.
@@ -245,20 +256,43 @@ export default function ClipboardPalette({
       <div className="relative z-10 flex max-h-[70vh] w-[680px] max-w-[92vw] flex-col gap-3 rounded-xl border border-zinc-700 bg-zinc-900 p-4 text-zinc-100 shadow-2xl">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-zinc-300">Clipboard</span>
-          <button
-            type="button"
-            onClick={() => setEditing({ id: null, draft: { label: "", content: "", tags: "" } })}
-            className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
-          >
-            New entry
-          </button>
-          <button
-            type="button"
-            onClick={() => void forgetHistory()}
-            className="ml-auto rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
-          >
-            Clear history
-          </button>
+          <div role="tablist" aria-label="Clipboard sections" className="flex gap-1">
+            {TABS.map(({ id, label }) => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={tab === id}
+                onClick={() => {
+                  setTab(id);
+                  setSelected(0);
+                  inputRef.current?.focus();
+                }}
+                className={`rounded-md px-2 py-1 text-xs ${
+                  tab === id ? "bg-zinc-700 text-zinc-100" : "text-zinc-400 hover:bg-zinc-800"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {tab === "saved" ? (
+            <button
+              type="button"
+              onClick={() => setEditing({ id: null, draft: { label: "", content: "", tags: "" } })}
+              className="ml-auto rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
+            >
+              New entry
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => void forgetHistory()}
+              className="ml-auto rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
+            >
+              Clear history
+            </button>
+          )}
         </div>
 
         <input
@@ -269,7 +303,7 @@ export default function ClipboardPalette({
             setSelected(0);
           }}
           onKeyDown={onSearchKeyDown}
-          placeholder="Search saved entries and clipboard history…"
+          placeholder={tab === "saved" ? "Search saved entries…" : "Search clipboard history…"}
           aria-label="Search the clipboard"
           className="rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600"
         />
@@ -284,12 +318,18 @@ export default function ClipboardPalette({
         )}
 
         {error && <p className="text-xs text-red-400">{error}</p>}
-        {historyError && <p className="text-xs text-amber-300">{historyError}</p>}
+        {tab === "history" && historyError && (
+          <p className="text-xs text-amber-300">{historyError}</p>
+        )}
 
         <div className="min-h-0 flex-1 overflow-y-auto">
           {rows.length === 0 ? (
             <p className="px-1 py-6 text-center text-sm text-zinc-500">
-              {query ? "Nothing matches that." : "Nothing saved yet — copy something, or add it."}
+              {query
+                ? "Nothing matches that."
+                : tab === "saved"
+                  ? "Nothing saved yet — add an entry, or save a clip from History."
+                  : "No clipboard history yet — copy something."}
             </p>
           ) : (
             <ul className="space-y-0.5">
@@ -322,7 +362,8 @@ export default function ClipboardPalette({
 
         <p className="text-xs text-zinc-600">
           ↑↓ to move · Enter to copy · Esc to close
-          {history.hiddenCount > 0 &&
+          {tab === "history" &&
+            history.hiddenCount > 0 &&
             ` · ${history.hiddenCount} clip${history.hiddenCount === 1 ? "" : "s"} hidden (looked like credentials)`}
         </p>
       </div>
