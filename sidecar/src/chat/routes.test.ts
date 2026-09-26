@@ -181,4 +181,26 @@ describe("chat routes", () => {
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toContain("Anthropic API key");
   });
+
+  it("404s a rewind to a message that isn't a user message in the session", async () => {
+    const session = await app.request("/api/chat/sessions", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ title: "x" }),
+    });
+    const { id } = (await session.json()) as { id: string };
+
+    const res = await app.request("/api/chat", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        sessionId: id,
+        message: "hello",
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        rewindTo: "00000000-0000-4000-8000-000000000000",
+      }),
+    });
+    expect(res.status).toBe(404);
+  });
 });

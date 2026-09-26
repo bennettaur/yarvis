@@ -46,6 +46,7 @@ export default function OmniChat({
     alwaysAllow,
     send,
     retry,
+    rewind,
     stop,
     newChat,
   } = useChatThread({
@@ -174,6 +175,7 @@ export default function OmniChat({
             busy={busy}
             thinking={thinking}
             activity={activity}
+            onRewind={rewind}
             emptyHint="Ask about whatever you're looking at — it's sent along as context."
           />
         </div>

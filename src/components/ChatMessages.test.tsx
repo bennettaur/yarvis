@@ -109,4 +109,29 @@ describe("ChatMessages", () => {
     const html = await render({});
     expect(html).toContain(EMPTY_HINT);
   });
+
+  it("offers Resend and Edit on persisted user messages when the thread can rewind", async () => {
+    const html = await render({
+      messages: [
+        { id: "m1", role: "user", content: "hello" },
+        { id: "m2", role: "assistant", content: "hi" },
+      ],
+      onRewind: () => {},
+    });
+    expect(html).toContain(">Resend</button>");
+    expect(html).toContain(">Edit</button>");
+    // Only the one user message gets them.
+    expect(html.match(/>Resend</g)).toHaveLength(1);
+  });
+
+  it("hides the rewind controls without a handler, without an id, or while busy", async () => {
+    const withId = [{ id: "m1", role: "user", content: "hello" }];
+    expect(await render({ messages: withId })).not.toContain("Resend");
+    expect(
+      await render({ messages: [{ role: "user", content: "hello" }], onRewind: () => {} }),
+    ).not.toContain("Resend");
+    expect(await render({ messages: withId, onRewind: () => {}, busy: true })).not.toContain(
+      "Resend",
+    );
+  });
 });

@@ -49,6 +49,7 @@ export default function ChatPanel() {
     alwaysAllow,
     send,
     retry,
+    rewind,
     stop,
     newChat,
     loadSession,
@@ -158,6 +159,7 @@ export default function ChatPanel() {
           emptyHint={EMPTY_HINT}
           thinking={thinking}
           activity={activity}
+          onRewind={rewind}
         />
       </div>
 
