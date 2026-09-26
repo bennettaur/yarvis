@@ -6,6 +6,8 @@ import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 import { createCustomProvider } from "../customProviders/service.ts";
+import { getDb } from "../db/client.ts";
+import { addMessage, createSession } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -180,5 +182,15 @@ describe("chat routes", () => {
     });
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toContain("Anthropic API key");
+  });
+
+  it("hides compaction summaries from a session's messages", async () => {
+    const { db } = getDb(url);
+    const session = await createSession(db, "s");
+    await addMessage(db, { sessionId: session.id, role: "user", content: "hello" });
+    await addMessage(db, { sessionId: session.id, role: "system", content: "a summary" });
+    const res = await app.request(`/api/chat/sessions/${session.id}/messages`, { headers: auth });
+    const rows = (await res.json()) as Array<{ role: string }>;
+    expect(rows.map((m) => m.role)).toEqual(["user"]);
   });
 });

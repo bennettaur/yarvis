@@ -16,6 +16,7 @@ import { buildBuiltinTools } from "./builtinTools.ts";
 import {
   compactSession,
   isContextWindowError,
+  newNonce,
   selectReplay,
   summaryMessage,
 } from "./compaction.ts";
@@ -295,46 +296,28 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
   // A compaction row can sit after the user message, so the last real message is
   // the last one that isn't a `system` row.
   const lastIdx = history.findLastIndex((m) => m.role !== "system");
-  const last = history[lastIdx];
-  const repeatsLastUserMessage = last?.role === "user" && last.content === message;
+  const lastMessage = history[lastIdx];
+  const repeatsLastUserMessage = lastMessage?.role === "user" && lastMessage.content === message;
   if (repeatsLastUserMessage) history.splice(lastIdx, 1);
   else await addMessage(db, { sessionId, role: "user", content: message, metadata: userMetadata });
 
   // Summarize the older part of a long chat before it outgrows the model's window.
-  let replayable = history;
-  if (await compactSession({ db, model, sessionId, history, signal })) {
-    // The reread includes this turn's user row, which is pushed below instead.
-    replayable = await getMessages(db, sessionId);
-    replayable.splice(
-      replayable.findLastIndex((m) => m.role !== "system"),
-      1,
-    );
-  }
+  const summaryRow = await compactSession({ db, model, sessionId, history, signal });
+  const rows = summaryRow ? [...history, summaryRow] : history;
 
-  // Only user/assistant messages are replayed. A persisted `system` row could
-  // otherwise override the application system prompt on the next turn, so
-  // apart from the compaction summary — which replays as fenced user-role data —
-  // they are filtered out as a defense in depth.
-  const replay = selectReplay(replayable);
-  const messages: ModelMessage[] = [];
-  if (replay.summary) {
-    messages.push(
-      summaryMessage(replay.summary, crypto.randomUUID().replaceAll("-", "").slice(0, 12)),
-    );
-  }
-  messages.push(
-    ...replay.live.map((m) => ({
-      role: m.role as "user" | "assistant",
-      content: m.content,
-    })),
-  );
+  // Only user/assistant messages are replayed as they are. A persisted `system`
+  // row could otherwise override the application system prompt, so the one
+  // `system` row that reaches the model is the compaction summary, replayed as
+  // fenced user-role data.
+  const replay = selectReplay(rows);
+  const messages: ModelMessage[] = [
+    ...(replay.summary ? [summaryMessage(replay.summary)] : []),
+    ...replay.live.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
+  ];
   // Attach the summoning screen as an ephemeral user message (not persisted)
   // just before the user's message, so the model has it for this turn without
   // it gaining system-level authority.
-  const screenContext = buildScreenContextMessage(
-    context,
-    crypto.randomUUID().replaceAll("-", "").slice(0, 12),
-  );
+  const screenContext = buildScreenContextMessage(context, newNonce());
   if (screenContext) messages.push({ role: "user", content: screenContext });
   messages.push({ role: "user", content: message });
 
@@ -506,12 +489,14 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
     // The next attempt would fail the same way. Compact now so that Retry, which
     // re-sends this message, goes through on a shorter history.
     if (isContextWindowError(`${describeError(streamError)} ${detail ?? ""}`)) {
+      const stored = await getMessages(db, sessionId);
       const shortened = await compactSession({
         db,
         model,
         sessionId,
-        history: await getMessages(db, sessionId),
+        history: stored,
         force: true,
+        signal,
       });
       if (shortened) {
         yield {
