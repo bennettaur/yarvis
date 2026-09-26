@@ -29,6 +29,7 @@ import {
   PROVIDER_FRESHNESS,
   useCachedResource,
 } from "../lib/resourceCache";
+import DeleteFilterButton from "./DeleteFilterButton";
 import PrDetailView from "./PrDetailView";
 import PrGroupedList from "./pr/PrGroupedList";
 import PrLocator from "./pr/PrLocator";
@@ -434,15 +435,12 @@ export default function PrsPanel({
                     >
                       {f.name}
                     </button>
-                    <button
-                      onClick={async () => {
+                    <DeleteFilterButton
+                      onDelete={async () => {
                         await ghDeleteFilter(f.id);
                         await listsRes.refresh();
                       }}
-                      className="text-zinc-600 hover:text-red-400"
-                    >
-                      ✕
-                    </button>
+                    />
                   </span>
                 ))}
               </div>
@@ -450,12 +448,14 @@ export default function PrsPanel({
                 <input
                   value={newGhFilter.name}
                   placeholder="Filter name"
+                  aria-label="Name for the new saved filter"
                   onChange={(e) => setNewGhFilter((p) => ({ ...p, name: e.target.value }))}
                   className="w-32 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
                 />
                 <input
                   value={newGhFilter.query}
                   placeholder="is:open is:pr ..."
+                  aria-label="GitHub search query for the new saved filter"
                   onChange={(e) => setNewGhFilter((p) => ({ ...p, query: e.target.value }))}
                   className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
                 />
@@ -486,15 +486,12 @@ export default function PrsPanel({
                     >
                       {f.name}
                     </button>
-                    <button
-                      onClick={async () => {
+                    <DeleteFilterButton
+                      onDelete={async () => {
                         await azDeleteFilter(f.id);
                         await listsRes.refresh();
                       }}
-                      className="text-zinc-600 hover:text-red-400"
-                    >
-                      ✕
-                    </button>
+                    />
                   </span>
                 ))}
               </div>
@@ -502,11 +499,13 @@ export default function PrsPanel({
                 <input
                   value={newAzFilter.name}
                   placeholder="Filter name"
+                  aria-label="Name for the new saved filter"
                   onChange={(e) => setNewAzFilter((p) => ({ ...p, name: e.target.value }))}
                   className="w-32 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
                 />
                 <select
                   value={newAzFilter.scope}
+                  aria-label="Which pull requests the new saved filter lists"
                   onChange={(e) =>
                     setNewAzFilter((p) => ({ ...p, scope: e.target.value as "mine" | "review" }))
                   }
@@ -518,6 +517,7 @@ export default function PrsPanel({
                 <input
                   value={newAzFilter.project}
                   placeholder="Project (optional)"
+                  aria-label="Azure DevOps project to limit the new saved filter to (optional)"
                   onChange={(e) => setNewAzFilter((p) => ({ ...p, project: e.target.value }))}
                   className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
                 />
