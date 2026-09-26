@@ -241,6 +241,12 @@ export default function ClipboardPalette({
     }
   };
 
+  const emptyMessage = query
+    ? "Nothing matches that."
+    : tab === "saved"
+      ? "Nothing saved yet — add an entry, or save a clip from History."
+      : "No clipboard history yet — copy something.";
+
   if (!open) return null;
 
   return (
@@ -256,14 +262,14 @@ export default function ClipboardPalette({
       <div className="relative z-10 flex max-h-[70vh] w-[680px] max-w-[92vw] flex-col gap-3 rounded-xl border border-zinc-700 bg-zinc-900 p-4 text-zinc-100 shadow-2xl">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-zinc-300">Clipboard</span>
-          <div role="tablist" aria-label="Clipboard sections" className="flex gap-1">
+          <div className="flex gap-1">
             {TABS.map(({ id, label }) => (
               <button
                 key={id}
                 type="button"
-                role="tab"
-                aria-selected={tab === id}
+                aria-pressed={tab === id}
                 onClick={() => {
+                  // The query carries over, so one search can be tried against both lists.
                   setTab(id);
                   setSelected(0);
                   inputRef.current?.focus();
@@ -324,13 +330,7 @@ export default function ClipboardPalette({
 
         <div className="min-h-0 flex-1 overflow-y-auto">
           {rows.length === 0 ? (
-            <p className="px-1 py-6 text-center text-sm text-zinc-500">
-              {query
-                ? "Nothing matches that."
-                : tab === "saved"
-                  ? "Nothing saved yet — add an entry, or save a clip from History."
-                  : "No clipboard history yet — copy something."}
-            </p>
+            <p className="px-1 py-6 text-center text-sm text-zinc-500">{emptyMessage}</p>
           ) : (
             <ul className="space-y-0.5">
               {rows.map((row, index) => (

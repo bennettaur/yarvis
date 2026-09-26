@@ -97,6 +97,8 @@ mock.module("../../lib/api", () => ({
 
 // The entry list is debounced, so the render has to settle past the debounce.
 const SETTLE_MS = 400;
+/** Long enough for a tab click's state change to render. */
+const TAB_SWITCH_MS = 50;
 
 describe("ClipboardPalette", () => {
   it("renders nothing while closed", async () => {
@@ -126,25 +128,33 @@ describe("ClipboardPalette", () => {
     );
     expect(html).not.toContain("kubectl -n production get pods");
     expect(html).not.toContain("Clear history");
+    expect(html).not.toContain("clip hidden");
+    expect(html).toContain("New entry");
   });
 
   describe("History tab", () => {
     let unmount: (() => void) | undefined;
     afterEach(() => unmount?.());
 
-    it("offers a safe clip and withholds a flagged one, without saved entries", async () => {
+    async function openHistoryTab() {
       const mounted = await mountForInteraction(
         createElement(ClipboardPalette, { open: true, onClose: () => {} }),
         SETTLE_MS,
       );
       unmount = mounted.unmount;
-      const historyTab = [...mounted.host.querySelectorAll('[role="tab"]')].find(
+      const historyTab = [...mounted.host.querySelectorAll("button[aria-pressed]")].find(
         (el) => el.textContent === "History",
-      ) as HTMLElement;
+      ) as HTMLElement | undefined;
+      if (!historyTab) throw new Error("History tab not rendered");
       historyTab.click();
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise((resolve) => setTimeout(resolve, TAB_SWITCH_MS));
+      return { host: mounted.host, historyTab };
+    }
 
-      const html = mounted.host.innerHTML;
+    it("offers a safe clip and withholds a flagged one, without saved entries", async () => {
+      const { host, historyTab } = await openHistoryTab();
+      const html = host.innerHTML;
+      expect(historyTab.getAttribute("aria-pressed")).toBe("true");
       expect(html).toContain("kubectl -n production get pods");
       expect(html).toContain('aria-label="Save this clip as an entry"');
       // The credential-shaped clip must not reach the screen at all.
@@ -152,6 +162,13 @@ describe("ClipboardPalette", () => {
       // …and the palette says one was withheld rather than quietly showing less.
       expect(html).toContain("1 clip hidden");
       expect(html).not.toContain("Staging identity");
+    });
+
+    it("swaps the tab's own controls in", async () => {
+      const { host } = await openHistoryTab();
+      const html = host.innerHTML;
+      expect(html).toContain("Clear history");
+      expect(html).not.toContain("New entry");
     });
   });
 });
