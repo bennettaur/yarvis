@@ -336,6 +336,7 @@ export default function PrFloatingHeader({
   const actions = actionsForStatus(status);
   const mergeControls = mergeControlsFor(detail, status);
   const busy = pending !== null || mergePending;
+  const isReloading = loading || refreshing;
 
   const run = async (action: ReviewAction, body?: string) => {
     setPending(action);
@@ -506,12 +507,17 @@ export default function PrFloatingHeader({
           <button
             type="button"
             onClick={() => invalidatePrReview(prRef)}
-            disabled={loading || refreshing}
+            disabled={isReloading}
             className="rounded-md border border-zinc-700 px-2 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
             title="Refresh this pull request"
             aria-label="Refresh this pull request"
           >
-            <span className={`inline-block ${loading || refreshing ? "animate-spin" : ""}`}>↻</span>
+            <span
+              aria-hidden="true"
+              className={`inline-block ${isReloading ? "animate-spin" : ""}`}
+            >
+              ↻
+            </span>
           </button>
           <button
             onClick={() => openExternal(pr.url)}
