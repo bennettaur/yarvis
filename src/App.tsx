@@ -44,6 +44,7 @@ import { onOmniChatSummon } from "./lib/omniChat";
 import { useOmniChatContext } from "./lib/omniChatContext";
 import { OmniChatOverlayProvider } from "./lib/omniChatOverlay";
 import type { PrSummary } from "./lib/pr/types";
+import { CHAT_TAB_SESSION_KEY } from "./lib/useChatThread";
 import { useTelegramSecurityAlerts } from "./lib/useTelegramSecurityAlerts";
 import { getWip, type WipItem } from "./lib/wip";
 
@@ -281,11 +282,14 @@ export default function App() {
         onOpenAttention={openAttentionPanel}
         attentionPending={attention !== null || ringingAlarms.length > 0}
       >
-        {/* Chat and Omni fill the region and manage their own layout; page-like
-            views scroll as a padded document. */}
-        {tab === "chat" ? (
-          <ChatPanel />
-        ) : tab === "omni" ? (
+        {/* Chat stays mounted while another tab is showing, so a turn keeps
+            streaming instead of being cancelled by the unmount. */}
+        <div className={tab === "chat" ? "h-full" : "hidden"}>
+          <ChatPanel active={tab === "chat"} sessionStorageKey={CHAT_TAB_SESSION_KEY} />
+        </div>
+        {/* Omni fills the region and manages its own layout; page-like views
+            scroll as a padded document. Chat is rendered above. */}
+        {tab === "chat" ? null : tab === "omni" ? (
           <OmniView />
         ) : tab === "terminal" ? (
           <TerminalTabs

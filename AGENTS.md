@@ -292,9 +292,10 @@ back to ad-hoc.
   mechanism gives MCP tools to a surface that cannot prompt: that still requires
   `approval` hooks to exist at all.
 - A list a tab shows is read through `lib/resourceCache`, not fetched into local
-  state on mount. `App` renders one panel at a time, so every tab switch unmounts
-  a page outright, and the fetch-on-mount shape meant coming back always painted
-  an empty list first (#275). `useCachedResource` seeds a remount from the cache
+  state on mount. `App` renders one panel at a time (the Chat tab aside, kept
+  mounted so a turn outlives the switch), so a tab switch unmounts a page
+  outright, and the fetch-on-mount shape meant coming back always painted an
+  empty list first (#275). `useCachedResource` seeds a remount from the cache
   synchronously and revalidates behind it, which is why `Resource` distinguishes
   `refreshing` — a load running behind data already on screen, what
   `RefreshingIndicator` shows — from `loading`, which means there is nothing to
@@ -335,10 +336,10 @@ back to ad-hoc.
   above the composer, showing the front of the queue with a count, rather than a
   card per call inside the thread. Its `A`/`D` shortcuts are on `window`, so a
   bar the host is keeping off screen must be told — `visible` — or it answers
-  for a surface the user cannot see: Omni Chat stays mounted and streaming while
-  hidden, and the overlay covers a `ChatPanel` that has a bar of its own
-  (`lib/omniChatOverlay.ts`). Anything else that mounts a second bar owes the
-  same gate.
+  for a surface the user cannot see: Omni Chat and the Chat tab stay mounted and
+  streaming while hidden, and the overlay covers a `ChatPanel` that has a bar of
+  its own (`lib/omniChatOverlay.ts`). Anything else that mounts a second bar owes
+  the same gate.
 - Stopping a turn is the user's own doing, and both layers say so. The AI SDK
   ends its iteration normally on an abort rather than throwing, so `runAgentTurn`
   checks the abort *before* the empty-turn branch and saves nothing; the surface
