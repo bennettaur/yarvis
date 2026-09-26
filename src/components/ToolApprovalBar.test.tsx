@@ -126,6 +126,14 @@ describe("ToolApprovalBar", () => {
     expect(answered).toEqual([]);
   });
 
+  it("names the keyboard shortcut in the Approve and Deny tooltips", async () => {
+    const html = await renderToHtml(
+      <ToolApprovalBar approvals={[approval()]} onRespond={() => {}} />,
+    );
+    expect(html).toContain("press A");
+    expect(html).toContain("press D");
+  });
+
   it("offers to remember an MCP tool, but not a built-in", async () => {
     const remembered: string[] = [];
     const mounted = await mountForInteraction(

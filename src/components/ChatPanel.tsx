@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type ChatSession, listSessions, type ProviderId } from "../lib/chat";
+import { MODEL_HINT, PROVIDER_HINT, SESSION_HINT } from "../lib/chatControlHints";
 import { type DisplayError, formatError } from "../lib/errors";
 import { useOmniChatOverlayOpen } from "../lib/omniChatOverlay";
 import { useChatThread } from "../lib/useChatThread";
@@ -97,6 +98,7 @@ export default function ChatPanel() {
           New chat
         </button>
         <select
+          title={SESSION_HINT}
           value={sessionId ?? ""}
           onChange={(e) => e.target.value && void loadSession(e.target.value)}
           className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
@@ -118,6 +120,7 @@ export default function ChatPanel() {
             Thinking
           </label>
           <select
+            title={PROVIDER_HINT}
             value={provider}
             onChange={(e) => {
               const id = e.target.value as ProviderId;
@@ -134,6 +137,7 @@ export default function ChatPanel() {
             ))}
           </select>
           <select
+            title={MODEL_HINT}
             value={model}
             onChange={(e) => setModel(e.target.value)}
             className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
