@@ -20,7 +20,7 @@ mock.module("./api", () => ({
   fetchPrFileDiff: async () => undefined,
 }));
 
-import { invalidate, prDetailKey, usePrDetail } from "./cache";
+import { invalidate, invalidatePrReview, prDetailKey, usePrDetail } from "./cache";
 import type { PrRef } from "./types";
 
 const ref: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 7 };
@@ -177,5 +177,18 @@ describe("cache invalidation", () => {
 
     root.unmount();
     host.remove();
+  });
+});
+
+describe("invalidatePrReview", () => {
+  it("refetches a mounted detail subscriber", async () => {
+    fetchCount = 0;
+    const { root } = mount(createElement(Probe, { subject: ref }));
+    await settle();
+    const before = fetchCount;
+    invalidatePrReview(ref);
+    await settle();
+    expect(fetchCount).toBe(before + 1);
+    root.unmount();
   });
 });

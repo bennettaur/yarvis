@@ -6,7 +6,7 @@ import {
   mergePr,
   type ReviewAction,
 } from "../../lib/pr/api";
-import { invalidate, prDetailKey, prStackKey } from "../../lib/pr/cache";
+import { invalidate, invalidatePrReview, prDetailKey, prStackKey } from "../../lib/pr/cache";
 import { refDisplayRepo, refNumber, refProviderName } from "../../lib/pr/ref";
 import type { CheckItem, MergeMethod, PrDetail, PrRef, PrSummary } from "../../lib/pr/types";
 import { openExternal } from "../../lib/url";
@@ -292,6 +292,7 @@ export default function PrFloatingHeader({
   pr,
   detail,
   loading = false,
+  refreshing = false,
   onBack,
   starred,
   onToggleStar,
@@ -305,6 +306,8 @@ export default function PrFloatingHeader({
    * nothing (#268).
    */
   loading?: boolean;
+  /** Whether a reload is running behind a detail already on screen. */
+  refreshing?: boolean;
   onBack: () => void;
   starred: boolean;
   onToggleStar: (pr: PrSummary, starred: boolean) => Promise<void>;
@@ -500,6 +503,16 @@ export default function PrFloatingHeader({
               {mergePending ? "…" : "Cancel auto-merge"}
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => invalidatePrReview(prRef)}
+            disabled={loading || refreshing}
+            className="rounded-md border border-zinc-700 px-2 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+            title="Refresh this pull request"
+            aria-label="Refresh this pull request"
+          >
+            <span className={`inline-block ${loading || refreshing ? "animate-spin" : ""}`}>↻</span>
+          </button>
           <button
             onClick={() => openExternal(pr.url)}
             className="rounded-md border border-zinc-700 px-2 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"

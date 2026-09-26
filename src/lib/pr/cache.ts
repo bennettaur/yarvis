@@ -1,4 +1,10 @@
-import { invalidate, PROVIDER_FRESHNESS, type Resource, useCachedResource } from "../resourceCache";
+import {
+  invalidate,
+  invalidatePrefix,
+  PROVIDER_FRESHNESS,
+  type Resource,
+  useCachedResource,
+} from "../resourceCache";
 import {
   fetchPrDetail,
   fetchPrFileContent,
@@ -59,6 +65,23 @@ export const prDetailKey = (ref: PrRef) => `detail:${refKey(ref)}`;
  * layer reads in the stack, so anything invalidating one invalidates both.
  */
 export const prStackKey = (ref: PrRef) => `stack:${refKey(ref)}`;
+
+/**
+ * Drops everything cached for one pull request so each mounted piece refetches:
+ * detail, stack, file list, status, and every per-file diff and full-text
+ * fetch. For a reader who knows the PR moved on the provider (a push, a new
+ * comment) and doesn't want to wait out the freshness window.
+ */
+export function invalidatePrReview(ref: PrRef): void {
+  const key = refKey(ref);
+  invalidate(prDetailKey(ref));
+  invalidate(prStackKey(ref));
+  invalidate(`files:${key}`);
+  invalidate(`status:${key}`);
+  // The trailing colon stops one PR's prefix matching another's (#7 and #70).
+  invalidatePrefix(`filediff:${key}:`);
+  invalidatePrefix(`content:${key}:`);
+}
 
 export function usePrDetail(ref: PrRef | null): Resource<PrDetail> {
   return useCachedResource(
