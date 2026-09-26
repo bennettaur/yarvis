@@ -324,6 +324,10 @@ export default function PrFloatingHeader({
   // review in flight don't clobber each other's spinner.
   const [mergeMenu, setMergeMenu] = useState<null | "merge" | "auto_merge">(null);
   const [mergePending, setMergePending] = useState(false);
+  const [starPending, setStarPending] = useState(false);
+  // The summary's title can be empty when the entry came from the workspace
+  // poller cache, which doesn't store PR titles, so prefer the detail's.
+  const title = detail?.title || pr.title;
 
   const status = derivePrUiStatus(detail, pr);
   const actions = actionsForStatus(status);
@@ -359,21 +363,6 @@ export default function PrFloatingHeader({
     }
   };
 
-  const [starPending, setStarPending] = useState(false);
-  const toggleStar = async () => {
-    setStarPending(true);
-    setError(null);
-    try {
-      // The summary's title is empty when it came from the workspace poller
-      // cache, so store the detail's title with the star when there is one.
-      await onToggleStar({ ...pr, title: detail?.title || pr.title }, starred);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setStarPending(false);
-    }
-  };
-
   const runDisableAutoMerge = async () => {
     setMergePending(true);
     setError(null);
@@ -384,6 +373,18 @@ export default function PrFloatingHeader({
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setMergePending(false);
+    }
+  };
+
+  const toggleStar = async () => {
+    setStarPending(true);
+    setError(null);
+    try {
+      await onToggleStar({ ...pr, title }, starred);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStarPending(false);
     }
   };
 
@@ -410,17 +411,9 @@ export default function PrFloatingHeader({
             >
               ★
             </button>
-            {/* Prefer the detail's title — the summary's title can be empty
-                when the entry came from the workspace poller cache (which
-                doesn't store PR titles). Show a placeholder while detail
-                loads so the bar isn't blank. */}
-            <h2
-              className="min-w-0 truncate text-base font-semibold text-zinc-100"
-              title={detail?.title || pr.title}
-            >
-              {detail?.title || pr.title || (
-                <span className="font-normal italic text-zinc-500">Loading…</span>
-              )}
+            {/* Show a placeholder while detail loads so the bar isn't blank. */}
+            <h2 className="min-w-0 truncate text-base font-semibold text-zinc-100" title={title}>
+              {title || <span className="font-normal italic text-zinc-500">Loading…</span>}
             </h2>
             <span className="font-normal text-zinc-500">#{refNumber(prRef)}</span>
           </div>

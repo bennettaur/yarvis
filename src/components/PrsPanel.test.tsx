@@ -226,7 +226,7 @@ describe("PrsPanel place", () => {
     const html = await renderToHtml(<PrsPanel persistPlace />);
 
     expect(html).not.toContain(LIST_NAV);
-    expect(html).toContain('aria-pressed="true"');
+    expect(html).toContain('title="Unstar"');
   });
 
   it("doesn't count reopening a remembered PR as viewing it", async () => {
