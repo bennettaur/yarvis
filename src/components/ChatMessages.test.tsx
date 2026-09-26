@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { type ComponentProps, createElement } from "react";
-import { renderToHtml } from "../test/render";
+import { renderToHtml, textOf } from "../test/render";
 import ChatMessages from "./ChatMessages";
 
 const EMPTY_HINT = "Start a conversation.";
@@ -108,5 +108,29 @@ describe("ChatMessages", () => {
   it("shows the empty hint until there is something to render", async () => {
     const html = await render({});
     expect(html).toContain(EMPTY_HINT);
+  });
+
+  it("folds the in-flight tool calls once the reply text starts", async () => {
+    const activity = [{ id: "c1", name: "search_pages", status: "ok" as const }];
+    const open = await render({ busy: true, activity });
+    expect(textOf(open)).not.toContain("tool call");
+    const folded = await render({ busy: true, activity, streaming: "found it" });
+    expect(textOf(folded)).toContain("Used 1 tool call");
+  });
+
+  it("folds a finished turn's tool calls and tells the speakers apart", async () => {
+    const html = await render({
+      messages: [
+        { role: "user", content: "hi" },
+        {
+          role: "assistant",
+          content: "done",
+          activity: [{ id: "c1", name: "search_pages", status: "ok" as const }],
+        },
+      ],
+    });
+    expect(textOf(html)).toContain("Used 1 tool call");
+    expect(html).toContain("border-violet-500");
+    expect(html).toContain("bg-sky-950");
   });
 });

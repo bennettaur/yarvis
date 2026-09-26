@@ -15,22 +15,66 @@ export default function TurnActivity({
   activity,
   thinking,
   running,
+  collapsed = false,
 }: {
   activity: ToolActivity[];
   /** Reasoning streamed for this turn, if any. */
   thinking?: string;
   /** True while the turn is still in flight, so an unsettled row reads as busy. */
   running?: boolean;
+  /**
+   * Fold the rows under a one-line summary. The in-flight turn stays open so
+   * calls can pop in as they happen, then folds once the reply text starts;
+   * finished turns are folded from the start. The user can reopen either.
+   */
+  collapsed?: boolean;
 }) {
+  const [expanded, setExpanded] = useState(false);
   if (activity.length === 0 && !thinking) return null;
-  return (
+
+  const rows = (
     <div className="space-y-1">
-      {thinking && <ThinkingBlock text={thinking} streaming={running} />}
+      {thinking && <ThinkingBlock text={thinking} streaming={running && !collapsed} />}
       {activity.map((entry) => (
         <ToolRow key={entry.id} entry={entry} />
       ))}
     </div>
   );
+  const open = !collapsed || expanded;
+
+  return (
+    <div className="mb-2">
+      {collapsed && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          className="flex items-center gap-2 py-0.5 text-xs text-zinc-500 hover:text-zinc-300"
+        >
+          <Chevron open={expanded} />
+          <span>{summarize(activity, Boolean(thinking))}</span>
+        </button>
+      )}
+      {/* Animating grid rows lets the height go to and from auto. The rows stay
+          mounted while folded so the fold can animate, hence `inert`. */}
+      <div
+        className={`grid transition-[grid-template-rows,opacity] duration-300 ease-out motion-reduce:transition-none ${
+          open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"
+        }`}
+        inert={!open}
+      >
+        <div className={`min-h-0 overflow-hidden ${collapsed ? "mt-1" : ""}`}>{rows}</div>
+      </div>
+    </div>
+  );
+}
+
+function summarize(activity: ToolActivity[], thought: boolean): string {
+  const calls = `${activity.length} tool call${activity.length === 1 ? "" : "s"}`;
+  if (activity.length === 0) return "Thought about it";
+  const failed = activity.filter((a) => a.status === "error" || a.status === "denied").length;
+  const tail = failed > 0 ? ` · ${failed} failed` : "";
+  return `${thought ? "Thought, " : "Used "}${calls}${tail}`;
 }
 
 function ThinkingBlock({ text, streaming }: { text: string; streaming?: boolean }) {
