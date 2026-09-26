@@ -292,6 +292,7 @@ export default function EmbeddingsSection() {
           </Labeled>
           <Labeled label="Dimension">
             <input
+              title="Length of the vector the model returns. It must match the size your memory store was built with, and existing memories need Re-embed all after a change."
               value={draft.dimensions}
               inputMode="numeric"
               placeholder="1536"

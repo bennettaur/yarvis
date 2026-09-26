@@ -69,11 +69,13 @@ export default function AlarmsPanel() {
           <input
             value={label}
             placeholder="Label (e.g. Standup)"
+            aria-label="Alarm label"
             onChange={(e) => setLabel(e.target.value)}
             className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-zinc-500"
           />
           <input
             type="datetime-local"
+            aria-label="Alarm time"
             value={when}
             onChange={(e) => setWhen(e.target.value)}
             className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"

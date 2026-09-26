@@ -44,9 +44,12 @@ function blankDraft(): Draft {
   return { modelId: "", capabilities: ["chat"] };
 }
 
-function Chip({ label }: { label: string }) {
+function Chip({ label, title }: { label: string; title?: string }) {
   return (
-    <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-zinc-400">
+    <span
+      title={title}
+      className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-zinc-400"
+    >
       {label}
     </span>
   );
@@ -277,7 +280,13 @@ export default function ModelCatalogSection() {
                           {capability}
                         </label>
                       ) : (
-                        on && <Chip key={capability} label={capability} />
+                        on && (
+                          <Chip
+                            key={capability}
+                            label={capability}
+                            title={CAPABILITY_HINTS[capability]}
+                          />
+                        )
                       );
                     })}
                     {model.row && (
@@ -305,6 +314,7 @@ export default function ModelCatalogSection() {
                   }))
                 }
                 placeholder="model id"
+                aria-label="Model id"
                 className={`${FIELD} max-w-xs font-mono`}
               />
               {catalog.capabilities.map((capability) => (
