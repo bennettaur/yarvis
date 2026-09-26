@@ -1258,6 +1258,11 @@ function writeWorkspaceFiles(detail: WorkspaceDetail): void {
       "or `Gemfile` — and go through that manager rather than whatever happens to",
       "be on `PATH` here. With mise that is `mise install` once, then",
       "`mise exec -- <command>`.",
+      "",
+      "The same goes for committing and pushing. A repo's git hooks (lefthook,",
+      "husky, pre-commit) call its tools, so run `git commit` and `git push` from",
+      "inside the repo's directory. With mise that is `mise exec -- git commit`.",
+      "From this root the hooks fail, or run against the wrong tool versions.",
     );
   }
 
