@@ -293,6 +293,8 @@ export default function PrFloatingHeader({
   detail,
   loading = false,
   onBack,
+  starred,
+  onToggleStar,
 }: {
   pr: PrSummary;
   detail: PrDetail | null;
@@ -304,6 +306,8 @@ export default function PrFloatingHeader({
    */
   loading?: boolean;
   onBack: () => void;
+  starred: boolean;
+  onToggleStar: (pr: PrSummary, starred: boolean) => Promise<void>;
 }) {
   const prRef: PrRef = pr.ref;
   // Publishing, approving or merging changes both how this pull request reads
@@ -355,6 +359,21 @@ export default function PrFloatingHeader({
     }
   };
 
+  const [starPending, setStarPending] = useState(false);
+  const toggleStar = async () => {
+    setStarPending(true);
+    setError(null);
+    try {
+      // The summary's title is empty when it came from the workspace poller
+      // cache, so store the detail's title with the star when there is one.
+      await onToggleStar({ ...pr, title: detail?.title || pr.title }, starred);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStarPending(false);
+    }
+  };
+
   const runDisableAutoMerge = async () => {
     setMergePending(true);
     setError(null);
@@ -379,6 +398,18 @@ export default function PrFloatingHeader({
         </button>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void toggleStar()}
+              disabled={starPending}
+              className={`shrink-0 disabled:opacity-50 ${
+                starred ? "text-amber-400" : "text-zinc-600 hover:text-zinc-400"
+              }`}
+              title={starred ? "Unstar" : "Star"}
+              aria-pressed={starred}
+            >
+              ★
+            </button>
             {/* Prefer the detail's title — the summary's title can be empty
                 when the entry came from the workspace poller cache (which
                 doesn't store PR titles). Show a placeholder while detail

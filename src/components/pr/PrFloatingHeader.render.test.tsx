@@ -100,8 +100,16 @@ const detail = (overrides: Partial<PrDetail> = {}): PrDetail => ({
   ...overrides,
 });
 
-const render = (d: PrDetail | null) =>
-  renderToHtml(createElement(PrFloatingHeader, { pr: summary(), detail: d, onBack: () => {} }));
+const render = (d: PrDetail | null, starred = false) =>
+  renderToHtml(
+    createElement(PrFloatingHeader, {
+      pr: summary(),
+      detail: d,
+      onBack: () => {},
+      starred,
+      onToggleStar: async () => {},
+    }),
+  );
 
 describe("PrFloatingHeader merge controls", () => {
   it("shows Merge (not Enable auto-merge) once the PR is ready to merge", async () => {
@@ -147,6 +155,8 @@ describe("PrFloatingHeader loading state", () => {
         detail: null,
         loading: true,
         onBack: () => {},
+        starred: false,
+        onToggleStar: async () => {},
       }),
     );
 
@@ -158,5 +168,21 @@ describe("PrFloatingHeader loading state", () => {
     const html = await render(detail());
 
     expect(textOf(html)).not.toContain("Loading…");
+  });
+});
+
+describe("PrFloatingHeader star", () => {
+  it("offers to star a PR that isn't starred", async () => {
+    const html = await render(detail());
+
+    expect(html).toContain('title="Star"');
+    expect(html).toContain('aria-pressed="false"');
+  });
+
+  it("offers to unstar a starred PR", async () => {
+    const html = await render(detail(), true);
+
+    expect(html).toContain('title="Unstar"');
+    expect(html).toContain('aria-pressed="true"');
   });
 });
