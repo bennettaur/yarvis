@@ -202,7 +202,7 @@ export default function OmniChat({
           />
         )}
 
-        <McpConnectionBar />
+        <McpConnectionBar visible={open} />
 
         <ChatComposer
           value={input}

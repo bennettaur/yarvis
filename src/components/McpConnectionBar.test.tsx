@@ -31,6 +31,8 @@ const json = (body: unknown) =>
 let servers: McpServer[] = [];
 let statuses: Record<string, unknown> = {};
 const refreshed: string[] = [];
+const authorized: string[] = [];
+let refreshResult: Record<string, unknown> = { connected: true, toolCount: 1 };
 
 mock.module("../lib/api", () => ({
   ...realApi,
@@ -41,7 +43,12 @@ mock.module("../lib/api", () => ({
     const refresh = path.match(/^\/api\/mcp\/servers\/([^/]+)\/refresh$/);
     if (refresh && init?.method === "POST") {
       refreshed.push(refresh[1]);
-      return json({ connected: true, toolCount: 1 });
+      return json(refreshResult);
+    }
+    const authorize = path.match(/^\/api\/mcp\/servers\/([^/]+)\/authorize$/);
+    if (authorize && init?.method === "POST") {
+      authorized.push(authorize[1]);
+      return json({ authorizationUrl: "https://example.com/authorize" });
     }
     return new Response("unexpected request", { status: 404 });
   },
@@ -58,7 +65,22 @@ afterEach(() => {
   cleanup?.();
   cleanup = null;
   refreshed.length = 0;
+  authorized.length = 0;
+  refreshResult = { connected: true, toolCount: 1 };
 });
+
+async function waitFor(condition: () => boolean, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+function click(host: HTMLElement, label: string) {
+  Array.from(host.querySelectorAll("button"))
+    .find((b) => b.textContent === label)
+    ?.click();
+}
 
 describe("McpConnectionBar", () => {
   it("renders nothing when every enabled server is connected", async () => {
@@ -93,11 +115,66 @@ describe("McpConnectionBar", () => {
     cleanup = mounted.unmount;
 
     expect(mounted.host.textContent).toContain("Local is not connected");
-    Array.from(mounted.host.querySelectorAll("button"))
-      .find((b) => b.textContent === "Reconnect")
-      ?.click();
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    click(mounted.host, "Reconnect");
+    await waitFor(() => refreshed.length > 0);
 
     expect(refreshed).toEqual(["s1"]);
+  });
+
+  it("shows why a reconnect failed and lets the user try again", async () => {
+    servers = [server({ name: "Local" })];
+    statuses = { s1: { connected: false, toolCount: 0, oauth: null } };
+    refreshResult = { connected: false, toolCount: 0, error: "boom" };
+    const mounted = await mountForInteraction(<McpConnectionBar />);
+    cleanup = mounted.unmount;
+
+    click(mounted.host, "Reconnect");
+    await waitFor(() => mounted.host.textContent?.includes("boom") ?? false);
+
+    expect(mounted.host.textContent).toContain("Local is not connected");
+    expect(mounted.host.textContent).toContain("boom");
+    expect(mounted.host.querySelector("button")?.disabled).toBe(false);
+  });
+
+  it("hands a refresh that needs authorization off to sign-in", async () => {
+    servers = [server({ oauth: true })];
+    statuses = {
+      s1: {
+        connected: false,
+        toolCount: 0,
+        oauth: { registered: true, authorized: true, scope: null },
+      },
+    };
+    refreshResult = { connected: false, toolCount: 0, needsAuthorization: true };
+    const mounted = await mountForInteraction(<McpConnectionBar />);
+    cleanup = mounted.unmount;
+
+    // Authorized but disconnected reads as a reconnect, not a sign-in.
+    expect(mounted.host.textContent).toContain("Notion is not connected");
+    click(mounted.host, "Reconnect");
+    await waitFor(() => authorized.length > 0);
+
+    expect(refreshed).toEqual(["s1"]);
+    expect(authorized).toEqual(["s1"]);
+  });
+
+  it("rechecks when the window regains focus", async () => {
+    servers = [server({})];
+    statuses = { s1: { connected: true, toolCount: 3, oauth: null } };
+    const mounted = await mountForInteraction(<McpConnectionBar />);
+    cleanup = mounted.unmount;
+    expect(mounted.host.textContent).toBe("");
+
+    statuses = { s1: { connected: false, toolCount: 0, oauth: null } };
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => (mounted.host.textContent ?? "") !== "");
+
+    expect(mounted.host.textContent).toContain("Notion is not connected");
+  });
+
+  it("does not check while hidden", async () => {
+    servers = [server({})];
+    statuses = { s1: { connected: false, toolCount: 0, oauth: null } };
+    expect(await renderToHtml(<McpConnectionBar visible={false} />)).toBe("");
   });
 });

@@ -3,10 +3,11 @@ import { useMcpConnectionIssues } from "../lib/useMcpConnectionIssues";
 /**
  * Above a chat's composer: which MCP servers can't serve tools right now, with
  * the button that fixes each one without leaving the chat. Renders nothing when
- * every enabled server is healthy, so it costs no space in the common case.
+ * every enabled server is healthy. `visible` is for a host that keeps the chat
+ * mounted while it is off screen (Omni Chat), so it doesn't poll unseen.
  */
-export default function McpConnectionBar() {
-  const { issues, authorize, reconnect } = useMcpConnectionIssues();
+export default function McpConnectionBar({ visible = true }: { visible?: boolean }) {
+  const { issues, authorize, reconnect } = useMcpConnectionIssues(visible);
   if (issues.length === 0) return null;
 
   return (

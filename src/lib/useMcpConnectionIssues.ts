@@ -54,9 +54,11 @@ async function findIssues(): Promise<Found[]> {
  * The MCP servers a chat surface should flag, with the actions to fix them in
  * place. Rechecked on mount, on a timer, and whenever the window regains focus —
  * a token expiring or a server dropping doesn't announce itself, and the user
- * usually finds out by asking for something the tool can't do.
+ * usually finds out by asking for something the tool can't do. A surface that
+ * stays mounted while hidden passes `active: false` so it stops polling, and
+ * rechecks the moment it is shown again.
  */
-export function useMcpConnectionIssues(): {
+export function useMcpConnectionIssues(active = true): {
   issues: McpConnectionIssue[];
   authorize: (serverId: string) => Promise<void>;
   reconnect: (serverId: string) => Promise<void>;
@@ -81,16 +83,25 @@ export function useMcpConnectionIssues(): {
 
   useEffect(() => {
     mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!active) return;
     void check();
-    const timer = setInterval(() => void check(), RECHECK_INTERVAL_MS);
+    // A backgrounded window skips its tick; the focus handler catches up.
+    const timer = setInterval(() => {
+      if (!document.hidden) void check();
+    }, RECHECK_INTERVAL_MS);
     const onFocus = () => void check();
     window.addEventListener("focus", onFocus);
     return () => {
-      mounted.current = false;
       clearInterval(timer);
       window.removeEventListener("focus", onFocus);
     };
-  }, [check]);
+  }, [active, check]);
 
   const run = useCallback(
     async (serverId: string, action: () => Promise<void>) => {
@@ -116,18 +127,28 @@ export function useMcpConnectionIssues(): {
     [check],
   );
 
+  /**
+   * Opens the sign-in page, then waits for the sidecar's callback route to
+   * finish the exchange. A status read that fails mid-wait is not the end of it:
+   * the user may well be signing in, so keep watching until the attempts run out.
+   */
+  const signIn = useCallback(async (serverId: string) => {
+    const { authorizationUrl } = await authorizeMcpServer(serverId);
+    openExternal(authorizationUrl);
+    for (let i = 0; i < AUTHORIZE_POLL_ATTEMPTS && mounted.current; i++) {
+      await new Promise((resolve) => setTimeout(resolve, AUTHORIZE_POLL_INTERVAL_MS));
+      try {
+        if ((await getMcpServerStatus(serverId)).oauth?.authorized) return;
+      } catch {
+        // Transient; try again.
+      }
+    }
+    if (mounted.current) throw new Error("Sign-in didn't complete.");
+  }, []);
+
   const authorize = useCallback(
-    (serverId: string) =>
-      run(serverId, async () => {
-        const { authorizationUrl } = await authorizeMcpServer(serverId);
-        openExternal(authorizationUrl);
-        // The sidecar's callback route finishes the exchange and connects.
-        for (let i = 0; i < AUTHORIZE_POLL_ATTEMPTS && mounted.current; i++) {
-          await new Promise((r) => setTimeout(r, AUTHORIZE_POLL_INTERVAL_MS));
-          if ((await getMcpServerStatus(serverId)).oauth?.authorized) return;
-        }
-      }),
-    [run],
+    (serverId: string) => run(serverId, () => signIn(serverId)),
+    [run, signIn],
   );
 
   const reconnect = useCallback(
@@ -135,14 +156,10 @@ export function useMcpConnectionIssues(): {
       run(serverId, async () => {
         const result = await refreshMcpServer(serverId);
         // A 401 on refresh means the token is gone: hand off to the sign-in flow.
-        if (result.needsAuthorization) {
-          const { authorizationUrl } = await authorizeMcpServer(serverId);
-          openExternal(authorizationUrl);
-          return;
-        }
+        if (result.needsAuthorization) return signIn(serverId);
         if (!result.connected) throw new Error(result.error ?? "Could not connect");
       }),
-    [run],
+    [run, signIn],
   );
 
   const issues = found.map((f) => ({
