@@ -74,6 +74,8 @@ export interface ChatMessage {
 
 /** A message as rendered in a thread: its persisted role, text and provenance. */
 export interface ThreadMessage {
+  /** The persisted message id. Absent until the thread has re-read the transcript. */
+  id?: string;
   role: string;
   content: string;
   metadata?: ChatMessageMetadata | null;
@@ -193,6 +195,8 @@ export interface ChatRequest {
   source?: "voice";
   /** Ask the provider to stream the model's reasoning, where it supports it. */
   reasoning?: boolean;
+  /** Restart from this persisted user message: it and everything after it are dropped first. */
+  rewindTo?: string;
 }
 
 /** Responds to a pending MCP tool-call approval mid-stream. */

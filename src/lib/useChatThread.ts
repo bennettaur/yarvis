@@ -21,6 +21,16 @@ import { setToolSettings } from "./mcp";
 const PROVIDER_KEY = "yarvis.chat.provider";
 const MODEL_KEY = "yarvis.chat.model";
 
+function toThreadMessages(msgs: ChatMessage[]): ThreadMessage[] {
+  return msgs.map((m) => ({
+    id: m.id,
+    role: m.role,
+    content: m.content,
+    metadata: m.metadata,
+    activity: m.toolCalls ?? undefined,
+  }));
+}
+
 export interface UseChatThreadOptions {
   /** localStorage key under which this thread's session id is persisted. */
   sessionStorageKey?: string;
@@ -67,6 +77,10 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
   // stream, which the sidecar reads as the client going away and uses to cancel
   // the upstream call, so a stopped turn stops costing tokens.
   const inFlight = useRef<AbortController | null>(null);
+  // The session on screen now, for async work that must not land in a thread the
+  // user has since left.
+  const currentSession = useRef<string | null>(null);
+  currentSession.current = sessionId;
   const stop = useCallback(() => {
     inFlight.current?.abort();
   }, []);
@@ -128,14 +142,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
       setSessionId(id);
       try {
         const msgs = await getMessages(id);
-        setMessages(
-          msgs.map((m: ChatMessage) => ({
-            role: m.role,
-            content: m.content,
-            metadata: m.metadata,
-            activity: m.toolCalls ?? undefined,
-          })),
-        );
+        setMessages(toThreadMessages(msgs));
       } catch (e) {
         setError(formatError(e));
       }
@@ -200,8 +207,41 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     return session;
   }, [onSessionCreated, abandonTurn]);
 
+  /**
+   * Messages added during a turn are shown before the sidecar has told us their
+   * ids, and only a message with an id can be rewound to. Once the turn settles,
+   * copy the ids across by position; the thread is append-only, so they line up.
+   */
+  const adoptPersistedIds = useCallback(async (id: string) => {
+    try {
+      const persisted = await getMessages(id);
+      if (currentSession.current !== id) return;
+      setMessages((prev) =>
+        // Only when the two lists plainly line up; a mismatch would hand a
+        // message the wrong id, and a rewind would then cut the wrong range.
+        persisted.length === prev.length && prev.every((m, i) => m.role === persisted[i]?.role)
+          ? prev.map((m, i) => ({ ...m, id: persisted[i]!.id }))
+          : prev,
+      );
+    } catch {
+      // Ids only enable rewinding; the thread is fine without them.
+    }
+  }, []);
+
+  const reloadMessages = useCallback(async (id: string) => {
+    try {
+      const persisted = await getMessages(id);
+      if (currentSession.current === id) setMessages(toThreadMessages(persisted));
+    } catch {
+      // Keep what is on screen; the error from the turn is already shown.
+    }
+  }, []);
+
   const send = useCallback(
-    async (text: string, sendOptions: { source?: "voice"; resend?: boolean } = {}) => {
+    async (
+      text: string,
+      sendOptions: { source?: "voice"; resend?: boolean; rewindTo?: string } = {},
+    ) => {
       const trimmed = text.trim();
       // Nothing to send, nothing to send it with, or a turn already running.
       if (!trimmed || !provider || !model || busy) return false;
@@ -220,16 +260,19 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
       // failure is the same turn to it — show one bubble here too, or a reload
       // would drop the one the transcript never gained.
       setMessages((prev) => {
+        const turn: ThreadMessage = {
+          role: "user",
+          content: trimmed,
+          metadata: sendOptions.source ? { source: "voice" } : null,
+        };
+        if (sendOptions.rewindTo) {
+          // Drop the chosen message and everything after it, as the sidecar does.
+          const at = prev.findIndex((m) => m.id === sendOptions.rewindTo);
+          return [...(at === -1 ? prev : prev.slice(0, at)), turn];
+        }
         const last = prev[prev.length - 1];
         if (sendOptions.resend || (last?.role === "user" && last.content === trimmed)) return prev;
-        return [
-          ...prev,
-          {
-            role: "user",
-            content: trimmed,
-            metadata: sendOptions.source ? { source: "voice" } : null,
-          },
-        ];
+        return [...prev, turn];
       });
       setBusy(true);
       setError(null);
@@ -254,6 +297,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
             // Marks a turn the user spoke rather than typed, which is what puts
             // the agent's irreversible tools behind a confirmation.
             source: sendOptions.source,
+            rewindTo: sendOptions.rewindTo,
           },
           { signal: controller.signal },
         )) {
@@ -337,12 +381,27 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
         }
         setStreaming("");
         setBusy(false);
+        // A rewind that failed may have left the screen and the transcript
+        // disagreeing about what was dropped; the sidecar's copy is the truth.
+        if (sendOptions.rewindTo && failed) void reloadMessages(activeId);
+        else void adoptPersistedIds(activeId);
         // Any approvals not acted on are moot once the turn ends.
         setApprovals([]);
       }
       return true;
     },
-    [provider, model, busy, sessionId, getContext, onAttention, onSessionCreated, reasoning],
+    [
+      provider,
+      model,
+      busy,
+      sessionId,
+      getContext,
+      onAttention,
+      onSessionCreated,
+      reasoning,
+      adoptPersistedIds,
+      reloadMessages,
+    ],
   );
 
   /**
@@ -360,6 +419,21 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     const source = last.metadata?.source === "voice" ? "voice" : undefined;
     void send(last.content, { resend: true, source });
   }, [messages, busy, send]);
+
+  /**
+   * Restarts the conversation from a user message: it and everything after it
+   * are dropped, and `text` — the original or an edit — runs as the new turn.
+   * Keeps the original's provenance, for the same reason `retry` does.
+   */
+  const rewind = useCallback(
+    (messageId: string, text: string) => {
+      const target = messages.find((m) => m.id === messageId);
+      if (!target || target.role !== "user" || busy) return;
+      const source = target.metadata?.source === "voice" ? "voice" : undefined;
+      void send(text, { rewindTo: messageId, source });
+    },
+    [messages, busy, send],
+  );
 
   return {
     providers,
@@ -380,6 +454,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     alwaysAllow,
     send,
     retry,
+    rewind,
     stop,
     newChat,
     loadSession,
