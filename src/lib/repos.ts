@@ -53,6 +53,19 @@ function isAzureHost(host: string): boolean {
   );
 }
 
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+// A decoded `.`, `..`, or slash would escape its place in the API paths built from it.
+function isUnsafeSegment(segment: string): boolean {
+  return segment === "." || segment === ".." || /[/\\]/.test(segment);
+}
+
 function splitRemote(url: string): { host: string; segments: string[] } | null {
   const trimmed = url.trim().replace(/\.git$/, "");
   const scp = trimmed.match(/^[^/]+@([^/:]+):(.+)$/);
@@ -71,7 +84,9 @@ function splitRemote(url: string): { host: string; segments: string[] } | null {
     }
   }
   if (!host) return null;
-  return { host, segments: path.split("/").filter(Boolean) };
+  const segments = path.split("/").filter(Boolean).map(decodeSegment);
+  if (segments.some(isUnsafeSegment)) return null;
+  return { host, segments };
 }
 
 /**

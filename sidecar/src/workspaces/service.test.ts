@@ -93,6 +93,39 @@ describe("parseRepoRemote", () => {
     ).toEqual({ provider: "azure", org: "myorg", project: "MyProject", repo: "web" });
   });
 
+  it("decodes a percent-encoded Azure DevOps project name", () => {
+    expect(parseRepoRemote("https://dev.azure.com/myorg/My%20Project/_git/web")).toEqual({
+      provider: "azure",
+      org: "myorg",
+      project: "My Project",
+      repo: "web",
+    });
+  });
+
+  it("decodes a percent-encoded project in an Azure DevOps ssh remote", () => {
+    expect(parseRepoRemote("git@ssh.dev.azure.com:v3/myorg/My%20Project/web")).toEqual({
+      provider: "azure",
+      org: "myorg",
+      project: "My Project",
+      repo: "web",
+    });
+  });
+
+  it("keeps a segment with invalid percent-encoding as written", () => {
+    expect(parseRepoRemote("https://dev.azure.com/myorg/Bad%E0%A4%A/_git/web")).toEqual({
+      provider: "azure",
+      org: "myorg",
+      project: "Bad%E0%A4%A",
+      repo: "web",
+    });
+  });
+
+  it("returns null when a decoded segment would escape its path position", () => {
+    expect(parseRepoRemote("https://dev.azure.com/myorg/%2e%2e/_git/web")).toBeNull();
+    expect(parseRepoRemote("https://dev.azure.com/myorg/MyProject/_git/%2E%2E")).toBeNull();
+    expect(parseRepoRemote("https://dev.azure.com/myorg/My%2FProject/_git/web")).toBeNull();
+  });
+
   it("returns null for an Azure host with no _git or v3 marker", () => {
     // dev.azure.com host but not a repo clone URL — reaches the Azure block's
     // own null return, not the earlier splitRemote bail.
