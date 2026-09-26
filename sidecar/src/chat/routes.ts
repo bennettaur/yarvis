@@ -12,8 +12,10 @@ import { runAgentTurn } from "./agent.ts";
 import {
   type ChatConfig,
   getChatConfig,
+  MAX_COMPACT_AT_TOKENS,
   MAX_OUTPUT_TOKENS_CEILING,
   MAX_STEPS_CEILING,
+  MIN_COMPACT_AT_TOKENS,
   saveChatConfig,
 } from "./config.ts";
 import { createSession, getMessages, listSessions } from "./service.ts";
@@ -58,6 +60,7 @@ const approvalSchema = z.object({ approved: z.boolean() });
 const configSchema = z.object({
   maxSteps: z.number().int().min(1).max(MAX_STEPS_CEILING),
   maxOutputTokens: z.number().int().min(256).max(MAX_OUTPUT_TOKENS_CEILING).nullable(),
+  compactAtTokens: z.number().int().min(MIN_COMPACT_AT_TOKENS).max(MAX_COMPACT_AT_TOKENS),
 });
 
 export function createChatRoutes(config: Config): Hono {

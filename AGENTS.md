@@ -369,8 +369,9 @@ back to ad-hoc.
   `metadata.compaction.throughMessageId` names the last one it covers, and
   `runAgentTurn` replays that summary (fenced as data) plus what came after. No
   row is deleted, and the messages route hides the `system` row, so the thread
-  the user sees is unchanged. A context-window error compacts too, so Retry
-  succeeds. The retry collapse in `runAgentTurn` skips `system` rows when it
+  the user sees is unchanged. The size that triggers it is `compactAtTokens` in
+  `chat/config.ts` (default 200k, edited in Settings). A context-window error
+  compacts too, so Retry succeeds. The retry collapse in `runAgentTurn` skips `system` rows when it
   looks for the last message, since a summary can land after the user's turn.
 - A chat turn reports what it is doing, not only what it concluded.
   `runAgentTurn` drives `fullStream`, so tool calls, their outcomes and any

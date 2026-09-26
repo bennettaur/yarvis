@@ -25,20 +25,32 @@ describe("chat config", () => {
     expect(await getChatConfig()).toEqual(DEFAULT_CHAT_CONFIG);
   });
 
+  it("defaults compaction to 200k tokens and fills it in for an older saved section", async () => {
+    expect(DEFAULT_CHAT_CONFIG.compactAtTokens).toBe(200_000);
+    await withSection<{ maxSteps: number }, void>("chatConfig", () => ({
+      next: { maxSteps: 30 },
+      result: undefined,
+    }));
+    expect((await getChatConfig()).compactAtTokens).toBe(200_000);
+  });
+
   it("saves and reads back the budget", async () => {
-    const saved = await saveChatConfig({ maxSteps: 40, maxOutputTokens: 8000 });
-    expect(saved).toEqual({ maxSteps: 40, maxOutputTokens: 8000 });
+    const saved = await saveChatConfig({
+      maxSteps: 40,
+      maxOutputTokens: 8000,
+      compactAtTokens: 120_000,
+    });
+    expect(saved).toEqual({ maxSteps: 40, maxOutputTokens: 8000, compactAtTokens: 120_000 });
     expect(await getChatConfig()).toEqual(saved);
   });
 
   // Null is a value here, not an absent field: it means "leave the provider's
   // own limit alone", which is not the same as "fall back to a default cap".
   it("keeps an explicit null output cap", async () => {
-    await saveChatConfig({ maxSteps: 40, maxOutputTokens: 8000 });
-    expect(await saveChatConfig({ maxSteps: 40, maxOutputTokens: null })).toEqual({
-      maxSteps: 40,
-      maxOutputTokens: null,
-    });
+    await saveChatConfig({ maxSteps: 40, maxOutputTokens: 8000, compactAtTokens: 200_000 });
+    expect(
+      await saveChatConfig({ maxSteps: 40, maxOutputTokens: null, compactAtTokens: 200_000 }),
+    ).toEqual({ maxSteps: 40, maxOutputTokens: null, compactAtTokens: 200_000 });
   });
 
   it("leaves the other sections of the settings file alone", async () => {
@@ -46,7 +58,7 @@ describe("chat config", () => {
       next: { keep: true },
       result: undefined,
     }));
-    await saveChatConfig({ maxSteps: 12, maxOutputTokens: null });
+    await saveChatConfig({ maxSteps: 12, maxOutputTokens: null, compactAtTokens: 200_000 });
     expect(await readSection<{ keep: boolean }>("voiceConfig")).toEqual({ keep: true });
   });
 });

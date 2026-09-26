@@ -127,7 +127,13 @@ describe("compactSession", () => {
   it("does nothing while the history is under the threshold", async () => {
     const sessionId = await seed(10);
     const history = await getMessages(db, sessionId);
-    const done = await compactSession({ db, model: summarizer("s"), sessionId, history });
+    const done = await compactSession({
+      thresholdTokens: 150_000,
+      db,
+      model: summarizer("s"),
+      sessionId,
+      history,
+    });
     expect(done).toBeNull();
     expect(await getMessages(db, sessionId)).toHaveLength(10);
   });
@@ -164,7 +170,14 @@ describe("compactSession", () => {
         throw new Error("boom");
       },
     });
-    const done = await compactSession({ db, model, sessionId, history, force: true });
+    const done = await compactSession({
+      thresholdTokens: 150_000,
+      db,
+      model,
+      sessionId,
+      history,
+      force: true,
+    });
     expect(done).toBeNull();
     expect(await getMessages(db, sessionId)).toHaveLength(10);
   });
@@ -173,7 +186,16 @@ describe("compactSession", () => {
     const sessionId = await seed(10);
     const history = await getMessages(db, sessionId);
     for (const model of [summarizer("half a sum", "length"), summarizer("   ")]) {
-      expect(await compactSession({ db, model, sessionId, history, force: true })).toBeNull();
+      expect(
+        await compactSession({
+          thresholdTokens: 150_000,
+          db,
+          model,
+          sessionId,
+          history,
+          force: true,
+        }),
+      ).toBeNull();
     }
     expect(await getMessages(db, sessionId)).toHaveLength(10);
   });
@@ -182,6 +204,7 @@ describe("compactSession", () => {
     const sessionId = await seed(6);
     const history = await getMessages(db, sessionId);
     const done = await compactSession({
+      thresholdTokens: 150_000,
       db,
       model: summarizer("s"),
       sessionId,
@@ -194,6 +217,7 @@ describe("compactSession", () => {
   it("feeds the previous summary into the next one and advances past it", async () => {
     const sessionId = await seed(10);
     await compactSession({
+      thresholdTokens: 150_000,
       db,
       model: summarizer("first summary"),
       sessionId,
@@ -209,6 +233,7 @@ describe("compactSession", () => {
     }
     const model = summarizer("second summary");
     await compactSession({
+      thresholdTokens: 150_000,
       db,
       model,
       sessionId,

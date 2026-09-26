@@ -400,11 +400,11 @@ describe("runAgentTurn", () => {
 
     async function seedLongSession(): Promise<string> {
       const session = await createSession(db, "long");
-      for (let i = 0; i < 12; i++) {
+      for (let i = 0; i < 16; i++) {
         await addMessage(db, {
           sessionId: session.id,
           role: i % 2 === 0 ? "user" : "assistant",
-          // 12 x 60k chars is about 180k tokens, past the compaction threshold.
+          // 16 x 60k chars is about 240k tokens, past the default compaction threshold.
           content: `m${i} ${"x".repeat(60_000)}`,
         });
       }

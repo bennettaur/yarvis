@@ -12,6 +12,13 @@ export interface ChatConfig {
   maxSteps: number;
   /** Output tokens one reply may use. Null leaves the provider's own limit. */
   maxOutputTokens: number | null;
+  /**
+   * Estimated history size, in tokens, past which the older messages are
+   * summarized. Set it under the smallest context window of any model you chat
+   * with: the estimate is rough, and the system prompt, tools and reply come on
+   * top of it.
+   */
+  compactAtTokens: number;
 }
 
 const SETTINGS_KEY = "chatConfig";
@@ -27,11 +34,14 @@ const SETTINGS_KEY = "chatConfig";
 export const DEFAULT_CHAT_CONFIG: ChatConfig = {
   maxSteps: 100,
   maxOutputTokens: null,
+  compactAtTokens: 200_000,
 };
 
 /** Ceilings the routes validate against, so a typo can't cost a fortune. */
 export const MAX_STEPS_CEILING = 500;
 export const MAX_OUTPUT_TOKENS_CEILING = 200_000;
+export const MIN_COMPACT_AT_TOKENS = 10_000;
+export const MAX_COMPACT_AT_TOKENS = 2_000_000;
 
 /** Returns the stored budget merged over the defaults. */
 export async function getChatConfig(): Promise<ChatConfig> {
@@ -40,6 +50,7 @@ export async function getChatConfig(): Promise<ChatConfig> {
   return {
     maxSteps: stored.maxSteps ?? DEFAULT_CHAT_CONFIG.maxSteps,
     maxOutputTokens: stored.maxOutputTokens ?? DEFAULT_CHAT_CONFIG.maxOutputTokens,
+    compactAtTokens: stored.compactAtTokens ?? DEFAULT_CHAT_CONFIG.compactAtTokens,
   };
 }
 
@@ -49,6 +60,7 @@ export async function saveChatConfig(input: ChatConfig): Promise<ChatConfig> {
     const next: ChatConfig = {
       maxSteps: input.maxSteps,
       maxOutputTokens: input.maxOutputTokens ?? null,
+      compactAtTokens: input.compactAtTokens,
     };
     return { next, result: next };
   });

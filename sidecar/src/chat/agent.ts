@@ -302,7 +302,14 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
   else await addMessage(db, { sessionId, role: "user", content: message, metadata: userMetadata });
 
   // Summarize the older part of a long chat before it outgrows the model's window.
-  const summaryRow = await compactSession({ db, model, sessionId, history, signal });
+  const summaryRow = await compactSession({
+    db,
+    model,
+    sessionId,
+    history,
+    thresholdTokens: budget.compactAtTokens,
+    signal,
+  });
   const rows = summaryRow ? [...history, summaryRow] : history;
 
   // Only user/assistant messages are replayed as they are. A persisted `system`
@@ -495,6 +502,7 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
         model,
         sessionId,
         history: stored,
+        thresholdTokens: budget.compactAtTokens,
         force: true,
         signal,
       });

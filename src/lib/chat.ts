@@ -230,6 +230,8 @@ export interface ChatConfig {
   maxSteps: number;
   /** Null leaves the provider's own output limit in place. */
   maxOutputTokens: number | null;
+  /** Estimated history size, in tokens, past which older messages are summarized. */
+  compactAtTokens: number;
 }
 
 export async function getChatConfig(): Promise<ChatConfig> {

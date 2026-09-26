@@ -12,13 +12,6 @@ import { addMessage } from "./service.ts";
  * ignoring `system` rows in general.
  */
 
-/**
- * Estimated history size that triggers a compaction. Well under the smallest
- * window a chat model here offers, since the estimate is rough and the system
- * prompt, tool definitions and the reply come on top of it.
- */
-export const COMPACT_AT_TOKENS = 150_000;
-
 /** Recent messages kept verbatim, so the model still has the live exchange. */
 const KEEP_RECENT_MESSAGES = 6;
 
@@ -126,8 +119,8 @@ export interface CompactParams {
   history: ChatMessage[];
   /** Compact even when the history is under the threshold. */
   force?: boolean;
-  /** Overrides {@link COMPACT_AT_TOKENS}. */
-  thresholdTokens?: number;
+  /** Estimated history size that triggers a compaction; `ChatConfig.compactAtTokens`. */
+  thresholdTokens: number;
   signal?: AbortSignal;
 }
 
@@ -145,7 +138,7 @@ export async function compactSession(params: CompactParams): Promise<ChatMessage
   const { db, model, sessionId, history, force, signal } = params;
   const { summary, live } = selectReplay(history);
   const estimatedTokens = estimateTokens(live) + (summary ? estimateTokens([summary]) : 0);
-  if (!force && estimatedTokens < (params.thresholdTokens ?? COMPACT_AT_TOKENS)) return null;
+  if (!force && estimatedTokens < params.thresholdTokens) return null;
 
   // Too short to compact: everything is inside the recent messages kept verbatim.
   const toSummarize = live.slice(0, -KEEP_RECENT_MESSAGES);

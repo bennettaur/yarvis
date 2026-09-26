@@ -100,6 +100,23 @@ export default function ChatBudgetSection() {
             )}
           </div>
 
+          <label className="block">
+            <span className="block text-sm text-zinc-100">Summarize the chat past (tokens)</span>
+            <span className="mb-1 block text-xs text-zinc-500">
+              Once a chat's history is estimated to pass this, its older messages are replaced by a
+              summary. Keep it under the smallest context window of any model you chat with.
+            </span>
+            <input
+              type="number"
+              min={10000}
+              max={2000000}
+              step={10000}
+              value={config.compactAtTokens}
+              onChange={(e) => setConfig({ ...config, compactAtTokens: Number(e.target.value) })}
+              className="w-32 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-zinc-500"
+            />
+          </label>
+
           <div className="flex items-center gap-3">
             <button
               type="button"
