@@ -1,5 +1,7 @@
 import { syncBuiltins } from "./agentTools/registry.ts";
 import { createApp } from "./app.ts";
+import { browserBridge } from "./browser/bridge.ts";
+import { writeDiscovery } from "./browser/discovery.ts";
 import { loadConfig, loadInstanceConfig } from "./config.ts";
 import { getDb } from "./db/client.ts";
 import { runMigrations } from "./db/migrate.ts";
@@ -60,6 +62,15 @@ if (config.tokenGenerated) {
       `[sidecar] generated dev token fingerprint: ${fingerprint} — set YARVIS_LOG_DEV_TOKEN=1 to print the full token`,
     );
   }
+}
+
+// The extension's native host finds this sidecar through a file, since the port
+// is new each launch. Machine-singular like the Telegram bot: with several
+// instances running only the one that owns background work is the browser's.
+if (instance.backgroundWorkers) {
+  writeDiscovery(config.port, browserBridge.token).catch((e) =>
+    console.error("[browser] could not write the discovery file:", e),
+  );
 }
 
 if (config.databaseUrl) {
