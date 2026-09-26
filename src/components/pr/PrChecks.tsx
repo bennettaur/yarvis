@@ -4,6 +4,7 @@ import type { CheckItem, PrRef } from "../../lib/pr/types";
 import { openExternal } from "../../lib/url";
 import CopyButton from "../CopyButton";
 import CopyLinkButton from "../CopyLinkButton";
+import LoadingIndicator from "../LoadingIndicator";
 
 function checkColor(check: CheckItem): string {
   if (check.status !== "COMPLETED") return "text-amber-400";
@@ -45,7 +46,7 @@ export default function PrChecks({ prRef }: { prRef: PrRef }) {
   const { data, error, loading } = usePrDetail(prRef);
 
   if (error) return <p className="text-sm text-red-400">{error}</p>;
-  if (loading || !data) return <p className="text-sm text-zinc-500">Loading…</p>;
+  if (loading || !data) return <LoadingIndicator />;
 
   const checks = data.checks;
   if (checks.length === 0) {

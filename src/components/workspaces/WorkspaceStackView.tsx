@@ -8,6 +8,7 @@ import {
   type WorkspaceWorktree,
   workspaceRepoStack,
 } from "../../lib/workspaces";
+import LoadingIndicator from "../LoadingIndicator";
 import PrStackList from "../pr/PrStackList";
 
 /**
@@ -123,7 +124,7 @@ export default function WorkspaceStackView({
     return error ? (
       <p className="text-xs text-red-400">{error}</p>
     ) : (
-      <p className="text-xs text-zinc-500">Loading…</p>
+      <LoadingIndicator className="text-xs text-zinc-500" />
     );
   }
   if (!stack || stack.entries.length === 0) {

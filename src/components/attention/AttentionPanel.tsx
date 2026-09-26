@@ -6,6 +6,7 @@ import type { AttentionGroup } from "../../lib/attentionGroups";
 import { markAttention, markAttentionScope, useAttentionGroups } from "../../lib/attentionStore";
 import { formatRelativeTime } from "../../lib/time";
 import type { WipItem, WipSource } from "../../lib/wip";
+import LoadingIndicator from "../LoadingIndicator";
 import { sessionTabTitle } from "../shell/terminalTabs/sessionIds";
 
 /**
@@ -246,7 +247,7 @@ export default function AttentionPanel({
 
           <SectionHeader label="In progress" count={wip.length} />
           {wipLoading && wip.length === 0 ? (
-            <p className="px-4 py-4 text-xs text-zinc-500">Loading…</p>
+            <LoadingIndicator className="px-4 py-4 text-xs text-zinc-500" />
           ) : wip.length === 0 ? (
             <p className="px-4 py-4 text-xs text-zinc-500">No work in progress.</p>
           ) : (

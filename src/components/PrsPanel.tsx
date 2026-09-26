@@ -370,6 +370,8 @@ export default function PrsPanel({
         pr={selected}
         onBack={() => setSelected(null)}
         recordView={selected !== restoredPlace.selected}
+        starred={isStarred(selected)}
+        onToggleStar={onToggleStar}
       />
     );
   }

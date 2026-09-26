@@ -31,6 +31,9 @@ function toThreadMessages(msgs: ChatMessage[]): ThreadMessage[] {
   }));
 }
 
+/** localStorage key under which the Chat tab's open session id is kept. */
+export const CHAT_TAB_SESSION_KEY = "yarvis.chat.sessionId";
+
 export interface UseChatThreadOptions {
   /** localStorage key under which this thread's session id is persisted. */
   sessionStorageKey?: string;

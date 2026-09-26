@@ -150,6 +150,8 @@ export default function PrDetailView({
   pr,
   onBack,
   recordView = true,
+  starred,
+  onToggleStar,
 }: {
   pr: PrSummary;
   onBack: () => void;
@@ -160,6 +162,8 @@ export default function PrDetailView({
    * log with the same PR.
    */
   recordView?: boolean;
+  starred: boolean;
+  onToggleStar: (pr: PrSummary, starred: boolean) => Promise<void>;
 }) {
   const prRef = pr.ref;
   const { data: detail, error, loading } = usePrDetail(prRef);
@@ -202,7 +206,14 @@ export default function PrDetailView({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <PrFloatingHeader pr={pr} detail={detail} loading={loading} onBack={onBack} />
+      <PrFloatingHeader
+        pr={pr}
+        detail={detail}
+        loading={loading}
+        onBack={onBack}
+        starred={starred}
+        onToggleStar={onToggleStar}
+      />
 
       {/* The vertical padding lives on the inner wrapper, not this scroll
           container: a sticky file header uses `top-0` against this container, and

@@ -8,6 +8,7 @@ import {
   workspaceRepoFile,
 } from "../../lib/workspaces";
 import CodeEditor from "../editor/CodeEditor";
+import LoadingIndicator from "../LoadingIndicator";
 
 /**
  * A workspace editor tab's body: one file from a repo's worktree, opened for
@@ -222,7 +223,7 @@ export default function WorkspaceFileEditor({
         {loadError ? (
           <p className="p-3 text-xs text-red-400">{loadError}</p>
         ) : file === null ? (
-          <p className="p-3 text-xs text-zinc-500">Loading…</p>
+          <LoadingIndicator className="p-3 text-xs text-zinc-500" />
         ) : file.unreadable ? (
           <p className="p-3 text-xs text-zinc-500">
             {UNREADABLE_REASON[file.unreadable]} ({file.size.toLocaleString()} bytes)

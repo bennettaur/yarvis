@@ -21,6 +21,7 @@ import {
   type WorkspaceStatus,
   type WorkspaceSummary,
 } from "../lib/workspaces";
+import LoadingIndicator from "./LoadingIndicator";
 import CopyPathButton from "./pr/CopyPathButton";
 import RefreshingIndicator from "./RefreshingIndicator";
 import SplitPane, { usePersistedRatio } from "./SplitPane";
@@ -1067,7 +1068,7 @@ function WorkspaceDetailView({
   }, [agentActive, startAgent]);
 
   if (error) return <p className="p-6 text-sm text-red-400">{error}</p>;
-  if (!detail) return <p className="p-6 text-sm text-zinc-500">Loading…</p>;
+  if (!detail) return <LoadingIndicator className="p-6 text-sm text-zinc-500" />;
 
   const provisioned = detail.status === "active";
   const actions = provisionActions(detail);
@@ -1348,7 +1349,7 @@ function WorkspaceDetailView({
                   // "Overwrite with mine" would then write those contents to
                   // this file, with a hash fresh enough to pass the guard.
                   renderFileEditor={({ repoId, path, worktree }) => (
-                    <Suspense fallback={<p className="p-3 text-xs text-zinc-500">Loading…</p>}>
+                    <Suspense fallback={<LoadingIndicator className="p-3 text-xs text-zinc-500" />}>
                       <WorkspaceFileEditor
                         key={fileKey(repoId, path, worktree)}
                         workspaceId={detail.id}

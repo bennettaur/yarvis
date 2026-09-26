@@ -19,6 +19,7 @@ import {
 import CopyButton from "./CopyButton";
 import CopyLinkButton from "./CopyLinkButton";
 import FileTreeRows, { treeRowPaddingLeft } from "./files/FileTreeRows";
+import LoadingIndicator from "./LoadingIndicator";
 import CopyPathButton from "./pr/CopyPathButton";
 import type { OpenFileDiff } from "./shell/terminalTabs/TerminalTabs";
 import WorkspaceReviewComments from "./workspaces/WorkspaceReviewComments";
@@ -384,7 +385,7 @@ function FilesView({
   const tree = useMemo(() => (data ? buildFileTree(data, (path) => path) : []), [data]);
 
   if (error) return <p className="text-xs text-red-400">{error}</p>;
-  if (!data) return <p className="text-xs text-zinc-500">Loading…</p>;
+  if (!data) return <LoadingIndicator className="text-xs text-zinc-500" />;
   if (data.length === 0) return <p className="text-xs text-zinc-500">No files.</p>;
   return (
     <>
@@ -449,7 +450,7 @@ function ChangesView({
   const tree = useMemo(() => (data ? buildFileTree(data, (file) => file.path) : []), [data]);
 
   if (error) return <p className="text-xs text-red-400">{error}</p>;
-  if (!data) return <p className="text-xs text-zinc-500">Loading…</p>;
+  if (!data) return <LoadingIndicator className="text-xs text-zinc-500" />;
   if (data.length === 0) return <p className="text-xs text-zinc-500">No changes on this branch.</p>;
   return (
     <>
@@ -706,7 +707,7 @@ function WorktreeChecksView({
     <div className="space-y-2">
       {error && <p className="text-xs text-red-400">{error}</p>}
       {pr === undefined ? (
-        !error && <p className="text-xs text-zinc-500">Loading…</p>
+        !error && <LoadingIndicator className="text-xs text-zinc-500" />
       ) : pr === null ? (
         <p className="text-xs text-zinc-500">No provider is configured that can look up this PR.</p>
       ) : (

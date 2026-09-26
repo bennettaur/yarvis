@@ -1,5 +1,5 @@
 import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
-import { createElement } from "react";
+import { createElement, useState } from "react";
 import * as realApi from "../lib/api";
 import * as realChat from "../lib/chat";
 import { OmniChatOverlayProvider } from "../lib/omniChatOverlay";
@@ -50,6 +50,7 @@ mock.module("../lib/api", () => ({
         createdAt: "2026-01-01T00:00:00Z",
         updatedAt: "2026-01-01T00:00:00Z",
       };
+      sessions = [session, ...sessions];
       return json(session);
     }
     if (path === "/api/chat/sessions") return json(sessions);
@@ -75,6 +76,11 @@ mock.module("../lib/chat", () => ({
     for (const event of scripted) {
       // A turn that never finishes on its own, so a test can stop it. The real
       // stream rejects on abort; this one has to as well.
+      // A pause mid-turn, long enough for a test to act while it streams.
+      if ((event as { type?: string }).type === "wait") {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        continue;
+      }
       if ((event as { type?: string }).type === "hang") {
         await new Promise((_resolve, reject) => {
           init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
@@ -98,6 +104,14 @@ function ThreadHarness() {
 }
 
 const settle = (ms = 80) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** A host that can take the panel off screen and back, as the tab switch does. */
+let setHostActive: (active: boolean) => void = () => {};
+function TogglingHost() {
+  const [active, setActive] = useState(true);
+  setHostActive = setActive;
+  return createElement(ChatPanel, { active });
+}
 
 /** Types a message into the composer and presses Send. */
 async function say(host: HTMLElement, text: string) {
@@ -261,6 +275,112 @@ describe("ChatPanel", () => {
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }));
     await settle();
     expect(mounted.host.textContent).toContain("search_pages");
+  });
+
+  // The Chat tab stays mounted behind other tabs so its turn keeps running;
+  // while there it must not answer for a call the user cannot see.
+  it("stops answering the keyboard while the host keeps it off screen", async () => {
+    scripted = [
+      {
+        type: "tool_approval_request",
+        id: "call-1",
+        toolId: "mcp:server-uuid:search_pages",
+        name: "search_pages",
+        server: "Notion",
+        args: { query: "roadmap" },
+      },
+      { type: "hang" },
+    ];
+    const mounted = await mountForInteraction(createElement(TogglingHost));
+    unmount = mounted.unmount;
+
+    await say(mounted.host, "pull the notion doc");
+    await settle(500);
+    expect(mounted.host.textContent).toContain("search_pages");
+    setHostActive(false);
+    await settle();
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }));
+    await settle();
+    expect(mounted.host.textContent).toContain("search_pages");
+  });
+
+  it("keeps the turn running while the host keeps it off screen", async () => {
+    scripted = [
+      { type: "delta", text: "before " },
+      { type: "wait" },
+      { type: "delta", text: "and after" },
+      { type: "done", finishReason: "stop" },
+    ];
+    const mounted = await mountForInteraction(createElement(TogglingHost));
+    unmount = mounted.unmount;
+
+    await say(mounted.host, "pull the notion doc");
+    setHostActive(false);
+    await settle(300);
+    setHostActive(true);
+    await settle();
+
+    expect(mounted.host.textContent).toContain("before and after");
+  });
+
+  it("picks up sessions created elsewhere when it comes back into view", async () => {
+    const mounted = await mountForInteraction(createElement(TogglingHost));
+    unmount = mounted.unmount;
+
+    setHostActive(false);
+    await settle(20);
+    sessions = [
+      {
+        id: "s2",
+        title: "From Omni Chat",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+    setHostActive(true);
+    await settle();
+
+    expect(textOf(mounted.host.innerHTML)).toContain("From Omni Chat");
+  });
+
+  it("reopens the session it last had open", async () => {
+    sessions = [
+      {
+        id: "s1",
+        title: "Yesterday",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+    localStorage.setItem("test.chat.sessionId", "s1");
+    const mounted = await mountForInteraction(
+      createElement(ChatPanel, { sessionStorageKey: "test.chat.sessionId" }),
+    );
+    unmount = mounted.unmount;
+    await settle();
+
+    expect(mounted.host.querySelector("select")?.value).toBe("s1");
+  });
+
+  it("remembers the session a thread opens for the next mount", async () => {
+    const first = await mountForInteraction(
+      createElement(ChatPanel, { sessionStorageKey: "test.chat.sessionId" }),
+    );
+    unmount = first.unmount;
+    Array.from(first.host.querySelectorAll("button"))
+      .find((b) => b.textContent === "New chat")
+      ?.click();
+    await settle(50);
+    first.unmount();
+
+    const second = await mountForInteraction(
+      createElement(ChatPanel, { sessionStorageKey: "test.chat.sessionId" }),
+    );
+    unmount = second.unmount;
+    await settle();
+
+    expect(second.host.querySelector("select")?.value).toBe("new-session-1");
   });
 });
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type CcPlan,
   type CcProject,
@@ -10,6 +10,7 @@ import {
   listProjects,
   listSessions,
 } from "../lib/cc";
+import LoadingIndicator from "./LoadingIndicator";
 
 type View = "sessions" | "plans";
 
@@ -22,6 +23,19 @@ export default function SessionsPanel() {
   const [plans, setPlans] = useState<CcPlan[]>([]);
   const [planContent, setPlanContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [plansLoading, setPlansLoading] = useState(true);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [transcriptLoading, setTranscriptLoading] = useState(false);
+  const [planLoading, setPlanLoading] = useState(false);
+  // Counts project selections so a slow answer for a project the user has
+  // already left can't overwrite the current one or clear its spinner.
+  const latestProject = useRef(0);
+
+  const fail = useCallback(
+    (e: unknown) => setError(e instanceof Error ? e.message : String(e)),
+    [],
+  );
 
   useEffect(() => {
     void (async () => {
@@ -32,29 +46,66 @@ export default function SessionsPanel() {
           setProjectDir(p[0].dir);
           setSessions(await listSessions(p[0].dir));
         }
-        setPlans(await listPlans());
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        fail(e);
+      } finally {
+        setInitialLoading(false);
       }
     })();
-  }, []);
+    void listPlans()
+      .then(setPlans)
+      .catch(fail)
+      .finally(() => setPlansLoading(false));
+  }, [fail]);
 
-  const selectProject = useCallback(async (dir: string) => {
-    setProjectDir(dir);
-    setTranscript(null);
-    setSessions(await listSessions(dir));
-  }, []);
+  const selectProject = useCallback(
+    async (dir: string) => {
+      const seq = ++latestProject.current;
+      setProjectDir(dir);
+      setTranscript(null);
+      setTranscriptLoading(false);
+      setSessionsLoading(true);
+      try {
+        const next = await listSessions(dir);
+        if (seq === latestProject.current) setSessions(next);
+      } catch (e) {
+        if (seq === latestProject.current) fail(e);
+      } finally {
+        if (seq === latestProject.current) setSessionsLoading(false);
+      }
+    },
+    [fail],
+  );
 
   const openTranscript = useCallback(
     async (id: string) => {
-      setTranscript(await getTranscript(projectDir, id));
+      const seq = latestProject.current;
+      setTranscriptLoading(true);
+      try {
+        const next = await getTranscript(projectDir, id);
+        if (seq === latestProject.current) setTranscript(next);
+      } catch (e) {
+        if (seq === latestProject.current) fail(e);
+      } finally {
+        if (seq === latestProject.current) setTranscriptLoading(false);
+      }
     },
-    [projectDir],
+    [projectDir, fail],
   );
 
-  const openPlan = useCallback(async (name: string) => {
-    setPlanContent((await getPlan(name)).content);
-  }, []);
+  const openPlan = useCallback(
+    async (name: string) => {
+      setPlanLoading(true);
+      try {
+        setPlanContent((await getPlan(name)).content);
+      } catch (e) {
+        fail(e);
+      } finally {
+        setPlanLoading(false);
+      }
+    },
+    [fail],
+  );
 
   const tab = (v: View, label: string) => (
     <button
@@ -88,7 +139,11 @@ export default function SessionsPanel() {
             ))}
           </select>
 
-          {transcript ? (
+          {initialLoading || sessionsLoading || transcriptLoading ? (
+            <LoadingIndicator
+              label={transcriptLoading ? "Loading transcript…" : "Loading sessions…"}
+            />
+          ) : transcript ? (
             <div className="space-y-3">
               <button
                 onClick={() => setTranscript(null)}
@@ -133,7 +188,9 @@ export default function SessionsPanel() {
 
       {view === "plans" && (
         <div className="space-y-3">
-          {planContent ? (
+          {plansLoading || planLoading ? (
+            <LoadingIndicator label={planLoading ? "Loading plan…" : "Loading plans…"} />
+          ) : planContent ? (
             <div className="space-y-3">
               <button
                 onClick={() => setPlanContent(null)}

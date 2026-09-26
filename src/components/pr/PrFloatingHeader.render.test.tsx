@@ -1,7 +1,7 @@
 import { describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import type { PrDetail, PrSummary } from "../../lib/pr/types";
-import { renderToHtml, textOf } from "../../test/render";
+import { mountForInteraction, renderToHtml, textOf } from "../../test/render";
 import PrFloatingHeader from "./PrFloatingHeader";
 
 // The header renders PrWorkspaceAction, which calls sidecarFetch to look up a
@@ -100,8 +100,16 @@ const detail = (overrides: Partial<PrDetail> = {}): PrDetail => ({
   ...overrides,
 });
 
-const render = (d: PrDetail | null) =>
-  renderToHtml(createElement(PrFloatingHeader, { pr: summary(), detail: d, onBack: () => {} }));
+const render = (d: PrDetail | null, starred = false) =>
+  renderToHtml(
+    createElement(PrFloatingHeader, {
+      pr: summary(),
+      detail: d,
+      onBack: () => {},
+      starred,
+      onToggleStar: async () => {},
+    }),
+  );
 
 describe("PrFloatingHeader merge controls", () => {
   it("shows Merge (not Enable auto-merge) once the PR is ready to merge", async () => {
@@ -147,6 +155,8 @@ describe("PrFloatingHeader loading state", () => {
         detail: null,
         loading: true,
         onBack: () => {},
+        starred: false,
+        onToggleStar: async () => {},
       }),
     );
 
@@ -158,5 +168,72 @@ describe("PrFloatingHeader loading state", () => {
     const html = await render(detail());
 
     expect(textOf(html)).not.toContain("Loading…");
+  });
+});
+
+describe("PrFloatingHeader star", () => {
+  it("offers to star a PR that isn't starred", async () => {
+    const html = await render(detail());
+
+    expect(html).toContain('title="Star"');
+    expect(html).toContain('aria-pressed="false"');
+  });
+
+  it("offers to unstar a starred PR", async () => {
+    const html = await render(detail(), true);
+
+    expect(html).toContain('title="Unstar"');
+    expect(html).toContain('aria-pressed="true"');
+  });
+});
+
+describe("PrFloatingHeader star toggle", () => {
+  const starButton = (host: HTMLElement) =>
+    host.querySelector("button[aria-pressed]") as HTMLButtonElement;
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+  it("stars with the detail's title when the summary has none", async () => {
+    // Summaries from the workspace poller cache carry no title.
+    const calls: [PrSummary, boolean][] = [];
+    const { host, unmount } = await mountForInteraction(
+      createElement(PrFloatingHeader, {
+        pr: summary({ title: "" }),
+        detail: detail({ title: "Real title" }),
+        onBack: () => {},
+        starred: false,
+        onToggleStar: async (pr, starred) => {
+          calls.push([pr, starred]);
+        },
+      }),
+    );
+
+    starButton(host).click();
+    await settle();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.[0].title).toBe("Real title");
+    expect(calls[0]?.[1]).toBe(false);
+    unmount();
+  });
+
+  it("shows the error and re-enables the star when the toggle fails", async () => {
+    const { host, unmount } = await mountForInteraction(
+      createElement(PrFloatingHeader, {
+        pr: summary(),
+        detail: detail(),
+        onBack: () => {},
+        starred: true,
+        onToggleStar: async () => {
+          throw new Error("star failed");
+        },
+      }),
+    );
+
+    starButton(host).click();
+    await settle();
+
+    expect(host.textContent).toContain("star failed");
+    expect(starButton(host).disabled).toBe(false);
+    unmount();
   });
 });

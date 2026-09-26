@@ -1,7 +1,8 @@
 import { describe, expect, it, mock, setSystemTime } from "bun:test";
 import { createElement } from "react";
+import { clearResourceCache } from "../lib/resourceCache";
 import type { Task } from "../lib/tasks";
-import { renderToHtml } from "../test/render";
+import { firstPaintOf, renderToHtml } from "../test/render";
 import TasksPanel from "./TasksPanel";
 
 setSystemTime(new Date("2026-06-17T12:00:00"));
@@ -93,6 +94,17 @@ mock.module("../lib/api", () => ({
 }));
 
 describe("TasksPanel", () => {
+  it("shows a loading indicator, not empty groups, before the first load lands", async () => {
+    clearResourceCache();
+    const cold = firstPaintOf(createElement(TasksPanel));
+    expect(cold.text).toContain("Loading tasks…");
+    expect(cold.text).not.toContain("Nothing here yet.");
+    cold.unmount();
+
+    const html = await renderToHtml(createElement(TasksPanel));
+    expect(html).not.toContain("Loading tasks…");
+  });
+
   it("renders each open task with a delete affordance", async () => {
     const html = await renderToHtml(createElement(TasksPanel));
 

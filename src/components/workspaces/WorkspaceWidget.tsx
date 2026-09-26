@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { type CheckRollup, getWorkspace, type WorkspaceDetail } from "../../lib/workspaces";
+import LoadingIndicator from "../LoadingIndicator";
 
 const ROLLUP_LABEL: Record<CheckRollup, string> = {
   success: "✓ checks passing",
@@ -30,7 +31,7 @@ export default function WorkspaceWidget({ workspaceId }: { workspaceId: string }
   }, [workspaceId]);
 
   if (error) return <p className="p-3 text-sm text-red-400">{error}</p>;
-  if (!detail) return <p className="p-3 text-sm text-zinc-500">Loading…</p>;
+  if (!detail) return <LoadingIndicator className="p-3 text-sm text-zinc-500" />;
 
   return (
     <div className="space-y-3 p-3 text-sm">

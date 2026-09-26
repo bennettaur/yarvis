@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useReviewComments } from "../../lib/workspaceReview";
 import { workspaceRepoFileDiff } from "../../lib/workspaces";
+import LoadingIndicator from "../LoadingIndicator";
 import ReviewDiffBody from "./ReviewDiffBody";
 
 /**
@@ -81,7 +82,7 @@ export default function WorkspaceFileDiff({
         {error ? (
           <p className="p-3 text-xs text-red-400">{error}</p>
         ) : patch === null ? (
-          <p className="p-3 text-xs text-zinc-500">Loading diff…</p>
+          <LoadingIndicator className="p-3 text-xs text-zinc-500" label="Loading diff…" />
         ) : (
           <ReviewDiffBody
             patch={patch}

@@ -107,6 +107,16 @@ mock.module("../lib/api", () => ({
       return json({ ok: true });
     }
     if (path === "/api/github/viewer") return json({ login: "octo" });
+    if (path === "/api/github/stars")
+      return json([
+        {
+          owner: MY_PR.owner,
+          repo: MY_PR.repo,
+          number: MY_PR.number,
+          title: MY_PR.title,
+          url: MY_PR.url,
+        },
+      ]);
     if (path.startsWith("/api/github/search")) return json([MY_PR]);
     if (path === "/api/github/config")
       return json({ reviewQuery: "is:open", reviewingLookbackDays: 7 });
@@ -208,6 +218,15 @@ describe("PrsPanel place", () => {
 
     expect(html).toContain(MY_PR.title);
     expect(html).not.toContain(LIST_NAV);
+  });
+
+  it("shows whether the open PR is starred", async () => {
+    storePlace({ provider: "github", tab: "mine", selected: summaryOf(MY_PR) });
+
+    const html = await renderToHtml(<PrsPanel persistPlace />);
+
+    expect(html).not.toContain(LIST_NAV);
+    expect(html).toContain('title="Unstar"');
   });
 
   it("doesn't count reopening a remembered PR as viewing it", async () => {
