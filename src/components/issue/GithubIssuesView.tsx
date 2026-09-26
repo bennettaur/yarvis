@@ -30,6 +30,7 @@ import {
 } from "../../lib/resourceCache";
 import { formatRelativeTime } from "../../lib/time";
 import { openExternal } from "../../lib/url";
+import DeleteFilterButton from "../DeleteFilterButton";
 import RefreshingIndicator from "../RefreshingIndicator";
 import GithubCreateIssueModal from "./GithubCreateIssueModal";
 import IssueDetailView from "./IssueDetailView";
@@ -467,15 +468,12 @@ export default function GithubIssuesView({
                     <button onClick={() => void runFilter(f.query)} className="hover:text-zinc-100">
                       {f.name}
                     </button>
-                    <button
-                      onClick={async () => {
+                    <DeleteFilterButton
+                      onDelete={async () => {
                         await deleteIssueFilter(f.id);
                         await filtersRes.refresh();
                       }}
-                      className="text-zinc-600 hover:text-red-400"
-                    >
-                      ✕
-                    </button>
+                    />
                   </span>
                 ))}
               </div>
@@ -483,12 +481,14 @@ export default function GithubIssuesView({
                 <input
                   value={newFilter.name}
                   placeholder="Filter name"
+                  aria-label="Name for the new saved filter"
                   onChange={(e) => setNewFilter((p) => ({ ...p, name: e.target.value }))}
                   className="w-32 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
                 />
                 <input
                   value={newFilter.query}
                   placeholder="is:open is:issue label:bug ..."
+                  aria-label="GitHub search query for the new saved filter"
                   onChange={(e) => setNewFilter((p) => ({ ...p, query: e.target.value }))}
                   className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
                 />

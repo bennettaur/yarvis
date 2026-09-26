@@ -108,6 +108,7 @@ function CommentPrompt({
         ref={textareaRef}
         value={text}
         placeholder={placeholder}
+        aria-label={`${label} comment`}
         onChange={(e) => setText(e.target.value)}
         rows={3}
         className="w-72 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500"
@@ -196,6 +197,9 @@ const MERGE_METHOD_LABEL: Record<MergeMethod, string> = {
   REBASE: "Rebase and merge",
 };
 
+/** Why a header button is greyed out: the only reason is another action in flight. */
+const BUSY_TITLE = "Another action on this PR is still in progress";
+
 /** Which merge controls the header should offer for the current PR. */
 export interface MergeControls {
   /** Merge now (PR is mergeable and checks are green). */
@@ -233,6 +237,7 @@ export function mergeControlsFor(detail: PrDetail | null, status: PrUiStatus): M
  */
 function MergeMenu({
   label,
+  title,
   className,
   methods,
   pending,
@@ -242,6 +247,8 @@ function MergeMenu({
   onPick,
 }: {
   label: string;
+  /** Says what the button does; replaced by the busy reason while disabled. */
+  title: string;
   className: string;
   methods: MergeMethod[];
   pending: boolean;
@@ -256,6 +263,7 @@ function MergeMenu({
         type="button"
         onClick={onToggle}
         disabled={disabled}
+        title={disabled ? BUSY_TITLE : title}
         className={`rounded-md px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors disabled:opacity-50 ${className}`}
       >
         {pending ? "…" : label}
@@ -418,6 +426,7 @@ export default function PrFloatingHeader({
                 <button
                   onClick={onClick}
                   disabled={busy}
+                  title={busy ? BUSY_TITLE : undefined}
                   className={`rounded-md px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors disabled:opacity-50 ${cfg.className}`}
                 >
                   {isPending ? "…" : cfg.label}
@@ -438,13 +447,17 @@ export default function PrFloatingHeader({
             );
           })}
           {detail?.autoMergeEnabled && (
-            <span className="rounded bg-sky-900/60 px-2 py-0.5 text-xs font-medium text-sky-200">
+            <span
+              className="rounded bg-sky-900/60 px-2 py-0.5 text-xs font-medium text-sky-200"
+              title="This PR will merge on its own once its required checks and reviews pass"
+            >
               Auto-merge on
             </span>
           )}
           {mergeControls.merge && detail && (
             <MergeMenu
               label="Merge"
+              title="Merge this PR now, using the method you pick"
               className="bg-emerald-600 hover:bg-emerald-500"
               methods={detail.mergeMethods}
               pending={mergePending}
@@ -457,6 +470,7 @@ export default function PrFloatingHeader({
           {mergeControls.enableAuto && detail && (
             <MergeMenu
               label="Enable auto-merge"
+              title="Merge this PR automatically once its required checks and reviews pass, using the method you pick"
               className="bg-sky-600 hover:bg-sky-500"
               methods={detail.mergeMethods}
               pending={mergePending}
@@ -471,6 +485,9 @@ export default function PrFloatingHeader({
               type="button"
               onClick={() => void runDisableAutoMerge()}
               disabled={busy}
+              title={
+                busy ? BUSY_TITLE : "Turn off auto-merge so this PR no longer merges on its own"
+              }
               className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800 disabled:opacity-50"
             >
               {mergePending ? "…" : "Cancel auto-merge"}
