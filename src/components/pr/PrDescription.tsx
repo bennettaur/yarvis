@@ -50,7 +50,7 @@ export default function PrDescription({ prRef }: { prRef: PrRef }) {
   const { data, error, loading } = usePrDetail(prRef);
 
   if (error) return <p className="text-sm text-red-400">{error}</p>;
-  if (loading || !data) return <LoadingIndicator className="text-sm text-zinc-500" />;
+  if (loading || !data) return <LoadingIndicator />;
 
   const general = data.reviewThreads.filter((t) => t.path == null || t.line == null);
 

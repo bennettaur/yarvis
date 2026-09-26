@@ -60,7 +60,7 @@ export default function WipSection() {
   if (error && !config) {
     return <p className="text-sm text-red-400">Couldn't load config: {error}</p>;
   }
-  if (!config) return <LoadingIndicator className="text-sm text-zinc-500" />;
+  if (!config) return <LoadingIndicator />;
 
   const setSource = (key: keyof WipSourcesConfig, value: boolean) => {
     setSavedAt(false);

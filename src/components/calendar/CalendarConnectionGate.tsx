@@ -44,7 +44,7 @@ export default function CalendarConnectionGate({
   }, []);
 
   if (!status) {
-    return <LoadingIndicator className="text-sm text-zinc-500" />;
+    return <LoadingIndicator />;
   }
 
   if (!status.configured) {

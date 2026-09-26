@@ -479,7 +479,7 @@ export default function JiraIssueDetailView({
               )}
             </div>
             {!detail ? (
-              <LoadingIndicator className="text-sm text-zinc-500" />
+              <LoadingIndicator />
             ) : editingDesc ? (
               <div className="space-y-2">
                 <textarea

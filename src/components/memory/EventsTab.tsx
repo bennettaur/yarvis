@@ -126,9 +126,7 @@ export default function EventsTab() {
         </button>
         <RefreshingIndicator active={pageRes.refreshing} />
         <span className="text-xs text-zinc-500">
-          {page.total === 0
-            ? "no events"
-            : `${offset + 1}–${shownTo} of ${page.total}${pageRes.loading ? " · loading…" : ""}`}
+          {page.total === 0 ? "no events" : `${offset + 1}–${shownTo} of ${page.total}`}
         </span>
       </div>
 

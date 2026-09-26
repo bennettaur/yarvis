@@ -579,7 +579,7 @@ export default function IssueDetailView({
               )}
             </div>
             {!detail ? (
-              <LoadingIndicator className="text-sm text-zinc-500" />
+              <LoadingIndicator />
             ) : editingBody ? (
               <div className="space-y-2">
                 <textarea

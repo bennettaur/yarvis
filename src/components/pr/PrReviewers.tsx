@@ -110,6 +110,6 @@ export function ReviewersList({ reviewers }: { reviewers: Reviewer[] }) {
 export default function PrReviewers({ prRef }: { prRef: PrRef }) {
   const { data, error, loading } = usePrDetail(prRef);
   if (error) return <p className="text-sm text-red-400">{error}</p>;
-  if (loading || !data) return <LoadingIndicator className="text-sm text-zinc-500" />;
+  if (loading || !data) return <LoadingIndicator />;
   return <ReviewersList reviewers={data.reviewers} />;
 }

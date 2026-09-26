@@ -61,8 +61,7 @@ export default function PrFileList({
   const tree = useMemo(() => (data ? buildFileTree(data, (f) => f.filename) : []), [data]);
 
   if (error) return <p className="text-sm text-red-400">{error}</p>;
-  if (loading || !data)
-    return <LoadingIndicator className="text-sm text-zinc-500" label="Loading files…" />;
+  if (loading || !data) return <LoadingIndicator label="Loading files…" />;
   if (data.length === 0) return <p className="text-sm text-zinc-600">No file changes.</p>;
 
   const onClick = (path: string) => {

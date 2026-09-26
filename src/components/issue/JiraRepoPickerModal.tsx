@@ -123,7 +123,7 @@ export default function JiraRepoPickerModal({
           </p>
           {error && <p className="mb-3 text-xs text-red-400">{error}</p>}
           {loading ? (
-            <LoadingIndicator className="text-sm text-zinc-500" label="Loading repos…" />
+            <LoadingIndicator label="Loading repos…" />
           ) : repos.length === 0 ? (
             <p className="text-sm text-zinc-600">
               No repos registered. Add one in Settings → Repositories, or start a scratch workspace.
