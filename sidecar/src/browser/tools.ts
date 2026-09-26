@@ -66,6 +66,10 @@ function withoutQuery(url: string): string {
   return cut === -1 ? url : url.slice(0, cut);
 }
 
+function withCleanUrl<T extends { url: string }>(state: T): T {
+  return { ...state, url: withoutQuery(state.url) };
+}
+
 /** What a tool says when the browser side failed; the model can relay it. */
 function failure(result: CommandResult): { error: string } {
   return { error: result.error ?? "The browser returned an error." };
@@ -103,7 +107,7 @@ export function buildBrowserTools(bridge: BrowserBridge = browserBridge) {
     };
   }
 
-  const tabId = z
+  const tabIdField = z
     .number()
     .int()
     .optional()
@@ -123,7 +127,7 @@ export function buildBrowserTools(bridge: BrowserBridge = browserBridge) {
       description:
         "Read the visible text of a page open in the user's Chrome — the active tab by default, or a tab id from list_browser_tabs. Returns the URL, title, any text the user has selected, and the page text. Long pages such as chat channels only include what is loaded, so scroll_browser_page up to load older messages. Read-only.",
       inputSchema: z.object({
-        tabId,
+        tabId: tabIdField,
         maxChars: z
           .number()
           .int()
@@ -152,7 +156,7 @@ export function buildBrowserTools(bridge: BrowserBridge = browserBridge) {
       description:
         "List what can be clicked or scrolled on a page in the user's Chrome: links, buttons, tabs, sidebar items (each with a numeric ref), and scrollable panels (kind 'scroll'). Use the refs with click_browser_element and scroll_browser_page. Refs are only valid until the page changes, so list again after a click. Controls that send or change things (send, delete, leave, ...) are left out.",
       inputSchema: z.object({
-        tabId,
+        tabId: tabIdField,
         maxElements: z.number().int().min(10).max(300).default(150),
       }),
       execute: ({ tabId, maxElements }) =>
@@ -160,38 +164,56 @@ export function buildBrowserTools(bridge: BrowserBridge = browserBridge) {
           { type: "list_elements", tabId, maxElements },
           elementsSchema,
           "browser-elements",
+          // Query strings carry session tokens, and a ref is all a click needs.
+          (page) => ({
+            ...page,
+            url: withoutQuery(page.url),
+            elements: page.elements.map((el) => ({
+              ...el,
+              href: el.href && withoutQuery(el.href),
+            })),
+          }),
         ),
     }),
     click_browser_element: tool({
       description:
         "Click a link, tab or sidebar item on a page in the user's Chrome, by ref from list_browser_elements — for example to open another Slack channel. It only works inside the site the tab is already on: a link to another site is refused, and so is anything that sends, posts, deletes or changes something. It cannot type. Returns the tab's URL and title afterwards; then read_browser_page to see the result.",
       inputSchema: z.object({
-        tabId,
+        tabId: tabIdField,
         ref: z.number().int().describe("Ref from the latest list_browser_elements"),
       }),
       execute: ({ tabId, ref }) =>
-        askFenced({ type: "click", tabId, ref }, stateSchema, "browser-state"),
+        askFenced({ type: "click", tabId, ref }, stateSchema, "browser-state", withCleanUrl),
     }),
     scroll_browser_page: tool({
       description:
         "Scroll the page, or one scrollable panel (a 'scroll' ref from list_browser_elements), in the user's Chrome. Scrolling a chat channel up loads older messages. Reports whether it is now at the top or bottom.",
       inputSchema: z.object({
-        tabId,
+        tabId: tabIdField,
         ref: z.number().int().optional().describe("A 'scroll' ref; omit to scroll the whole page"),
         direction: z.enum(["up", "down", "top", "bottom"]),
       }),
       execute: ({ tabId, ref, direction }) =>
-        askFenced({ type: "scroll", tabId, ref, direction }, stateSchema, "browser-state"),
+        askFenced(
+          { type: "scroll", tabId, ref, direction },
+          stateSchema,
+          "browser-state",
+          withCleanUrl,
+        ),
     }),
     navigate_browser_tab: tool({
       description:
         "Load an address in a tab of the user's Chrome. It must be on the same site (origin) the tab is already on; any other site is refused. Prefer clicking a link when there is one.",
       inputSchema: z.object({
-        tabId,
-        url: z.string().url().max(2000),
+        tabId: tabIdField,
+        url: z
+          .string()
+          .url()
+          .max(2000)
+          .refine((u) => /^https?:/i.test(u), "must be an http(s) address"),
       }),
       execute: ({ tabId, url }) =>
-        askFenced({ type: "navigate", tabId, url }, stateSchema, "browser-state"),
+        askFenced({ type: "navigate", tabId, url }, stateSchema, "browser-state", withCleanUrl),
     }),
   };
 }

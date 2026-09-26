@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { isBlockedLabel, sameOrigin } from "../../extension/site.js";
+import { isBlockedLabel, isBlockedPath, sameOrigin } from "../../extension/site.js";
 
 describe("sameOrigin", () => {
   it("accepts pages on the same origin, whatever the path", () => {
@@ -24,9 +24,31 @@ describe("sameOrigin", () => {
   });
 });
 
+describe("isBlockedPath", () => {
+  it("blocks same-site addresses that change state", () => {
+    const paths = ["/logout", "/account/sign-out", "/api/channels/leave?id=1", "/x?delete=1"];
+    for (const path of paths) expect(isBlockedPath(path)).toBe(true);
+  });
+
+  it("lets ordinary pages through", () => {
+    for (const path of ["/client/T1/C2", "/archives/general", "/messages/threads"]) {
+      expect(isBlockedPath(path)).toBe(false);
+    }
+  });
+});
+
 describe("isBlockedLabel", () => {
   it("blocks controls that send or change things", () => {
-    for (const label of ["Send", "Delete message", "Leave channel", "Post", "Sign out"]) {
+    for (const label of [
+      "Send",
+      "Delete message",
+      "Leave channel",
+      "Post",
+      "Sign out",
+      "Approve",
+      "Deleted",
+      "Joining",
+    ]) {
       expect(isBlockedLabel(label)).toBe(true);
     }
   });

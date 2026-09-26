@@ -4,7 +4,7 @@
   "version": "0.2.0",
   "description": "Lets Yarvis read, and move around within, the site open in this Chrome tab, on request.",
   "minimum_chrome_version": "116",
-  "permissions": ["alarms", "nativeMessaging", "scripting", "tabs"],
+  "permissions": ["alarms", "declarativeNetRequest", "nativeMessaging", "scripting", "tabs"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "background.js", "type": "module" },
   "action": { "default_title": "Yarvis" }

@@ -23,7 +23,19 @@ export function sameOrigin(a, b) {
  * guarantee, which is why the tools also ask for approval on a spoken turn.
  */
 export const BLOCKED_LABEL_SOURCE =
-  "\\b(delete|remove|leave|archive|deactivate|sign ?out|log ?out|send|post|reply|submit|publish|pay|purchase|buy|confirm|unsubscribe|block|report|mute|kick|invite|save|edit|share|react|upload)\\b";
+  "\\b(?:delete|remove|leave|archive|deactivate|sign ?out|log ?out|send|post|reply|submit|publish|pay|purchase|buy|confirm|unsubscribe|block|report|mute|kick|invite|save|edit|share|react|upload|approve|accept|decline|join|add|create|resolve|discard|trash|dismiss|revoke|disable|authorize|install|snooze|forward|apply|continue)(?:s|es|d|ed|ing)?\\b";
+
+/**
+ * The same screen for a link's address. A same-site GET such as /logout or
+ * /channels/leave changes state without leaving the site, and a link's label is
+ * not where that shows.
+ */
+export const BLOCKED_PATH_SOURCE =
+  "(log-?out|sign-?out|delete|remove|leave|unsubscribe|deactivate|invite)";
+
+export function isBlockedPath(path) {
+  return new RegExp(BLOCKED_PATH_SOURCE, "i").test(path);
+}
 
 export function isBlockedLabel(label) {
   return new RegExp(BLOCKED_LABEL_SOURCE, "i").test(label);

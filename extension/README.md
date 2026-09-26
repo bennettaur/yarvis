@@ -50,15 +50,23 @@ install command (they differ per profile only if loaded from a different path).
 
 The extension enforces this, not the sidecar:
 
-- **Same origin only.** A link, redirect or address on another scheme, host or
-  port is refused. A click that ends up elsewhere is undone with Back, and a
-  tab a click opens is closed. A sibling subdomain counts as another site.
+- **Same origin only.** A link or address on another scheme, host or port is
+  refused before anything happens. While a click or navigation runs, the tab is
+  also blocked from loading any other host (`declarativeNetRequest`), which
+  covers a script that navigates and an open redirect on the site. Sibling
+  subdomains of the host are not blocked that way, so a click that still ends up
+  elsewhere is caught afterwards and undone with Back, but by then that page may
+  have loaded with your session. A tab a click opens is closed. A sibling
+  subdomain counts as another site.
+- **No sign-out-style addresses.** `navigate_browser_tab` and links whose
+  address contains logout, delete, remove, leave and the like are refused.
 - **No typing.** There is no tool for it, so nothing can be composed or sent.
 - **No controls that send or change things.** Buttons and `#` links labelled
   send, post, delete, leave, edit, save and the like are left out of the list and
   refused if named. This is a match on the visible label, so treat it as a
-  safety net, not a guarantee. Real links to pages on the site are not screened
-  by label, so a channel called `post-mortems` still opens.
+  safety net, not a guarantee. Links to pages on the site are screened by
+  address instead (`/logout`, `/delete`, `/leave`, ...), so a channel called
+  `post-mortems` still opens.
 - **Approval on spoken turns.** `click_browser_element` and `navigate_browser_tab`
   sit in `chat/destructiveTools.ts`, so a voice turn asks first.
 

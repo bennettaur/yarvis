@@ -10,7 +10,7 @@
 // dropped one is retried on an alarm, so the worker comes back after Chrome
 // idles it or the host exits.
 
-import { BLOCKED_LABEL_SOURCE, sameOrigin } from "./site.js";
+import { BLOCKED_LABEL_SOURCE, BLOCKED_PATH_SOURCE, isBlockedPath, sameOrigin } from "./site.js";
 
 const HOST = "com.yarvis.browser";
 const RECONNECT_ALARM = "yarvis-reconnect";
@@ -73,6 +73,35 @@ async function run(command) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// While a click or navigation runs, top-level loads in that tab to any other host
+// are blocked before the request is made. The origin checks afterwards can only
+// undo a visit; this stops the visit, including an open redirect on the site
+// itself. Blocking by excluded domain also lets the host's own subdomains
+// through, which the after-the-fact check still catches.
+async function withNavigationLock(tabId, url, run) {
+  const { hostname } = new URL(url);
+  await chrome.declarativeNetRequest.updateSessionRules({
+    removeRuleIds: [tabId],
+    addRules: [
+      {
+        id: tabId,
+        priority: 1,
+        action: { type: "block" },
+        condition: {
+          tabIds: [tabId],
+          resourceTypes: ["main_frame"],
+          excludedRequestDomains: [hostname],
+        },
+      },
+    ],
+  });
+  try {
+    return await run();
+  } finally {
+    await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [tabId] });
+  }
+}
+
 async function listTabs() {
   const tabs = await chrome.tabs.query({});
   return tabs
@@ -112,16 +141,19 @@ async function listElements(tabId, maxElements) {
   return inPage(target, extractElements, [
     Math.min(maxElements ?? 150, MAX_ELEMENTS),
     BLOCKED_LABEL_SOURCE,
+    BLOCKED_PATH_SOURCE,
   ]);
 }
 
 async function scroll(tabId, ref, direction) {
   const target = tabId ?? (await activeTabId());
-  const result = await inPage(target, scrollElement, [ref ?? null, direction]);
-  if (result.error) throw new Error(result.error);
-  // Chat lists load older messages lazily as the top comes into view.
+  const moved = await inPage(target, scrollElement, [ref ?? null, direction]);
+  if (moved.error) throw new Error(moved.error);
+  // Chat lists load older messages lazily as the top comes into view, which
+  // changes how far there is left to scroll, so the position is read after.
   await sleep(SETTLE_MS);
-  return { ...(await pageState(target)), atTop: result.atTop, atBottom: result.atBottom };
+  const position = await inPage(target, scrollElement, [ref ?? null, "stay"]);
+  return { ...(await pageState(target)), atTop: position.atTop, atBottom: position.atBottom };
 }
 
 async function click(tabId, ref) {
@@ -136,23 +168,30 @@ async function click(tabId, ref) {
   };
   chrome.tabs.onCreated.addListener(onCreated);
   let result;
-  try {
-    result = await inPage(target, clickElement, [ref, BLOCKED_LABEL_SOURCE]);
+  let injectionError;
+  await withNavigationLock(target, before.url ?? "", async () => {
+    try {
+      result = await inPage(target, clickElement, [ref, BLOCKED_LABEL_SOURCE, BLOCKED_PATH_SOURCE]);
+    } catch (error) {
+      // A click that starts a navigation can tear the page down before the script
+      // reports back. The checks below still have to run.
+      injectionError = error;
+    }
     await sleep(SETTLE_MS);
-  } finally {
-    chrome.tabs.onCreated.removeListener(onCreated);
-  }
+  });
+  chrome.tabs.onCreated.removeListener(onCreated);
   for (const id of opened) await chrome.tabs.remove(id).catch(() => {});
-  if (result.error) throw new Error(result.error);
-  if (opened.length > 0) throw new Error("That click tried to open another tab, which was closed.");
 
   const after = await chrome.tabs.get(target);
   if (!sameOrigin(before.url ?? "", after.url ?? "")) {
     await chrome.tabs.goBack(target).catch(() => {});
     throw new Error(
-      "That click left the site, so it was undone. Yarvis stays on the current site.",
+      "That click left the site. Yarvis went back, but the other page may already have loaded.",
     );
   }
+  if (opened.length > 0) throw new Error("That click tried to open another tab, which was closed.");
+  if (result?.error) throw new Error(result.error);
+  if (injectionError && before.url === after.url) throw injectionError;
   return { ...(await pageState(target)), navigated: before.url !== after.url };
 }
 
@@ -162,8 +201,15 @@ async function navigate(tabId, url) {
   if (!sameOrigin(before.url ?? "", url)) {
     throw new Error("That address is on a different site. Yarvis stays on the current site.");
   }
-  await chrome.tabs.update(target, { url });
-  await waitForLoad(target);
+  const { pathname, search } = new URL(url);
+  if (isBlockedPath(pathname + search)) {
+    throw new Error("That address changes something on the site, so Yarvis won't open it.");
+  }
+  await withNavigationLock(target, before.url ?? "", async () => {
+    const loaded = waitForLoad(target);
+    await chrome.tabs.update(target, { url });
+    await loaded;
+  });
 
   const after = await chrome.tabs.get(target);
   // A redirect can carry the tab off the site even when the address didn't.
@@ -174,13 +220,30 @@ async function navigate(tabId, url) {
   return pageState(target);
 }
 
-async function waitForLoad(tabId) {
-  const deadline = Date.now() + LOAD_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    const tab = await chrome.tabs.get(tabId);
-    if (tab.status === "complete") return;
-    await sleep(200);
-  }
+// Resolves once the tab has gone through loading to complete. Checking the status
+// alone would return at once, since the old page is still "complete" when the
+// update is issued. A same-page change (a hash) never loads, hence the short cap
+// on waiting for it to start.
+function waitForLoad(tabId) {
+  return new Promise((resolve) => {
+    let started = false;
+    const finish = () => {
+      clearTimeout(startTimer);
+      clearTimeout(giveUp);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      resolve();
+    };
+    const onUpdated = (id, info) => {
+      if (id !== tabId) return;
+      if (info.status === "loading") started = true;
+      if (info.status === "complete" && started) finish();
+    };
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    const startTimer = setTimeout(() => {
+      if (!started) finish();
+    }, 1500);
+    const giveUp = setTimeout(finish, LOAD_TIMEOUT_MS);
+  });
 }
 
 async function pageState(tabId) {
@@ -203,8 +266,9 @@ function extractPage(maxChars) {
 
 // Numbers each thing worth clicking and remembers the element, so a later click
 // names a number instead of a selector the page could have changed under us.
-function extractElements(maxElements, blockedSource) {
+function extractElements(maxElements, blockedSource, blockedPathSource) {
   const blocked = new RegExp(blockedSource, "i");
+  const blockedPath = new RegExp(blockedPathSource, "i");
   const refs = new Map();
   window.__yarvisRefs = refs;
   const selector =
@@ -215,17 +279,14 @@ function extractElements(maxElements, blockedSource) {
     const style = getComputedStyle(el);
     return style.visibility !== "hidden" && style.display !== "none";
   };
-  // A link to a page on this site only moves around; the same-origin check in
-  // clickElement covers it. Anything else (a button, a "#" or javascript: link)
-  // may act, so its label is screened.
+  // A link to a page on this site is screened by its address, not its label: a
+  // channel called "post-mortems" should open, but a link to /logout should not.
+  // Anything else (a button, a "#" or javascript: link) has its label screened.
   const isNavigation = (el) => {
-    if (el.tagName !== "A" || !el.getAttribute("href")) return false;
+    const raw = el.tagName === "A" ? el.getAttribute("href") : null;
+    if (!raw || raw.startsWith("#")) return false;
     try {
-      const url = new URL(el.href);
-      return (
-        url.origin === location.origin &&
-        !(url.hash && url.pathname === location.pathname && !url.search)
-      );
+      return new URL(el.href).origin === location.origin;
     } catch {
       return false;
     }
@@ -241,11 +302,18 @@ function extractElements(maxElements, blockedSource) {
   let truncated = false;
   for (const el of document.querySelectorAll(selector)) {
     if (!visible(el) || el.disabled) continue;
-    if (el.type === "submit" || (el.tagName === "BUTTON" && el.form && el.type !== "button")) {
+    // A <button> with no type attribute reports "submit" even outside a form, so
+    // only one that sits in a form is a submit control.
+    if (el.tagName === "BUTTON" && el.form && el.type === "submit") continue;
+    if (el.tagName === "INPUT" && el.type === "submit") continue;
+    const label = labelOf(el);
+    if (!label) continue;
+    if (isNavigation(el)) {
+      const url = new URL(el.href);
+      if (blockedPath.test(url.pathname + url.search)) continue;
+    } else if (blocked.test(label)) {
       continue;
     }
-    const label = labelOf(el);
-    if (!label || (!isNavigation(el) && blocked.test(label))) continue;
     if (elements.length >= maxElements) {
       truncated = true;
       break;
@@ -280,7 +348,7 @@ function extractElements(maxElements, blockedSource) {
   return { url: location.href, title: document.title, elements, truncated };
 }
 
-function clickElement(ref, blockedSource) {
+function clickElement(ref, blockedSource, blockedPathSource) {
   const el = window.__yarvisRefs?.get(ref);
   if (!el || !el.isConnected) {
     return { error: "That element is gone. List the page's elements again." };
@@ -289,21 +357,25 @@ function clickElement(ref, blockedSource) {
     .replace(/\s+/g, " ")
     .trim();
   const anchor = el.closest("a[href]");
+  const rawHref = anchor?.getAttribute("href");
   const navigates =
-    anchor &&
+    Boolean(rawHref) &&
+    !rawHref.startsWith("#") &&
     (() => {
       try {
-        const url = new URL(anchor.href);
-        return (
-          url.origin === location.origin &&
-          !(url.hash && url.pathname === location.pathname && !url.search)
-        );
+        return new URL(anchor.href).origin === location.origin;
       } catch {
         return false;
       }
     })();
   if (!navigates && new RegExp(blockedSource, "i").test(label)) {
     return { error: "That control changes or sends something, so Yarvis won't click it." };
+  }
+  if (navigates) {
+    const url = new URL(anchor.href);
+    if (new RegExp(blockedPathSource, "i").test(url.pathname + url.search)) {
+      return { error: "That link changes something on the site, so Yarvis won't open it." };
+    }
   }
   if (anchor) {
     let target;
@@ -333,7 +405,9 @@ function scrollElement(ref, direction) {
     return { error: "That element is gone. List the page's elements again." };
   }
   const step = el.clientHeight * 0.8;
-  if (direction === "up") el.scrollBy({ top: -step });
+  if (direction === "stay") {
+    // Only reports where the panel is.
+  } else if (direction === "up") el.scrollBy({ top: -step });
   else if (direction === "down") el.scrollBy({ top: step });
   else if (direction === "top") el.scrollTop = 0;
   else el.scrollTop = el.scrollHeight;
@@ -342,6 +416,13 @@ function scrollElement(ref, direction) {
     atBottom: el.scrollTop + el.clientHeight >= el.scrollHeight - 2,
   };
 }
+
+// A rule left behind by a worker that died mid-command would keep blocking a tab.
+chrome.declarativeNetRequest.getSessionRules().then((rules) =>
+  chrome.declarativeNetRequest.updateSessionRules({
+    removeRuleIds: rules.map((rule) => rule.id),
+  }),
+);
 
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
