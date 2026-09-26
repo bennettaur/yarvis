@@ -73,7 +73,12 @@ function UserMessage({
           >
             Resend
           </button>
-          <button type="button" onClick={() => setDraft(message.content)} className={ACTION_CLASS}>
+          <button
+            type="button"
+            title="Edit this message, then resend it"
+            onClick={() => setDraft(message.content)}
+            className={ACTION_CLASS}
+          >
             Edit
           </button>
         </div>

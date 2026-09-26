@@ -21,6 +21,16 @@ import { setToolSettings } from "./mcp";
 const PROVIDER_KEY = "yarvis.chat.provider";
 const MODEL_KEY = "yarvis.chat.model";
 
+function toThreadMessages(msgs: ChatMessage[]): ThreadMessage[] {
+  return msgs.map((m) => ({
+    id: m.id,
+    role: m.role,
+    content: m.content,
+    metadata: m.metadata,
+    activity: m.toolCalls ?? undefined,
+  }));
+}
+
 export interface UseChatThreadOptions {
   /** localStorage key under which this thread's session id is persisted. */
   sessionStorageKey?: string;
@@ -67,6 +77,10 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
   // stream, which the sidecar reads as the client going away and uses to cancel
   // the upstream call, so a stopped turn stops costing tokens.
   const inFlight = useRef<AbortController | null>(null);
+  // The session on screen now, for async work that must not land in a thread the
+  // user has since left.
+  const currentSession = useRef<string | null>(null);
+  currentSession.current = sessionId;
   const stop = useCallback(() => {
     inFlight.current?.abort();
   }, []);
@@ -128,15 +142,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
       setSessionId(id);
       try {
         const msgs = await getMessages(id);
-        setMessages(
-          msgs.map((m: ChatMessage) => ({
-            id: m.id,
-            role: m.role,
-            content: m.content,
-            metadata: m.metadata,
-            activity: m.toolCalls ?? undefined,
-          })),
-        );
+        setMessages(toThreadMessages(msgs));
       } catch (e) {
         setError(formatError(e));
       }
@@ -209,11 +215,25 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
   const adoptPersistedIds = useCallback(async (id: string) => {
     try {
       const persisted = await getMessages(id);
+      if (currentSession.current !== id) return;
       setMessages((prev) =>
-        prev.map((m, i) => (m.id || !persisted[i] ? m : { ...m, id: persisted[i].id })),
+        // Only when the two lists plainly line up; a mismatch would hand a
+        // message the wrong id, and a rewind would then cut the wrong range.
+        persisted.length === prev.length && prev.every((m, i) => m.role === persisted[i]?.role)
+          ? prev.map((m, i) => ({ ...m, id: persisted[i]!.id }))
+          : prev,
       );
     } catch {
       // Ids only enable rewinding; the thread is fine without them.
+    }
+  }, []);
+
+  const reloadMessages = useCallback(async (id: string) => {
+    try {
+      const persisted = await getMessages(id);
+      if (currentSession.current === id) setMessages(toThreadMessages(persisted));
+    } catch {
+      // Keep what is on screen; the error from the turn is already shown.
     }
   }, []);
 
@@ -239,31 +259,20 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
       // collapses on the text alone, so a message the user retypes after a
       // failure is the same turn to it — show one bubble here too, or a reload
       // would drop the one the transcript never gained.
-      // A rewind first drops the chosen message and everything after it, just as
-      // the sidecar does, then shows the (possibly edited) text as the new turn.
       setMessages((prev) => {
+        const turn: ThreadMessage = {
+          role: "user",
+          content: trimmed,
+          metadata: sendOptions.source ? { source: "voice" } : null,
+        };
         if (sendOptions.rewindTo) {
+          // Drop the chosen message and everything after it, as the sidecar does.
           const at = prev.findIndex((m) => m.id === sendOptions.rewindTo);
-          const kept = at === -1 ? prev : prev.slice(0, at);
-          return [
-            ...kept,
-            {
-              role: "user",
-              content: trimmed,
-              metadata: sendOptions.source ? { source: "voice" } : null,
-            },
-          ];
+          return [...(at === -1 ? prev : prev.slice(0, at)), turn];
         }
         const last = prev[prev.length - 1];
         if (sendOptions.resend || (last?.role === "user" && last.content === trimmed)) return prev;
-        return [
-          ...prev,
-          {
-            role: "user",
-            content: trimmed,
-            metadata: sendOptions.source ? { source: "voice" } : null,
-          },
-        ];
+        return [...prev, turn];
       });
       setBusy(true);
       setError(null);
@@ -372,7 +381,10 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
         }
         setStreaming("");
         setBusy(false);
-        void adoptPersistedIds(activeId);
+        // A rewind that failed may have left the screen and the transcript
+        // disagreeing about what was dropped; the sidecar's copy is the truth.
+        if (sendOptions.rewindTo && failed) void reloadMessages(activeId);
+        else void adoptPersistedIds(activeId);
         // Any approvals not acted on are moot once the turn ends.
         setApprovals([]);
       }
@@ -388,6 +400,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
       onSessionCreated,
       reasoning,
       adoptPersistedIds,
+      reloadMessages,
     ],
   );
 
