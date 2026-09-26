@@ -1,3 +1,5 @@
+import type { Config } from "../config.ts";
+import { modelCompactAtTokens } from "../llm/providers.ts";
 import { readSection, withSection } from "../settings/store.ts";
 
 /**
@@ -52,6 +54,22 @@ export async function getChatConfig(): Promise<ChatConfig> {
     maxOutputTokens: stored.maxOutputTokens ?? DEFAULT_CHAT_CONFIG.maxOutputTokens,
     compactAtTokens: stored.compactAtTokens ?? DEFAULT_CHAT_CONFIG.compactAtTokens,
   };
+}
+
+/**
+ * The budget for a turn on one model: the stored settings, with the model's own
+ * compaction threshold taking over the global one when it has one.
+ */
+export async function getChatBudget(
+  config: Config,
+  provider: string,
+  model: string,
+): Promise<ChatConfig> {
+  const [budget, perModel] = await Promise.all([
+    getChatConfig(),
+    modelCompactAtTokens(config, provider, model),
+  ]);
+  return perModel ? { ...budget, compactAtTokens: perModel } : budget;
 }
 
 /** Stores the budget as the whole section, replacing whatever was there. */

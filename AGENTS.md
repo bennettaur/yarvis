@@ -370,7 +370,10 @@ back to ad-hoc.
   `runAgentTurn` replays that summary (fenced as data) plus what came after. No
   row is deleted, and the messages route hides the `system` row, so the thread
   the user sees is unchanged. The size that triggers it is `compactAtTokens` in
-  `chat/config.ts` (default 200k, edited in Settings). A context-window error
+  `chat/config.ts` (default 200k, edited in Settings). A model can carry its own
+  on its catalogue entry (`ModelInfo.compactAtTokens`, bundled defaults set under
+  each model's window), which wins over the global value: the right number is a
+  property of the model's window, and `getChatBudget` resolves it per turn. A context-window error
   compacts too, so Retry succeeds. The retry collapse in `runAgentTurn` skips `system` rows when it
   looks for the last message, since a summary can land after the user's turn.
 - A chat turn reports what it is doing, not only what it concluded.

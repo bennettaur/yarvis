@@ -28,6 +28,12 @@ export type ModelCapability = (typeof MODEL_CAPABILITIES)[number];
 export interface ModelInfo {
   id: string;
   capabilities: ModelCapability[];
+  /**
+   * Estimated history size, in tokens, past which a chat on this model has its
+   * older messages summarized. Set it under the model's context window. Absent
+   * means the global `chatConfig.compactAtTokens` applies.
+   */
+  compactAtTokens?: number;
 }
 
 export function isModelCapability(value: string): value is ModelCapability {
@@ -41,6 +47,7 @@ export interface ProviderModelRow {
   capabilities: ModelCapability[];
   enabled: boolean;
   sortOrder: number;
+  compactAtTokens?: number;
 }
 
 /** Shorthand for the common case of a text-in/text-out chat model. */
@@ -48,6 +55,13 @@ const chat = (id: string, ...extra: ModelCapability[]): ModelInfo => ({
   id,
   capabilities: ["chat", ...extra],
 });
+
+/** The same, with the size at which its chats are compacted. */
+const chatWithWindow = (
+  id: string,
+  compactAtTokens: number,
+  ...extra: ModelCapability[]
+): ModelInfo => ({ ...chat(id, ...extra), compactAtTokens });
 
 /**
  * Default catalogue per built-in provider, keyed by `ProviderInfo.id`.
@@ -60,24 +74,24 @@ const chat = (id: string, ...extra: ModelCapability[]): ModelInfo => ({
  */
 export const DEFAULT_MODELS: Record<string, ModelInfo[]> = {
   anthropic: [
-    chat("claude-opus-4-7", "vision"),
-    chat("claude-sonnet-4-6", "vision"),
-    chat("claude-haiku-4-5", "vision"),
+    chatWithWindow("claude-opus-4-7", 150_000, "vision"),
+    chatWithWindow("claude-sonnet-4-6", 150_000, "vision"),
+    chatWithWindow("claude-haiku-4-5", 150_000, "vision"),
   ],
-  bedrock: [chat("anthropic.claude-sonnet-4-6-v1:0", "vision")],
+  bedrock: [chatWithWindow("anthropic.claude-sonnet-4-6-v1:0", 150_000, "vision")],
   gemini: [
-    chat("gemini-3.5-flash", "vision", "stt"),
-    chat("gemini-3-flash-preview", "vision", "stt"),
-    chat("gemini-3.1-flash-lite", "vision", "stt"),
-    chat("gemini-3.1-pro-preview", "vision", "stt"),
+    chatWithWindow("gemini-3.5-flash", 800_000, "vision", "stt"),
+    chatWithWindow("gemini-3-flash-preview", 800_000, "vision", "stt"),
+    chatWithWindow("gemini-3.1-flash-lite", 800_000, "vision", "stt"),
+    chatWithWindow("gemini-3.1-pro-preview", 800_000, "vision", "stt"),
     { id: "gemini-2.5-flash-preview-tts", capabilities: ["tts"] },
     { id: "gemini-2.5-pro-preview-tts", capabilities: ["tts"] },
   ],
   cerebras: [
-    chat("zai-glm-4.6"),
-    chat("qwen-3-coder-480b"),
-    chat("gpt-oss-120b"),
-    chat("llama-3.3-70b"),
+    chatWithWindow("zai-glm-4.6", 50_000),
+    chatWithWindow("qwen-3-coder-480b", 50_000),
+    chatWithWindow("gpt-oss-120b", 50_000),
+    chatWithWindow("llama-3.3-70b", 50_000),
   ],
   /**
    * Transcription only. The obvious TTS candidates — `hexgrad/Kokoro-82M`,
@@ -103,6 +117,8 @@ export interface ProviderModelInput {
   capabilities: ModelCapability[];
   enabled?: boolean;
   sortOrder?: number;
+  /** Null clears a saved value, so the global setting applies again. */
+  compactAtTokens?: number | null;
 }
 
 function rowToInfo(row: ProviderModelRow): ModelInfo {
@@ -112,6 +128,7 @@ function rowToInfo(row: ProviderModelRow): ModelInfo {
     // doesn't recognize; drop it here rather than handing a picker a tag it
     // can never match.
     capabilities: row.capabilities.filter(isModelCapability),
+    ...(row.compactAtTokens ? { compactAtTokens: row.compactAtTokens } : {}),
   };
 }
 
@@ -123,6 +140,7 @@ interface ProviderModelEntry {
   capabilities: ModelCapability[];
   enabled: boolean;
   sortOrder: number;
+  compactAtTokens?: number;
 }
 
 type ProviderModelsSection = Record<string, ProviderModelEntry[]>;
@@ -150,6 +168,7 @@ export async function saveProviderModel(input: ProviderModelInput): Promise<Prov
     capabilities: input.capabilities,
     enabled: input.enabled ?? true,
     sortOrder: input.sortOrder ?? 0,
+    ...(input.compactAtTokens ? { compactAtTokens: input.compactAtTokens } : {}),
   };
   return withSection<ProviderModelsSection, ProviderModelRow>(PROVIDER_MODELS_KEY, (current) => {
     const section = current ?? {};

@@ -11,6 +11,7 @@ import { listMcpServers } from "../mcp/service.ts";
 import { runAgentTurn } from "./agent.ts";
 import {
   type ChatConfig,
+  getChatBudget,
   getChatConfig,
   MAX_COMPACT_AT_TOKENS,
   MAX_OUTPUT_TOKENS_CEILING,
@@ -133,7 +134,7 @@ export function createChatRoutes(config: Config): Hono {
     const servers = await listMcpServers();
     const serverNames = new Map(servers.map((s) => [s.id, s.name]));
     const providerOptions = reasoning ? await reasoningOptions(provider, model) : undefined;
-    const budget = await getChatConfig();
+    const budget = await getChatBudget(config, provider, model);
 
     return streamSSE(c, async (stream) => {
       // Tool-approval requests are emitted from inside a tool's `execute`, out of

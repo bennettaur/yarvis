@@ -14,6 +14,7 @@ import {
   availableProviders,
   CUSTOM_PROVIDER_PREFIX,
   defaultProviderModel,
+  modelCompactAtTokens,
   reasoningOptions,
   resolveModel,
 } from "./providers.ts";
@@ -186,6 +187,34 @@ describe("the model catalogue", () => {
       provider: "gemini",
       model: "gemini-9-flash",
     });
+  });
+});
+
+describe("modelCompactAtTokens", () => {
+  it("reads a bundled model's threshold and returns undefined for one without", async () => {
+    const config = configWithSecrets();
+    expect(await modelCompactAtTokens(config, "anthropic", "claude-haiku-4-5")).toBe(150_000);
+    expect(await modelCompactAtTokens(config, "anthropic", "not-a-model")).toBeUndefined();
+    expect(await modelCompactAtTokens(config, "nope", "x")).toBeUndefined();
+  });
+
+  it("prefers a saved row over the bundled default, and clearing it leaves none", async () => {
+    const config = configWithSecrets();
+    await saveProviderModel({
+      providerId: "anthropic",
+      modelId: "claude-haiku-4-5",
+      capabilities: ["chat"],
+      compactAtTokens: 60_000,
+    });
+    expect(await modelCompactAtTokens(config, "anthropic", "claude-haiku-4-5")).toBe(60_000);
+
+    await saveProviderModel({
+      providerId: "anthropic",
+      modelId: "claude-haiku-4-5",
+      capabilities: ["chat"],
+      compactAtTokens: null,
+    });
+    expect(await modelCompactAtTokens(config, "anthropic", "claude-haiku-4-5")).toBeUndefined();
   });
 });
 

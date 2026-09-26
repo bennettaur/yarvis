@@ -106,7 +106,8 @@ export default function ChatBudgetSection() {
             <span className="block text-sm text-zinc-100">Summarize the chat past (tokens)</span>
             <span className="mb-1 block text-xs text-zinc-500">
               Once a chat's history is estimated to pass this, its older messages are replaced by a
-              summary. Keep it under the smallest context window of any model you chat with.
+              summary. A model with its own value under Settings → Models uses that instead; keep
+              this under the smallest context window of any model without one.
             </span>
             <input
               type="number"
