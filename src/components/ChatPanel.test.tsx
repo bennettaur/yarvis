@@ -4,6 +4,7 @@ import * as realApi from "../lib/api";
 import * as realChat from "../lib/chat";
 import { OmniChatOverlayProvider } from "../lib/omniChatOverlay";
 import { useChatThread } from "../lib/useChatThread";
+import { REASONING_HINT } from "../lib/useReasoningPreference";
 import { mountForInteraction, textOf } from "../test/render";
 import ChatPanel from "./ChatPanel";
 
@@ -157,7 +158,8 @@ describe("ChatPanel", () => {
     const label = Array.from(mounted.host.querySelectorAll("label")).find(
       (l) => l.textContent?.trim() === "Thinking",
     );
-    expect(label?.getAttribute("title")).toContain("reasoning");
+    expect(label).toBeTruthy();
+    expect(label?.getAttribute("title")).toBe(REASONING_HINT);
   });
 
   it("adds a session the thread created to the picker and selects it", async () => {
