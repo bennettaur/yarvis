@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import {
   type ChatMessage,
@@ -80,15 +80,20 @@ export async function rewindToMessage(
   sessionId: string,
   messageId: string,
 ): Promise<boolean> {
-  const [target] = await db
-    .select({ role: chatMessages.role, createdAt: chatMessages.createdAt })
-    .from(chatMessages)
-    .where(and(eq(chatMessages.id, messageId), eq(chatMessages.sessionId, sessionId)));
-  if (target?.role !== "user") return false;
-  await db
-    .delete(chatMessages)
-    .where(
-      and(eq(chatMessages.sessionId, sessionId), gte(chatMessages.createdAt, target.createdAt)),
-    );
+  // Cut by position in the transcript getMessages returns, not by comparing
+  // timestamps: rows written in the same instant would otherwise be over- or
+  // under-deleted.
+  const history = await getMessages(db, sessionId);
+  const at = history.findIndex((m) => m.id === messageId);
+  if (at === -1 || history[at]!.role !== "user") return false;
+  await db.delete(chatMessages).where(
+    and(
+      eq(chatMessages.sessionId, sessionId),
+      inArray(
+        chatMessages.id,
+        history.slice(at).map((m) => m.id),
+      ),
+    ),
+  );
   return true;
 }

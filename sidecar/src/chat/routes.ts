@@ -126,15 +126,16 @@ export function createChatRoutes(config: Config): Hono {
       parsed.data;
 
     const dbh = db();
-    if (rewindTo && !(await rewindToMessage(dbh, sessionId, rewindTo))) {
-      return c.json({ error: "rewindTo is not a user message in this session" }, 404);
-    }
     let chatModel;
     try {
       chatModel = await resolveModel(config, provider, model);
     } catch (e) {
       console.error("[chat] model resolution failed:", describeError(e));
       return c.json({ error: clientError(e), detail: errorDetail(e) }, 400);
+    }
+    // After the model resolves, so a request that can't run leaves the history alone.
+    if (rewindTo && !(await rewindToMessage(dbh, sessionId, rewindTo))) {
+      return c.json({ error: "rewindTo is not a user message in this session" }, 404);
     }
     const servers = await listMcpServers();
     const serverNames = new Map(servers.map((s) => [s.id, s.name]));
