@@ -30,6 +30,23 @@ const KIND_DOT: Record<AttentionKind, string> = {
   info: "bg-indigo-400",
 };
 
+/** Tooltip for the kind dot, which carries its meaning by colour alone. */
+const KIND_HINT: Record<AttentionKind, string> = {
+  permission: "Needs permission to continue",
+  idle: "Waiting for your input",
+  error: "Hit an error",
+  completed: "Finished and ready for you",
+  info: "Wants your attention",
+};
+
+const WIP_HINT: Record<WipSource, string> = {
+  pr: "One of your open pull requests",
+  "starred-pr": "A pull request you starred",
+  issue: "An issue you are working on, labelled for you, or starred",
+  task: "One of today's open tasks",
+  workspace: "A workspace currently in use",
+};
+
 const WIP_LABEL: Record<WipSource, string> = {
   pr: "PR",
   "starred-pr": "★ PR",
@@ -76,12 +93,18 @@ function AttentionGroupRow({
 
   return (
     <li className="group flex items-start gap-3 px-4 py-3 hover:bg-zinc-800/60">
-      <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${KIND_DOT[lead.kind]}`} />
+      <span
+        title={KIND_HINT[lead.kind]}
+        className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${KIND_DOT[lead.kind]}`}
+      />
       <button type="button" onClick={() => onOpen(lead)} className="min-w-0 flex-1 text-left">
         <div className="flex items-center gap-2">
           <span className="truncate text-sm text-zinc-100">{lead.title}</span>
           {items.length > 1 && (
-            <span className="shrink-0 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400">
+            <span
+              title={`${items.length} pending items from this ${group.scope.workspaceId ? "workspace" : "tab"}`}
+              className="shrink-0 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400"
+            >
               {items.length}
             </span>
           )}
@@ -143,7 +166,10 @@ function WipRow({ item, onOpen }: { item: WipItem; onOpen: (item: WipItem) => vo
         onClick={() => onOpen(item)}
         className="flex w-full items-start gap-3 px-4 py-3 text-left"
       >
-        <span className="mt-0.5 shrink-0 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400">
+        <span
+          title={WIP_HINT[item.source]}
+          className="mt-0.5 shrink-0 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400"
+        >
           {WIP_LABEL[item.source]}
         </span>
         <span className="min-w-0 flex-1">

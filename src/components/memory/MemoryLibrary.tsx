@@ -189,6 +189,7 @@ export default function MemoryLibrary() {
           <button
             onClick={() => void runRecap("day")}
             disabled={recapBusy}
+            title="Summarize the tasks you finished and notes you saved since midnight"
             className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800 disabled:opacity-50"
           >
             Today
@@ -196,6 +197,7 @@ export default function MemoryLibrary() {
           <button
             onClick={() => void runRecap("week")}
             disabled={recapBusy}
+            title="Summarize the tasks you finished and notes you saved since Monday"
             className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800 disabled:opacity-50"
           >
             This week
@@ -269,6 +271,7 @@ export default function MemoryLibrary() {
           <RefreshingIndicator active={!searching && browseRes.refreshing} />
           <select
             value={kind}
+            aria-label="Filter memories by kind"
             onChange={(e) => {
               setOffset(0);
               setKind(e.target.value as MemoryKind | "");
@@ -285,6 +288,7 @@ export default function MemoryLibrary() {
           <input
             value={query}
             placeholder="Search memories…"
+            aria-label="Search memories"
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && void runSearch()}
             className="ml-auto w-48 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm"

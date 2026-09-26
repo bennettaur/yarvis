@@ -34,6 +34,13 @@ const STATUS_COLOR: Record<string, string> = {
   abandoned: "bg-zinc-800 text-zinc-500",
 };
 
+const STATUS_HINT: Record<string, string> = {
+  active: "Being worked on now",
+  paused: "On hold for now",
+  shipped: "Finished and released",
+  abandoned: "Dropped, no longer being pursued",
+};
+
 export default function ProjectsTab() {
   const [selected, setSelected] = useState<string | null>(null);
 
@@ -87,6 +94,7 @@ export default function ProjectsTab() {
             >
               {project.name}
               <span
+                title={STATUS_HINT[project.status]}
                 className={`ml-2 rounded px-1 text-[10px] ${STATUS_COLOR[project.status] ?? ""}`}
               >
                 {project.status}

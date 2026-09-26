@@ -250,6 +250,7 @@ export default function TasksPanel() {
           <input
             value={title}
             placeholder="Add a task..."
+            aria-label="New task"
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") void onAdd();
@@ -258,6 +259,7 @@ export default function TasksPanel() {
           />
           <select
             value={scope}
+            aria-label="Task scope"
             onChange={(e) => setScope(e.target.value as "daily" | "weekly")}
             className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-2 text-sm outline-none focus:border-indigo-500"
           >

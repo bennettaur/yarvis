@@ -255,6 +255,7 @@ export default function ClipboardPalette({
           <button
             type="button"
             onClick={() => void forgetHistory()}
+            title="Forget the clips recorded from your clipboard; saved entries are kept"
             className="ml-auto rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
           >
             Clear history
