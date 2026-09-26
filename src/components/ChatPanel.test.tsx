@@ -150,6 +150,16 @@ describe("ChatPanel", () => {
     expect(text).toContain("Gemini (no key)");
   });
 
+  it("explains the Thinking checkbox in a tooltip", async () => {
+    const mounted = await mountForInteraction(createElement(ChatPanel));
+    unmount = mounted.unmount;
+    await settle();
+    const label = Array.from(mounted.host.querySelectorAll("label")).find(
+      (l) => l.textContent?.trim() === "Thinking",
+    );
+    expect(label?.getAttribute("title")).toContain("reasoning");
+  });
+
   it("adds a session the thread created to the picker and selects it", async () => {
     const mounted = await mountForInteraction(createElement(ChatPanel));
     unmount = mounted.unmount;
