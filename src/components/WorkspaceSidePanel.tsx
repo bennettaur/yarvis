@@ -178,7 +178,12 @@ export default function WorkspaceSidePanel({
           >
             {v.label}
             {v.key === "comments" && openComments > 0 && (
-              <span className="ml-1 rounded bg-zinc-800 px-1 text-zinc-300">{openComments}</span>
+              <span
+                className="ml-1 rounded bg-zinc-800 px-1 text-zinc-300"
+                title="Open review comments"
+              >
+                {openComments}
+              </span>
             )}
           </button>
         ))}
