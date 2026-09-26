@@ -461,5 +461,15 @@ back to ad-hoc.
   so an agent can put a meeting on the calendar and only the user can move it. A
   suggestion the user declines is recorded as a dismissal keyed by ref, because
   "not that one" has to survive the next planning turn.
+- Yarvis reads the user's Chrome through an extension (`extension/`) that can only
+  connect *out*, so the direction is reversed: a native-messaging host
+  (`scripts/browser/host.ts`) long-polls the sidecar's `/browser/next` and posts
+  answers to `/browser/result`, behind a scoped token like attention-ingest and
+  `/mcp`. The token and the (per-launch) port reach the host through
+  `~/.yarvis/browser.json`, written only by the instance that owns background
+  work. Everything a page says is third-party text — a Slack DM is prime
+  injection material — so `browser/tools.ts` fences it with a per-request nonce.
+  The tools are read-only on purpose: anything that clicks or navigates through
+  the user's signed-in sessions needs its own approval story first.
 - Follow the repo's existing comment style: comments explain *why*, not
   *what* — no restating what a well-named function already says.

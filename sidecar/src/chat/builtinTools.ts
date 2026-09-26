@@ -1,5 +1,6 @@
 import type { Tool } from "ai";
 import { buildDelegationTools } from "../agents/tools.ts";
+import { buildBrowserTools } from "../browser/tools.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { buildDigestTools } from "../digest/tools.ts";
@@ -60,6 +61,7 @@ export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Recor
     jira: buildJiraTools(db, config, { remoteControl }),
     prReview: buildPrReviewTools(db),
     calendar: buildCalendarTools(db, config),
+    browser: buildBrowserTools(),
   };
 }
 

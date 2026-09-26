@@ -4,6 +4,7 @@ import { cors } from "hono/cors";
 import { createSpecialistRoutes } from "./agents/routes.ts";
 import { createAttentionIngestRoutes, createAttentionRoutes } from "./attention/routes.ts";
 import { createAzureRoutes } from "./azure/routes.ts";
+import { createBrowserRoutes } from "./browser/routes.ts";
 import { createCcRoutes } from "./cc/routes.ts";
 import { createChatRoutes } from "./chat/routes.ts";
 import { createClipboardRoutes } from "./clipboard/routes.ts";
@@ -97,6 +98,10 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   // own scoped token (checked inside the router), so a Claude session shell can
   // raise an attention flag without holding the full-access bearer.
   app.route("/ingest", createAttentionIngestRoutes(config));
+
+  // The browser bridge is the same shape: the extension's native host holds only
+  // this scoped token, checked inside the router, never the full-access bearer.
+  app.route("/browser", createBrowserRoutes());
 
   // The MCP endpoint sits outside the bearer wall for the same reason and with
   // the same shape: its own scoped token, checked inside the router, so an MCP

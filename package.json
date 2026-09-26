@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "dev:instance": "bun run scripts/dev-instance.ts",
+    "browser:install": "bun run scripts/browser/install.ts",
     "test": "bun test ./src ./scripts",
     "test:watch": "bun test --watch ./src ./scripts",
     "sidecar:dev": "bun run --cwd sidecar dev",

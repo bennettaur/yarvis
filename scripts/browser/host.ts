@@ -1,0 +1,81 @@
+/**
+ * The native-messaging host Chrome launches for the Yarvis extension.
+ *
+ * The extension talks to this process over stdio, and this process talks to the
+ * sidecar over its loopback HTTP API: it long-polls `/browser/next` for a
+ * command, hands it to the extension, and posts the extension's answer to
+ * `/browser/result`. Keeping the network half here means the extension needs no
+ * host permission for localhost and never sees the sidecar's port or token —
+ * both are read from the discovery file the sidecar writes on each launch.
+ */
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { encodeFrame, FrameDecoder } from "./frames.ts";
+
+interface Discovery {
+  port: number;
+  token: string;
+}
+
+const RETRY_MS = 3_000;
+
+function discoveryPath(): string {
+  return process.env.YARVIS_BROWSER_DISCOVERY_PATH ?? join(homedir(), ".yarvis", "browser.json");
+}
+
+async function readDiscovery(): Promise<Discovery | null> {
+  try {
+    const parsed = JSON.parse(await readFile(discoveryPath(), "utf8"));
+    if (typeof parsed.port === "number" && typeof parsed.token === "string") return parsed;
+  } catch {
+    // Not written yet: Yarvis isn't running.
+  }
+  return null;
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function send(message: unknown): void {
+  process.stdout.write(encodeFrame(message));
+}
+
+async function post(target: Discovery, message: { id: string }): Promise<void> {
+  await fetch(`http://127.0.0.1:${target.port}/browser/result`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${target.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(message),
+  });
+}
+
+/** Extension → sidecar: the answer to a command. */
+const decoder = new FrameDecoder();
+process.stdin.on("data", (chunk: Buffer) => {
+  for (const message of decoder.push(chunk)) {
+    readDiscovery()
+      .then((target) => target && post(target, message as { id: string }))
+      .catch(() => {
+        // The sidecar restarted mid-command; the tool has already timed out.
+      });
+  }
+});
+// Chrome closes stdin when the extension disconnects or the browser quits.
+process.stdin.on("end", () => process.exit(0));
+
+/** Sidecar → extension: poll until the process ends. */
+for (;;) {
+  const target = await readDiscovery();
+  if (!target) {
+    await sleep(RETRY_MS);
+    continue;
+  }
+  try {
+    const res = await fetch(`http://127.0.0.1:${target.port}/browser/next`, {
+      headers: { Authorization: `Bearer ${target.token}` },
+    });
+    if (res.status === 200) send({ type: "command", ...(await res.json()) });
+    else if (res.status !== 204) await sleep(RETRY_MS);
+  } catch {
+    await sleep(RETRY_MS);
+  }
+}
