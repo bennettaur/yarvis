@@ -8,6 +8,7 @@ import { useVoice } from "../../lib/useVoice";
 import ChatComposer from "../ChatComposer";
 import ChatMessages from "../ChatMessages";
 import ErrorNotice from "../ErrorNotice";
+import McpConnectionBar from "../McpConnectionBar";
 import ToolApprovalBar from "../ToolApprovalBar";
 import VoiceControls from "../voice/VoiceControls";
 
@@ -200,6 +201,8 @@ export default function OmniChat({
             }
           />
         )}
+
+        <McpConnectionBar visible={open} />
 
         <ChatComposer
           value={input}
