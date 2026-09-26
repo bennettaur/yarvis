@@ -56,7 +56,13 @@ const chat = (id: string, ...extra: ModelCapability[]): ModelInfo => ({
   capabilities: ["chat", ...extra],
 });
 
-/** The same, with the size at which its chats are compacted. */
+/**
+ * The same, with the size at which its chats are compacted. Each value is a
+ * margin under the model's context window as we understand it, not a figure
+ * read from the provider: the window itself is not in the catalogue, and the
+ * estimate it is compared against is rough. Correct one here, or per model in
+ * Settings, when a window turns out to differ.
+ */
 const chatWithWindow = (
   id: string,
   compactAtTokens: number,
@@ -117,7 +123,10 @@ export interface ProviderModelInput {
   capabilities: ModelCapability[];
   enabled?: boolean;
   sortOrder?: number;
-  /** Null clears a saved value, so the global setting applies again. */
+  /**
+   * Omitted keeps whatever is saved, so a client that only edits capabilities
+   * can't drop it. Null clears it, so the global setting applies again.
+   */
   compactAtTokens?: number | null;
 }
 
@@ -128,7 +137,7 @@ function rowToInfo(row: ProviderModelRow): ModelInfo {
     // doesn't recognize; drop it here rather than handing a picker a tag it
     // can never match.
     capabilities: row.capabilities.filter(isModelCapability),
-    ...(row.compactAtTokens ? { compactAtTokens: row.compactAtTokens } : {}),
+    ...(typeof row.compactAtTokens === "number" ? { compactAtTokens: row.compactAtTokens } : {}),
   };
 }
 
@@ -163,17 +172,21 @@ export async function listProviderModels(): Promise<ProviderModelRow[]> {
  * settings UI can save a model without first looking up whether it exists.
  */
 export async function saveProviderModel(input: ProviderModelInput): Promise<ProviderModelRow> {
-  const entry: ProviderModelEntry = {
-    modelId: input.modelId,
-    capabilities: input.capabilities,
-    enabled: input.enabled ?? true,
-    sortOrder: input.sortOrder ?? 0,
-    ...(input.compactAtTokens ? { compactAtTokens: input.compactAtTokens } : {}),
-  };
   return withSection<ProviderModelsSection, ProviderModelRow>(PROVIDER_MODELS_KEY, (current) => {
     const section = current ?? {};
     const existing = section[input.providerId] ?? [];
     const index = existing.findIndex((e) => e.modelId === input.modelId);
+    const compactAtTokens =
+      input.compactAtTokens === undefined
+        ? existing[index]?.compactAtTokens
+        : input.compactAtTokens;
+    const entry: ProviderModelEntry = {
+      modelId: input.modelId,
+      capabilities: input.capabilities,
+      enabled: input.enabled ?? true,
+      sortOrder: input.sortOrder ?? 0,
+      ...(typeof compactAtTokens === "number" ? { compactAtTokens } : {}),
+    };
     const updated = index === -1 ? [...existing, entry] : existing.with(index, entry);
     return {
       next: { ...section, [input.providerId]: updated },

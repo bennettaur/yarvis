@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { MAX_COMPACT_AT_TOKENS, MIN_COMPACT_AT_TOKENS } from "../chat/config.ts";
 import {
   catalogFor,
   DEFAULT_MODELS,
@@ -98,8 +99,8 @@ describe("the bundled defaults", () => {
       .filter((m) => m.capabilities.includes("chat"));
     expect(chatModels.length).toBeGreaterThan(0);
     for (const model of chatModels) {
-      expect(model.compactAtTokens).toBeGreaterThanOrEqual(10_000);
-      expect(model.compactAtTokens).toBeLessThanOrEqual(2_000_000);
+      expect(model.compactAtTokens).toBeGreaterThanOrEqual(MIN_COMPACT_AT_TOKENS);
+      expect(model.compactAtTokens).toBeLessThanOrEqual(MAX_COMPACT_AT_TOKENS);
     }
   });
 
@@ -166,6 +167,13 @@ describe("provider_models storage", () => {
     const cleared = await saveProviderModel({ ...base, compactAtTokens: null });
     expect(cleared.compactAtTokens).toBeUndefined();
     expect((await listProviderModels())[0]?.compactAtTokens).toBeUndefined();
+  });
+
+  it("keeps a saved threshold when a later save leaves the field out", async () => {
+    const base = { providerId: "anthropic", modelId: "m", capabilities: ["chat" as const] };
+    await saveProviderModel({ ...base, compactAtTokens: 120_000 });
+    const resaved = await saveProviderModel({ ...base, capabilities: ["chat", "vision"] });
+    expect(resaved.compactAtTokens).toBe(120_000);
   });
 
   it("defaults enabled to true and sortOrder to 0 when omitted", async () => {

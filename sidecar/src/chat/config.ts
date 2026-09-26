@@ -69,7 +69,7 @@ export async function getChatBudget(
     getChatConfig(),
     modelCompactAtTokens(config, provider, model),
   ]);
-  return perModel ? { ...budget, compactAtTokens: perModel } : budget;
+  return perModel === undefined ? budget : { ...budget, compactAtTokens: perModel };
 }
 
 /** Stores the budget as the whole section, replacing whatever was there. */

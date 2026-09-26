@@ -83,9 +83,21 @@ describe("chat config", () => {
   describe("getChatBudget", () => {
     it("uses the model's own threshold over the global one", async () => {
       await saveChatConfig({ maxSteps: 40, maxOutputTokens: null, compactAtTokens: 300_000 });
-      const budget = await getChatBudget(appConfig, "anthropic", "claude-haiku-4-5");
-      expect(budget.compactAtTokens).toBe(150_000);
+      await saveProviderModel({
+        providerId: "anthropic",
+        modelId: "custom-model",
+        capabilities: ["chat"],
+        compactAtTokens: 60_000,
+      });
+      const budget = await getChatBudget(appConfig, "anthropic", "custom-model");
+      expect(budget.compactAtTokens).toBe(60_000);
       expect(budget.maxSteps).toBe(40);
+    });
+
+    it("falls back to the global threshold for an unknown provider or model", async () => {
+      await saveChatConfig({ maxSteps: 40, maxOutputTokens: null, compactAtTokens: 300_000 });
+      expect((await getChatBudget(appConfig, "nope", "x")).compactAtTokens).toBe(300_000);
+      expect((await getChatBudget(appConfig, "anthropic", "nope")).compactAtTokens).toBe(300_000);
     });
 
     it("falls back to the global threshold for a model with none", async () => {

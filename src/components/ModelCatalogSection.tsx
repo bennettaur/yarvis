@@ -198,6 +198,8 @@ export default function ModelCatalogSection() {
   const editThreshold = useCallback(
     (row: ProviderModel, raw: string) => {
       const value = raw.trim() === "" ? null : Number(raw);
+      // A non-number would serialise to null and silently clear the saved value.
+      if (value !== null && !Number.isFinite(value)) return;
       if (value === (row.compactAtTokens ?? null)) return;
       void run(() =>
         saveProviderModel({
@@ -292,6 +294,9 @@ export default function ModelCatalogSection() {
                     {model.capabilities.includes("chat") &&
                       (model.row ? (
                         <input
+                          // Re-created when the saved value changes, so a refresh
+                          // replaces what was typed rather than leaving it stale.
+                          key={model.compactAtTokens ?? "none"}
                           type="number"
                           min={10000}
                           max={2000000}
@@ -305,8 +310,8 @@ export default function ModelCatalogSection() {
                           className="w-24 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-xs outline-none focus:border-zinc-500"
                         />
                       ) : (
-                        model.compactAtTokens && (
-                          <Chip label={`summarize ${model.compactAtTokens / 1000}k`} />
+                        model.compactAtTokens !== undefined && (
+                          <Chip label={`summarize ${Math.round(model.compactAtTokens / 1000)}k`} />
                         )
                       ))}
                     {catalog.capabilities.map((capability) => {
