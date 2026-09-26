@@ -165,6 +165,7 @@ export default function ScheduledJobsPanel() {
                     <span className="text-xs text-amber-400">running</span>
                   ) : status.lastRun ? (
                     <span
+                      title="Result of the most recent run."
                       className={`text-xs ${
                         status.lastRun.status === "error" ? "text-red-400" : "text-emerald-400"
                       }`}

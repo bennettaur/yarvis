@@ -434,6 +434,7 @@ function DraftEditor({
             <div className="mt-3">
               <Labeled label="Scopes (optional)" full>
                 <input
+                  title="Space-separated OAuth scopes to request; leave blank to accept the server's defaults."
                   value={draft.oauthScope}
                   placeholder="api:read api:write offline_access"
                   onChange={(e) => setDraft((d) => ({ ...d, oauthScope: e.target.value }))}

@@ -259,6 +259,7 @@ export default function TelegramSection() {
                 <label className="text-xs text-zinc-400">Re-auth window (min)</label>
                 <input
                   type="number"
+                  title="How many minutes a chat stays unlocked after a valid code before it has to send one again."
                   min={1}
                   value={otpWindow}
                   placeholder={String(settings?.defaultTelegramOtpWindowMinutes ?? "")}
