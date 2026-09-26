@@ -1261,7 +1261,7 @@ function writeWorkspaceFiles(detail: WorkspaceDetail): void {
       "",
       "The same goes for committing and pushing. A repo's git hooks (lefthook,",
       "husky, pre-commit) call its tools, so run `git commit` and `git push` from",
-      "inside the repo's directory, through its tool manager when it has one.",
+      "inside the repo's directory. With mise that is `mise exec -- git commit`.",
       "From this root the hooks fail, or run against the wrong tool versions.",
     );
   }
