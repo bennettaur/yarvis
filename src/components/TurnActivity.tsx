@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import type { ToolActivity } from "../lib/chat";
 
 /**
@@ -15,22 +15,69 @@ export default function TurnActivity({
   activity,
   thinking,
   running,
+  collapsed = false,
 }: {
   activity: ToolActivity[];
   /** Reasoning streamed for this turn, if any. */
   thinking?: string;
   /** True while the turn is still in flight, so an unsettled row reads as busy. */
   running?: boolean;
+  /**
+   * Fold the rows under a one-line summary. The in-flight turn stays open so
+   * calls can pop in as they happen, then folds once the reply text starts;
+   * finished turns are folded from the start. The user can reopen either.
+   */
+  collapsed?: boolean;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const panelId = useId();
   if (activity.length === 0 && !thinking) return null;
-  return (
-    <div className="space-y-1">
-      {thinking && <ThinkingBlock text={thinking} streaming={running} />}
+
+  const rows = (
+    <div className={`space-y-1 ${collapsed ? "pt-1" : ""}`}>
+      {/* Reasoning stops reading as live once the reply text has started. */}
+      {thinking && <ThinkingBlock text={thinking} streaming={running && !collapsed} />}
       {activity.map((entry) => (
         <ToolRow key={entry.id} entry={entry} />
       ))}
     </div>
   );
+  const showRows = !collapsed || expanded;
+
+  return (
+    <div className="mb-2">
+      {collapsed && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          aria-controls={panelId}
+          className="flex items-center gap-2 py-0.5 text-xs text-zinc-500 hover:text-zinc-300"
+        >
+          <Chevron open={expanded} />
+          <span>{summarize(activity, Boolean(thinking))}</span>
+        </button>
+      )}
+      {/* Animating grid rows lets the height go to and from auto. The rows stay
+          mounted while folded so the fold can animate, hence `inert`. */}
+      <div
+        id={panelId}
+        className={`grid transition-[grid-template-rows,opacity] duration-300 ease-out motion-reduce:transition-none ${
+          showRows ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"
+        }`}
+        inert={!showRows}
+      >
+        <div className="min-h-0 overflow-hidden">{rows}</div>
+      </div>
+    </div>
+  );
+}
+
+function summarize(activity: ToolActivity[], hasThinking: boolean): string {
+  if (activity.length === 0) return "Thought about it";
+  const count = `${activity.length} tool call${activity.length === 1 ? "" : "s"}`;
+  const failed = activity.filter((a) => a.status === "error" || a.status === "denied").length;
+  return `${hasThinking ? "Thought, " : "Used "}${count}${failed > 0 ? ` · ${failed} failed` : ""}`;
 }
 
 function ThinkingBlock({ text, streaming }: { text: string; streaming?: boolean }) {

@@ -74,4 +74,55 @@ describe("TurnActivity", () => {
     const done = await renderToHtml(<TurnActivity activity={[]} thinking="weighing it up" />);
     expect(textOf(done)).toContain("Thought about it");
   });
+
+  it("folds the rows under a summary when collapsed, and reopens on click", async () => {
+    const mounted = await mountForInteraction(
+      <TurnActivity activity={[entry(), entry({ id: "c2", status: "error" })]} collapsed />,
+    );
+    cleanup = mounted.unmount;
+    const toggle = mounted.host.querySelector<HTMLButtonElement>("button[aria-expanded]");
+    expect(toggle?.textContent).toContain("Used 2 tool calls · 1 failed");
+    expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+    expect(mounted.host.querySelector("[inert]")).not.toBeNull();
+
+    toggle?.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(toggle?.getAttribute("aria-expanded")).toBe("true");
+    expect(mounted.host.querySelector("[inert]")).toBeNull();
+  });
+
+  it("shows no summary while the turn is still open", async () => {
+    const html = await renderToHtml(<TurnActivity activity={[entry()]} running />);
+    expect(textOf(html)).not.toContain("tool call");
+    expect(textOf(html)).toContain("search_pages");
+    expect(html).not.toContain("inert");
+  });
+
+  it("words the summary for reasoning, a single call and a denial", async () => {
+    const single = await renderToHtml(<TurnActivity activity={[entry()]} collapsed />);
+    expect(textOf(single)).toContain("Used 1 tool call");
+    expect(textOf(single)).not.toContain("1 tool calls");
+
+    const mixed = await renderToHtml(
+      <TurnActivity
+        activity={[entry(), entry({ id: "c2", status: "denied" })]}
+        thinking="hmm"
+        collapsed
+      />,
+    );
+    expect(textOf(mixed)).toContain("Thought, 2 tool calls · 1 failed");
+  });
+
+  it("folds again on a second click", async () => {
+    const mounted = await mountForInteraction(<TurnActivity activity={[entry()]} collapsed />);
+    cleanup = mounted.unmount;
+    const toggle = mounted.host.querySelector<HTMLButtonElement>("button[aria-expanded]");
+    expect(toggle).not.toBeNull();
+    toggle?.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    toggle?.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+    expect(mounted.host.querySelector("[inert]")).not.toBeNull();
+  });
 });
