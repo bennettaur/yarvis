@@ -93,6 +93,24 @@ describe("parseRepoRemote", () => {
     ).toEqual({ provider: "azure", org: "myorg", project: "MyProject", repo: "web" });
   });
 
+  it("decodes a percent-encoded Azure DevOps project name", () => {
+    expect(parseRepoRemote("https://dev.azure.com/myorg/My%20Project/_git/web")).toEqual({
+      provider: "azure",
+      org: "myorg",
+      project: "My Project",
+      repo: "web",
+    });
+  });
+
+  it("uses the repo name as the project when the Azure URL omits the project", () => {
+    expect(parseRepoRemote("https://dev.azure.com/myorg/_git/web")).toEqual({
+      provider: "azure",
+      org: "myorg",
+      project: "web",
+      repo: "web",
+    });
+  });
+
   it("returns null for an Azure host with no _git or v3 marker", () => {
     // dev.azure.com host but not a repo clone URL — reaches the Azure block's
     // own null return, not the earlier splitRemote bail.

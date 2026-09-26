@@ -28,6 +28,24 @@ describe("parseRepoRemote", () => {
     });
   });
 
+  it("decodes a percent-encoded Azure DevOps project name", () => {
+    expect(parseRepoRemote("https://dev.azure.com/myorg/My%20Project/_git/web")).toEqual({
+      provider: "azure",
+      org: "myorg",
+      project: "My Project",
+      repo: "web",
+    });
+  });
+
+  it("uses the repo name as the project when the Azure URL omits the project", () => {
+    expect(parseRepoRemote("https://dev.azure.com/myorg/_git/web")).toEqual({
+      provider: "azure",
+      org: "myorg",
+      project: "web",
+      repo: "web",
+    });
+  });
+
   it("classifies a legacy visualstudio.com remote", () => {
     expect(parseRepoRemote("https://myorg.visualstudio.com/MyProject/_git/web")).toEqual({
       provider: "azure",
