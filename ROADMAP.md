@@ -78,7 +78,8 @@ Status of the build against the original vision. The full V1 plan lives at
   jsdiff since Azure has no unified-diff endpoint). Clicking a diff line opens a
   composer that posts a single-line comment to the PR, and existing review
   threads render inline at their line — for both providers. A static header at
-  the top of the detail view shows a derived lifecycle status
+  the top of the detail view shows a star toggle (the same star as the list
+  rows), a derived lifecycle status
   (Draft / CI failing / Awaiting review / Ready to merge) plus a review toolbar
   that publishes a draft (GitHub `markPullRequestReadyForReview`; Azure
   `isDraft=false` PATCH), approves, or requests changes (GitHub native review
