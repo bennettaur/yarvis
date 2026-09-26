@@ -12,6 +12,8 @@ export type ModelCapability = "chat" | "stt" | "tts" | "vision" | "embed";
 export interface ModelInfo {
   id: string;
   capabilities: ModelCapability[];
+  /** Estimated tokens past which a chat on this model is summarized; absent uses the global setting. */
+  compactAtTokens?: number;
 }
 
 export interface ProviderInfo {
@@ -230,6 +232,8 @@ export interface ChatConfig {
   maxSteps: number;
   /** Null leaves the provider's own output limit in place. */
   maxOutputTokens: number | null;
+  /** Estimated history size, in tokens, past which older messages are summarized. */
+  compactAtTokens: number;
 }
 
 export async function getChatConfig(): Promise<ChatConfig> {

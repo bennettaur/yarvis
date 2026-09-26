@@ -129,6 +129,7 @@ export default function ModelCatalogSection() {
           modelId: model.id,
           capabilities: model.capabilities,
           sortOrder: order++,
+          compactAtTokens: model.compactAtTokens,
         });
       }
     },
@@ -186,6 +187,28 @@ export default function ModelCatalogSection() {
           capabilities,
           enabled: row.enabled,
           sortOrder: row.sortOrder,
+          compactAtTokens: row.compactAtTokens,
+        }),
+      );
+    },
+    [run],
+  );
+
+  /** Empty clears the value, which hands the model back to the global setting. */
+  const editThreshold = useCallback(
+    (row: ProviderModel, raw: string) => {
+      const value = raw.trim() === "" ? null : Number(raw);
+      // A non-number would serialise to null and silently clear the saved value.
+      if (value !== null && !Number.isFinite(value)) return;
+      if (value === (row.compactAtTokens ?? null)) return;
+      void run(() =>
+        saveProviderModel({
+          providerId: row.providerId,
+          modelId: row.modelId,
+          capabilities: row.capabilities,
+          enabled: row.enabled,
+          sortOrder: row.sortOrder,
+          compactAtTokens: value,
         }),
       );
     },
@@ -218,10 +241,23 @@ export default function ModelCatalogSection() {
         const defaults = catalog.defaults[providerId] ?? [];
         const customised = rows.length > 0;
         const draft = drafts[providerId] ?? blankDraft();
-        const shown: { id: string; capabilities: ModelCapability[]; row?: ProviderModel }[] =
-          customised
-            ? rows.map((r) => ({ id: r.modelId, capabilities: r.capabilities, row: r }))
-            : defaults.map((m) => ({ id: m.id, capabilities: m.capabilities }));
+        const shown: {
+          id: string;
+          capabilities: ModelCapability[];
+          compactAtTokens?: number;
+          row?: ProviderModel;
+        }[] = customised
+          ? rows.map((r) => ({
+              id: r.modelId,
+              capabilities: r.capabilities,
+              compactAtTokens: r.compactAtTokens,
+              row: r,
+            }))
+          : defaults.map((m) => ({
+              id: m.id,
+              capabilities: m.capabilities,
+              compactAtTokens: m.compactAtTokens,
+            }));
 
         return (
           <div
@@ -255,6 +291,29 @@ export default function ModelCatalogSection() {
                 >
                   <span className="font-mono text-xs text-zinc-300">{model.id}</span>
                   <div className="ml-auto flex items-center gap-2">
+                    {model.capabilities.includes("chat") &&
+                      (model.row ? (
+                        <input
+                          // Re-created when the saved value changes, so a refresh
+                          // replaces what was typed rather than leaving it stale.
+                          key={model.compactAtTokens ?? "none"}
+                          type="number"
+                          min={10000}
+                          max={2000000}
+                          step={10000}
+                          disabled={busy}
+                          aria-label={`Summarize ${model.id} chats past (tokens)`}
+                          title="Estimated tokens past which a chat on this model is summarized. Empty uses the global setting."
+                          placeholder="global"
+                          defaultValue={model.compactAtTokens ?? ""}
+                          onBlur={(e) => editThreshold(model.row!, e.target.value)}
+                          className="w-24 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-xs outline-none focus:border-zinc-500"
+                        />
+                      ) : (
+                        model.compactAtTokens !== undefined && (
+                          <Chip label={`summarize ${Math.round(model.compactAtTokens / 1000)}k`} />
+                        )
+                      ))}
                     {catalog.capabilities.map((capability) => {
                       const on = model.capabilities.includes(capability);
                       // Untagging is only offered on a saved row: toggling a

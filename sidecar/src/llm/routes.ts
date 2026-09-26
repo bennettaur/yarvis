@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
+import { MAX_COMPACT_AT_TOKENS, MIN_COMPACT_AT_TOKENS } from "../chat/config.ts";
 import type { Config } from "../config.ts";
 import {
   DEFAULT_MODELS,
@@ -41,6 +42,13 @@ const saveSchema = z.object({
   capabilities: z.array(z.enum(MODEL_CAPABILITIES)).min(1),
   enabled: z.boolean().optional(),
   sortOrder: z.number().int().min(0).max(9999).optional(),
+  compactAtTokens: z
+    .number()
+    .int()
+    .min(MIN_COMPACT_AT_TOKENS)
+    .max(MAX_COMPACT_AT_TOKENS)
+    .nullable()
+    .optional(),
 });
 
 export function createModelCatalogRoutes(_config: Config): Hono {

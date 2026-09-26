@@ -11,9 +11,12 @@ import { listMcpServers } from "../mcp/service.ts";
 import { runAgentTurn } from "./agent.ts";
 import {
   type ChatConfig,
+  getChatBudget,
   getChatConfig,
+  MAX_COMPACT_AT_TOKENS,
   MAX_OUTPUT_TOKENS_CEILING,
   MAX_STEPS_CEILING,
+  MIN_COMPACT_AT_TOKENS,
   saveChatConfig,
 } from "./config.ts";
 import { createSession, getMessages, listSessions } from "./service.ts";
@@ -58,6 +61,7 @@ const approvalSchema = z.object({ approved: z.boolean() });
 const configSchema = z.object({
   maxSteps: z.number().int().min(1).max(MAX_STEPS_CEILING),
   maxOutputTokens: z.number().int().min(256).max(MAX_OUTPUT_TOKENS_CEILING).nullable(),
+  compactAtTokens: z.number().int().min(MIN_COMPACT_AT_TOKENS).max(MAX_COMPACT_AT_TOKENS),
 });
 
 export function createChatRoutes(config: Config): Hono {
@@ -108,8 +112,9 @@ export function createChatRoutes(config: Config): Hono {
     return c.json(await createSession(db(), parsed.data.title), 201);
   });
 
+  // Compaction summaries are `system` rows meant for the model, not the thread.
   router.get("/sessions/:id/messages", async (c) =>
-    c.json(await getMessages(db(), c.req.param("id"))),
+    c.json((await getMessages(db(), c.req.param("id"))).filter((m) => m.role !== "system")),
   );
 
   router.post("/", async (c) => {
@@ -129,7 +134,7 @@ export function createChatRoutes(config: Config): Hono {
     const servers = await listMcpServers();
     const serverNames = new Map(servers.map((s) => [s.id, s.name]));
     const providerOptions = reasoning ? await reasoningOptions(provider, model) : undefined;
-    const budget = await getChatConfig();
+    const budget = await getChatBudget(config, provider, model);
 
     return streamSSE(c, async (stream) => {
       // Tool-approval requests are emitted from inside a tool's `execute`, out of

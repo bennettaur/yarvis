@@ -53,6 +53,11 @@ export interface ChatMessageMetadata {
   telegramUserId?: number;
   telegramUsername?: string;
   telegramFirstName?: string;
+  /**
+   * Set on the `system` row that stands in for the start of a long chat. The
+   * row's content is the summary; replay resumes after `throughMessageId`.
+   */
+  compaction?: { throughMessageId: string };
 }
 
 /**

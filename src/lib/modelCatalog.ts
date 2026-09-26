@@ -17,6 +17,7 @@ export interface ProviderModel {
   capabilities: ModelCapability[];
   enabled: boolean;
   sortOrder: number;
+  compactAtTokens?: number;
 }
 
 export interface ModelCatalog {
@@ -32,6 +33,8 @@ export interface ProviderModelInput {
   capabilities: ModelCapability[];
   enabled?: boolean;
   sortOrder?: number;
+  /** Null clears a saved value so the global setting applies again. */
+  compactAtTokens?: number | null;
 }
 
 export async function getModelCatalog(): Promise<ModelCatalog> {
