@@ -10,6 +10,7 @@ import {
   listProjects,
   listSessions,
 } from "../lib/cc";
+import LoadingIndicator from "./LoadingIndicator";
 
 type View = "sessions" | "plans";
 
@@ -22,6 +23,10 @@ export default function SessionsPanel() {
   const [plans, setPlans] = useState<CcPlan[]>([]);
   const [planContent, setPlanContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [transcriptLoading, setTranscriptLoading] = useState(false);
+  const [planLoading, setPlanLoading] = useState(false);
 
   useEffect(() => {
     void (async () => {
@@ -35,6 +40,8 @@ export default function SessionsPanel() {
         setPlans(await listPlans());
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setLoading(false);
       }
     })();
   }, []);
@@ -42,18 +49,33 @@ export default function SessionsPanel() {
   const selectProject = useCallback(async (dir: string) => {
     setProjectDir(dir);
     setTranscript(null);
-    setSessions(await listSessions(dir));
+    setSessionsLoading(true);
+    try {
+      setSessions(await listSessions(dir));
+    } finally {
+      setSessionsLoading(false);
+    }
   }, []);
 
   const openTranscript = useCallback(
     async (id: string) => {
-      setTranscript(await getTranscript(projectDir, id));
+      setTranscriptLoading(true);
+      try {
+        setTranscript(await getTranscript(projectDir, id));
+      } finally {
+        setTranscriptLoading(false);
+      }
     },
     [projectDir],
   );
 
   const openPlan = useCallback(async (name: string) => {
-    setPlanContent((await getPlan(name)).content);
+    setPlanLoading(true);
+    try {
+      setPlanContent((await getPlan(name)).content);
+    } finally {
+      setPlanLoading(false);
+    }
   }, []);
 
   const tab = (v: View, label: string) => (
@@ -88,7 +110,11 @@ export default function SessionsPanel() {
             ))}
           </select>
 
-          {transcript ? (
+          {loading || sessionsLoading || transcriptLoading ? (
+            <LoadingIndicator
+              label={transcriptLoading ? "Loading transcript…" : "Loading sessions…"}
+            />
+          ) : transcript ? (
             <div className="space-y-3">
               <button
                 onClick={() => setTranscript(null)}
@@ -133,7 +159,9 @@ export default function SessionsPanel() {
 
       {view === "plans" && (
         <div className="space-y-3">
-          {planContent ? (
+          {loading || planLoading ? (
+            <LoadingIndicator label={planLoading ? "Loading plan…" : "Loading plans…"} />
+          ) : planContent ? (
             <div className="space-y-3">
               <button
                 onClick={() => setPlanContent(null)}

@@ -27,6 +27,7 @@ import {
   useCachedResource,
 } from "../../lib/resourceCache";
 import { openExternal } from "../../lib/url";
+import LoadingIndicator from "../LoadingIndicator";
 import RefreshingIndicator from "../RefreshingIndicator";
 import JiraCreateIssueModal from "./JiraCreateIssueModal";
 import JiraIssueDetailView from "./JiraIssueDetailView";
@@ -537,7 +538,7 @@ export default function JiraIssuesView() {
           </div>
         </div>
 
-        {loading && <p className="text-sm text-zinc-600">Loading…</p>}
+        {loading && <LoadingIndicator className="text-sm text-zinc-600" />}
 
         {activeTab === "assigned" && !loading && (
           <GroupedList

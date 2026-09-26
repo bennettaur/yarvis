@@ -8,6 +8,7 @@ import {
   updateProjectItem,
 } from "../../lib/projects";
 import { useCachedResource } from "../../lib/resourceCache";
+import LoadingIndicator from "../LoadingIndicator";
 import RefreshingIndicator from "../RefreshingIndicator";
 
 /** Stable identity so an unloaded resource doesn't re-render the list. */
@@ -70,7 +71,9 @@ export default function ProjectsTab() {
         <RefreshingIndicator active={projectsRes.refreshing || overviewRes.refreshing} />
       </div>
 
-      {projects.length === 0 ? (
+      {projectsRes.loading ? (
+        <LoadingIndicator label="Loading projects…" />
+      ) : projects.length === 0 ? (
         <p className="text-sm text-zinc-600">No projects yet.</p>
       ) : (
         <div className="flex flex-wrap gap-2">

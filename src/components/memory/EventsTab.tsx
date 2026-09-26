@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { type EventRecord, listEvents, listEventTypes } from "../../lib/events";
 import { useCachedResource } from "../../lib/resourceCache";
+import LoadingIndicator from "../LoadingIndicator";
 import RefreshingIndicator from "../RefreshingIndicator";
 
 /**
@@ -131,7 +132,9 @@ export default function EventsTab() {
         </span>
       </div>
 
-      {page.items.length === 0 ? (
+      {pageRes.loading ? (
+        <LoadingIndicator label="Loading events…" />
+      ) : page.items.length === 0 ? (
         <p className="text-sm text-zinc-600">Nothing recorded for this filter.</p>
       ) : (
         <ul className="divide-y divide-zinc-800 rounded-xl border border-zinc-800 bg-zinc-900/50">

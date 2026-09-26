@@ -12,6 +12,7 @@ import {
   type RecapResult,
 } from "../../lib/memory";
 import { primeCache, useCachedResource } from "../../lib/resourceCache";
+import LoadingIndicator from "../LoadingIndicator";
 import Markdown from "../Markdown";
 import RefreshingIndicator from "../RefreshingIndicator";
 
@@ -307,7 +308,9 @@ export default function MemoryLibrary() {
             </button>
           )}
         </div>
-        {items.length === 0 ? (
+        {browseRes.loading && !searchResults ? (
+          <LoadingIndicator label="Loading memories…" />
+        ) : items.length === 0 ? (
           <p className="text-sm text-zinc-600">Nothing stored yet.</p>
         ) : (
           <ul className="divide-y divide-zinc-800 rounded-xl border border-zinc-800 bg-zinc-900/50">

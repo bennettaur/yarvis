@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { JiraTransition, StartWorkChoice } from "../../lib/jira/types";
 import { listRepos, type Repo } from "../../lib/repos";
+import LoadingIndicator from "../LoadingIndicator";
 
 /** The transition to pre-select: prefer a status named "In Progress", then any
  *  in-progress-category status, else none (JIRA's in-progress category also
@@ -122,7 +123,7 @@ export default function JiraRepoPickerModal({
           </p>
           {error && <p className="mb-3 text-xs text-red-400">{error}</p>}
           {loading ? (
-            <p className="text-sm text-zinc-500">Loading repos…</p>
+            <LoadingIndicator className="text-sm text-zinc-500" label="Loading repos…" />
           ) : repos.length === 0 ? (
             <p className="text-sm text-zinc-600">
               No repos registered. Add one in Settings → Repositories, or start a scratch workspace.

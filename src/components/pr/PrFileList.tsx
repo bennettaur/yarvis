@@ -3,6 +3,7 @@ import { buildFileTree, type FileTreeFile } from "../../lib/fileTree";
 import { usePrDetail, usePrFiles } from "../../lib/pr/cache";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import FileTreeRows, { treeRowPaddingLeft } from "../files/FileTreeRows";
+import LoadingIndicator from "../LoadingIndicator";
 import CopyFileLinkButton from "./CopyFileLinkButton";
 import CopyPathButton from "./CopyPathButton";
 import { JUMP_TO_FILE_EVENT, prFileAnchorId } from "./shared";
@@ -60,7 +61,8 @@ export default function PrFileList({
   const tree = useMemo(() => (data ? buildFileTree(data, (f) => f.filename) : []), [data]);
 
   if (error) return <p className="text-sm text-red-400">{error}</p>;
-  if (loading || !data) return <p className="text-sm text-zinc-500">Loading files…</p>;
+  if (loading || !data)
+    return <LoadingIndicator className="text-sm text-zinc-500" label="Loading files…" />;
   if (data.length === 0) return <p className="text-sm text-zinc-600">No file changes.</p>;
 
   const onClick = (path: string) => {

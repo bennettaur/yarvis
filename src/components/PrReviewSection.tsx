@@ -4,6 +4,7 @@ import { ghPrConfig, ghSavePrConfig } from "../lib/pr/github";
 import type { GhPrConfig } from "../lib/pr/types";
 import { invalidatePrefix } from "../lib/resourceCache";
 import { openExternal } from "../lib/url";
+import LoadingIndicator from "./LoadingIndicator";
 
 const SEARCH_DOCS =
   "https://docs.github.com/en/search-github/searching-on-github/searching-issues-and-pull-requests";
@@ -52,7 +53,7 @@ export default function PrReviewSection() {
   if (error && !config) {
     return <p className="text-sm text-red-400">Couldn't load config: {error}</p>;
   }
-  if (!config) return <p className="text-sm text-zinc-500">Loading…</p>;
+  if (!config) return <LoadingIndicator className="text-sm text-zinc-500" />;
 
   const update = (patch: Partial<GhPrConfig>) => {
     setSaved(false);

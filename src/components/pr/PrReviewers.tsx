@@ -1,5 +1,6 @@
 import { usePrDetail } from "../../lib/pr/cache";
 import type { PrRef, Reviewer, ReviewerState } from "../../lib/pr/types";
+import LoadingIndicator from "../LoadingIndicator";
 
 /**
  * Per-state visual treatment. Approvals and changes-requested carry the same
@@ -109,6 +110,6 @@ export function ReviewersList({ reviewers }: { reviewers: Reviewer[] }) {
 export default function PrReviewers({ prRef }: { prRef: PrRef }) {
   const { data, error, loading } = usePrDetail(prRef);
   if (error) return <p className="text-sm text-red-400">{error}</p>;
-  if (loading || !data) return <p className="text-sm text-zinc-500">Loading…</p>;
+  if (loading || !data) return <LoadingIndicator className="text-sm text-zinc-500" />;
   return <ReviewersList reviewers={data.reviewers} />;
 }

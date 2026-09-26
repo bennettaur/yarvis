@@ -1,6 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { type CalendarStatus, calAuthUrl, calStatus } from "../../lib/calendar";
 import { openExternal } from "../../lib/url";
+import LoadingIndicator from "../LoadingIndicator";
 
 /**
  * Gates calendar views behind a connected Google Calendar. Renders its children
@@ -43,7 +44,7 @@ export default function CalendarConnectionGate({
   }, []);
 
   if (!status) {
-    return <p className="text-sm text-zinc-500">Loading…</p>;
+    return <LoadingIndicator className="text-sm text-zinc-500" />;
   }
 
   if (!status.configured) {
