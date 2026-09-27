@@ -29,3 +29,24 @@ describe("Markdown", () => {
     expect(html).toContain('title="https://a.test"');
   });
 });
+
+describe("Markdown appLinks", () => {
+  const PR = "[#12](https://github.com/o/r/pull/12)";
+
+  it("offers a browser option beside a PR link", async () => {
+    const html = await renderToHtml(<Markdown appLinks>{PR}</Markdown>);
+    expect(html).toContain('title="Open in Yarvis"');
+    expect(html).toContain('aria-label="Open in browser"');
+  });
+
+  it("leaves PR links alone unless the caller opts in", async () => {
+    const html = await renderToHtml(<Markdown>{PR}</Markdown>);
+    expect(html).not.toContain("Open in browser");
+  });
+
+  it("keeps other links as plain external links", async () => {
+    const html = await renderToHtml(<Markdown appLinks>{"[docs](https://a.test)"}</Markdown>);
+    expect(html).toContain('title="https://a.test"');
+    expect(html).not.toContain("Open in browser");
+  });
+});

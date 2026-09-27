@@ -88,6 +88,8 @@ export default function App() {
   const handleOpenPr = useCallback((pr: PrSummary) => {
     setRequestedPr(pr);
     setTab("prs");
+    // A link clicked in the Omni Chat overlay would otherwise navigate behind it.
+    setOmniChatOpen(false);
   }, []);
   useOpenPrListener(handleOpenPr);
 
