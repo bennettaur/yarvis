@@ -116,7 +116,11 @@ const appLink: Components["a"] = (props) => {
     <span className="group inline-flex items-baseline gap-1">
       <a
         href={href}
-        title="Open in Yarvis"
+        // Same hover-destination guarantee as externalLink: the assistant
+        // (or third-party PR data it relays) chose the link text, so the
+        // title has to carry the real URL, not just "Open in Yarvis".
+        title={href}
+        aria-label={`Open in Yarvis: ${href}`}
         onClick={(e) => {
           e.preventDefault();
           requestOpenPr(pr);
@@ -143,7 +147,7 @@ export default function Markdown({
   children,
   className = "text-sm text-zinc-300",
   allowImages = false,
-  appLinks = false,
+  allowAppLinks = false,
 }: {
   children: string;
   /** Replaces — rather than extends — the wrapper's base text size and color. */
@@ -158,7 +162,7 @@ export default function Markdown({
    * the browser as a secondary choice. Off by default: a link in PR or issue
    * text is the author's, and the reader expects it to go where it says.
    */
-  appLinks?: boolean;
+  allowAppLinks?: boolean;
 }): ReactNode {
   const base = allowImages ? components : componentsWithDeferredImages;
   return (
@@ -167,7 +171,7 @@ export default function Markdown({
           renders one — chat replies and issue bodies both rely on it. */}
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkBreaks]}
-        components={appLinks ? { ...base, a: appLink } : base}
+        components={allowAppLinks ? { ...base, a: appLink } : base}
       >
         {children}
       </ReactMarkdown>

@@ -10,7 +10,7 @@ import TurnActivity from "./TurnActivity";
  */
 const AssistantReply = memo(function AssistantReply({ content }: { content: string }) {
   return (
-    <Markdown className="text-zinc-100" appLinks>
+    <Markdown className="text-zinc-100" allowAppLinks>
       {content}
     </Markdown>
   );
