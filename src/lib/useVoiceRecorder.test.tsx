@@ -301,8 +301,8 @@ describe("useVoiceRecorder", () => {
   });
 
   it("caps a recording at a minute by default", () => {
-    // The tests above shorten it; production uses this value, and the README
-    // tells the user about it.
+    // The tests above shorten it; production uses this value, and
+    // docs/features/voice.md tells the user about it.
     expect(MAX_UTTERANCE_MS).toBe(60_000);
     expect(DEFAULT_SILENCE_MS).toBe(1200);
   });

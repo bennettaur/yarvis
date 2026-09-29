@@ -33,7 +33,7 @@ jobs:
           `/Applications`, try to open it once, then allow it from **System
           Settings → Privacy & Security → Open Anyway**.
 
-          See "Installing a nightly build" in the README for the details.
+          See "Nightly builds" in docs/development.md for the details.
           NOTES
           gh release create nightly --prerelease --title "Nightly Release" --notes-file release-notes.md
 
@@ -98,7 +98,7 @@ jobs:
           # signature at all, reporting it as damaged, and Tauri only signs when
           # it is handed an identity. Ad-hoc ("-") is the floor when no Developer
           # ID certificate is configured; it leaves the app unnotarized, so see
-          # "Installing a nightly build" in README.md for what that costs users.
+          # "Nightly builds" in docs/development.md for what that costs users.
           echo "APPLE_SIGNING_IDENTITY=${APPLE_SIGNING_IDENTITY:--}" >> "$GITHUB_ENV"
 
           # Tauri reads the rest with var_os, which cannot distinguish "set to

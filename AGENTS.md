@@ -7,8 +7,8 @@ Guidance for AI agents building features in this repo.
 Yarvis is a personal-assistant desktop app for macOS, built with Tauri v2: an
 LLM chat interface with memory, a spoken (STT/TTS) front end to the same agent,
 work tracking, PR review, calendar, and workspace/git-worktree management. See
-`README.md` for the full user-facing setup and feature docs — this file is about
-working in the codebase.
+`docs/getting-started.md` for setup and `docs/features/` for the user-facing
+feature docs — this file is about working in the codebase.
 
 ## Architecture
 
@@ -33,8 +33,10 @@ Three processes, each with a clean ownership boundary:
   remote-control bot.
 
 Data lives in local **PostgreSQL + pgvector**; small structural settings live
-in `~/.yarvis/settings.json` instead. See `README.md`'s "Project layout"
-section for a directory-by-directory map of both `src/` and `sidecar/src/`.
+in `~/.yarvis/settings.json` instead. See `docs/development.md`'s "Project
+layout" section for a directory-by-directory map of both `src/` and
+`sidecar/src/`. A user-visible behavior change updates the matching page in
+`docs/features/` (or `docs/configuration.md` for settings and secrets).
 
 ## Commands
 

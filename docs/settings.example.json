@@ -1,0 +1,51 @@
+{
+  "agentName": "Claude",
+  "agentCommand": "claude --permission-mode auto",
+  "maxPtySessions": 60,
+  "secretBackend": "keychain",
+  "jiraBaseUrl": null,
+  "jiraEmail": null,
+  "azureDevopsOrgUrl": null,
+  "googleClientId": null,
+  "telegramOtpWindowMinutes": null,
+  "chatConfig": {
+    "maxSteps": 100,
+    "maxOutputTokens": null,
+    "compactAtTokens": 200000
+  },
+  "complexityModels": {
+    "low": null,
+    "medium": null,
+    "max": null
+  },
+  "githubPrConfig": {
+    "reviewQuery": "is:open is:pr review-requested:@me",
+    "reviewingLookbackDays": 30
+  },
+  "wipConfig": {
+    "sources": {
+      "myPrs": true,
+      "starredPrs": true,
+      "issues": true,
+      "tasks": true,
+      "workspaces": true
+    },
+    "issueLabels": []
+  },
+  "jobConfig": {
+    "ccDigestEnabled": false,
+    "ccDigestProjectDirs": []
+  },
+  "voiceConfig": {
+    "sttProvider": "",
+    "sttModel": "",
+    "sttLanguage": "",
+    "ttsProvider": "",
+    "ttsModel": "",
+    "ttsVoice": "",
+    "ttsRefAudio": "",
+    "ttsExtras": {},
+    "speakReplies": true,
+    "handsFree": false
+  }
+}

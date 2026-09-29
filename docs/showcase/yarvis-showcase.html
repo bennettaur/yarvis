@@ -1,0 +1,734 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yarvis: running the week with an assistant that can start the work</title>
+<!--
+  A self-contained slide deck. Open it in a browser.
+  Keys: → / Space next, ← back, Home / End, F fullscreen, N speaker notes, O overview.
+  Print (Cmd+P) gives one slide per page, for a PDF.
+  Each slide is a <section class="slide">. Notes go in an <aside class="notes">.
+  To use a real screenshot, replace a .mock block with <img class="shot" src="...">.
+-->
+<style>
+  :root {
+    --bg: #09090b;
+    --panel: #18181b;
+    --panel-2: #27272a;
+    --line: #3f3f46;
+    --text: #f4f4f5;
+    --muted: #a1a1aa;
+    --dim: #71717a;
+    --accent: #818cf8;
+    --accent-2: #6366f1;
+    --green: #4ade80;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --blue: #60a5fa;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #000; color: var(--text); font-family: var(--sans); }
+  body { overflow: hidden; }
+
+  /* Slides are laid out at 1280x720 and scaled to fit the window. */
+  #stage { position: fixed; inset: 0; display: grid; place-items: center; }
+  #deck { width: 1280px; height: 720px; position: relative; transform-origin: center center; }
+  .slide {
+    position: absolute; inset: 0; padding: 64px 80px; background: var(--bg);
+    display: none; flex-direction: column; overflow: hidden;
+    background-image: radial-gradient(ellipse at 90% -10%, rgba(99,102,241,.18), transparent 55%);
+  }
+  .slide.active { display: flex; }
+
+  h1 { font-size: 64px; line-height: 1.05; margin: 0 0 20px; letter-spacing: -1.5px; }
+  h2 { font-size: 40px; line-height: 1.1; margin: 0 0 8px; letter-spacing: -.8px; }
+  h3 { font-size: 20px; margin: 0 0 10px; color: var(--accent); font-weight: 600; }
+  p { margin: 0 0 14px; }
+  .lede { font-size: 22px; color: var(--muted); line-height: 1.45; max-width: 980px; }
+  .kicker { font-size: 14px; letter-spacing: 3px; text-transform: uppercase; color: var(--accent); margin-bottom: 18px; font-weight: 600; }
+  .sub { font-size: 19px; color: var(--muted); margin-bottom: 28px; }
+  code, .mono { font-family: var(--mono); font-size: .9em; }
+  code { background: var(--panel-2); padding: 1px 6px; border-radius: 4px; }
+  .muted { color: var(--muted); }
+  .dim { color: var(--dim); }
+  .accent { color: var(--accent); }
+  .grow { flex: 1; min-height: 0; }
+  .row { display: flex; gap: 28px; }
+  .col { flex: 1; min-width: 0; }
+  .center { align-items: center; justify-content: center; text-align: center; }
+  .bottom { margin-top: auto; }
+
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 22px 24px; }
+  .card h3 { margin-bottom: 8px; }
+  .card p, .card li { font-size: 17px; color: var(--muted); line-height: 1.45; }
+  .card ul { margin: 0; padding-left: 20px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .grid2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+  .tag { display: inline-block; font-size: 13px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); margin-right: 6px; }
+  .tag.urgent { color: var(--red); border-color: rgba(248,113,113,.4); }
+  .tag.high { color: var(--amber); border-color: rgba(251,191,36,.4); }
+  .tag.med { color: var(--blue); border-color: rgba(96,165,250,.4); }
+  .tag.low { color: var(--dim); }
+
+  /* Mock app UI */
+  .mock { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+  .mock .bar { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: #111113; font-size: 13px; color: var(--dim); }
+  .mock .bar .dots { display: flex; gap: 6px; margin-right: 8px; }
+  .mock .bar .dots i { width: 11px; height: 11px; border-radius: 50%; background: #3f3f46; display: block; }
+  .mock .body { padding: 18px; display: flex; flex-direction: column; gap: 12px; font-size: 16px; }
+  .msg { max-width: 88%; padding: 12px 16px; border-radius: 12px; line-height: 1.45; }
+  .msg.user { align-self: flex-end; background: var(--accent-2); color: #fff; border-bottom-right-radius: 4px; }
+  .msg.bot { align-self: flex-start; background: var(--panel-2); border-bottom-left-radius: 4px; }
+  .msg .label { display: block; font-size: 12px; opacity: .7; margin-bottom: 4px; }
+  .msg ul, .msg ol { margin: 6px 0 0; padding-left: 20px; }
+  .msg li { margin-bottom: 3px; }
+  ul.points { margin: 0; padding: 0; list-style: none; font-size: 21px; line-height: 1.5; }
+  ul.points li { padding-left: 28px; position: relative; margin-bottom: 12px; }
+  ul.points li::before { content: ""; position: absolute; left: 4px; top: 12px; width: 8px; height: 8px; border-radius: 2px; background: var(--accent); }
+  ul.points.small { font-size: 18px; }
+  .tools { align-self: flex-start; font-family: var(--mono); font-size: 13px; color: var(--dim); display: flex; flex-direction: column; gap: 3px; }
+  .tools span::before { content: "✓ "; color: var(--green); }
+  .approve { display: flex; align-items: center; gap: 12px; background: rgba(251,191,36,.1); border: 1px solid rgba(251,191,36,.35); color: var(--amber); border-radius: 10px; padding: 10px 14px; font-size: 15px; }
+  .approve .k { margin-left: auto; font-family: var(--mono); font-size: 13px; }
+  .approve .k b { border: 1px solid rgba(251,191,36,.5); border-radius: 4px; padding: 1px 6px; margin: 0 2px; }
+  .list { display: flex; flex-direction: column; }
+  .list .item { display: flex; align-items: center; gap: 12px; padding: 11px 14px; border-bottom: 1px solid #222226; font-size: 16px; }
+  .list .item:last-child { border-bottom: 0; }
+  .list .item .glyph { width: 22px; text-align: center; font-size: 17px; }
+  .list .item .meta { margin-left: auto; font-size: 13px; color: var(--dim); }
+  .g-green { color: var(--green); } .g-red { color: var(--red); } .g-amber { color: var(--amber); } .g-blue { color: var(--blue); } .g-accent { color: var(--accent); }
+  pre.term { margin: 0; font-family: var(--mono); font-size: 14px; line-height: 1.55; color: #d4d4d8; white-space: pre-wrap; }
+
+  /* The weekly loop diagram */
+  .loop { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; margin-top: 18px; }
+  .loop .step { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 22px; position: relative; }
+  .loop .step .when { font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: var(--accent); font-weight: 600; margin-bottom: 8px; }
+  .loop .step .what { font-size: 22px; font-weight: 600; margin-bottom: 10px; }
+  .loop .step p { font-size: 16px; color: var(--muted); line-height: 1.45; margin: 0; }
+  .loop .step:not(:last-child)::after { content: "→"; position: absolute; right: -16px; top: 50%; transform: translateY(-50%); color: var(--accent); font-size: 22px; }
+  .feedback { margin-top: 18px; text-align: center; color: var(--dim); font-size: 16px; border: 1px dashed var(--line); border-radius: 12px; padding: 12px; }
+
+  table.vis { width: 100%; border-collapse: collapse; font-size: 16px; }
+  table.vis th { text-align: left; color: var(--accent); font-weight: 600; font-size: 15px; letter-spacing: 1px; text-transform: uppercase; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  table.vis td { padding: 7px 14px; border-bottom: 1px solid #222226; color: var(--muted); vertical-align: top; }
+
+  .big-quote { font-size: 30px; line-height: 1.35; font-weight: 500; max-width: 1000px; }
+  .big-quote .who { display: block; font-size: 16px; color: var(--dim); margin-top: 14px; font-weight: 400; }
+
+  /* Chrome */
+  #progress { position: fixed; left: 0; bottom: 0; height: 3px; background: var(--accent); transition: width .2s; z-index: 5; }
+  #counter { position: fixed; right: 16px; bottom: 12px; font-size: 13px; color: var(--dim); font-family: var(--mono); z-index: 5; }
+  #notes { position: fixed; left: 0; right: 0; bottom: 0; max-height: 34vh; overflow: auto; background: rgba(24,24,27,.97); border-top: 1px solid var(--line); padding: 16px 24px 28px; font-size: 16px; line-height: 1.5; color: #e4e4e7; display: none; z-index: 6; }
+  #notes.show { display: block; }
+  #notes h4 { margin: 0 0 6px; font-size: 12px; letter-spacing: 2px; text-transform: uppercase; color: var(--accent); }
+  aside.notes { display: none; }
+  #help { position: fixed; left: 16px; bottom: 12px; font-size: 12px; color: #52525b; z-index: 5; }
+
+  /* Overview grid (O) */
+  body.overview { overflow: auto; }
+  body.overview #stage { position: static; display: block; padding: 24px; }
+  body.overview #deck { width: auto; height: auto; transform: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+  body.overview .slide { display: flex; position: relative; width: 1280px; height: 720px; transform: scale(.25); transform-origin: top left; margin-bottom: -540px; margin-right: -960px; cursor: pointer; outline: 1px solid var(--line); }
+  body.overview .slide.active { outline: 3px solid var(--accent); }
+
+  @media print {
+    @page { size: 1280px 720px; margin: 0; }
+    html, body { overflow: visible; height: auto; background: var(--bg); }
+    #stage { position: static; display: block; }
+    #deck { width: 1280px; height: auto; }
+    .slide, .slide.active { display: flex; position: relative; width: 1280px; height: 720px; page-break-after: always; break-after: page; }
+    #progress, #counter, #notes, #notes.show, #help { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="stage"><div id="deck">
+
+<!-- 1 -->
+<section class="slide center">
+  <div class="kicker">Yarvis</div>
+  <h1>Running my week with an assistant<br>that can start the work</h1>
+  <p class="lede" style="margin: 0 auto;">How I plan, start, steer and wrap up a week of work across many parallel coding agents, and how to get the most out of each part of Yarvis.</p>
+  <aside class="notes">
+    Set the frame: this isn't a tour of every button. It's how I actually use Yarvis across a week, and which features make each step work. Setup instructions are in docs/getting-started.md, or run /yarvis-setup in Claude Code.
+  </aside>
+</section>
+
+<!-- 2 -->
+<section class="slide">
+  <div class="kicker">The problem</div>
+  <h2>My work is spread across a dozen places, and none of them remember anything</h2>
+  <p class="sub">A normal day with coding agents looks like this:</p>
+  <div class="row grow">
+    <div class="col">
+      <ul class="points">
+        <li>Four or five Claude Code sessions, each in its own checkout</li>
+        <li>PRs to write, PRs to review, CI to babysit</li>
+        <li>Tickets in JIRA, issues in GitHub, tasks in my head</li>
+        <li>Meetings that I will miss if nothing yells at me</li>
+      </ul>
+    </div>
+    <div class="col">
+      <ul class="points">
+        <li>Every Monday: "what was I doing last week?"</li>
+        <li>Every afternoon: "which agent is waiting on me?"</li>
+        <li>Every Friday: "what did I actually ship?"</li>
+        <li>Every review: re-learning code I read last month</li>
+      </ul>
+    </div>
+  </div>
+  <p class="lede bottom">The agents do the work well. What was missing was something that keeps track of the work <em>around</em> them.</p>
+  <aside class="notes">
+    The pain isn't the coding. It's the context switching and the lost thread. Most of the questions on the right are things I used to answer by scrolling through terminals, GitHub notifications and my own notes.
+  </aside>
+</section>
+
+<!-- 3 -->
+<section class="slide">
+  <div class="kicker">What Yarvis is</div>
+  <h2>One desktop app, three layers</h2>
+  <p class="sub">A macOS app (Tauri, React, a Bun sidecar, Postgres with pgvector). Your data stays in a local Postgres. LLM and integration calls go out to those services.</p>
+  <div class="grid3 grow">
+    <div class="card">
+      <h3>The assistant</h3>
+      <ul>
+        <li>Knows my projects and their priorities</li>
+        <li>Keeps my tasks and its own todos</li>
+        <li>Remembers facts, decisions, feedback</li>
+        <li>Logs what I actually did</li>
+        <li>Starts work and steers running agents</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Workspaces</h3>
+      <ul>
+        <li>A folder per piece of work</li>
+        <li>A git worktree per repo, one branch</li>
+        <li>A Claude Code session at the root</li>
+        <li>Diffs, self-review, PR checks, stacks</li>
+        <li>A bell when a session needs me</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>The day's tools</h3>
+      <ul>
+        <li>PR review with guided tours</li>
+        <li>Terminals, Omni Chat, Omni view</li>
+        <li>Calendar and full-screen alarms</li>
+        <li>Voice, clipboard palette, Telegram</li>
+        <li>MCP in both directions</li>
+      </ul>
+    </div>
+  </div>
+  <aside class="notes">
+    The assistant is the center. Workspaces are where agents do the work. The tools around the edge are there so I don't leave the app during the day. They also feed the activity log, which is how the assistant knows what I did.
+  </aside>
+</section>
+
+<!-- 4 -->
+<section class="slide">
+  <div class="kicker">The weekly loop</div>
+  <h2>Plan, start, steer, wrap up. Then do it again.</h2>
+  <div class="loop">
+    <div class="step">
+      <div class="when">Monday</div>
+      <div class="what">Set priorities</div>
+      <p>Tell the assistant what the week is for, which tickets matter, and what's due when.</p>
+    </div>
+    <div class="step">
+      <div class="when">Any time</div>
+      <div class="what">Start work</div>
+      <p>"Start work on PROJ-412." A workspace, a worktree and an agent on the ticket.</p>
+    </div>
+    <div class="step">
+      <div class="when">All week</div>
+      <div class="what">Ask and steer</div>
+      <p>"Where did we leave off?" "What's next?" "Merge main into my open PRs."</p>
+    </div>
+    <div class="step">
+      <div class="when">Friday</div>
+      <div class="what">Wrap up</div>
+      <p>"What did I get done this week?" A write-up with every PR named.</p>
+    </div>
+  </div>
+  <div class="feedback">Everything along the way lands in memory and the activity log, so next Monday starts from where this week ended.</div>
+  <aside class="notes">
+    This is the whole talk in one slide. The next slides go through each step, with what I type and what Yarvis does behind it.
+  </aside>
+</section>
+
+<!-- 5 -->
+<section class="slide">
+  <div class="kicker">Monday · set priorities</div>
+  <h2>I start the week by talking, not by filling in forms</h2>
+  <div class="row grow" style="margin-top: 18px;">
+    <div class="mock col" style="flex: 1.35;">
+      <div class="bar"><span class="dots"><i></i><i></i><i></i></span>Chat · claude-sonnet-5</div>
+      <div class="body">
+        <div class="msg user">This week is about shipping the billing migration. PROJ-412 and PROJ-415 are urgent, PROJ-420 is nice to have. I need to review Sam's auth PR before Wednesday, and the flaky checkout test should be fixed by Friday.</div>
+        <div class="tools"><span>upsert_project · billing migration</span><span>track_project_item × 3</span><span>create_task × 2 (weekly)</span><span>create_todo · review Sam's PR by Wed</span><span>remember · project</span></div>
+        <div class="msg bot">Got it. <b>Billing migration</b> is this week's focus, with PROJ-412 and PROJ-415 urgent and PROJ-420 low. I added "fix flaky checkout test" as a weekly task due Friday, and I'll remind you about Sam's auth PR before Wednesday. Want me to start PROJ-412?</div>
+      </div>
+    </div>
+    <div class="col">
+      <ul class="points small">
+        <li>A <b>project</b> with a focus for the week</li>
+        <li>Each ticket tracked with the <b>priority</b> I said</li>
+        <li><b>Tasks</b> for my goals, daily or weekly</li>
+        <li>A <b>todo</b> for what the assistant promised</li>
+        <li>The story in <b>memory</b>: why, who, when</li>
+      </ul>
+      <p class="muted" style="font-size: 17px; margin-top: 18px;">All of it is visible and editable: projects under Memory → Projects, tasks on the Tasks tab, and the assistant's promises under Memory → Agent todos.</p>
+    </div>
+  </div>
+  <aside class="notes">
+    The key habit: say priorities out loud. "PROJ-412 is urgent" gets stored and used for the rest of the week. "Let's look at PROJ-412" doesn't. Tasks are my plan. Agent todos are the assistant's promises, kept separately so they survive the conversation without cluttering my list. For a big project, I ask it to reconcile against JIRA, which goes to the project-manager specialist.
+  </aside>
+</section>
+
+<!-- 6 -->
+<section class="slide">
+  <div class="kicker">Start work</div>
+  <h2>One sentence to a running agent on the ticket</h2>
+  <div class="row grow" style="margin-top: 18px;">
+    <div class="mock col">
+      <div class="bar"><span class="dots"><i></i><i></i><i></i></span>Chat</div>
+      <div class="body">
+        <div class="msg user">Start work on PROJ-412 in billing-api.</div>
+        <div class="tools"><span>jira_start_work_on_issue · PROJ-412</span></div>
+        <div class="msg bot">Started <b>proj-412-ledger-backfill</b>. The session is reading the ticket now. I assigned PROJ-412 to you and moved it to In Progress.</div>
+      </div>
+    </div>
+    <div class="col">
+      <h3>What happens behind it</h3>
+      <ol style="font-size: 18px; line-height: 1.6; color: var(--muted); padding-left: 22px; margin: 0;">
+        <li>A workspace folder, with a worktree per repo on a new branch</li>
+        <li>The repo's setup script runs in each worktree</li>
+        <li>Context files: <code>AGENTS.md</code>, attention hooks, the repos' skills, and <code>.mcp.json</code> for Yarvis memory</li>
+        <li>The ticket is written to <code>.yarvis/brief.md</code></li>
+        <li>A Claude Code session starts, told to read the brief and make a first pass</li>
+      </ol>
+      <p class="muted" style="font-size: 16px; margin-top: 16px;">The same thing is one click from any issue, task, or PR: <b>Start work</b> / <b>Start workspace</b>.</p>
+    </div>
+  </div>
+  <aside class="notes">
+    Provisioning runs in the sidecar, so I can navigate away and it still finishes. If it fails, the workspace opens on the failed setup log with Retry, or "Ignore and use anyway". The session connects to Yarvis's memory over MCP with no setup, which matters later.
+  </aside>
+</section>
+
+<!-- 7 -->
+<section class="slide">
+  <div class="kicker">Workspaces</div>
+  <h2>Many agents in parallel, and one glance tells me who needs me</h2>
+  <div class="row grow" style="margin-top: 18px;">
+    <div class="mock col" style="flex: 1.1;">
+      <div class="bar"><span class="dots"><i></i><i></i><i></i></span>Workspaces</div>
+      <div class="list">
+        <div class="item"><span class="glyph g-amber">●</span>proj-412-ledger-backfill<span class="meta">checks running · <span class="g-amber">needs you</span></span></div>
+        <div class="item"><span class="glyph g-red">✗</span>proj-415-webhook-retries<span class="meta">checks failing</span></div>
+        <div class="item"><span class="glyph g-accent">★</span>fix-flaky-checkout-test<span class="meta">ready to merge</span></div>
+        <div class="item"><span class="glyph g-amber">✎</span>auth-session-refresh<span class="meta">changes requested</span></div>
+        <div class="item"><span class="glyph dim">◌</span>proj-420-export-csv<span class="meta">draft</span></div>
+      </div>
+    </div>
+    <div class="col">
+      <ul class="points small">
+        <li>A badge per PR: <span class="g-red">✗</span> failing, <span class="g-amber">⚠</span> conflicts, <span class="g-amber">✎</span> changes requested, <span class="g-accent">★</span> ready to merge</li>
+        <li>The <b>bell</b> collects every session blocked on a permission prompt or idle waiting for me. Looking at it clears it.</li>
+        <li>Right column: all files, changed files, <b>self-review comments</b> with "Copy for Claude", PR checks, and the <b>Stack</b> tab</li>
+        <li>Terminals and sessions live in the Rust core, so they keep running while I'm elsewhere</li>
+      </ul>
+    </div>
+  </div>
+  <aside class="notes">
+    Self-review is my favorite small thing: comment on your own diff like a PR review, but nothing is published. Then "Copy for Claude" pastes the review into the agent as numbered items. The Stack tab shows a gh-stack chain with a state per layer, and can merge up to a chosen layer.
+  </aside>
+</section>
+
+<!-- 8 -->
+<section class="slide">
+  <div class="kicker">During the week</div>
+  <h2>"Where did we leave off?"</h2>
+  <div class="row grow" style="margin-top: 18px;">
+    <div class="mock col" style="flex: 1.35;">
+      <div class="bar"><span class="dots"><i></i><i></i><i></i></span>Chat · Wednesday 9:05</div>
+      <div class="body">
+        <div class="msg user">Morning. Where did we leave off?</div>
+        <div class="tools"><span>recall · day-summary, session-summary</span><span>search_events · since yesterday 17:00</span><span>list_todos</span><span>list_tasks · open</span></div>
+        <div class="msg bot">Yesterday you:
+          <ul>
+            <li>got PROJ-412's backfill passing locally. The session noted the migration still needs a dry-run flag.</li>
+            <li>reviewed two of Sam's files, and stopped at <code>session.ts</code>.</li>
+          </ul>
+          Still open: PROJ-415's failing webhook test, and my reminder to finish Sam's review, which is due today.</div>
+      </div>
+    </div>
+    <div class="col">
+      <h3>Where the answer comes from</h3>
+      <ul class="points small">
+        <li><b>Day summaries</b>, written overnight from the activity log</li>
+        <li><b>Session summaries</b> of Claude Code transcripts (opt-in)</li>
+        <li>The <b>activity log</b> since the last summary</li>
+        <li>Notes a session saved to Yarvis memory over MCP</li>
+        <li>Its own <b>todos</b>, and my open <b>tasks</b></li>
+      </ul>
+    </div>
+  </div>
+  <aside class="notes">
+    This is the question I ask most. The quality of the answer depends on what reached memory, which slide 11 covers. Guided reviews also remember where I stopped, so "where was I in Sam's review" works.
+  </aside>
+</section>
+
+<!-- 9 -->
+<section class="slide">
+  <div class="kicker">During the week</div>
+  <h2>"What should I work on next?"</h2>
+  <div class="row grow" style="margin-top: 18px;">
+    <div class="mock col" style="flex: 1.35;">
+      <div class="bar"><span class="dots"><i></i><i></i><i></i></span>Chat</div>
+      <div class="body">
+        <div class="msg user">Give me a plan for this afternoon.</div>
+        <div class="tools"><span>delegate · planner</span></div>
+        <div class="msg bot">
+          <ol>
+            <li><b>Finish Sam's auth review.</b> It's due today, and you've done only one review this week. Start at <code>session.ts</code>.</li>
+            <li><b>Unblock PROJ-415.</b> It's urgent and CI is red. Ask its session to look at the webhook retry test.</li>
+            <li><b>Merge the flaky-test fix.</b> It's approved and clean, so it's a two-minute win.</li>
+          </ol>
+        </div>
+        <div class="msg user">Not the merge, Priya wants to look first.</div>
+        <div class="tools"><span>dismiss_suggestion · 2 days</span></div>
+      </div>
+    </div>
+    <div class="col">
+      <ul class="points small">
+        <li>"What's next" ranks what's <b>waiting on me</b>: unfinished reviews, review requests, live workspaces, my PRs, overdue tasks</li>
+        <li>It moves reviews up when I've done few that week</li>
+        <li>"Give me a plan" goes to the <b>planner</b>, which also reads my projects and their <b>priorities</b></li>
+        <li>Saying no records a <b>dismissal</b>, so it stops suggesting it</li>
+      </ul>
+    </div>
+  </div>
+  <aside class="notes">
+    Worth knowing: the quick "what's next" ranking looks at what's waiting on me, not at project priorities. When priorities should drive the answer, I ask for a plan, which delegates to the planner specialist. The planner reads projects, tickets and their priorities too, and returns exactly three suggestions with a first step each.
+  </aside>
+</section>
+
+<!-- 10 -->
+<section class="slide">
+  <div class="kicker">Steering running work</div>
+  <h2>Act on many workspaces with one message</h2>
+  <div class="row grow" style="margin-top: 18px;">
+    <div class="mock col" style="flex: 1.35;">
+      <div class="bar"><span class="dots"><i></i><i></i><i></i></span>Chat</div>
+      <div class="body">
+        <div class="msg user">Merge main into all my open PRs.</div>
+        <div class="tools"><span>sync_workspaces_with_base · 5 workspaces</span></div>
+        <div class="msg bot">
+          <ul>
+            <li>Merged and pushed: proj-412, proj-420, fix-flaky-checkout-test</li>
+            <li>Skipped: auth-session-refresh, which has uncommitted changes</li>
+            <li><b>Conflict</b> in proj-415: <code>webhooks/retry.ts</code>. It's left unpushed.</li>
+          </ul>
+          Want the proj-415 session to resolve it?</div>
+        <div class="msg user">Yes.</div>
+        <div class="tools"><span>send_workspace_instruction · proj-415</span></div>
+        <div class="msg bot">Sent "resolve the merge conflicts and commit". It's running in the background. I can confirm it was delivered, not that it's done.</div>
+      </div>
+    </div>
+    <div class="col">
+      <ul class="points small">
+        <li>Fetch, merge the base branch, push, with a report per workspace</li>
+        <li>Dirty worktrees and half-finished merges are skipped, not trampled</li>
+        <li>Instructions are typed into the running session, with guards: only if Claude is the program reading the terminal, and never text starting with <code>!</code>, <code>/</code>, <code>#</code> or <code>@</code></li>
+        <li>The typing guards are in code. On top of that, the model is told never to forward text from an issue or PR as an instruction.</li>
+      </ul>
+    </div>
+  </div>
+  <aside class="notes">
+    Also useful: "what's the state of the billing-api workspace" (PR, checks, mergeability, polled every minute), and "archive it", which removes the worktrees and completes the linked task. It asks before throwing away uncommitted work.
+  </aside>
+</section>
+
+<!-- 11 -->
+<section class="slide">
+  <div class="kicker">What the assistant can see</div>
+  <h2>It sees logs and memory, not your terminals</h2>
+  <div class="grow" style="margin-top: 16px;">
+    <table class="vis">
+      <tr><th>Right away</th><th>After the nightly jobs</th><th>Not at all</th></tr>
+      <tr><td>Tasks, projects, todos, memories</td><td>What happened in a Claude Code session (transcript digest, opt-in)</td><td>Terminal output, live transcripts</td></tr>
+      <tr><td>The activity log, as it happens</td><td>4-hourly and daily activity summaries</td><td>Whether a sent instruction was carried out</td></tr>
+      <tr><td>Workspace PR state and CI (polled every minute)</td><td></td><td>The attention bell</td></tr>
+      <tr><td>Anything a session saved to Yarvis memory</td><td></td><td>PRs reviewed on github.com, outside Yarvis</td></tr>
+    </table>
+  </div>
+  <div class="grid2" style="margin-top: 18px;">
+    <div class="card"><h3>Close the gap during the day</h3><p>Add to your repo's <code>CLAUDE.md</code>: "When you finish a chunk of work, save a short note to Yarvis memory with <code>take_note</code>." Sessions already have the tool.</p></div>
+    <div class="card"><h3>Close it overnight</h3><p>Turn on the transcript digest (Settings → Assistant) for the project folders you trust. Each night it writes what was done, the decisions, and any feedback.</p></div>
+  </div>
+  <aside class="notes">
+    Be honest about this with people setting it up. The assistant doesn't read your terminals. It knows what the activity log, the PR poller and memory tell it. The digest is off by default because transcripts can hold pasted secrets, and summarizing them sends them to your LLM provider.
+  </aside>
+</section>
+
+<!-- 12 -->
+<section class="slide">
+  <div class="kicker">PR review</div>
+  <h2>Guided tours, and questions about any line</h2>
+  <div class="row grow" style="margin-top: 18px;">
+    <div class="col">
+      <div class="card" style="margin-bottom: 18px;">
+        <h3>Guided review</h3>
+        <p>An agent reads the change and lays out a reading order from the outside in: the request that comes in, what handles it, what it writes. Each step names the lines and why they come there, plus anything that looks wrong.</p>
+        <p>Data files and tests fold into one sanity-check step each. <b>Next</b> marks the step's files as viewed, synced to GitHub.</p>
+      </div>
+      <div class="card">
+        <h3>Ask about a line</h3>
+        <p>Press <b>?</b> beside any line (shift-click for a range). The answer is kept as your own note, not published, until you press <b>Post</b>. Later: "what did I work out about that file?"</p>
+      </div>
+    </div>
+    <div class="mock col">
+      <div class="bar"><span class="dots"><i></i><i></i><i></i></span>PR #218 · Refresh sessions before expiry · step 3 of 7</div>
+      <div class="body">
+        <div style="font-family: var(--mono); font-size: 13px; color: var(--dim);">src/auth/session.ts · 40–72</div>
+        <div style="font-size: 16px; line-height: 1.5;">The refresh timer is set here. It's worth reading before the middleware, because the middleware assumes the timer has already run.</div>
+        <div class="approve" style="background: rgba(248,113,113,.08); border-color: rgba(248,113,113,.35); color: var(--red);">⚠ A refresh that fails is swallowed at line 61, so the user stays logged in on an expired token.</div>
+        <div style="display: flex; gap: 10px; margin-top: auto;"><span class="tag">← Back</span><span class="tag" style="color: var(--accent); border-color: var(--accent);">Next →</span></div>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">
+    GitHub and Azure DevOps both work. A tour gives the agent up to 60 tool steps and a line question up to 16, so they cost real tokens. A guide is kept until you approve, request changes, merge or close the PR, or leave it untouched for 30 days. New commits mark it out of date rather than deleting it. "Start workspace" on a PR checks the branch out in a workspace with a blank agent session, to ask about the change or push a fix.
+  </aside>
+</section>
+
+<!-- 13 -->
+<section class="slide">
+  <div class="kicker">Omni Chat and Omni view</div>
+  <h2>The assistant over any screen, and a dashboard you describe</h2>
+  <div class="grid2 grow" style="margin-top: 18px;">
+    <div class="card">
+      <h3>Omni Chat · Control+Shift+Space</h3>
+      <p>A chat overlay you can summon from anywhere, even with Yarvis in the background. It sees what you're looking at. On a PR, it knows which one, so you can ask "what's risky here?" without pasting anything. On an issue, "make a task for this" works the same way.</p>
+      <p>Esc hides it and the reply keeps streaming. Summon it again to carry on the same conversation.</p>
+    </div>
+    <div class="card">
+      <h3>Omni view</h3>
+      <p>Describe a layout and the model builds it from live widgets: tasks, calendar views, PR lists, one PR's description, checks, files and diffs, workspaces, terminals, a chat.</p>
+      <p>"Today's calendar on the left, my tasks and open PRs on the right." Save it as a layout, and load it every morning.</p>
+    </div>
+  </div>
+  <aside class="notes">
+    Omni Chat is the one I use most after the Chat tab. Screen context is detailed for PRs, issues and the calendar, and is only the tab name elsewhere. The Omni builder model has no tools, so name the PR or workspace you want in the prompt.
+  </aside>
+</section>
+
+<!-- 14 -->
+<section class="slide">
+  <div class="kicker">Voice</div>
+  <h2>Talk to it, and hear it answer, on your own machine</h2>
+  <div class="row grow" style="margin-top: 18px;">
+    <div class="col">
+      <ul class="points">
+        <li>A mic on the Chat tab and in Omni Chat, feeding the same conversation</li>
+        <li><b>Speak replies</b> reads the answer as it streams, one sentence behind the model</li>
+        <li><b>Hands-free</b> ends a turn on silence and listens again after the reply</li>
+        <li>Runs locally with mlx-audio on Apple Silicon: Whisper in, Soprano or Kokoro out. Gemini works too.</li>
+      </ul>
+    </div>
+    <div class="col">
+      <div class="card">
+        <h3>Safer on spoken turns</h3>
+        <p>A transcript can be misheard, or picked up from the room. So on a spoken turn, anything irreversible asks first: archiving, starting work, syncing branches, sending an instruction, filing a ticket. Every MCP tool asks too.</p>
+      </div>
+      <pre class="term" style="margin-top: 18px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px;">uv sync
+uv run mlx_audio.server --host 127.0.0.1 --port 8000</pre>
+    </div>
+  </div>
+  <aside class="notes">
+    Great for "where did we leave off" while making coffee. Setup is in docs/voice-server.md, about five minutes. Hands-free is off by default on purpose.
+  </aside>
+</section>
+
+<!-- 15 -->
+<section class="slide">
+  <div class="kicker">Calendar and alarms</div>
+  <h2>Plan around meetings, with a full-screen alarm before each</h2>
+  <div class="row grow" style="margin-top: 18px;">
+    <div class="col">
+      <ul class="points">
+        <li>Google Calendar in Agenda, Week, Month and Day views, with Meet links</li>
+        <li>The assistant reads it to plan: "find me two hours of focus time Thursday"</li>
+        <li>It can <b>book</b> an event, always after asking. It can't move or delete one.</li>
+        <li><b>Set alarms for all</b> arms every meeting, one minute before it starts</li>
+      </ul>
+    </div>
+    <div class="mock col center" style="background: #1c1017; border-color: rgba(248,113,113,.4);">
+      <div class="body center" style="padding: 36px;">
+        <div style="font-size: 14px; letter-spacing: 3px; color: var(--red);">ALARM</div>
+        <div style="font-size: 34px; font-weight: 700; margin: 10px 0 6px;">Meeting: Billing sync</div>
+        <div class="muted" style="font-size: 16px;">Overdue by 42s. Please acknowledge.</div>
+        <div style="display: flex; gap: 10px; justify-content: center; margin-top: 22px;">
+          <span class="tag" style="color: var(--green); border-color: var(--green); font-size: 15px; padding: 5px 12px;">Join meeting</span>
+          <span class="tag" style="font-size: 15px; padding: 5px 12px;">Acknowledge</span>
+          <span class="tag" style="font-size: 15px; padding: 5px 12px;">Snooze 5 min</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">
+    The alarm takes over the whole screen, stays on top, and keeps sounding, getting louder after a minute, until you act. It's built for when you're deep in a diff with notifications muted. Arming is manual today: "Set alarms for all" each morning.
+  </aside>
+</section>
+
+<!-- 16 -->
+<section class="slide">
+  <div class="kicker">Around the edges</div>
+  <h2>Clipboard, MCP, Telegram, and scheduled jobs</h2>
+  <div class="grid2 grow" style="margin-top: 18px;">
+    <div class="card"><h3>Clipboard · Control+Shift+V</h3><p>Copy buttons on every path, PR link and check. A palette of saved snippets (ids, commands, links) and this session's clipboard history. It refuses to store anything that looks like a credential.</p></div>
+    <div class="card"><h3>MCP, both ways</h3><p>Connect remote or local MCP servers, with OAuth, and choose per tool: always on, found by search, or off. Yarvis also <em>serves</em> its memory over MCP, so every workspace session can recall and remember.</p></div>
+    <div class="card"><h3>Telegram</h3><p>The same assistant from your phone: "what's failing?", "start work on PROJ-420". Sessions started from Telegram get Claude Code's Remote Control, so you can follow them from the Claude app.</p></div>
+    <div class="card"><h3>Scheduled jobs</h3><p>A prompt on a cron schedule, run by Yarvis or by headless Claude Code, with recent runs' output kept. For example, "every weekday at 8:45, list what's waiting on me".</p></div>
+  </div>
+  <aside class="notes">
+    MCP both ways is what ties the coding sessions to the assistant: the session writes a note, and the assistant recalls it. Telegram is allowlisted by chat id, with an optional TOTP second factor.
+  </aside>
+</section>
+
+<!-- 17 -->
+<section class="slide">
+  <div class="kicker">Friday · wrap up</div>
+  <h2>"What did I get done this week?"</h2>
+  <div class="row grow" style="margin-top: 18px;">
+    <div class="mock col" style="flex: 1.35;">
+      <div class="bar"><span class="dots"><i></i><i></i><i></i></span>Chat · Friday 16:30</div>
+      <div class="body">
+        <div class="msg user">What did I get done this week?</div>
+        <div class="tools"><span>work_summary · this week</span></div>
+        <div class="msg bot"><b>Billing migration</b>: PROJ-412's ledger backfill merged (#231), and PROJ-415's webhook retries are in review (#234, approved, one check pending). PROJ-420 hasn't started.<br><br><b>Reviews</b>: 4 given, including Sam's auth refresh (#218, approved after one round).<br><br><b>Other</b>: fixed the flaky checkout test (#229, merged). Archived 3 workspaces.</div>
+      </div>
+    </div>
+    <div class="col">
+      <ul class="points small">
+        <li>Built from activity counts, the reviews I gave, my PRs and their state, finished tasks, archived workspaces, and the day summaries</li>
+        <li>Good for status updates, 1:1 notes, and a brag doc</li>
+        <li>Anything unfinished is still tracked, so Monday's "where did we leave off?" picks it up</li>
+      </ul>
+    </div>
+  </div>
+  <aside class="notes">
+    The assistant gathers the material with one tool call and writes the prose itself. Because PRs are looked up live, their state is current, not what it was when the work happened.
+  </aside>
+</section>
+
+<!-- 18 -->
+<section class="slide">
+  <div class="kicker">Getting the most out of it</div>
+  <h2>Habits that make the assistant useful</h2>
+  <div class="grid2 grow" style="margin-top: 18px;">
+    <div class="card"><h3>Say priorities out loud</h3><p>"X is urgent, Y can wait" is stored and used all week. Correct it when things change: "the deadline moved to the 14th" updates the memory rather than adding a second one.</p></div>
+    <div class="card"><h3>Bookend the day</h3><p>Start with "where did we leave off?" End with "note what's left for tomorrow". The note feeds tomorrow's answer.</p></div>
+    <div class="card"><h3>Start work through Yarvis</h3><p>Start work from the assistant or a Start work button, not a hand-made checkout. That's what puts the work in the activity log, links the task, and gives the session memory.</p></div>
+    <div class="card"><h3>Let sessions report back</h3><p>Add a <code>take_note</code> line to your <code>CLAUDE.md</code> and turn on the transcript digest. The assistant can only recall what reached memory.</p></div>
+  </div>
+  <aside class="notes">
+    If people take one thing away: the assistant is only as good as what reaches it. Starting work through Yarvis, and letting sessions write back, is what makes "where did we leave off" accurate.
+  </aside>
+</section>
+
+<!-- 19 -->
+<section class="slide center">
+  <div class="kicker">Try it</div>
+  <h1>Get started</h1>
+  <p class="lede" style="margin: 0 auto 28px;">Clone the repo, open Claude Code in it, and run the setup skill. It checks your Mac, installs Postgres with pgvector, starts the app, and walks you through the first configuration.</p>
+  <pre class="term" style="display: inline-block; text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 26px; font-size: 18px;">git clone https://github.com/bennettaur/yarvis.git
+cd yarvis && claude
+&gt; /yarvis-setup</pre>
+  <p class="muted" style="margin-top: 28px; font-size: 17px;">docs/getting-started.md · docs/features/ · docs/voice-server.md</p>
+  <aside class="notes">
+    The skill is written never to ask for API keys. You paste those into Settings, and they go to the Keychain. Full manual steps are in docs/getting-started.md.
+  </aside>
+</section>
+
+</div></div>
+
+<div id="progress"></div>
+<div id="counter"></div>
+<div id="help">← → navigate · N notes · O overview · F fullscreen</div>
+<div id="notes"><h4>Speaker notes</h4><div id="notes-body"></div></div>
+
+<script>
+  const slides = Array.from(document.querySelectorAll(".slide"));
+  const deck = document.getElementById("deck");
+  const notes = document.getElementById("notes");
+  const notesBody = document.getElementById("notes-body");
+  let current = 0;
+
+  function fit() {
+    if (document.body.classList.contains("overview")) return;
+    const scale = Math.min(window.innerWidth / 1280, window.innerHeight / 720);
+    deck.style.transform = `scale(${scale})`;
+  }
+
+  function show(index) {
+    current = Math.max(0, Math.min(slides.length - 1, index));
+    for (const [i, slide] of slides.entries()) slide.classList.toggle("active", i === current);
+    document.getElementById("counter").textContent = `${current + 1} / ${slides.length}`;
+    document.getElementById("progress").style.width = `${((current + 1) / slides.length) * 100}%`;
+    const aside = slides[current].querySelector("aside.notes");
+    notesBody.textContent = aside ? aside.textContent.trim() : "";
+    history.replaceState(null, "", `#${current + 1}`);
+  }
+
+  function toggleOverview() {
+    document.body.classList.toggle("overview");
+    if (!document.body.classList.contains("overview")) {
+      fit();
+      show(current);
+    } else {
+      deck.style.transform = "";
+      slides[current].scrollIntoView({ block: "center" });
+    }
+  }
+
+  document.addEventListener("keydown", (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    switch (e.key) {
+      case "ArrowRight": case "ArrowDown": case "PageDown": case " ": show(current + 1); break;
+      case "ArrowLeft": case "ArrowUp": case "PageUp": show(current - 1); break;
+      case "Home": show(0); break;
+      case "End": show(slides.length - 1); break;
+      case "n": case "N": notes.classList.toggle("show"); break;
+      case "o": case "O": toggleOverview(); break;
+      case "f": case "F":
+        if (document.fullscreenElement) document.exitFullscreen();
+        else document.documentElement.requestFullscreen?.();
+        break;
+      default: return;
+    }
+    e.preventDefault();
+  });
+
+  for (const [i, slide] of slides.entries()) {
+    slide.addEventListener("click", () => {
+      if (document.body.classList.contains("overview")) {
+        current = i;
+        toggleOverview();
+      }
+    });
+  }
+
+  window.addEventListener("resize", fit);
+  // The fit-to-window scale is an inline style, so printing clears it to lay slides out at full size.
+  window.addEventListener("beforeprint", () => { deck.style.transform = ""; });
+  window.addEventListener("afterprint", fit);
+  fit();
+  show((parseInt(location.hash.slice(1), 10) || 1) - 1);
+</script>
+</body>
+</html>

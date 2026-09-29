@@ -22,7 +22,7 @@ dist-ssr
 # Sidecar binary compiled at packaging time
 src-tauri/binaries/
 
-# The Python environment for the local speech server (see README → Voice).
+# The Python environment for the local speech server (see docs/voice-server.md).
 # `pyproject.toml` and `uv.lock` are committed so `uv sync` reproduces it; the
 # environment itself never is.
 .venv/
