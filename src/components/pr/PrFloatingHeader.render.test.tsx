@@ -171,6 +171,43 @@ describe("PrFloatingHeader loading state", () => {
   });
 });
 
+describe("PrFloatingHeader refresh button", () => {
+  const refreshButton = (host: HTMLElement) =>
+    host.querySelector('button[aria-label="Refresh this pull request"]') as HTMLButtonElement;
+  const mountHeader = (props: { loading?: boolean; refreshing?: boolean }) =>
+    mountForInteraction(
+      createElement(PrFloatingHeader, {
+        pr: summary(),
+        detail: detail(),
+        ...props,
+        onBack: () => {},
+        starred: false,
+        onToggleStar: async () => {},
+      }),
+    );
+
+  it("is enabled and still when nothing is loading", async () => {
+    const { host, unmount } = await mountHeader({});
+    expect(refreshButton(host).disabled).toBe(false);
+    expect(refreshButton(host).innerHTML).not.toContain("animate-spin");
+    unmount();
+  });
+
+  it("is disabled and spinning while the detail loads", async () => {
+    const { host, unmount } = await mountHeader({ loading: true });
+    expect(refreshButton(host).disabled).toBe(true);
+    expect(refreshButton(host).innerHTML).toContain("animate-spin");
+    unmount();
+  });
+
+  it("is disabled and spinning while a reload runs behind the detail", async () => {
+    const { host, unmount } = await mountHeader({ refreshing: true });
+    expect(refreshButton(host).disabled).toBe(true);
+    expect(refreshButton(host).innerHTML).toContain("animate-spin");
+    unmount();
+  });
+});
+
 describe("PrFloatingHeader star", () => {
   it("offers to star a PR that isn't starred", async () => {
     const html = await render(detail());

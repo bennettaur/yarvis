@@ -20,6 +20,8 @@ import {
 
 const FIELD =
   "w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-zinc-600 focus:outline-none";
+const CRON_HINT =
+  "Five fields — minute, hour, day of month, month, day of week — in this machine's local time; for example 0 9 * * 1-5 is 09:00 on weekdays.";
 const LABEL = "block text-xs font-medium uppercase tracking-wide text-zinc-500";
 
 type ClaudeTarget = Extract<AgentJobTarget, { kind: "claude-code" }>;
@@ -64,6 +66,7 @@ function ClaudeCodeFields({
         <span className={LABEL}>Permissions</span>
         <select
           className={FIELD}
+          title="What the headless session may do without asking; passed to claude --permission-mode."
           value={target.permissionMode ?? ""}
           onChange={(e) =>
             onChange({
@@ -162,6 +165,7 @@ export default function JobEditor({
           <input
             className={FIELD}
             value={value.cron}
+            title={CRON_HINT}
             placeholder="0 9 * * 1-5"
             onChange={(e) => onChange({ ...value, cron: e.target.value })}
           />
@@ -173,6 +177,7 @@ export default function JobEditor({
           <button
             key={preset.cron}
             type="button"
+            title={preset.cron}
             className="rounded-full border border-zinc-800 px-3 py-1 text-xs text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
             onClick={() => onChange({ ...value, cron: preset.cron })}
           >

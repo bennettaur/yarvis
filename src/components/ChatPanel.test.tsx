@@ -2,8 +2,10 @@ import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
 import { createElement, useState } from "react";
 import * as realApi from "../lib/api";
 import * as realChat from "../lib/chat";
+import { MODEL_HINT, PROVIDER_HINT, SESSION_HINT } from "../lib/chatControlHints";
 import { OmniChatOverlayProvider } from "../lib/omniChatOverlay";
 import { useChatThread } from "../lib/useChatThread";
+import { REASONING_HINT } from "../lib/useReasoningPreference";
 import { mountForInteraction, textOf } from "../test/render";
 import ChatPanel from "./ChatPanel";
 
@@ -162,6 +164,27 @@ describe("ChatPanel", () => {
     expect(text).toContain("Yesterday");
     expect(text).toContain("Anthropic");
     expect(text).toContain("Gemini (no key)");
+  });
+
+  it("explains the Thinking checkbox in a tooltip", async () => {
+    const mounted = await mountForInteraction(createElement(ChatPanel));
+    unmount = mounted.unmount;
+    await settle();
+    const label = Array.from(mounted.host.querySelectorAll("label")).find(
+      (l) => l.textContent?.trim() === "Thinking",
+    );
+    expect(label).toBeTruthy();
+    expect(label?.getAttribute("title")).toBe(REASONING_HINT);
+  });
+
+  it("labels the session, provider and model pickers", async () => {
+    const mounted = await mountForInteraction(createElement(ChatPanel));
+    unmount = mounted.unmount;
+    await settle();
+    const titles = Array.from(mounted.host.querySelectorAll("select")).map((s) =>
+      s.getAttribute("title"),
+    );
+    expect(titles).toEqual([SESSION_HINT, PROVIDER_HINT, MODEL_HINT]);
   });
 
   it("adds a session the thread created to the picker and selects it", async () => {

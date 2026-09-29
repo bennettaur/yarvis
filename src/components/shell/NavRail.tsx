@@ -9,6 +9,7 @@ function RailButton({
   active,
   onClick,
   badge = false,
+  badgeHint,
   shortcutKey = null,
   showHint = false,
 }: {
@@ -18,18 +19,22 @@ function RailButton({
   onClick: () => void;
   /** Shows an attention dot over the icon (e.g. Omni Chat needs the user). */
   badge?: boolean;
+  /** Appended to the title while {@link badge} shows, so the dot explains itself. */
+  badgeHint?: string;
   /** The key this button answers to with Cmd held, if it has one. */
   shortcutKey?: string | null;
   /** Label the button with {@link shortcutKey} — the user is holding Cmd. */
   showHint?: boolean;
 }) {
   const chord = shortcutKey ? formatChord(["Mod", shortcutKey]) : null;
+  const baseTitle = chord ? `${label} (${chord})` : label;
+  const hinted = badge && badgeHint ? `${label} — ${badgeHint}` : label;
 
   return (
     <button
       type="button"
-      title={chord ? `${label} (${chord})` : label}
-      aria-label={label}
+      title={badge && badgeHint ? `${baseTitle} — ${badgeHint}` : baseTitle}
+      aria-label={hinted}
       aria-current={active ? "page" : undefined}
       onClick={onClick}
       className={`relative flex h-10 w-10 items-center justify-center transition-colors ${
@@ -104,6 +109,7 @@ export default function NavRail({
           active={false}
           onClick={onOpenOmniChat}
           badge={attentionPending}
+          badgeHint="something needs your attention"
         />
         {bottom.map((item) => (
           <RailButton

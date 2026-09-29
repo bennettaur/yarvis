@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 // the hook renders while one is in flight.
 let draft = true;
 let fetchCount = 0;
+let diffFetchCount = 0;
 let loadMs = 0;
 mock.module("./api", () => ({
   fetchPrDetail: async (ref: PrRef) => {
@@ -17,13 +18,18 @@ mock.module("./api", () => ({
   },
   fetchPrFiles: async () => [],
   fetchPrStatus: async () => ({}),
-  fetchPrFileDiff: async () => undefined,
+  fetchPrFileDiff: async () => {
+    diffFetchCount++;
+    return { filename: "a.ts" };
+  },
 }));
 
-import { invalidate, prDetailKey, usePrDetail } from "./cache";
-import type { PrRef } from "./types";
+import { clearResourceCache } from "../resourceCache";
+import { invalidate, invalidatePrReview, prDetailKey, usePrDetail, usePrFileDiff } from "./cache";
+import type { PrFile, PrRef } from "./types";
 
 const ref: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 7 };
+const ref70: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 70 };
 /** A second pull request, for moving a mounted hook from one key to another. */
 const otherRef: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 8 };
 
@@ -32,6 +38,11 @@ const otherRef: PrRef = { provider: "github", owner: "octo", repo: "repo", numbe
 function Probe({ subject }: { subject: PrRef | null }) {
   const { data } = usePrDetail(subject);
   return createElement("span", null, data ? (data.draft ? "draft" : "open") : "loading");
+}
+
+function DiffProbe({ subject }: { subject: PrRef }) {
+  const { data } = usePrFileDiff(subject, { filename: "a.ts" } as PrFile, true);
+  return createElement("span", null, data ? "loaded" : "loading");
 }
 
 const settle = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -177,5 +188,44 @@ describe("cache invalidation", () => {
 
     root.unmount();
     host.remove();
+  });
+});
+
+describe("invalidatePrReview", () => {
+  beforeEach(() => {
+    fetchCount = 0;
+    diffFetchCount = 0;
+    clearResourceCache();
+  });
+
+  it("refetches a mounted detail subscriber", async () => {
+    const { host, root } = mount(createElement(Probe, { subject: ref }));
+    await settle();
+    expect(fetchCount).toBe(1);
+
+    invalidatePrReview(ref);
+    await settle();
+    expect(fetchCount).toBe(2);
+
+    root.unmount();
+    host.remove();
+  });
+
+  it("refetches this PR's file diffs but not another PR's whose number starts the same", async () => {
+    const seven = mount(createElement(DiffProbe, { subject: ref }));
+    // #70 shares the "…#7" prefix, so a prefix without its trailing separator
+    // would drop it too.
+    const seventy = mount(createElement(DiffProbe, { subject: ref70 }));
+    await settle();
+    expect(diffFetchCount).toBe(2);
+
+    invalidatePrReview(ref);
+    await settle();
+    expect(diffFetchCount).toBe(3);
+
+    for (const m of [seven, seventy]) {
+      m.root.unmount();
+      m.host.remove();
+    }
   });
 });

@@ -10,7 +10,9 @@ import ErrorNotice from "./ErrorNotice";
  * The step budget is the one users hit: a turn that runs out mid-chain returns
  * no reply at all, having already paid for the tool calls it made, so the
  * useful setting is generous. The output limit is offered as an override rather
- * than a default because the provider already enforces one.
+ * than a default because the provider already enforces one. The compaction
+ * threshold sits here too: it decides when a long chat's older messages are
+ * summarized to stay inside the model's context window.
  */
 export default function ChatBudgetSection() {
   const [config, setConfig] = useState<ChatConfig | null>(null);
@@ -99,6 +101,24 @@ export default function ChatBudgetSection() {
               />
             )}
           </div>
+
+          <label className="block">
+            <span className="block text-sm text-zinc-100">Summarize the chat past (tokens)</span>
+            <span className="mb-1 block text-xs text-zinc-500">
+              Once a chat's history is estimated to pass this, its older messages are replaced by a
+              summary. A model with its own value under Settings → Models uses that instead; keep
+              this under the smallest context window of any model without one.
+            </span>
+            <input
+              type="number"
+              min={10000}
+              max={2000000}
+              step={10000}
+              value={config.compactAtTokens}
+              onChange={(e) => setConfig({ ...config, compactAtTokens: Number(e.target.value) })}
+              className="w-32 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-zinc-500"
+            />
+          </label>
 
           <div className="flex items-center gap-3">
             <button

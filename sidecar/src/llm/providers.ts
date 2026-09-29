@@ -127,6 +127,19 @@ export async function availableProviders(
 }
 
 /**
+ * The compaction threshold saved for one model, or undefined when it has none
+ * and the global `chatConfig.compactAtTokens` should apply.
+ */
+export async function modelCompactAtTokens(
+  config: Config,
+  providerId: ProviderId,
+  modelId: string,
+): Promise<number | undefined> {
+  const provider = (await availableProviders(config)).find((p) => p.id === providerId);
+  return provider?.models.find((m) => m.id === modelId)?.compactAtTokens;
+}
+
+/**
  * Picks a sensible default provider/model for callers that have no user
  * selection to draw on (e.g. the Telegram bot, which can't see the frontend's
  * localStorage). Returns the first available provider's first model, or null
