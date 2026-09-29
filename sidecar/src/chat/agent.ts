@@ -13,6 +13,13 @@ import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
 import { newAttentionState } from "./attentionTools.ts";
 import { buildBuiltinTools } from "./builtinTools.ts";
+import {
+  compactSession,
+  isContextWindowError,
+  newNonce,
+  selectReplay,
+  summaryMessage,
+} from "./compaction.ts";
 import { type ChatConfig, DEFAULT_CHAT_CONFIG } from "./config.ts";
 import { ALWAYS_CONFIRM_BUILTIN_TOOLS, DESTRUCTIVE_BUILTIN_TOOLS } from "./destructiveTools.ts";
 import { addMessage, getMessages } from "./service.ts";
@@ -286,28 +293,38 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
   // (Telegram included) and for a user who retypes rather than pressing Retry;
   // `useChatThread` suppresses the duplicate bubble on the same condition so
   // the surface and the transcript agree.
-  const last = history[history.length - 1];
-  const repeatsLastUserMessage = last?.role === "user" && last.content === message;
-  if (repeatsLastUserMessage) history.pop();
+  // A compaction row can sit after the user message, so the last real message is
+  // the last one that isn't a `system` row.
+  const lastIdx = history.findLastIndex((m) => m.role !== "system");
+  const lastMessage = history[lastIdx];
+  const repeatsLastUserMessage = lastMessage?.role === "user" && lastMessage.content === message;
+  if (repeatsLastUserMessage) history.splice(lastIdx, 1);
   else await addMessage(db, { sessionId, role: "user", content: message, metadata: userMetadata });
 
-  // Only user/assistant messages are replayed. A persisted `system` row could
-  // otherwise override the application system prompt on the next turn, so
-  // even though the writers in this codebase don't insert them today we
-  // filter them out as a defense in depth.
-  const messages: ModelMessage[] = history
-    .filter((m) => m.role === "user" || m.role === "assistant")
-    .map((m) => ({
-      role: m.role as "user" | "assistant",
-      content: m.content,
-    }));
+  // Summarize the older part of a long chat before it outgrows the model's window.
+  const summaryRow = await compactSession({
+    db,
+    model,
+    sessionId,
+    history,
+    thresholdTokens: budget.compactAtTokens,
+    signal,
+  });
+  const rows = summaryRow ? [...history, summaryRow] : history;
+
+  // Only user/assistant messages are replayed as they are. A persisted `system`
+  // row could otherwise override the application system prompt, so the one
+  // `system` row that reaches the model is the compaction summary, replayed as
+  // fenced user-role data.
+  const replay = selectReplay(rows);
+  const messages: ModelMessage[] = [
+    ...(replay.summary ? [summaryMessage(replay.summary)] : []),
+    ...replay.live.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
+  ];
   // Attach the summoning screen as an ephemeral user message (not persisted)
   // just before the user's message, so the model has it for this turn without
   // it gaining system-level authority.
-  const screenContext = buildScreenContextMessage(
-    context,
-    crypto.randomUUID().replaceAll("-", "").slice(0, 12),
-  );
+  const screenContext = buildScreenContextMessage(context, newNonce());
   if (screenContext) messages.push({ role: "user", content: screenContext });
   messages.push({ role: "user", content: message });
 
@@ -475,7 +492,31 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
   }
 
   if (streamError) {
-    yield { type: "error", message: clientError(streamError), detail: errorDetail(streamError) };
+    const detail = errorDetail(streamError);
+    // The next attempt would fail the same way. Compact now so that Retry, which
+    // re-sends this message, goes through on a shorter history.
+    if (isContextWindowError(`${describeError(streamError)} ${detail ?? ""}`)) {
+      const stored = await getMessages(db, sessionId);
+      const shortened = await compactSession({
+        db,
+        model,
+        sessionId,
+        history: stored,
+        thresholdTokens: budget.compactAtTokens,
+        force: true,
+        signal,
+      });
+      if (shortened) {
+        yield {
+          type: "error",
+          message:
+            "This conversation was too long for the model, so its older messages were summarized. Send the message again to continue.",
+          detail,
+        };
+        return;
+      }
+    }
+    yield { type: "error", message: clientError(streamError), detail };
     return;
   }
 

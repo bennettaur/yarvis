@@ -133,8 +133,25 @@ function isAzureHost(host: string): boolean {
   );
 }
 
+/** Decodes one path segment, keeping it as-is when it isn't valid percent-encoding. */
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+/** True for a decoded segment that would change the shape of a URL built from it. */
+function isUnsafeSegment(segment: string): boolean {
+  return segment === "." || segment === ".." || /[/\\]/.test(segment);
+}
+
 /** Splits a git remote into its host and path segments, spanning scp-like
- *  (`git@host:path`) and URL (`https://…`, `ssh://…`) forms. */
+ *  (`git@host:path`) and URL (`https://…`, `ssh://…`) forms. Segments are
+ *  percent-decoded (Azure writes "My Project" as `My%20Project`). Returns null
+ *  when a decoded segment is `.`, `..`, or holds a slash, since those would
+ *  escape their place in the API paths built from them. */
 function splitRemote(url: string): { host: string; segments: string[] } | null {
   const trimmed = url.trim().replace(/\.git$/, "");
   // scp-like syntax (`user@host:path`) has no scheme and a `:` before the path.
@@ -150,7 +167,9 @@ function splitRemote(url: string): { host: string; segments: string[] } | null {
         }
       })();
   if (!host) return null;
-  return { host, segments: path.split("/").filter(Boolean) };
+  const segments = path.split("/").filter(Boolean).map(decodeSegment);
+  if (segments.some(isUnsafeSegment)) return null;
+  return { host, segments };
 }
 
 /**

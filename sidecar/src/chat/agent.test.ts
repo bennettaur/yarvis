@@ -9,7 +9,7 @@ import { resolveApproval } from "../mcp/approvals.ts";
 import { modelToolKey } from "../mcp/chatTools.ts";
 import type { McpClientTool } from "../mcp/connectionManager.ts";
 import { type AgentEvent, runAgentTurn } from "./agent.ts";
-import { createSession, getMessages } from "./service.ts";
+import { addMessage, createSession, getMessages } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -99,7 +99,7 @@ async function collect(
   sessionId: string,
   approval?: { onRequest: (info: { toolCallId: string }) => Promise<void> },
   signal?: AbortSignal,
-  budget?: { maxSteps?: number; maxOutputTokens?: number | null },
+  budget?: { maxSteps?: number; maxOutputTokens?: number | null; compactAtTokens?: number },
   liveTools?: Record<string, McpClientTool>,
 ): Promise<AgentEvent[]> {
   const events: AgentEvent[] = [];
@@ -383,5 +383,124 @@ describe("runAgentTurn", () => {
     expect(error?.message).toBe("model not found (status 404)");
     expect(error?.detail).toContain("no such model");
     expect(error?.detail).toContain("gateway.internal");
+  });
+
+  describe("compaction", () => {
+    /** One model for both jobs: `doGenerate` writes the summary, `doStream` the reply. */
+    function chatAndSummarizer(summary: string, reply = "ok") {
+      const model = streamingModel([...text(reply), finish("stop")]);
+      model.doGenerate = async () => ({
+        content: [{ type: "text", text: summary }],
+        finishReason: { unified: "stop", raw: "stop" },
+        usage,
+        warnings: [],
+      });
+      return model;
+    }
+
+    async function seedLongSession(): Promise<string> {
+      const session = await createSession(db, "long");
+      for (let i = 0; i < 16; i++) {
+        await addMessage(db, {
+          sessionId: session.id,
+          role: i % 2 === 0 ? "user" : "assistant",
+          // 16 x 60k chars is about 240k tokens, past the default compaction threshold.
+          content: `m${i} ${"x".repeat(60_000)}`,
+        });
+      }
+      return session.id;
+    }
+
+    it("summarizes a long history before the turn and replays the summary", async () => {
+      const sessionId = await seedLongSession();
+      const model = chatAndSummarizer("They talked about x.");
+      const events = await collect(model, sessionId);
+      expect(events.at(-1)?.type).toBe("done");
+
+      const rows = await getMessages(db, sessionId);
+      expect(rows.filter((m) => m.role === "system")).toHaveLength(1);
+
+      const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+      expect(prompt).toContain("They talked about x.");
+      expect(prompt).not.toContain("m0 ");
+      // The current message is sent once.
+      expect(prompt.match(/"text":"hi"/g)).toHaveLength(1);
+    });
+
+    it("compacts at the configured threshold rather than the default", async () => {
+      const session = await createSession(db, "small");
+      for (let i = 0; i < 12; i++) {
+        await addMessage(db, {
+          sessionId: session.id,
+          role: i % 2 === 0 ? "user" : "assistant",
+          content: `m${i} ${"x".repeat(10_000)}`,
+        });
+      }
+      // About 30k tokens: far under the 200k default, over a 10k setting.
+      const model = chatAndSummarizer("Lower threshold summary.");
+      await collect(model, session.id, undefined, undefined, { compactAtTokens: 10_000 });
+      expect((await getMessages(db, session.id)).some((m) => m.role === "system")).toBe(true);
+    });
+
+    it("leaves a history under a raised threshold alone", async () => {
+      const sessionId = await seedLongSession();
+      const model = chatAndSummarizer("unused");
+      await collect(model, sessionId, undefined, undefined, { compactAtTokens: 1_000_000 });
+      expect((await getMessages(db, sessionId)).some((m) => m.role === "system")).toBe(false);
+      expect(model.doGenerateCalls).toHaveLength(0);
+    });
+
+    it("still answers from the full history when the summarizer fails", async () => {
+      const sessionId = await seedLongSession();
+      const model = streamingModel([...text("ok"), finish("stop")]);
+      model.doGenerate = async () => {
+        throw new Error("boom");
+      };
+      const events = await collect(model, sessionId);
+      expect(events.at(-1)?.type).toBe("done");
+      expect((await getMessages(db, sessionId)).some((m) => m.role === "system")).toBe(false);
+    });
+
+    it("does not duplicate a resent message when a summary follows it", async () => {
+      const session = await createSession(db, "retry");
+      await addMessage(db, { sessionId: session.id, role: "user", content: "hi" });
+      const first = (await getMessages(db, session.id))[0]!;
+      await addMessage(db, {
+        sessionId: session.id,
+        role: "system",
+        content: "summary",
+        metadata: { compaction: { throughMessageId: first.id } },
+      });
+
+      await collect(streamingModel([...text("ok"), finish("stop")]), session.id);
+      const users = (await getMessages(db, session.id)).filter((m) => m.role === "user");
+      expect(users).toHaveLength(1);
+    });
+
+    it("compacts after a context-window error so a retry can go through", async () => {
+      const session = await createSession(db, "overflow");
+      for (let i = 0; i < 12; i++) {
+        await addMessage(db, {
+          sessionId: session.id,
+          role: i % 2 === 0 ? "user" : "assistant",
+          content: `message ${i} ${"y".repeat(500)}`,
+        });
+      }
+      const model = new MockLanguageModelV3({
+        doStream: async () => {
+          throw new Error("prompt is too long: 1152621 tokens > 1000000 maximum");
+        },
+        doGenerate: async () => ({
+          content: [{ type: "text", text: "short" }],
+          finishReason: { unified: "stop", raw: "stop" },
+          usage,
+          warnings: [],
+        }),
+      });
+      const events = await collect(model, session.id);
+      const error = events.find((e) => e.type === "error");
+      expect(error?.type === "error" && error.message).toContain("summarized");
+      expect((await getMessages(db, session.id)).some((m) => m.role === "system")).toBe(true);
+    });
   });
 });
