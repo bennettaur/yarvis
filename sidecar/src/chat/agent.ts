@@ -158,6 +158,7 @@ function systemPrompt(): string {
     "You have a set of always-available tools, but many more are available on demand. Workspaces and agent sessions, JIRA, in-flight PR reviews and the calendar all sit behind search: call search_tools for what you want to do, then mount_tools with the ids you need to make them callable, then use them. External (MCP) integrations work the same way. Use unmount_tools when you're done to stay focused.",
     "Calling a mounted external (MCP) tool requires the user's approval, so expect a brief pause while they approve or deny it.",
     "Some built-in tools also ask for approval on turns the user spoke rather than typed, so the same pause can happen for them. A call that comes back denied was refused by the user: say so plainly, don't retry it, and don't work around it with a different tool.",
+    "When you mention a pull request or any other web page the user may want to open, write it as a markdown link with the full URL, like [#12 Fix login](https://github.com/owner/repo/pull/12). The app turns PR links into clickable links that open in Yarvis, so never leave a bare PR number when you know its URL.",
     "Be concise and concrete.",
   ].join(" ");
 }

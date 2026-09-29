@@ -9,7 +9,11 @@ import TurnActivity from "./TurnActivity";
  * each already-finished reply would be re-parsed by react-markdown per token.
  */
 const AssistantReply = memo(function AssistantReply({ content }: { content: string }) {
-  return <Markdown className="text-zinc-100">{content}</Markdown>;
+  return (
+    <Markdown className="text-zinc-100" allowAppLinks>
+      {content}
+    </Markdown>
+  );
 });
 
 /** An assistant turn: accent rule and label set it apart from the user's bubbles. */

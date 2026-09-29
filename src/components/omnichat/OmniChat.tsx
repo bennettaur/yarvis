@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ProviderId } from "../../lib/chat";
+import { MODEL_HINT, PROVIDER_HINT } from "../../lib/chatControlHints";
 import { OMNI_CHAT_SESSION_KEY } from "../../lib/omniChat";
 import { collectContext, formatContext } from "../../lib/omniChatContext";
 import { useChatThread } from "../../lib/useChatThread";
-import { useReasoningPreference } from "../../lib/useReasoningPreference";
+import { REASONING_HINT, useReasoningPreference } from "../../lib/useReasoningPreference";
 import { useVoice } from "../../lib/useVoice";
 import ChatComposer from "../ChatComposer";
 import ChatMessages from "../ChatMessages";
@@ -128,7 +129,7 @@ export default function OmniChat({
             New chat
           </button>
           <div className="ml-auto flex items-center gap-2">
-            <label className="flex items-center gap-1 text-xs text-zinc-400">
+            <label title={REASONING_HINT} className="flex items-center gap-1 text-xs text-zinc-400">
               <input
                 type="checkbox"
                 checked={reasoning}
@@ -137,6 +138,7 @@ export default function OmniChat({
               Thinking
             </label>
             <select
+              title={PROVIDER_HINT}
               value={provider}
               onChange={(e) => {
                 const id = e.target.value as ProviderId;
@@ -153,6 +155,7 @@ export default function OmniChat({
               ))}
             </select>
             <select
+              title={MODEL_HINT}
               value={model}
               onChange={(e) => setModel(e.target.value)}
               className="max-w-[160px] rounded-md border border-zinc-700 bg-zinc-800 px-1.5 py-1 text-xs"

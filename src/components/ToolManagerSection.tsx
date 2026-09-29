@@ -11,6 +11,17 @@ import {
 } from "../lib/mcp";
 import ErrorNotice from "./ErrorNotice";
 
+const POLICY_HINTS: Record<ToolPolicy, string> = {
+  always: "Always loaded into the agent's context on every turn.",
+  search: "Not loaded by default; the agent finds it with search_tools and mounts it when needed.",
+  disabled: "Hidden from the agent entirely.",
+};
+
+const APPROVAL_HINTS: Record<ToolApproval, string> = {
+  ask: "Asks you before every call to this tool.",
+  auto: "Runs without asking, on turns you typed rather than spoke.",
+};
+
 /**
  * The unified Tool Manager: lists every tool the agent can use — built-in and
  * MCP-sourced — grouped by source, and lets the user set each tool's policy
@@ -135,6 +146,11 @@ function ToolGroup({
           <button
             type="button"
             onClick={() => onSetGroupApproval(allAuto ? "ask" : "auto")}
+            title={
+              allAuto
+                ? "Make every tool on this server ask before each call."
+                : "Let every tool on this server run without asking, on turns you typed rather than spoke."
+            }
             className="rounded-md border border-zinc-700 px-2 py-0.5 text-xs text-zinc-400 hover:bg-zinc-800"
           >
             {allAuto ? "Ask for every tool" : "Auto-approve every tool"}
@@ -158,6 +174,7 @@ function ToolGroup({
                 <select
                   value={t.approval}
                   aria-label={`Approval for ${t.name}`}
+                  title={APPROVAL_HINTS[t.approval]}
                   onChange={(e) => onChange(t.id, { approval: e.target.value as ToolApproval })}
                   className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs outline-none focus:border-zinc-500"
                 >
@@ -168,6 +185,7 @@ function ToolGroup({
               <select
                 value={t.policy}
                 aria-label={`Policy for ${t.name}`}
+                title={POLICY_HINTS[t.policy]}
                 onChange={(e) => onChange(t.id, { policy: e.target.value as ToolPolicy })}
                 className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs outline-none focus:border-zinc-500"
               >

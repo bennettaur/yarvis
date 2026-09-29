@@ -65,6 +65,14 @@ describe("ChatMessages", () => {
     expect(html).toContain('title="https://elsewhere.example/p.png?q=1"');
   });
 
+  it("opens a PR link from an assistant reply inside Yarvis instead of the browser", async () => {
+    const html = await render({
+      messages: [{ role: "assistant", content: "See [#12](https://github.com/o/r/pull/12)" }],
+    });
+    expect(html).toContain('aria-label="Open in Yarvis: https://github.com/o/r/pull/12"');
+    expect(html).toContain('aria-label="Open in browser"');
+  });
+
   it("keeps user text verbatim while formatting the assistant's reply", async () => {
     const html = await render({
       messages: [
