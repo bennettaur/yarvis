@@ -11,7 +11,7 @@ export default function CopyLinkButton({
   url,
   subject,
   title,
-  icon = "link",
+  icon,
   className = "",
 }: {
   url: string | null | undefined;
@@ -19,7 +19,7 @@ export default function CopyLinkButton({
   subject: string;
   /** Overrides the tooltip and accessible name, e.g. to name the target. */
   title?: string;
-  /** Idle glyph; defaults to the link icon so it reads differently from a copy-path button. */
+  /** Idle glyph; pass "link" where this sits next to a copy-path button. */
   icon?: CopyIconKind;
   /** Extra classes from the host, e.g. hover-reveal in a dense list row. */
   className?: string;

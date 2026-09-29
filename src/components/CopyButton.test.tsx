@@ -5,6 +5,7 @@ import { clipboardWrites, failNextClipboardWrite, resetClipboardWrites } from ".
 
 // Imported after the shared clipboard stub so it is in place.
 const { default: CopyButton, FEEDBACK_MS } = await import("./CopyButton");
+type CopyIconKind = import("./CopyButton").CopyIconKind;
 
 let root: Root | null = null;
 let host: HTMLElement | null = null;
@@ -21,7 +22,7 @@ async function mountButton(
     value: string | (() => string);
     subject: string;
     title?: string;
-    icon?: "copy" | "link";
+    icon?: CopyIconKind;
   },
   wrapperHtml = "<div></div>",
   mountSelector?: string,

@@ -6,6 +6,7 @@ import { mountForInteraction, renderToHtml } from "../../test/render";
 
 // Imported after the shared clipboard stub so it is in place.
 const { default: CopyFileLinkButton } = await import("./CopyFileLinkButton");
+const { default: CopyPathButton } = await import("./CopyPathButton");
 
 const githubRef: PrRef = { provider: "github", owner: "octo", repo: "web", number: 7 };
 
@@ -31,6 +32,19 @@ afterEach(() => {
 });
 
 describe("CopyFileLinkButton", () => {
+  // It sits right next to CopyPathButton in the file list and diff header —
+  // without a distinct glyph a reader can't tell which button copies what (#289).
+  it("renders a different idle icon than CopyPathButton", async () => {
+    const iconOf = (html: string) => /<svg[^>]*>.*?<\/svg>/s.exec(html)?.[0];
+    const pathIcon = iconOf(
+      await renderToHtml(createElement(CopyPathButton, { path: "src/a.ts" })),
+    );
+    const linkIcon = iconOf(await render());
+    expect(pathIcon).toBeTruthy();
+    expect(linkIcon).toBeTruthy();
+    expect(linkIcon).not.toBe(pathIcon);
+  });
+
   it("names the provider and the file it copies a link to", async () => {
     const html = await render();
     expect(html).toContain("Copy the GitHub link to src/a.ts");
