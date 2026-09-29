@@ -1327,6 +1327,7 @@ describe("provision + archive (injected git runner)", () => {
     // The repo is still there, so the tool-manager guidance stays.
     expect(agents).toContain("## Running a repo's tools");
     expect(agents).toContain("mise");
+    expect(agents).toContain("`mise exec -- git commit`");
   });
 
   it("keeps the attention hooks and the copied skills in the same .claude dir", async () => {
