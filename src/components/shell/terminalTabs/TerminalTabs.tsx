@@ -838,7 +838,11 @@ function TabStrip({
                 }
               >
                 {flagged && <span className="text-amber-400">●</span>}
-                {t.kind === "diff" && <span className="text-sky-400">±</span>}
+                {t.kind === "diff" && (
+                  <span className="text-sky-400" title="Diff view">
+                    ±
+                  </span>
+                )}
                 {/* One glyph either way, coloured when unsaved: an amber dot
                     here would read as the attention marker above. */}
                 {t.kind === "editor" && (
@@ -849,7 +853,11 @@ function TabStrip({
                     ✎
                   </span>
                 )}
-                {t.kind === "setup" && <span className="text-red-400">⚠</span>}
+                {t.kind === "setup" && (
+                  <span className="text-red-400" title="Setup log for a repo whose setup failed">
+                    ⚠
+                  </span>
+                )}
                 {t.title}
               </button>
               <button

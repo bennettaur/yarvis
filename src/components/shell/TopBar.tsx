@@ -39,6 +39,13 @@ export default function TopBar({
     };
   }, []);
 
+  const sidecarHint =
+    health === "checking"
+      ? "Checking whether the sidecar is running"
+      : health === "ok"
+        ? "The sidecar (the local backend service) is running"
+        : "The sidecar (the local backend service) is not responding";
+
   const dotColor =
     health === "checking" ? "bg-zinc-500" : health === "ok" ? "bg-emerald-500" : "bg-red-500";
 
@@ -60,7 +67,7 @@ export default function TopBar({
             </span>
           )}
         </button>
-        <div className="flex items-center gap-2 text-xs text-zinc-500">
+        <div className="flex items-center gap-2 text-xs text-zinc-500" title={sidecarHint}>
           <span className={`inline-block h-2 w-2 rounded-full ${dotColor}`} />
           sidecar
         </div>

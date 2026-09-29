@@ -322,6 +322,11 @@ export default function VoiceSection() {
           type="button"
           onClick={() => void testVoice()}
           disabled={testing || !config.ttsProvider || !config.ttsModel}
+          title={
+            config.ttsProvider && config.ttsModel
+              ? "Play a sample phrase with the current text-to-speech settings."
+              : "Choose a text-to-speech provider and model first."
+          }
           className="ml-auto rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800 disabled:opacity-40"
         >
           {testing ? "Testing…" : "Test voice"}

@@ -9,10 +9,18 @@ import {
 
 type Health = "checking" | "ok" | "down";
 
-export function StatusDot({ state }: { state: boolean | null }) {
+/**
+ * `label` names the state for hover and screen readers. Pass it only where no
+ * text sits beside the dot, or a screen reader says it twice.
+ */
+export function StatusDot({ state, label }: { state: boolean | null; label?: string }) {
   const color = state === null ? "bg-zinc-500" : state ? "bg-emerald-500" : "bg-red-500";
-  return <span className={`inline-block h-2.5 w-2.5 rounded-full ${color}`} />;
+  const labelProps = label ? ({ title: label, role: "img", "aria-label": label } as const) : {};
+  return <span className={`inline-block h-2.5 w-2.5 rounded-full ${color}`} {...labelProps} />;
 }
+
+const keyLabel = (present: boolean | null) =>
+  present === null ? "Checking key" : present ? "Key set" : "Key missing";
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -84,16 +92,39 @@ export default function Dashboard() {
         />
         <Row
           label="Anthropic key"
-          value={<StatusDot state={status?.providers.anthropic ?? null} />}
+          value={
+            <StatusDot
+              state={status?.providers.anthropic ?? null}
+              label={keyLabel(status?.providers.anthropic ?? null)}
+            />
+          }
         />
-        <Row label="Gemini key" value={<StatusDot state={status?.providers.gemini ?? null} />} />
+        <Row
+          label="Gemini key"
+          value={
+            <StatusDot
+              state={status?.providers.gemini ?? null}
+              label={keyLabel(status?.providers.gemini ?? null)}
+            />
+          }
+        />
         <Row
           label="Cerebras key"
-          value={<StatusDot state={status?.providers.cerebras ?? null} />}
+          value={
+            <StatusDot
+              state={status?.providers.cerebras ?? null}
+              label={keyLabel(status?.providers.cerebras ?? null)}
+            />
+          }
         />
         <Row
           label="Hugging Face key"
-          value={<StatusDot state={status?.providers.huggingface ?? null} />}
+          value={
+            <StatusDot
+              state={status?.providers.huggingface ?? null}
+              label={keyLabel(status?.providers.huggingface ?? null)}
+            />
+          }
         />
       </section>
     </div>

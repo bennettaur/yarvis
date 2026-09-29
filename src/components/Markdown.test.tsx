@@ -29,3 +29,37 @@ describe("Markdown", () => {
     expect(html).toContain('title="https://a.test"');
   });
 });
+
+describe("Markdown allowAppLinks", () => {
+  const PR = "[#12](https://github.com/o/r/pull/12)";
+
+  it("offers a browser option beside a PR link", async () => {
+    const html = await renderToHtml(<Markdown allowAppLinks>{PR}</Markdown>);
+    expect(html).toContain('aria-label="Open in Yarvis: https://github.com/o/r/pull/12"');
+    expect(html).toContain('aria-label="Open in browser"');
+  });
+
+  it("still shows the real destination on hover for a PR link", async () => {
+    const html = await renderToHtml(<Markdown allowAppLinks>{PR}</Markdown>);
+    expect(html).toContain('title="https://github.com/o/r/pull/12"');
+  });
+
+  it("leaves PR links alone unless the caller opts in", async () => {
+    const html = await renderToHtml(<Markdown>{PR}</Markdown>);
+    expect(html).not.toContain("Open in browser");
+  });
+
+  it("keeps other links as plain external links", async () => {
+    const html = await renderToHtml(<Markdown allowAppLinks>{"[docs](https://a.test)"}</Markdown>);
+    expect(html).toContain('title="https://a.test"');
+    expect(html).not.toContain("Open in browser");
+  });
+
+  it("doesn't crash on a link with a malformed percent-escape", async () => {
+    const html = await renderToHtml(
+      <Markdown allowAppLinks>{"[deal](https://example.test/50%-off)"}</Markdown>,
+    );
+    expect(html).toContain("deal");
+    expect(html).not.toContain("Open in browser");
+  });
+});
