@@ -17,7 +17,12 @@ const settle = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
  * happens after a click.
  */
 async function mountButton(
-  props: { value: string | (() => string); subject: string; title?: string },
+  props: {
+    value: string | (() => string);
+    subject: string;
+    title?: string;
+    icon?: "copy" | "link";
+  },
   wrapperHtml = "<div></div>",
   mountSelector?: string,
 ): Promise<HTMLButtonElement> {
@@ -44,6 +49,18 @@ afterEach(() => {
 });
 
 describe("CopyButton", () => {
+  // A path button and a link button sit side by side in file rows, so their
+  // idle glyphs have to differ.
+  it("draws a different idle glyph for the link icon", async () => {
+    const copy = await mountButton({ value: "a", subject: "path" });
+    const copyGlyph = copy.innerHTML;
+    root?.unmount();
+    host?.remove();
+    const link = await mountButton({ value: "a", subject: "file link", icon: "link" });
+    expect(link.querySelector("svg")).not.toBeNull();
+    expect(link.innerHTML).not.toBe(copyGlyph);
+  });
+
   it("writes the value to the clipboard", async () => {
     const button = await mountButton({ value: "https://example.test/pull/1", subject: "PR link" });
     button.click();
