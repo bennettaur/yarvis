@@ -116,6 +116,11 @@ back to ad-hoc.
 - Sidecar tests that touch storage hit a real Postgres — see `sidecar/src/workspaces/routes.test.ts`
   for the pattern (temp workspaces root via `mkdtempSync`, `TRUNCATE` between
   tests, injected fake git runners to avoid real network/filesystem git ops).
+  Anything stored in `settings.json` is not in Postgres, so `TRUNCATE` doesn't
+  reset it: give the test its own `YARVIS_SETTINGS_PATH` (see
+  `sidecar/src/customProviders/routes.test.ts`). The preload in
+  `sidecar/src/test/setup.ts` points the whole suite at a temp file, so a test
+  that forgets never writes the user's real one.
 - Secrets (provider API keys, tokens, DB URL) are entered in the app's
   Settings screen and stored in a single item — never in env files or
   committed anywhere. Which store holds that item, the macOS Keychain or a
