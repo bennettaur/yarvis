@@ -1,4 +1,4 @@
 # Test runner config for the sidecar suite (run from sidecar/). The preload
-# keeps tests away from the real ~/.yarvis/settings.json.
+# keeps tests away from the real ~/.yarvis (settings.json and agents/).
 [test]
 preload = ["./src/test/setup.ts"]

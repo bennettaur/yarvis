@@ -80,7 +80,9 @@ Settings kept in `settings.json` (custom providers, voice config and so on)
 aren't in Postgres, so truncating doesn't reset them. The sidecar preload in
 `sidecar/src/test/setup.ts` points `YARVIS_SETTINGS_PATH` at a temp file for
 the whole suite when it runs from `sidecar/`. A test that writes settings
-should still set its own path per test.
+should still set its own path per test. The preload does the same for
+`YARVIS_AGENTS_DIR`, so your own `~/.yarvis/agents` definitions never change
+what the tests load.
 
 Frontend tests use `bun test` with happy-dom. The preload in
 `src/test/setup.ts` registers the DOM, pins the timezone and stubs the Tauri
