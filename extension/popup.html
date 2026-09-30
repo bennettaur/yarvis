@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Yarvis</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <h1>Yarvis</h1>
+
+    <section>
+      <label for="name">This Chrome profile is called</label>
+      <form id="rename">
+        <input id="name" maxlength="40" autocomplete="off" spellcheck="false" />
+        <button type="submit">Save</button>
+      </form>
+      <p class="hint">Tell Yarvis this name to point it at this browser, e.g. "check Slack in my <span id="example">work</span> profile".</p>
+      <p id="saved" class="hint" hidden>Saved.</p>
+    </section>
+
+    <section>
+      <h2>Connection</h2>
+      <p id="host"></p>
+      <ul id="instances"></ul>
+    </section>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
