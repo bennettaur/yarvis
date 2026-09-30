@@ -16,8 +16,6 @@ import type { Config } from "../config.ts";
  * typed, 502 for what the backend did) is what the UI branches on.
  */
 
-const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
-
 const config: Config = {
   port: 0,
   token: "test-token",
@@ -25,7 +23,7 @@ const config: Config = {
   attentionToken: "test-attention-token",
   mcpToken: "test-mcp-token",
   allowedOrigins: null,
-  databaseUrl: url,
+  databaseUrl: undefined,
   workspacesRoot: "/tmp/yarvis-test-workspaces",
   secrets: {},
   customProviderSecrets: {},

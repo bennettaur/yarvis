@@ -3,5 +3,7 @@
 # stubs the Tauri runtime so component and library code under src/ can be
 # exercised in `bun test`. It also loads for the dev-script tests under scripts/,
 # which need none of it — keep anything added here harmless to a plain Bun suite.
+# The sidecar's preload is listed too, so a sidecar test started from the repo
+# root still can't write the real ~/.yarvis/settings.json.
 [test]
-preload = ["./src/test/setup.ts"]
+preload = ["./src/test/setup.ts", "./sidecar/src/test/setup.ts"]
