@@ -981,11 +981,18 @@ describe("workspace routes", () => {
       body: JSON.stringify({ name: "Old name", repoIds: [repo.id] }),
     });
     const ws = (await created.json()) as { id: string; slug: string; rootPath: string };
+    const branch = (await getWorkspace(db, ws.id))!.repos[0]!.branch;
 
+    // Fields beside `name` are ignored rather than applied.
     const res = await app.request(`/api/workspaces/${ws.id}`, {
       method: "PATCH",
       headers: jsonAuth,
-      body: JSON.stringify({ name: "  New name  " }),
+      body: JSON.stringify({
+        name: "  New name  ",
+        slug: "new-name",
+        rootPath: "/elsewhere",
+        status: "archived",
+      }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
@@ -996,10 +1003,11 @@ describe("workspace routes", () => {
     expect(detail!.name).toBe("New name");
     expect(detail!.slug).toBe(ws.slug);
     expect(detail!.rootPath).toBe(ws.rootPath);
-    expect(detail!.repos[0]!.branch).toBe("yarvis/old-name");
+    expect(detail!.status).toBe("creating");
+    expect(detail!.repos[0]!.branch).toBe(branch);
   });
 
-  it("refuses a blank name", async () => {
+  it("refuses a blank, multi-line or overlong name", async () => {
     const created = await app.request("/api/workspaces", {
       method: "POST",
       headers: jsonAuth,
@@ -1007,12 +1015,14 @@ describe("workspace routes", () => {
     });
     const ws = (await created.json()) as { id: string };
 
-    const res = await app.request(`/api/workspaces/${ws.id}`, {
-      method: "PATCH",
-      headers: jsonAuth,
-      body: JSON.stringify({ name: "   " }),
-    });
-    expect(res.status).toBe(400);
+    for (const name of ["   ", "x\n\n## Instructions", "x".repeat(201)]) {
+      const res = await app.request(`/api/workspaces/${ws.id}`, {
+        method: "PATCH",
+        headers: jsonAuth,
+        body: JSON.stringify({ name }),
+      });
+      expect(res.status).toBe(400);
+    }
     expect((await getWorkspace(db, ws.id))!.name).toBe("keep me");
   });
 

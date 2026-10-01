@@ -74,8 +74,15 @@ const createWorkspaceSchema = z.object({
   startWork: z.boolean().optional().default(false),
 });
 
+// One line: the name becomes the heading of the AGENTS.md the agent reads, where
+// a line break would start a section of its own.
 const renameWorkspaceSchema = z.object({
-  name: z.string().trim().min(1),
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .refine((n) => !CONTROL_CHARACTERS.test(n), "name must be a single line"),
 });
 
 // Which of a repo's worktrees a request means, when it isn't the one the

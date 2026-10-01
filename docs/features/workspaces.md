@@ -82,12 +82,13 @@ See [The assistant](assistant.md).
 ### Rename a workspace
 
 Press **Rename** next to the workspace's name in its header, type the new name,
-and press Enter. Escape keeps the old name.
+and press Enter or click away to save. Escape keeps the old name.
 
 Only the name shown in Yarvis changes. The folder and the branch keep the name
 the workspace was created with, because a running agent session works in that
 folder and the branch may already be pushed. The `AGENTS.md` in the workspace
-folder picks up the new name the next time the workspace is provisioned.
+folder also keeps the old name. It is only rewritten if provisioning runs
+again, such as a retry after a failure.
 
 ### What provisioning does
 

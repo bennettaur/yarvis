@@ -2,8 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 /**
  * The workspace detail header's title, editable in place. Enter or leaving the
- * field saves, Escape cancels. Only the display name changes; the folder and
- * branch keep the name the workspace was created with.
+ * field saves, Escape cancels.
  */
 export default function WorkspaceNameHeading({
   name,
@@ -17,13 +16,14 @@ export default function WorkspaceNameHeading({
   const [draft, setDraft] = useState(name);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Set once Enter or Escape has decided the edit, so the blur that follows
-  // as the field unmounts doesn't save a second time.
-  const settledRef = useRef(false);
+  // True once a save or cancel has decided the edit, so the blur that follows
+  // as the field unmounts doesn't save a second time. A failed save clears it,
+  // so leaving the field tries again.
+  const skipBlurSaveRef = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // The field only appears once the user has asked to edit, so taking focus is
-  // expected. Via a ref rather than `autoFocus`, matching the review composer.
+  // expected. Via a ref because biome's a11y/noAutofocus rule flags `autoFocus`.
   useEffect(() => {
     if (!editing) return;
     inputRef.current?.focus();
@@ -31,32 +31,34 @@ export default function WorkspaceNameHeading({
   }, [editing]);
 
   const start = () => {
-    settledRef.current = false;
+    skipBlurSaveRef.current = false;
     setDraft(name);
     setError(null);
     setEditing(true);
   };
 
   const cancel = () => {
-    settledRef.current = true;
+    skipBlurSaveRef.current = true;
     setEditing(false);
     setError(null);
   };
 
   const save = async () => {
+    if (busy) return;
     const next = draft.trim();
+    // Nothing to save: treat it as Escape.
     if (!next || next === name) {
       cancel();
       return;
     }
-    settledRef.current = true;
+    skipBlurSaveRef.current = true;
     setBusy(true);
     try {
       await onRename(next);
       setEditing(false);
       setError(null);
     } catch (e) {
-      settledRef.current = false;
+      skipBlurSaveRef.current = false;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
@@ -84,8 +86,11 @@ export default function WorkspaceNameHeading({
       <input
         ref={inputRef}
         aria-label="Workspace name"
+        maxLength={200}
         value={draft}
-        disabled={busy}
+        // Read-only rather than disabled while saving: disabling drops focus, and
+        // a failed save should leave the field ready to retry or Escape.
+        readOnly={busy}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
@@ -97,7 +102,7 @@ export default function WorkspaceNameHeading({
           }
         }}
         onBlur={() => {
-          if (!settledRef.current) void save();
+          if (!skipBlurSaveRef.current) void save();
         }}
         className="min-w-0 rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-sm text-zinc-100 focus:border-indigo-500 focus:outline-none"
       />

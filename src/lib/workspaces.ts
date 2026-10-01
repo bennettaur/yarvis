@@ -181,8 +181,7 @@ export async function createWorkspace(input: CreateWorkspaceInput): Promise<Work
   return res.json();
 }
 
-/** Changes the display name only; the workspace's folder and branch keep the
- *  name it was created with. */
+/** Changes the display name only; the folder and branch keep theirs. */
 export async function renameWorkspace(id: string, name: string): Promise<Workspace> {
   const res = await sidecarFetch(`/api/workspaces/${id}`, {
     method: "PATCH",

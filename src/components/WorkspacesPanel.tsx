@@ -1018,6 +1018,16 @@ function WorkspaceDetailView({
     }
   }, [id, load, onChanged]);
 
+  // Errors propagate so the heading can show them beside the field.
+  const rename = useCallback(
+    async (name: string) => {
+      await renameWorkspace(id, name);
+      await load();
+      onChanged();
+    },
+    [id, load, onChanged],
+  );
+
   // Auto-provision a workspace whose kick-off is still running. The sidecar
   // drives it whether or not anyone is here, so this only joins the run already
   // going — which is what puts its log on screen. The ref stops it re-firing on
@@ -1121,14 +1131,7 @@ function WorkspaceDetailView({
     <div className="relative flex h-full min-h-0 flex-col">
       <div className="shrink-0 border-b border-zinc-800 px-4 py-2">
         <div className="flex items-center gap-2">
-          <WorkspaceNameHeading
-            name={detail.name}
-            onRename={async (name) => {
-              await renameWorkspace(id, name);
-              await load();
-              onChanged();
-            }}
-          />
+          <WorkspaceNameHeading name={detail.name} onRename={rename} />
           <StatusBadge status={detail.status} />
           <span className="ml-auto truncate font-mono text-xs text-zinc-500">
             {detail.rootPath}

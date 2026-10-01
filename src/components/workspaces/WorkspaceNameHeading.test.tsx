@@ -27,6 +27,8 @@ async function startEditing(host: HTMLElement): Promise<HTMLInputElement> {
   return input;
 }
 
+/** Goes through the prototype's value setter because React's value tracker
+ *  swallows the input event when `value` is assigned directly. */
 function type(input: HTMLInputElement, value: string) {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, value);
   input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -51,6 +53,41 @@ describe("WorkspaceNameHeading", () => {
 
     expect(saved).toEqual(["New name"]);
     expect(host.querySelector("input")).toBeNull();
+  });
+
+  it("saves when the field loses focus", async () => {
+    const saved: string[] = [];
+    const host = await mount(async (name) => {
+      saved.push(name);
+    });
+    const input = await startEditing(host);
+
+    type(input, "New name");
+    input.blur();
+    await settle();
+
+    expect(saved).toEqual(["New name"]);
+    expect(host.querySelector("input")).toBeNull();
+  });
+
+  it("saves once when Enter is followed by the field losing focus", async () => {
+    const saved: string[] = [];
+    let finish = () => {};
+    const host = await mount(async (name) => {
+      saved.push(name);
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+    });
+    const input = await startEditing(host);
+
+    type(input, "New name");
+    press(input, "Enter");
+    input.blur();
+    finish();
+    await settle();
+
+    expect(saved).toEqual(["New name"]);
   });
 
   it("drops the edit on Escape without saving", async () => {
@@ -98,5 +135,27 @@ describe("WorkspaceNameHeading", () => {
 
     expect(host.querySelector("input")).not.toBeNull();
     expect(host.textContent).toContain("rename workspace failed (500)");
+  });
+
+  it("saves on a retry after a failed save and clears the error", async () => {
+    let fail = true;
+    const saved: string[] = [];
+    const host = await mount(async (name) => {
+      if (fail) throw new Error("rename workspace failed (500)");
+      saved.push(name);
+    });
+    const input = await startEditing(host);
+
+    type(input, "New name");
+    press(input, "Enter");
+    await settle();
+
+    fail = false;
+    press(host.querySelector("input")!, "Enter");
+    await settle();
+
+    expect(saved).toEqual(["New name"]);
+    expect(host.querySelector("input")).toBeNull();
+    expect(host.textContent).not.toContain("failed");
   });
 });
