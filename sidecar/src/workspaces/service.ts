@@ -587,6 +587,21 @@ export async function getWorkspace(db: Db, id: string): Promise<WorkspaceDetail 
   };
 }
 
+/**
+ * Changes a workspace's display name. The slug, folder and branch keep the
+ * name the workspace was created with: a live agent session runs in that
+ * folder and the branch may already be pushed. Returns null if the workspace
+ * doesn't exist.
+ */
+export async function renameWorkspace(db: Db, id: string, name: string): Promise<Workspace | null> {
+  const [row] = await db
+    .update(workspaces)
+    .set({ name: name.trim(), updatedAt: new Date() })
+    .where(eq(workspaces.id, id))
+    .returning();
+  return row ?? null;
+}
+
 /** Links a task to a workspace; archiving the workspace will complete it.
  *  Returns false if the task doesn't exist. */
 export async function linkTask(db: Db, workspaceId: string, taskId: string): Promise<boolean> {

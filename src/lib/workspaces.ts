@@ -181,6 +181,18 @@ export async function createWorkspace(input: CreateWorkspaceInput): Promise<Work
   return res.json();
 }
 
+/** Changes the display name only; the workspace's folder and branch keep the
+ *  name it was created with. */
+export async function renameWorkspace(id: string, name: string): Promise<Workspace> {
+  const res = await sidecarFetch(`/api/workspaces/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) return readError(res, "rename workspace");
+  return res.json();
+}
+
 /**
  * Drives provisioning of a workspace's worktrees, yielding progress events as
  * they stream in (setup-script output arrives as `log` events). A workspace
