@@ -25,16 +25,52 @@ describe("htmlToMarkdown", () => {
     expect(htmlToMarkdown('<a href="javascript:alert(1)">click</a>')).toBe("click");
   });
 
-  it("leaves no tag behind when tags are nested to dodge a single pass", () => {
-    const nasty = [
-      "<scr<script>ipt>alert(1)</script>",
-      "<<script>script>alert(1)<</script>/script>",
-      '<a href="https://x.dev"><<b>img src=x onerror=alert(1)></a>',
-      "<pre><scr<b>ipt>x</pre>",
-    ];
-    for (const html of nasty) {
-      expect(htmlToMarkdown(html)).not.toMatch(/<\s*(script|img|b)\b/i);
-    }
+  it("strips tags rebuilt by removing a tag nested inside them", () => {
+    // One pass removes `<b>` and leaves `<script>` behind.
+    expect(htmlToMarkdown("<scr<b>ipt>alert(1)")).toBe("alert(1)");
+    expect(htmlToMarkdown('<a href="https://x.dev"><i<b>mg src=x>go</a>')).toBe(
+      "[go](https://x.dev)",
+    );
+  });
+
+  it("drops a script block rebuilt by splicing another block into its tag", () => {
+    expect(htmlToMarkdown("<scr<script></script>ipt>alert(1)</script>ok")).toBe("ok");
+    expect(htmlToMarkdown("<sty<style></style>le>p{}</style>ok")).toBe("ok");
+  });
+
+  it("drops script blocks whose closing tag has trailing whitespace", () => {
+    expect(htmlToMarkdown("<script>alert(1)</script >ok")).toBe("ok");
+  });
+
+  it("drops every bracket when tags nest deeper than the pass limit", () => {
+    const deep = `${"<".repeat(50)}script${">".repeat(50)}x`;
+    expect(htmlToMarkdown(deep)).toBe("x");
+  });
+
+  it("strips a long run of unclosed brackets quickly", () => {
+    const start = performance.now();
+    htmlToMarkdown(`${"<".repeat(60_000)}x`);
+    expect(performance.now() - start).toBeLessThan(500);
+  });
+
+  it("cuts an oversized body down before converting it", () => {
+    const out = htmlToMarkdown(`<div>${"a".repeat(200_000)}</div>`);
+    expect(out.length).toBeLessThan(100_010);
+    expect(out.endsWith("…")).toBe(true);
+  });
+
+  it("stays fast on nested script blocks with unclosed openers", () => {
+    let nested = "<script></script>";
+    for (let i = 0; i < 1500; i++) nested = `<scr${nested}ipt></script>`;
+    const start = performance.now();
+    htmlToMarkdown(nested + "<script>".repeat(3000));
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+
+  it("keeps escaped markup inside a code block as text", () => {
+    expect(htmlToMarkdown("<pre>&lt;b&gt;bold&lt;/b&gt; &amp;lt;</pre>")).toBe(
+      "```\n<b>bold</b> &lt;\n```",
+    );
   });
 
   it("drops script and style contents entirely", () => {

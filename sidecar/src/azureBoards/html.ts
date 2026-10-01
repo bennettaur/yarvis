@@ -28,32 +28,67 @@ function decodeEntities(text: string): string {
 }
 
 /**
- * Applies `pattern` until the text stops changing. One pass is not enough:
- * removing the inner tag of `<scr<script>ipt>` leaves a new `<script>` behind.
+ * Real Azure HTML settles in one or two passes. The cap keeps a work item built
+ * to nest thousands of levels deep from costing a pass per level.
+ */
+const MAX_PASSES = 10;
+
+/**
+ * Removes matches of `pattern` until the text stops changing, or `MAX_PASSES`
+ * runs out. One pass is not enough: removing the inner tag of `<scr<b>ipt>`
+ * leaves a new `<script>` behind.
  */
 function removeUntilStable(text: string, pattern: RegExp): string {
   let previous: string;
   let current = text;
+  let passes = 0;
   do {
     previous = current;
     current = current.replace(pattern, "");
-  } while (current !== previous);
+    passes++;
+  } while (current !== previous && passes < MAX_PASSES);
   return current;
 }
 
+// `[^<>]` rather than `[^>]` keeps each pass linear: a run of unclosed `<`
+// would otherwise make every one of them rescan the rest of the text.
+const TAG = /<[^<>]*>/g;
+
 function stripTags(text: string): string {
-  return removeUntilStable(text, /<[^>]*>/g);
+  const stripped = removeUntilStable(text, TAG);
+  // Still holding a tag means the cap ran out on deliberately nested input, so
+  // drop every bracket rather than leave one behind.
+  return /<[^<>]*>/.test(stripped) ? stripped.replace(/[<>]/g, "") : stripped;
 }
+
+/**
+ * Marks where a `<pre>` block's text goes back in, after everything else ran.
+ * A private-use character, so it can't clash with anything the editor writes.
+ */
+const SLOT = "\uE000";
+const PRE_SLOT = new RegExp(`${SLOT}(\\d+)${SLOT}`, "g");
+
+/**
+ * Azure's editor output is far below this. Several patterns here rescan to the
+ * end of the text for each unclosed tag, so an oversized body built to exploit
+ * that is cut down before conversion.
+ */
+const MAX_HTML_LENGTH = 100_000;
 
 /** Converts Azure's description/comment HTML to Markdown for display. */
 export function htmlToMarkdown(html: string | null | undefined): string {
   if (!html) return "";
-  let out = html.replace(/\r\n?/g, "\n");
+  let out = html.length > MAX_HTML_LENGTH ? `${html.slice(0, MAX_HTML_LENGTH)}…` : html;
+  out = out.replace(/\r\n?/g, "\n").replaceAll(SLOT, "");
   // Drop blocks whose contents are never meant to be read as text.
   out = removeUntilStable(out, /<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi);
+  // Code is set aside once decoded, so escaped markup in it (`&lt;b&gt;`)
+  // isn't turned into formatting or stripped by the passes that follow.
+  const codeBlocks: string[] = [];
   out = out.replace(/<pre\b[^>]*>([\s\S]*?)<\/pre>/gi, (_m, body: string) => {
     const code = decodeEntities(stripTags(body.replace(/<br\s*\/?>/gi, "\n")));
-    return `\n\n\`\`\`\n${code.trim()}\n\`\`\`\n\n`;
+    codeBlocks.push(`\n\n\`\`\`\n${code.trim()}\n\`\`\`\n\n`);
+    return `${SLOT}${codeBlocks.length - 1}${SLOT}`;
   });
   out = out.replace(
     /<a\b[^>]*href\s*=\s*["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi,
@@ -78,8 +113,10 @@ export function htmlToMarkdown(html: string | null | undefined): string {
   out = out.replace(/<\/(p|div|ul|ol|table|tr|blockquote)>/gi, "\n\n");
   out = stripTags(out);
   // Entities decode last, so `&lt;b&gt;` the author typed stays visible text.
-  // The Markdown renderer does not render raw HTML, so it can't become a tag.
+  // The Markdown renderer does not render raw HTML, so a decoded `<b>` can't
+  // become a tag.
   out = decodeEntities(out);
+  out = out.replace(PRE_SLOT, (_m, i: string) => codeBlocks[Number(i)] ?? "");
   return out
     .split("\n")
     .map((line) => line.trimEnd())
