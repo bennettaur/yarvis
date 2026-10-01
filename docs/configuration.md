@@ -31,7 +31,7 @@ reads one back.
 | Cerebras API key | Cerebras chat | `CEREBRAS_API_KEY` |
 | Hugging Face token | Cloud speech to text | `HUGGINGFACE_API_KEY` |
 | GitHub token | PRs, issues, stacks | `GITHUB_TOKEN` |
-| Azure DevOps token | Azure PRs | `AZURE_DEVOPS_TOKEN` |
+| Azure DevOps token | Azure PRs, Azure Boards | `AZURE_DEVOPS_TOKEN` |
 | JIRA API token | JIRA issues | `JIRA_API_TOKEN` |
 | Google client secret | Google Calendar | `GOOGLE_CLIENT_SECRET` |
 | Telegram bot token | The Telegram bot | `TELEGRAM_BOT_TOKEN` |
@@ -58,7 +58,8 @@ AWS Bedrock uses the standard AWS credential chain (`~/.aws`, `AWS_PROFILE`,
   **Contents: Read** (the review reads file bodies to show context) plus pull
   request and issue access. Merging a stack needs write access to the repo.
 - **Azure DevOps.** A PAT with **Code (read)** and **Pull Request Threads (read &
-  write)**. Set the organization URL (`https://dev.azure.com/your-org`) under
+  write)**. Add **Work Items (read & write)** to use Azure Boards on the Issues
+  tab. Set the organization URL (`https://dev.azure.com/your-org`) under
   Settings → Credentials. The project is picked per search, so there is
   nothing else to set. Code search needs the **Code Search** extension
   installed in your organization. Without it, guided review still works, but

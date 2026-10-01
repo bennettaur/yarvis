@@ -4,14 +4,16 @@
  * these types so the frontend renders one Issues view regardless of source.
  *
  * An issue is identified by the source-agnostic triple used across the schema:
- *  - `provider`   — "github" | "jira"
- *  - `sourceKey`  — the grouping key (GitHub "owner/repo"; JIRA project key)
- *  - `externalId` — the canonical id (GitHub issue number as a string; JIRA key)
+ *  - `provider`   — "github" | "jira" | "azure" (Azure Boards)
+ *  - `sourceKey`  — the grouping key (GitHub "owner/repo"; JIRA project key;
+ *                   Azure project name)
+ *  - `externalId` — the canonical id (GitHub issue number as a string; JIRA key;
+ *                   Azure work item id as a string)
  * `displayId` is the human label ("#123" / "PROJ-45"); `sourceLabel` is the
  * group header text.
  */
 
-export type IssueProvider = "github" | "jira";
+export type IssueProvider = "github" | "jira" | "azure";
 
 export interface IssueLabel {
   name: string;

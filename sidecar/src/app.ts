@@ -4,6 +4,7 @@ import { cors } from "hono/cors";
 import { createSpecialistRoutes } from "./agents/routes.ts";
 import { createAttentionIngestRoutes, createAttentionRoutes } from "./attention/routes.ts";
 import { createAzureRoutes } from "./azure/routes.ts";
+import { createAzureBoardsRoutes } from "./azureBoards/routes.ts";
 import { createCcRoutes } from "./cc/routes.ts";
 import { createChatRoutes } from "./chat/routes.ts";
 import { createClipboardRoutes } from "./clipboard/routes.ts";
@@ -141,6 +142,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/issues", createIssueRoutes(config));
   app.route("/api/jira", createJiraRoutes(config));
   app.route("/api/azure", createAzureRoutes(config));
+  app.route("/api/azure-boards", createAzureBoardsRoutes(config));
   app.route("/api/memory", createMemoryRoutes(config));
   app.route("/api/events", createEventRoutes(config));
   app.route("/api/projects", createProjectRoutes(config));

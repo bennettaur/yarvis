@@ -268,6 +268,7 @@ sidecar/        Bun + TS service (Hono)
                    workspace-on-a-PR, stacks
   src/issues/      provider-neutral issue routes and start-work
   src/jira/        JIRA client, routes, tools, ADF↔Markdown
+  src/azureBoards/ Azure Boards work item client, routes, HTML↔Markdown
   src/google/      Google Calendar OAuth, reads, and create
   src/omni/        Omni UI generation and saved layouts
   src/workspaces/  repo registry, worktree provisioning, base-branch sync,

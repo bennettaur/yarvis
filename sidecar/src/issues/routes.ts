@@ -113,12 +113,13 @@ const issueCommentSchema = z.object({
 
 /**
  * Providers whose issues are stored/linked through these source-agnostic routes.
- * JIRA reuses the DB-backed slices here (stars, saved filters, workspace
- * links), but its live queries and mutations — keyed by issue key, not
- * owner/repo/number — live under `/api/jira`. The GitHub-shaped live routes
+ * JIRA and Azure Boards reuse the DB-backed slices here (stars, saved filters,
+ * workspace links), but their live queries and mutations — keyed by issue key
+ * or work item id, not owner/repo/number — live under `/api/jira` and
+ * `/api/azure-boards`. The GitHub-shaped live routes
  * below (repos, assigned, all, search, detail, start-work) stay GitHub-only.
  */
-const SUPPORTED_PROVIDERS: IssueProvider[] = ["github", "jira"];
+const SUPPORTED_PROVIDERS: IssueProvider[] = ["github", "jira", "azure"];
 
 /**
  * Ticket-system issue routes, mounted under /api/issues. Source-agnostic:
