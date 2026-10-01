@@ -149,6 +149,13 @@ export interface ResolvedWorktree {
  * must not reach the new workspace's worktrees. A repo whose setup failed still
  * does, since "Ignore and use anyway" leaves it in `error` with a usable
  * worktree.
+ *
+ * A workspace whose archive is still running (`archiving` with no error)
+ * doesn't resolve either. Git is deleting its worktrees file by file, so every
+ * file removed so far reads as a deletion. If `.gitignore` goes before
+ * `node_modules`, every file under it reads as untracked too. A diff of that
+ * costs far more than the archive and is useless once it lands. An archive
+ * parked on a dirty worktree still resolves, so the user can see what's dirty.
  */
 export async function resolveWorktree(
   db: Db,
@@ -157,7 +164,13 @@ export async function resolveWorktree(
   runner: GitRunner,
 ): Promise<ResolvedWorktree> {
   const [row] = await db
-    .select({ wr: workspaceRepos, repo: repos, rootPath: workspaces.rootPath })
+    .select({
+      wr: workspaceRepos,
+      repo: repos,
+      rootPath: workspaces.rootPath,
+      status: workspaces.status,
+      error: workspaces.error,
+    })
     .from(workspaceRepos)
     .innerJoin(repos, eq(workspaceRepos.repoId, repos.id))
     .innerJoin(workspaces, eq(workspaceRepos.workspaceId, workspaces.id))
@@ -169,6 +182,9 @@ export async function resolveWorktree(
       ),
     );
   if (!row) throw new Error("workspace repo not found");
+  if (row.status === "archiving" && row.error === null) {
+    throw new Error("workspace is being archived");
+  }
   const { wr, repo, rootPath } = row;
 
   let all: WorkspaceWorktree[];

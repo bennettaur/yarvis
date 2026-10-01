@@ -339,8 +339,11 @@ export function createWorkspaceRoutes(config: Config): Hono {
   });
 
   // Files / changed-files for a workspace repo's worktree (right-column views).
-  const errorStatus = (e: unknown): 400 | 404 =>
-    e instanceof Error && e.message.includes("not found") ? 404 : 400;
+  const errorStatus = (e: unknown): 400 | 404 | 409 => {
+    if (!(e instanceof Error)) return 400;
+    if (e.message.includes("not found")) return 404;
+    return e.message.includes("being archived") ? 409 : 400;
+  };
 
   /** The parsed `worktree` query parameter, or the validation error for the
    *  caller to answer 400 with. */

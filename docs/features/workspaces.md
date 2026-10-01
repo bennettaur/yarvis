@@ -388,7 +388,9 @@ Safety rules:
 Press **Archive** in the workspace header when the work is done. The dialog
 asks for a short summary and the PR link, prefilled from the PR the poller
 saw. Archiving stops the session, removes the worktrees, and marks linked
-tasks complete. It runs in the background.
+tasks complete. It runs in the background. While it runs, the right column's
+files, changes and stack views are hidden, since the worktrees they read are
+being deleted.
 
 A worktree with uncommitted work won't remove. The workspace stays in
 "archiving" with that repo's error. Reopen the dialog to see it, and use

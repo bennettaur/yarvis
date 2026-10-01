@@ -22,6 +22,7 @@ import {
   tasks,
   workspaceRepoPr,
   workspaceRepos,
+  workspaces,
 } from "../db/schema.ts";
 import { createTask } from "../tasks/service.ts";
 import type { StartClaudeSessionInput } from "./claudeSession.ts";
@@ -262,6 +263,31 @@ describe("workspace worktrees", () => {
     const [primary, ...others] = only?.worktrees ?? [];
     expect(primary?.branch).toBe(wr.branch);
     expect(others.map((w) => w.branch).sort()).toEqual(["stack/api", "stack/auth"]);
+  });
+
+  it("refuses to read a worktree while its archive is still running", async () => {
+    const { workspaceId, wr } = await provisioned();
+    await db
+      .update(workspaces)
+      .set({ status: "archiving", error: null })
+      .where(eq(workspaces.id, workspaceId));
+
+    const res = await app.request(`/api/workspaces/${workspaceId}/repos/${wr.id}/changes`, {
+      headers: auth,
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "workspace is being archived" });
+  });
+
+  it("still reads a worktree an archive stopped on", async () => {
+    const { workspaceId, wr } = await provisioned();
+    await db
+      .update(workspaces)
+      .set({ status: "archiving", error: "one or more worktrees could not be removed" })
+      .where(eq(workspaces.id, workspaceId));
+
+    const resolved = await resolveWorktree(db, wr.id, undefined, fakeGit);
+    expect(resolved).toMatchObject({ path: wr.worktreePath, primary: true });
   });
 
   it("refuses a worktree inside a .git directory", async () => {

@@ -1452,12 +1452,18 @@ function WorkspaceDetailView({
             );
           })()}
           second={
-            <WorkspaceSidePanel
-              workspaceId={detail.id}
-              repos={detail.repos}
-              onOpenFile={setDiffRequest}
-              onEditFile={setEditorRequest}
-            />
+            // Its views poll git in worktrees the archive is deleting, which the
+            // sidecar refuses until the teardown lands or stops.
+            archiveRunning ? (
+              <p className="p-3 text-xs text-zinc-500">Removing worktrees…</p>
+            ) : (
+              <WorkspaceSidePanel
+                workspaceId={detail.id}
+                repos={detail.repos}
+                onOpenFile={setDiffRequest}
+                onEditFile={setEditorRequest}
+              />
+            )
           }
         />
       )}
