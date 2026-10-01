@@ -23,7 +23,7 @@ async function send<T>(path: string, method: string, body?: unknown): Promise<T>
   return res.json();
 }
 
-const item = (id: string) => `/api/azure-boards/item/${encodeURIComponent(id)}`;
+const itemPath = (id: string) => `/api/azure-boards/item/${encodeURIComponent(id)}`;
 
 /** The authenticated user — also the "is Azure Boards configured and working" probe. */
 export const boardsViewer = () => get<BoardsViewer>("/api/azure-boards/viewer");
@@ -43,24 +43,24 @@ export const boardsSearch = (query: string) =>
 export const boardsItems = (ids: string[]) =>
   get<IssueSummary[]>(`/api/azure-boards/items?ids=${ids.map(encodeURIComponent).join(",")}`);
 
-export const boardsItemDetail = (id: string) => get<BoardsWorkItemDetail>(item(id));
+export const boardsItemDetail = (id: string) => get<BoardsWorkItemDetail>(itemPath(id));
 
 // --- Edits (each returns the refreshed detail) ---
 
 export const boardsUpdateFields = (
   id: string,
-  fields: { title?: string; description?: string; tags?: string[] },
-) => send<BoardsWorkItemDetail>(item(id), "PATCH", fields);
+  fields: { title?: string; description?: string; reproSteps?: string; tags?: string[] },
+) => send<BoardsWorkItemDetail>(itemPath(id), "PATCH", fields);
 
 export const boardsSetState = (id: string, state: string) =>
-  send<BoardsWorkItemDetail>(`${item(id)}/state`, "POST", { state });
+  send<BoardsWorkItemDetail>(`${itemPath(id)}/state`, "POST", { state });
 
 /** Assigns the item to the current user, or unassigns it. */
 export const boardsAssign = (id: string, self: boolean) =>
-  send<BoardsWorkItemDetail>(`${item(id)}/assignee`, "PUT", { self });
+  send<BoardsWorkItemDetail>(`${itemPath(id)}/assignee`, "PUT", { self });
 
 export const boardsAddComment = (id: string, body: string) =>
-  send<IssueComment>(`${item(id)}/comment`, "POST", { body });
+  send<IssueComment>(`${itemPath(id)}/comment`, "POST", { body });
 
 // --- Start work ---
 

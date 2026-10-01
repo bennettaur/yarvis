@@ -54,8 +54,9 @@ const NO_FILTERS: IssueFilter[] = [];
 
 /**
  * "Not configured" comes back as data so it is cached and a remount paints the
- * explanation straight away. Anything else is rethrown and not cached, the same
- * as `probeJira`.
+ * explanation straight away. Anything else is rethrown and not cached, because
+ * "your settings are missing" and "Azure is down" send the user to different
+ * places and must not read the same.
  */
 async function probeBoards(): Promise<{ configured: boolean }> {
   try {
@@ -74,6 +75,9 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "search", label: "Search" },
   { key: "starred", label: "Starred" },
 ];
+
+/** The sidecar's `/items` route takes at most this many ids. */
+const MAX_STARRED = 200;
 
 /** A bare work item id, optionally with a leading `#`. */
 const WORK_ITEM_ID_RE = /^#?(\d{1,10})$/;
@@ -206,7 +210,10 @@ export default function AzureBoardsIssuesView({
   // Resolve starred work items to full rows in one batch call.
   useEffect(() => {
     if (activeTab !== "starred") return;
-    const ids = stars.map((s) => s.externalId).filter((id) => WORK_ITEM_ID_RE.test(id));
+    const ids = stars
+      .map((s) => s.externalId)
+      .filter((id) => WORK_ITEM_ID_RE.test(id))
+      .slice(0, MAX_STARRED);
     if (ids.length === 0) {
       setStarredItems([]);
       return;

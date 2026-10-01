@@ -21,19 +21,37 @@ import { applyBoardsStartWorkSideEffects } from "./service.ts";
 // long digit string from turning into an imprecise number.
 const workItemId = z.coerce.number().int().positive().max(2_147_483_647);
 
-// Azure project names can't contain `/` or `\`, and `..` would traverse once
-// interpolated into an API path.
+// Azure project names can't contain `/`, `\` or control characters, and `..`
+// would traverse once interpolated into an API path. The name also lands in
+// the agent's brief, so a newline must not get through.
 const projectName = z
   .string()
   .min(1)
   .max(64)
-  .refine((s) => !s.includes("/") && !s.includes("\\") && !s.includes(".."), "invalid project");
+  .refine(
+    (s) =>
+      ![...s].some((ch) => ch < " " || ch === "\x7f" || ch === "/" || ch === "\\") &&
+      !s.includes(".."),
+    "invalid project",
+  );
 
 const updateSchema = z
   .object({
     title: z.string().trim().min(1).max(255).optional(),
     description: z.string().max(32_000).optional(),
-    tags: z.array(z.string().trim().min(1).max(400)).max(50).optional(),
+    reproSteps: z.string().max(32_000).optional(),
+    // Azure stores tags as one `;`-separated string, so a `;` would split a tag.
+    tags: z
+      .array(
+        z
+          .string()
+          .trim()
+          .min(1)
+          .max(400)
+          .refine((t) => !t.includes(";"), "tags can't contain ;"),
+      )
+      .max(50)
+      .optional(),
   })
   .refine((v) => Object.values(v).some((field) => field !== undefined), "no fields to update");
 
@@ -46,7 +64,10 @@ const commentSchema = z.object({ body: z.string().trim().min(1).max(32_000) });
 
 const startWorkSchema = z.object({
   sourceKey: projectName,
-  externalId: z.string().regex(/^\d{1,10}$/, "invalid work item id"),
+  // A string here because it's the shared issue-link key; the same rule as a path id.
+  externalId: z
+    .string()
+    .refine((s) => workItemId.safeParse(s).success && /^\d+$/.test(s), "invalid work item id"),
   title: z.string().min(1),
   body: z.string().default(""),
   url: z.string().nullish(),
@@ -147,11 +168,10 @@ export function createAzureBoardsRoutes(config: Config): Hono {
     if (client instanceof Response) return client;
     const wiql = c.req.query("wiql");
     const text = c.req.query("text");
-    const query = wiql ?? text;
-    if (!query) return c.json({ error: "missing wiql or text" }, 400);
-    if (query.length > 2000) return c.json({ error: "query too long" }, 400);
+    if (!wiql && !text) return c.json({ error: "missing wiql or text" }, 400);
+    if ((wiql ?? text ?? "").length > 2000) return c.json({ error: "query too long" }, 400);
     try {
-      return c.json(wiql ? await client.queryWiql(wiql) : await client.searchTitle(query));
+      return c.json(wiql ? await client.queryWiql(wiql) : await client.searchTitle(text ?? ""));
     } catch (e) {
       return upstreamError(c, e);
     }

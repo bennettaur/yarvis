@@ -121,8 +121,10 @@ A WIQL query runs across the whole organization, so it can't use `@project`.
 
 Open a work item to change its state, edit its title, description or tags,
 assign it to yourself or unassign it, and add comments. Assigning to someone
-else is done in Azure. Descriptions are saved as plain text, so editing one
-replaces any formatting it had in Azure.
+else is done in Azure. On a bug whose Description is empty, the detail view
+shows and edits its **Repro steps** instead. Descriptions are saved as plain
+text, so editing one replaces any formatting it had in Azure. Tags are
+separated by `;` or `,`.
 
 Creating work items isn't supported yet.
 
@@ -154,7 +156,7 @@ You can also ask the assistant: "start work on PROJ-123 in the api repo". It
 takes the same path. See [The assistant](assistant.md).
 
 **On an Azure Boards work item:** the same picker opens, listing the states the
-work item's type allows. It defaults to "In Progress", or "Active" in the Agile
-process. Yarvis creates the workspace, assigns the work item to you, sets the
+work item's type allows. It defaults to "In Progress", or "Active" in the Agile and
+CMMI processes. Yarvis creates the workspace, assigns the work item to you, sets the
 state you chose, and starts Claude on it. The assistant can't start work on a
 work item yet.

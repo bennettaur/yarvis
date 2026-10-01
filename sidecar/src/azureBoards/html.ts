@@ -16,10 +16,13 @@ const ENTITIES: Record<string, string> = {
 
 function decodeEntities(text: string): string {
   return text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, code: string) => {
-    if (code.startsWith("#x") || code.startsWith("#X")) {
-      return String.fromCodePoint(Number.parseInt(code.slice(2), 16));
+    if (code.startsWith("#")) {
+      const hex = code[1] === "x" || code[1] === "X";
+      const point = Number.parseInt(code.slice(hex ? 2 : 1), hex ? 16 : 10);
+      // An out-of-range code point would make fromCodePoint throw, so a single
+      // bad entity in a comment would break the whole work item.
+      return point <= 0x10ffff ? String.fromCodePoint(point) : match;
     }
-    if (code.startsWith("#")) return String.fromCodePoint(Number.parseInt(code.slice(1), 10));
     return ENTITIES[code.toLowerCase()] ?? match;
   });
 }

@@ -9,10 +9,10 @@
  * those take the project name read off the item.
  */
 
-import { orgFromOrgUrl } from "../azure/client.ts";
 import type { IssueComment, IssueLabel, IssueSummary } from "../issues/types.ts";
 import { htmlToMarkdown, textToHtml } from "./html.ts";
 import type {
+  BoardsBodyField,
   BoardsState,
   BoardsStateCategory,
   BoardsViewer,
@@ -105,15 +105,28 @@ interface RawWorkItem {
   fields?: Record<string, any>;
 }
 
-interface JsonPatchOp {
-  op: "add";
-  path: string;
-  value: unknown;
+type JsonPatchOp = { op: "add"; path: string; value: unknown } | { op: "remove"; path: string };
+
+/** The field that holds a work item's main text. */
+const BODY_FIELDS: Record<BoardsBodyField, string> = {
+  description: "System.Description",
+  reproSteps: "Microsoft.VSTS.TCM.ReproSteps",
+};
+
+// The viewer is fixed for a given PAT and org, and assigning to yourself needs
+// it on every call. Keyed by org URL and token so a changed PAT re-resolves.
+const viewerCache = new Map<string, BoardsViewer>();
+
+function categoryIn(states: BoardsState[] | undefined, state: string): BoardsStateCategory {
+  return states?.find((s) => s.name === state)?.category ?? guessStateCategory(state);
+}
+
+function stateKey(project: string, type: string): string {
+  return `${project}\n${type}`;
 }
 
 export class AzureBoardsClient {
   private readonly orgUrl: string;
-  readonly org: string;
 
   constructor(
     private readonly token: string,
@@ -121,7 +134,6 @@ export class AzureBoardsClient {
     private readonly fetchImpl: FetchFn = fetch,
   ) {
     this.orgUrl = orgUrl.replace(/\/+$/, "");
-    this.org = orgFromOrgUrl(this.orgUrl);
   }
 
   private headers(contentType?: string): Record<string, string> {
@@ -184,6 +196,9 @@ export class AzureBoardsClient {
    * same one the PR client uses, and unversioned for the same reason).
    */
   async viewer(): Promise<BoardsViewer> {
+    const cacheKey = `${this.orgUrl}\n${this.token}`;
+    const cached = viewerCache.get(cacheKey);
+    if (cached) return cached;
     const data = await this.request<{
       authenticatedUser?: {
         id?: string;
@@ -194,14 +209,16 @@ export class AzureBoardsClient {
     const user = data.authenticatedUser;
     if (!user?.id) throw new Error("azure connectionData returned no authenticated user");
     const login = user.providerDisplayName ?? "";
-    return { login, uniqueName: user.properties?.Account?.$value || login };
+    const viewer = { login, uniqueName: user.properties?.Account?.$value || login };
+    viewerCache.set(cacheKey, viewer);
+    return viewer;
   }
 
   // --- States ---
 
   /** The states a work item type allows in a project, cached briefly. */
   async typeStates(project: string, type: string): Promise<BoardsState[]> {
-    const key = `${this.orgUrl}\n${project}\n${type}`;
+    const key = `${this.orgUrl}\n${stateKey(project, type)}`;
     const cached = statesCache.get(key);
     if (cached && Date.now() - cached.ts < STATES_CACHE_TTL_MS) return cached.states;
     const data = await this.request<{ value?: { name?: string; category?: string }[] }>(
@@ -220,7 +237,7 @@ export class AzureBoardsClient {
    * whose states fail to load falls back to guessing from the state name, so
    * one bad lookup doesn't fail the whole list.
    */
-  private async categorize(
+  private async loadCategoryResolver(
     items: RawWorkItem[],
   ): Promise<(item: RawWorkItem) => BoardsStateCategory> {
     const pairs = new Map<string, { project: string; type: string }>();
@@ -228,7 +245,7 @@ export class AzureBoardsClient {
       const f = item.fields ?? {};
       const project = f["System.TeamProject"];
       const type = f["System.WorkItemType"];
-      if (project && type) pairs.set(`${project}\n${type}`, { project, type });
+      if (project && type) pairs.set(stateKey(project, type), { project, type });
     }
     const resolved = new Map<string, BoardsState[]>();
     await Promise.all(
@@ -245,8 +262,10 @@ export class AzureBoardsClient {
     return (item) => {
       const f = item.fields ?? {};
       const state: string = f["System.State"] ?? "";
-      const states = resolved.get(`${f["System.TeamProject"]}\n${f["System.WorkItemType"]}`);
-      return states?.find((s) => s.name === state)?.category ?? guessStateCategory(state);
+      return categoryIn(
+        resolved.get(stateKey(f["System.TeamProject"], f["System.WorkItemType"])),
+        state,
+      );
     };
   }
 
@@ -296,9 +315,10 @@ export class AzureBoardsClient {
           },
         },
       );
+      // Omitted (deleted) items come back as null entries.
       items.push(...(data.value ?? []).filter((item) => item?.id));
     }
-    const categoryOf = await this.categorize(items);
+    const categoryOf = await this.loadCategoryResolver(items);
     const byId = new Map(items.map((item) => [item.id, item]));
     return unique
       .map((id) => byId.get(id))
@@ -316,7 +336,7 @@ export class AzureBoardsClient {
       `${this.orgUrl}/_apis/wit/wiql?$top=${LIST_LIMIT}`,
       { body: { query: wiql } },
     );
-    const ids = (data.workItems ?? []).map((w) => w.id).slice(0, LIST_LIMIT);
+    const ids = (data.workItems ?? []).map((w) => w.id);
     if (ids.length === 0) return [];
     return this.workItems(ids);
   }
@@ -349,20 +369,30 @@ export class AzureBoardsClient {
     const project: string = f["System.TeamProject"] ?? "";
     const type: string = f["System.WorkItemType"] ?? "";
     const [comments, states] = await Promise.all([
-      this.comments(project, id),
-      this.typeStates(project, type).catch(() => [] as BoardsState[]),
+      this.getComments(project, id),
+      // Without the states the detail still loads; the state can't be changed.
+      this.typeStates(project, type).catch((e) => {
+        console.warn(
+          `[azure-boards] could not load states for ${type}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+        return [] as BoardsState[];
+      }),
     ]);
     const state: string = f["System.State"] ?? "";
-    const category = states.find((s) => s.name === state)?.category ?? guessStateCategory(state);
-    // Bugs keep their main text in Repro Steps and often leave Description empty.
-    const body = f["System.Description"] ?? f["Microsoft.VSTS.TCM.ReproSteps"] ?? "";
+    const category = categoryIn(states, state);
+    // Bugs keep their main text in Repro Steps and often leave Description
+    // empty. Edits go back to whichever field the text came from.
+    const bodyField: BoardsBodyField =
+      !f[BODY_FIELDS.description] && f[BODY_FIELDS.reproSteps] ? "reproSteps" : "description";
     const priority = f["Microsoft.VSTS.Common.Priority"];
     return {
       ...this.toSummary(item, category),
-      commentCount: comments.length,
-      body: htmlToMarkdown(body),
-      comments,
+      commentCount: comments.total,
+      body: htmlToMarkdown(f[BODY_FIELDS[bodyField]]),
+      bodyField,
+      comments: comments.comments,
       assignee: f["System.AssignedTo"]?.displayName ?? null,
+      // Repeated from the summary so the detail type can require them.
       statusName: state,
       statusCategory: category,
       issueType: type,
@@ -386,13 +416,18 @@ export class AzureBoardsClient {
     return { state: f["System.State"] ?? "", states };
   }
 
-  private async comments(project: string, id: number): Promise<IssueComment[]> {
-    const data = await this.request<{ comments?: any[] }>(
+  /** Up to the first 200 comments, oldest first, with the item's total count. */
+  private async getComments(
+    project: string,
+    id: number,
+  ): Promise<{ comments: IssueComment[]; total: number }> {
+    const data = await this.request<{ comments?: any[]; totalCount?: number }>(
       "GET",
       `${this.projectBase(project)}/_apis/wit/workItems/${id}/comments?$top=200&order=asc`,
       { apiVersion: COMMENTS_API_VERSION },
     );
-    return (data.comments ?? []).map((c) => this.toComment(c));
+    const comments = (data.comments ?? []).map((c) => this.toComment(c));
+    return { comments, total: data.totalCount ?? comments.length };
   }
 
   private toComment(c: any): IssueComment {
@@ -414,23 +449,22 @@ export class AzureBoardsClient {
   }
 
   /**
-   * Updates editable fields. Only the provided keys are sent. `description` is
-   * plain text converted to HTML; `tags` replaces the full set.
+   * Updates editable fields. Only the provided keys are sent. `description` and
+   * `reproSteps` are plain text converted to HTML; `tags` replaces the full set.
    */
   async updateFields(
     id: number,
-    input: { title?: string; description?: string; tags?: string[] },
+    input: { title?: string; description?: string; reproSteps?: string; tags?: string[] },
   ): Promise<void> {
     const ops: JsonPatchOp[] = [];
     if (input.title !== undefined) {
       ops.push({ op: "add", path: "/fields/System.Title", value: input.title });
     }
-    if (input.description !== undefined) {
-      ops.push({
-        op: "add",
-        path: "/fields/System.Description",
-        value: textToHtml(input.description),
-      });
+    for (const field of ["description", "reproSteps"] as const) {
+      const text = input[field];
+      if (text !== undefined) {
+        ops.push({ op: "add", path: `/fields/${BODY_FIELDS[field]}`, value: textToHtml(text) });
+      }
     }
     if (input.tags !== undefined) {
       ops.push({ op: "add", path: "/fields/System.Tags", value: input.tags.join("; ") });
@@ -445,8 +479,9 @@ export class AzureBoardsClient {
 
   /** Assigns the work item to a user by unique name, or unassigns it when null. */
   async assign(id: number, uniqueName: string | null): Promise<void> {
+    const path = "/fields/System.AssignedTo";
     await this.patch(id, [
-      { op: "add", path: "/fields/System.AssignedTo", value: uniqueName ?? "" },
+      uniqueName === null ? { op: "remove", path } : { op: "add", path, value: uniqueName },
     ]);
   }
 

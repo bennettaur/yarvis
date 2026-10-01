@@ -55,7 +55,11 @@ export async function applyBoardsStartWorkSideEffects(
       const { state, states } = await boards.stateInfo(id);
       const target = pickStartWorkState(states, opts.state);
       if (!target) {
-        warnings.push("no in-progress state available for this work item type");
+        warnings.push(
+          opts.state
+            ? `"${opts.state}" is not a state this work item type allows`
+            : "no in-progress state available for this work item type",
+        );
       } else if (target.name !== state) {
         await boards.setState(id, target.name);
       }

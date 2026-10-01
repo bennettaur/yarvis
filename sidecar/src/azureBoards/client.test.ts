@@ -212,11 +212,51 @@ describe("AzureBoardsClient queries", () => {
       }),
     );
 
-    expect((await client.workItemDetail(7)).body).toBe("Click login");
+    const detail = await client.workItemDetail(7);
+    expect(detail.body).toBe("Click login");
+    expect(detail.bodyField).toBe("reproSteps");
+  });
+});
+
+describe("AzureBoardsClient.workItems", () => {
+  it("skips items the batch omits because they were deleted", async () => {
+    const org = nextOrg();
+    const client = new AzureBoardsClient(
+      "pat",
+      org,
+      fakeFetch(org, {
+        "POST /_apis/wit/workitemsbatch": { value: [null, { id: 2, fields: fields() }] },
+        "/Web%20App/_apis/wit/workitemtypes/Bug/states": bugStates,
+      }),
+    );
+
+    const rows = await client.workItems([1, 2]);
+
+    expect(rows.map((r) => r.externalId)).toEqual(["2"]);
   });
 });
 
 describe("AzureBoardsClient mutations", () => {
+  it("writes Repro Steps, not Description, when that is the field being edited", async () => {
+    const org = nextOrg();
+    const recorder: RecordedRequest[] = [];
+    const client = new AzureBoardsClient(
+      "pat",
+      org,
+      fakeFetch(org, { "PATCH /_apis/wit/workitems/7": { id: 7 } }, recorder),
+    );
+
+    await client.updateFields(7, { reproSteps: "Click login" });
+
+    expect(recorder[0]?.body).toEqual([
+      {
+        op: "add",
+        path: "/fields/Microsoft.VSTS.TCM.ReproSteps",
+        value: "<div>Click login</div>",
+      },
+    ]);
+  });
+
   it("sends field edits as a JSON Patch document", async () => {
     const org = nextOrg();
     const recorder: RecordedRequest[] = [];
@@ -236,7 +276,7 @@ describe("AzureBoardsClient mutations", () => {
     ]);
   });
 
-  it("clears the assignee with an empty value", async () => {
+  it("clears the assignee with a remove op", async () => {
     const org = nextOrg();
     const recorder: RecordedRequest[] = [];
     const client = new AzureBoardsClient(
@@ -247,9 +287,7 @@ describe("AzureBoardsClient mutations", () => {
 
     await client.assign(7, null);
 
-    expect(recorder[0]?.body).toEqual([
-      { op: "add", path: "/fields/System.AssignedTo", value: "" },
-    ]);
+    expect(recorder[0]?.body).toEqual([{ op: "remove", path: "/fields/System.AssignedTo" }]);
   });
 
   it("posts a comment to the item's project", async () => {
@@ -310,5 +348,18 @@ describe("AzureBoardsClient.viewer", () => {
     );
 
     expect(await client.viewer()).toEqual({ login: "Jane Dev", uniqueName: "jane@acme.com" });
+  });
+
+  it("asks Azure once per org and token", async () => {
+    const org = nextOrg();
+    const recorder: RecordedRequest[] = [];
+    const routes = {
+      "/_apis/connectionData": { authenticatedUser: { id: "u1", providerDisplayName: "Jane" } },
+    };
+    await new AzureBoardsClient("pat", org, fakeFetch(org, routes, recorder)).viewer();
+    await new AzureBoardsClient("pat", org, fakeFetch(org, routes, recorder)).viewer();
+    await new AzureBoardsClient("other", org, fakeFetch(org, routes, recorder)).viewer();
+
+    expect(recorder).toHaveLength(2);
   });
 });

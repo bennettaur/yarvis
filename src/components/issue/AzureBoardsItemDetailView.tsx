@@ -85,9 +85,10 @@ export default function AzureBoardsItemDetailView({
       () => setEditingTitle(false),
     );
 
+  // Writes back to the field the text was read from: Repro Steps on a bug.
   const saveDescription = () =>
     runField(
-      () => boardsUpdateFields(id, { description: descDraft }),
+      () => boardsUpdateFields(id, { [detail?.bodyField ?? "description"]: descDraft }),
       () => setEditingDesc(false),
     );
 
@@ -113,9 +114,11 @@ export default function AzureBoardsItemDetailView({
     setSavingComment(true);
     setError(null);
     try {
-      await boardsAddComment(id, commentDraft.trim());
+      const comment = await boardsAddComment(id, commentDraft.trim());
       setCommentDraft("");
-      setDetail(await boardsItemDetail(id));
+      setDetail(
+        (d) => d && { ...d, comments: [...d.comments, comment], commentCount: d.commentCount + 1 },
+      );
     } catch (e) {
       setError(errMsg(e));
     } finally {
@@ -235,11 +238,13 @@ export default function AzureBoardsItemDetailView({
                   className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-1.5 py-1 text-sm"
                 >
                   <option value="">{detail.statusName}</option>
-                  {statesAsTransitions(detail).map((t) => (
-                    <option key={t.id} value={t.id}>
-                      → {t.toStatusName}
-                    </option>
-                  ))}
+                  {detail.states
+                    .filter((s) => s.name !== detail.statusName)
+                    .map((s) => (
+                      <option key={s.name} value={s.name}>
+                        → {s.name}
+                      </option>
+                    ))}
                 </select>
               ) : (
                 <span className="text-zinc-300">{detail?.statusName ?? "…"}</span>
@@ -308,7 +313,7 @@ export default function AzureBoardsItemDetailView({
                   value={tagsDraft}
                   aria-label="Tags"
                   onChange={(e) => setTagsDraft(e.target.value)}
-                  placeholder="tags separated by ;"
+                  placeholder="tags separated by ; or ,"
                   className={fieldInput}
                 />
                 <button
@@ -358,7 +363,7 @@ export default function AzureBoardsItemDetailView({
           <section>
             <div className="mb-2 flex items-center gap-2">
               <h3 className="text-sm font-medium uppercase tracking-wide text-zinc-500">
-                Description
+                {detail?.bodyField === "reproSteps" ? "Repro steps" : "Description"}
               </h3>
               {detail && !editingDesc && (
                 <button

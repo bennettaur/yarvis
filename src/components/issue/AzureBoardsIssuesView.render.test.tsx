@@ -23,9 +23,10 @@ const item: IssueSummary = {
   issueType: "Bug",
 };
 
-const detail = {
+let detail = {
   ...item,
   body: "the body",
+  bodyField: "description",
   comments: [],
   assignee: null,
   priority: "2",
@@ -47,6 +48,8 @@ let notConfigured = false;
 function responseFor(path: string): unknown {
   if (path.startsWith("/api/azure-boards/viewer")) return { login: "alice", uniqueName: "a@x" };
   if (path.startsWith("/api/azure-boards/assigned")) return [item];
+  if (/^\/api\/azure-boards\/item\/\d+\/comment/.test(path))
+    return { author: "alice", body: "on it", createdAt: "2026-01-03T00:00:00Z" };
   if (path.startsWith("/api/azure-boards/item/")) return detail;
   if (path.startsWith("/api/azure-boards/start-work")) return { workspaceId: "w1", warnings: [] };
   return [];
@@ -157,6 +160,7 @@ beforeEach(() => {
   sent.length = 0;
   failing = null;
   notConfigured = false;
+  detail = { ...detail, bodyField: "description" };
   // The probe's answer is cached, so each test starts from a cold cache.
   invalidatePrefix(AZURE_BOARDS_ISSUES_PREFIX);
 });
@@ -226,6 +230,83 @@ describe("AzureBoardsIssuesView", () => {
     expect(sent).toContainEqual({
       path: "/api/azure-boards/item/7/state",
       body: { state: "Closed" },
+    });
+    cleanup();
+  });
+
+  /** Opens the first row's detail view. */
+  async function openDetail(host: HTMLElement) {
+    host.querySelector("li")?.click();
+    await settle();
+  }
+
+  function type(el: HTMLInputElement | HTMLTextAreaElement, value: string) {
+    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement : HTMLInputElement;
+    Object.getOwnPropertyDescriptor(proto.prototype, "value")?.set?.call(el, value);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  it("saves tags split on ; and , with blanks dropped", async () => {
+    const { host, cleanup } = await mount();
+    await openDetail(host);
+    host.querySelector<HTMLButtonElement>('[title="Edit tags"]')?.click();
+    await settle();
+    const input = host.querySelector<HTMLInputElement>('[aria-label="Tags"]');
+    if (!input) throw new Error("tags input missing");
+    type(input, "a b; c, ,d");
+    await settle();
+    button(host, "Save")?.click();
+    await settle();
+    expect(sent).toContainEqual({
+      path: "/api/azure-boards/item/7",
+      body: { tags: ["a b", "c", "d"] },
+    });
+    cleanup();
+  });
+
+  it("assigns the work item to the current user", async () => {
+    const { host, cleanup } = await mount();
+    await openDetail(host);
+    button(host, "Assign to me")?.click();
+    await settle();
+    expect(sent).toContainEqual({
+      path: "/api/azure-boards/item/7/assignee",
+      body: { self: true },
+    });
+    cleanup();
+  });
+
+  it("shows a posted comment without reloading the work item", async () => {
+    const { host, cleanup } = await mount();
+    await openDetail(host);
+    const box = host.querySelector<HTMLTextAreaElement>('[aria-label="New comment"]');
+    if (!box) throw new Error("comment box missing");
+    type(box, "on it");
+    await settle();
+    const detailLoads = fetched.filter((p) => p === "/api/azure-boards/item/7").length;
+    button(host, "Comment")?.click();
+    await settle();
+    expect(sent).toContainEqual({
+      path: "/api/azure-boards/item/7/comment",
+      body: { body: "on it" },
+    });
+    expect(host.textContent).toContain("Comments (1)");
+    expect(fetched.filter((p) => p === "/api/azure-boards/item/7").length).toBe(detailLoads);
+    cleanup();
+  });
+
+  it("edits a bug's Repro Steps rather than its Description", async () => {
+    detail = { ...detail, bodyField: "reproSteps" };
+    const { host, cleanup } = await mount();
+    await openDetail(host);
+    expect(host.textContent).toContain("Repro steps");
+    host.querySelector<HTMLButtonElement>('[title="Edit description"]')?.click();
+    await settle();
+    button(host, "Save")?.click();
+    await settle();
+    expect(sent).toContainEqual({
+      path: "/api/azure-boards/item/7",
+      body: { reproSteps: "the body" },
     });
     cleanup();
   });

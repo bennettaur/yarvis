@@ -5,7 +5,7 @@
  * worse, everything — so the two ends hold the same value instead.
  */
 
-/** Everything either issue view reads. */
+/** Everything any issue view reads. */
 export const ISSUES_PREFIX = "issues:";
 
 /** The GitHub view's own resources, which repo configuration decides. */

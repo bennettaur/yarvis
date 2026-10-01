@@ -12,7 +12,9 @@ export interface BoardsStartWorkFlow {
   starting: boolean;
   error: string | null;
   warnings: string[];
+  /** Starts from a list row, which carries only a summary. */
   start: (id: string) => Promise<void>;
+  /** Starts from the detail view, which already holds the work item. */
   startWithDetail: (detail: BoardsWorkItemDetail) => void;
   confirm: (choice: StartWorkChoice) => Promise<void>;
   cancel: () => void;
@@ -79,6 +81,7 @@ export function useBoardsStartWork(onStarted?: () => void): BoardsStartWorkFlow 
           url: pending.url,
           repoIds: choice.repoIds,
           moveToInProgress: choice.transitionToInProgress,
+          // `statesAsTransitions` keys each option by its state name.
           state: choice.transitionId,
         });
         setWarnings(result.warnings);

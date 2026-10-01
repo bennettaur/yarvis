@@ -35,6 +35,15 @@ describe("htmlToMarkdown", () => {
     );
   });
 
+  it("leaves an out-of-range numeric entity as text instead of throwing", () => {
+    expect(htmlToMarkdown("a &#99999999; b &#x110000;")).toBe("a &#99999999; b &#x110000;");
+  });
+
+  it("keeps web images and drops other image sources", () => {
+    expect(htmlToMarkdown('<img src="https://x.dev/a.png">')).toBe("![](https://x.dev/a.png)");
+    expect(htmlToMarkdown('<img src="data:image/png;base64,AAAA">')).toBe("");
+  });
+
   it("renders pre blocks as fenced code", () => {
     expect(htmlToMarkdown("<pre>line 1<br>line 2</pre>")).toBe("```\nline 1\nline 2\n```");
   });

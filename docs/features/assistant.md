@@ -166,7 +166,8 @@ contradiction. The old version stays for the record but drops out of search.
 Yarvis records meaningful actions as events. Examples:
 
 - a PR viewed, approved, commented on or merged,
-- an issue or JIRA ticket created or commented on,
+- an issue, JIRA ticket or Azure Boards work item created, edited or commented
+  on,
 - work started on a ticket,
 - a workspace created, its session started, synced or archived,
 - tasks created and completed,

@@ -69,20 +69,51 @@ describe("applyBoardsStartWorkSideEffects", () => {
     expect(calls).toEqual([]);
   });
 
-  it("turns failures into warnings instead of throwing", async () => {
+  it("turns a failed assign into a warning instead of throwing", async () => {
     const { client } = stubClient({
       viewer: async () => {
         throw new Error("401");
       },
-      stateInfo: async () => ({ state: "New", states: [{ name: "New", category: "todo" }] }),
     });
     const warnings = await applyBoardsStartWorkSideEffects(client, 7, {
       assignSelf: true,
+      moveToInProgress: false,
+    });
+    expect(warnings).toEqual(["could not assign work item: 401"]);
+  });
+
+  it("turns a failed state change into a warning", async () => {
+    const { client } = stubClient({
+      setState: async () => {
+        throw new Error("400");
+      },
+    });
+    const warnings = await applyBoardsStartWorkSideEffects(client, 7, {
+      assignSelf: false,
       moveToInProgress: true,
     });
-    expect(warnings).toEqual([
-      "could not assign work item: 401",
-      "no in-progress state available for this work item type",
-    ]);
+    expect(warnings).toEqual(["could not change state: 400"]);
+  });
+
+  it("warns when the type has no in-progress state", async () => {
+    const { client } = stubClient({
+      stateInfo: async () => ({ state: "New", states: [{ name: "New", category: "todo" }] }),
+    });
+    const warnings = await applyBoardsStartWorkSideEffects(client, 7, {
+      assignSelf: false,
+      moveToInProgress: true,
+    });
+    expect(warnings).toEqual(["no in-progress state available for this work item type"]);
+  });
+
+  it("names the requested state when the type doesn't allow it", async () => {
+    const { client, calls } = stubClient();
+    const warnings = await applyBoardsStartWorkSideEffects(client, 7, {
+      assignSelf: false,
+      moveToInProgress: true,
+      state: "Doing",
+    });
+    expect(warnings).toEqual(['"Doing" is not a state this work item type allows']);
+    expect(calls).toEqual([]);
   });
 });
