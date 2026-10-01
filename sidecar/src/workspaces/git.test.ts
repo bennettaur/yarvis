@@ -358,6 +358,16 @@ describe("removeWorktree", () => {
     await removeWorktree(runner, "/repo", "/wt", { force: true });
     expect(calls[0]).toEqual(["worktree", "remove", "--force", "/wt"]);
   });
+
+  it("gives the removal longer than the default two-minute timeout", async () => {
+    const timeouts: (number | undefined)[] = [];
+    const runner: GitRunner = async (args, opts) => {
+      if (args[1] === "remove") timeouts.push(opts.timeoutMs);
+      return { stdout: "", stderr: "", exitCode: 0 };
+    };
+    await removeWorktree(runner, "/repo", "/wt", { force: false });
+    expect(timeouts[0]).toBeGreaterThan(120_000);
+  });
 });
 
 describe("listFiles", () => {

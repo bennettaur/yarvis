@@ -30,6 +30,11 @@ export type GitRunner = (
 /** Network git operations (clone/fetch) can legitimately take a while. */
 const NETWORK_TIMEOUT_MS = 10 * 60 * 1000;
 
+/** Deleting a worktree with a big `node_modules` can outlast the default
+ *  timeout, and a removal killed partway leaves a half-deleted worktree behind.
+ *  It runs in the background, so nothing is held waiting on it. */
+const REMOVAL_TIMEOUT_MS = 10 * 60 * 1000;
+
 /**
  * Real runner: shells out to `git` with a scrubbed env. `GIT_TERMINAL_PROMPT=0`
  * makes a missing-credential clone fail fast instead of hanging on a prompt the
@@ -482,7 +487,7 @@ export async function removeWorktree(
   opts: { force: boolean },
 ): Promise<void> {
   const args = ["worktree", "remove", ...(opts.force ? ["--force"] : []), worktreePath];
-  await git(runner, args, primaryClonePath);
+  await git(runner, args, primaryClonePath, REMOVAL_TIMEOUT_MS);
   await git(runner, ["worktree", "prune"], primaryClonePath);
 }
 
