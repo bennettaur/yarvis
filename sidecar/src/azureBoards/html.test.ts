@@ -25,6 +25,18 @@ describe("htmlToMarkdown", () => {
     expect(htmlToMarkdown('<a href="javascript:alert(1)">click</a>')).toBe("click");
   });
 
+  it("leaves no tag behind when tags are nested to dodge a single pass", () => {
+    const nasty = [
+      "<scr<script>ipt>alert(1)</script>",
+      "<<script>script>alert(1)<</script>/script>",
+      '<a href="https://x.dev"><<b>img src=x onerror=alert(1)></a>',
+      "<pre><scr<b>ipt>x</pre>",
+    ];
+    for (const html of nasty) {
+      expect(htmlToMarkdown(html)).not.toMatch(/<\s*(script|img|b)\b/i);
+    }
+  });
+
   it("drops script and style contents entirely", () => {
     expect(htmlToMarkdown("<script>alert(1)</script><style>p{}</style>ok")).toBe("ok");
   });

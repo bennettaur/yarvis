@@ -27,20 +27,38 @@ function decodeEntities(text: string): string {
   });
 }
 
+/**
+ * Applies `pattern` until the text stops changing. One pass is not enough:
+ * removing the inner tag of `<scr<script>ipt>` leaves a new `<script>` behind.
+ */
+function removeUntilStable(text: string, pattern: RegExp): string {
+  let previous: string;
+  let current = text;
+  do {
+    previous = current;
+    current = current.replace(pattern, "");
+  } while (current !== previous);
+  return current;
+}
+
+function stripTags(text: string): string {
+  return removeUntilStable(text, /<[^>]*>/g);
+}
+
 /** Converts Azure's description/comment HTML to Markdown for display. */
 export function htmlToMarkdown(html: string | null | undefined): string {
   if (!html) return "";
   let out = html.replace(/\r\n?/g, "\n");
   // Drop blocks whose contents are never meant to be read as text.
-  out = out.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, "");
+  out = removeUntilStable(out, /<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi);
   out = out.replace(/<pre\b[^>]*>([\s\S]*?)<\/pre>/gi, (_m, body: string) => {
-    const code = decodeEntities(body.replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, ""));
+    const code = decodeEntities(stripTags(body.replace(/<br\s*\/?>/gi, "\n")));
     return `\n\n\`\`\`\n${code.trim()}\n\`\`\`\n\n`;
   });
   out = out.replace(
     /<a\b[^>]*href\s*=\s*["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi,
     (_m, href: string, text: string) => {
-      const label = text.replace(/<[^>]+>/g, "").trim();
+      const label = stripTags(text).trim();
       // Only web links keep their target; anything else (javascript:, data:)
       // is reduced to its label.
       return /^https?:\/\//i.test(href) ? `[${label || href}](${href})` : label;
@@ -58,7 +76,9 @@ export function htmlToMarkdown(html: string | null | undefined): string {
   out = out.replace(/<li\b[^>]*>/gi, "\n- ");
   out = out.replace(/<br\s*\/?>/gi, "\n");
   out = out.replace(/<\/(p|div|ul|ol|table|tr|blockquote)>/gi, "\n\n");
-  out = out.replace(/<[^>]+>/g, "");
+  out = stripTags(out);
+  // Entities decode last, so `&lt;b&gt;` the author typed stays visible text.
+  // The Markdown renderer does not render raw HTML, so it can't become a tag.
   out = decodeEntities(out);
   return out
     .split("\n")
