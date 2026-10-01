@@ -1,14 +1,38 @@
-import type { EditorSelection, Extension } from "@codemirror/state";
+import type { EditorSelection, Extension, StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { EditorPlace } from "../../lib/editorPlaces";
 
 /**
- * The selection to open a document with, from a place recorded on an earlier
- * view. Dropped when it no longer fits: the file may have shrunk since (a
- * reload from disk), and a selection past the end of the document is a
- * RangeError.
+ * What a new view needs to open at `initialPlace` and keep reporting where the
+ * user is: the selection and scroll position to start with, and an extension
+ * that calls `onPlaceChange` as either moves.
+ *
+ * The scroll snapshot needs no fit check, unlike the selection: CodeMirror clips
+ * one that points past the end of a shorter document.
  */
-export function restoredSelection(
+export function placeConfig(
+  initialPlace: EditorPlace | null | undefined,
+  doc: string,
+  onPlaceChange: (place: EditorPlace) => void,
+): {
+  selection: EditorSelection | undefined;
+  scrollTo: StateEffect<unknown> | undefined;
+  extension: Extension;
+} {
+  const scrollSnapshot = initialPlace?.scrollSnapshot ?? null;
+  return {
+    selection: restoredSelection(initialPlace, doc.length),
+    scrollTo: scrollSnapshot ?? undefined,
+    extension: trackPlace(scrollSnapshot, onPlaceChange),
+  };
+}
+
+/**
+ * Dropped when it no longer fits: a remounted tab re-reads the file, which may
+ * have shrunk while it was away (the agent rewrote it), and a selection past the
+ * end of the document is a RangeError.
+ */
+function restoredSelection(
   place: EditorPlace | null | undefined,
   docLength: number,
 ): EditorSelection | undefined {
@@ -17,25 +41,31 @@ export function restoredSelection(
   return selection;
 }
 
-/** Reports the cursor and scroll position each time either changes.
- *  `initialScroll` is where the view opened, carried until the user scrolls. */
-export function trackPlace(
-  initialScroll: EditorPlace["scroll"],
-  onChange: (place: EditorPlace) => void,
+function trackPlace(
+  initialScrollSnapshot: EditorPlace["scrollSnapshot"],
+  onPlaceChange: (place: EditorPlace) => void,
 ): Extension {
-  let scroll = initialScroll;
+  // Starts as the snapshot the view opened at, so a cursor move before the
+  // first scroll doesn't report the restored position as null.
+  let scrollSnapshot = initialScrollSnapshot;
   return [
     EditorView.updateListener.of((update) => {
+      // The snapshot names a document offset, so an edit above it would
+      // otherwise restore to a few lines off.
+      if (update.docChanged && scrollSnapshot) {
+        scrollSnapshot = scrollSnapshot.map(update.changes) ?? null;
+      }
       if (update.selectionSet || update.docChanged) {
-        onChange({ selection: update.state.selection, scroll });
+        onPlaceChange({ selection: update.state.selection, scrollSnapshot });
       }
     }),
-    // Snapshotted on scroll rather than per keystroke, since taking one reads
-    // layout.
+    // Taken on every scroll because it can't be taken at teardown: by the time
+    // the unmount cleanup runs, the view is detached and reads as scrolled to
+    // the top.
     EditorView.domEventHandlers({
       scroll: (_event, view) => {
-        scroll = view.scrollSnapshot();
-        onChange({ selection: view.state.selection, scroll });
+        scrollSnapshot = view.scrollSnapshot();
+        onPlaceChange({ selection: view.state.selection, scrollSnapshot });
       },
     }),
   ];

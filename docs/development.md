@@ -213,7 +213,8 @@ changes.
 src/            React frontend (Vite + TS + Tailwind)
   lib/          sidecar API client, Keychain wrappers, Omni Chat context registry,
                 notifications, cross-tab nav (nav.ts), unsaved editor buffers
-                (fileDrafts.ts), and the voice loop (useVoice.ts and friends)
+                (fileDrafts.ts) and cursor/scroll positions (editorPlaces.ts),
+                and the voice loop (useVoice.ts and friends)
     pr/         provider-agnostic PR data layer: GitHub and Azure transports, cache,
                 refs, per-file viewed state, link parsing, diff parsing and context
                 expansion, guide, insight and stack clients

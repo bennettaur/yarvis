@@ -53,6 +53,7 @@ interface EditorProps {
   initialPlace?: EditorPlace | null;
   onPlaceChange?: (place: EditorPlace) => void;
 }
+
 /** What the most recently rendered editor was handed. */
 let editorProps: EditorProps | null = null;
 
@@ -302,7 +303,7 @@ describe("WorkspaceFileEditor", () => {
   });
 
   it("reopens the editor where it was left", async () => {
-    const place: EditorPlace = { selection: EditorSelection.single(6), scroll: null };
+    const place: EditorPlace = { selection: EditorSelection.single(6), scrollSnapshot: null };
     await mount();
     editorProps?.onPlaceChange?.(place);
     unmount?.();
@@ -317,12 +318,16 @@ describe("WorkspaceFileEditor", () => {
       "src/a.ts": fileOf("src/a.ts", "AAA\n", HASH_A),
       "src/b.ts": fileOf("src/b.ts", "BBB\n", HASH_B),
     };
+    const placeInA: EditorPlace = { selection: EditorSelection.single(2), scrollSnapshot: null };
     await mountSwitchable();
-    editorProps?.onPlaceChange?.({ selection: EditorSelection.single(2), scroll: null });
+    editorProps?.onPlaceChange?.(placeInA);
 
     await switchTo("src/b.ts");
-
     expect(editorProps?.initialPlace).toBeNull();
+    editorProps?.onPlaceChange?.({ selection: EditorSelection.single(3), scrollSnapshot: null });
+
+    await switchTo("src/a.ts");
+    expect(editorProps?.initialPlace).toBe(placeInA);
   });
 
   it("reports a file it could not read", async () => {

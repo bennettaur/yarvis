@@ -216,10 +216,12 @@ you.
 - Edits live outside the tab. Switching tabs keeps what you typed, and the tab
   is marked while it has unsaved changes. Closing it asks first.
 - Switching away and back also keeps your place: the cursor and scroll position
-  come back where you left them.
+  come back where you left them, even after closing the tab and reopening the
+  file.
 - **Revert** throws your edits away and re-reads the file.
-- Unsaved text is in memory only. The tab comes back when the app reopens, but
-  unsaved text in it does not. Save before quitting.
+- Unsaved text and your place in each file are in memory only. The tab comes
+  back when the app reopens, but unsaved text in it does not, and it opens at
+  the top. Save before quitting.
 
 **A save is refused if the file changed since you opened it.** The agent works
 in the same worktree, and saving over its work would drop that work silently.

@@ -6,7 +6,7 @@ import { EditorView, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { useEffect, useRef } from "react";
 import type { EditorPlace } from "../../lib/editorPlaces";
-import { restoredSelection, trackPlace } from "./place";
+import { placeConfig } from "./place";
 
 /** The Tailwind zinc steps the rest of the app reaches through classes. Spelled
  *  out here because CodeMirror is styled through a JS theme, not the class list,
@@ -49,9 +49,9 @@ const LANGUAGE_SLOT = new Compartment();
  * there and ignored. A different file belongs in a different mount, so that its
  * undo history cannot reach back into the file before it; the caller keys it.
  *
- * Because a remount starts the view over, the cursor and scroll position are
- * handed in (`initialPlace`) and reported back out (`onPlaceChange`) so the
- * caller can carry them across one.
+ * A remount starts the view over, so the cursor and scroll position are handed
+ * in (`initialPlace`) and reported back out (`onPlaceChange`) for the caller to
+ * keep between mounts.
  *
  * Grammars load lazily. `@codemirror/language-data` describes every language it
  * supports without pulling any of them in, so the bundle carries one grammar per
@@ -91,13 +91,13 @@ export default function CodeEditor({
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    const place = placeConfig(initialPlace, value, (next) => onPlaceChangeRef.current?.(next));
     const view = new EditorView({
       parent: host,
-      // A snapshot past the end of a shorter document is clipped by CodeMirror.
-      scrollTo: initialPlace?.scroll ?? undefined,
+      scrollTo: place.scrollTo,
       state: EditorState.create({
         doc: value,
-        selection: restoredSelection(initialPlace, value.length),
+        selection: place.selection,
         extensions: [
           basicSetup,
           oneDark,
@@ -115,7 +115,7 @@ export default function CodeEditor({
           EditorView.updateListener.of((update) => {
             if (update.docChanged) onChangeRef.current(update.state.doc.toString());
           }),
-          trackPlace(initialPlace?.scroll ?? null, (place) => onPlaceChangeRef.current?.(place)),
+          place.extension,
         ],
       }),
     });
