@@ -1452,8 +1452,8 @@ function WorkspaceDetailView({
             );
           })()}
           second={
-            // Its views poll git in worktrees the archive is deleting, which the
-            // sidecar refuses until the teardown lands or stops.
+            // The side panel polls git in worktrees the archive is deleting, which
+            // the sidecar refuses until the teardown lands or stops.
             archiveRunning ? (
               <p className="p-3 text-xs text-zinc-500">Removing worktrees…</p>
             ) : (

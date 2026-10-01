@@ -151,11 +151,11 @@ export interface ResolvedWorktree {
  * worktree.
  *
  * A workspace whose archive is still running (`archiving` with no error)
- * doesn't resolve either. Git is deleting its worktrees file by file, so every
- * file removed so far reads as a deletion. If `.gitignore` goes before
- * `node_modules`, every file under it reads as untracked too. A diff of that
- * costs far more than the archive and is useless once it lands. An archive
- * parked on a dirty worktree still resolves, so the user can see what's dirty.
+ * doesn't resolve either. Git deletes the worktree file by file, so a diff
+ * taken mid-removal lists every removed file as deleted, and once `.gitignore`
+ * is gone, everything under `node_modules` as untracked. Computing that can pin
+ * the CPU, and the result is stale as soon as the removal finishes. An archive
+ * stopped on a dirty worktree still resolves, so the user can see what's dirty.
  */
 export async function resolveWorktree(
   db: Db,

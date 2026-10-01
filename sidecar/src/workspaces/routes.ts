@@ -342,7 +342,8 @@ export function createWorkspaceRoutes(config: Config): Hono {
   const errorStatus = (e: unknown): 400 | 404 | 409 => {
     if (!(e instanceof Error)) return 400;
     if (e.message.includes("not found")) return 404;
-    return e.message.includes("being archived") ? 409 : 400;
+    if (e.message.includes("being archived")) return 409;
+    return 400;
   };
 
   /** The parsed `worktree` query parameter, or the validation error for the
@@ -390,7 +391,7 @@ export function createWorkspaceRoutes(config: Config): Hono {
 
   // The PR on a worktree's branch, read live. The primary worktree's is already
   // cached by the poller; this is for the ones it doesn't watch. Resolving the
-  // worktree fails locally (400/404); the provider call is the one that reaches
+  // worktree fails locally (400/404/409); the provider call is the one that reaches
   // out, so its failure is a 502 and is logged, as the PR routes do.
   router.get("/:id/repos/:wrId/pr", async (c) => {
     if (!z.string().uuid().safeParse(c.req.param("wrId")).success) {
