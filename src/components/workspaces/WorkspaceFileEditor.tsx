@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getEditorPlace, setEditorPlace } from "../../lib/editorPlaces";
 import { clearDraft, draftKey, getDraft, setDraft, useDraft } from "../../lib/fileDrafts";
 import {
   FileConflictError,
@@ -23,6 +24,7 @@ import LoadingIndicator from "../LoadingIndicator";
  *
  * The text being edited lives in `fileDrafts`, not in this component, so
  * switching tabs — which unmounts it — doesn't discard what has been typed.
+ * The cursor and scroll position live in `editorPlaces` for the same reason.
  */
 
 const UNREADABLE_REASON: Record<FileUnreadable, string> = {
@@ -234,6 +236,8 @@ export default function WorkspaceFileEditor({
             path={path}
             onChange={onChange}
             onSave={() => void save(draft?.baseHash ?? file.hash)}
+            initialPlace={getEditorPlace(key)}
+            onPlaceChange={(place) => setEditorPlace(key, place)}
           />
         )}
       </div>

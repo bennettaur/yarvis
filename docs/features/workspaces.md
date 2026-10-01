@@ -215,6 +215,8 @@ you.
 - **Cmd+S** (or **Save**) writes the file back to the worktree.
 - Edits live outside the tab. Switching tabs keeps what you typed, and the tab
   is marked while it has unsaved changes. Closing it asks first.
+- Switching away and back also keeps your place: the cursor and scroll position
+  come back where you left them.
 - **Revert** throws your edits away and re-reads the file.
 - Unsaved text is in memory only. The tab comes back when the app reopens, but
   unsaved text in it does not. Save before quitting.
