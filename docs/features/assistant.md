@@ -294,7 +294,7 @@ The shipped specialists:
 | `project-manager` | Reconciles a project's tracked tickets against JIRA. Files new tickets only when asked. | You, via chat |
 | `activity-consolidator` | Summarizes a window of events into prose. | The background jobs |
 | `session-summarizer` | Summarizes one Claude Code transcript into work, decisions and feedback. Has no tools, on purpose. | The transcript digest |
-| `yarvis-guide` | Answers "where is X?" and "how do I set up Y?" about Yarvis itself, from these docs. Replies with steps and links that open the right page or Settings tab. | You, via chat |
+| `yarvis-guide` | Answers "where is X?" and "how do I set up Y?" about Yarvis itself, from these docs. Replies with steps and links that open the right page or Settings tab. | You, via chat or **Help → Ask Yarvis** |
 
 A delegated run has limits:
 

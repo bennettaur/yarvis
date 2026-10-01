@@ -20,6 +20,7 @@ describe("built-in tool registry", () => {
       "upsert_project",
       "create_todo",
       "search_events",
+      "search_yarvis_docs",
     ]) {
       expect(names).toContain(name);
     }

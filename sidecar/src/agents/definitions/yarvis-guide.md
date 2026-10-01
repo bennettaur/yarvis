@@ -8,6 +8,7 @@ tools:
   - search_yarvis_docs
   - read_yarvis_doc
   - yarvis_setup_status
+complexity: low
 maxSteps: 8
 ---
 

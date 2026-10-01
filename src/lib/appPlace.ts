@@ -3,8 +3,8 @@ import { isSettingsTabKey, type SettingsTabKey } from "./settingsTabs";
 
 /**
  * A place in the app a link can send the user: a nav tab, one tab inside
- * Settings, or one of the two guides. The Yarvis guide agent writes these as
- * `yarvis://` links so "where is X?" is answered with a button to X.
+ * Settings, the setup guide, or the app tour. The yarvis-guide agent writes
+ * these as `yarvis://` links so "where is X?" is answered with a button to X.
  */
 export type AppPlace =
   | { kind: "tab"; tab: Tab }
@@ -19,21 +19,22 @@ function isTab(value: string): value is Tab {
 }
 
 /**
- * Reads a `yarvis://` link: `yarvis://settings/credentials`, `yarvis://tab/prs`,
- * `yarvis://setup` or `yarvis://tour`. Anything else, including a known prefix
- * with an unknown tab, is `null`, so a mistyped link stays an inert link
- * rather than landing somewhere unexpected.
+ * Reads a `yarvis://` link: `yarvis://settings/credentials`, `yarvis://settings`
+ * (the Settings page), `yarvis://tab/prs`, `yarvis://setup` or `yarvis://tour`,
+ * with an optional trailing slash. Anything else, including a known prefix with
+ * an unknown tab, is `null`, so a mistyped link stays an inert link rather than
+ * landing somewhere unexpected.
  */
 export function parseAppPlace(href: string | undefined): AppPlace | null {
   if (!href?.startsWith(SCHEME)) return null;
-  const [head, sub, ...rest] = href.slice(SCHEME.length).replace(/\/$/, "").split("/");
+  const [section, name, ...rest] = href.slice(SCHEME.length).replace(/\/$/, "").split("/");
   if (rest.length > 0) return null;
-  if (head === "setup" && sub === undefined) return { kind: "setup" };
-  if (head === "tour" && sub === undefined) return { kind: "tour" };
-  if (head === "settings") {
-    if (sub === undefined) return { kind: "tab", tab: "settings" };
-    return isSettingsTabKey(sub) ? { kind: "settings", tab: sub } : null;
+  if (section === "setup" && name === undefined) return { kind: "setup" };
+  if (section === "tour" && name === undefined) return { kind: "tour" };
+  if (section === "settings") {
+    if (name === undefined) return { kind: "tab", tab: "settings" };
+    return isSettingsTabKey(name) ? { kind: "settings", tab: name } : null;
   }
-  if (head === "tab" && sub !== undefined && isTab(sub)) return { kind: "tab", tab: sub };
+  if (section === "tab" && name !== undefined && isTab(name)) return { kind: "tab", tab: name };
   return null;
 }

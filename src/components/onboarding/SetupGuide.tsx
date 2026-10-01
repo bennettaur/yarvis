@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import type { AppPlace } from "../../lib/appPlace";
 import { markSetupGuideSeen } from "../../lib/onboarding";
 import {
@@ -10,7 +10,19 @@ import {
   WelcomeStep,
 } from "./setupSteps";
 
-const STEPS = ["Welcome", "Secret store", "Database", "LLM provider", "Check", "Next steps"];
+interface Step {
+  label: string;
+  render: (leaveFor: (place: AppPlace) => void) => ReactNode;
+}
+
+const STEPS: Step[] = [
+  { label: "Welcome", render: () => <WelcomeStep /> },
+  { label: "Secret store", render: () => <SecretStoreStep /> },
+  { label: "Database", render: () => <DatabaseStep /> },
+  { label: "LLM provider", render: () => <ProviderStep /> },
+  { label: "Check", render: () => <CheckStep /> },
+  { label: "Next steps", render: (leaveFor) => <FinishStep onNavigate={leaveFor} /> },
+];
 
 /**
  * The first-run setup guide: secret store, database, LLM provider, a check that
@@ -33,31 +45,34 @@ export default function SetupGuide({
   onNavigate: (place: AppPlace) => void;
   onStartTour: () => void;
 }) {
-  const [step, setStep] = useState(0);
+  const [stepIndex, setStepIndex] = useState(0);
 
-  useEffect(() => {
-    if (open) setStep(0);
-  }, [open]);
+  // Reset on close rather than on open, so a reopened guide never paints (and
+  // mounts, with its sidecar calls) the step it was last closed on.
+  const close = useCallback(() => {
+    markSetupGuideSeen();
+    setStepIndex(0);
+    onClose();
+  }, [onClose]);
 
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.preventDefault();
-      markSetupGuideSeen();
-      onClose();
+      close();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open, close]);
 
   if (!open) return null;
 
-  const close = () => {
-    markSetupGuideSeen();
-    onClose();
+  const isLastStep = stepIndex === STEPS.length - 1;
+  const leaveFor = (place: AppPlace) => {
+    close();
+    onNavigate(place);
   };
-  const last = step === STEPS.length - 1;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
@@ -70,16 +85,20 @@ export default function SetupGuide({
         <header className="flex items-center gap-3 border-b border-zinc-800 px-5 py-3">
           <span className="text-sm font-medium text-zinc-300">Set up Yarvis</span>
           <ol className="flex flex-1 items-center justify-center gap-1.5" aria-label="Steps">
-            {STEPS.map((label, i) => (
+            {STEPS.map(({ label }, i) => (
               <li key={label}>
                 <button
                   type="button"
-                  onClick={() => setStep(i)}
+                  onClick={() => setStepIndex(i)}
                   title={label}
                   aria-label={label}
-                  aria-current={i === step ? "step" : undefined}
+                  aria-current={i === stepIndex ? "step" : undefined}
                   className={`h-2 w-2 rounded-full ${
-                    i === step ? "bg-indigo-400" : i < step ? "bg-zinc-500" : "bg-zinc-700"
+                    i === stepIndex
+                      ? "bg-indigo-400"
+                      : i < stepIndex
+                        ? "bg-zinc-500"
+                        : "bg-zinc-700"
                   }`}
                 />
               </li>
@@ -95,36 +114,24 @@ export default function SetupGuide({
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-          {step === 0 && <WelcomeStep />}
-          {step === 1 && <SecretStoreStep />}
-          {step === 2 && <DatabaseStep />}
-          {step === 3 && <ProviderStep />}
-          {step === 4 && <CheckStep />}
-          {step === 5 && (
-            <FinishStep
-              onNavigate={(place) => {
-                close();
-                onNavigate(place);
-              }}
-            />
-          )}
+          {STEPS[stepIndex].render(leaveFor)}
         </div>
 
         <footer className="flex items-center gap-2 border-t border-zinc-800 px-5 py-3">
           <span className="text-xs text-zinc-500">
-            Step {step + 1} of {STEPS.length}: {STEPS[step]}
+            Step {stepIndex + 1} of {STEPS.length}: {STEPS[stepIndex].label}
           </span>
           <div className="ml-auto flex gap-2">
-            {step > 0 && (
+            {stepIndex > 0 && (
               <button
                 type="button"
-                onClick={() => setStep(step - 1)}
+                onClick={() => setStepIndex(stepIndex - 1)}
                 className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
               >
                 Back
               </button>
             )}
-            {last ? (
+            {isLastStep ? (
               <>
                 <button
                   type="button"
@@ -147,10 +154,10 @@ export default function SetupGuide({
             ) : (
               <button
                 type="button"
-                onClick={() => setStep(step + 1)}
+                onClick={() => setStepIndex(stepIndex + 1)}
                 className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500"
               >
-                {step === 0 ? "Get started" : "Next"}
+                {stepIndex === 0 ? "Get started" : "Next"}
               </button>
             )}
           </div>

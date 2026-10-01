@@ -18,13 +18,13 @@ import voiceServer from "../../../docs/voice-server.md" with { type: "text" };
 
 /**
  * The user-facing docs, embedded so the Yarvis guide can answer "where is X?"
- * from the same pages a person would read. Imported as text for the same
- * reason the specialist definitions are: they travel inside the compiled
- * sidecar. The developer docs (`development.md`, the security review) are left
- * out because they describe the codebase, not the app.
+ * from the same pages a person would read. Imported as text so they are
+ * bundled into the compiled sidecar. The developer docs (`development.md`, the
+ * security review) are left out because they describe the codebase, not the app.
  *
- * Keyed by the path under `docs/` without `.md`, which is also what the
- * pages' own relative links use.
+ * Keyed by the path under `docs/` without `.md`. A link in a top-level page
+ * (`features/pr-review.md`) becomes a key once `.md` is stripped; links inside
+ * `features/` are relative to that folder and don't.
  */
 const DOCS: Record<string, string> = {
   "getting-started": gettingStarted,
@@ -69,37 +69,40 @@ export function splitSections(doc: string, markdown: string): DocSection[] {
 
   const flush = () => {
     const text = lines.join("\n").trim();
-    if (text || chain.length) sections.push({ doc, heading: chain.join(" › "), text });
+    if (text) sections.push({ doc, heading: chain.join(" › "), text });
     lines = [];
   };
 
   for (const line of markdown.split("\n")) {
     if (FENCE.test(line)) inFence = !inFence;
-    const match = inFence ? null : HEADING.exec(line);
-    if (!match) {
+    const [, hashes, title] = (inFence ? null : HEADING.exec(line)) ?? [];
+    if (!hashes || !title) {
       lines.push(line);
       continue;
     }
     flush();
-    const level = match[1]!.length;
-    chain.length = level - 1;
-    chain[level - 1] = match[2]!;
+    chain.length = hashes.length - 1;
+    chain[hashes.length - 1] = title;
   }
   flush();
-  return sections.filter((s) => s.text.length > 0);
+  return sections;
 }
 
-let cached: DocSection[] | null = null;
+let cachedSections: DocSection[] | null = null;
 
 function allSections(): DocSection[] {
-  cached ??= Object.entries(DOCS).flatMap(([doc, markdown]) => splitSections(doc, markdown));
-  return cached;
+  cachedSections ??= Object.entries(DOCS).flatMap(([doc, markdown]) =>
+    splitSections(doc, markdown),
+  );
+  return cachedSections;
 }
 
 export function docNames(): string[] {
   return Object.keys(DOCS);
 }
 
+// Beyond the usual filler words, "set", "up" and "yarvis" appear in most
+// questions ("how do I set up Yarvis to…") and would match every page.
 const STOPWORDS = new Set([
   "a",
   "an",
@@ -128,7 +131,7 @@ const STOPWORDS = new Set([
   "yarvis",
 ]);
 
-function terms(query: string): string[] {
+function searchTerms(query: string): string[] {
   return [
     ...new Set(
       query
@@ -139,7 +142,7 @@ function terms(query: string): string[] {
   ];
 }
 
-function occurrences(haystack: string, term: string): number {
+function countOccurrences(haystack: string, term: string): number {
   let count = 0;
   let at = haystack.indexOf(term);
   while (at !== -1) {
@@ -157,6 +160,8 @@ export interface DocMatch {
 }
 
 const SNIPPET_CHARS = 600;
+const HEADING_WEIGHT = 4;
+const MAX_BODY_HITS = 5;
 
 /**
  * Keyword search over the doc sections. A term in a heading counts for more
@@ -165,23 +170,23 @@ const SNIPPET_CHARS = 600;
  * are small enough that a scan per query is cheap.
  */
 export function searchDocs(query: string, limit = 5): DocMatch[] {
-  const wanted = terms(query);
-  if (wanted.length === 0) return [];
+  const queryTerms = searchTerms(query);
+  if (queryTerms.length === 0) return [];
   const scored: DocMatch[] = [];
   for (const section of allSections()) {
     const heading = section.heading.toLowerCase();
     const body = section.text.toLowerCase();
     let score = 0;
-    let matched = 0;
-    for (const term of wanted) {
-      const inHeading = occurrences(heading, term);
-      const inBody = Math.min(occurrences(body, term), 5);
-      if (inHeading || inBody) matched++;
-      score += inHeading * 4 + inBody;
+    let matchedTerms = 0;
+    for (const term of queryTerms) {
+      const inHeading = countOccurrences(heading, term);
+      const inBody = Math.min(countOccurrences(body, term), MAX_BODY_HITS);
+      if (inHeading || inBody) matchedTerms++;
+      score += inHeading * HEADING_WEIGHT + inBody;
     }
     if (score === 0) continue;
     // Covering more of the question beats repeating one word of it.
-    score *= matched / wanted.length;
+    score *= matchedTerms / queryTerms.length;
     scored.push({
       doc: section.doc,
       heading: section.heading,
@@ -195,6 +200,8 @@ export function searchDocs(query: string, limit = 5): DocMatch[] {
   return scored.sort((a, b) => b.score - a.score).slice(0, limit);
 }
 
+// About 6k tokens: room for the longest page today (workspaces, ~20 KB) while
+// keeping one tool result from crowding out the guide's own context.
 const MAX_READ_CHARS = 24_000;
 
 /**
@@ -206,9 +213,11 @@ export function readDoc(
   doc: string,
   section?: string,
 ): { doc: string; text: string; truncated: boolean } | { doc: string; headings: string[] } | null {
-  const markdown = DOCS[doc.replace(/\.md$/, "")];
-  if (markdown === undefined) return null;
   const name = doc.replace(/\.md$/, "");
+  // The name is the model's choice, so `constructor` and friends must not
+  // resolve to Object.prototype members.
+  if (!Object.hasOwn(DOCS, name)) return null;
+  const markdown = DOCS[name] as string;
   let text = markdown;
   if (section?.trim()) {
     const needle = section.trim().toLowerCase();

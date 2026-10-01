@@ -70,4 +70,10 @@ describe("readDoc", () => {
   it("is null for a page that doesn't exist", () => {
     expect(readDoc("development")).toBeNull();
   });
+
+  it("doesn't resolve Object.prototype names as pages", () => {
+    expect(readDoc("constructor")).toBeNull();
+    expect(readDoc("toString", "anything")).toBeNull();
+    expect(readDoc("__proto__")).toBeNull();
+  });
 });

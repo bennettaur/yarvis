@@ -88,8 +88,8 @@ export default function App() {
   // A PTY session on the standalone Terminal tab that an attention item asked us
   // to bring into view. The terminal surface consumes and clears it.
   const [requestedTerminalSession, setRequestedTerminalSession] = useState<string | null>(null);
-  // A Settings tab a guide link or the setup guide asked for. SettingsPanel
-  // consumes and clears it.
+  // A Settings tab asked for by a `yarvis://settings/...` link or the setup
+  // guide's Open buttons. SettingsPanel consumes and clears it.
   const [requestedSettingsTab, setRequestedSettingsTab] = useState<SettingsTabKey | null>(null);
   const [setupGuideOpen, setSetupGuideOpen] = useState(false);
   const [tourOpen, setTourOpen] = useState(false);
@@ -127,32 +127,31 @@ export default function App() {
     setSetupGuideOpen(true);
   }, []);
 
-  const handleOpenPlace = useCallback(
-    (place: AppPlace) => {
-      switch (place.kind) {
-        case "setup":
-          openSetupGuide();
-          return;
-        case "tour":
-          startTour();
-          return;
-        case "settings":
-          setRequestedSettingsTab(place.tab);
-          setTab("settings");
-          break;
-        case "tab":
-          setTab(place.tab);
-          break;
-      }
-      // A link clicked in the Omni Chat overlay would otherwise navigate behind it.
-      setOmniChatOpen(false);
-    },
-    [openSetupGuide, startTour],
-  );
+  const handleOpenPlace = useCallback((place: AppPlace) => {
+    // A link clicked in the Omni Chat overlay would otherwise navigate behind it.
+    setOmniChatOpen(false);
+    switch (place.kind) {
+      case "setup":
+        setSetupGuideOpen(true);
+        break;
+      case "tour":
+        setTourOpen(true);
+        break;
+      case "settings":
+        setRequestedSettingsTab(place.tab);
+        setTab("settings");
+        break;
+      case "tab":
+        setTab(place.tab);
+        break;
+    }
+  }, []);
   useOpenPlaceListener(handleOpenPlace);
 
-  // First launch: open the setup guide when the database or a chat provider is
-  // missing. A failed check opens nothing; the Help menu still reaches it.
+  // On launch, open the setup guide if it has never been closed and the
+  // database or a chat provider is missing. BootGate holds the app until the
+  // sidecar answers, so a failure here is a real one; it opens nothing, and the
+  // Help menu still reaches the guide.
   useEffect(() => {
     shouldAutoOpenSetupGuide()
       .then((open) => {

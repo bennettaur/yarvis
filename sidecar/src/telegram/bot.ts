@@ -370,9 +370,18 @@ async function handleChat(
     await client.sendMessage(chatId, `⚠️ ${errorMessage}`);
     return;
   }
-  let out = full.trim() || "(no response)";
+  let out = stripAppLinks(full).trim() || "(no response)";
   if (attentionReason) out += `\n\n🔔 ${attentionReason}`;
   await client.sendMessage(chatId, out);
+}
+
+/**
+ * Telegram shows replies as plain text, where a `[label](yarvis://…)` link the
+ * guide wrote for the desktop app is noise that leads nowhere. Keep the label,
+ * which names the page ("Settings → Credentials").
+ */
+export function stripAppLinks(text: string): string {
+  return text.replace(/\[([^\]]+)\]\(yarvis:\/\/[^)\s]*\)/g, "$1");
 }
 
 /** Promise sleep that resolves early if the bot is asked to stop. */

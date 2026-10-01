@@ -3,7 +3,8 @@
 Press **Cmd+/** for a cheat sheet of the main shortcuts, grouped by where they
 apply. This page lists them all.
 The keyboard icon in the nav rail opens the same list. Hold **Cmd** for a moment
-to label each nav-rail button with its number.
+to label each nav-rail button with its number. The **?** button opens Help: the
+setup guide, a tour of the app, and Ask Yarvis.
 
 ## Anywhere, even with Yarvis in the background
 
@@ -66,3 +67,10 @@ These use Cmd only, so Ctrl+D, Ctrl+T and Ctrl+W still reach the shell. See
 | ↑ / ↓ | Move the selection |
 | Enter | Copy the selected entry and close |
 | Esc | Close |
+
+## App tour and setup guide
+
+| Keys | Does |
+| --- | --- |
+| → / ← | Next / previous step of the tour |
+| Esc | End the tour, or close the setup guide (it won't open by itself again) |

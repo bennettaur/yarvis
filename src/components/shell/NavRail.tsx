@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Icon, type IconName } from "./icons";
 import { NAV_ITEMS, type Tab } from "./nav";
 import { formatChord } from "./shortcuts";
@@ -14,7 +14,8 @@ function RailButton({
   shortcutKey = null,
   showHint = false,
   tourId,
-  expanded,
+  panelOpen,
+  panelId,
 }: {
   label: string;
   icon: IconName;
@@ -28,11 +29,13 @@ function RailButton({
   shortcutKey?: string | null;
   /** Label the button with {@link shortcutKey} — the user is holding Cmd. */
   showHint?: boolean;
-  /** What the app tour highlights this button by. */
+  /** Rendered as `data-tour`, which the app tour uses to find and highlight this button. */
   tourId?: string;
-  /** Set when the button opens a menu, to report whether it is open. */
-  expanded?: boolean;
+  /** Set when the button shows and hides a panel (`panelId`), to report whether it is open. */
+  panelOpen?: boolean;
+  panelId?: string;
 }) {
+  const lit = active || panelOpen === true;
   const chord = shortcutKey ? formatChord(["Mod", shortcutKey]) : null;
   const baseTitle = chord ? `${label} (${chord})` : label;
   const hinted = badge && badgeHint ? `${label} — ${badgeHint}` : label;
@@ -43,12 +46,12 @@ function RailButton({
       title={badge && badgeHint ? `${baseTitle} — ${badgeHint}` : baseTitle}
       aria-label={hinted}
       aria-current={active ? "page" : undefined}
-      aria-haspopup={expanded === undefined ? undefined : "menu"}
-      aria-expanded={expanded}
+      aria-expanded={panelOpen}
+      aria-controls={panelOpen ? panelId : undefined}
       data-tour={tourId}
       onClick={onClick}
       className={`relative flex h-10 w-10 items-center justify-center transition-colors ${
-        active ? "text-indigo-400" : "text-zinc-500 hover:text-zinc-200"
+        lit ? "text-indigo-400" : "text-zinc-500 hover:text-zinc-200"
       }`}
     >
       {active && (
@@ -68,8 +71,10 @@ function RailButton({
 }
 
 /**
- * The Help button's menu: the setup guide, the app tour, and the assistant for
- * "where is X?" questions. Closes on a pick, Esc, or a click outside.
+ * The Help button and the panel it opens: the setup guide, the app tour, and
+ * the assistant for "where is X?" questions. Closes on a pick, Esc, or a click
+ * outside. A plain disclosure rather than an ARIA menu, which would promise
+ * arrow-key navigation this doesn't have.
  */
 function HelpMenu({
   onOpenSetupGuide,
@@ -81,20 +86,21 @@ function HelpMenu({
   onAskYarvis: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const panelId = useId();
 
   useEffect(() => {
     if (!open) return;
-    const onPointer = (e: PointerEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    const closeOnOutsidePointer = (e: PointerEvent) => {
+      if (!containerRef.current?.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
     };
-    window.addEventListener("pointerdown", onPointer);
+    window.addEventListener("pointerdown", closeOnOutsidePointer);
     window.addEventListener("keydown", onKey);
     return () => {
-      window.removeEventListener("pointerdown", onPointer);
+      window.removeEventListener("pointerdown", closeOnOutsidePointer);
       window.removeEventListener("keydown", onKey);
     };
   }, [open]);
@@ -111,26 +117,25 @@ function HelpMenu({
   ];
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={containerRef} className="relative">
       <RailButton
         label="Help"
         icon="help"
-        active={open}
+        active={false}
         onClick={() => setOpen((o) => !o)}
         tourId="help"
-        expanded={open}
+        panelOpen={open}
+        panelId={panelId}
       />
       {open && (
         <div
-          role="menu"
-          aria-label="Help"
+          id={panelId}
           className="absolute bottom-0 left-full z-40 ml-2 w-60 rounded-lg border border-zinc-700 bg-zinc-900 py-1 shadow-xl"
         >
           {items.map((item) => (
             <button
               key={item.label}
               type="button"
-              role="menuitem"
               onClick={pick(item.action)}
               className="block w-full px-3 py-2 text-left hover:bg-zinc-800"
             >

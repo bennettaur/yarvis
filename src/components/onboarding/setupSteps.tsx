@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { type DbHealthResponse, getDbHealth, getHealth, getStatus } from "../../lib/api";
+import { type DbHealthResponse, getDbHealth, getHealth } from "../../lib/api";
 import type { AppPlace } from "../../lib/appPlace";
 import { listProviders, type ProviderInfo } from "../../lib/chat";
+import { formatError } from "../../lib/errors";
 import { listSecretStatus, SECRETS, type SecretKey, setSecret } from "../../lib/keychain";
-import { hasConfiguredChatProvider } from "../../lib/onboarding";
+import { configuredChatProviders } from "../../lib/onboarding";
 import { clearResourceCache } from "../../lib/resourceCache";
 import { restartAndWait } from "../../lib/restart";
 import { getSettings } from "../../lib/settings";
@@ -12,11 +13,10 @@ import { StatusDot } from "../Dashboard";
 import { MaskedInput } from "../MaskedInput";
 import SecretBackendSection from "../SecretBackendSection";
 
-const DEFAULT_DATABASE_URL = "postgres://localhost:5432/yarvis";
+const DEFAULT_DATABASE_URL =
+  SECRETS.find((s) => s.key === "database_url")?.placeholder ?? "postgres://localhost:5432/yarvis";
 
-function errorText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
+const errorMessage = (e: unknown): string => formatError(e).message;
 
 /**
  * Saves one secret and restarts the sidecar so it picks the value up. When the
@@ -29,7 +29,7 @@ async function saveSecretAndRestart(key: SecretKey, value: string): Promise<void
     await restartAndWait();
   } catch (e) {
     const health = await getHealth().catch(() => null);
-    throw new Error(health?.error ?? errorText(e));
+    throw new Error(health?.error ?? errorMessage(e));
   } finally {
     // Every cached answer came from the sidecar that just went away.
     clearResourceCache();
@@ -40,8 +40,8 @@ function useSecretPresent(key: SecretKey): [boolean | null, () => Promise<void>]
   const [present, setPresent] = useState<boolean | null>(null);
   const refresh = useCallback(async () => {
     try {
-      const all = await listSecretStatus();
-      setPresent(all.find((s) => s.key === key)?.present ?? false);
+      const statuses = await listSecretStatus();
+      setPresent(statuses.find((s) => s.key === key)?.present ?? false);
     } catch {
       setPresent(null);
     }
@@ -50,6 +50,27 @@ function useSecretPresent(key: SecretKey): [boolean | null, () => Promise<void>]
     void refresh();
   }, [refresh]);
   return [present, refresh];
+}
+
+/** Saving one secret from a step: the busy and error state around {@link saveSecretAndRestart}. */
+function useSaveSecret(key: SecretKey, afterSave: () => Promise<unknown>) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const save = async (value: string): Promise<boolean> => {
+    setBusy(true);
+    setError(null);
+    try {
+      await saveSecretAndRestart(key, value);
+      return true;
+    } catch (e) {
+      setError(errorMessage(e));
+      return false;
+    } finally {
+      await afterSave();
+      setBusy(false);
+    }
+  };
+  return { save, busy, error };
 }
 
 function StepHeading({ title, children }: { title: string; children: React.ReactNode }) {
@@ -93,16 +114,14 @@ export function SecretStoreStep() {
 
 export function DatabaseStep() {
   const [present, refreshPresent] = useSecretPresent("database_url");
-  const [db, setDb] = useState<DbHealthResponse | null>(null);
-  const [value, setValue] = useState(DEFAULT_DATABASE_URL);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [dbHealth, setDbHealth] = useState<DbHealthResponse | null>(null);
+  const [databaseUrl, setDatabaseUrl] = useState("");
 
   const refreshDb = useCallback(async () => {
     try {
-      setDb(await getDbHealth());
+      setDbHealth(await getDbHealth());
     } catch {
-      setDb(null);
+      setDbHealth(null);
     }
   }, []);
 
@@ -110,19 +129,18 @@ export function DatabaseStep() {
     void refreshDb();
   }, [refreshDb]);
 
+  // Offer the default only when nothing is saved, so one click on Save can't
+  // replace a working URL (which may carry a password) with the default.
+  useEffect(() => {
+    if (present === false) setDatabaseUrl((v) => v || DEFAULT_DATABASE_URL);
+  }, [present]);
+
+  const { save, busy, error } = useSaveSecret("database_url", () =>
+    Promise.all([refreshPresent(), refreshDb()]),
+  );
   const onSave = async () => {
-    const url = value.trim();
-    if (!url) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await saveSecretAndRestart("database_url", url);
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      await Promise.all([refreshPresent(), refreshDb()]);
-      setBusy(false);
-    }
+    const url = databaseUrl.trim();
+    if (url && (await save(url))) setDatabaseUrl("");
   };
 
   return (
@@ -135,11 +153,15 @@ export function DatabaseStep() {
         </p>
       </StepHeading>
       <div className="flex gap-2">
-        <MaskedInput value={value} onChange={setValue} placeholder={DEFAULT_DATABASE_URL} />
+        <MaskedInput
+          value={databaseUrl}
+          onChange={setDatabaseUrl}
+          placeholder={present ? "Saved. Enter a new URL to replace it." : DEFAULT_DATABASE_URL}
+        />
         <button
           type="button"
           onClick={() => void onSave()}
-          disabled={busy || !value.trim()}
+          disabled={busy || !databaseUrl.trim()}
           className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500 disabled:opacity-40"
         >
           {busy ? "Connecting…" : "Save and connect"}
@@ -150,14 +172,14 @@ export function DatabaseStep() {
           <StatusDot state={present} />
           {present ? "A database URL is saved" : "No database URL saved yet"}
         </span>
-        {db?.configured && (
+        {dbHealth?.configured && (
           <span className="flex items-center gap-2">
-            <StatusDot state={db.reachable} />
-            {db.reachable ? "Database is reachable" : "Database is not reachable"}
+            <StatusDot state={dbHealth.reachable} />
+            {dbHealth.reachable ? "Database is reachable" : "Database is not reachable"}
           </span>
         )}
       </div>
-      {db?.configured && !db.reachable && (
+      {dbHealth?.configured && !dbHealth.reachable && (
         <p className="mt-3 text-xs text-zinc-500">
           Check that PostgreSQL is running (<code>brew services start postgresql@17</code>) and that
           the database exists (<code>createdb yarvis</code>).
@@ -184,27 +206,16 @@ const PROVIDER_SECRET: Partial<Record<ProviderChoice, SecretKey>> = {
   cerebras: "cerebras_api_key",
 };
 
-function NativeKeyForm({ secretKey }: { secretKey: SecretKey }) {
+/** The API key form for a built-in provider (Anthropic, Gemini, Cerebras). */
+function ProviderKeyForm({ secretKey }: { secretKey: SecretKey }) {
   const meta = SECRETS.find((s) => s.key === secretKey);
   const [present, refreshPresent] = useSecretPresent(secretKey);
-  const [value, setValue] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [apiKey, setApiKey] = useState("");
+  const { save, busy, error } = useSaveSecret(secretKey, refreshPresent);
 
   const onSave = async () => {
-    const key = value.trim();
-    if (!key) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await saveSecretAndRestart(secretKey, key);
-      setValue("");
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      await refreshPresent();
-      setBusy(false);
-    }
+    const value = apiKey.trim();
+    if (value && (await save(value))) setApiKey("");
   };
 
   return (
@@ -218,11 +229,11 @@ function NativeKeyForm({ secretKey }: { secretKey: SecretKey }) {
       </div>
       {meta?.help && <p className="mb-2 text-xs text-zinc-500">{meta.help}</p>}
       <div className="flex gap-2">
-        <MaskedInput value={value} onChange={setValue} placeholder={meta?.placeholder} />
+        <MaskedInput value={apiKey} onChange={setApiKey} placeholder={meta?.placeholder} />
         <button
           type="button"
           onClick={() => void onSave()}
-          disabled={busy || !value.trim()}
+          disabled={busy || !apiKey.trim()}
           className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500 disabled:opacity-40"
         >
           {busy ? "Saving…" : "Save"}
@@ -260,7 +271,7 @@ export function ProviderStep() {
           </label>
         ))}
       </div>
-      {secretKey && <NativeKeyForm key={secretKey} secretKey={secretKey} />}
+      {secretKey && <ProviderKeyForm key={secretKey} secretKey={secretKey} />}
       {choice === "custom" && <CustomProviderSection />}
       {choice === "bedrock" && (
         <p className="text-sm text-zinc-400">
@@ -274,25 +285,30 @@ export function ProviderStep() {
 }
 
 interface CheckResult {
-  secretStore: string;
+  secretStoreLabel: string;
   databaseConfigured: boolean;
   databaseReachable: boolean;
   providers: ProviderInfo[];
 }
 
 async function runChecks(): Promise<CheckResult> {
-  const [settings, status, db, providers] = await Promise.all([
+  const [settings, dbHealth, providers] = await Promise.all([
     getSettings(),
-    getStatus(),
     getDbHealth(),
     listProviders("chat"),
   ]);
   return {
-    secretStore: settings.secretBackend === "onepassword" ? "1Password" : "macOS Keychain",
-    databaseConfigured: status.databaseConfigured,
-    databaseReachable: db.reachable,
+    secretStoreLabel: settings.secretBackend === "onepassword" ? "1Password" : "macOS Keychain",
+    databaseConfigured: dbHealth.configured,
+    databaseReachable: dbHealth.reachable,
     providers,
   };
+}
+
+function databaseDetail(result: CheckResult | null): string {
+  if (!result) return "…";
+  if (!result.databaseConfigured) return "not configured";
+  return result.databaseReachable ? "reachable" : "not reachable";
 }
 
 function CheckRow({ ok, label, detail }: { ok: boolean | null; label: string; detail: string }) {
@@ -318,7 +334,7 @@ export function CheckStep() {
     try {
       setResult(await runChecks());
     } catch (e) {
-      setError(errorText(e));
+      setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -328,8 +344,7 @@ export function CheckStep() {
     void check();
   }, [check]);
 
-  const configured = result?.providers.filter((p) => p.available && p.id !== "bedrock") ?? [];
-  const providerOk = result ? hasConfiguredChatProvider(result.providers) : null;
+  const configured = result ? configuredChatProviders(result.providers) : [];
 
   return (
     <>
@@ -340,26 +355,20 @@ export function CheckStep() {
         </p>
       </StepHeading>
       <div className="rounded-lg border border-zinc-800 px-3">
+        {/* The settings that name the store were read, so there is nothing more
+            to check here: a locked store shows up as a failed save on a later step. */}
         <CheckRow
           ok={result ? true : null}
           label="Secret store"
-          detail={result?.secretStore ?? "…"}
+          detail={result?.secretStoreLabel ?? "…"}
         />
         <CheckRow
           ok={result ? result.databaseConfigured && result.databaseReachable : null}
           label="Database"
-          detail={
-            !result
-              ? "…"
-              : !result.databaseConfigured
-                ? "not configured"
-                : result.databaseReachable
-                  ? "reachable"
-                  : "not reachable"
-          }
+          detail={databaseDetail(result)}
         />
         <CheckRow
-          ok={providerOk}
+          ok={result ? configured.length > 0 : null}
           label="LLM provider"
           detail={
             !result ? "…" : configured.length ? configured.map((p) => p.label).join(", ") : "none"
@@ -379,7 +388,7 @@ export function CheckStep() {
   );
 }
 
-/** Optional integrations, mirroring the table in docs/getting-started.md. */
+/** Optional integrations. Keep in step with the table in docs/getting-started.md. */
 const OPTIONAL_FEATURES: { label: string; what: string; place: AppPlace }[] = [
   {
     label: "GitHub PRs and issues",

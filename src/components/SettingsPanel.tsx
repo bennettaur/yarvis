@@ -1,10 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
-import {
-  isSettingsTabKey,
-  SETTINGS_TAB_STORAGE_KEY,
-  SETTINGS_TABS,
-  type SettingsTabKey,
-} from "../lib/settingsTabs";
+import { SETTINGS_TABS, type SettingsTabKey, useSettingsTab } from "../lib/settingsTabs";
 import AgentSection from "./AgentSection";
 import ChatBudgetSection from "./ChatBudgetSection";
 import ComplexityModelSection from "./ComplexityModelSection";
@@ -37,26 +31,11 @@ export default function SettingsPanel({
   requestedTab = null,
   onRequestConsumed,
 }: {
-  /** A tab another view (a guide link, the setup guide) asked to show. */
+  /** A tab to switch to, asked for by a `yarvis://settings/...` link or the setup guide. */
   requestedTab?: SettingsTabKey | null;
   onRequestConsumed?: () => void;
 } = {}) {
-  const [active, setActive] = useState<SettingsTabKey>(() => {
-    if (requestedTab) return requestedTab;
-    const saved = localStorage.getItem(SETTINGS_TAB_STORAGE_KEY);
-    return isSettingsTabKey(saved) ? saved : "credentials";
-  });
-
-  const select = useCallback((key: SettingsTabKey) => {
-    setActive(key);
-    localStorage.setItem(SETTINGS_TAB_STORAGE_KEY, key);
-  }, []);
-
-  useEffect(() => {
-    if (!requestedTab) return;
-    select(requestedTab);
-    onRequestConsumed?.();
-  }, [requestedTab, onRequestConsumed, select]);
+  const [active, select] = useSettingsTab(requestedTab, onRequestConsumed);
 
   return (
     <div className="space-y-5">

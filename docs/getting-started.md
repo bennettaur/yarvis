@@ -157,9 +157,9 @@ it quits the app.
 ## 5. First configuration
 
 The app starts with nothing configured, so on first launch it opens a **setup
-guide** that walks through the steps below: the secret store, the database, an
-LLM provider, and a check that they work. It finishes by offering a tour of
-each page. You can skip it and reopen it, or the tour, at any time from the
+guide**. It covers the same ground as the steps below, plus choosing where
+secrets are kept (the macOS Keychain or 1Password), and finishes by offering a
+tour of each page. You can skip it and reopen it, or the tour, at any time from the
 **Help** button (the **?** at the bottom of the nav rail).
 
 To do the same by hand, open **Settings** (the gear at the bottom of the nav
@@ -182,6 +182,9 @@ rail on the left) and do these three things.
    which defaults to `us-east-1`). For an OpenAI- or Anthropic-compatible
    endpoint (LiteLLM, Ollama, a company gateway), use **Settings → LLM
    Providers → Add provider** instead.
+
+   The setup guide can't check AWS credentials, so with only Bedrock
+   configured it keeps opening at launch until you finish or skip it.
 3. **Check it works.** Open **Dashboard** (bottom of the nav rail). **Database**
    should say reachable, and your provider's dot should be lit. Then open
    **Chat** (Cmd+1), pick the provider and a model at the top, and say hello.

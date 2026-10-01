@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import type { Tab } from "../shell/nav";
 import { formatChord } from "../shell/shortcuts";
 import { tabShortcutDigit } from "../shell/useTabShortcuts";
-import { TOUR_STEPS } from "./tourSteps";
+import { TOUR_STEPS, type TourStep } from "./tourSteps";
 
 interface Rect {
   top: number;
@@ -12,8 +12,20 @@ interface Rect {
 }
 
 const CARD_WIDTH = 320;
-const GAP = 12;
+// The tallest card, so one near the bottom of the rail stays fully on screen.
+const CARD_MAX_HEIGHT = 220;
+const CARD_GAP = 12;
 const RING_PAD = 4;
+
+/** A page step highlights its own nav button unless it names another target. */
+function targetOf(step: TourStep): string | undefined {
+  return step.target ?? step.tab;
+}
+
+function chordOf(step: TourStep): string | null {
+  const key = step.shortcutKey ?? (step.tab ? tabShortcutDigit(step.tab) : null);
+  return key ? formatChord(["Mod", key]) : null;
+}
 
 function targetRect(target: string | undefined): Rect | null {
   if (!target) return null;
@@ -29,16 +41,22 @@ function targetRect(target: string | undefined): Rect | null {
  * vertically.
  */
 function cardPosition(rect: Rect): { top: number; left: number } {
-  const top = Math.max(GAP, Math.min(rect.top - GAP, window.innerHeight - 220));
-  const left = Math.min(rect.left + rect.width + GAP, window.innerWidth - CARD_WIDTH - GAP);
+  const top = Math.max(
+    CARD_GAP,
+    Math.min(rect.top - CARD_GAP, window.innerHeight - CARD_MAX_HEIGHT),
+  );
+  const left = Math.min(
+    rect.left + rect.width + CARD_GAP,
+    window.innerWidth - CARD_WIDTH - CARD_GAP,
+  );
   return { top, left };
 }
 
 /**
  * The app tour: steps through {@link TOUR_STEPS}, switching to each page and
  * ringing its nav-rail button. A step whose target isn't on screen shows its
- * card centered instead of failing, so a renamed button costs a highlight, not
- * the tour.
+ * card centered instead of failing, so a button whose `data-tour` value changes
+ * costs a highlight, not the tour.
  */
 export default function Tour({
   open,
@@ -52,39 +70,44 @@ export default function Tour({
   const [index, setIndex] = useState(0);
   const [rect, setRect] = useState<Rect | null>(null);
   const step = TOUR_STEPS[index];
-  const last = index === TOUR_STEPS.length - 1;
+  const isLastStep = index === TOUR_STEPS.length - 1;
 
-  useEffect(() => {
-    if (open) setIndex(0);
-  }, [open]);
+  // Reset on close rather than on open: the effect below would otherwise switch
+  // to the page of the step the tour last ended on before the reset landed.
+  const close = useCallback(() => {
+    setIndex(0);
+    onClose();
+  }, [onClose]);
 
   useEffect(() => {
     if (open && step.tab) onTabChange(step.tab);
   }, [open, step, onTabChange]);
 
-  // Measured after layout so the ring lands on the button as it is drawn now,
-  // and again on resize since the rail's buttons move with the window height.
+  // Measured in a layout effect so the ring is placed before the frame paints,
+  // and again on resize because the bottom group of rail buttons moves with the
+  // window height.
   useLayoutEffect(() => {
     if (!open) return;
-    const measure = () => setRect(targetRect(step.target));
+    const measure = () => setRect(targetRect(targetOf(step)));
     measure();
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
   }, [open, step]);
 
   const next = useCallback(() => {
-    if (last) onClose();
+    if (isLastStep) close();
     else setIndex((i) => i + 1);
-  }, [last, onClose]);
+  }, [isLastStep, close]);
   const back = useCallback(() => setIndex((i) => Math.max(0, i - 1)), []);
 
   useEffect(() => {
     if (!open) return;
     // Capture phase so the Terminal's xterm, shown on one of the steps, can't
-    // swallow the keys first.
+    // swallow the keys first. Enter is left alone so it still presses whichever
+    // card button has focus.
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-      else if (e.key === "ArrowRight" || e.key === "Enter") next();
+      if (e.key === "Escape") close();
+      else if (e.key === "ArrowRight") next();
       else if (e.key === "ArrowLeft") back();
       else return;
       e.preventDefault();
@@ -92,16 +115,11 @@ export default function Tour({
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [open, onClose, next, back]);
+  }, [open, close, next, back]);
 
   if (!open) return null;
 
-  const digit = step.tab ? tabShortcutDigit(step.tab) : null;
-  const chord = digit
-    ? formatChord(["Mod", digit])
-    : step.target === "shortcuts"
-      ? formatChord(["Mod", "/"])
-      : null;
+  const chord = chordOf(step);
   const position = rect ? cardPosition(rect) : null;
 
   return (
@@ -110,6 +128,7 @@ export default function Tour({
       <div className={`absolute inset-0 ${rect ? "" : "bg-black/55"}`} />
       {rect && (
         <div
+          data-tour-highlight
           className="pointer-events-none absolute rounded-lg ring-2 ring-indigo-400"
           style={{
             top: rect.top - RING_PAD,
@@ -144,7 +163,7 @@ export default function Tour({
         <div className="mt-4 flex items-center gap-2">
           <button
             type="button"
-            onClick={onClose}
+            onClick={close}
             className="text-xs text-zinc-500 hover:text-zinc-300"
           >
             End tour
@@ -164,7 +183,7 @@ export default function Tour({
               onClick={next}
               className="rounded-md bg-indigo-600 px-3 py-1 text-sm font-medium hover:bg-indigo-500"
             >
-              {last ? "Finish" : "Next"}
+              {isLastStep ? "Finish" : "Next"}
             </button>
           </div>
         </div>

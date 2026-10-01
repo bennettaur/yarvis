@@ -36,7 +36,13 @@ Data lives in local **PostgreSQL + pgvector**; small structural settings live
 in `~/.yarvis/settings.json` instead. See `docs/development.md`'s "Project
 layout" section for a directory-by-directory map of both `src/` and
 `sidecar/src/`. A user-visible behavior change updates the matching page in
-`docs/features/` (or `docs/configuration.md` for settings and secrets).
+`docs/features/` (or `docs/configuration.md` for settings and secrets). Those
+pages are also what the in-app `yarvis-guide` specialist answers from:
+`sidecar/src/help/docs.ts` embeds them with `with { type: "text" }`, so a new
+user-facing page is added to its `DOCS` map too (`help/docs.test.ts` catches a
+missing `docs/features/` page, not a new top-level one). The guide's prompt
+lists every `yarvis://` address by hand; `src/lib/appPlace.test.ts` fails when
+a nav or Settings tab is added, renamed or removed without updating it.
 
 ## Commands
 

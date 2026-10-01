@@ -41,6 +41,7 @@ const FAMILY_POLICY: Record<string, ToolPolicy> = {
   jira: "search",
   prReview: "search",
   calendar: "search",
+  help: "search",
 };
 
 function builtinDescriptors(): ToolDescriptor[] {

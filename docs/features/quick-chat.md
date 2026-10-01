@@ -13,7 +13,8 @@ the provider and model you last picked.
 
 Press **Control+Shift+Space** from anywhere, even when Yarvis is in the
 background. The window comes forward and a chat panel opens in the middle of it.
-You can also open it from the chat button at the bottom of the nav rail.
+You can also open it from the chat button at the bottom of the nav rail, or
+from **Help → Ask Yarvis** (the **?** below it).
 
 - **It knows what's on screen.** When you send a message, Omni Chat attaches a
   short description of the current view. On a PR, that is the PR's number,
@@ -24,6 +25,10 @@ You can also open it from the chat button at the bottom of the nav rail.
   in progress keeps streaming. Summon it again and you're back in the same
   conversation.
 - **New chat** starts a fresh session.
+- **Links to places in Yarvis work.** Ask "where do I add a GitHub token?" and
+  the answer links straight to the page, such as **Settings → Credentials**.
+  Clicking one hides Omni Chat so you can see the page. The Chat tab's links
+  work the same way.
 
 The screen description is capped at a few thousand characters and is sent only
 with that turn. It is never saved to the chat history, and the assistant

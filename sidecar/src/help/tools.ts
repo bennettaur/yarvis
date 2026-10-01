@@ -4,11 +4,13 @@ import type { Config } from "../config.ts";
 import { availableProviders } from "../llm/providers.ts";
 import { docNames, readDoc, searchDocs } from "./docs.ts";
 
+const isSet = (value: string | undefined): boolean => !!value;
+
 /**
- * Help tools: what the Yarvis guide answers "where is X?" and "how do I set
- * up Y?" from. Two read the embedded user docs; the third reports which parts
- * of the app are configured, as booleans only, so the guide can tell a user
- * what they still need without any secret leaving the sidecar.
+ * Help tools the Yarvis guide answers "where is X?" and "how do I set up Y?"
+ * from. `search_yarvis_docs` and `read_yarvis_doc` read the embedded user docs.
+ * `yarvis_setup_status` reports whether each part of the app is configured,
+ * never the values, so no secret leaves the sidecar.
  */
 export function buildHelpTools(config: Config) {
   return {
@@ -50,26 +52,26 @@ export function buildHelpTools(config: Config) {
 
     yarvis_setup_status: tool({
       description:
-        "Which parts of Yarvis this user has configured: the database, each chat provider, and the integrations (GitHub, Azure DevOps, JIRA, Google Calendar, Telegram). Use it to tell the user what is already done and what they still need.",
+        "Which parts of Yarvis this user has configured: the database, each chat provider, and the integrations (GitHub, Azure DevOps, JIRA, Google Calendar, Hugging Face voice, Telegram). Use it to tell the user what is already done and what they still need.",
       inputSchema: z.object({}),
       execute: async () => {
         const { secrets } = config;
         const providers = await availableProviders(config, "chat");
         return {
-          database: config.databaseUrl !== undefined,
+          database: isSet(config.databaseUrl),
           chatProviders: providers.map((p) => ({
             id: p.id,
             label: p.label,
             configured: p.available,
             ...(p.id === "bedrock" ? { note: "uses AWS credentials; not checked" } : {}),
           })),
-          github: secrets.githubToken !== undefined,
-          azureDevops: secrets.azureDevopsToken !== undefined && !!secrets.azureDevopsOrgUrl,
-          jira: secrets.jiraApiToken !== undefined && !!secrets.jiraBaseUrl && !!secrets.jiraEmail,
-          googleCalendarClient:
-            secrets.googleClientId !== undefined && secrets.googleClientSecret !== undefined,
-          huggingFace: secrets.huggingFaceApiKey !== undefined,
-          telegram: config.telegram.botToken !== undefined,
+          github: isSet(secrets.githubToken),
+          azureDevops: isSet(secrets.azureDevopsToken) && isSet(secrets.azureDevopsOrgUrl),
+          jira:
+            isSet(secrets.jiraApiToken) && isSet(secrets.jiraBaseUrl) && isSet(secrets.jiraEmail),
+          googleCalendarClient: isSet(secrets.googleClientId) && isSet(secrets.googleClientSecret),
+          huggingFace: isSet(secrets.huggingFaceApiKey),
+          telegram: isSet(config.telegram.botToken),
         };
       },
     }),

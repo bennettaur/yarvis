@@ -181,9 +181,10 @@ export default function Markdown({
    */
   allowImages?: boolean;
   /**
-   * Open links to things Yarvis has a view for (PRs, `yarvis://` places) inside
-   * the app, offering the browser as a secondary choice for PRs. Off by default: a link in PR or issue
-   * text is the author's, and the reader expects it to go where it says.
+   * Open links to things Yarvis has a view for (PRs, `yarvis://` places)
+   * inside the app, offering the browser as a secondary choice for PRs. Off by
+   * default: a link in PR or issue text is the author's, and the reader expects
+   * it to go where it says.
    */
   allowAppLinks?: boolean;
 }): ReactNode {
