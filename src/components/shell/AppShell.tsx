@@ -23,6 +23,8 @@ export default function AppShell({
   onOpenOmniChat,
   onOpenClipboard,
   onOpenAttention,
+  onOpenSetupGuide,
+  onStartTour,
   attentionPending,
   children,
 }: {
@@ -31,6 +33,8 @@ export default function AppShell({
   onOpenOmniChat: () => void;
   onOpenClipboard: () => void;
   onOpenAttention: () => void;
+  onOpenSetupGuide: () => void;
+  onStartTour: () => void;
   attentionPending: boolean;
   children: React.ReactNode;
 }) {
@@ -59,6 +63,8 @@ export default function AppShell({
         onOpenOmniChat={onOpenOmniChat}
         onOpenClipboard={onOpenClipboard}
         onOpenShortcuts={() => setShortcutsOpen(true)}
+        onOpenSetupGuide={onOpenSetupGuide}
+        onStartTour={onStartTour}
         attentionPending={attentionPending}
         showHints={showHints}
       />

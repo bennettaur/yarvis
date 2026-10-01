@@ -234,6 +234,7 @@ src/            React frontend (Vite + TS + Tailwind)
     omnichat/   Omni Chat, the summon-from-anywhere chat overlay
     memory/     memory library, activity log, agent todos, projects
     clipboard/  clipboard palette
+    onboarding/ first-run setup guide and the app tour
     find/       find-on-page bar (Cmd+F)
   omni/         json-render component catalog, registry, layout primitives
 src-tauri/      Rust core (Tauri v2)
@@ -261,6 +262,7 @@ sidecar/        Bun + TS service (Hono)
   src/projects/    projects: status, focus, tracked tickets with priorities
   src/todos/       the assistant's own todo list
   src/agents/      specialists and bounded delegated runs
+  src/help/        the user docs, embedded, and the tools the Yarvis guide reads them with
   src/jobs/        scheduler and jobs: consolidation, nightly rollup, transcript
                    digest, and your own scheduled jobs
   src/digest/      dangling work, next-work ranking, weekly summary, dismissals

@@ -5,6 +5,7 @@ import type { Db } from "../db/client.ts";
 import { buildDigestTools } from "../digest/tools.ts";
 import { buildEventTools } from "../events/tools.ts";
 import { buildCalendarTools } from "../google/tools.ts";
+import { buildHelpTools } from "../help/tools.ts";
 import { buildJiraTools } from "../jira/tools.ts";
 import type { MemoryService } from "../memory/index.ts";
 import { buildMemoryTools } from "../memory/tools.ts";
@@ -60,6 +61,7 @@ export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Recor
     jira: buildJiraTools(db, config, { remoteControl }),
     prReview: buildPrReviewTools(db),
     calendar: buildCalendarTools(db, config),
+    help: buildHelpTools(config),
   };
 }
 

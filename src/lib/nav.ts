@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import type { AppPlace } from "./appPlace";
 import type { PrSummary } from "./pr/types";
 
 /**
@@ -105,4 +106,26 @@ export function onNewWorkspace(handler: (request: NewWorkspaceRequest) => void):
 /** React-friendly hook over `onNewWorkspace` for the App shell. */
 export function useNewWorkspaceListener(handler: (request: NewWorkspaceRequest) => void): void {
   useEffect(() => onNewWorkspace(handler), [handler]);
+}
+
+const OPEN_PLACE_EVENT = "yarvis:open-place";
+
+interface OpenPlaceEvent extends Event {
+  detail: AppPlace;
+}
+
+/** Asks the App shell to show a tab, a Settings tab, or one of the guides. */
+export function requestOpenPlace(place: AppPlace): void {
+  target.dispatchEvent(new CustomEvent(OPEN_PLACE_EVENT, { detail: place }));
+}
+
+export function onOpenPlace(handler: (place: AppPlace) => void): () => void {
+  const listener = (e: Event) => handler((e as OpenPlaceEvent).detail);
+  target.addEventListener(OPEN_PLACE_EVENT, listener);
+  return () => target.removeEventListener(OPEN_PLACE_EVENT, listener);
+}
+
+/** React-friendly hook over `onOpenPlace` for the App shell. */
+export function useOpenPlaceListener(handler: (place: AppPlace) => void): void {
+  useEffect(() => onOpenPlace(handler), [handler]);
 }

@@ -1,4 +1,10 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import {
+  isSettingsTabKey,
+  SETTINGS_TAB_STORAGE_KEY,
+  SETTINGS_TABS,
+  type SettingsTabKey,
+} from "../lib/settingsTabs";
 import AgentSection from "./AgentSection";
 import ChatBudgetSection from "./ChatBudgetSection";
 import ComplexityModelSection from "./ComplexityModelSection";
@@ -21,56 +27,41 @@ import ToolManagerSection from "./ToolManagerSection";
 import VoiceSection from "./VoiceSection";
 import WipSection from "./WipSection";
 
-type TabKey =
-  | "credentials"
-  | "providers"
-  | "tools"
-  | "repos"
-  | "prs"
-  | "voice"
-  | "embeddings"
-  | "telegram"
-  | "wip"
-  | "assistant"
-  | "diagnostics";
-
-const TABS: { key: TabKey; label: string }[] = [
-  { key: "credentials", label: "Credentials" },
-  { key: "providers", label: "LLM Providers" },
-  { key: "tools", label: "Tools & MCP" },
-  { key: "repos", label: "Repositories" },
-  { key: "prs", label: "PR review" },
-  { key: "voice", label: "Voice" },
-  { key: "embeddings", label: "Embeddings" },
-  { key: "telegram", label: "Telegram" },
-  { key: "wip", label: "Work in progress" },
-  { key: "assistant", label: "Assistant" },
-  { key: "diagnostics", label: "Diagnostics" },
-];
-
-const TAB_STORAGE_KEY = "yarvis.settings.activeTab";
-
 /**
  * The Settings tab — where the user configures credentials, custom LLM
  * providers, MCP servers, and tool policies. Health/status indicators stay on
  * the Dashboard tab. Sections are grouped into tabs so each one stays
  * self-contained and the page doesn't become an ever-growing scroll.
  */
-export default function SettingsPanel() {
-  const [active, setActive] = useState<TabKey>(() => {
-    const saved = localStorage.getItem(TAB_STORAGE_KEY) as TabKey | null;
-    return saved && TABS.some((t) => t.key === saved) ? saved : "credentials";
+export default function SettingsPanel({
+  requestedTab = null,
+  onRequestConsumed,
+}: {
+  /** A tab another view (a guide link, the setup guide) asked to show. */
+  requestedTab?: SettingsTabKey | null;
+  onRequestConsumed?: () => void;
+} = {}) {
+  const [active, setActive] = useState<SettingsTabKey>(() => {
+    if (requestedTab) return requestedTab;
+    const saved = localStorage.getItem(SETTINGS_TAB_STORAGE_KEY);
+    return isSettingsTabKey(saved) ? saved : "credentials";
   });
 
-  const select = (key: TabKey) => {
+  const select = useCallback((key: SettingsTabKey) => {
     setActive(key);
-    localStorage.setItem(TAB_STORAGE_KEY, key);
-  };
+    localStorage.setItem(SETTINGS_TAB_STORAGE_KEY, key);
+  }, []);
+
+  useEffect(() => {
+    if (!requestedTab) return;
+    select(requestedTab);
+    onRequestConsumed?.();
+  }, [requestedTab, onRequestConsumed, select]);
 
   return (
     <div className="space-y-5">
       <nav className="flex gap-1 border-b border-zinc-800">
-        {TABS.map((tab) => (
+        {SETTINGS_TABS.map((tab) => (
           <button
             key={tab.key}
             onClick={() => select(tab.key)}

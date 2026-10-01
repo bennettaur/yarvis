@@ -156,8 +156,14 @@ it quits the app.
 
 ## 5. First configuration
 
-The app starts with nothing configured. Open **Settings** (the gear at the
-bottom of the nav rail on the left) and do these three things.
+The app starts with nothing configured, so on first launch it opens a **setup
+guide** that walks through the steps below: the secret store, the database, an
+LLM provider, and a check that they work. It finishes by offering a tour of
+each page. You can skip it and reopen it, or the tour, at any time from the
+**Help** button (the **?** at the bottom of the nav rail).
+
+To do the same by hand, open **Settings** (the gear at the bottom of the nav
+rail on the left) and do these three things.
 
 1. **Connect the database.** Go to **Settings → Credentials**. In **Database
    URL**, enter `postgres://localhost:5432/yarvis` and press **Save**. The
@@ -183,7 +189,10 @@ bottom of the nav rail on the left) and do these three things.
 Secrets are saved to one Keychain item and never read back into the UI. To
 change one, save a new value over it.
 
-That's a working Yarvis. Everything below is optional.
+That's a working Yarvis. Everything below is optional. From here you can also
+ask the assistant where a setting is or how to set something up ("where do I
+add a GitHub token?"). It answers from these docs, with links that open the
+right page.
 
 ## 6. Turn on the features you want
 

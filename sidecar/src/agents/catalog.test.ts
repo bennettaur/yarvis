@@ -157,6 +157,7 @@ describe("the catalogue", () => {
       "project-manager",
       "session-summarizer",
       "work-scout",
+      "yarvis-guide",
     ]);
     expect(specialists.every((s) => s.source === "builtin")).toBe(true);
     // The one deliberate unattended grant in the shipped set.
@@ -206,14 +207,14 @@ describe("the catalogue", () => {
     expect(problems.length).toBe(1);
     expect(problems[0]!.message).toContain("frontmatter fence");
     // The rest still load.
-    expect(specialists.length).toBe(5);
+    expect(specialists.length).toBe(6);
   });
 
   it("treats a missing directory as no user definitions", async () => {
     rmSync(dir, { recursive: true, force: true });
     const { specialists, problems } = await reloadCatalog();
     expect(problems).toEqual([]);
-    expect(specialists.length).toBe(5);
+    expect(specialists.length).toBe(6);
     mkdirSync(dir, { recursive: true });
   });
 
@@ -222,7 +223,7 @@ describe("the catalogue", () => {
     mkdirSync(join(dir, "nested.md"));
     const { specialists, problems } = await reloadCatalog();
     expect(problems).toEqual([]);
-    expect(specialists.length).toBe(5);
+    expect(specialists.length).toBe(6);
   });
 
   it("resolves a name case-insensitively, and answers null for an unknown one", async () => {
@@ -257,6 +258,6 @@ describe("choosing a specialist", () => {
   });
 
   it("returns everything for an empty query rather than nothing", async () => {
-    expect((await searchSpecialists("")).length).toBe(5);
+    expect((await searchSpecialists("")).length).toBe(6);
   });
 });

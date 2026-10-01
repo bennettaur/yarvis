@@ -11,6 +11,8 @@ const rail = (showHints: boolean) => (
     onOpenOmniChat={noop}
     onOpenClipboard={noop}
     onOpenShortcuts={noop}
+    onOpenSetupGuide={noop}
+    onStartTour={noop}
     attentionPending={false}
     showHints={showHints}
   />

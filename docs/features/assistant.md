@@ -272,6 +272,8 @@ Loaded on demand:
 - **PR review.** List your guided reviews and search the notes you took while
   reviewing.
 - **Calendar.** List events and create one.
+- **Help.** Search and read Yarvis's own user docs, and check which parts of
+  the app are configured (yes or no only, never a secret's value).
 
 The full list, with each tool's policy, is in **Settings → Tools & MCP → Tool
 Manager**.
@@ -292,6 +294,7 @@ The shipped specialists:
 | `project-manager` | Reconciles a project's tracked tickets against JIRA. Files new tickets only when asked. | You, via chat |
 | `activity-consolidator` | Summarizes a window of events into prose. | The background jobs |
 | `session-summarizer` | Summarizes one Claude Code transcript into work, decisions and feedback. Has no tools, on purpose. | The transcript digest |
+| `yarvis-guide` | Answers "where is X?" and "how do I set up Y?" about Yarvis itself, from these docs. Replies with steps and links that open the right page or Settings tab. | You, via chat |
 
 A delegated run has limits:
 

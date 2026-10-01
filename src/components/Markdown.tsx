@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown, { type Components, defaultUrlTransform } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
-import { requestOpenPr } from "../lib/nav";
+import { parseAppPlace } from "../lib/appPlace";
+import { requestOpenPlace, requestOpenPr } from "../lib/nav";
 import { parsePrLink } from "../lib/prLink";
 import { openExternal } from "../lib/url";
 
@@ -105,11 +106,28 @@ function textOfChildren(children: ReactNode): string {
 }
 
 /**
- * A link that opens a PR inside Yarvis, with a small control (shown on hover)
+ * A link to a place in Yarvis (`yarvis://settings/credentials`) navigates there.
+ * A link to a PR opens it inside Yarvis, with a small control (shown on hover)
  * to open it in the browser instead. Any other link keeps the default `a`.
  */
 const appLink: Components["a"] = (props) => {
   const { href, children } = props;
+  const place = parseAppPlace(href);
+  if (place) {
+    return (
+      <a
+        href={href}
+        title={href}
+        onClick={(e) => {
+          e.preventDefault();
+          requestOpenPlace(place);
+        }}
+        className="text-sky-400 hover:underline"
+      >
+        {children}
+      </a>
+    );
+  }
   const pr = parsePrLink(href, textOfChildren(children));
   if (!pr) return externalLink(props);
   return (
@@ -142,6 +160,11 @@ const appLink: Components["a"] = (props) => {
   );
 };
 
+/** The default transform drops unknown schemes, which would blank a `yarvis://` link. */
+function keepAppLinks(url: string): string {
+  return parseAppPlace(url) ? url : defaultUrlTransform(url);
+}
+
 /** Renders GitHub-flavored markdown with the app's dark styling. */
 export default function Markdown({
   children,
@@ -158,8 +181,8 @@ export default function Markdown({
    */
   allowImages?: boolean;
   /**
-   * Open links to things Yarvis has a view for (PRs) inside the app, offering
-   * the browser as a secondary choice. Off by default: a link in PR or issue
+   * Open links to things Yarvis has a view for (PRs, `yarvis://` places) inside
+   * the app, offering the browser as a secondary choice for PRs. Off by default: a link in PR or issue
    * text is the author's, and the reader expects it to go where it says.
    */
   allowAppLinks?: boolean;
@@ -172,6 +195,7 @@ export default function Markdown({
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkBreaks]}
         components={allowAppLinks ? { ...base, a: appLink } : base}
+        urlTransform={allowAppLinks ? keepAppLinks : defaultUrlTransform}
       >
         {children}
       </ReactMarkdown>
