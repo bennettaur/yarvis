@@ -115,7 +115,7 @@ const archiveSchema = z.object({
 
 // The source-agnostic triple identifying an issue across providers.
 const issueRefSchema = z.object({
-  provider: z.enum(["github", "jira"]),
+  provider: z.enum(["github", "jira", "azure"]),
   sourceKey: z.string().min(1).max(256),
   externalId: z.string().min(1).max(256),
 });

@@ -1,10 +1,11 @@
 /**
  * Frontend issue shapes, mirroring the sidecar's provider-neutral issue types
  * (`sidecar/src/issues/types.ts`). An issue is keyed by the source-agnostic
- * triple (provider, sourceKey, externalId) so JIRA slots in beside GitHub.
+ * triple (provider, sourceKey, externalId) so JIRA and Azure Boards slot in
+ * beside GitHub.
  */
 
-export type IssueProvider = "github" | "jira";
+export type IssueProvider = "github" | "jira" | "azure";
 
 export interface IssueLabel {
   name: string;

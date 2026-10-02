@@ -704,7 +704,7 @@ export const issueLinks = pgTable(
   "issue_links",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    provider: text("provider").notNull(), // "github" | "jira"
+    provider: text("provider").notNull(), // "github" | "jira" | "azure"
     sourceKey: text("source_key").notNull(), // github: "owner/repo"; jira: project key
     externalId: text("external_id").notNull(), // github: issue number; jira: issue key
     title: text("title"),

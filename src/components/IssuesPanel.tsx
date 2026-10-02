@@ -1,17 +1,18 @@
 import { useEffect, useState } from "react";
 import type { IssueProvider, IssueSummary } from "../lib/issues/types";
+import AzureBoardsIssuesView from "./issue/AzureBoardsIssuesView";
 import GithubIssuesView from "./issue/GithubIssuesView";
 import JiraIssuesView from "./issue/JiraIssuesView";
 
 /**
  * The Issues panel. A provider toggle switches the whole panel between issue
- * sources — GitHub and JIRA today — each rendering its own view. The toggle is
- * built to extend to further providers (Linear, Azure DevOps) by adding an entry
- * here and a matching view.
+ * sources (GitHub, JIRA and Azure Boards), each rendering its own view. A
+ * further provider is an entry here and a matching view.
  */
 const PROVIDERS: { key: IssueProvider; label: string }[] = [
   { key: "github", label: "GitHub" },
   { key: "jira", label: "JIRA" },
+  { key: "azure", label: "Azure Boards" },
 ];
 
 export default function IssuesPanel({
@@ -55,8 +56,13 @@ export default function IssuesPanel({
             requested={requested?.provider === "github" ? requested : null}
             onRequestConsumed={onRequestConsumed}
           />
-        ) : (
+        ) : provider === "jira" ? (
           <JiraIssuesView />
+        ) : (
+          <AzureBoardsIssuesView
+            requested={requested?.provider === "azure" ? requested : null}
+            onRequestConsumed={onRequestConsumed}
+          />
         )}
       </div>
     </div>

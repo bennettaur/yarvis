@@ -264,7 +264,10 @@ export default function App() {
         case "issue":
           // The detail view re-fetches from (provider, sourceKey, externalId).
           setRequestedIssue({
-            provider: target.provider === "jira" ? "jira" : "github",
+            provider:
+              target.provider === "jira" || target.provider === "azure"
+                ? target.provider
+                : "github",
             sourceKey: target.sourceKey,
             sourceLabel: target.sourceKey,
             externalId: target.externalId,
