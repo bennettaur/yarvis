@@ -97,6 +97,7 @@ describe("htmlToMarkdown", () => {
       "[lbl](https://a.dev/x%29[e]%28javascript:alert%281%29%29)",
     );
     expect(htmlToMarkdown('<a href="https://a.dev">a]b</a>')).toBe("[a\\]b](https://a.dev/)");
+    expect(htmlToMarkdown('<a href="https://a.dev">a\\]b</a>')).toBe("[a\\\\\\]b](https://a.dev/)");
   });
 
   it("makes a code fence longer than any backtick run in the code", () => {

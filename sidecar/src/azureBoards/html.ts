@@ -120,8 +120,12 @@ export function htmlToMarkdown(html: string | null | undefined): string {
         if (name === "a" && openLink) {
           const { href, label: parts } = openLink;
           openLink = null;
-          // Escaped so a `]` in the text can't end the label early.
-          const label = parts.join("").trim().replace(/[[\]]/g, "\\$&");
+          // Escaped so a `]` in the text can't end the label early. Backslashes
+          // too, or `\]` would escape the escape and let the `]` through.
+          const label = parts
+            .join("")
+            .trim()
+            .replace(/[\\[\]]/g, "\\$&");
           write(href ? `[${label || href}](${href})` : label);
         } else if (isHeading(name)) {
           write("\n\n");
