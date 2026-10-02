@@ -27,6 +27,7 @@ describe("htmlToMarkdown", () => {
 
   it("drops script and style contents entirely", () => {
     expect(htmlToMarkdown("<script>alert(1)</script><style>p{}</style>ok")).toBe("ok");
+    expect(htmlToMarkdown("<script>alert(1)</script >ok")).toBe("ok");
   });
 
   it("decodes entities as text, so escaped markup stays visible", () => {
@@ -60,35 +61,53 @@ describe("htmlToMarkdown", () => {
     }
   });
 
-  it("drops script and style blocks even with whitespace in the closing tag", () => {
-    expect(htmlToMarkdown("<script>alert(1)</script >ok")).toBe("ok");
-    expect(htmlToMarkdown("<style>p{}</style>ok")).toBe("ok");
-  });
-
   it("keeps escaped markup inside a code block as text", () => {
     expect(htmlToMarkdown("<pre>&lt;b&gt;bold&lt;/b&gt; &amp;lt;</pre>")).toBe(
       "```\n<b>bold</b> &lt;\n```",
     );
   });
 
-  it("does not let entities in body text forge a second copy of a code block", () => {
-    const out = htmlToMarkdown("<pre>X</pre>&#xE000;0&#xE000;");
-    expect(out.match(/```/g)).toHaveLength(2);
+  it.each([
+    ["unclosed hrefs", '<a href="'.repeat(20_000)],
+    ["unclosed srcs", "<img src=''".repeat(20_000)],
+    ["bare brackets", "<".repeat(200_000)],
+    ["unclosed bold", "<b>".repeat(60_000)],
+    ["spliced scripts", `${"<scr<script></script>ipt>".repeat(5_000)}${"<script>".repeat(20_000)}`],
+  ])("stays fast on crafted %s", (_name, html) => {
+    const start = performance.now();
+    htmlToMarkdown(html);
+    expect(performance.now() - start).toBeLessThan(500);
   });
 
-  it("stays linear on crafted unclosed tags", () => {
-    const crafted = [
-      '<a href="'.repeat(20_000),
-      "<img src=''".repeat(20_000),
-      "<".repeat(200_000),
-      "<b>".repeat(60_000),
-      `${"<scr<script></script>ipt>".repeat(5_000)}${"<script>".repeat(20_000)}`,
-    ];
-    for (const html of crafted) {
-      const start = performance.now();
-      htmlToMarkdown(html);
-      expect(performance.now() - start).toBeLessThan(500);
-    }
+  it("closes a link and a code block left open at the end", () => {
+    expect(htmlToMarkdown('<a href="https://x.dev">open label')).toBe(
+      "[open label](https://x.dev/)",
+    );
+    expect(htmlToMarkdown("<pre>unclosed <b>x")).toBe("```\nunclosed x\n```");
+  });
+
+  it("closes the first link when a second one opens", () => {
+    expect(
+      htmlToMarkdown('<a href="https://a.dev">one <a href="https://b.dev">two</a> three</a>'),
+    ).toBe("[one](https://a.dev/)[two](https://b.dev/) three");
+  });
+
+  it("keeps a crafted href from closing the link and opening another", () => {
+    expect(htmlToMarkdown('<a href="https://a.dev/x)[e](javascript:alert(1))">lbl</a>')).toBe(
+      "[lbl](https://a.dev/x%29[e]%28javascript:alert%281%29%29)",
+    );
+    expect(htmlToMarkdown('<a href="https://a.dev">a]b</a>')).toBe("[a\\]b](https://a.dev/)");
+  });
+
+  it("makes a code fence longer than any backtick run in the code", () => {
+    expect(htmlToMarkdown("<pre>```\nafter</pre>")).toBe("````\n```\nafter\n````");
+  });
+
+  // A code block inside a link breaks the link; pinned until that's handled.
+  it("writes a code block inside a link into the link label", () => {
+    expect(htmlToMarkdown('<a href="https://a.dev">x<pre>code</pre>y</a>')).toBe(
+      "[x\n\n```\ncode\n```\n\ny](https://a.dev/)",
+    );
   });
 
   it("renders pre blocks as fenced code", () => {

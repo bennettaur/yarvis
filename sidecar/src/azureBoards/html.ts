@@ -2,11 +2,13 @@
  * Azure Boards stores descriptions and comments as HTML, but the issue views
  * render Markdown (without raw HTML). These convert the small subset of HTML
  * the Azure editor produces, the way `jira/adf.ts` does for JIRA's ADF.
- * Anything unrecognised is reduced to its text, so nothing renders as markup.
+ * Anything unrecognised is reduced to its text.
  *
- * The HTML is untrusted: anyone who can edit a work item writes it. It goes
- * through htmlparser2's tokenizer, which runs in linear time, rather than
- * through regexes, which crafted unclosed tags can make take minutes.
+ * The HTML is untrusted: anyone who can edit a work item writes it. htmlparser2's
+ * tokenizer stays linear on any input, including crafted unclosed tags, and
+ * decodes entities exactly once. Decoded text can still spell out `<img ...>` or
+ * Markdown of its own, so the output is untrusted Markdown: it is safe to show
+ * only because the renderer doesn't render raw HTML and filters link schemes.
  */
 
 import { Parser } from "htmlparser2";
@@ -17,6 +19,7 @@ const SKIPPED = new Set(["script", "style", "noscript", "template", "head"]);
 /** Elements that end a paragraph-like block. */
 const BLOCKS = new Set(["p", "div", "ul", "ol", "table", "tr", "blockquote"]);
 
+/** The Markdown that wraps each inline emphasis element. */
 const INLINE_MARKS: Record<string, string> = {
   strong: "**",
   b: "**",
@@ -24,24 +27,46 @@ const INLINE_MARKS: Record<string, string> = {
   i: "_",
 };
 
-/** Only web links keep their target; anything else (javascript:, data:) is dropped. */
-function webUrl(value: string | undefined): string | null {
-  return value && /^https?:\/\//i.test(value.trim()) ? value.trim() : null;
+const isHeading = (name: string) => /^h[1-6]$/.test(name);
+
+/**
+ * The URL to link to, or null for anything but http(s) (javascript:, data:).
+ * Brackets are percent-encoded so the URL can't close the Markdown `(...)` it
+ * sits in and start a second link.
+ */
+function toWebUrl(value: string | undefined): string | null {
+  if (!value) return null;
+  let url: URL;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  return url.href.replace(/[()<>]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
+/** A fenced code block whose fence is longer than any backtick run inside it. */
+function fence(code: string): string {
+  const longestRun = Math.max(0, ...(code.match(/`+/g) ?? []).map((run) => run.length));
+  const marks = "`".repeat(Math.max(3, longestRun + 1));
+  return `\n\n${marks}\n${code}\n${marks}\n\n`;
 }
 
 /** Converts Azure's description/comment HTML to Markdown for display. */
 export function htmlToMarkdown(html: string | null | undefined): string {
   if (!html) return "";
 
-  // Each open `<a>` collects its label in a buffer of its own, so the label can
-  // be wrapped once the tag closes. The bottom buffer is the document.
-  const buffers: string[][] = [[]];
-  const links: (string | null)[] = [];
-  const write = (text: string) => buffers[buffers.length - 1]?.push(text);
+  const doc: string[] = [];
+  // The open `<a>` collects its label separately so it can be wrapped once the
+  // tag closes. htmlparser2 closes an open `<a>` when another opens, and closes
+  // everything still open at the end, so there is at most one at a time.
+  let openLink: { href: string | null; label: string[] } | null = null;
+  const write = (text: string) => (openLink?.label ?? doc).push(text);
 
   let skipDepth = 0;
   let preDepth = 0;
-  let codeText: string[] = [];
+  let preText: string[] = [];
 
   const parser = new Parser(
     {
@@ -53,23 +78,22 @@ export function htmlToMarkdown(html: string | null | undefined): string {
         if (skipDepth > 0) return;
         if (preDepth > 0) {
           if (name === "pre") preDepth++;
-          else if (name === "br") codeText.push("\n");
+          else if (name === "br") preText.push("\n");
           return;
         }
         if (name === "pre") {
           preDepth = 1;
-          codeText = [];
+          preText = [];
         } else if (name === "a") {
-          links.push(webUrl(attribs.href));
-          buffers.push([]);
+          openLink = { href: toWebUrl(attribs.href), label: [] };
         } else if (name === "img") {
-          const src = webUrl(attribs.src);
+          const src = toWebUrl(attribs.src);
           if (src) write(`![](${src})`);
         } else if (name === "br") {
           write("\n");
         } else if (name === "li") {
           write("\n- ");
-        } else if (/^h[1-6]$/.test(name)) {
+        } else if (isHeading(name)) {
           write(`\n\n${"#".repeat(Number(name[1]))} `);
         } else if (name === "code") {
           write("`");
@@ -79,27 +103,27 @@ export function htmlToMarkdown(html: string | null | undefined): string {
       },
       ontext(text) {
         if (skipDepth > 0) return;
-        if (preDepth > 0) codeText.push(text);
+        if (preDepth > 0) preText.push(text);
         // The Azure editor pads with `&nbsp;`; plain spaces trim and wrap normally.
         else write(text.replace(/\u00a0/g, " "));
       },
       onclosetag(name) {
         if (SKIPPED.has(name)) {
-          skipDepth = Math.max(0, skipDepth - 1);
+          skipDepth--;
           return;
         }
         if (skipDepth > 0) return;
         if (preDepth > 0) {
-          if (name === "pre" && --preDepth === 0) {
-            write(`\n\n\`\`\`\n${codeText.join("").trim()}\n\`\`\`\n\n`);
-          }
+          if (name === "pre" && --preDepth === 0) write(fence(preText.join("").trim()));
           return;
         }
-        if (name === "a" && buffers.length > 1) {
-          const label = (buffers.pop() ?? []).join("").trim();
-          const href = links.pop();
+        if (name === "a" && openLink) {
+          const { href, label: parts } = openLink;
+          openLink = null;
+          // Escaped so a `]` in the text can't end the label early.
+          const label = parts.join("").trim().replace(/[[\]]/g, "\\$&");
           write(href ? `[${label || href}](${href})` : label);
-        } else if (/^h[1-6]$/.test(name)) {
+        } else if (isHeading(name)) {
           write("\n\n");
         } else if (name === "code") {
           write("`");
@@ -115,14 +139,7 @@ export function htmlToMarkdown(html: string | null | undefined): string {
   parser.write(html.replace(/\r\n?/g, "\n"));
   parser.end();
 
-  // Fold any links left open at the end into the document as plain labels.
-  while (buffers.length > 1) {
-    const label = (buffers.pop() ?? []).join("");
-    links.pop();
-    write(label);
-  }
-
-  return (buffers[0] ?? [])
+  return doc
     .join("")
     .split("\n")
     .map((line) => line.trimEnd())
