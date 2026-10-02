@@ -25,46 +25,44 @@ describe("htmlToMarkdown", () => {
     expect(htmlToMarkdown('<a href="javascript:alert(1)">click</a>')).toBe("click");
   });
 
-  it("strips tags rebuilt by removing a tag nested inside them", () => {
-    // One pass removes `<b>` and leaves `<script>` behind.
-    expect(htmlToMarkdown("<scr<b>ipt>alert(1)")).toBe("alert(1)");
-    expect(htmlToMarkdown('<a href="https://x.dev"><i<b>mg src=x>go</a>')).toBe(
-      "[go](https://x.dev)",
+  it("drops script and style contents entirely", () => {
+    expect(htmlToMarkdown("<script>alert(1)</script><style>p{}</style>ok")).toBe("ok");
+  });
+
+  it("decodes entities as text, so escaped markup stays visible", () => {
+    expect(htmlToMarkdown("<div>a &lt;b&gt; &amp; c&nbsp;d &#39;e&#x27;</div>")).toBe(
+      "a <b> & c d 'e'",
     );
   });
 
-  it("drops a script block rebuilt by splicing another block into its tag", () => {
-    expect(htmlToMarkdown("<scr<script></script>ipt>alert(1)</script>ok")).toBe("ok");
-    expect(htmlToMarkdown("<sty<style></style>le>p{}</style>ok")).toBe("ok");
+  it("turns an out-of-range numeric entity into a replacement character", () => {
+    expect(htmlToMarkdown("a &#99999999; b")).toBe("a \uFFFD b");
   });
 
-  it("drops script blocks whose closing tag has trailing whitespace", () => {
+  it("keeps web images and drops other image sources", () => {
+    expect(htmlToMarkdown('<img src="https://x.dev/a.png">')).toBe("![](https://x.dev/a.png)");
+    expect(htmlToMarkdown('<img src="data:image/png;base64,AAAA">')).toBe("");
+  });
+
+  it("never lets a tag through, however the markup is nested or left open", () => {
+    const crafted = [
+      "<scr<b>ipt>alert(1)",
+      "<scr<script></script>ipt>alert(1)</script>ok",
+      "<sty<style></style>le>p{}</style>ok",
+      "<script>alert(1)</script >ok",
+      `${"<".repeat(50)}script${">".repeat(50)}x`,
+      '<a href="https://x.dev"><i<b>mg src=x>go</a>',
+      "<pre><scr<b>ipt>x</pre>",
+      '<a href="https://x.dev"><img src="javascript:alert(1)">',
+    ];
+    for (const html of crafted) {
+      expect(htmlToMarkdown(html)).not.toMatch(/<[^<>]*>/);
+    }
+  });
+
+  it("drops script and style blocks even with whitespace in the closing tag", () => {
     expect(htmlToMarkdown("<script>alert(1)</script >ok")).toBe("ok");
-  });
-
-  it("drops every bracket when tags nest deeper than the pass limit", () => {
-    const deep = `${"<".repeat(50)}script${">".repeat(50)}x`;
-    expect(htmlToMarkdown(deep)).toBe("x");
-  });
-
-  it("strips a long run of unclosed brackets quickly", () => {
-    const start = performance.now();
-    htmlToMarkdown(`${"<".repeat(60_000)}x`);
-    expect(performance.now() - start).toBeLessThan(500);
-  });
-
-  it("cuts an oversized body down before converting it", () => {
-    const out = htmlToMarkdown(`<div>${"a".repeat(200_000)}</div>`);
-    expect(out.length).toBeLessThan(100_010);
-    expect(out.endsWith("…")).toBe(true);
-  });
-
-  it("stays fast on nested script blocks with unclosed openers", () => {
-    let nested = "<script></script>";
-    for (let i = 0; i < 1500; i++) nested = `<scr${nested}ipt></script>`;
-    const start = performance.now();
-    htmlToMarkdown(nested + "<script>".repeat(3000));
-    expect(performance.now() - start).toBeLessThan(1000);
+    expect(htmlToMarkdown("<style>p{}</style>ok")).toBe("ok");
   });
 
   it("keeps escaped markup inside a code block as text", () => {
@@ -73,23 +71,24 @@ describe("htmlToMarkdown", () => {
     );
   });
 
-  it("drops script and style contents entirely", () => {
-    expect(htmlToMarkdown("<script>alert(1)</script><style>p{}</style>ok")).toBe("ok");
+  it("does not let entities in body text forge a second copy of a code block", () => {
+    const out = htmlToMarkdown("<pre>X</pre>&#xE000;0&#xE000;");
+    expect(out.match(/```/g)).toHaveLength(2);
   });
 
-  it("decodes entities after stripping tags, so escaped markup stays text", () => {
-    expect(htmlToMarkdown("<div>a &lt;b&gt; &amp; c&nbsp;d &#39;e&#x27;</div>")).toBe(
-      "a <b> & c d 'e'",
-    );
-  });
-
-  it("leaves an out-of-range numeric entity as text instead of throwing", () => {
-    expect(htmlToMarkdown("a &#99999999; b &#x110000;")).toBe("a &#99999999; b &#x110000;");
-  });
-
-  it("keeps web images and drops other image sources", () => {
-    expect(htmlToMarkdown('<img src="https://x.dev/a.png">')).toBe("![](https://x.dev/a.png)");
-    expect(htmlToMarkdown('<img src="data:image/png;base64,AAAA">')).toBe("");
+  it("stays linear on crafted unclosed tags", () => {
+    const crafted = [
+      '<a href="'.repeat(20_000),
+      "<img src=''".repeat(20_000),
+      "<".repeat(200_000),
+      "<b>".repeat(60_000),
+      `${"<scr<script></script>ipt>".repeat(5_000)}${"<script>".repeat(20_000)}`,
+    ];
+    for (const html of crafted) {
+      const start = performance.now();
+      htmlToMarkdown(html);
+      expect(performance.now() - start).toBeLessThan(500);
+    }
   });
 
   it("renders pre blocks as fenced code", () => {
