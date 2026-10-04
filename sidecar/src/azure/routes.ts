@@ -193,6 +193,31 @@ export function createAzureRoutes(config: Config): Hono {
     }
   });
 
+  // List-row summary for a single PR, so a PR named by link can be opened
+  // without first appearing in a search result. A link names its org, but every
+  // call goes to the configured org, so a link into another org is refused
+  // rather than resolved against the wrong one.
+  router.get("/pr/:project/:repo/:prId/summary", async (c) => {
+    const az = requireClient(c);
+    if (az instanceof Response) return az;
+    const ref = parsePrParams(c.req.param("project"), c.req.param("repo"), c.req.param("prId"));
+    if ("error" in ref) return c.json({ error: ref.error }, 400);
+    const org = c.req.query("org");
+    if (org && org.toLowerCase() !== az.org.toLowerCase()) {
+      return c.json(
+        {
+          error: `pull request is in the ${org} organization, but Azure DevOps is set up for ${az.org}`,
+        },
+        400,
+      );
+    }
+    try {
+      return c.json(await az.prSummary(ref));
+    } catch (e) {
+      return upstreamError(c, e);
+    }
+  });
+
   router.get("/pr/:project/:repo/:prId/detail", async (c) => {
     const az = requireClient(c);
     if (az instanceof Response) return az;

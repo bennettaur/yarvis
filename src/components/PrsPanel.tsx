@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useOmniChatContext } from "../lib/omniChatContext";
 import { addStar, removeStar } from "../lib/pr/api";
 import {
+  AzureViewerError,
+  type AzureViewerReason,
   azCreateFilter,
   azDeleteFilter,
   azFilters,
@@ -57,7 +59,37 @@ async function probe(viewer: () => Promise<unknown>): Promise<boolean> {
 }
 
 const probeGithub = () => probe(ghViewer);
-const probeAzure = () => probe(azViewer);
+
+/**
+ * Like {@link probe}, but a rejection keeps Azure's reason, so the panel can
+ * say why Azure is missing instead of just leaving it off the toggle.
+ */
+async function probeAzure(): Promise<true | AzureViewerReason> {
+  try {
+    await azViewer();
+    return true;
+  } catch (e) {
+    if (e instanceof AzureViewerError && e.status >= 400 && e.status < 500) return e.reason;
+    throw e;
+  }
+}
+
+/**
+ * What to tell the user when Azure DevOps is set up but its probe failed. A
+ * missing token gets no notice: that is how a GitHub-only setup looks.
+ */
+function azureSetupProblem(reason: true | AzureViewerReason | null): string | null {
+  switch (reason) {
+    case "missing_org_url":
+      return "An Azure DevOps token is saved, but no organization URL is set. Add it in Settings → Credentials.";
+    case "invalid_org_url":
+      return "The Azure DevOps organization URL must be an https dev.azure.com or visualstudio.com address. Fix it in Settings → Credentials.";
+    case "unauthorized":
+      return "Azure DevOps rejected the saved token. It may have expired, or it was made for a different organization. Update it in Settings → Credentials.";
+    default:
+      return null;
+  }
+}
 
 /** The lists this panel shows for one provider, loaded together. */
 interface ProviderLists {
@@ -157,10 +189,11 @@ export default function PrsPanel({
   const availableProviders = useMemo(() => {
     const set = new Set<Provider>();
     if (ghProbe.data) set.add("github");
-    if (azProbe.data) set.add("azure");
+    if (azProbe.data === true) set.add("azure");
     return set;
   }, [ghProbe.data, azProbe.data]);
   const probeComplete = !ghProbe.loading && !azProbe.loading;
+  const azureProblem = azureSetupProblem(azProbe.data);
 
   // The probe already confirmed the viewer works, so the lists skip a second
   // round trip and search straight away. Credentials invalidated mid-session
@@ -251,6 +284,13 @@ export default function PrsPanel({
     setProvider(p);
     setSelected(null);
     setFilterResults(null);
+  }, []);
+
+  // A PR opened from the locator can belong to either provider, so the toggle
+  // follows it the same way it follows a cross-tab open request.
+  const openLocated = useCallback((pr: PrSummary) => {
+    setProvider(pr.ref.provider);
+    setSelected(pr);
   }, []);
 
   // Once probing is done, if the user is sitting on a provider that turned out
@@ -354,10 +394,14 @@ export default function PrsPanel({
     const unreachable = ghProbe.error ?? azProbe.error;
     return (
       <div className="h-full overflow-y-auto p-6">
-        <p className="text-sm text-zinc-400">
-          No PR provider configured. Add a GitHub token or Azure DevOps PAT in Settings →
-          Credentials to see your PRs here.
-        </p>
+        {azureProblem ? (
+          <p className="text-sm text-amber-400">{azureProblem}</p>
+        ) : (
+          <p className="text-sm text-zinc-400">
+            No PR provider configured. Add a GitHub token or Azure DevOps PAT in Settings →
+            Credentials to see your PRs here.
+          </p>
+        )}
         {unreachable && <p className="mt-2 text-sm text-red-400">{unreachable}</p>}
       </div>
     );
@@ -387,7 +431,9 @@ export default function PrsPanel({
           <RefreshingIndicator active={refreshing} />
         </div>
 
-        {availableProviders.has("github") && <PrLocator onOpen={setSelected} />}
+        {azureProblem && <p className="text-sm text-amber-400">{azureProblem}</p>}
+
+        <PrLocator onOpen={openLocated} />
 
         <nav className="flex gap-1 border-b border-zinc-800">
           {tabs.map((tab) => {

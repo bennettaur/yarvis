@@ -101,6 +101,16 @@ export async function azSearch(scope: "mine" | "review", project?: string): Prom
   return raw.map(toSummary);
 }
 
+/**
+ * The list-row summary for one PR, used to open a PR the user named by link.
+ * The org goes along so the sidecar can refuse a link into an org other than
+ * the configured one.
+ */
+export async function azPrSummary(ref: PrRef): Promise<PrSummary> {
+  const query = new URLSearchParams({ org: az(ref).org });
+  return toSummary(await get<AzRawSummary>(`${refApiPath(ref)}/summary?${query.toString()}`));
+}
+
 export const azPrStatus = (ref: PrRef) => get<PrStatus>(refApiPath(ref));
 export const azPrDetail = (ref: PrRef) => get<PrDetail>(`${refApiPath(ref)}/detail`);
 export const azPrFiles = (ref: PrRef) => get<PrFile[]>(`${refApiPath(ref)}/files`);

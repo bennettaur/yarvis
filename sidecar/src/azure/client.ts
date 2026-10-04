@@ -403,6 +403,11 @@ export class AzureDevOpsClient {
     };
   }
 
+  /** The list-row summary for one PR, so a PR named by link can be opened. */
+  async prSummary(ref: AzureRef): Promise<AzurePrSummary> {
+    return this.toSummary(await this.prRaw(ref));
+  }
+
   private async prRaw(ref: AzureRef): Promise<AzurePullRequest> {
     return this.get<AzurePullRequest>(`${this.repoBase(ref)}/pullRequests/${ref.prId}`);
   }

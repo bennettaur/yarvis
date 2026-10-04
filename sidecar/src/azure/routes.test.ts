@@ -81,6 +81,14 @@ describe("azure route validation", () => {
     expect(((await res.json()) as { error: string }).error).toContain("rejecting");
   });
 
+  it("refuses a summary for a pull request in a different org with 400", async () => {
+    const res = await configured.request("/api/azure/pr/Shop/web/1/summary?org=other", {
+      headers: auth,
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toContain("set up for acme");
+  });
+
   it("rejects vote=-10 with a whitespace-only body with 400", async () => {
     const res = await configured.request("/api/azure/pr/Shop/web/1/vote", {
       method: "POST",

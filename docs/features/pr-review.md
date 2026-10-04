@@ -19,7 +19,9 @@ those notes later.
    Repositories**. See [Workspaces](workspaces.md).
 
 When both providers are set up, a toggle in the PRs tab picks which one backs
-the list.
+the list. If an Azure DevOps token is saved but Azure rejects it, or the
+organization URL is missing or wrong, the PRs tab says which one to fix instead
+of showing Azure DevOps on the toggle.
 
 ## Use it
 
@@ -38,7 +40,9 @@ collapsed across tabs and restarts.
 The box above the lists jumps straight to a PR you can already name. It
 accepts:
 
-- a link, such as `https://github.com/owner/repo/pull/123`,
+- a link, such as `https://github.com/owner/repo/pull/123` or
+  `https://dev.azure.com/org/project/_git/repo/pullrequest/123`. An Azure DevOps
+  link has to be in the organization set up in Settings,
 - `owner/repo#123`,
 - `repo#123`, which is matched against your registered repos. If the name
   matches several owners, you are asked which one.

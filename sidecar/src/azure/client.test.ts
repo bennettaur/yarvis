@@ -91,6 +91,37 @@ describe("summarizeReviewDecision", () => {
 });
 
 describe("azure client", () => {
+  it("reads one PR as a summary", async () => {
+    const az = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([
+        {
+          match: (u) => u.includes("/repositories/web/pullRequests/7"),
+          body: {
+            pullRequestId: 7,
+            title: "Fix bug",
+            status: "active",
+            isDraft: true,
+            creationDate: "2026-06-01",
+            createdBy: { displayName: "Them" },
+            repository: { name: "web", project: { name: "Shop", id: "p1" } },
+          },
+        },
+      ]),
+    );
+    expect(await az.prSummary({ project: "Shop", repo: "web", prId: 7 })).toMatchObject({
+      prId: 7,
+      title: "Fix bug",
+      org: "acme",
+      project: "Shop",
+      repo: "web",
+      author: "Them",
+      draft: true,
+      url: `${ORG}/Shop/_git/web/pullrequest/7`,
+    });
+  });
+
   it("maps PR search items to summaries", async () => {
     const az = new AzureDevOpsClient(
       "pat",

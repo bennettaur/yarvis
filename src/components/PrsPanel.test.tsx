@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import type { PrsPlace } from "../lib/pr/panelState";
+import { clearResourceCache } from "../lib/resourceCache";
 import { firstPaintOf, renderToHtml } from "../test/render";
 import PrsPanel from "./PrsPanel";
 
@@ -44,6 +45,9 @@ let recordedEvents: string[] = [];
  * that it doesn't have to wait for one.
  */
 let holdResponses: Promise<void> | null = null;
+
+/** The body Azure's viewer probe answers with (always a 401). */
+let azureViewerBody: Record<string, string> = { error: "no pat" };
 
 // GitHub is the configured provider throughout; Azure is not, which is what
 // lets the last test exercise a remembered Azure place going stale.
@@ -156,7 +160,7 @@ mock.module("../lib/api", () => ({
         reviewers: [],
       });
     if (path.startsWith("/api/pr/insights")) return json({ insights: [] });
-    if (path.startsWith("/api/azure")) return json({ error: "no pat" }, 401);
+    if (path.startsWith("/api/azure")) return json(azureViewerBody, 401);
     return json([]);
   },
   streamSSE: async function* () {},
@@ -176,6 +180,7 @@ describe("PrsPanel place", () => {
     localStorage.clear();
     recordedEvents = [];
     holdResponses = null;
+    azureViewerBody = { error: "no pat" };
   });
 
   it("paints the lists from the cache when the tab is revisited", async () => {
@@ -295,5 +300,17 @@ describe("PrsPanel place", () => {
     expect(html).toContain(LIST_NAV);
     expect(html).toContain(MY_PR.title);
     expect(readPlace().selected).toBeNull();
+  });
+
+  it("says why Azure is missing when Azure rejects the saved token", async () => {
+    clearResourceCache();
+    azureViewerBody = { error: "azure devops rejected the token", reason: "unauthorized" };
+
+    const html = await renderToHtml(<PrsPanel />);
+
+    expect(html).toContain("Azure DevOps rejected the saved token");
+    expect(html).toContain(MY_PR.title);
+    // The cached probe answer would otherwise follow the next test.
+    clearResourceCache();
   });
 });
