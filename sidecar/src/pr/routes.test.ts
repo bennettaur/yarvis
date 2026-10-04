@@ -10,6 +10,7 @@ import { getDb } from "../db/client.ts";
 import { listEvents } from "../events/service.ts";
 import { createRepo } from "../workspaces/service.ts";
 import { saveGuide } from "./guides.ts";
+import { savePrModelConfig } from "./models.ts";
 import type { PrRef } from "./types.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -220,6 +221,56 @@ describe("POST /api/pr/guide", () => {
     });
     expect(res.status).toBe(400);
     expect(((await res.json()) as any).error).toContain("github token");
+  });
+});
+
+describe("model choice for guided reviews and line questions", () => {
+  // A GitHub token gets the request past `sourceFor` without a network call,
+  // and with no LLM keys set, the 400 names the provider the route picked.
+  const keyedApp = createApp({ ...config, secrets: { githubToken: "test-github-token" } });
+  const askBody = { ref, path: "src/api.ts", startLine: 1, endLine: 2, question: "why?" };
+
+  beforeEach(async () => {
+    await savePrModelConfig({
+      guide: { provider: "gemini", model: "gemini-2.5-pro" },
+      ask: { provider: "anthropic", model: "claude-sonnet-4-5" },
+    });
+  });
+
+  // The settings file is shared across the suite, so later tests must not
+  // inherit these selections.
+  afterEach(async () => {
+    await savePrModelConfig({ guide: null, ask: null });
+  });
+
+  it("runs a guided review on the model saved for it", async () => {
+    const res = await keyedApp.request("/api/pr/guide", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ ref }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error).toContain("Gemini");
+  });
+
+  it("answers a line question on the model saved for it", async () => {
+    const res = await keyedApp.request("/api/pr/insight", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify(askBody),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error).toContain("Anthropic");
+  });
+
+  it("prefers a model named in the request over the saved one", async () => {
+    const res = await keyedApp.request("/api/pr/guide", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ ref, provider: "anthropic", model: "claude-sonnet-4-5" }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error).toContain("Anthropic");
   });
 });
 

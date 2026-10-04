@@ -179,11 +179,11 @@ export function createPrRoutes(config: Config): Hono {
   };
 
   /**
-   * Resolves the model an agent run should use, falling back to the model saved
-   * for that feature in Settings, then the default chat model, when the caller
-   * names none. Returns a message rather than throwing so the route can answer
-   * 400 with something the user can act on — "no LLM provider is configured" is
-   * a settings problem, not a server fault.
+   * Resolves the model an agent run should use: the one the caller names, else
+   * the one saved for `feature` in Settings, else the default chat model.
+   * Returns a message rather than throwing so the route can answer 400 with
+   * something the user can act on — "no LLM provider is configured" is a
+   * settings problem, not a server fault.
    */
   const modelFor = async (
     feature: PrModelFeature,

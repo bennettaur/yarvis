@@ -65,6 +65,7 @@ describe("PrModelSection", () => {
   it("shows every feature defaulting to the chat model", async () => {
     const text = textOf(await renderToHtml(createElement(PrModelSection)));
     expect(text).toContain("Guided review");
+    expect(text).toContain("Line questions");
     expect(text).toContain("Default chat model");
   });
 

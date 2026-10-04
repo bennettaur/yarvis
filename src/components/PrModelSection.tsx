@@ -18,7 +18,7 @@ import {
 const FIELD =
   "w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500";
 
-const FEATURES: Record<PrModelFeature, { label: string; hint: string }> = {
+const FEATURE_LABELS: Record<PrModelFeature, { label: string; hint: string }> = {
   guide: { label: "Guided review", hint: "Reads the whole change and plans the walkthrough." },
   ask: { label: "Line questions", hint: "Answers a question about the lines you selected." },
 };
@@ -77,8 +77,8 @@ export default function PrModelSection() {
           return (
             <div key={feature} className="grid grid-cols-[120px_1fr_1fr] items-start gap-2">
               <div>
-                <p className="text-sm text-zinc-300">{FEATURES[feature].label}</p>
-                <p className="text-xs text-zinc-600">{FEATURES[feature].hint}</p>
+                <p className="text-sm text-zinc-300">{FEATURE_LABELS[feature].label}</p>
+                <p className="text-xs text-zinc-600">{FEATURE_LABELS[feature].hint}</p>
               </div>
               <select
                 className={FIELD}

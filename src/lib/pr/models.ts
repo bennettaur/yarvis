@@ -9,7 +9,7 @@ import type { ModelSelection } from "../complexityModels";
 
 export const PR_MODEL_FEATURES = ["guide", "ask"] as const;
 
-/** `guide` writes the guided tour; `ask` answers questions about selected lines. */
+/** `guide` writes the guided review (the tour); `ask` answers line questions. */
 export type PrModelFeature = (typeof PR_MODEL_FEATURES)[number];
 
 export type PrModelConfig = Record<PrModelFeature, ModelSelection | null>;
