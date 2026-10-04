@@ -8,7 +8,7 @@ import type { AttentionNavTarget, PrGuideRow } from "../db/schema.ts";
 import { emitEvent } from "../events/service.ts";
 import { GitHubClient } from "../github/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
-import { availableProviders, pickDefaultModel, resolveModel } from "../llm/providers.ts";
+import { resolveModel } from "../llm/providers.ts";
 import { askAboutCode } from "./ask.ts";
 import { deleteGuide, getGuide, isStale, saveGuide, setGuideProgress } from "./guides.ts";
 import {
@@ -18,6 +18,7 @@ import {
   markInsightPosted,
   saveInsight,
 } from "./insights.ts";
+import { type PrModelFeature, resolvePrModel } from "./models.ts";
 import { azurePrSource, githubPrSource, type PrCodeSource } from "./source.ts";
 import { generateTour } from "./tour.ts";
 import { type PrRef, parseRefKey, refKey } from "./types.ts";
@@ -178,16 +179,18 @@ export function createPrRoutes(config: Config): Hono {
   };
 
   /**
-   * Resolves the model an agent run should use, falling back to the configured
-   * default when the caller names none. Returns a message rather than throwing
-   * so the route can answer 400 with something the user can act on — "no LLM
-   * provider is configured" is a settings problem, not a server fault.
+   * Resolves the model an agent run should use, falling back to the model saved
+   * for that feature in Settings, then the default chat model, when the caller
+   * names none. Returns a message rather than throwing so the route can answer
+   * 400 with something the user can act on — "no LLM provider is configured" is
+   * a settings problem, not a server fault.
    */
   const modelFor = async (
+    feature: PrModelFeature,
     providerId?: string,
     modelId?: string,
   ): Promise<{ model: Awaited<ReturnType<typeof resolveModel>> } | { error: string }> => {
-    const fallback = pickDefaultModel(await availableProviders(config, "chat"));
+    const fallback = await resolvePrModel(config, feature);
     const provider = providerId ?? fallback?.provider;
     const model = modelId ?? fallback?.model;
     if (!provider || !model) return { error: "no LLM provider is configured" };
@@ -210,7 +213,7 @@ export function createPrRoutes(config: Config): Hono {
     if ("error" in source) return c.json({ error: source.error }, 400);
 
     const dbh = db();
-    const resolved = await modelFor(parsed.data.provider, parsed.data.model);
+    const resolved = await modelFor("guide", parsed.data.provider, parsed.data.model);
     if ("error" in resolved) return c.json({ error: resolved.error }, 400);
 
     try {
@@ -311,7 +314,7 @@ export function createPrRoutes(config: Config): Hono {
     if ("error" in source) return c.json({ error: source.error }, 400);
 
     const dbh = db();
-    const resolved = await modelFor(parsed.data.provider, parsed.data.model);
+    const resolved = await modelFor("ask", parsed.data.provider, parsed.data.model);
     if ("error" in resolved) return c.json({ error: resolved.error }, 400);
 
     try {

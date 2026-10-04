@@ -26,6 +26,7 @@ import { createMcpRoutes } from "./mcp/routes.ts";
 import { createMcpEndpointInfoRoutes, createMcpEndpointRoutes } from "./mcpServer/routes.ts";
 import { createMemoryRoutes } from "./memory/routes.ts";
 import { createOmniRoutes } from "./omni/routes.ts";
+import { createPrModelRoutes } from "./pr/modelRoutes.ts";
 import { createPrRoutes } from "./pr/routes.ts";
 import { createProjectRoutes } from "./projects/routes.ts";
 import { createReadiness, type Readiness } from "./readiness.ts";
@@ -155,6 +156,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/calendar", createCalendarRoutes(config));
   app.route("/api/omni", createOmniRoutes(config));
   app.route("/api/pr", createPrRoutes(config));
+  app.route("/api/pr-models", createPrModelRoutes(config));
   app.route("/api/telegram", createTelegramRoutes());
   app.route("/api/voice", createVoiceRoutes(config));
   app.route("/api/repos", createRepoRoutes(config));
