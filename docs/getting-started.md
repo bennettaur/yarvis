@@ -271,9 +271,9 @@ with filters by level and scope, and a button to copy it.
 
 A `.dmg` is published to the
 [`nightly` release](https://github.com/bennettaur/yarvis/releases/tag/nightly),
-but it doesn't run yet, because release builds don't bundle the sidecar. Use
-the dev build above. [Development](development.md#nightly-builds) has the
-details.
+but it isn't notarized, so macOS blocks its first launch.
+[Development](development.md#nightly-builds) explains how to open it. The dev
+build above is still the way to work on Yarvis.
 
 ## Set up with Claude Code
 

@@ -204,7 +204,12 @@ async fn supervise(app: AppHandle, port: u16, token: String, restart: Arc<Notify
         })
         .await
         {
-            Ok(command) => command,
+            Ok(Ok(command)) => command,
+            Ok(Err(e)) => {
+                eprintln!("[sidecar] not starting: {e}; retrying shortly");
+                sleep(SPAWN_RETRY_DELAY).await;
+                continue;
+            }
             Err(e) => {
                 eprintln!("[sidecar] could not prepare the launch command: {e}");
                 return;
@@ -241,8 +246,8 @@ async fn supervise(app: AppHandle, port: u16, token: String, restart: Arc<Notify
     }
 }
 
-fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
-    let mut cmd = command_base();
+fn build_command(app: &AppHandle, port: u16, token: &str) -> Result<Command, String> {
+    let mut cmd = command_base(app)?;
     cmd.env("YARVIS_SIDECAR_PORT", port.to_string());
     cmd.env("YARVIS_SIDECAR_TOKEN", token);
     cmd.env(
@@ -373,24 +378,41 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
 
     // Ensure the child dies with the parent rather than lingering.
     cmd.kill_on_drop(true);
-    cmd
+    Ok(cmd)
 }
 
 #[cfg(debug_assertions)]
-fn command_base() -> Command {
+fn command_base(_app: &AppHandle) -> Result<Command, String> {
     // Dev: run the TypeScript entrypoint directly with Bun (no build step).
     let entry = concat!(env!("CARGO_MANIFEST_DIR"), "/../sidecar/src/server.ts");
     let mut cmd = Command::new("bun");
     cmd.arg("run").arg(entry);
-    cmd
+    Ok(cmd)
 }
 
 #[cfg(not(debug_assertions))]
-fn command_base() -> Command {
-    // Production: run the compiled sidecar binary bundled via `externalBin`.
-    // TODO(packaging): resolve the bundled binary path from resources and apply
-    // the Bun `extractFromBunfs` workaround for the Agent SDK's embedded CLI.
-    Command::new("yarvis-sidecar")
+fn command_base(app: &AppHandle) -> Result<Command, String> {
+    // Production: the binary `bun run sidecar:compile` builds, which
+    // `tauri.release.conf.json` bundles via `externalBin`. Tauri places it
+    // beside the app's own executable. Never a `PATH` lookup: whatever answers
+    // to the name would be handed every secret.
+    let exe = tauri::utils::platform::current_exe()
+        .map_err(|e| format!("can't locate the app executable: {e}"))?;
+    let bin = exe.with_file_name(format!("yarvis-sidecar{}", std::env::consts::EXE_SUFFIX));
+    let mut cmd = Command::new(bin);
+
+    // The compiled binary has no checkout to find its migrations in, so they
+    // ship as a bundle resource.
+    let resources = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("can't locate the bundled migrations: {e}"))?;
+    cmd.env("YARVIS_MIGRATIONS_DIR", resources.join("drizzle"));
+
+    if let Some(path) = crate::login_path::get() {
+        cmd.env("PATH", path);
+    }
+    Ok(cmd)
 }
 
 /// The log file the frontend offers to reveal, so a user chasing a failure can

@@ -52,6 +52,9 @@ Run from the repo root unless noted.
 bun install                      # install deps (root + sidecar workspace)
 
 bun run tauri dev                # full app: frontend + Rust core + sidecar
+bun run tauri:preview            # same, but on the production frontend build
+                                  #   (no Vite dev server, React prod mode)
+bun run tauri:build              # release bundle, with the compiled sidecar
 bun run dev:instance <name>       # a second app beside the primary one; add
                                   #   YARVIS_DATABASE_URL to give it its own DB
 bun run sidecar:dev               # sidecar only (prints a dev bearer token)

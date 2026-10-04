@@ -30,6 +30,8 @@ Run these from the repo root.
 
 ```bash
 bun run tauri dev                 # the full app: frontend + Rust core + sidecar
+bun run tauri:preview             # the same on the production frontend build: faster, no hot reload
+bun run tauri:build               # a release bundle with the compiled sidecar (see Nightly builds)
 bun run dev:instance <name>       # a second copy beside your main one
 bun run sidecar:dev               # the sidecar on its own (YARVIS_LOG_DEV_TOKEN=1 prints its API token)
 
@@ -181,10 +183,15 @@ Workspaces are shared too: both instances create worktrees under
 `.github/workflows/nightly.yml` publishes a `.dmg` to the
 [`nightly` release](https://github.com/bennettaur/yarvis/releases/tag/nightly).
 
-Release builds don't bundle the sidecar yet. `command_base` in
-`src-tauri/src/sidecar.rs` runs a `yarvis-sidecar` binary that packaging doesn't
-produce (`bun build --compile` plus `externalBin`). Until that lands, run the
-dev build.
+Build a release locally with `bun run tauri:build`, not `bun run tauri build`.
+It layers `src-tauri/tauri.release.conf.json` over the main config, which
+compiles the sidecar into a single binary (`bun run sidecar:compile`), bundles it
+with `externalBin`, and ships `sidecar/drizzle` as a resource for the migrations.
+Those entries stay out of `tauri.conf.json` because `tauri-build` checks that an
+`externalBin` exists on every cargo build, including `cargo clippy` in the
+pre-commit hook. A release build also runs the sidecar with the `PATH` of your
+login shell (`src-tauri/src/login_path.rs`), since an app opened from Finder
+gets one without Homebrew or mise on it.
 
 The nightly is ad-hoc code-signed but not notarized, so macOS blocks the first
 launch:

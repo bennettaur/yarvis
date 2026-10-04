@@ -361,10 +361,9 @@ overnight day rollup, and the nightly transcript digest, all under
 
 ## Cross-cutting / polish / tech debt
 
-- **Packaging & distribution:** compile the Bun sidecar to a single binary
-  (`bun build --compile`) and wire the production spawn path in `sidecar.rs`
-  (`externalBin` + `extractFromBunfs` for the Agent SDK's bundled CLI); app
-  bundle + code signing.
+- **Packaging & distribution:** notarize the release bundle. `bun run
+  tauri:build` already bundles the compiled sidecar, but the nightly is only
+  ad-hoc signed.
 - **Live verification:** exercise the credential-gated paths once keys are
   entered — chat streaming + task tool-calls, GitHub queries, Gemini embeddings.
 - **Tray + autostart:** the plugins are installed but not yet wired to behaviors
