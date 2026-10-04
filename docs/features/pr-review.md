@@ -43,9 +43,9 @@ accepts:
 - a link, such as `https://github.com/owner/repo/pull/123` or
   `https://dev.azure.com/org/project/_git/repo/pullrequest/123`. An Azure DevOps
   link has to be in the organization set up in Settings,
-- `owner/repo#123`,
-- `repo#123`, which is matched against your registered repos. If the name
-  matches several owners, you are asked which one.
+- `owner/repo#123` (GitHub only),
+- `repo#123` (GitHub only), which is matched against your registered repos. If
+  the name matches several owners, you are asked which one.
 
 Leaving the PRs tab and coming back puts you where you were: the same
 provider, the same list, and the same PR if you had one open. That also

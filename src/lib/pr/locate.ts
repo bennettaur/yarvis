@@ -54,9 +54,10 @@ export function resolvePrLocator(input: string, knownRepos: KnownRepo[] = []): P
   const url = trimmed.match(GITHUB_URL);
   if (url) return [githubRef(url[1]!, url[2]!, url[3]!)];
 
-  // Links copied from an address bar carry a scheme, but one typed by hand may not.
-  const azure = parsePrLink(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
-  if (azure?.ref.provider === "azure") return [azure.ref];
+  // Links copied from an address bar carry a scheme, but one typed by hand may
+  // not. GitHub links already matched above, so this only picks up Azure ones.
+  const link = parsePrLink(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
+  if (link?.ref.provider === "azure") return [link.ref];
 
   const qualified = trimmed.match(OWNER_REPO_NUMBER);
   if (qualified) return [githubRef(qualified[1]!, qualified[2]!, qualified[3]!)];

@@ -60,11 +60,14 @@ async function probe(viewer: () => Promise<unknown>): Promise<boolean> {
 
 const probeGithub = () => probe(ghViewer);
 
+/** `true` when Azure's credentials work, otherwise the sidecar's reason they don't. */
+type AzureProbeResult = true | AzureViewerReason;
+
 /**
  * Like {@link probe}, but a rejection keeps Azure's reason, so the panel can
  * say why Azure is missing instead of just leaving it off the toggle.
  */
-async function probeAzure(): Promise<true | AzureViewerReason> {
+async function probeAzure(): Promise<AzureProbeResult> {
   try {
     await azViewer();
     return true;
@@ -78,8 +81,8 @@ async function probeAzure(): Promise<true | AzureViewerReason> {
  * What to tell the user when Azure DevOps is set up but its probe failed. A
  * missing token gets no notice: that is how a GitHub-only setup looks.
  */
-function azureSetupProblem(reason: true | AzureViewerReason | null): string | null {
-  switch (reason) {
+function azureSetupMessage(probeResult: AzureProbeResult | null): string | null {
+  switch (probeResult) {
     case "missing_org_url":
       return "An Azure DevOps token is saved, but no organization URL is set. Add it in Settings → Credentials.";
     case "invalid_org_url":
@@ -178,8 +181,8 @@ export default function PrsPanel({
    * from "checked, found nothing", so the empty state can't flash on first
    * paint.
    *
-   * A probe that finds no working credentials resolves to `false` rather than
-   * rejecting: "this provider isn't configured" is an answer worth caching, and
+   * A probe that finds no working credentials resolves to `false` (GitHub) or
+   * the rejection reason (Azure) rather than rejecting: "this provider isn't configured" is an answer worth caching, and
    * errors are not cached. A user with only GitHub set up would otherwise
    * re-probe Azure on every remount and hold `probeComplete` — and with it the
    * lists — behind that round trip.
@@ -193,7 +196,7 @@ export default function PrsPanel({
     return set;
   }, [ghProbe.data, azProbe.data]);
   const probeComplete = !ghProbe.loading && !azProbe.loading;
-  const azureProblem = azureSetupProblem(azProbe.data);
+  const azureProblem = azureSetupMessage(azProbe.data);
 
   // The probe already confirmed the viewer works, so the lists skip a second
   // round trip and search straight away. Credentials invalidated mid-session
@@ -287,11 +290,15 @@ export default function PrsPanel({
   }, []);
 
   // A PR opened from the locator can belong to either provider, so the toggle
-  // follows it the same way it follows a cross-tab open request.
-  const openLocated = useCallback((pr: PrSummary) => {
-    setProvider(pr.ref.provider);
-    setSelected(pr);
-  }, []);
+  // follows it. Only to a provider whose probe passed, though: switching to one
+  // that hasn't would have the effect below switch back and drop the PR.
+  const openLocatedPr = useCallback(
+    (pr: PrSummary) => {
+      if (availableProviders.has(pr.ref.provider)) setProvider(pr.ref.provider);
+      setSelected(pr);
+    },
+    [availableProviders],
+  );
 
   // Once probing is done, if the user is sitting on a provider that turned out
   // not to be configured, jump them to one that is. Done in a separate effect
@@ -394,14 +401,11 @@ export default function PrsPanel({
     const unreachable = ghProbe.error ?? azProbe.error;
     return (
       <div className="h-full overflow-y-auto p-6">
-        {azureProblem ? (
-          <p className="text-sm text-amber-400">{azureProblem}</p>
-        ) : (
-          <p className="text-sm text-zinc-400">
-            No PR provider configured. Add a GitHub token or Azure DevOps PAT in Settings →
-            Credentials to see your PRs here.
-          </p>
-        )}
+        {azureProblem && <p className="mb-2 text-sm text-amber-400">{azureProblem}</p>}
+        <p className="text-sm text-zinc-400">
+          No PR provider configured. Add a GitHub token or Azure DevOps PAT in Settings →
+          Credentials to see your PRs here.
+        </p>
         {unreachable && <p className="mt-2 text-sm text-red-400">{unreachable}</p>}
       </div>
     );
@@ -433,7 +437,7 @@ export default function PrsPanel({
 
         {azureProblem && <p className="text-sm text-amber-400">{azureProblem}</p>}
 
-        <PrLocator onOpen={openLocated} />
+        <PrLocator onOpen={openLocatedPr} />
 
         <nav className="flex gap-1 border-b border-zinc-800">
           {tabs.map((tab) => {

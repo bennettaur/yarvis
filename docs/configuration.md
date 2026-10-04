@@ -57,8 +57,10 @@ AWS Bedrock uses the standard AWS credential chain (`~/.aws`, `AWS_PROFILE`,
 - **GitHub.** A classic PAT needs `repo`. A fine-grained PAT needs
   **Contents: Read** (the review reads file bodies to show context) plus pull
   request and issue access. Merging a stack needs write access to the repo.
-- **Azure DevOps.** A PAT with **Code (read)** and **Pull Request Threads (read &
-  write)**. Set the organization URL (`https://dev.azure.com/your-org`) under
+- **Azure DevOps.** A PAT with **Code (read & write)** and **Pull Request
+  Threads (read & write)**. Code (read) is enough to browse and comment, but
+  voting and publishing a draft write to the PR itself. Set the organization URL
+  (`https://dev.azure.com/your-org` or `https://your-org.visualstudio.com`) under
   Settings → Credentials. The project is picked per search, so there is
   nothing else to set. Code search needs the **Code Search** extension
   installed in your organization. Without it, guided review still works, but
