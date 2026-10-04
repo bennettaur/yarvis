@@ -205,7 +205,7 @@ Each integration is independent. Set up the ones you need, in any order.
 | --- | --- | --- |
 | GitHub PRs and issues | Save a **GitHub token** in Settings → Credentials. See [token scopes](configuration.md#token-scopes). | [PR review](features/pr-review.md) |
 | Workspaces | Install Claude Code, then add repos under **Settings → Repositories**. | [Workspaces](features/workspaces.md) |
-| Azure DevOps PRs | Save an **Azure DevOps token** and set the organization URL under Settings → Credentials. | [PR review](features/pr-review.md) |
+| Azure DevOps PRs and Azure Boards | Save an **Azure DevOps token** and set the organization URL under Settings → Credentials. Azure Boards also needs the **Work Items (read & write)** scope. | [PR review](features/pr-review.md), [Issues and tasks](features/issues-and-tasks.md) |
 | JIRA | Save a **JIRA API token** and set the base URL and account email. | [Issues and tasks](features/issues-and-tasks.md) |
 | Google Calendar and alarms | Create a Google OAuth client, then connect from the Calendar tab. | [Calendar and alarms](features/calendar-and-alarms.md) |
 | Better memory search | Add a Gemini key, or configure **Settings → Embeddings**. Without either, memory search uses a weaker offline embedder. | [Configuration](configuration.md#embeddings) |

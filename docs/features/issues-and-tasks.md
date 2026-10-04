@@ -1,8 +1,8 @@
 # Issues and tasks
 
 Two tabs hold the work you plan to do. **Tasks** (Cmd+5) is your own to-do
-list for today and this week. **Issues** (Cmd+7) shows GitHub issues and JIRA
-tickets. Both have a **Start work** button that creates a
+list for today and this week. **Issues** (Cmd+7) shows GitHub issues, JIRA
+tickets and Azure Boards work items. Both have a **Start work** button that creates a
 [workspace](workspaces.md) and starts a Claude Code session on the item. The
 assistant reads and writes the same tasks, so you can plan by talking to it and
 see the result here.
@@ -24,6 +24,12 @@ For **JIRA** (Atlassian Cloud only):
 2. Under **Settings → Credentials**, save it as **JIRA API token**.
 3. On the same tab, set the **JIRA base URL** (`https://your-org.atlassian.net`)
    and the **account email** the token belongs to.
+
+For **Azure Boards**:
+
+1. Use the same **Azure DevOps token** and **organization URL** as the Azure PR
+   dashboard, under **Settings → Credentials**.
+2. The token needs the **Work Items (read & write)** scope.
 
 ## Tasks
 
@@ -73,7 +79,8 @@ Otherwise it completes tasks. See [The assistant](assistant.md).
 
 ## Issues
 
-A toggle at the top switches between **GitHub** and **JIRA**.
+A toggle at the top switches between **GitHub**, **JIRA** and **Azure
+Boards**.
 
 ### GitHub
 
@@ -97,6 +104,29 @@ what feeds that list under **Settings → Work in progress**.
 | **Starred** | Tickets you starred |
 
 **+ New issue** files a new JIRA ticket.
+
+### Azure Boards
+
+| Tab | Shows |
+| --- | --- |
+| **Assigned to me** | Open work items assigned to you, across every project in the organization |
+| **Created by me** | Open work items you created |
+| **Search** | Title text, a work item id like `1234`, or a WIQL query starting with `SELECT` |
+| **Starred** | Work items you starred |
+
+"Open" means the state is not Closed, Done, Removed, Resolved or Completed. If
+your process uses other names for finished states, those items still show up.
+
+A WIQL query runs across the whole organization, so it can't use `@project`.
+
+Open a work item to change its state, edit its title, description or tags,
+assign it to yourself or unassign it, and add comments. Assigning to someone
+else is done in Azure. On a bug whose Description is empty, the detail view
+shows and edits its **Repro steps** instead. Descriptions are saved as plain
+text, so editing one replaces any formatting it had in Azure. Tags are
+separated by `;` or `,`.
+
+Creating work items isn't supported yet.
 
 ### Start work
 
@@ -124,3 +154,9 @@ still created, and you see a warning.
 
 You can also ask the assistant: "start work on PROJ-123 in the api repo". It
 takes the same path. See [The assistant](assistant.md).
+
+**On an Azure Boards work item:** the same picker opens, listing the states the
+work item's type allows. It defaults to "In Progress", or "Active" in the Agile and
+CMMI processes. Yarvis creates the workspace, assigns the work item to you, sets the
+state you chose, and starts Claude on it. The assistant can't start work on a
+work item yet.

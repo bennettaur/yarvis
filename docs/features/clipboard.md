@@ -26,7 +26,7 @@ You'll find copy buttons next to:
   - the link to each file, pinned to the commit the PR points at, so it still
     shows the code you meant after a later push,
   - the link to each check, and every check at once, one per line.
-- **On an issue:** its GitHub or JIRA link.
+- **On an issue:** its GitHub, JIRA or Azure Boards link.
 
 Where a link can't be worked out, no button appears.
 

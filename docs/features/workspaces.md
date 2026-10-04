@@ -66,7 +66,7 @@ There are four ways to start one.
 5. Press **Create**.
 
 **From an issue or task.** Press **Start work** on a GitHub issue, a JIRA
-ticket, or a task. Yarvis creates the workspace, writes the work into
+ticket, an Azure Boards work item, or a task. Yarvis creates the workspace, writes the work into
 `.yarvis/brief.md`, and starts the agent on it. See
 [Issues and tasks](issues-and-tasks.md).
 

@@ -40,7 +40,7 @@ Then, in the app, open **Settings → Credentials**. Save the database URL
 | [Workspaces](docs/features/workspaces.md) | Multi-repo git worktrees, each with its own Claude Code session, diffs, self-review and stacked PRs |
 | [Terminals](docs/features/terminals.md) | Tabbed, split terminals that keep running while you switch views |
 | [PR review](docs/features/pr-review.md) | GitHub and Azure DevOps reviews with guided tours and per-line questions |
-| [Issues and tasks](docs/features/issues-and-tasks.md) | GitHub and JIRA issues, your task list, and one-click "Start work" |
+| [Issues and tasks](docs/features/issues-and-tasks.md) | GitHub issues, JIRA tickets and Azure Boards work items, your task list, and one-click "Start work" |
 | [Omni view](docs/features/omni-view.md) | Describe a dashboard and get one, built from live widgets |
 | [Voice](docs/features/voice.md) | Talk to the assistant and hear it answer, fully local if you like |
 | [Calendar and alarms](docs/features/calendar-and-alarms.md) | Google Calendar, and full-screen meeting alarms |

@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  boardsAssigned,
+  boardsCreated,
+  boardsItems,
+  boardsSearch,
+  boardsViewer,
+} from "../../lib/azureBoards/api";
+import { statesAsTransitions, useBoardsStartWork } from "../../lib/azureBoards/useBoardsStartWork";
+import {
   addIssueStar,
   createIssueFilter,
   deleteIssueFilter,
@@ -8,7 +16,7 @@ import {
   issueStars,
   removeIssueStar,
 } from "../../lib/issues/api";
-import { JIRA_ISSUES_PREFIX } from "../../lib/issues/cacheKeys";
+import { AZURE_BOARDS_ISSUES_PREFIX } from "../../lib/issues/cacheKeys";
 import {
   type IssueFilter,
   type IssueLink,
@@ -16,12 +24,9 @@ import {
   type IssueSummary,
   issueKey,
 } from "../../lib/issues/types";
-import { jiraAssigned, jiraCreated, jiraSearch, jiraViewer } from "../../lib/jira/api";
-import { useJiraStartWork } from "../../lib/jira/useJiraStartWork";
 import { useOmniChatContext } from "../../lib/omniChatContext";
 import {
   combineResources,
-  invalidatePrefix,
   PROBE_FRESHNESS,
   PROVIDER_FRESHNESS,
   useCachedResource,
@@ -29,23 +34,18 @@ import {
 import DeleteFilterButton from "../DeleteFilterButton";
 import LoadingIndicator from "../LoadingIndicator";
 import RefreshingIndicator from "../RefreshingIndicator";
-import JiraCreateIssueModal from "./JiraCreateIssueModal";
-import JiraIssueDetailView from "./JiraIssueDetailView";
+import AzureBoardsItemDetailView from "./AzureBoardsItemDetailView";
 import JiraRepoPickerModal from "./JiraRepoPickerModal";
 import StatusGroupedIssueList from "./StatusGroupedIssueList";
 
 type TabKey = "assigned" | "created" | "search" | "starred";
 
-/**
- * Cache keys for the JIRA lists, under the same `issues:` prefix the GitHub
- * view uses so a write that moves both providers' views drops them together.
- */
-const VIEWER_KEY = `${JIRA_ISSUES_PREFIX}viewer`;
-const ASSIGNED_KEY = `${JIRA_ISSUES_PREFIX}assigned`;
-const CREATED_KEY = `${JIRA_ISSUES_PREFIX}created`;
-const FILTERS_KEY = `${JIRA_ISSUES_PREFIX}filters`;
-const STARS_KEY = `${JIRA_ISSUES_PREFIX}stars`;
-const LINKS_KEY = `${JIRA_ISSUES_PREFIX}links`;
+const VIEWER_KEY = `${AZURE_BOARDS_ISSUES_PREFIX}viewer`;
+const ASSIGNED_KEY = `${AZURE_BOARDS_ISSUES_PREFIX}assigned`;
+const CREATED_KEY = `${AZURE_BOARDS_ISSUES_PREFIX}created`;
+const FILTERS_KEY = `${AZURE_BOARDS_ISSUES_PREFIX}filters`;
+const STARS_KEY = `${AZURE_BOARDS_ISSUES_PREFIX}stars`;
+const LINKS_KEY = `${AZURE_BOARDS_ISSUES_PREFIX}links`;
 
 /** Stable identities so an unloaded resource doesn't re-render the lists. */
 const NO_ISSUES: IssueSummary[] = [];
@@ -53,18 +53,14 @@ const NO_STARS: IssueStar[] = [];
 const NO_FILTERS: IssueFilter[] = [];
 
 /**
- * The gate answers a 400 "jira not configured" when the secrets are missing.
- * That is a state to explain rather than an error to report, and returning it as
- * data means it is cached like any other answer — a remount of an unconfigured
- * JIRA paints the explanation straight away instead of an empty list first.
- *
- * Anything else is rethrown, and so not cached: JIRA is the only provider this
- * tab can show, so "your credentials are missing" and "JIRA is down" send the
- * user to different places and must not read the same.
+ * "Not configured" comes back as data so it is cached and a remount paints the
+ * explanation straight away. Anything else is rethrown and not cached, because
+ * "your settings are missing" and "Azure is down" send the user to different
+ * places and must not read the same.
  */
-async function probeJira(): Promise<{ configured: boolean }> {
+async function probeBoards(): Promise<{ configured: boolean }> {
   try {
-    await jiraViewer();
+    await boardsViewer();
     return { configured: true };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -80,50 +76,80 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "starred", label: "Starred" },
 ];
 
-/** A bare JIRA issue key like "PROJ-45", used to detect key lookups vs JQL. */
-const ISSUE_KEY_RE = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
+/** The sidecar's `/items` route takes at most this many ids. */
+const MAX_STARRED = 200;
+
+/** A bare work item id, optionally with a leading `#`. */
+const WORK_ITEM_ID_RE = /^#?(\d{1,10})$/;
+
+/** A placeholder summary for opening a work item by id; the detail view fills it in. */
+function summaryForId(id: string): IssueSummary {
+  return {
+    provider: "azure",
+    sourceKey: "",
+    sourceLabel: "",
+    externalId: id,
+    displayId: `#${id}`,
+    title: `#${id}`,
+    url: "",
+    state: "open",
+    author: "",
+    assignees: [],
+    labels: [],
+    createdAt: "",
+    updatedAt: "",
+    commentCount: 0,
+  };
+}
 
 /**
- * The JIRA issues view: sub-tabs for issues assigned to / created by the user,
- * a JQL/key search, and starred issues — all grouped by project and status.
- * Rows open the JIRA detail view. A "New issue" button opens the create dialog.
- * Shown when the Issues panel's provider toggle is set to JIRA.
+ * The Azure Boards view: work items assigned to or created by the user, a
+ * search (WIQL, title text, or a work item id), and starred items, grouped by
+ * project and state. Shown when the Issues panel's provider toggle is set to
+ * Azure Boards.
  */
-export default function JiraIssuesView() {
+export default function AzureBoardsIssuesView({
+  requested,
+  onRequestConsumed,
+}: {
+  /** A work item another view (the attention panel) asked to open directly. */
+  requested?: IssueSummary | null;
+  onRequestConsumed?: () => void;
+} = {}) {
   const [activeTab, setActiveTab] = useState<TabKey>("assigned");
-  const [starredIssues, setStarredIssues] = useState<IssueSummary[]>([]);
+  const [starredItems, setStarredItems] = useState<IssueSummary[]>([]);
   const [searchText, setSearchText] = useState("");
   const [searchResults, setSearchResults] = useState<IssueSummary[] | null>(null);
   const [newFilterName, setNewFilterName] = useState("");
   const [selected, setSelected] = useState<IssueSummary | null>(null);
-  const [creating, setCreating] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
-  // Probed first so the "not configured" state reads precisely, distinct from an
-  // upstream failure, and so the lists below aren't asked for at all until JIRA
-  // is reachable.
-  const viewerRes = useCachedResource(VIEWER_KEY, probeJira, PROBE_FRESHNESS);
+  useEffect(() => {
+    if (!requested) return;
+    setSelected(requested);
+    onRequestConsumed?.();
+  }, [requested, onRequestConsumed]);
+
+  const viewerRes = useCachedResource(VIEWER_KEY, probeBoards, PROBE_FRESHNESS);
   const configured = viewerRes.data?.configured === true;
-  // The two searches go to JIRA; the filters, stars and links behind them are
-  // the sidecar's own rows and refresh on the shorter default.
   const assignedRes = useCachedResource<IssueSummary[]>(
     configured ? ASSIGNED_KEY : null,
-    jiraAssigned,
+    boardsAssigned,
     PROVIDER_FRESHNESS,
   );
   const createdRes = useCachedResource<IssueSummary[]>(
     configured ? CREATED_KEY : null,
-    jiraCreated,
+    boardsCreated,
     PROVIDER_FRESHNESS,
   );
   const filtersRes = useCachedResource<IssueFilter[]>(configured ? FILTERS_KEY : null, () =>
-    issueFilters("jira"),
+    issueFilters("azure"),
   );
   const starsRes = useCachedResource<IssueStar[]>(configured ? STARS_KEY : null, () =>
-    issueStars("jira"),
+    issueStars("azure"),
   );
   const linksRes = useCachedResource<IssueLink[]>(configured ? LINKS_KEY : null, () =>
-    issueLinks("jira"),
+    issueLinks("azure"),
   );
 
   const assigned = assignedRes.data ?? NO_ISSUES;
@@ -159,7 +185,9 @@ export default function JiraIssuesView() {
     if (selected) {
       return {
         source: "issues",
-        summary: `Viewing JIRA issue ${selected.displayId} "${selected.title}" in ${selected.sourceLabel}`,
+        summary: `Viewing Azure Boards work item ${selected.displayId} "${selected.title}"${
+          selected.sourceLabel ? ` in ${selected.sourceLabel}` : ""
+        }`,
         details: { url: selected.url },
       };
     }
@@ -169,33 +197,31 @@ export default function JiraIssuesView() {
         : activeTab === "created"
           ? created.length
           : activeTab === "starred"
-            ? starredIssues.length
+            ? starredItems.length
             : (searchResults?.length ?? 0);
     return {
       source: "issues",
-      summary: `On the Issues tab (JIRA ${activeTab} list, ${count} shown)`,
+      summary: `On the Issues tab (Azure Boards ${activeTab} list, ${count} shown)`,
     };
-  }, [selected, activeTab, assigned.length, created.length, starredIssues.length, searchResults]);
+  }, [selected, activeTab, assigned.length, created.length, starredItems.length, searchResults]);
 
   const loadLinks = linksRes.refresh;
 
-  /** Drops every JIRA resource at once; each mounted hook reloads itself. */
-  const dropCaches = useCallback(() => {
-    invalidatePrefix(JIRA_ISSUES_PREFIX);
-  }, []);
-
-  // Resolve starred issues to full rows (status/labels/assignee) via one JQL.
+  // Resolve starred work items to full rows in one batch call.
   useEffect(() => {
     if (activeTab !== "starred") return;
-    const keys = stars.map((s) => s.externalId).filter((k) => ISSUE_KEY_RE.test(k));
-    if (keys.length === 0) {
-      setStarredIssues([]);
+    const ids = stars
+      .map((s) => s.externalId)
+      .filter((id) => WORK_ITEM_ID_RE.test(id))
+      .slice(0, MAX_STARRED);
+    if (ids.length === 0) {
+      setStarredItems([]);
       return;
     }
     let live = true;
     setSearchError(null);
-    jiraSearch(`issuekey in (${keys.join(",")}) ORDER BY updated DESC`)
-      .then((rows) => live && setStarredIssues(rows))
+    boardsItems(ids)
+      .then((rows) => live && setStarredItems(rows))
       .catch((e) => live && setSearchError(e instanceof Error ? e.message : String(e)));
     return () => {
       live = false;
@@ -221,21 +247,19 @@ export default function JiraIssuesView() {
     [links],
   );
 
-  const startFlow = useJiraStartWork(loadLinks);
-  // A row counts as busy from the click until the picker closes: first while
-  // its detail loads, then while the dialog shows that ticket's transitions.
+  const startFlow = useBoardsStartWork(loadLinks);
   const isStarting = useCallback(
     (issue: IssueSummary) =>
-      startFlow.preparingKey === issue.externalId ||
+      startFlow.preparingId === issue.externalId ||
       startFlow.pending?.externalId === issue.externalId,
-    [startFlow.preparingKey, startFlow.pending],
+    [startFlow.preparingId, startFlow.pending],
   );
   const onStartWork = useCallback(
     (issue: IssueSummary) => void startFlow.start(issue.externalId),
     [startFlow.start],
   );
-  // Opening a ticket abandons a start begun on another row — otherwise its
-  // detail lands unseen and the picker springs open on the way back.
+  // Opening an item abandons a start begun on another row, so its picker
+  // doesn't spring open on the way back.
   const onOpen = useCallback(
     (issue: IssueSummary) => {
       startFlow.cancel();
@@ -244,40 +268,18 @@ export default function JiraIssuesView() {
     [startFlow.cancel],
   );
 
-  const runSearch = useCallback(async (jql: string) => {
-    // Cleared up front, or a search that failed once keeps its banner for the
-    // life of the view — and hides every list error behind it, since it takes
-    // precedence over them.
+  const runSearch = useCallback(async (query: string) => {
     setSearchError(null);
-    setSearchResults(await jiraSearch(jql));
+    setSearchResults(await boardsSearch(query));
   }, []);
 
   const onSubmitSearch = useCallback(() => {
     const text = searchText.trim();
     if (!text) return;
     setSearchError(null);
-    // A bare issue key opens that issue directly; anything else is JQL. JIRA
-    // keys are upper-case, so normalise once and derive every field from it so
-    // the composite issueKey() matches stored stars/links.
-    if (ISSUE_KEY_RE.test(text)) {
-      const key = text.toUpperCase();
-      const projectKey = key.replace(/-\d+$/, "");
-      setSelected({
-        provider: "jira",
-        sourceKey: projectKey,
-        sourceLabel: projectKey,
-        externalId: key,
-        displayId: key,
-        title: key,
-        url: "",
-        state: "open",
-        author: "",
-        assignees: [],
-        labels: [],
-        createdAt: "",
-        updatedAt: "",
-        commentCount: 0,
-      });
+    const idMatch = WORK_ITEM_ID_RE.exec(text);
+    if (idMatch?.[1]) {
+      setSelected(summaryForId(idMatch[1]));
       return;
     }
     void runSearch(text).catch((e) => setSearchError(e instanceof Error ? e.message : String(e)));
@@ -285,14 +287,14 @@ export default function JiraIssuesView() {
 
   const saveFilter = useCallback(async () => {
     if (!newFilterName.trim() || !searchText.trim()) return;
-    await createIssueFilter(newFilterName.trim(), searchText.trim(), "jira");
+    await createIssueFilter(newFilterName.trim(), searchText.trim(), "azure");
     setNewFilterName("");
     await filtersRes.refresh();
   }, [newFilterName, searchText, filtersRes.refresh]);
 
   if (selected) {
     return (
-      <JiraIssueDetailView
+      <AzureBoardsItemDetailView
         summary={selected}
         onBack={() => setSelected(null)}
         onStarted={() => void loadLinks()}
@@ -304,15 +306,16 @@ export default function JiraIssuesView() {
     return (
       <div className="p-6">
         <p className="text-sm text-zinc-400">
-          JIRA isn’t configured. Add your JIRA base URL, email, and API token in Settings →
-          Credentials to see your issues here.
+          Azure Boards isn’t configured. It uses the same Azure DevOps organization URL and personal
+          access token as the PR dashboard: add them in Settings → Credentials. The token needs the
+          Work Items (Read &amp; write) scope.
         </p>
       </div>
     );
   }
 
   const listProps = {
-    providerName: "JIRA",
+    providerName: "Azure Boards",
     isStarred,
     linkFor,
     isStarting,
@@ -351,16 +354,7 @@ export default function JiraIssuesView() {
               );
             })}
           </nav>
-          <div className="flex items-center gap-2">
-            <RefreshingIndicator active={refreshing} />
-            <button
-              type="button"
-              onClick={() => setCreating(true)}
-              className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800"
-            >
-              + New issue
-            </button>
-          </div>
+          <RefreshingIndicator active={refreshing} />
         </div>
 
         {loading && <LoadingIndicator className="text-sm text-zinc-600" />}
@@ -368,21 +362,21 @@ export default function JiraIssuesView() {
         {activeTab === "assigned" && !loading && (
           <StatusGroupedIssueList
             issues={assigned}
-            emptyText="No open issues assigned to you."
+            emptyText="No open work items assigned to you."
             {...listProps}
           />
         )}
         {activeTab === "created" && !loading && (
           <StatusGroupedIssueList
             issues={created}
-            emptyText="No open issues reported by you."
+            emptyText="No open work items created by you."
             {...listProps}
           />
         )}
         {activeTab === "starred" && !loading && (
           <StatusGroupedIssueList
-            issues={starredIssues}
-            emptyText="No starred issues."
+            issues={starredItems}
+            emptyText="No starred work items."
             {...listProps}
           />
         )}
@@ -392,10 +386,10 @@ export default function JiraIssuesView() {
             <div className="flex gap-2">
               <input
                 value={searchText}
-                aria-label="JQL query or issue key"
+                aria-label="WIQL query, title text or work item id"
                 onChange={(e) => setSearchText(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && onSubmitSearch()}
-                placeholder="JQL, e.g. project = PROJ AND status = 'In Progress' — or an issue key like PROJ-45"
+                placeholder="Title text, a work item id like 1234, or WIQL starting with SELECT"
                 className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
               />
               <button
@@ -427,7 +421,7 @@ export default function JiraIssuesView() {
                     </button>
                     <DeleteFilterButton
                       onDelete={async () => {
-                        await deleteIssueFilter(f.id, "jira");
+                        await deleteIssueFilter(f.id, "azure");
                         await filtersRes.refresh();
                       }}
                     />
@@ -441,7 +435,7 @@ export default function JiraIssuesView() {
                 <div className="flex gap-2">
                   <input
                     value={newFilterName}
-                    placeholder="Save this JQL as…"
+                    placeholder="Save this search as…"
                     aria-label="Name for the saved filter"
                     onChange={(e) => setNewFilterName(e.target.value)}
                     className="w-48 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
@@ -466,8 +460,6 @@ export default function JiraIssuesView() {
         )}
 
         {error && <p className="text-sm text-red-400">{error}</p>}
-        {/* Separate from the list error, and only while no picker is open: the
-            dialog renders its own start failures on top of this view. */}
         {!startFlow.pending && startFlow.error && (
           <p className="text-sm text-red-400">{startFlow.error}</p>
         )}
@@ -475,18 +467,16 @@ export default function JiraIssuesView() {
 
       {startFlow.pending && (
         <JiraRepoPickerModal
-          projectKey={startFlow.pending.sourceKey}
+          // The picker remembers the last repos per key; the prefix keeps an
+          // Azure project from sharing a JIRA project key's choice.
+          projectKey={`azure:${startFlow.pending.sourceKey}`}
           issueKey={startFlow.pending.displayId}
-          transitions={startFlow.pending.transitions}
+          transitions={statesAsTransitions(startFlow.pending)}
           busy={startFlow.starting}
           startError={startFlow.error}
           onConfirm={(choice) => void startFlow.confirm(choice)}
           onClose={startFlow.cancel}
         />
-      )}
-
-      {creating && (
-        <JiraCreateIssueModal onClose={() => setCreating(false)} onCreated={dropCaches} />
       )}
     </div>
   );
