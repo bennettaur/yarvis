@@ -8,8 +8,13 @@ hand.
 ```bash
 bun run demo                 # every flow in demo/flows/
 bun run demo -g tour         # one flow, by title
+bun run demo flows/chat.demo.ts  # one flow, by file
 bun run demo --headed        # watch it run
 ```
+
+The flows in `demo/flows/` cover the Chat tab (including a tool call that
+creates a task), Omni Chat, the Omni layout builder, the Terminal tab, a
+workspace's Claude Code session, and a short tour.
 
 Output lands in `demo/output/<flow-title>/`, with the test's title lowercased
 and hyphenated ("Memory library" becomes `memory-library/`). It holds numbered
@@ -25,21 +30,39 @@ Before the first run:
 ## What's real and what isn't
 
 The React frontend and the sidecar are real. Data goes through the sidecar's
-HTTP API into Postgres, exactly as in the app.
+HTTP API into Postgres, exactly as in the app. Three things are faked:
 
-The Rust core is replaced by `tauriMock.ts`, because Tauri's macOS webview
-(WKWebView) can't be driven by Playwright or WebDriver. Because of that:
-
-- Terminals and workspace agent sessions open empty. They are PTYs in the Rust
-  core. A flow can write into one with
-  `demo.emit("pty-output:<id>", { offset, bytes })`, the shape in `src/lib/pty.ts`.
-- Native things don't appear: the window frame, the tray, OS notifications,
-  global hotkeys. A flow can fire the events they would send (`demo.fireAlarm`,
+- **The Rust core** is replaced by `tauriMock.ts`, because Tauri's macOS
+  webview (WKWebView) can't be driven by Playwright or WebDriver. Native things
+  don't appear: the window frame, the tray, OS notifications, global hotkeys. A
+  flow can fire the events they would send (`demo.fireAlarm`,
   `demo.emit("omni-chat-summon")`).
-- Chat replies need a provider key. Set `ANTHROPIC_API_KEY` (or
-  `GEMINI_API_KEY`, `CEREBRAS_API_KEY`) in the shell running `bun run demo` and
-  it's passed to the sidecar. Apart from `PATH` and `USER`, no other env var
-  from your shell reaches it.
+- **The chat model** is `fakeLlm/`, a local server that speaks the OpenAI
+  chat-completions API. It's registered with the sidecar as an ordinary custom
+  provider ("Demo model"), and every chat surface is set to use it. It answers
+  from the canned replies in `fakeLlm/script.ts`, streamed so the reply is seen
+  being written. A reply can call one of the sidecar's tools, which then runs
+  for real: the chat flow's `create_task` call puts a real task on the list.
+- **Terminals** are `fakeShell.ts`: each one shows a prompt, echoes keys, and
+  prints canned output for the commands in `COMMANDS` (`git status`,
+  `bun test`, …). Typing `claude`, or opening a workspace, starts a scripted
+  Claude Code session that answers any instruction the same way.
+
+## Canned replies
+
+`fakeLlm/script.ts` holds a list of replies. The first one whose `when` matches
+the user's latest message is used, so put specific patterns first. A reply has
+either `text`, or a `toolCall` plus the `after` text the model says once the
+tool has run. Replies with `surface: "omni"` answer the Omni tab's layout
+builder instead of chat. Their text is one line of prose followed by a
+` ```spec ` block of JSON patches, the format Omni's system prompt asks for.
+Widgets there fetch their own data, so pick ones the seed fills: Tasks, Memory,
+Terminal, Alarms, WorkspaceList. Calendar and PR widgets need live Google or
+GitHub access and show empty.
+
+A message no reply matches gets a placeholder answer, which is easy to spot in
+a screenshot. A tool the reply asks for has to be among those the sidecar
+offers that turn; if it isn't, the server logs `[fake-llm]` and answers in text.
 
 ## The demo stack
 
@@ -49,11 +72,13 @@ The Rust core is replaced by `tauriMock.ts`, because Tauri's macOS webview
    `YARVIS_DEMO_DATABASE_URL`. Since this step deletes the database, the
    runner only accepts a local one with "demo" in its name, and refuses query
    parameters such as `?dbname=` that would point the sidecar elsewhere.
-2. Starts the sidecar against that database, and Vite. The sidecar's `HOME`,
-   `settings.json`, agents directory, workspaces root and `CLAUDE_HOME` all
-   point into `demo/output/.state/`, so your real memories, sessions and
-   workspaces never show up in a screenshot. Background workers are off.
-3. Seeds the database with made-up data from `seed.ts`.
+2. Starts the fake model, the sidecar against that database, and Vite. The
+   sidecar's `HOME`, `settings.json`, agents directory and `CLAUDE_HOME` point
+   into `demo/output/.state/`, so your real memories, sessions and workspaces
+   never show up in a screenshot. Workspaces go in `/tmp/yarvis-demo/`, since
+   the app shows a workspace's full path. Background workers are off.
+3. Seeds the database with made-up data from `seed.ts`, including a provisioned
+   "Checkout redesign" workspace.
 
 Each flow then opens `demo/index.html`, which installs the Tauri mock and then
 loads the normal app. A flow fails if the app calls a Tauri command the mock
@@ -96,6 +121,10 @@ target, and ripples on click. Typing goes one key at a time.
 | `fireAlarm(alarm)` | Rings an alarm, as the core's scheduler would. |
 | `emit(event, payload)` | Fires any other native event the UI listens for. |
 
+To type into a terminal, click it (`demo.click(page.locator(".xterm").first())`),
+then use `page.keyboard.type(...)` and `demo.press("Enter")`. The terminal's
+text is in the DOM, so `expect(page.getByText(...))` can wait for output.
+
 Use `expect(...)` to wait for the result of an action before taking a shot.
 Otherwise the shot can catch the screen mid-update.
 
@@ -104,4 +133,6 @@ key, token or personal detail into a flow. Use obvious placeholders such as
 `sk-ant-demo-0000`.
 
 To add data that every flow can use, extend `seed.ts`. Data only one flow
-needs can be created in that flow, through the UI or with `page.request`.
+needs can be created in that flow, through the UI or with `page.request`. Flows
+run one after another against the same database, so a flow sees what earlier
+ones created. Give anything a flow adds a name no other flow uses.

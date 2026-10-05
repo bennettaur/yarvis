@@ -5,9 +5,9 @@ test("tour", async ({ demo, page }) => {
   await expect(page.getByText("Prep demo for Thursday's review")).toBeVisible();
   await demo.shot("tasks");
 
-  await demo.type(page.getByPlaceholder("Add a task..."), "Send the rollout plan to Priya");
+  await demo.type(page.getByPlaceholder("Add a task..."), "Book the checkout retro");
   await demo.click(page.getByRole("button", { name: "Add", exact: true }));
-  await expect(page.getByText("Send the rollout plan to Priya")).toBeVisible();
+  await expect(page.getByText("Book the checkout retro")).toBeVisible();
   await demo.shot("task added");
 
   await demo.openTab("Memory");

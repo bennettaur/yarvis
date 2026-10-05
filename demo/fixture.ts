@@ -13,8 +13,9 @@ import { join } from "node:path";
 import { test as base, expect, type Locator, type Page } from "@playwright/test";
 import type { Alarm } from "../src/lib/alarms";
 import { type DemoConfig, UNMOCKED_COMMAND_WARNING } from "./demoConfig";
+import { FAKE_MODEL } from "./fakeLlm/server";
 import { flowOutputDir, slugify } from "./paths";
-import { PASSTHROUGH_SECRETS } from "./stack";
+import { FAKE_PROVIDER_ID, PASSTHROUGH_SECRETS } from "./stack";
 
 export const VIEWPORT = { width: 1440, height: 900 };
 
@@ -185,12 +186,21 @@ export const test = base.extend<{ demo: Demo }>({
       ],
     };
     await page.addInitScript(
-      ({ config, setupGuideKey }) => {
+      ({ config, setupGuideKey, provider, model }) => {
         window.__YARVIS_DEMO_CONFIG__ = config;
         // Skip the first-run setup guide, which would cover every screen.
         localStorage.setItem(setupGuideKey, "1");
+        // Every chat surface reads these. Without them the picker falls back to
+        // Bedrock, which always reports itself available.
+        localStorage.setItem("yarvis.chat.provider", provider);
+        localStorage.setItem("yarvis.chat.model", model);
       },
-      { config: demoConfig, setupGuideKey: SETUP_GUIDE_SEEN_KEY },
+      {
+        config: demoConfig,
+        setupGuideKey: SETUP_GUIDE_SEEN_KEY,
+        provider: `custom:${FAKE_PROVIDER_ID}`,
+        model: FAKE_MODEL,
+      },
     );
     await page.addInitScript(installCursor);
 

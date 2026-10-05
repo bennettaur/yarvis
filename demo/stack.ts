@@ -9,17 +9,50 @@
 
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
+import { FAKE_MODEL, startFakeLlm } from "./fakeLlm/server";
 import { OUTPUT_DIR, REPO_ROOT } from "./paths";
 
 const STATE_DIR = join(OUTPUT_DIR, ".state");
+/**
+ * The app shows a workspace's full path, so workspaces live somewhere that
+ * doesn't reveal the developer's username or folder layout.
+ */
+const WORKSPACES_ROOT = "/tmp/yarvis-demo/workspaces";
 
 const DEFAULT_DATABASE_URL = "postgres://localhost:5432/yarvis_demo";
 
 /** Provider keys the sidecar may use when they're set in the runner's env. */
 export const PASSTHROUGH_SECRETS = ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "CEREBRAS_API_KEY"];
+
+/**
+ * The custom provider that points at the fake model. Its id is fixed so the
+ * fixture can select it before the page loads.
+ */
+export const FAKE_PROVIDER_ID = "00000000-0000-4000-8000-00000000de70";
+export const FAKE_PROVIDER_NAME = "Demo model";
+
+/**
+ * Registers the fake model as a custom provider, written straight into the
+ * sidecar's settings file the way its own custom-provider routes store one.
+ */
+function writeFakeProvider(settingsPath: string, fakeLlmUrl: string): void {
+  const now = new Date().toISOString();
+  const row = {
+    id: FAKE_PROVIDER_ID,
+    name: FAKE_PROVIDER_NAME,
+    baseUrl: `${fakeLlmUrl}/v1`,
+    apiKind: "openai-chat",
+    models: [FAKE_MODEL],
+    headerNames: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+  mkdirSync(join(settingsPath, ".."), { recursive: true });
+  writeFileSync(settingsPath, JSON.stringify({ customProviders: { [row.id]: row } }, null, 2));
+}
 
 export interface Stack {
   /** The app's URL, `demo/index.html` on the Vite dev server. */
@@ -182,15 +215,23 @@ export async function startStack(): Promise<Stack> {
   recreateDatabase(demoDatabase(databaseUrl));
 
   rmSync(STATE_DIR, { recursive: true, force: true });
+  rmSync(WORKSPACES_ROOT, { recursive: true, force: true });
   const home = join(STATE_DIR, "home");
-  const workspacesRoot = join(STATE_DIR, "workspaces");
   mkdirSync(home, { recursive: true });
-  mkdirSync(workspacesRoot, { recursive: true });
+  mkdirSync(WORKSPACES_ROOT, { recursive: true });
 
-  const [sidecarPort, vitePort] = await Promise.all([findFreePort(), findFreePort()]);
+  const [sidecarPort, vitePort, fakeLlmPort] = await Promise.all([
+    findFreePort(),
+    findFreePort(),
+    findFreePort(),
+  ]);
   const sidecarToken = randomBytes(24).toString("hex");
   const sidecarUrl = `http://127.0.0.1:${sidecarPort}`;
   const appOrigin = `http://localhost:${vitePort}`;
+
+  const fakeLlm = await startFakeLlm(fakeLlmPort);
+  const settingsPath = join(home, ".yarvis", "settings.json");
+  writeFakeProvider(settingsPath, `http://127.0.0.1:${fakeLlmPort}`);
 
   // Built from scratch rather than inheriting process.env, so a token or key
   // in the developer's shell can't leak into the demo by accident.
@@ -207,9 +248,11 @@ export async function startStack(): Promise<Stack> {
     // calls out to GitHub mid-recording.
     YARVIS_INSTANCE: "demo",
     YARVIS_BACKGROUND_WORKERS: "0",
-    YARVIS_SETTINGS_PATH: join(home, ".yarvis", "settings.json"),
+    YARVIS_SETTINGS_PATH: settingsPath,
+    // The AI SDK won't send a request without a key. The fake model ignores it.
+    YARVIS_CUSTOM_PROVIDER_SECRETS: JSON.stringify({ [FAKE_PROVIDER_ID]: { apiKey: "demo" } }),
     YARVIS_AGENTS_DIR: join(home, ".yarvis", "agents"),
-    YARVIS_WORKSPACES_ROOT: workspacesRoot,
+    YARVIS_WORKSPACES_ROOT: WORKSPACES_ROOT,
     CLAUDE_HOME: join(home, ".claude"),
   };
   for (const key of PASSTHROUGH_SECRETS) {
@@ -231,6 +274,7 @@ export async function startStack(): Promise<Stack> {
   });
   const stop = async () => {
     await Promise.all([sidecar.child, vite.child].map(stopChild));
+    await new Promise((resolve) => fakeLlm.close(resolve));
   };
 
   try {

@@ -16,6 +16,7 @@ import type { Alarm } from "../src/lib/alarms";
 import type { ClipboardHistoryItem } from "../src/lib/clipboard";
 import type { Settings } from "../src/lib/settings";
 import { type DemoConfig, UNMOCKED_COMMAND_WARNING } from "./demoConfig";
+import { FakeTerminals } from "./fakeShell";
 
 declare global {
   interface Window {
@@ -82,6 +83,9 @@ let alarms: Alarm[] = [];
 let clipboardHistory: ClipboardHistoryItem[] = [];
 
 type CommandArgs = Record<string, unknown>;
+
+// The core's PTYs, played by scripted shells.
+const terminals = new FakeTerminals((id, chunk) => void emit(`pty-output:${id}`, chunk));
 
 function updateSettings(patch: Partial<Settings>): Settings {
   settings = { ...settings, ...patch };
@@ -201,23 +205,28 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
     case "clipboard_write":
       return null;
 
-    // Terminals and agent sessions live in the Rust core's PTYs, which the
-    // browser can't reach. They open empty; a demo can write output into one
-    // by emitting `pty-output:<id>`.
     case "get_agent_config":
       return {
         name: settings.agentName ?? settings.defaultAgentName,
         command: settings.agentCommand ?? settings.defaultAgentCommand,
       };
     case "pty_exists":
+      return terminals.exists(args.id as string);
+    // Never busy, so closing a tab doesn't stop the recording on a confirm dialog.
     case "pty_is_busy":
       return false;
     case "pty_attach":
-      return { scrollback: [], endOffset: 0 };
+      return terminals.attach(args.id as string);
     case "pty_write":
-    case "pty_resize":
+      terminals.write(args.id as string, args.data as string);
+      return null;
     case "pty_kill":
+      terminals.kill(args.id as string);
+      return null;
     case "pty_start_claude":
+      terminals.startAgent(`ws-claude:${args.workspaceId as string}`);
+      return null;
+    case "pty_resize":
       return null;
 
     case "plugin:opener|open_url":

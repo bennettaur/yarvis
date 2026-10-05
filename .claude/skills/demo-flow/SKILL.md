@@ -14,9 +14,12 @@ mocked by `demo/tauriMock.ts`.
 1. Get the script: a list of steps to show, and the screenshots wanted. If the
    user gave only a goal ("show off memory"), write the steps yourself and
    confirm them before going on.
-2. Check each step against what the harness can show. Terminals and agent
-   sessions open empty, and chat needs a provider key in the env. If a step
-   depends on one of those, say so and offer an alternative before writing it.
+2. Check each step against what the harness can show. Chat replies come from
+   `demo/fakeLlm/script.ts` and terminal output from `demo/fakeShell.ts`, so a
+   step that chats or runs a command needs a canned reply or command there;
+   add one. Native UI (window frame, tray, OS notifications) can't be shown,
+   and Omni's Calendar and PR widgets show empty. If a step depends on one of
+   those, say so and offer an alternative before writing it.
 3. Find the selectors in the components under `src/components/`. Prefer, in
    order: `getByRole` with the accessible name, `getByPlaceholder`,
    `getByText`. Avoid CSS classes, since Tailwind classes change often.
