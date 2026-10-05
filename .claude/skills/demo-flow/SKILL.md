@@ -21,14 +21,18 @@ mocked by `demo/tauriMock.ts`.
    order: `getByRole` with the accessible name, `getByPlaceholder`,
    `getByText`. Avoid CSS classes, since Tailwind classes change often.
 4. Write `demo/flows/<name>.demo.ts` with the `demo` helpers from
-   `demo/fixture.ts`. After every action that changes the screen, wait for the
+   `demo/fixture.ts`. Never type a real key, token or personal detail; the
+   video records it. After every action that changes the screen, wait for the
    result with `expect(...).toBeVisible()` before calling `demo.shot`. If the
    flow needs data the seed lacks, add it to `demo/seed.ts` when other flows
    could use it too. Otherwise create it in the flow.
-5. Run it: `bun run demo -g "<test title>"`. It needs local Postgres, so
-   outside a sandbox.
-6. Look at every PNG in `demo/output/<title>/`. Check that each one shows what
-   its step promised: no loading spinners, no error banners, nothing cut off.
+5. Run it: `bun run demo -g "<test title>"`. It connects to the local Postgres
+   server, which the command sandbox blocks, so run it with the sandbox
+   disabled.
+6. Look at every PNG in `demo/output/<title>/`, where the title is lowercased
+   and hyphenated ("Memory library" becomes `memory-library/`). Check that
+   each one shows what its step promised: no loading spinners, no error
+   banners, nothing cut off.
    Fix the flow and rerun until they do.
 7. Report the output path. Mention any step that couldn't be shown as
    written.

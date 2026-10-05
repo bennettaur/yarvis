@@ -3,11 +3,11 @@
  *
  * Every `invoke` the UI makes is answered here, and `listen` is backed by
  * Tauri's own event mock so a demo can fire native events (an alarm going
- * off, the Quick Chat hotkey) with `window.__yarvisDemo.emit`. Data still
- * comes from a real sidecar; only the native layer is faked.
+ * off, the Quick Chat hotkey) with `window.__yarvisDemoControls.emit`. Data
+ * still comes from a real sidecar; only the native layer is faked.
  *
- * The sidecar's port and token arrive on `window.__YARVIS_DEMO__`, which the
- * Playwright fixture sets before any page script runs.
+ * The sidecar's port and token arrive on `window.__YARVIS_DEMO_CONFIG__`,
+ * which the Playwright fixture sets before any page script runs.
  */
 
 import { emit } from "@tauri-apps/api/event";
@@ -15,32 +15,32 @@ import { mockIPC } from "@tauri-apps/api/mocks";
 import type { Alarm } from "../src/lib/alarms";
 import type { ClipboardHistoryItem } from "../src/lib/clipboard";
 import type { Settings } from "../src/lib/settings";
-
-export interface DemoConfig {
-  sidecarPort: number;
-  sidecarToken: string;
-  /** Secret keys the Settings screen should show as stored. */
-  presentSecrets?: string[];
-  alarms?: Alarm[];
-  clipboardHistory?: ClipboardHistoryItem[];
-}
+import { type DemoConfig, UNMOCKED_COMMAND_WARNING } from "./demoConfig";
 
 declare global {
   interface Window {
-    __YARVIS_DEMO__?: DemoConfig;
-    __yarvisDemo?: {
+    __YARVIS_DEMO_CONFIG__?: DemoConfig;
+    __yarvisDemoControls?: {
       emit: typeof emit;
       fireAlarm: (alarm: Omit<Alarm, "status">) => Promise<void>;
-      calls: { cmd: string; args: unknown }[];
     };
   }
 }
 
-const config = window.__YARVIS_DEMO__;
-if (!config) {
-  throw new Error("demo/index.html needs window.__YARVIS_DEMO__; open it through the demo runner");
+function readConfig(): DemoConfig {
+  const config = window.__YARVIS_DEMO_CONFIG__;
+  if (!config) {
+    throw new Error(
+      "demo/index.html needs window.__YARVIS_DEMO_CONFIG__; open it through `bun run demo`",
+    );
+  }
+  return config;
 }
 
+const config = readConfig();
+
+// Mirrors SECRET_KEYS in src-tauri/src/keychain.rs, so Settings lists the
+// same rows as the real app.
 const SECRET_KEYS = [
   "anthropic_api_key",
   "gemini_api_key",
@@ -56,39 +56,39 @@ const SECRET_KEYS = [
   "telegram_otp_secret",
 ];
 
-// Defaults copied from `src-tauri/src/settings.rs` and `pty.rs`.
+// Mirrors the defaults in src-tauri/src/settings.rs and pty.rs.
 let settings: Settings = {
   maxPtySessions: null,
-  defaultMaxPtySessions: 8,
-  maxConfigurablePtySessions: 32,
+  defaultMaxPtySessions: 60,
+  maxConfigurablePtySessions: 1000,
   agentName: null,
   agentCommand: null,
-  defaultAgentName: "Claude Code",
-  defaultAgentCommand: "claude",
+  defaultAgentName: "Claude",
+  defaultAgentCommand: "claude --permission-mode auto",
   agentCommandOverriddenByEnv: false,
   azureDevopsOrgUrl: null,
   jiraBaseUrl: null,
   jiraEmail: null,
   googleClientId: null,
   telegramOtpWindowMinutes: null,
-  defaultTelegramOtpWindowMinutes: 10,
-  secretBackend: "keychain",
+  defaultTelegramOtpWindowMinutes: 120,
+  secretBackend: null,
   onePasswordVault: null,
   onePasswordItem: null,
 };
 
-const presentSecrets = new Set(config.presentSecrets ?? ["database_url"]);
-let alarms: Alarm[] = config.alarms ?? [];
-let clipboardHistory: ClipboardHistoryItem[] = config.clipboardHistory ?? [];
+const presentSecrets = new Set(config.presentSecrets);
+let alarms: Alarm[] = [];
+let clipboardHistory: ClipboardHistoryItem[] = [];
 
-type Args = Record<string, unknown>;
+type CommandArgs = Record<string, unknown>;
 
-function update(patch: Partial<Settings>): Settings {
+function updateSettings(patch: Partial<Settings>): Settings {
   settings = { ...settings, ...patch };
   return settings;
 }
 
-function setAlarm(id: string, patch: Partial<Alarm>): void {
+function updateAlarm(id: string, patch: Partial<Alarm>): void {
   alarms = alarms.map((a) => (a.id === id ? { ...a, ...patch } : a));
 }
 
@@ -103,10 +103,10 @@ async function fireAlarm(alarm: Omit<Alarm, "status">): Promise<void> {
   await emit("alarm-fired", fired);
 }
 
-function handle(cmd: string, args: Args): unknown {
+function handleCommand(cmd: string, args: CommandArgs): unknown {
   switch (cmd) {
     case "get_sidecar_info":
-      return { port: config?.sidecarPort, token: config?.sidecarToken };
+      return { port: config.sidecarPort, token: config.sidecarToken };
     case "get_sidecar_log_path":
       return "~/Library/Logs/Yarvis/sidecar.log";
     case "restart_sidecar":
@@ -116,25 +116,26 @@ function handle(cmd: string, args: Args): unknown {
     case "get_settings":
       return settings;
     case "set_max_pty_sessions":
-      return update({ maxPtySessions: args.value as number | null });
+      return updateSettings({ maxPtySessions: args.value as number | null });
     case "set_agent":
-      return update({
-        agentName: args.name as string | null,
-        agentCommand: args.command as string | null,
+      // The core stores a blank field as unset.
+      return updateSettings({
+        agentName: (args.name as string | null) || null,
+        agentCommand: (args.command as string | null) || null,
       });
     case "set_azure_devops_org_url":
-      return update({ azureDevopsOrgUrl: args.value as string | null });
+      return updateSettings({ azureDevopsOrgUrl: args.value as string | null });
     case "set_jira_base_url":
-      return update({ jiraBaseUrl: args.value as string | null });
+      return updateSettings({ jiraBaseUrl: args.value as string | null });
     case "set_jira_email":
-      return update({ jiraEmail: args.value as string | null });
+      return updateSettings({ jiraEmail: args.value as string | null });
     case "set_google_client_id":
-      return update({ googleClientId: args.value as string | null });
+      return updateSettings({ googleClientId: args.value as string | null });
     case "set_telegram_otp_window_minutes":
-      return update({ telegramOtpWindowMinutes: args.value as number | null });
+      return updateSettings({ telegramOtpWindowMinutes: args.value as number | null });
     case "set_secret_backend":
       return {
-        settings: update({
+        settings: updateSettings({
           secretBackend: args.backend as Settings["secretBackend"],
           onePasswordVault: args.vault as string | null,
           onePasswordItem: args.item as string | null,
@@ -180,13 +181,13 @@ function handle(cmd: string, args: Args): unknown {
       return alarm;
     }
     case "cancel_alarm":
-      setAlarm(args.id as string, { status: "cancelled" });
+      updateAlarm(args.id as string, { status: "cancelled" });
       return null;
     case "acknowledge_alarm":
-      setAlarm(args.id as string, { status: "acknowledged" });
+      updateAlarm(args.id as string, { status: "acknowledged" });
       return null;
     case "snooze_alarm":
-      setAlarm(args.id as string, {
+      updateAlarm(args.id as string, {
         status: "scheduled",
         fireAtMs: Date.now() + (args.minutes as number) * 60_000,
       });
@@ -204,7 +205,10 @@ function handle(cmd: string, args: Args): unknown {
     // browser can't reach. They open empty; a demo can write output into one
     // by emitting `pty-output:<id>`.
     case "get_agent_config":
-      return { name: "Claude Code", command: "claude" };
+      return {
+        name: settings.agentName ?? settings.defaultAgentName,
+        command: settings.agentCommand ?? settings.defaultAgentCommand,
+      };
     case "pty_exists":
     case "pty_is_busy":
       return false;
@@ -218,19 +222,21 @@ function handle(cmd: string, args: Args): unknown {
 
     case "plugin:opener|open_url":
       return null;
+    // Asked only while the browser's own permission is undecided. Saying no
+    // keeps notifications from popping up over a recording.
+    case "plugin:notification|is_permission_granted":
+      return false;
 
     default:
-      console.warn(`[demo] unmocked Tauri command: ${cmd}`, args);
+      // The fixture fails the flow on this line, so a command the app gains
+      // later shows up as a failure rather than a quietly broken screenshot.
+      // Arguments are left out because some commands carry secrets.
+      console.warn(`${UNMOCKED_COMMAND_WARNING} ${cmd}`);
       return null;
   }
 }
 
-const calls: { cmd: string; args: unknown }[] = [];
-mockIPC(
-  (cmd, payload) => {
-    calls.push({ cmd, args: payload });
-    return handle(cmd, (payload ?? {}) as Args);
-  },
-  { shouldMockEvents: true },
-);
-window.__yarvisDemo = { emit, fireAlarm, calls };
+mockIPC((cmd, payload) => handleCommand(cmd, (payload ?? {}) as CommandArgs), {
+  shouldMockEvents: true,
+});
+window.__yarvisDemoControls = { emit, fireAlarm };

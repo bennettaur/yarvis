@@ -4,18 +4,22 @@
  * cursor glides to its target, clicks ripple, and text is typed a key at a
  * time.
  *
- * Each flow's screenshots and video land in `demo/output/<flow title>/`.
+ * Each flow's screenshots and video land in `demo/output/<flow-title>/`, the
+ * title lowercased and hyphenated.
  */
 
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { test as base, expect, type Locator, type Page } from "@playwright/test";
 import type { Alarm } from "../src/lib/alarms";
-import type { DemoConfig } from "./tauriMock";
+import { type DemoConfig, UNMOCKED_COMMAND_WARNING } from "./demoConfig";
+import { flowOutputDir, slugify } from "./paths";
+import { PASSTHROUGH_SECRETS } from "./stack";
 
 export const VIEWPORT = { width: 1440, height: 900 };
 
-const OUTPUT_DIR = join(import.meta.dirname, "output");
+/** Matches `SETUP_GUIDE_SEEN_KEY` in `src/lib/onboarding.ts`. */
+const SETUP_GUIDE_SEEN_KEY = "yarvis.setupGuide.seen";
 
 /**
  * Draws a cursor and click ripples, since Playwright's video shows neither.
@@ -70,13 +74,6 @@ function installCursor() {
   window.addEventListener("mouseup", () => cursor.classList.remove("down"), true);
 }
 
-function slugify(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
 export class Demo {
   private shotCount = 0;
   private mouse = { x: VIEWPORT.width / 2, y: VIEWPORT.height / 2 };
@@ -99,6 +96,7 @@ export class Demo {
     const x = box.x + box.width / 2;
     const y = box.y + box.height / 2;
     const distance = Math.hypot(x - this.mouse.x, y - this.mouse.y);
+    // About one step per 12px, and at least 8, so long moves glide rather than jump.
     await this.page.mouse.move(x, y, { steps: Math.max(8, Math.round(distance / 12)) });
     this.mouse = { x, y };
   }
@@ -106,22 +104,24 @@ export class Demo {
   async click(target: Locator): Promise<void> {
     await this.hover(target);
     await this.pause(150);
-    await this.page.mouse.down();
-    await this.page.mouse.up();
+    // Clicks at the point the cursor already rests on, after Playwright's
+    // checks that the element is enabled and not covered.
+    await target.click();
     await this.pause(400);
   }
 
   /** Clicks into `target` and types `text` at a readable speed. */
   async type(target: Locator, text: string, { delay = 45 } = {}): Promise<void> {
     await this.click(target);
-    await this.page.keyboard.type(text, { delay });
+    await target.pressSequentially(text, { delay });
     await this.pause(300);
   }
 
   /** Opens a nav rail tab by its label ("Tasks", "Memory", "Settings"). */
   async openTab(label: string): Promise<void> {
     // A tab with a badge appends a hint to its accessible name ("PRs — 2 need review").
-    const name = new RegExp(`^${label}( —|$)`);
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const name = new RegExp(`^${escaped}( —|$)`);
     await this.click(this.page.getByRole("navigation").getByRole("button", { name }));
     await this.pause(600);
   }
@@ -133,15 +133,23 @@ export class Demo {
 
   /** Rings an alarm, raising the full-screen takeover. */
   async fireAlarm(alarm: Omit<Alarm, "status">): Promise<void> {
-    await this.page.evaluate((a) => window.__yarvisDemo?.fireAlarm(a), alarm);
+    await this.page.evaluate((a) => {
+      const controls = window.__yarvisDemoControls;
+      if (!controls) throw new Error("the Tauri mock isn't installed");
+      return controls.fireAlarm(a);
+    }, alarm);
   }
 
   /** Fires a native event, as the Rust core would (e.g. `omni-chat-summon`). */
   async emit(event: string, payload?: unknown): Promise<void> {
-    await this.page.evaluate(([e, p]) => window.__yarvisDemo?.emit(e as string, p), [
-      event,
-      payload,
-    ] as const);
+    await this.page.evaluate(
+      ({ event, payload }) => {
+        const controls = window.__yarvisDemoControls;
+        if (!controls) throw new Error("the Tauri mock isn't installed");
+        return controls.emit(event, payload);
+      },
+      { event, payload },
+    );
   }
 
   /**
@@ -152,7 +160,7 @@ export class Demo {
   async shot(
     name: string,
     { target, cursor = false }: { target?: Locator; cursor?: boolean } = {},
-  ) {
+  ): Promise<string> {
     await this.pause(300);
     this.shotCount += 1;
     const file = join(
@@ -160,8 +168,7 @@ export class Demo {
       `${String(this.shotCount).padStart(2, "0")}-${slugify(name)}.png`,
     );
     const style = cursor ? undefined : "#demo-cursor, .demo-ripple { display: none !important; }";
-    if (target) await target.screenshot({ path: file, animations: "disabled", style });
-    else await this.page.screenshot({ path: file, animations: "disabled", style });
+    await (target ?? this.page).screenshot({ path: file, animations: "disabled", style });
     return file;
   }
 }
@@ -171,26 +178,42 @@ export const test = base.extend<{ demo: Demo }>({
     const demoConfig: DemoConfig = {
       sidecarPort: Number(process.env.DEMO_SIDECAR_PORT),
       sidecarToken: process.env.DEMO_SIDECAR_TOKEN ?? "",
-      presentSecrets: ["database_url", "anthropic_api_key"],
+      // Settings shows a key as stored exactly when the sidecar was given it.
+      presentSecrets: [
+        "database_url",
+        ...PASSTHROUGH_SECRETS.filter((key) => process.env[key]).map((key) => key.toLowerCase()),
+      ],
     };
-    await page.addInitScript((c) => {
-      window.__YARVIS_DEMO__ = c;
-      // Skip the first-run setup guide, which would cover every screen.
-      localStorage.setItem("yarvis.setupGuide.seen", "1");
-    }, demoConfig);
+    await page.addInitScript(
+      ({ config, setupGuideKey }) => {
+        window.__YARVIS_DEMO_CONFIG__ = config;
+        // Skip the first-run setup guide, which would cover every screen.
+        localStorage.setItem(setupGuideKey, "1");
+      },
+      { config: demoConfig, setupGuideKey: SETUP_GUIDE_SEEN_KEY },
+    );
     await page.addInitScript(installCursor);
+
+    const unmocked: string[] = [];
+    page.on("console", (message) => {
+      if (message.text().startsWith(UNMOCKED_COMMAND_WARNING)) unmocked.push(message.text());
+    });
+
     await use(page);
+
+    // The UI called something the mock doesn't answer, so a screenshot may
+    // show a broken screen. Add the command to tauriMock.ts.
+    expect(unmocked, "Tauri commands the demo mock doesn't answer").toEqual([]);
   },
 
   demo: async ({ page }, use, testInfo) => {
-    const outputDir = join(OUTPUT_DIR, slugify(testInfo.title));
+    const outputDir = flowOutputDir(testInfo.title);
     // Start clean, so a shot a flow no longer takes doesn't linger beside the new ones.
     rmSync(outputDir, { recursive: true, force: true });
     mkdirSync(outputDir, { recursive: true });
 
     const appUrl = process.env.DEMO_APP_URL;
-    if (!appUrl)
-      throw new Error("DEMO_APP_URL is unset; run flows through demo/playwright.config.ts");
+    if (!appUrl) throw new Error("DEMO_APP_URL is unset; run flows with `bun run demo`");
     await page.goto(appUrl);
     // BootGate holds the app behind a loading screen until the sidecar is
     // ready; the nav rail is the first thing that appears after it.

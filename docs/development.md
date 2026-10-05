@@ -287,4 +287,5 @@ sidecar/        Bun + TS service (Hono)
   src/attention/   attention stream: hook ingest, SSE, clearing
   drizzle/         generated SQL migrations
 scripts/        dev tooling (dev-instance.ts)
+demo/           Playwright demo recordings: mocked Rust core, seeded demo DB (see demo/README.md)
 ```

@@ -9,12 +9,13 @@ export default defineConfig({
   // Flows share one sidecar and database, so they run one at a time.
   workers: 1,
   fullyParallel: false,
+  // Flows pause and type at human speed, so they run well past the 30s default.
   timeout: 5 * 60_000,
   reporter: [["list"]],
   use: {
     browserName: "chromium",
     viewport: VIEWPORT,
-    // Retina-sharp screenshots. Video is recorded at the viewport size.
+    // Screenshots at 2x. Video is recorded at the viewport size regardless.
     deviceScaleFactor: 2,
     colorScheme: "dark",
     video: { mode: "on", size: VIEWPORT },

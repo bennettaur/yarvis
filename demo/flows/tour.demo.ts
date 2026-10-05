@@ -2,6 +2,7 @@ import { expect, test } from "../fixture";
 
 test("tour", async ({ demo, page }) => {
   await demo.openTab("Tasks");
+  await expect(page.getByText("Prep demo for Thursday's review")).toBeVisible();
   await demo.shot("tasks");
 
   await demo.type(page.getByPlaceholder("Add a task..."), "Send the rollout plan to Priya");
@@ -10,9 +11,11 @@ test("tour", async ({ demo, page }) => {
   await demo.shot("task added");
 
   await demo.openTab("Memory");
+  await expect(page.getByText("Priya Shah leads the payments team")).toBeVisible();
   await demo.shot("memory");
 
   await demo.openTab("Dashboard");
+  await expect(page.getByText("reachable")).toBeVisible();
   await demo.shot("dashboard");
 
   await demo.fireAlarm({
@@ -22,6 +25,6 @@ test("tour", async ({ demo, page }) => {
     sound: false,
     meetLink: "https://meet.google.com/abc-defg-hij",
   });
-  await demo.pause(1200);
+  await expect(page.getByRole("button", { name: "Acknowledge" })).toBeVisible();
   await demo.shot("alarm fired");
 });
