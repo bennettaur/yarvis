@@ -20,7 +20,7 @@ const StatusBadge = ({ status }: { status: Status }) => (
 export interface WorkspaceRow {
   name: string;
   status: Status;
-  prs?: Omit<WorkspaceSummaryPr, "repoName" | "prNumber"> & { prNumber: number };
+  pr?: Omit<WorkspaceSummaryPr, "repoName">;
   attention?: boolean;
 }
 
@@ -30,11 +30,11 @@ export interface WorkspaceGroup {
 }
 
 /** A PR summary for a list row, from the few fields that decide its badge. */
-export const pr = (
+export const prSummary = (
   prNumber: number,
   checkRollup: WorkspaceSummaryPr["checkRollup"],
   extra: Partial<WorkspaceSummaryPr> = {},
-): WorkspaceRow["prs"] => ({
+): WorkspaceRow["pr"] => ({
   prNumber,
   checkRollup,
   prState: "open",
@@ -104,9 +104,7 @@ export function WorkspacesView({
                         <span className="truncate">{ws.name}</span>
                       </span>
                       <span className="flex shrink-0 items-center gap-1.5">
-                        {ws.prs && (
-                          <WorkspacePrBadges prs={[{ repoName: group.label, ...ws.prs }]} />
-                        )}
+                        {ws.pr && <WorkspacePrBadges prs={[{ repoName: group.label, ...ws.pr }]} />}
                         <StatusBadge status={ws.status} />
                       </span>
                     </div>
@@ -280,15 +278,7 @@ const ROLLUP = {
 } as const;
 
 /** `WorkspacePrStatus`'s line: PR number, state, check rollup, and the Review button. */
-export function PrStatusLine({
-  number,
-  rollup,
-  conflicts = false,
-}: {
-  number: number;
-  rollup: keyof typeof ROLLUP;
-  conflicts?: boolean;
-}) {
+export function PrStatusLine({ number, rollup }: { number: number; rollup: keyof typeof ROLLUP }) {
   const [label, color] = ROLLUP[rollup];
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
@@ -297,9 +287,6 @@ export function PrStatusLine({
         <span className="rounded bg-emerald-900/40 px-1.5 py-0.5 text-emerald-200">open</span>
       </span>
       <span className={color}>{label}</span>
-      {conflicts && (
-        <span className="rounded bg-red-900/50 px-1.5 py-0.5 text-red-200">⚠ merge conflicts</span>
-      )}
       <span className="rounded border border-indigo-700/60 bg-indigo-900/30 px-1.5 py-0.5 text-indigo-200">
         Review
       </span>

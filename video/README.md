@@ -2,12 +2,12 @@
 
 Two animated cuts of the Yarvis showcase, built with [Remotion](https://www.remotion.dev):
 
-- **Reel**: about 90 seconds. Plan, start work, parallel workspaces, "where did
-  we leave off", merging main into every PR, PR review, alarms, and the Friday
-  wrap-up.
+- **Reel**: about 90 seconds. Setting the week's priorities, start work,
+  parallel workspaces, "where did we leave off", merging main into every PR,
+  PR review, alarms, and the Friday wrap-up.
 - **Walkthrough**: about 3½ minutes. Everything in the reel, plus projects,
-  planning, what the assistant can see, Omni Chat and Omni view, voice, the
-  integrations, and the habits that make it useful.
+  "what should I work on next", what the assistant can see, Omni Chat and Omni
+  view, voice, the integrations, and the habits that make it useful.
 
 The scenes render the app's real React components where they are driven only by
 props: the nav rail, `ChatMessages`, `ChatComposer`, `ToolApprovalBar`,
@@ -34,10 +34,13 @@ bun run studio            # Remotion Studio: scrub, edit and preview each scene
 bun run render            # both MP4s into out/
 bun run player:dev        # the web player page
 bun run player:build      # the web player page as static files in dist/
+bun run typecheck         # after changing a component the scenes import from src/
 ```
 
 Rendering needs Chrome Headless Shell. Remotion downloads it on first use, or
-you can point it at an existing one with `--browser-executable`.
+you can point it at an existing one with `--browser-executable`. Render on a
+Mac: the captions use the system font and the terminal uses Menlo, so another OS
+lays the text out differently.
 
 ## Layout
 
@@ -45,8 +48,11 @@ you can point it at an existing one with `--browser-executable`.
   whether the reel includes it. The walkthrough has every scene.
 - `src/scenes/`: one file per scene, or a few related ones per file.
 - `src/screens/`: the app views the scenes put in the window.
-- `src/components/`: the camera, the app window, captions, the cursor, and the
-  scripted terminal.
+- `src/components/`: the camera and its preset shots, the app window and the
+  scene wrapper around it, the backdrop, captions, the cursor, and the scripted
+  terminal.
+- `src/lib/timing.ts`: frame rate, sizes, and the easing and typing helpers
+  every scene uses.
 - `src/lib/chatScript.ts`: turns a scripted conversation into the props
   `ChatMessages` would have at a given frame, so typing, tool calls and
   streaming look live.

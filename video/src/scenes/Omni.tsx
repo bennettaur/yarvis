@@ -8,18 +8,18 @@ import { AppScene } from "../components/AppScene";
 import { Em } from "../components/Caption";
 import { closeUp, framed, swingIn } from "../components/shots";
 import { chatAt, doneAt, type ScriptTurn, sentAt } from "../lib/chatScript";
-import { caretOn, enter, pop, progress, sec, typed } from "../lib/timing";
+import { noop } from "../lib/style";
+import { caretOn, enter, pop, progress, sec, typed, typingFrames, withCaret } from "../lib/timing";
 import { DiffFile, PrReviewView } from "../screens/PrReviewView";
 
-const noop = () => {};
-
-const SUMMON = 40;
+/** Frame Omni Chat is summoned. */
+const SUMMON_AT = 40;
 
 const TURN: ScriptTurn = {
-  typeAt: SUMMON + 24,
+  typeAt: SUMMON_AT + 24,
   typeCps: 30,
   user: "What's risky here?",
-  replyAt: 30,
+  replyAfter: 30,
   reply:
     "Two things in **#218**:\n\n1. `refresh()` swallows errors, so a failed refresh leaves the user on an expired token with no retry scheduled.\n2. `scheduleRefresh` uses `Date.now()` directly, so the test for the one-minute lead depends on the wall clock.",
 };
@@ -39,9 +39,9 @@ const PATCH = [
 /** Omni Chat over whatever is on screen, from `OmniChat`'s markup. */
 function OmniChatOverlay() {
   const frame = useCurrentFrame();
-  if (frame < SUMMON) return null;
+  if (frame < SUMMON_AT) return null;
   const chat = chatAt([TURN], frame);
-  const t = pop(frame, SUMMON, 15);
+  const t = pop(frame, SUMMON_AT, 15);
   return (
     <div
       className="absolute inset-0 z-50 flex items-start justify-center"
@@ -79,7 +79,7 @@ function OmniChatOverlay() {
           </div>
         </div>
         <ChatComposer
-          value={chat.draft ? `${chat.draft}${caretOn(frame) ? "▏" : ""}` : ""}
+          value={withCaret(chat.draft, frame)}
           onChange={noop}
           onSubmit={noop}
           placeholder="Ask anything about what you're looking at…"
@@ -103,14 +103,14 @@ export function OmniChat() {
       tab="prs"
       shots={[
         ...swingIn(),
-        closeUp(SUMMON + 10, 600, 360, 1.3),
+        closeUp(SUMMON_AT + 10, 600, 360, 1.3),
         closeUp(sentAt(TURN) + 20, 600, 300, 1.4),
         framed(doneAt(TURN)),
       ]}
       caption={{
         kicker: "Omni Chat · ⌃⇧Space",
         title: "The assistant over any screen",
-        pointsAt: SUMMON + 10,
+        pointsAt: SUMMON_AT + 10,
         pointStep: 50,
         points: [
           <>Summon it from anywhere, even with Yarvis in the background</>,
@@ -143,7 +143,11 @@ export function OmniChat() {
 }
 
 const PROMPT = "Today's calendar on the left, my tasks and open PRs on the right.";
-const BUILD = 30 + Math.ceil((PROMPT.length / 40) * 30) + 10;
+const PROMPT_AT = 30;
+const PROMPT_CPS = 40;
+// Frames the prompt is sent, and the layout appears.
+const BUILD_AT = PROMPT_AT + typingFrames(PROMPT, PROMPT_CPS) + 10;
+const BUILT_AT = BUILD_AT + 30;
 
 /** One widget landing in the generated layout. */
 function Widget({
@@ -181,18 +185,18 @@ const Item = ({ children, meta }: { children: ReactNode; meta?: ReactNode }) => 
 /** The Omni view, from `OmniView`'s markup: a layout described in words, built from live widgets. */
 function OmniViewScreen() {
   const frame = useCurrentFrame();
-  const built = frame >= BUILD + 30;
+  const built = frame >= BUILT_AT;
   return (
     <div className="flex h-full min-h-0">
       <div className="flex h-full min-w-0 flex-[0.72] flex-col overflow-hidden">
         <div
-          className={`h-0.5 shrink-0 ${frame >= BUILD && !built ? "bg-indigo-500" : "bg-transparent"}`}
-          style={{ opacity: frame >= BUILD && !built ? 0.5 + 0.5 * Math.sin(frame / 3) : 1 }}
+          className={`h-0.5 shrink-0 ${frame >= BUILD_AT && !built ? "bg-indigo-500" : "bg-transparent"}`}
+          style={{ opacity: frame >= BUILD_AT && !built ? 0.5 + 0.5 * Math.sin(frame / 3) : 1 }}
         />
         <div className="min-h-0 flex-1 overflow-hidden p-1">
           {built ? (
             <Row>
-              <Widget at={BUILD + 30} title="Calendar" name="Calendar">
+              <Widget at={BUILT_AT} title="Calendar" name="Calendar">
                 {[
                   ["9:30", "Standup"],
                   ["2:00", "Billing sync"],
@@ -205,7 +209,7 @@ function OmniViewScreen() {
                 ))}
               </Widget>
               <Column>
-                <Widget at={BUILD + 40} title="Tasks" name="Tasks">
+                <Widget at={BUILT_AT + 10} title="Tasks" name="Tasks">
                   <Item
                     meta={
                       <span className="rounded bg-indigo-900/40 px-1.5 py-0.5 text-xs text-indigo-200">
@@ -225,7 +229,7 @@ function OmniViewScreen() {
                     Fix flaky checkout test
                   </Item>
                 </Widget>
-                <Widget at={BUILD + 50} title="Pull Requests" name="PrList">
+                <Widget at={BUILT_AT + 20} title="Pull Requests" name="PrList">
                   <Item
                     meta={
                       <span className="rounded bg-red-900 px-1.5 py-0.5 text-xs text-red-200">
@@ -256,7 +260,7 @@ function OmniViewScreen() {
                 </Widget>
               </Column>
             </Row>
-          ) : frame >= BUILD ? (
+          ) : frame >= BUILD_AT ? (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-zinc-400">
               Generating your layout…
             </div>
@@ -280,14 +284,14 @@ function OmniViewScreen() {
           <span className="text-xs text-zinc-500">Clear</span>
         </div>
         <div className="min-h-0 flex-1 space-y-4 overflow-hidden px-4 py-4">
-          {frame >= BUILD && (
-            <div className="text-sm" style={enter(frame, BUILD)}>
+          {frame >= BUILD_AT && (
+            <div className="text-sm" style={enter(frame, BUILD_AT)}>
               <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">user</div>
               <div className="whitespace-pre-wrap text-zinc-100">{PROMPT}</div>
             </div>
           )}
           {built && (
-            <div className="text-sm" style={enter(frame, BUILD + 30)}>
+            <div className="text-sm" style={enter(frame, BUILT_AT)}>
               <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">assistant</div>
               <div className="whitespace-pre-wrap text-zinc-100">
                 Built a calendar beside your tasks and open PRs.
@@ -297,15 +301,15 @@ function OmniViewScreen() {
         </div>
         <div className="flex gap-2 border-t border-zinc-800 p-3">
           <div className="min-h-9 flex-1 border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100">
-            {frame < BUILD ? typed(PROMPT, frame, 30, 40) : ""}
-            {frame < BUILD && frame >= 30 && caretOn(frame) && "▏"}
-            {(frame < 30 || frame >= BUILD) && (
+            {frame < BUILD_AT ? typed(PROMPT, frame, PROMPT_AT, PROMPT_CPS) : ""}
+            {frame < BUILD_AT && frame >= PROMPT_AT && caretOn(frame) && "▏"}
+            {(frame < PROMPT_AT || frame >= BUILD_AT) && (
               <span className="text-zinc-500">Describe a layout...</span>
             )}
           </div>
           <span
             className="h-fit self-end rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium"
-            style={{ opacity: 1 - 0.4 * progress(frame, BUILD, 4) }}
+            style={{ opacity: 1 - 0.4 * progress(frame, BUILD_AT, 4) }}
           >
             Build
           </span>
@@ -315,7 +319,7 @@ function OmniViewScreen() {
   );
 }
 
-export const omniViewFrames = () => BUILD + sec(5);
+export const omniViewFrames = () => BUILD_AT + sec(5);
 
 /** A dashboard described in one sentence, assembled from the app's own widgets. */
 export function OmniView() {
@@ -325,13 +329,13 @@ export function OmniView() {
       shots={[
         ...swingIn(),
         closeUp(26, 1000, 600, 1.5),
-        framed(BUILD + 6),
-        closeUp(BUILD + 60, 450, 380, 1.2),
+        framed(BUILD_AT + 6),
+        closeUp(BUILT_AT + 30, 450, 380, 1.2),
       ]}
       caption={{
         kicker: "Omni view",
         title: "A dashboard you describe",
-        pointsAt: BUILD + 20,
+        pointsAt: BUILD_AT + 20,
         pointStep: 36,
         points: [
           <>Live widgets: tasks, calendar, PRs, diffs, terminals, chat</>,

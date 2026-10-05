@@ -51,7 +51,7 @@ export function Camera({
   children,
 }: {
   shots: Shot[];
-  /** Stage x the picture fades out by, moving left. */
+  /** Stage x left of which the picture fades to transparent, so it doesn't run under the caption. */
   fadeLeft?: number;
   children: ReactNode;
 }) {

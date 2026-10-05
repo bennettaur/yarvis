@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
 import { doneAt, type ScriptTurn, sentAt } from "../lib/chatScript";
 import { ChatView } from "../screens/ChatView";
-import { AppScene, type CaptionProps } from "./AppScene";
+import { AppScene } from "./AppScene";
 import type { Shot } from "./Camera";
+import type { CaptionProps } from "./Caption";
 import { closeUp, framed, swingIn } from "./shots";
 
 /** Frames a chat scene needs: every turn finished, then a hold to read the last reply. */
@@ -18,31 +19,26 @@ export function ChatScene({
   turns,
   caption,
   session,
-  extraShots = [],
   overlay,
-  footer,
 }: {
   turns: ScriptTurn[];
   caption: CaptionProps;
   session?: string;
-  /** Shots after the conversation's own, e.g. a cut to another view. */
-  extraShots?: Shot[];
   overlay?: ReactNode;
-  footer?: ReactNode;
 }) {
   const shots: Shot[] = [...swingIn()];
   for (const turn of turns) {
-    if (turn.metadata?.source !== "voice") shots.push(closeUp(turn.typeAt + 4, 560, 690, 1.4, 20));
+    shots.push(closeUp(turn.typeAt + 4, 560, 690, 1.4, 20));
     // Wide enough that the thread's left edge, where tool calls and replies
     // start, stays clear of the caption fade.
     shots.push(closeUp(sentAt(turn), 620, 470, 1.12));
-    shots.push(closeUp(sentAt(turn) + turn.replyAt + 12, 620, 500, 1.1));
+    shots.push(closeUp(sentAt(turn) + turn.replyAfter + 12, 620, 500, 1.1));
   }
   shots.push(framed(doneAt(turns[turns.length - 1]) + 6));
 
   return (
-    <AppScene tab="chat" shots={[...shots, ...extraShots]} caption={caption} overlay={overlay}>
-      <ChatView turns={turns} session={session} footer={footer} />
+    <AppScene tab="chat" shots={shots} caption={caption} overlay={overlay}>
+      <ChatView turns={turns} session={session} />
     </AppScene>
   );
 }

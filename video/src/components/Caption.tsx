@@ -1,8 +1,7 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { useCurrentFrame } from "remotion";
+import { SANS } from "../lib/style";
 import { enter, pop, progress } from "../lib/timing";
-
-const SANS = '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Inter, sans-serif';
 
 /** Words that rise in one after another. */
 export function StaggerWords({
@@ -14,7 +13,7 @@ export function StaggerWords({
   text: string;
   start: number;
   step?: number;
-  style?: React.CSSProperties;
+  style?: CSSProperties;
 }) {
   const frame = useCurrentFrame();
   return (
@@ -23,7 +22,6 @@ export function StaggerWords({
         const t = pop(frame, start + i * step, 16);
         return (
           <span
-            // Words in a fixed caption never reorder.
             // biome-ignore lint/suspicious/noArrayIndexKey: static text
             key={i}
             style={{
@@ -41,45 +39,39 @@ export function StaggerWords({
   );
 }
 
-/**
- * A scene's title: a small coloured kicker over a large headline, and in the
- * walkthrough a few bullet points that land one at a time.
- */
-export function Caption({
-  kicker,
-  title,
-  points = [],
-  start = 6,
-  pointsAt,
-  pointStep = 30,
-  width = 560,
-  left = 96,
-  top = 150,
-}: {
+export interface CaptionProps {
   kicker: string;
   title: string;
   points?: ReactNode[];
-  start?: number;
   /** Frame the first point lands. Defaults to shortly after the title. */
   pointsAt?: number;
+  /** Frames between one point landing and the next. */
   pointStep?: number;
-  width?: number;
-  left?: number;
-  top?: number;
-}) {
+}
+
+/** Frame the caption starts coming in. */
+const START = 6;
+
+/**
+ * A scene's title: a small coloured kicker over a large headline, then any
+ * bullet points, landing one at a time.
+ */
+export function Caption({ kicker, title, points = [], pointsAt, pointStep = 30 }: CaptionProps) {
   const frame = useCurrentFrame();
-  const firstPoint = pointsAt ?? start + 30;
-  const rule = progress(frame, start, 18);
+  const firstPoint = pointsAt ?? START + 30;
+  const rule = progress(frame, START, 18);
 
   return (
-    <div style={{ position: "absolute", left, top, width, fontFamily: SANS, zIndex: 40 }}>
+    <div
+      style={{ position: "absolute", left: 96, top: 150, width: 560, fontFamily: SANS, zIndex: 40 }}
+    >
       <div
         style={{
           display: "flex",
           alignItems: "center",
           gap: 14,
           marginBottom: 22,
-          ...enter(frame, start, 14, 10),
+          ...enter(frame, START, 14, 10),
         }}
       >
         <div
@@ -111,7 +103,7 @@ export function Caption({
           textShadow: "0 4px 30px rgba(0,0,0,.6)",
         }}
       >
-        <StaggerWords text={title} start={start + 4} />
+        <StaggerWords text={title} start={START + 4} />
       </div>
       {points.length > 0 && (
         <ul style={{ listStyle: "none", padding: 0, margin: "36px 0 0" }}>

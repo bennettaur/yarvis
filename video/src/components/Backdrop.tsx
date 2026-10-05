@@ -1,6 +1,9 @@
 import { AbsoluteFill, useCurrentFrame } from "remotion";
 
-/** The dark stage behind everything: two slow-drifting glows in the icon's cyan and amber. */
+/**
+ * The dark stage behind everything: a slow-drifting indigo glow (red for
+ * alarms), plus smaller ones in the icon's cyan and amber.
+ */
 export function Backdrop({ tint = "indigo" }: { tint?: "indigo" | "red" }) {
   const frame = useCurrentFrame();
   const drift = (period: number, amp: number, phase = 0) =>

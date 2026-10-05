@@ -1,13 +1,11 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useMemo } from "react";
 import { CodeText, rowClass } from "../../../src/components/diff/DiffRow";
 import PrGuidePanel from "../../../src/components/pr/PrGuidePanel";
 import type { GuideController } from "../../../src/components/pr/usePrGuide";
 import { parsePatch } from "../../../src/lib/pr/diff";
 import type { PrGuideStep } from "../../../src/lib/pr/guide";
 import { highlightDiff, rowHtml } from "../../../src/lib/pr/highlight";
-
-const noop = () => {};
-const asyncNoop = async () => {};
+import { asyncNoop, noop } from "../lib/style";
 
 /** A guide controller with nothing behind it: the panel only reads `guide` and `step`. */
 export function staticGuide(steps: PrGuideStep[], current: number): GuideController {
@@ -49,8 +47,9 @@ export function DiffFile({
   /** Rendered under the row for this new-file line, as insights are. */
   below?: { line: number; node: ReactNode };
 }) {
-  const rows = parsePatch(patch);
-  const highlight = highlightDiff(rows, path);
+  // The patch is fixed, so parse and highlight it once rather than every frame.
+  const rows = useMemo(() => parsePatch(patch), [patch]);
+  const highlight = useMemo(() => highlightDiff(rows, path), [rows, path]);
   return (
     <div className="border border-zinc-800">
       <div className="flex items-center gap-2 bg-zinc-900 px-3 py-2 text-sm">
@@ -94,7 +93,7 @@ export function DiffFile({
   );
 }
 
-const ACTION = "rounded-md px-3 py-1.5 text-xs font-medium text-white shadow-sm";
+const ACTION_CLASS = "rounded-md px-3 py-1.5 text-xs font-medium text-white shadow-sm";
 
 /**
  * A PR's review page from `PrDetailView`'s markup: the pinned header, the
@@ -139,8 +138,8 @@ export function PrReviewView({
             Awaiting review
           </span>
           <div className="flex shrink-0 items-center gap-2">
-            <span className={`${ACTION} bg-emerald-600`}>Approve</span>
-            <span className={`${ACTION} bg-red-600`}>Request changes</span>
+            <span className={`${ACTION_CLASS} bg-emerald-600`}>Approve</span>
+            <span className={`${ACTION_CLASS} bg-red-600`}>Request changes</span>
           </div>
         </div>
       </div>

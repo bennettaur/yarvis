@@ -2,11 +2,10 @@ import { AbsoluteFill, Img, useCurrentFrame } from "remotion";
 import icon from "../assets/yarvis-icon.png";
 import { Backdrop } from "../components/Backdrop";
 import { StaggerWords } from "../components/Caption";
-import { caretOn, enter, pop, sec, typed } from "../lib/timing";
+import { SANS } from "../lib/style";
+import { caretOn, enter, pop, sec, typed, typingFrames } from "../lib/timing";
 
-const SANS = '-apple-system, BlinkMacSystemFont, "SF Pro Display", Inter, sans-serif';
-
-export const OUTRO_FRAMES = sec(7);
+export const outroFrames = () => sec(7);
 
 const COMMANDS = [
   "git clone https://github.com/bennettaur/yarvis.git",
@@ -20,7 +19,7 @@ export function Outro() {
   let at = 30;
   const rows = COMMANDS.map((cmd) => {
     const start = at;
-    at += Math.ceil((cmd.length / 45) * 30) + 8;
+    at += typingFrames(cmd, 45) + 8;
     return { cmd, start };
   });
 

@@ -6,13 +6,13 @@ import { FPS, HEIGHT, WIDTH } from "../src/lib/timing";
 import { ShowcaseVideo, totalFrames } from "../src/videos";
 
 const CUTS = [
-  { full: false, label: "90-second reel" },
-  { full: true, label: "Full walkthrough" },
+  { walkthrough: false, label: "90-second reel" },
+  { walkthrough: true, label: "Full walkthrough" },
 ];
 
 /** The showcase page: both cuts of the video in Remotion's player, with a toggle between them. */
 function App() {
-  const [full, setFull] = useState(false);
+  const [walkthrough, setWalkthrough] = useState(false);
   return (
     <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-5 px-6 py-10 text-zinc-100">
       <header className="flex flex-wrap items-end gap-4">
@@ -27,9 +27,11 @@ function App() {
             <button
               key={cut.label}
               type="button"
-              onClick={() => setFull(cut.full)}
+              onClick={() => setWalkthrough(cut.walkthrough)}
               className={`px-4 py-2 text-sm ${
-                cut.full === full ? "bg-indigo-600 text-white" : "text-zinc-300 hover:bg-zinc-800"
+                cut.walkthrough === walkthrough
+                  ? "bg-indigo-600 text-white"
+                  : "text-zinc-300 hover:bg-zinc-800"
               }`}
             >
               {cut.label}
@@ -38,10 +40,11 @@ function App() {
         </div>
       </header>
       <Player
-        key={String(full)}
+        // A new key per cut restarts the player at frame 0 with the new length.
+        key={String(walkthrough)}
         component={ShowcaseVideo}
-        inputProps={{ full }}
-        durationInFrames={totalFrames(full)}
+        inputProps={{ walkthrough }}
+        durationInFrames={totalFrames(walkthrough)}
         fps={FPS}
         compositionWidth={WIDTH}
         compositionHeight={HEIGHT}
@@ -51,11 +54,7 @@ function App() {
         doubleClickToFullscreen
       />
       <p className="text-sm text-zinc-500">
-        Rendered from the app's own React components with scripted data. The{" "}
-        <a className="text-indigo-400 hover:underline" href="./deck.html">
-          slide deck
-        </a>{" "}
-        has the same material with speaker notes.
+        Rendered from the app's own React components with scripted data.
       </p>
     </main>
   );

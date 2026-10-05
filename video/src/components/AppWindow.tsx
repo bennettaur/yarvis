@@ -2,10 +2,11 @@ import type { ReactNode } from "react";
 import { Icon } from "../../../src/components/shell/icons";
 import NavRail from "../../../src/components/shell/NavRail";
 import { type Tab, tabLabel } from "../../../src/components/shell/nav";
+import { noop } from "../lib/style";
 import { APP_HEIGHT, APP_WIDTH } from "../lib/timing";
 
-const noop = () => {};
-const TITLE_BAR = 30;
+/** Height of the macOS title bar above the shell. */
+export const TITLE_BAR = 30;
 
 /**
  * The app's `TopBar`, drawn from its markup: the real one polls the sidecar's
@@ -40,13 +41,11 @@ function TopBar({ title, attention }: { title: string; attention: number }) {
  */
 export function AppWindow({
   tab,
-  title,
   attention = 0,
   children,
   overlay,
 }: {
   tab: Tab;
-  title?: string;
   attention?: number;
   children: ReactNode;
   overlay?: ReactNode;
@@ -87,7 +86,7 @@ export function AppWindow({
           attentionPending={attention > 0}
         />
         <div className="flex min-w-0 flex-1 flex-col">
-          <TopBar title={title ?? tabLabel(tab)} attention={attention} />
+          <TopBar title={tabLabel(tab)} attention={attention} />
           <main className="relative min-h-0 flex-1 overflow-hidden">{children}</main>
         </div>
       </div>
@@ -95,7 +94,3 @@ export function AppWindow({
     </div>
   );
 }
-
-/** Content-region coordinates, for pointing the camera and cursor at things inside a view. */
-export const CONTENT_LEFT = 56;
-export const CONTENT_TOP = TITLE_BAR + 48;

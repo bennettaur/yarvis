@@ -2,19 +2,18 @@ import { AbsoluteFill, Easing, Img, interpolate, useCurrentFrame } from "remotio
 import icon from "../assets/yarvis-icon.png";
 import { Backdrop } from "../components/Backdrop";
 import { StaggerWords } from "../components/Caption";
+import { SANS } from "../lib/style";
 import { enter, pop, progress, sec } from "../lib/timing";
 
-const SANS = '-apple-system, BlinkMacSystemFont, "SF Pro Display", Inter, sans-serif';
+export const introFrames = () => sec(5);
 
-export const INTRO_FRAMES = sec(5);
-
-/** The icon's two rings spin in and lock together, then the name and tagline land. */
+/** The icon spins in and settles, then the name and tagline land. */
 export function Intro() {
   const frame = useCurrentFrame();
   const settle = pop(frame, 4, 11);
   const spin = interpolate(settle, [0, 1], [-140, 0]);
   const glow = progress(frame, 10, 30, Easing.out(Easing.quad));
-  const exit = progress(frame, INTRO_FRAMES - 14, 14);
+  const exit = progress(frame, introFrames() - 14, 14);
 
   return (
     <AbsoluteFill style={{ fontFamily: SANS, opacity: 1 - exit }}>

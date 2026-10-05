@@ -5,11 +5,10 @@ import ChatMessages from "../../../src/components/ChatMessages";
 import ToolApprovalBar from "../../../src/components/ToolApprovalBar";
 import type { PendingApproval } from "../../../src/lib/chat";
 import { chatAt, type ScriptTurn } from "../lib/chatScript";
-import { caretOn } from "../lib/timing";
+import { noop } from "../lib/style";
+import { withCaret } from "../lib/timing";
 
-const noop = () => {};
-
-const SELECT = "rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm";
+const SELECT_CLASS = "rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm";
 
 /**
  * The Chat tab's layout from `ChatPanel`, holding the real `ChatMessages`,
@@ -20,33 +19,31 @@ const SELECT = "rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-s
 export function ChatView({
   turns,
   session = "Week of Oct 5",
-  model = "claude-sonnet-5",
   approvals = [],
   footer,
 }: {
   turns: ScriptTurn[];
   session?: string;
-  model?: string;
   approvals?: PendingApproval[];
   /** Replaces the area under the composer, e.g. the voice controls. */
   footer?: ReactNode;
 }) {
   const frame = useCurrentFrame();
   const chat = chatAt(turns, frame);
-  const draft = chat.draft ? `${chat.draft}${caretOn(frame) ? "▏" : ""}` : "";
+  const draft = withCaret(chat.draft, frame);
 
   return (
     <div className="flex h-full flex-col gap-4 p-6">
       <div className="flex flex-wrap items-center gap-2">
         <span className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm">New chat</span>
-        <span className={SELECT}>{session} ▾</span>
+        <span className={SELECT_CLASS}>{session} ▾</span>
         <div className="ml-auto flex items-center gap-2">
           <span className="flex items-center gap-1 text-xs text-zinc-400">
             <span className="inline-block h-3 w-3 border border-zinc-600 bg-zinc-800" />
             Thinking
           </span>
-          <span className={SELECT}>Anthropic ▾</span>
-          <span className={SELECT}>{model} ▾</span>
+          <span className={SELECT_CLASS}>Anthropic ▾</span>
+          <span className={SELECT_CLASS}>claude-sonnet-5 ▾</span>
         </div>
       </div>
       <div className="flex min-h-0 flex-1 flex-col justify-end overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
@@ -60,6 +57,8 @@ export function ChatView({
           />
         </div>
       </div>
+      {/* `visible` only gates the A and D shortcuts: the bar still renders, and
+          with nothing to answer the shortcuts must stay off. */}
       <ToolApprovalBar approvals={approvals} onRespond={noop} visible={false} />
       <ChatComposer
         value={draft}

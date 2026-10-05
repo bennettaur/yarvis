@@ -8,23 +8,24 @@ const TURN: ScriptTurn = {
   typeCps: 80,
   user: "This week is about shipping the billing migration. PROJ-412 and PROJ-415 are urgent, PROJ-420 is nice to have. I need to review Sam's auth PR before Wednesday, and the flaky checkout test should be fixed by Friday.",
   tools: [
-    { name: "upsert_project", at: 8 },
-    { name: "track_project_item", at: 18 },
-    { name: "track_project_item", at: 24 },
-    { name: "track_project_item", at: 30 },
-    { name: "create_task", at: 40 },
-    { name: "create_todo", at: 50 },
-    { name: "remember", at: 60 },
+    { name: "upsert_project", after: 8 },
+    { name: "track_project_item", after: 18 },
+    { name: "track_project_item", after: 24 },
+    { name: "track_project_item", after: 30 },
+    { name: "create_task", after: 40 },
+    { name: "create_todo", after: 50 },
+    { name: "remember", after: 60 },
   ],
-  replyAt: 80,
+  replyAfter: 80,
   reply:
     "Got it. **Billing migration** is this week's focus, with PROJ-412 and PROJ-415 urgent and PROJ-420 low.\n\nI added *fix flaky checkout test* as a weekly task due Friday, and I'll remind you about Sam's auth PR before Wednesday.\n\nWant me to start PROJ-412?",
 };
 
-export const mondayFrames = (full: boolean) => chatSceneFrames([TURN], full ? sec(4) : sec(1.5));
+export const mondayFrames = (walkthrough: boolean) =>
+  chatSceneFrames([TURN], walkthrough ? sec(4) : sec(1.5));
 
 /** Monday: the week's priorities said once, in chat, and turned into a project, tasks and memory. */
-export function Monday({ full = false }: { full?: boolean }) {
+export function Monday({ walkthrough = false }: { walkthrough?: boolean }) {
   return (
     <ChatScene
       turns={[TURN]}
@@ -32,8 +33,8 @@ export function Monday({ full = false }: { full?: boolean }) {
         kicker: "Monday · set priorities",
         title: "Start the week by talking, not filling in forms",
         pointsAt: sentAt(TURN) + 10,
-        pointStep: full ? 26 : 30,
-        points: full
+        pointStep: walkthrough ? 26 : 30,
+        points: walkthrough
           ? [
               <>
                 A <Em>project</Em> with a focus for the week

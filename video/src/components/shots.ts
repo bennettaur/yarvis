@@ -19,7 +19,7 @@ export const swingIn = (at = 0): Shot[] => [
 ];
 
 /** Close in on a point of the app, keeping it right of the caption column. */
-export const closeUp = (at: number, x: number, y: number, zoom = 1.4, dur = 26): Shot => ({
+export const closeUp = (at: number, x: number, y: number, zoom: number, dur = 26): Shot => ({
   at,
   dur,
   x,
@@ -30,7 +30,7 @@ export const closeUp = (at: number, x: number, y: number, zoom = 1.4, dur = 26):
 });
 
 /** Full-bleed: the window centred with no caption column. */
-export const centred = (at: number, zoom = 1.12, dur = 26): Shot => ({
+export const centred = (at: number, zoom: number, dur = 26): Shot => ({
   at,
   dur,
   x: APP_WIDTH / 2,

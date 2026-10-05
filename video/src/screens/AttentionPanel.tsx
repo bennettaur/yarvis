@@ -1,4 +1,6 @@
-// Copied from AttentionPanel's `KIND_DOT`, which isn't exported.
+import { TITLE_BAR } from "../components/AppWindow";
+
+// The kinds the scenes use, copied from AttentionPanel's `KIND_DOT`, which isn't exported.
 const KIND_DOT = {
   permission: "bg-amber-400",
   idle: "bg-amber-400",
@@ -36,7 +38,7 @@ export function AttentionPanel({
 }) {
   if (slide <= 0) return null;
   return (
-    <div className="absolute inset-0 z-50" style={{ top: 30 }}>
+    <div className="absolute inset-0 z-50" style={{ top: TITLE_BAR }}>
       <div className="absolute inset-0 bg-black/40" style={{ opacity: slide }} />
       <aside
         className="absolute inset-y-0 right-0 flex w-[420px] flex-col border-l border-zinc-800 bg-zinc-900 shadow-2xl"

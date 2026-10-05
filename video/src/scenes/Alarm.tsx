@@ -2,7 +2,7 @@ import { AbsoluteFill, useCurrentFrame } from "remotion";
 import { AppScene } from "../components/AppScene";
 import { Em, StaggerWords } from "../components/Caption";
 import { centred, closeUp, framed, swingIn } from "../components/shots";
-import { enter, pop, sec } from "../lib/timing";
+import { enter, FPS, pop, sec } from "../lib/timing";
 
 const EVENTS = [
   { title: "Standup", time: "9:30 AM" },
@@ -96,14 +96,13 @@ function Agenda({ armedFrom }: { armedFrom: number }) {
 function AlarmTakeover({ from }: { from: number }) {
   const frame = useCurrentFrame();
   if (frame < from) return null;
-  const overdue = 60 + Math.floor((frame - from) / 30) * 1;
-  const pulse = 0.5 + 0.5 * Math.sin(((frame - from) / 30) * Math.PI * 2);
+  const overdue = 60 + Math.floor((frame - from) / FPS);
+  const pulse = 0.5 + 0.5 * Math.sin(((frame - from) / FPS) * Math.PI * 2);
   return (
     <div
       className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-8"
       style={{
         background: `rgb(${69 + pulse * 30}, ${10 + pulse * 6}, ${10 + pulse * 6})`,
-        top: 0,
       }}
     >
       <div
@@ -134,39 +133,41 @@ function AlarmTakeover({ from }: { from: number }) {
   );
 }
 
-export const alarmFrames = (full: boolean) => (full ? sec(11) : sec(5));
+/** Frame "Set alarms for all" is clicked. */
+const ARM_AT = 54;
+
+export const alarmFrames = (walkthrough: boolean) => (walkthrough ? sec(11) : sec(5));
 
 /** Alarms armed for every meeting, then one takes over the whole screen until you act. */
-export function Alarm({ full = false }: { full?: boolean }) {
-  const armAt = 54;
-  const takeover = full ? 150 : 24;
+export function Alarm({ walkthrough = false }: { walkthrough?: boolean }) {
+  const takeoverAt = walkthrough ? 150 : 24;
   const frame = useCurrentFrame();
 
   return (
     <AbsoluteFill>
       <AppScene
         tab="calendar"
-        tint={frame >= takeover ? "red" : "indigo"}
+        tint={frame >= takeoverAt ? "red" : "indigo"}
         shots={
-          full
+          walkthrough
             ? [
                 ...swingIn(),
                 closeUp(40, 820, 200, 1.4),
-                framed(takeover - 20, 16),
-                closeUp(takeover + 4, 600, 400, 1.12, 14),
+                framed(takeoverAt - 20, 16),
+                closeUp(takeoverAt + 4, 600, 400, 1.12, 14),
               ]
             : [{ ...centred(0, 0.9), rotY: -14 }, centred(4, 1.3, 20), centred(30, 1.18, 120)]
         }
         cursor={
-          full
+          walkthrough
             ? [
-                { at: armAt - 26, x: 600, y: 300 },
-                { at: armAt - 18, x: 1000, y: 160, dur: 14, click: true },
+                { at: ARM_AT - 26, x: 600, y: 300 },
+                { at: ARM_AT - 18, x: 1000, y: 160, dur: 14, click: true },
               ]
             : []
         }
         caption={
-          full
+          walkthrough
             ? {
                 kicker: "Calendar and alarms",
                 title: "A full-screen alarm before each meeting",
@@ -184,11 +185,11 @@ export function Alarm({ full = false }: { full?: boolean }) {
               }
             : undefined
         }
-        overlay={<AlarmTakeover from={takeover} />}
+        overlay={<AlarmTakeover from={takeoverAt} />}
       >
-        <Agenda armedFrom={full ? armAt : 0} />
+        <Agenda armedFrom={walkthrough ? ARM_AT : 0} />
       </AppScene>
-      {!full && (
+      {!walkthrough && (
         <div
           className="absolute inset-x-0 bottom-16 text-center"
           style={{

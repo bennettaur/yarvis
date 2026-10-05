@@ -34,15 +34,22 @@ export function pop(frame: number, start: number, damping = 14) {
   return spring({ frame: frame - start, fps: FPS, config: { damping, mass: 0.6 } });
 }
 
+/** Characters per second typed into a composer or terminal, unless a script says otherwise. */
+export const TYPE_CPS = 28;
+
 /** The part of `text` typed by `frame`, at `cps` characters per second from `start`. */
-export function typed(text: string, frame: number, start: number, cps = 28) {
+export function typed(text: string, frame: number, start: number, cps = TYPE_CPS) {
   if (frame < start) return "";
   const chars = Math.floor(((frame - start) / FPS) * cps);
   return text.slice(0, chars);
 }
 
 /** Frames needed to type `text` at `cps`. */
-export const typingFrames = (text: string, cps = 28) => Math.ceil((text.length / cps) * FPS);
+export const typingFrames = (text: string, cps = TYPE_CPS) => Math.ceil((text.length / cps) * FPS);
 
-/** A caret that blinks twice a second. */
-export const caretOn = (frame: number) => Math.floor(frame / 15) % 2 === 0;
+/** A caret that blinks once a second: on for half a second, off for half. */
+export const caretOn = (frame: number) => Math.floor(frame / (FPS / 2)) % 2 === 0;
+
+/** A composer's text with the blinking caret after it, or empty when there is nothing typed. */
+export const withCaret = (text: string, frame: number) =>
+  text ? `${text}${caretOn(frame) ? "▏" : ""}` : "";

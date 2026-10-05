@@ -1,27 +1,30 @@
 import type { ChatMessageMetadata, ThreadMessage, ToolActivity } from "../../../src/lib/chat";
-import { FPS, typingFrames } from "./timing";
+import { typed, typingFrames } from "./timing";
 
 export interface ScriptTool {
   name: string;
   /** Frames after the message is sent that the call starts. */
-  at: number;
-  /** Frames the call stays pending before it settles. */
-  runs?: number;
+  after: number;
+  /** Frames the call stays pending before it settles. `Infinity` keeps it pending. */
+  pendingFrames?: number;
   status?: ToolActivity["status"];
   durationMs?: number;
   server?: string;
 }
 
 export interface ScriptTurn {
-  /** Frame the user starts typing this message into the composer. */
+  /**
+   * Frame the user starts typing this message into the composer. A spoken turn
+   * (`metadata.source === "voice"`) skips the composer and is sent at this frame.
+   */
   typeAt: number;
   user: string;
-  /** Typing speed. A spoken turn skips the composer and is sent at `typeAt`. */
+  /** Characters per second typed into the composer. */
   typeCps?: number;
   metadata?: ChatMessageMetadata;
   tools?: ScriptTool[];
   /** Frames after the message is sent that the reply starts streaming. */
-  replyAt: number;
+  replyAfter: number;
   reply: string;
   /** Characters per second the reply streams at. */
   replyCps?: number;
@@ -37,6 +40,7 @@ export interface ChatFrame {
 }
 
 const SEND_PAUSE = 8;
+const REPLY_CPS = 110;
 
 /** The frame a turn's message leaves the composer. */
 export function sentAt(turn: ScriptTurn) {
@@ -46,21 +50,22 @@ export function sentAt(turn: ScriptTurn) {
 
 /** The frame a turn's reply has finished streaming. */
 export function doneAt(turn: ScriptTurn) {
-  const cps = turn.replyCps ?? 110;
-  return sentAt(turn) + turn.replyAt + Math.ceil((turn.reply.length / cps) * FPS);
+  return sentAt(turn) + turn.replyAfter + typingFrames(turn.reply, turn.replyCps ?? REPLY_CPS);
 }
 
 function toolsAt(turn: ScriptTurn, sinceSend: number): ToolActivity[] {
   return (turn.tools ?? [])
     .map((tool, i) => ({ tool, i }))
-    .filter(({ tool }) => sinceSend >= tool.at)
+    .filter(({ tool }) => sinceSend >= tool.after)
     .map(({ tool, i }) => {
-      const settled = sinceSend >= tool.at + (tool.runs ?? 10);
+      const settled = sinceSend >= tool.after + (tool.pendingFrames ?? 10);
       return {
         id: `${turn.typeAt}-${i}`,
         name: tool.name,
         server: tool.server,
         status: settled ? (tool.status ?? "ok") : "pending",
+        // Unless the script gives one, a made-up duration that varies by row but
+        // is the same on every frame.
         durationMs: settled ? (tool.durationMs ?? 140 + ((i * 97) % 600)) : undefined,
       };
     });
@@ -94,7 +99,7 @@ export function chatAt(turns: ScriptTurn[], frame: number): ChatFrame {
     if (frame < turn.typeAt) break;
     const sent = sentAt(turn);
     if (frame < sent) {
-      draft = turn.user.slice(0, Math.floor(((frame - turn.typeAt) / FPS) * (turn.typeCps ?? 28)));
+      draft = typed(turn.user, frame, turn.typeAt, turn.typeCps);
       break;
     }
     messages.push({
@@ -110,9 +115,9 @@ export function chatAt(turns: ScriptTurn[], frame: number): ChatFrame {
     }
     busy = true;
     activity = toolsAt(turn, sinceSend);
-    if (sinceSend >= turn.replyAt) {
-      const chars = Math.floor(((sinceSend - turn.replyAt) / FPS) * (turn.replyCps ?? 110));
-      streaming = streamedText(turn.reply, chars);
+    if (sinceSend >= turn.replyAfter) {
+      const sofar = typed(turn.reply, sinceSend, turn.replyAfter, turn.replyCps ?? REPLY_CPS);
+      streaming = streamedText(turn.reply, sofar.length);
     }
     break;
   }

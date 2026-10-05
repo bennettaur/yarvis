@@ -6,44 +6,57 @@ import { AppScene } from "../components/AppScene";
 import { Em } from "../components/Caption";
 import { closeUp, framed, swingIn } from "../components/shots";
 import { doneAt, type ScriptTurn, sentAt } from "../lib/chatScript";
+import { asyncNoop, noop } from "../lib/style";
 import { enter, sec } from "../lib/timing";
 import { ChatView } from "../screens/ChatView";
 
-const noop = () => {};
-const asyncNoop = async () => {};
+// Frames the mic opens and the first question is heard.
+const LISTEN_AT = 40;
+const HEARD_AT = 120;
 
-const LISTEN = 40;
-const HEARD = 120;
+const ASK: ScriptTurn = {
+  typeAt: HEARD_AT,
+  user: "Where did we leave off on PROJ-415?",
+  metadata: { source: "voice" },
+  tools: [
+    { name: "recall", after: 6 },
+    { name: "search_events", after: 14 },
+  ],
+  replyAfter: 34,
+  replyCps: 70,
+  reply:
+    "The retry spec is still red. Its session changed the backoff yesterday and is waiting on you to approve a test run.",
+};
 
-const TURNS: ScriptTurn[] = [
-  {
-    typeAt: HEARD,
-    user: "Where did we leave off on PROJ-415?",
-    metadata: { source: "voice" },
-    tools: [
-      { name: "recall", at: 6 },
-      { name: "search_events", at: 14 },
-    ],
-    replyAt: 34,
-    replyCps: 70,
-    reply:
-      "The retry spec is still red. Its session changed the backoff yesterday and is waiting on you to approve a test run.",
-  },
-];
-const SECOND = doneAt(TURNS[0]) + 30;
-TURNS.push({
-  typeAt: SECOND + 70,
+// Frames the mic opens again and the second request is heard.
+const SECOND_LISTEN_AT = doneAt(ASK) + 30;
+const SECOND_HEARD_AT = SECOND_LISTEN_AT + 70;
+
+// The archive waits on the approval prompt for the rest of the scene, so the
+// call never settles and no reply streams.
+const ARCHIVE: ScriptTurn = {
+  typeAt: SECOND_HEARD_AT,
   user: "Archive the flaky test workspace.",
   metadata: { source: "voice" },
-  tools: [{ name: "archive_workspace", at: 6, runs: 9999 }],
-  replyAt: 9999,
+  tools: [{ name: "archive_workspace", after: 6, pendingFrames: Infinity }],
+  replyAfter: Infinity,
   reply: "",
-});
+};
+
+const TURNS = [ASK, ARCHIVE];
+
+/** What was heard, as subtitles: each line and the frames it is on screen. */
+const SUBTITLES = [
+  { text: ASK.user, from: LISTEN_AT + 10, to: HEARD_AT + 10 },
+  { text: ARCHIVE.user, from: SECOND_LISTEN_AT + 10, to: SECOND_HEARD_AT + 10 },
+];
 
 /** What the voice hook would report at this frame: listening, then speaking the reply. */
 function voiceAt(frame: number): UseVoiceResult {
-  const listening = (frame >= LISTEN && frame < HEARD) || (frame >= SECOND && frame < SECOND + 70);
-  const speaking = frame >= sentAt(TURNS[0]) + TURNS[0].replyAt && frame < doneAt(TURNS[0]) + 20;
+  const listening =
+    (frame >= LISTEN_AT && frame < HEARD_AT) ||
+    (frame >= SECOND_LISTEN_AT && frame < SECOND_HEARD_AT);
+  const speaking = frame >= sentAt(ASK) + ASK.replyAfter && frame < doneAt(ASK) + 20;
   // A loudness that rises and falls like speech.
   const level = listening
     ? 0.12 + 0.1 * Math.abs(Math.sin(frame / 3.1) * Math.cos(frame / 7.3))
@@ -65,17 +78,12 @@ function voiceAt(frame: number): UseVoiceResult {
 /** What was heard, shown big under the window as subtitles. */
 function Heard() {
   const frame = useCurrentFrame();
-  const line =
-    frame >= LISTEN + 10 && frame < HEARD + 10
-      ? { text: TURNS[0].user, at: LISTEN + 10 }
-      : frame >= SECOND + 10 && frame < SECOND + 80
-        ? { text: TURNS[1].user, at: SECOND + 10 }
-        : null;
+  const line = SUBTITLES.find((s) => frame >= s.from && frame < s.to);
   if (!line) return null;
   return (
     <div
       className="absolute bottom-20 z-40 text-center"
-      style={{ left: 660, right: 40, ...enter(frame, line.at, 8, 10) }}
+      style={{ left: 660, right: 40, ...enter(frame, line.from, 8, 10) }}
     >
       <span className="bg-black/85 px-5 py-3 text-4xl font-semibold text-zinc-50">
         “{line.text}”
@@ -84,26 +92,26 @@ function Heard() {
   );
 }
 
-export const voiceFrames = () => SECOND + 70 + sec(4);
+export const voiceFrames = () => SECOND_HEARD_AT + sec(4);
 
 /** A spoken turn, a spoken reply, and the approval prompt a spoken irreversible action gets. */
 export function Voice() {
   const frame = useCurrentFrame();
-  const asking = frame >= sentAt(TURNS[1]) + 10;
+  const asking = frame >= sentAt(ARCHIVE) + 10;
 
   return (
     <AppScene
       tab="chat"
       shots={[
         ...swingIn(),
-        closeUp(LISTEN - 10, 300, 690, 1.6),
-        closeUp(HEARD, 620, 520, 1.12),
-        closeUp(sentAt(TURNS[1]) + 4, 720, 580, 1.2),
-        framed(sentAt(TURNS[1]) + 70),
+        closeUp(LISTEN_AT - 10, 300, 690, 1.6),
+        closeUp(HEARD_AT, 620, 520, 1.12),
+        closeUp(sentAt(ARCHIVE) + 4, 720, 580, 1.2),
+        framed(sentAt(ARCHIVE) + 70),
       ]}
       cursor={[
-        { at: LISTEN - 20, x: 500, y: 600 },
-        { at: LISTEN - 14, x: 108, y: 718, dur: 12, click: true },
+        { at: LISTEN_AT - 20, x: 500, y: 600 },
+        { at: LISTEN_AT - 14, x: 108, y: 718, dur: 12, click: true },
       ]}
       caption={{
         kicker: "Voice",
@@ -122,7 +130,7 @@ export function Voice() {
         ],
       }}
       stage={<Heard />}
-      hideCursorAfter={HEARD}
+      hideCursorAfter={HEARD_AT}
     >
       <ChatView
         turns={TURNS}

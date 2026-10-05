@@ -2,9 +2,8 @@ import type { ReactNode } from "react";
 import { AbsoluteFill, useCurrentFrame } from "remotion";
 import { Backdrop } from "../components/Backdrop";
 import { StaggerWords } from "../components/Caption";
-import { enter, pop, sec } from "../lib/timing";
-
-const SANS = '-apple-system, BlinkMacSystemFont, "SF Pro Display", Inter, sans-serif';
+import { SANS } from "../lib/style";
+import { enter, pop, progress, sec } from "../lib/timing";
 
 /** A full-stage title over a grid of cards that land one after another. */
 function CardSlide({
@@ -63,14 +62,20 @@ function CardSlide({
                   borderTop: `3px solid ${card.accent ?? "#818cf8"}`,
                   padding: "26px 30px",
                   boxShadow: "0 24px 60px rgba(0,0,0,.45)",
-                  ...enter(frame, at, 14, 40),
+                  // Fades in on the frame, and rises on a spring so it settles with a bounce.
+                  opacity: progress(frame, at, 14),
                   transform: `translateY(${(1 - Math.min(1, pop(frame, at))) * 40}px)`,
                 }}
               >
-                <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12 }}>
-                  <span style={{ fontSize: 28, fontWeight: 680, color: card.accent ?? "#a5b4fc" }}>
-                    {card.title}
-                  </span>
+                <div
+                  style={{
+                    fontSize: 28,
+                    fontWeight: 680,
+                    color: card.accent ?? "#a5b4fc",
+                    marginBottom: 12,
+                  }}
+                >
+                  {card.title}
                 </div>
                 <div style={{ fontSize: 23, lineHeight: 1.45, color: "#a1a1aa" }}>{card.body}</div>
               </div>
@@ -140,7 +145,7 @@ export function Visibility() {
 
 export const edgesFrames = () => sec(11);
 
-/** Clipboard, MCP, Telegram and scheduled jobs, one card each. */
+/** The smaller integrations, one card each. */
 export function Edges() {
   return (
     <CardSlide

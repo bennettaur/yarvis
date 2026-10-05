@@ -6,15 +6,16 @@ export interface TermLine {
   at: number;
   text: string;
   /** Tailwind text colour class. */
-  tone?: string;
+  colorClass?: string;
   /** Type the line out rather than printing it at once. */
-  type?: boolean;
+  typeOut?: boolean;
   cps?: number;
 }
 
 /**
  * Scripted terminal output in the look of the app's xterm panes. Lines print
- * at their frame; typed lines show a caret while they are being typed.
+ * at their frame; a typed line shows a caret while it types, and the last one
+ * keeps it, like a waiting prompt.
  */
 export function Terminal({
   lines,
@@ -39,13 +40,15 @@ export function Terminal({
       // Menlo carries the box-drawing glyphs, so borders line up.
       style={{ fontFamily: "Menlo, monospace" }}
     >
-      {visible.map((line) => {
-        const text = line.type ? typed(line.text, frame, line.at, line.cps ?? 40) : line.text;
-        const typing = line.type && text.length < line.text.length;
+      {visible.map((line, i) => {
+        const text = line.typeOut ? typed(line.text, frame, line.at, line.cps ?? 40) : line.text;
+        const typing = line.typeOut && text.length < line.text.length;
         return (
-          <div key={`${line.at}-${line.text}`} className={`whitespace-pre ${line.tone ?? ""}`}>
+          // Lines only ever append, and blank lines repeat, so the index is the stable key.
+          // biome-ignore lint/suspicious/noArrayIndexKey: append-only script
+          <div key={i} className={`whitespace-pre ${line.colorClass ?? ""}`}>
             {text}
-            {(typing || (line === last && line.type)) && caretOn(frame) && (
+            {(typing || (line === last && line.typeOut)) && caretOn(frame) && (
               <span className="bg-zinc-300 text-transparent">_</span>
             )}
           </div>
@@ -65,13 +68,17 @@ export function claudeWelcome(at: number, cwd: string): TermLine[] {
   const width = 58;
   const row = (s: string) => `│ ${s.padEnd(width - 4)} │`;
   return [
-    { at, text: `╭${"─".repeat(width - 2)}╮`, tone: "text-orange-300" },
-    { at, text: row("✻ Welcome to Claude Code!"), tone: "text-orange-300" },
-    { at, text: row(""), tone: "text-orange-300" },
-    { at, text: row("  /help for help, /status for your current setup"), tone: "text-orange-300" },
-    { at, text: row(""), tone: "text-orange-300" },
-    { at, text: row(`  cwd: ${cwd}`), tone: "text-orange-300" },
-    { at, text: `╰${"─".repeat(width - 2)}╯`, tone: "text-orange-300" },
+    { at, text: `╭${"─".repeat(width - 2)}╮`, colorClass: "text-orange-300" },
+    { at, text: row("✻ Welcome to Claude Code!"), colorClass: "text-orange-300" },
+    { at, text: row(""), colorClass: "text-orange-300" },
+    {
+      at,
+      text: row("  /help for help, /status for your current setup"),
+      colorClass: "text-orange-300",
+    },
+    { at, text: row(""), colorClass: "text-orange-300" },
+    { at, text: row(`  cwd: ${cwd}`), colorClass: "text-orange-300" },
+    { at, text: `╰${"─".repeat(width - 2)}╯`, colorClass: "text-orange-300" },
     { at, text: " " },
   ];
 }

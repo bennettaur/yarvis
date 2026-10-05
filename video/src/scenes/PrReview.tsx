@@ -65,6 +65,7 @@ const STEPS: PrGuideStep[] = [
       },
     ],
   },
+  // Placeholder steps the scene never reaches, so the counter reads "of 7" like a real tour.
   ...Array.from({ length: 4 }, (_, i) => ({
     path: "src/auth/session.test.ts",
     startLine: null,
@@ -73,8 +74,9 @@ const STEPS: PrGuideStep[] = [
   })),
 ];
 
-const NEXT = 120;
-const ASK = 200;
+// Frames the cursor clicks Next, and the line question is asked.
+const NEXT_AT = 120;
+const ASK_AT = 200;
 
 const FILES = [
   { path: "src/http/middleware.ts", change: "M" as const, add: 6, del: 2 },
@@ -85,12 +87,12 @@ const FILES = [
 
 const QUESTION = "What happens to the user if refresh() throws?";
 
-export const prReviewFrames = (full: boolean) => (full ? sec(15) : sec(9));
+export const prReviewFrames = (walkthrough: boolean) => (walkthrough ? sec(15) : sec(9));
 
 /** A guided tour of a PR: an agent's reading order, the lines it means, and what looks wrong. */
-export function PrReview({ full = false }: { full?: boolean }) {
+export function PrReview({ walkthrough = false }: { walkthrough?: boolean }) {
   const frame = useCurrentFrame();
-  const step = frame >= NEXT ? 2 : 1;
+  const step = frame >= NEXT_AT ? 2 : 1;
   const focus = { start: STEPS[step].startLine ?? 0, end: STEPS[step].endLine ?? 0 };
 
   return (
@@ -99,19 +101,21 @@ export function PrReview({ full = false }: { full?: boolean }) {
       shots={[
         ...swingIn(),
         closeUp(40, 820, 520, 1.25),
-        closeUp(NEXT + 6, 940, 600, 1.45),
-        ...(full ? [closeUp(ASK - 10, 700, 600, 1.4), framed(ASK + 150)] : [framed(NEXT + 110)]),
+        closeUp(NEXT_AT + 6, 940, 600, 1.45),
+        ...(walkthrough
+          ? [closeUp(ASK_AT - 10, 700, 600, 1.4), framed(ASK_AT + 150)]
+          : [framed(NEXT_AT + 110)]),
       ]}
       cursor={[
-        { at: NEXT - 30, x: 700, y: 400 },
-        { at: NEXT - 20, x: 838, y: 731, dur: 16, click: true },
+        { at: NEXT_AT - 30, x: 700, y: 400 },
+        { at: NEXT_AT - 20, x: 838, y: 731, dur: 16, click: true },
       ]}
       caption={{
         kicker: "PR review",
         title: "Guided tours, and questions about any line",
         pointsAt: 50,
-        pointStep: full ? 40 : 50,
-        points: full
+        pointStep: walkthrough ? 40 : 50,
+        points: walkthrough
           ? [
               <>
                 An agent lays out a <Em>reading order</Em>, outside in
@@ -134,6 +138,7 @@ export function PrReview({ full = false }: { full?: boolean }) {
         number={218}
         repo="acme/auth-service · sam"
         files={FILES}
+        // Each step so far covered one file, in list order.
         viewed={step}
         selected="src/auth/session.ts"
         guide={staticGuide(STEPS, step)}
@@ -145,13 +150,13 @@ export function PrReview({ full = false }: { full?: boolean }) {
           del={2}
           focus={focus}
           below={
-            full && frame >= ASK
+            walkthrough && frame >= ASK_AT
               ? {
                   line: 57,
                   node: (
                     <div
                       className="max-w-[58%] rounded-lg border border-violet-900 bg-violet-950/20 p-3 text-sm"
-                      style={enter(frame, ASK)}
+                      style={enter(frame, ASK_AT)}
                     >
                       <div className="mb-1 flex items-center gap-2 text-xs">
                         <span className="font-medium text-violet-300">Insight</span>
@@ -164,7 +169,7 @@ export function PrReview({ full = false }: { full?: boolean }) {
                         {typed(
                           "The error is dropped and no new timer is set, so the access token expires and nothing retries until the next request fails with a 401.",
                           frame,
-                          ASK + 20,
+                          ASK_AT + 20,
                           70,
                         )}
                       </div>

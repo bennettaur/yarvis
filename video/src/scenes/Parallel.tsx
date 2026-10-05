@@ -4,26 +4,27 @@ import { AppScene } from "../components/AppScene";
 import { Em } from "../components/Caption";
 import { closeUp, framed, swingIn } from "../components/shots";
 import type { TermLine } from "../components/Terminal";
+import { noop } from "../lib/style";
 import { progress, sec } from "../lib/timing";
 import { AttentionPanel } from "../screens/AttentionPanel";
 import {
   ChangedFiles,
   PrStatusLine,
-  pr,
+  prSummary,
   type WorkspaceGroup,
   WorkspacesView,
 } from "../screens/WorkspacesView";
 
-const noop = () => {};
+// Frames proj-412's session goes idle, #229 becomes ready to merge, the
+// walkthrough opens the Comments tab, and the attention panel opens.
+const IDLE_412_AT = 50;
+const READY_229_AT = 80;
+const COMMENTS_AT = 110;
+const PANEL_AT = 166;
 
-// Moments in the scene, in frames.
-const T = {
-  idle412: 50,
-  ready229: 80,
-  comments: 110,
-  bell: 150,
-  panel: 166,
-};
+// Relative to the render's own clock: `ReviewCommentCard` labels the time
+// against `Date.now()`, so a fixed date would read "N days ago".
+const COMMENT_TIME = new Date(Date.now() - 5 * 60_000).toISOString();
 
 const groups = (frame: number): WorkspaceGroup[] => [
   {
@@ -32,16 +33,20 @@ const groups = (frame: number): WorkspaceGroup[] => [
       {
         name: "proj-412-ledger-backfill",
         status: "active",
-        prs: pr(231, frame >= T.idle412 ? "success" : "pending"),
-        attention: frame >= T.idle412,
+        pr: prSummary(231, frame >= IDLE_412_AT ? "success" : "pending"),
+        attention: frame >= IDLE_412_AT,
       },
       {
         name: "proj-415-webhook-retries",
         status: "active",
-        prs: pr(234, "failure"),
+        pr: prSummary(234, "failure"),
         attention: true,
       },
-      { name: "proj-420-export-csv", status: "active", prs: pr(236, "none", { isDraft: true }) },
+      {
+        name: "proj-420-export-csv",
+        status: "active",
+        pr: prSummary(236, "none", { isDraft: true }),
+      },
     ],
   },
   {
@@ -50,7 +55,9 @@ const groups = (frame: number): WorkspaceGroup[] => [
       {
         name: "fix-flaky-checkout-test",
         status: "active",
-        prs: pr(229, frame >= T.ready229 ? "success" : "pending", { reviewDecision: "approved" }),
+        pr: prSummary(229, frame >= READY_229_AT ? "success" : "pending", {
+          reviewDecision: "approved",
+        }),
       },
     ],
   },
@@ -60,35 +67,63 @@ const groups = (frame: number): WorkspaceGroup[] => [
       {
         name: "auth-session-refresh",
         status: "active",
-        prs: pr(218, "success", { reviewDecision: "changes_requested" }),
+        pr: prSummary(218, "success", { reviewDecision: "changes_requested" }),
       },
     ],
   },
 ];
 
 const TERMINAL: TermLine[] = [
-  { at: 0, text: "⏺ Update(app/webhooks/retry.rb)", tone: "text-zinc-100" },
-  { at: 0, text: "  ⎿  Updated with 14 additions and 3 removals", tone: "text-zinc-500" },
+  { at: 0, text: "⏺ Update(app/webhooks/retry.rb)", colorClass: "text-zinc-100" },
+  { at: 0, text: "  ⎿  Updated with 14 additions and 3 removals", colorClass: "text-zinc-500" },
   { at: 0, text: " " },
-  { at: 0, text: "⏺ Bash(bundle exec rspec spec/webhooks)", tone: "text-zinc-100" },
+  { at: 0, text: "⏺ Bash(bundle exec rspec spec/webhooks)", colorClass: "text-zinc-100" },
   { at: 0, text: " " },
-  { at: 0, text: "╭────────────────────────────────────────────────────╮", tone: "text-amber-300" },
-  { at: 0, text: "│ Bash command                                       │", tone: "text-amber-300" },
-  { at: 0, text: "│   bundle exec rspec spec/webhooks                  │", tone: "text-amber-300" },
-  { at: 0, text: "│ Do you want to proceed?                            │", tone: "text-amber-300" },
-  { at: 0, text: "│ > 1. Yes                                           │", tone: "text-amber-300" },
-  { at: 0, text: "│   2. No, and tell Claude what to do differently    │", tone: "text-amber-300" },
-  { at: 0, text: "╰────────────────────────────────────────────────────╯", tone: "text-amber-300" },
+  {
+    at: 0,
+    text: "╭────────────────────────────────────────────────────╮",
+    colorClass: "text-amber-300",
+  },
+  {
+    at: 0,
+    text: "│ Bash command                                       │",
+    colorClass: "text-amber-300",
+  },
+  {
+    at: 0,
+    text: "│   bundle exec rspec spec/webhooks                  │",
+    colorClass: "text-amber-300",
+  },
+  {
+    at: 0,
+    text: "│ Do you want to proceed?                            │",
+    colorClass: "text-amber-300",
+  },
+  {
+    at: 0,
+    text: "│ > 1. Yes                                           │",
+    colorClass: "text-amber-300",
+  },
+  {
+    at: 0,
+    text: "│   2. No, and tell Claude what to do differently    │",
+    colorClass: "text-amber-300",
+  },
+  {
+    at: 0,
+    text: "╰────────────────────────────────────────────────────╯",
+    colorClass: "text-amber-300",
+  },
 ];
 
-export const parallelFrames = (full: boolean) => (full ? sec(14) : sec(10));
+export const parallelFrames = (walkthrough: boolean) => (walkthrough ? sec(14) : sec(10));
 
 /** Five workspaces at once: PR badges change, the bell collects whoever is blocked on you. */
-export function Parallel({ full = false }: { full?: boolean }) {
+export function Parallel({ walkthrough = false }: { walkthrough?: boolean }) {
   const frame = useCurrentFrame();
-  const panelAt = full ? T.panel + 90 : T.panel;
+  const panelAt = walkthrough ? PANEL_AT + 90 : PANEL_AT;
   const slide = progress(frame, panelAt, 16);
-  const attention = frame >= T.idle412 ? 2 : 1;
+  const attention = frame >= IDLE_412_AT ? 2 : 1;
 
   return (
     <AppScene
@@ -96,8 +131,8 @@ export function Parallel({ full = false }: { full?: boolean }) {
       attention={attention}
       shots={[
         ...swingIn(),
-        closeUp(T.idle412 - 14, 170, 260, 1.55),
-        ...(full ? [closeUp(T.comments, 1030, 380, 1.5)] : []),
+        closeUp(IDLE_412_AT - 14, 170, 260, 1.55),
+        ...(walkthrough ? [closeUp(COMMENTS_AT, 1030, 380, 1.5)] : []),
         framed(panelAt - 16, 18),
         closeUp(panelAt + 14, 990, 300, 1.35),
       ]}
@@ -109,8 +144,8 @@ export function Parallel({ full = false }: { full?: boolean }) {
         kicker: "Workspaces",
         title: "Many agents in parallel. One glance says who needs you.",
         pointsAt: 40,
-        pointStep: full ? 50 : 40,
-        points: full
+        pointStep: walkthrough ? 50 : 40,
+        points: walkthrough
           ? [
               <>
                 A badge per PR: <span style={{ color: "#f87171" }}>✗</span> failing,{" "}
@@ -173,10 +208,10 @@ export function Parallel({ full = false }: { full?: boolean }) {
           prLine: <PrStatusLine number={234} rollup="failure" />,
           terminal: TERMINAL,
           agentFlagged: true,
-          sideTab: full && frame >= T.comments ? "Comments" : "Changed",
+          sideTab: walkthrough && frame >= COMMENTS_AT ? "Comments" : "Changed",
           commentCount: 1,
           side:
-            full && frame >= T.comments ? (
+            walkthrough && frame >= COMMENTS_AT ? (
               <div className="space-y-2">
                 <div className="flex items-center gap-2 text-xs text-zinc-500">
                   1 open · 0 resolved
@@ -194,8 +229,8 @@ export function Parallel({ full = false }: { full?: boolean }) {
                     commitSha: null,
                     body: "Back off with jitter here, or every retry lands on the same second.",
                     resolvedAt: null,
-                    createdAt: new Date(Date.now() - 5 * 60_000).toISOString(),
-                    updatedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+                    createdAt: COMMENT_TIME,
+                    updatedAt: COMMENT_TIME,
                   }}
                   location="retry.rb:41–44"
                   onToggleResolved={noop}

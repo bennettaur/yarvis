@@ -2,11 +2,10 @@ import type { ReactNode } from "react";
 import { AbsoluteFill, Easing, useCurrentFrame } from "remotion";
 import { Backdrop } from "../components/Backdrop";
 import { StaggerWords } from "../components/Caption";
+import { SANS } from "../lib/style";
 import { enter, pop, progress, sec } from "../lib/timing";
 
-const SANS = '-apple-system, BlinkMacSystemFont, "SF Pro Display", Inter, sans-serif';
-
-export const problemFrames = (full: boolean) => (full ? sec(9) : sec(6));
+export const problemFrames = (walkthrough: boolean) => (walkthrough ? sec(9) : sec(6));
 
 interface Shard {
   x: number;
@@ -131,11 +130,11 @@ const QUESTIONS = [
 ];
 
 /** The work scattered across terminals, GitHub, JIRA and a calendar, then pulled into one place. */
-export function Problem({ full = false }: { full?: boolean }) {
+export function Problem({ walkthrough = false }: { walkthrough?: boolean }) {
   const frame = useCurrentFrame();
-  const total = problemFrames(full);
+  const total = problemFrames(walkthrough);
   const collapse = progress(frame, total - 26, 22, Easing.in(Easing.cubic));
-  const qStep = full ? 40 : 22;
+  const qStep = walkthrough ? 40 : 22;
 
   return (
     <AbsoluteFill style={{ fontFamily: SANS }}>

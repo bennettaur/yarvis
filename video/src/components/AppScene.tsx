@@ -4,17 +4,11 @@ import type { Tab } from "../../../src/components/shell/nav";
 import { AppWindow } from "./AppWindow";
 import { Backdrop } from "./Backdrop";
 import { Camera, type Shot } from "./Camera";
-import { Caption } from "./Caption";
+import { Caption, type CaptionProps } from "./Caption";
 import { Cursor, type CursorStop } from "./Cursor";
 
-export interface CaptionProps {
-  kicker: string;
-  title: string;
-  points?: ReactNode[];
-  pointsAt?: number;
-  pointStep?: number;
-  start?: number;
-}
+/** Stage x where the window fades out, so a close-up never runs under the caption. */
+const CAPTION_EDGE = 640;
 
 /**
  * One scene inside the app: the backdrop, the window under a moving camera,
@@ -22,7 +16,6 @@ export interface CaptionProps {
  */
 export function AppScene({
   tab,
-  title,
   attention,
   shots,
   cursor = [],
@@ -34,7 +27,6 @@ export function AppScene({
   children,
 }: {
   tab: Tab;
-  title?: string;
   attention?: number;
   shots: Shot[];
   cursor?: CursorStop[];
@@ -50,7 +42,7 @@ export function AppScene({
     <AbsoluteFill>
       <Backdrop tint={tint} />
       <Camera shots={shots} fadeLeft={caption ? CAPTION_EDGE : undefined}>
-        <AppWindow tab={tab} title={title} attention={attention} overlay={overlay}>
+        <AppWindow tab={tab} attention={attention} overlay={overlay}>
           {children}
         </AppWindow>
         <Cursor stops={cursor} hideAfter={hideCursorAfter} />
@@ -60,6 +52,3 @@ export function AppScene({
     </AbsoluteFill>
   );
 }
-
-/** Stage x where the window fades out, so a close-up never runs under the caption. */
-const CAPTION_EDGE = 640;
