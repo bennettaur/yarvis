@@ -39,11 +39,13 @@ For **Azure Boards**:
 2. Pick **Today** or **This week**.
 3. Press **Add**.
 
-Tasks are grouped into three lists:
+Tasks are grouped into these lists:
 
 - **Overdue**: open tasks whose date has passed. Complete them, or ask the
   assistant to carry them over.
 - **Today**.
+- **Upcoming**: tasks for a later day, such as one the assistant added for
+  Friday. It only appears when there's something in it.
 - **This week**: tasks with no fixed day.
 
 Each task shows a date chip: Today, Tomorrow, a weekday, or "3d ago" for an
