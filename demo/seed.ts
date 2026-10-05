@@ -33,16 +33,6 @@ export async function seed(sidecarUrl: string, sidecarToken: string): Promise<vo
     return (await res.json()) as T;
   }
 
-  // The sidecar registers its built-in tools at startup only on an instance
-  // that runs background workers, which the demo's doesn't. Listing the tools
-  // registers them, and chat can't call `create_task` and the rest without it.
-  const toolsResponse = await fetch(`${sidecarUrl}/api/mcp/tools`, {
-    headers: { Authorization: `Bearer ${sidecarToken}` },
-  });
-  if (!toolsResponse.ok) {
-    throw new Error(`registering built-in tools failed: ${toolsResponse.status}`);
-  }
-
   const project = await post<{ id: string }>("/api/projects", {
     name: "Checkout redesign",
     summary: "Rebuild the checkout flow so it loads in under a second on mobile.",

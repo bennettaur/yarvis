@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { type Tool, type ToolExecutionOptions, tool } from "ai";
 import { z } from "zod";
-import { listRegistryTools, searchRegistry } from "../agentTools/store.ts";
+import { syncBuiltins } from "../agentTools/registry.ts";
+import { listRegistryTools, type RegistryTool, searchRegistry } from "../agentTools/store.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
@@ -189,6 +190,26 @@ export interface AgentToolset {
  * for one omits `approval`; live MCP tools are then left out of the set rather
  * than exposed with no gate.
  */
+/**
+ * The tool registry, seeding the built-ins first if none are there. Startup
+ * seeds them only on an instance that runs background workers, so a secondary
+ * instance with a database of its own would otherwise start with none, and a
+ * built-in with no registry row is assembled but never offered to the model.
+ * A failed seed is logged rather than thrown, so chat still works without the
+ * built-ins; two turns seeding at once can collide, and the re-read picks up
+ * whichever won.
+ */
+async function readRegistryWithBuiltins(config: Config, db: Db): Promise<RegistryTool[]> {
+  const registry = await listRegistryTools(db);
+  if (registry.some((t) => t.source === "builtin")) return registry;
+  try {
+    await syncBuiltins(db, await chooseEmbedder(config, db));
+  } catch (e) {
+    console.error("[mcp] seeding built-in tools failed:", e);
+  }
+  return listRegistryTools(db);
+}
+
 export async function assembleAgentToolset(opts: {
   config: Config;
   db: Db;
@@ -221,7 +242,7 @@ export async function assembleAgentToolset(opts: {
     confirmBuiltins,
     honourStandingConsent = true,
   } = opts;
-  const registry = await listRegistryTools(db);
+  const registry = await readRegistryWithBuiltins(config, db);
   const policyById = new Map(registry.map((r) => [r.id, r.policy]));
   const approvalById = new Map(registry.map((r) => [r.id, r.approval]));
 
