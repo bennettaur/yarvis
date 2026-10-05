@@ -61,6 +61,8 @@ Then, in the app, open **Settings → Credentials**. Save the database URL
   second instance, nightly builds, and the project layout.
 - [Showcase deck](docs/showcase/yarvis-showcase.html): a slide deck on the
   weekly workflow. Open it in a browser.
+- [Showcase video](video/README.md): a 90-second reel and a full walkthrough,
+  rendered with Remotion from the app's own components.
 - [`AGENTS.md`](AGENTS.md): conventions for changing the code.
 - [`ROADMAP.md`](ROADMAP.md): what's shipped and what's next.
 
