@@ -83,13 +83,15 @@ logs `[fake-llm]` and answers in text.
    `YARVIS_DEMO_DATABASE_URL`. Since this step deletes the database, the
    runner only accepts a local one with "demo" in its name, and refuses query
    parameters such as `?dbname=` that would point the sidecar elsewhere.
-2. Starts the fake model, the sidecar against that database, and Vite. The
+2. Starts the fake model, GitHub and Google, the sidecar against that
+   database, and Vite. The
    sidecar's `HOME`, `settings.json`, agents directory and `CLAUDE_HOME` point
    into `demo/output/.state/`, so your real memories, sessions and workspaces
    never show up in a screenshot. Workspaces go in `/tmp/yarvis-demo/`, since
    the app shows a workspace's full path. Background workers are off.
-3. Seeds the database with made-up data from `seed.ts`, including a provisioned
-   "Payment step" workspace.
+3. Seeds the database with made-up data from `seed.ts`: tasks, memories, a
+   provisioned "Payment step" workspace, the fake GitHub repo for the Issues
+   tab, and a Google token so Calendar shows as connected.
 
 Run one demo at a time per machine: runs share the demo database and
 `/tmp/yarvis-demo/`, and each run starts by wiping both.

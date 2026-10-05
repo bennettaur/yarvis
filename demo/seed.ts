@@ -1,7 +1,7 @@
 /**
- * Fills the demo database with a believable week of work, through the
- * sidecar's own API so the rows are exactly what the app would have written.
- * Every name and detail here is made up.
+ * Fills the demo database with a believable week of work. Rows go through the
+ * sidecar's own API wherever it has a route, so they're exactly what the app
+ * would have written. Every name and detail here is made up.
  */
 
 import { spawnSync } from "node:child_process";
@@ -20,7 +20,9 @@ function inDays(days: number): string {
 /**
  * Marks Google Calendar as connected. There's no route for it (the token
  * normally arrives through the OAuth callback), so the row goes straight into
- * the table. It doesn't expire during a run, so nothing tries to refresh it.
+ * the table, whose columns are `googleTokens` in `sidecar/src/db/schema.ts`.
+ * The scope is `CALENDAR_SCOPE` from `sidecar/src/google/client.ts`. It doesn't
+ * expire during a run, so nothing tries to refresh it.
  */
 function connectGoogle(databaseUrl: string): void {
   const sql = `INSERT INTO google_tokens (access_token, refresh_token, scope, expires_at)

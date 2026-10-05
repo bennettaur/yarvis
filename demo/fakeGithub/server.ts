@@ -3,30 +3,30 @@
  * sidecar's `GitHubClient` makes from the data in `data.ts`. The sidecar finds
  * it through YARVIS_GITHUB_API_URL and YARVIS_GITHUB_GRAPHQL_URL.
  *
- * GraphQL isn't parsed. Every query gets one response holding every field any
- * of the client's queries reads, since the client ignores what it didn't ask
- * for. Aliased lookups (`pr0`, `pr1`, …) are filled in from the `n0`, `n1`, …
- * variables they carry.
+ * GraphQL isn't parsed. Every query gets the same response, holding the fields
+ * the client's queries read; the client ignores fields it didn't ask for. A new
+ * client query that reads a field `toGraphqlPull` lacks gets undefined, so add
+ * the field there.
  */
 
 import type { Server } from "node:http";
 import { type FakeRequest, type FakeResponse, startFakeServer } from "../fakeHttp";
-import { type FakeIssue, type FakePull, ISSUES, OWNER, PULLS, REPO, VIEWER } from "./data";
+import { type FakeIssue, type FakePull, ISSUES, OWNER, PEOPLE, PULLS, REPO, VIEWER } from "./data";
 
-const HTML = `https://github.com/${OWNER}/${REPO}`;
-const API_REPO = `https://api.github.com/repos/${OWNER}/${REPO}`;
+const REPO_HTML_URL = `https://github.com/${OWNER}/${REPO}`;
+const REPO_API_URL = `https://api.github.com/repos/${OWNER}/${REPO}`;
 
 const findPull = (number: unknown) => PULLS.find((p) => p.number === Number(number));
 const findIssue = (number: unknown) => ISSUES.find((i) => i.number === Number(number));
 
 /** A pull request as the REST search and pulls endpoints return it. */
-function restPull(pr: FakePull) {
+function toRestPull(pr: FakePull) {
   return {
     number: pr.number,
     title: pr.title,
-    html_url: `${HTML}/pull/${pr.number}`,
-    repository_url: API_REPO,
-    pull_request: { html_url: `${HTML}/pull/${pr.number}` },
+    html_url: `${REPO_HTML_URL}/pull/${pr.number}`,
+    repository_url: REPO_API_URL,
+    pull_request: { html_url: `${REPO_HTML_URL}/pull/${pr.number}` },
     user: { login: pr.author },
     draft: pr.draft,
     state: "open",
@@ -41,12 +41,12 @@ function restPull(pr: FakePull) {
   };
 }
 
-function restIssue(issue: FakeIssue) {
+function toRestIssue(issue: FakeIssue) {
   return {
     number: issue.number,
     title: issue.title,
-    html_url: `${HTML}/issues/${issue.number}`,
-    repository_url: API_REPO,
+    html_url: `${REPO_HTML_URL}/issues/${issue.number}`,
+    repository_url: REPO_API_URL,
     state: "open",
     user: { login: issue.author },
     assignees: issue.assignees.map((login) => ({ login })),
@@ -58,14 +58,21 @@ function restIssue(issue: FakeIssue) {
   };
 }
 
-/** A pull request as the GraphQL queries read it: every field any of them selects. */
-function graphPull(pr: FakePull) {
+/** The combined check state, as GitHub reports it: any failure wins over anything still running. */
+function rollupState(pr: FakePull): "SUCCESS" | "FAILURE" | "PENDING" {
+  if (pr.checks.some((c) => c.conclusion === "FAILURE")) return "FAILURE";
+  if (pr.checks.some((c) => c.conclusion === null)) return "PENDING";
+  return "SUCCESS";
+}
+
+/** A pull request as the GraphQL queries read it: the fields any of them selects. */
+function toGraphqlPull(pr: FakePull) {
   return {
     id: `PR_${pr.number}`,
     number: pr.number,
     title: pr.title,
     body: pr.body,
-    url: `${HTML}/pull/${pr.number}`,
+    url: `${REPO_HTML_URL}/pull/${pr.number}`,
     state: "OPEN",
     isDraft: pr.draft,
     isInMergeQueue: false,
@@ -85,7 +92,9 @@ function graphPull(pr: FakePull) {
     autoMergeRequest: null,
     viewerCanEnableAutoMerge: false,
     viewerCanDisableAutoMerge: false,
-    reviewRequests: { nodes: pr.requested.map((login) => ({ requestedReviewer: { login } })) },
+    reviewRequests: {
+      nodes: pr.requestedReviewers.map((login) => ({ requestedReviewer: { login } })),
+    },
     latestReviews: {
       nodes: Object.entries(pr.reviews).map(([login, state]) => ({ author: { login }, state })),
     },
@@ -94,7 +103,7 @@ function graphPull(pr: FakePull) {
       nodes: pr.reviews[VIEWER] ? [{ state: pr.reviews[VIEWER] }] : [],
     },
     reviewThreads: {
-      nodes: pr.threads.map((t) => ({
+      nodes: pr.reviewThreads.map((t) => ({
         isResolved: false,
         path: t.path,
         line: t.line,
@@ -108,14 +117,14 @@ function graphPull(pr: FakePull) {
         {
           commit: {
             statusCheckRollup: {
-              state: pr.checks.every((c) => c.conclusion === "SUCCESS") ? "SUCCESS" : "PENDING",
+              state: rollupState(pr),
               contexts: {
                 nodes: pr.checks.map((c) => ({
                   __typename: "CheckRun",
                   name: c.name,
                   status: c.conclusion ? "COMPLETED" : "IN_PROGRESS",
                   conclusion: c.conclusion,
-                  detailsUrl: `${HTML}/actions`,
+                  detailsUrl: `${REPO_HTML_URL}/actions`,
                 })),
               },
             },
@@ -130,17 +139,26 @@ function graphPull(pr: FakePull) {
   };
 }
 
-function graphql(body: unknown): FakeResponse {
+function handleGraphql(body: unknown): FakeResponse {
   const { query = "", variables = {} } = (body ?? {}) as {
     query?: string;
     variables?: Record<string, unknown>;
   };
+  // Mutations (merge, auto-merge, marking a file viewed) succeed without changing anything.
   if (query.trimStart().startsWith("mutation")) return { json: { data: {} } };
 
+  // Which query reads which key:
+  //   viewer                   the viewer lookup
+  //   search                   PRs the viewer is involved in (the Reviewing tab)
+  //   repository.pullRequest   PR detail, viewed files and the stack's first layer ($number)
+  //   repository.pullRequests  the stack's layers above and below (none: nothing is stacked)
+  //   pr0, pr1, …              batched lookups by PR, from their n0, n1, … variables
+  // The stack's c0, c1, … behind-base comparisons are left out, so every layer
+  // reads as up to date.
   const data: Record<string, unknown> = {
     viewer: { login: VIEWER },
     // Searches for PRs the viewer has commented on or reviewed.
-    search: { nodes: PULLS.filter((p) => p.author !== VIEWER).map(graphPull) },
+    search: { nodes: PULLS.filter((p) => p.author !== VIEWER).map(toGraphqlPull) },
   };
   const pr = findPull(variables.number);
   data.repository = {
@@ -148,13 +166,13 @@ function graphql(body: unknown): FakeResponse {
     squashMergeAllowed: true,
     rebaseMergeAllowed: false,
     defaultBranchRef: { name: "main" },
-    pullRequest: pr ? graphPull(pr) : null,
+    pullRequest: pr ? toGraphqlPull(pr) : null,
     // Stack lookups: no PR is stacked on another.
     pullRequests: { nodes: [] },
   };
   for (let i = 0; `n${i}` in variables; i++) {
     const aliased = findPull(variables[`n${i}`]);
-    data[`pr${i}`] = { pullRequest: aliased ? graphPull(aliased) : null };
+    data[`pr${i}`] = { pullRequest: aliased ? toGraphqlPull(aliased) : null };
   }
   return { json: { data } };
 }
@@ -163,20 +181,20 @@ function graphql(body: unknown): FakeResponse {
 function searchIssues(q: string): FakeResponse {
   let items: unknown[];
   if (q.includes("is:pr") && q.includes("author:@me")) {
-    items = PULLS.filter((p) => p.author === VIEWER).map(restPull);
-  } else if (q.includes("is:pr")) {
-    items = PULLS.filter((p) => p.requested.includes(VIEWER)).map(restPull);
+    items = PULLS.filter((p) => p.author === VIEWER).map(toRestPull);
+  } else if (q.includes("is:pr") && q.includes("review-requested:@me")) {
+    items = PULLS.filter((p) => p.requestedReviewers.includes(VIEWER)).map(toRestPull);
   } else {
     const words = q
       .replace(/\S+:\S+/g, "")
       .trim()
       .toLowerCase();
-    items = ISSUES.filter((i) => !words || i.title.toLowerCase().includes(words)).map(restIssue);
+    items = ISSUES.filter((i) => !words || i.title.toLowerCase().includes(words)).map(toRestIssue);
   }
   return { json: { total_count: items.length, items } };
 }
 
-function rest({ method, url, body }: FakeRequest): FakeResponse {
+function handleRest({ method, url, body }: FakeRequest): FakeResponse {
   const path = url.pathname;
   if (method === "GET" && path === "/user") return { json: { login: VIEWER } };
   if (method === "GET" && path === "/search/issues") {
@@ -191,17 +209,27 @@ function rest({ method, url, body }: FakeRequest): FakeResponse {
   const pullNumber = matchNumber(/^\/pulls\/(\d+)$/);
   if (pullNumber) {
     const pr = findPull(pullNumber);
-    return pr ? { json: restPull(pr) } : { status: 404, json: {} };
+    return pr ? { json: toRestPull(pr) } : { status: 404, json: {} };
   }
-  const filesOf = matchNumber(/^\/pulls\/(\d+)\/files$/);
-  if (filesOf) return { json: findPull(filesOf)?.files ?? [] };
-  if (/^\/pulls\/\d+\/reviews$/.test(repoPath) && method === "GET") return { json: [] };
+  const filesPullNumber = matchNumber(/^\/pulls\/(\d+)\/files$/);
+  if (filesPullNumber) return { json: findPull(filesPullNumber)?.files ?? [] };
+  const reviewsPullNumber = matchNumber(/^\/pulls\/(\d+)\/reviews$/);
+  if (reviewsPullNumber && method === "GET") {
+    const reviews = findPull(reviewsPullNumber)?.reviews ?? {};
+    return {
+      json: Object.entries(reviews).map(([login, state]) => ({
+        user: { login },
+        state,
+        author_association: "MEMBER",
+      })),
+    };
+  }
   if (/^\/pulls\/\d+\/(reviews|comments)$/.test(repoPath)) return { status: 201, json: { id: 1 } };
   // Finding a workspace branch's PR: none of the demo's branches have one.
   if (repoPath === "/pulls") return { json: [] };
-  const checksOf = matchNumber(/^\/commits\/sha-(\d+)\/check-runs$/);
-  if (checksOf) {
-    const checks = findPull(checksOf)?.checks ?? [];
+  const checksPullNumber = matchNumber(/^\/commits\/sha-(\d+)\/check-runs$/);
+  if (checksPullNumber) {
+    const checks = findPull(checksPullNumber)?.checks ?? [];
     return {
       json: {
         check_runs: checks.map((c) => ({
@@ -218,17 +246,17 @@ function rest({ method, url, body }: FakeRequest): FakeResponse {
   if (repoPath === "/issues" && method === "GET") {
     const assignee = url.searchParams.get("assignee");
     const issues = ISSUES.filter((i) => !assignee || i.assignees.includes(assignee));
-    return { json: issues.map(restIssue) };
+    return { json: issues.map(toRestIssue) };
   }
   const issueNumber = matchNumber(/^\/issues\/(\d+)$/);
   if (issueNumber && method === "GET") {
     const issue = findIssue(issueNumber);
-    return issue ? { json: restIssue(issue) } : { status: 404, json: {} };
+    return issue ? { json: toRestIssue(issue) } : { status: 404, json: {} };
   }
-  const commentsOf = matchNumber(/^\/issues\/(\d+)\/comments$/);
-  if (commentsOf && method === "GET") {
+  const commentsIssueNumber = matchNumber(/^\/issues\/(\d+)\/comments$/);
+  if (commentsIssueNumber && method === "GET") {
     return {
-      json: (findIssue(commentsOf)?.comments ?? []).map((c) => ({
+      json: (findIssue(commentsIssueNumber)?.comments ?? []).map((c) => ({
         user: { login: c.author },
         body: c.body,
         created_at: c.createdAt,
@@ -239,21 +267,21 @@ function rest({ method, url, body }: FakeRequest): FakeResponse {
     return { json: [...new Map(ISSUES.flatMap((i) => i.labels).map((l) => [l.name, l])).values()] };
   }
   if (repoPath === "/assignees") {
-    return { json: [VIEWER, "priya-shah", "sam-okafor"].map((login) => ({ login })) };
+    return { json: PEOPLE.map((login) => ({ login })) };
   }
   // Writes (new issues, comments, labels, assignees) succeed without being kept.
   if (method !== "GET") {
     return {
       status: 201,
-      json: { number: 999, ...(body as object), html_url: `${HTML}/issues/999` },
+      json: { number: 999, ...(body as object), html_url: `${REPO_HTML_URL}/issues/999` },
     };
   }
   return { status: 404, json: { message: "Not Found" } };
 }
 
 export function handleGithubRequest(req: FakeRequest): FakeResponse {
-  if (req.url.pathname === "/graphql") return graphql(req.body);
-  return rest(req);
+  if (req.url.pathname === "/graphql") return handleGraphql(req.body);
+  return handleRest(req);
 }
 
 export function startFakeGithub(port: number): Promise<Server> {

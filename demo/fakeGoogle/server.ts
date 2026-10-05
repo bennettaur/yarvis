@@ -23,7 +23,7 @@ interface GoogleEvent {
 const MEET = "https://meet.google.com/xqa-demo-rec";
 
 /** `daysFromToday` days out, at `hour`:`minute` local time, as an ISO timestamp. */
-function at(daysFromToday: number, hour: number, minute = 0): string {
+function localTimeIso(daysFromToday: number, hour: number, minute = 0): string {
   const d = new Date();
   d.setDate(d.getDate() + daysFromToday);
   d.setHours(hour, minute, 0, 0);
@@ -31,7 +31,7 @@ function at(daysFromToday: number, hour: number, minute = 0): string {
 }
 
 /** A local calendar date as YYYY-MM-DD, for all-day events. */
-function day(daysFromToday: number): string {
+function localDate(daysFromToday: number): string {
   const d = new Date();
   d.setDate(d.getDate() + daysFromToday);
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -43,7 +43,7 @@ function daysUntil(weekday: number): number {
   return (weekday - new Date().getDay() + 7) % 7;
 }
 
-function timed(
+function timedEvent(
   id: string,
   summary: string,
   start: string,
@@ -64,24 +64,25 @@ function timed(
 function seedEvents(): GoogleEvent[] {
   const thursday = daysUntil(4);
   return [
-    timed("standup-0", "Checkout standup", at(0, 9, 30), 15, { hangoutLink: MEET }),
-    timed("design-0", "Design review: payment step", at(0, 14), 45, {
+    timedEvent("standup-0", "Checkout standup", localTimeIso(0, 9, 30), 15, { hangoutLink: MEET }),
+    timedEvent("design-0", "Design review: payment step", localTimeIso(0, 14), 45, {
       hangoutLink: MEET,
       location: "Room 4B",
     }),
-    timed("focus-0", "Focus: rollout plan", at(0, 15, 30), 90),
-    timed("standup-1", "Checkout standup", at(1, 9, 30), 15, { hangoutLink: MEET }),
-    timed("one-on-one-1", "1:1 with Priya", at(1, 11), 30, { hangoutLink: MEET }),
-    timed("review-thu", "Thursday review: checkout v2", at(thursday || 7, 15), 60, {
+    timedEvent("focus-0", "Focus: rollout plan", localTimeIso(0, 15, 30), 90),
+    timedEvent("standup-1", "Checkout standup", localTimeIso(1, 9, 30), 15, { hangoutLink: MEET }),
+    timedEvent("one-on-one-1", "1:1 with Priya", localTimeIso(1, 11), 30, { hangoutLink: MEET }),
+    // Always ahead of today, like the seeded "Prep demo for Thursday's review" task.
+    timedEvent("review-thu", "Thursday review: checkout v2", localTimeIso(thursday || 7, 15), 60, {
       hangoutLink: MEET,
     }),
-    timed("standup-2", "Checkout standup", at(2, 9, 30), 15, { hangoutLink: MEET }),
-    timed("retro-4", "Checkout retro", at(4, 16), 45, { hangoutLink: MEET }),
+    timedEvent("standup-2", "Checkout standup", localTimeIso(2, 9, 30), 15, { hangoutLink: MEET }),
+    timedEvent("retro-4", "Checkout retro", localTimeIso(4, 16), 45, { hangoutLink: MEET }),
     {
       id: "offsite",
       summary: "Team offsite",
-      start: { date: day(8) },
-      end: { date: day(10) },
+      start: { date: localDate(8) },
+      end: { date: localDate(10) },
       htmlLink: "https://calendar.google.com/event?eid=offsite",
     },
   ];
@@ -90,7 +91,11 @@ function seedEvents(): GoogleEvent[] {
 const startOf = (e: GoogleEvent) => new Date(e.start.dateTime ?? `${e.start.date}T00:00:00`);
 const endOf = (e: GoogleEvent) => new Date(e.end.dateTime ?? `${e.end.date}T00:00:00`);
 
-export function createFakeGoogle() {
+/**
+ * The request handler. A factory, rather than one shared handler, because
+ * each server keeps the events created through it.
+ */
+export function createGoogleHandler() {
   const events = seedEvents();
   let created = 0;
 
@@ -141,5 +146,5 @@ export function createFakeGoogle() {
 }
 
 export function startFakeGoogle(port: number): Promise<Server> {
-  return startFakeServer("fake-google", port, createFakeGoogle());
+  return startFakeServer("fake-google", port, createGoogleHandler());
 }

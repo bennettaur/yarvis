@@ -17,8 +17,8 @@ mocked by `demo/tauriMock.ts`.
 2. Check each step against what the harness can show. Chat replies come from
    `demo/fakeLlm/script.ts`, terminal output from `demo/fakeShell.ts`, GitHub
    from `demo/fakeGithub/data.ts` and calendar events from
-   `demo/fakeGoogle/server.ts`; a step that needs something new there gets it
-   added. Native UI (window frame, tray, OS notifications) and the `gh`-backed
+   `demo/fakeGoogle/server.ts`. A step that needs something those don't have
+   yet needs it added there first. Native UI (window frame, tray, OS notifications) and the `gh`-backed
    Stack tab can't be shown. If a step depends on one of those, say so and
    offer an alternative before writing it.
 3. Find the selectors in the components under `src/components/`. Prefer, in

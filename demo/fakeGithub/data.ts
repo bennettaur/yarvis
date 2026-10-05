@@ -30,14 +30,23 @@ export interface FakePull {
   createdAt: string;
   updatedAt: string;
   /** Logins asked to review who haven't yet. */
-  requested: string[];
+  requestedReviewers: string[];
   /** Each reviewer's latest review, by login. */
   reviews: Record<string, "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED">;
+  /** A null conclusion means the check is still running. */
   checks: { name: string; conclusion: "SUCCESS" | "FAILURE" | null }[];
-  threads: { path: string; line: number; author: string; body: string }[];
+  reviewThreads: { path: string; line: number; author: string; body: string }[];
+  /** The diff. A PR without files shows none, and its +/- counts are zero. */
   files: FakeFile[];
 }
 
+/**
+ * Where a PR shows up is decided by its fields:
+ * - `author: VIEWER`: My PRs.
+ * - `requestedReviewers` includes `VIEWER`: Needs review.
+ * - any other author: Reviewing, which lists PRs the viewer has commented on
+ *   or reviewed.
+ */
 export const PULLS: FakePull[] = [
   {
     number: 477,
@@ -59,14 +68,14 @@ export const PULLS: FakePull[] = [
     baseRef: "main",
     createdAt: hoursAgo(26),
     updatedAt: hoursAgo(2),
-    requested: [VIEWER],
+    requestedReviewers: [VIEWER],
     reviews: { "sam-okafor": "APPROVED" },
     checks: [
       { name: "build", conclusion: "SUCCESS" },
       { name: "unit tests", conclusion: "SUCCESS" },
       { name: "lighthouse", conclusion: "SUCCESS" },
     ],
-    threads: [
+    reviewThreads: [
       {
         path: "src/checkout/PaymentStep.tsx",
         line: 42,
@@ -165,13 +174,13 @@ export const PULLS: FakePull[] = [
     baseRef: "main",
     createdAt: hoursAgo(50),
     updatedAt: hoursAgo(20),
-    requested: [VIEWER],
+    requestedReviewers: [VIEWER],
     reviews: {},
     checks: [
       { name: "build", conclusion: "SUCCESS" },
       { name: "unit tests", conclusion: "FAILURE" },
     ],
-    threads: [],
+    reviewThreads: [],
     files: [],
   },
   {
@@ -184,13 +193,13 @@ export const PULLS: FakePull[] = [
     baseRef: "main",
     createdAt: hoursAgo(5),
     updatedAt: hoursAgo(1),
-    requested: [],
+    requestedReviewers: [],
     reviews: { "priya-shah": "APPROVED" },
     checks: [
       { name: "build", conclusion: "SUCCESS" },
       { name: "unit tests", conclusion: "SUCCESS" },
     ],
-    threads: [],
+    reviewThreads: [],
     files: [],
   },
   {
@@ -203,13 +212,16 @@ export const PULLS: FakePull[] = [
     baseRef: "main",
     createdAt: hoursAgo(30),
     updatedAt: hoursAgo(28),
-    requested: [],
+    requestedReviewers: [],
     reviews: {},
     checks: [{ name: "build", conclusion: null }],
-    threads: [],
+    reviewThreads: [],
     files: [],
   },
 ];
+
+/** Everyone who appears in the data; the Issues tab offers them as assignees. */
+export const PEOPLE = [VIEWER, "priya-shah", "sam-okafor", "jordan-lee"];
 
 export interface FakeIssue {
   number: number;

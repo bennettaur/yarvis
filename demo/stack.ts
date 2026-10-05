@@ -1,6 +1,7 @@
 /**
  * Starts everything a demo needs: a fresh demo database, the fake chat model,
- * a sidecar against both, and the Vite dev server serving `demo/index.html`.
+ * GitHub and Google servers, a sidecar pointed at all of them, and the Vite
+ * dev server serving `demo/index.html`.
  *
  * The sidecar's home directory and settings file point into
  * `demo/output/.state/` and its workspaces root into `/tmp/yarvis-demo/`, so
