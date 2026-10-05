@@ -48,8 +48,9 @@ lays the text out differently.
 The player page is published at <https://bennettaur.github.io/yarvis/video/>,
 beside the recorded demos and the slide deck. The `Demo site` workflow
 (`.github/workflows/demo-pages.yml`) builds it into the Pages site each time it
-runs; see `demo/README.md` for when that is. Locally, `bun run player:build` here
-and then `bun run demo:site` at the repo root put it in `demo/site/video/`.
+runs; see `demo/README.md` for when that is. Locally, `bun run player:build` here,
+then `bun run demo` and `bun run demo:site` at the repo root, put it in
+`demo/site/video/`.
 
 The MP4s are not in git. Render them on a Mac, then run `bun run publish:videos`
 to replace the files on the `showcase-video` release, which the page links to.

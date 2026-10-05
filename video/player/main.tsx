@@ -68,7 +68,7 @@ function App() {
             </a>
           </span>
         ))}
-        . More: the{" "}
+        {/* Relative to the Pages site, where this page is served from video/. */}. More: the{" "}
         <a className={LINK} href="../">
           recorded demos
         </a>

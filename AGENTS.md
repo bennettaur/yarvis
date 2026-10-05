@@ -82,9 +82,9 @@ cargo test --manifest-path src-tauri/Cargo.toml --all-targets   # Rust tests
 ```
 
 CI (`.github/workflows/ci.yml`) runs all of the above (frontend tests, sidecar
-tests against a `pgvector/pgvector:pg16` service container, both typechecks,
-biome, `bun audit --prod`, `cargo fmt --check`, `cargo clippy`, `cargo test`,
-`cargo audit`). Every job in it runs on a read-only `GITHUB_TOKEN` — ci.yml
+tests against a `pgvector/pgvector:pg16` service container, the frontend,
+sidecar and `video/` typechecks, biome, `bun audit --prod`, `cargo fmt --check`,
+`cargo clippy`, `cargo test`, `cargo audit`). Every job in it runs on a read-only `GITHUB_TOKEN` — ci.yml
 sets that default itself, so a job that needs to write back to GitHub has to
 say so in its own `permissions:` block, where review can see it — and its
 actions are pinned to commit SHAs, with the ref they were resolved from in a

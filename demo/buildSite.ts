@@ -198,6 +198,12 @@ function buildSite(): void {
   mkdirSync(join(SITE_DIR, "showcase"), { recursive: true });
   copyFileSync(SHOWCASE, join(SITE_DIR, "showcase", "index.html"));
   const withVideo = existsSync(VIDEO_PLAYER);
+  // Optional locally, but the published site is linked to at video/, so CI
+  // must not quietly publish without it.
+  if (!withVideo && process.env.CI)
+    throw new Error(
+      `no video player in ${VIDEO_PLAYER}; run \`bun run --cwd video player:build\` first`,
+    );
   if (withVideo) cpSync(VIDEO_PLAYER, join(SITE_DIR, "video"), { recursive: true });
 
   const sha = process.env.GITHUB_SHA?.slice(0, 7);
