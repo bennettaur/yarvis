@@ -17,7 +17,7 @@ import { and, eq } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { repos, workspaceRepoPr, workspaceRepos } from "../db/schema.ts";
-import { GitHubClient } from "../github/client.ts";
+import { createGitHubClient, type GitHubClient } from "../github/client.ts";
 import { redactSecrets } from "../llm/errors.ts";
 import { type MergeMethod, NO_PULL_REQUEST, type PrStack, type StackEntry } from "../pr/types.ts";
 import { type RunResult, run } from "./exec.ts";
@@ -374,7 +374,7 @@ async function readStack(
     git,
   );
   const token = config.secrets.githubToken;
-  const client = token ? new GitHubClient(token) : null;
+  const client = token ? createGitHubClient(config, token) : null;
 
   // The poller watches only the primary branch, so another worktree's PR is
   // looked up here. A failed lookup is reported as `prStackError`; the stack

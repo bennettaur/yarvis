@@ -232,6 +232,12 @@ copy of the app, or for debugging.
 | `YARVIS_LOG_DEV_TOKEN` | `1` makes a standalone sidecar (`bun run sidecar:dev`) print its API token instead of a fingerprint |
 | `TAURI_DEV_HOST` | Serve the Vite dev server on this host. Also turns on the HMR socket port. |
 | `CLAUDE_HOME` | Where Claude Code keeps sessions. Default `~/.claude`. |
+| `YARVIS_GITHUB_API_URL`, `YARVIS_GITHUB_GRAPHQL_URL` | Send GitHub requests somewhere other than `api.github.com`, such as a local fake. Both are needed: GitHub Enterprise serves GraphQL from `/api/graphql`, not under the REST base. |
+| `YARVIS_GOOGLE_CALENDAR_API_URL`, `YARVIS_GOOGLE_TOKEN_URL` | Send Google Calendar API and OAuth token requests somewhere other than Google |
+
+The four endpoint overrides carry your token to wherever they point, so each
+must be `https://`, or plain `http://` to `localhost` or `127.0.0.1`. Anything
+else is ignored with a warning in the sidecar log.
 | `AWS_PROFILE`, `AWS_REGION`, … | The usual AWS credential chain, for Bedrock |
 
 The sidecar inherits the environment of the shell that started the app. A

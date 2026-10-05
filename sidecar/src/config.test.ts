@@ -3,6 +3,7 @@ import {
   loadInstanceConfig,
   parseAllowedChatIds,
   parseBackgroundWorkers,
+  parseEndpointOverride,
   parseInstanceName,
   parseOtpWindowMinutes,
 } from "./config.ts";
@@ -103,5 +104,29 @@ describe("loadInstanceConfig", () => {
     process.env.YARVIS_INSTANCE = "migration-test";
     delete process.env.YARVIS_BACKGROUND_WORKERS;
     expect(loadInstanceConfig().backgroundWorkers).toBe(false);
+  });
+});
+
+describe("parseEndpointOverride", () => {
+  it("accepts https anywhere and trims a trailing slash", () => {
+    expect(parseEndpointOverride("X", "https://ghe.example.com/api/v3/")).toBe(
+      "https://ghe.example.com/api/v3",
+    );
+  });
+
+  it("accepts plain http only to this machine", () => {
+    expect(parseEndpointOverride("X", "http://127.0.0.1:4010")).toBe("http://127.0.0.1:4010");
+    expect(parseEndpointOverride("X", "http://localhost:4010/v3")).toBe("http://localhost:4010/v3");
+    expect(parseEndpointOverride("X", "http://api.example.com")).toBeUndefined();
+  });
+
+  it("ignores credentials in the URL, which would travel with every request", () => {
+    expect(parseEndpointOverride("X", "https://user:pass@ghe.example.com")).toBeUndefined();
+  });
+
+  it("treats unset, blank and malformed values as no override", () => {
+    expect(parseEndpointOverride("X", undefined)).toBeUndefined();
+    expect(parseEndpointOverride("X", "  ")).toBeUndefined();
+    expect(parseEndpointOverride("X", "not a url")).toBeUndefined();
   });
 });

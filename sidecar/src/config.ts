@@ -182,6 +182,64 @@ export interface Config {
    */
   embeddingsSecrets: CustomProviderSecrets;
   telegram: TelegramConfig;
+  /**
+   * Where the GitHub and Google clients send requests, when not the public
+   * services. Set from YARVIS_* env vars; the demo recordings point them at
+   * local fakes. Absent means the defaults in each client.
+   */
+  endpoints?: ServiceEndpoints;
+}
+
+export interface ServiceEndpoints {
+  /** GitHub REST base, e.g. `https://api.github.com`. */
+  githubApi?: string;
+  /** GitHub GraphQL endpoint, e.g. `https://api.github.com/graphql`. */
+  githubGraphql?: string;
+  /** Google Calendar API base, e.g. `https://www.googleapis.com/calendar/v3`. */
+  googleCalendar?: string;
+  /** Google's OAuth token endpoint, e.g. `https://oauth2.googleapis.com/token`. */
+  googleToken?: string;
+}
+
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * Reads one endpoint override. The service's token goes wherever this points,
+ * so it must be https, or plain http only to this machine. Anything else is
+ * ignored with a warning, leaving the real service in use.
+ */
+export function parseEndpointOverride(name: string, raw: string | undefined): string | undefined {
+  const value = raw?.trim();
+  if (!value) return undefined;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    console.warn(`[config] ignoring ${name}: not a URL`);
+    return undefined;
+  }
+  const secure = url.protocol === "https:";
+  const local = url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname);
+  if (!(secure || local) || url.username || url.password) {
+    console.warn(`[config] ignoring ${name}: must be https, or http to localhost`);
+    return undefined;
+  }
+  return value.replace(/\/+$/, "");
+}
+
+function parseEndpoints(env: NodeJS.ProcessEnv): ServiceEndpoints {
+  return {
+    githubApi: parseEndpointOverride("YARVIS_GITHUB_API_URL", env.YARVIS_GITHUB_API_URL),
+    githubGraphql: parseEndpointOverride(
+      "YARVIS_GITHUB_GRAPHQL_URL",
+      env.YARVIS_GITHUB_GRAPHQL_URL,
+    ),
+    googleCalendar: parseEndpointOverride(
+      "YARVIS_GOOGLE_CALENDAR_API_URL",
+      env.YARVIS_GOOGLE_CALENDAR_API_URL,
+    ),
+    googleToken: parseEndpointOverride("YARVIS_GOOGLE_TOKEN_URL", env.YARVIS_GOOGLE_TOKEN_URL),
+  };
 }
 
 /** Parses one `{ apiKey?, headers }` secret bundle from untrusted JSON. */
@@ -416,6 +474,7 @@ export function loadConfig(): Config {
       otpSecret: env.TELEGRAM_OTP_SECRET || undefined,
       otpWindowMinutes: parseOtpWindowMinutes(env.TELEGRAM_OTP_WINDOW_MINUTES),
     },
+    endpoints: parseEndpoints(env),
   };
 }
 

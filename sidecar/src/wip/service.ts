@@ -1,7 +1,7 @@
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import type { AttentionNavTarget, GithubStar, IssueLink, IssueStar, Task } from "../db/schema.ts";
-import { GitHubClient } from "../github/client.ts";
+import { createGitHubClient, type GitHubClient } from "../github/client.ts";
 import { listStars as listPrStars } from "../github/service.ts";
 import { listIssueRepos, listStars as listIssueStars, listLinks } from "../issues/service.ts";
 import type { IssueSummary } from "../issues/types.ts";
@@ -172,10 +172,9 @@ async function safe<T>(label: string, run: () => Promise<T>, fallback: T): Promi
  */
 async function fetchLabeledIssues(
   db: Db,
-  token: string,
+  gh: GitHubClient,
   labels: string[],
 ): Promise<IssueSummary[]> {
-  const gh = new GitHubClient(token);
   const [{ login }, repos] = await Promise.all([gh.viewer(), listIssueRepos(db)]);
   const byKey = new Map<string, IssueSummary>();
   await Promise.all(
@@ -224,7 +223,7 @@ export async function getWipList(db: Db, config: Config): Promise<WipItem[]> {
       ? safe(
           "my open PRs",
           async () =>
-            token ? await new GitHubClient(token).search("is:pr is:open author:@me") : [],
+            token ? await createGitHubClient(config, token).search("is:pr is:open author:@me") : [],
           [] as PrSummary[],
         )
       : [],
@@ -239,7 +238,7 @@ export async function getWipList(db: Db, config: Config): Promise<WipItem[]> {
     token && issueLabels.length
       ? safe(
           "labeled issues",
-          () => fetchLabeledIssues(db, token, issueLabels),
+          () => fetchLabeledIssues(db, createGitHubClient(config, token), issueLabels),
           [] as IssueSummary[],
         )
       : [],

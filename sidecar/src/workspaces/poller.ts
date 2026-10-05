@@ -19,7 +19,7 @@ import {
   workspaceRepos,
   workspaces,
 } from "../db/schema.ts";
-import { type ChecksSummary, GitHubClient } from "../github/client.ts";
+import { type ChecksSummary, createGitHubClient, type GitHubClient } from "../github/client.ts";
 import { parseRepoRemote } from "./service.ts";
 
 type CheckRollup = WorkspaceRepoPr["checkRollup"];
@@ -174,7 +174,7 @@ async function branchPr(
 export function pollerClients(config: Config): PollerClients {
   const { githubToken, azureDevopsToken, azureDevopsOrgUrl } = config.secrets;
   return {
-    github: githubToken ? new GitHubClient(githubToken) : undefined,
+    github: githubToken ? createGitHubClient(config, githubToken) : undefined,
     azure:
       azureDevopsToken && azureDevopsOrgUrl && isAllowedAzureOrgUrl(azureDevopsOrgUrl)
         ? new AzureDevOpsClient(azureDevopsToken, azureDevopsOrgUrl)

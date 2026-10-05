@@ -6,7 +6,7 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import type { AttentionNavTarget, PrGuideRow } from "../db/schema.ts";
 import { emitEvent } from "../events/service.ts";
-import { GitHubClient } from "../github/client.ts";
+import { createGitHubClient } from "../github/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
 import { availableProviders, pickDefaultModel, resolveModel } from "../llm/providers.ts";
 import { askAboutCode } from "./ask.ts";
@@ -142,7 +142,7 @@ export function createPrRoutes(config: Config): Hono {
     if (ref.provider === "github") {
       const token = config.secrets.githubToken;
       if (!token) return { error: "github token not configured" };
-      return githubPrSource(new GitHubClient(token), ref);
+      return githubPrSource(createGitHubClient(config, token), ref);
     }
     const { azureDevopsToken, azureDevopsOrgUrl } = config.secrets;
     if (!azureDevopsToken || !azureDevopsOrgUrl) return { error: "azure devops not configured" };
@@ -280,7 +280,11 @@ export function createPrRoutes(config: Config): Hono {
     const token = config.secrets.githubToken;
     if (!token) return c.json({ error: "github token not configured" }, 400);
     try {
-      const stack = await new GitHubClient(token).prStack(ref.owner, ref.repo, ref.number);
+      const stack = await createGitHubClient(config, token).prStack(
+        ref.owner,
+        ref.repo,
+        ref.number,
+      );
       return c.json({ stack });
     } catch (e) {
       console.error("[pr] could not read the stack:", describeError(e));
@@ -411,7 +415,7 @@ export function createPrRoutes(config: Config): Hono {
     if (ref.provider === "github") {
       const token = config.secrets.githubToken;
       if (!token) throw new Error("github token not configured");
-      await new GitHubClient(token).postComment(ref.owner, ref.repo, ref.number, comment);
+      await createGitHubClient(config, token).postComment(ref.owner, ref.repo, ref.number, comment);
       return;
     }
     const { azureDevopsToken, azureDevopsOrgUrl } = config.secrets;

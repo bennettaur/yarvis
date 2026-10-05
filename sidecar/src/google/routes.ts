@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { emitEvent } from "../events/service.ts";
-import { buildAuthUrl, GoogleCalendarClient, scopeSatisfied } from "./client.ts";
+import { buildAuthUrl, createGoogleCalendarClient, scopeSatisfied } from "./client.ts";
 import {
   clearToken,
   consumeState,
@@ -16,12 +16,6 @@ import {
 /** Loopback redirect the Google "Desktop app" client returns to after consent. */
 function redirectUri(config: Config): string {
   return `http://127.0.0.1:${config.port}/oauth/google/callback`;
-}
-
-function makeClient(config: Config): GoogleCalendarClient | null {
-  const { googleClientId, googleClientSecret } = config.secrets;
-  if (!googleClientId || !googleClientSecret) return null;
-  return new GoogleCalendarClient(googleClientId, googleClientSecret);
 }
 
 /**
@@ -81,7 +75,7 @@ export function createCalendarRoutes(config: Config): Hono {
   });
 
   router.get("/events", async (c) => {
-    const client = makeClient(config);
+    const client = createGoogleCalendarClient(config);
     if (!client) return c.json({ error: "google oauth not configured" }, 400);
 
     const timeMin = c.req.query("timeMin");
@@ -110,7 +104,7 @@ export function createCalendarRoutes(config: Config): Hono {
    * the user can move or cancel it.
    */
   router.post("/events", async (c) => {
-    const client = makeClient(config);
+    const client = createGoogleCalendarClient(config);
     if (!client) return c.json({ error: "google oauth not configured" }, 400);
     const parsed = createEventSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
@@ -162,7 +156,7 @@ export function createGoogleCallbackRoutes(config: Config): Hono {
     if (!code || !state || !consumeState(state)) {
       return c.html(donePage("Invalid or expired authorization."), 400);
     }
-    const client = makeClient(config);
+    const client = createGoogleCalendarClient(config);
     if (!client || !config.databaseUrl) {
       return c.html(donePage("Calendar integration is not configured."), 400);
     }
