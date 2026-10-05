@@ -1,7 +1,7 @@
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { countEventsByType, type EventType, listEvents } from "../events/service.ts";
-import { GitHubClient } from "../github/client.ts";
+import { createGitHubClient } from "../github/client.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
 import { refKey } from "../pr/types.ts";
@@ -167,7 +167,9 @@ export async function weeklySummaryMaterial(
       const since = window.from.toISOString().slice(0, 10);
       // Both open and closed: a week's story includes what merged, and search
       // has no "state:any" so the absence of an `is:` qualifier is the way.
-      const prs = await new GitHubClient(token).search(`is:pr author:@me updated:>=${since}`);
+      const prs = await createGitHubClient(config, token).search(
+        `is:pr author:@me updated:>=${since}`,
+      );
       myPullRequests = prs.map((pr) => ({
         key: `gh:${pr.owner}/${pr.repo}/${pr.number}`,
         title: `${pr.owner}/${pr.repo}#${pr.number} ${pr.title}`,

@@ -1,7 +1,10 @@
 import { describe, expect, it } from "bun:test";
+import type { Config } from "../config.ts";
 import {
+  createGitHubClient,
   encodeRepoPath,
   GitHubClient,
+  type PrSummary,
   summarizeCheckItems,
   summarizeChecks,
   summarizeReviewDecision,
@@ -918,5 +921,57 @@ describe("github stack restack detection", () => {
     expect((await new GitHubClient("t", stackFetch(stack)).prStack("o", "r", 2)).truncated).toBe(
       false,
     );
+  });
+});
+
+describe("github endpoints", () => {
+  const recording = (urls: string[]) =>
+    (async (url: string) => {
+      urls.push(String(url));
+      return new Response(JSON.stringify({ login: "octo", data: { viewer: { login: "octo" } } }));
+    }) as unknown as typeof fetch;
+
+  it("sends REST and GraphQL requests to the configured endpoints", async () => {
+    const urls: string[] = [];
+    const gh = new GitHubClient("t", recording(urls), {
+      api: "http://127.0.0.1:4010",
+      graphql: "http://127.0.0.1:4010/graphql",
+    });
+    await gh.viewer();
+    await gh.lookupBranches([{ owner: "o", repo: "r", number: 1 } as PrSummary]);
+    expect(urls[0]).toBe("http://127.0.0.1:4010/user");
+    expect(urls[1]).toBe("http://127.0.0.1:4010/graphql");
+  });
+
+  it("sends requests to the endpoints the config overrides", async () => {
+    const original = globalThis.fetch;
+    const urls: string[] = [];
+    globalThis.fetch = recording(urls);
+    try {
+      await createGitHubClient(
+        {
+          endpoints: {
+            githubApi: "http://127.0.0.1:4010",
+            githubGraphql: "http://127.0.0.1:4011/q",
+          },
+        },
+        "t",
+      ).viewer();
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(urls[0]).toBe("http://127.0.0.1:4010/user");
+  });
+
+  it("uses github.com when the config doesn't override it", async () => {
+    const original = globalThis.fetch;
+    const urls: string[] = [];
+    globalThis.fetch = recording(urls);
+    try {
+      await createGitHubClient({} as Config, "t").viewer();
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(urls[0]).toBe("https://api.github.com/user");
   });
 });

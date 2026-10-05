@@ -58,6 +58,9 @@ bun run tauri:build              # release bundle, with the compiled sidecar
 bun run dev:instance <name>       # a second app beside the primary one; add
                                   #   YARVIS_DATABASE_URL to give it its own DB
 bun run sidecar:dev               # sidecar only (prints a dev bearer token)
+bun run demo                      # screenshots + video of the real UI in
+                                  #   Chromium, Rust core mocked; see
+                                  #   demo/README.md
 
 bun run test                      # frontend tests (src/, happy-dom) + the
                                   #   dev-script tests (scripts/)
@@ -179,6 +182,12 @@ back to ad-hoc.
   the tools in `codeTools.ts` are written once and GitHub/Azure each supply an
   implementation. A capability one provider lacks resolves to `null` so the
   caller can say so, rather than throwing.
+- A GitHub or Google client is built with `createGitHubClient(config, token)` or
+  `createGoogleCalendarClient(config)`, never its constructor. The factories are
+  where the demo's endpoint overrides apply, so a bare `new GitHubClient(token)`
+  would send the demo's placeholder token, or a dev's real one, to the real
+  service. The overrides themselves are refused by the Rust core
+  (`ENDPOINT_OVERRIDE_VARS` in `sidecar.rs`) and accepted only for loopback URLs.
 - Stacked pull requests have two sources and neither is optional: the CLI
   decides membership, the API decides each layer's status, and either being
   absent degrades rather than fails. `sidecar/src/workspaces/stack.ts` explains

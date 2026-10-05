@@ -3,6 +3,7 @@
  * implementation is injectable so response shaping can be unit-tested.
  */
 
+import type { Config } from "../config.ts";
 import type { IssueDetail, IssueLabel, IssueRepoMeta, IssueSummary } from "../issues/types.ts";
 import type {
   CheckItem,
@@ -609,14 +610,34 @@ export function encodeRepoPath(path: string): string {
   return segments.map(encodeURIComponent).join("/");
 }
 
+/** Where a `GitHubClient` sends REST and GraphQL requests. */
+export interface GitHubEndpoints {
+  api: string;
+  graphql: string;
+}
+
+const GITHUB_DEFAULT_ENDPOINTS: GitHubEndpoints = {
+  api: "https://api.github.com",
+  graphql: "https://api.github.com/graphql",
+};
+
+/** A client for the GitHub the config points at: github.com unless overridden. */
+export function createGitHubClient(config: Pick<Config, "endpoints">, token: string): GitHubClient {
+  return new GitHubClient(token, fetch, {
+    api: config.endpoints?.githubApi ?? GITHUB_DEFAULT_ENDPOINTS.api,
+    graphql: config.endpoints?.githubGraphql ?? GITHUB_DEFAULT_ENDPOINTS.graphql,
+  });
+}
+
 export class GitHubClient {
   constructor(
     private readonly token: string,
     private readonly fetchImpl: FetchFn = fetch,
+    private readonly endpoints: GitHubEndpoints = GITHUB_DEFAULT_ENDPOINTS,
   ) {}
 
   private async api<T>(path: string): Promise<T> {
-    const res = await this.fetchImpl(`https://api.github.com${path}`, {
+    const res = await this.fetchImpl(`${this.endpoints.api}${path}`, {
       headers: {
         Authorization: `Bearer ${this.token}`,
         Accept: "application/vnd.github+json",
@@ -638,7 +659,7 @@ export class GitHubClient {
     variables: Record<string, unknown>,
     { allowPartial = false, signal }: { allowPartial?: boolean; signal?: AbortSignal } = {},
   ): Promise<T> {
-    const res = await this.fetchImpl("https://api.github.com/graphql", {
+    const res = await this.fetchImpl(this.endpoints.graphql, {
       method: "POST",
       signal,
       headers: {
@@ -816,7 +837,7 @@ export class GitHubClient {
   async fileContent(owner: string, repo: string, path: string, ref: string): Promise<string> {
     const encoded = encodeRepoPath(path);
     const res = await this.fetchImpl(
-      `https://api.github.com/repos/${owner}/${repo}/contents/${encoded}?ref=${encodeURIComponent(ref)}`,
+      `${this.endpoints.api}/repos/${owner}/${repo}/contents/${encoded}?ref=${encodeURIComponent(ref)}`,
       {
         headers: {
           Authorization: `Bearer ${this.token}`,
@@ -846,7 +867,7 @@ export class GitHubClient {
     const encoded = encodeRepoPath(path);
     const suffix = encoded ? `/${encoded}` : "";
     const res = await this.fetchImpl(
-      `https://api.github.com/repos/${owner}/${repo}/contents${suffix}?ref=${encodeURIComponent(ref)}`,
+      `${this.endpoints.api}/repos/${owner}/${repo}/contents${suffix}?ref=${encodeURIComponent(ref)}`,
       {
         headers: {
           Authorization: `Bearer ${this.token}`,
@@ -880,16 +901,13 @@ export class GitHubClient {
     limit = 10,
   ): Promise<{ path: string; fragments: string[] }[]> {
     const q = encodeURIComponent(`${query} repo:${owner}/${repo}`);
-    const res = await this.fetchImpl(
-      `https://api.github.com/search/code?q=${q}&per_page=${limit}`,
-      {
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-          Accept: "application/vnd.github.text-match+json",
-          "X-GitHub-Api-Version": "2022-11-28",
-        },
+    const res = await this.fetchImpl(`${this.endpoints.api}/search/code?q=${q}&per_page=${limit}`, {
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        Accept: "application/vnd.github.text-match+json",
+        "X-GitHub-Api-Version": "2022-11-28",
       },
-    );
+    });
     if (!res.ok) throw new Error(`github code search -> ${res.status}`);
     const body = (await res.json()) as { items?: any[] };
     return (body.items ?? []).map((item: any) => ({
@@ -1181,7 +1199,7 @@ export class GitHubClient {
     body?: string,
   ): Promise<void> {
     const res = await this.fetchImpl(
-      `https://api.github.com/repos/${owner}/${repo}/pulls/${number}/reviews`,
+      `${this.endpoints.api}/repos/${owner}/${repo}/pulls/${number}/reviews`,
       {
         method: "POST",
         headers: {
@@ -1204,7 +1222,7 @@ export class GitHubClient {
   async postComment(owner: string, repo: string, number: number, input: NewComment): Promise<void> {
     const pr = await this.api<{ head: { sha: string } }>(`/repos/${owner}/${repo}/pulls/${number}`);
     const res = await this.fetchImpl(
-      `https://api.github.com/repos/${owner}/${repo}/pulls/${number}/comments`,
+      `${this.endpoints.api}/repos/${owner}/${repo}/pulls/${number}/comments`,
       {
         method: "POST",
         headers: {
@@ -1359,12 +1377,12 @@ export class GitHubClient {
    */
   async ensureLabel(owner: string, repo: string, name: string, color = "ededed"): Promise<void> {
     const res = await this.fetchImpl(
-      `https://api.github.com/repos/${owner}/${repo}/labels/${encodeURIComponent(name)}`,
+      `${this.endpoints.api}/repos/${owner}/${repo}/labels/${encodeURIComponent(name)}`,
       { headers: this.restHeaders() },
     );
     if (res.ok) return;
     if (res.status !== 404) throw new Error(`github get label -> ${res.status}`);
-    const create = await this.fetchImpl(`https://api.github.com/repos/${owner}/${repo}/labels`, {
+    const create = await this.fetchImpl(`${this.endpoints.api}/repos/${owner}/${repo}/labels`, {
       method: "POST",
       headers: this.restHeaders(),
       body: JSON.stringify({ name, color }),
@@ -1389,7 +1407,7 @@ export class GitHubClient {
   }
 
   private async sendRest(path: string, method: string, body: unknown): Promise<Response> {
-    const res = await this.fetchImpl(`https://api.github.com${path}`, {
+    const res = await this.fetchImpl(`${this.endpoints.api}${path}`, {
       method,
       headers: this.restHeaders(),
       body: JSON.stringify(body),

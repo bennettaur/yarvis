@@ -34,6 +34,7 @@ bun run tauri:preview             # the same on the production frontend build: f
 bun run tauri:build               # a release bundle with the compiled sidecar (see Nightly builds)
 bun run dev:instance <name>       # a second copy beside your main one
 bun run sidecar:dev               # the sidecar on its own (YARVIS_LOG_DEV_TOKEN=1 prints its API token)
+bun run demo                      # record screenshots and video of the UI (see demo/README.md)
 
 bun run test                      # frontend tests (src/) and dev-script tests (scripts/)
 bun run sidecar:test              # sidecar tests; needs a test database
@@ -293,4 +294,5 @@ sidecar/        Bun + TS service (Hono)
   src/attention/   attention stream: hook ingest, SSE, clearing
   drizzle/         generated SQL migrations
 scripts/        dev tooling (dev-instance.ts)
+demo/           Playwright demo recordings: mocked Rust core, seeded demo DB (see demo/README.md)
 ```
