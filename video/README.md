@@ -35,12 +35,24 @@ bun run render            # both MP4s into out/
 bun run player:dev        # the web player page
 bun run player:build      # the web player page as static files in dist/
 bun run typecheck         # after changing a component the scenes import from src/
+bun run publish:videos    # upload out/*.mp4 to the showcase-video release
 ```
 
 Rendering needs Chrome Headless Shell. Remotion downloads it on first use, or
 you can point it at an existing one with `--browser-executable`. Render on a
 Mac: the captions use the system font and the terminal uses Menlo, so another OS
 lays the text out differently.
+
+## Publishing
+
+The player page is published at <https://bennettaur.github.io/yarvis/video/>,
+beside the recorded demos and the slide deck. The `Demo site` workflow
+(`.github/workflows/demo-pages.yml`) builds it into the Pages site each time it
+runs; see `demo/README.md` for when that is. Locally, `bun run player:build` here
+and then `bun run demo:site` at the repo root put it in `demo/site/video/`.
+
+The MP4s are not in git. Render them on a Mac, then run `bun run publish:videos`
+to replace the files on the `showcase-video` release, which the page links to.
 
 ## Layout
 

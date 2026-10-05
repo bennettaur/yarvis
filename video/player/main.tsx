@@ -5,10 +5,15 @@ import "../src/styles.css";
 import { FPS, HEIGHT, WIDTH } from "../src/lib/timing";
 import { ShowcaseVideo, totalFrames } from "../src/videos";
 
+/** Where `bun run publish:videos` uploads the rendered MP4s. */
+const RELEASE = "https://github.com/bennettaur/yarvis/releases/download/showcase-video";
+
 const CUTS = [
-  { walkthrough: false, label: "90-second reel" },
-  { walkthrough: true, label: "Full walkthrough" },
+  { walkthrough: false, label: "90-second reel", mp4: `${RELEASE}/yarvis-reel.mp4` },
+  { walkthrough: true, label: "Full walkthrough", mp4: `${RELEASE}/yarvis-walkthrough.mp4` },
 ];
+
+const LINK = "text-indigo-400 hover:underline";
 
 /** The showcase page: both cuts of the video in Remotion's player, with a toggle between them. */
 function App() {
@@ -54,7 +59,28 @@ function App() {
         doubleClickToFullscreen
       />
       <p className="text-sm text-zinc-500">
-        Rendered from the app's own React components with scripted data.
+        Rendered from the app's own React components with scripted data. Download the MP4:{" "}
+        {CUTS.map((cut, i) => (
+          <span key={cut.label}>
+            {i > 0 && " · "}
+            <a className={LINK} href={cut.mp4}>
+              {cut.label.toLowerCase()}
+            </a>
+          </span>
+        ))}
+        . More: the{" "}
+        <a className={LINK} href="../">
+          recorded demos
+        </a>
+        , the{" "}
+        <a className={LINK} href="../showcase/">
+          slide deck
+        </a>
+        , and the source at{" "}
+        <a className={LINK} href="https://github.com/bennettaur/yarvis">
+          github.com/bennettaur/yarvis
+        </a>
+        .
       </p>
     </main>
   );

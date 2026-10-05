@@ -109,9 +109,11 @@ back to ad-hoc.
 - Package manager is **Bun** everywhere, including the sidecar workspace.
 - `video/` is a standalone Remotion package for the showcase video, with its
   own `bun.lock`; it is not a workspace, so the root `bun install` skips it. Its
-  scenes import prop-driven components from `src/`, and neither CI nor the root
-  typecheck covers it, so after changing the props of a component it uses, run
-  `bun run typecheck` in `video/`.
+  scenes import prop-driven components from `src/`, so changing the props of a
+  component it uses can break it. The root typecheck doesn't cover it: run
+  `bun run typecheck` in `video/`, which CI's `video-typecheck` job also runs.
+  The `Demo site` workflow builds its web player into the Pages site at
+  `video/`.
 - `bun.lock` records no registry: every entry's resolution field stays `""` so
   CI's `--frozen-lockfile` install resolves from the default registry. A machine
   pointed at a private mirror has bun write that mirror's tarball URL into every
