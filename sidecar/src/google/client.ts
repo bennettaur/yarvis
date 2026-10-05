@@ -7,9 +7,22 @@
  * Google Cloud OAuth app (client id/secret) is wired in.
  */
 
+import type { Config } from "../config.ts";
+
+// Not overridable: it's the consent page the user's browser opens, not a
+// request the sidecar makes.
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
-const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
-const CALENDAR_EVENTS = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
+
+/** Where a `GoogleCalendarClient` sends token and Calendar API requests. */
+export interface GoogleEndpoints {
+  token: string;
+  calendar: string;
+}
+
+const GOOGLE_DEFAULT_ENDPOINTS: GoogleEndpoints = {
+  token: "https://oauth2.googleapis.com/token",
+  calendar: "https://www.googleapis.com/calendar/v3",
+};
 
 /**
  * Read plus event-create. `calendar.events` is the narrowest scope Google offers
@@ -104,16 +117,33 @@ export function toCalendarEvent(item: any): CalendarEvent {
   };
 }
 
+/** A client for the configured Google endpoints, or null until a client id and secret are set. */
+export function createGoogleCalendarClient(
+  config: Pick<Config, "secrets" | "endpoints">,
+): GoogleCalendarClient | null {
+  const { googleClientId, googleClientSecret } = config.secrets;
+  if (!googleClientId || !googleClientSecret) return null;
+  return new GoogleCalendarClient(googleClientId, googleClientSecret, fetch, {
+    token: config.endpoints?.googleToken ?? GOOGLE_DEFAULT_ENDPOINTS.token,
+    calendar: config.endpoints?.googleCalendar ?? GOOGLE_DEFAULT_ENDPOINTS.calendar,
+  });
+}
+
 export class GoogleCalendarClient {
   constructor(
     private readonly clientId: string,
     private readonly clientSecret: string,
     private readonly fetchImpl: FetchFn = fetch,
+    private readonly endpoints: GoogleEndpoints = GOOGLE_DEFAULT_ENDPOINTS,
   ) {}
+
+  private get eventsUrl(): string {
+    return `${this.endpoints.calendar}/calendars/primary/events`;
+  }
 
   /** Exchanges an authorization code for access + refresh tokens. */
   async exchangeCode(code: string, redirectUri: string): Promise<TokenResponse> {
-    const res = await this.fetchImpl(TOKEN_ENDPOINT, {
+    const res = await this.fetchImpl(this.endpoints.token, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -130,7 +160,7 @@ export class GoogleCalendarClient {
 
   /** Trades a refresh token for a fresh access token (no new refresh token). */
   async refresh(refreshToken: string): Promise<TokenResponse> {
-    const res = await this.fetchImpl(TOKEN_ENDPOINT, {
+    const res = await this.fetchImpl(this.endpoints.token, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -164,7 +194,7 @@ export class GoogleCalendarClient {
       maxResults: String(options.maxResults ?? 20),
     });
     if (options.timeMax) params.set("timeMax", options.timeMax);
-    const res = await this.fetchImpl(`${CALENDAR_EVENTS}?${params.toString()}`, {
+    const res = await this.fetchImpl(`${this.eventsUrl}?${params.toString()}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (!res.ok) throw new Error(`google calendar events -> ${res.status}`);
@@ -217,7 +247,7 @@ export class GoogleCalendarClient {
     const params = new URLSearchParams();
     if (input.conferenceLink) params.set("conferenceDataVersion", "1");
     const query = params.toString();
-    const res = await this.fetchImpl(`${CALENDAR_EVENTS}${query ? `?${query}` : ""}`, {
+    const res = await this.fetchImpl(`${this.eventsUrl}${query ? `?${query}` : ""}`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,

@@ -22,6 +22,10 @@
     "reviewQuery": "is:open is:pr review-requested:@me",
     "reviewingLookbackDays": 30
   },
+  "prModels": {
+    "guide": null,
+    "ask": null
+  },
   "wipConfig": {
     "sources": {
       "myPrs": true,

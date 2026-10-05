@@ -1,7 +1,7 @@
 import type { Db } from "../db/client.ts";
 import type { EventRow } from "../db/schema.ts";
 import { type EventType, listEvents, recordEventOnce } from "../events/service.ts";
-import { GitHubClient, type ReviewContribution, reviewExternalId } from "../github/client.ts";
+import { createGitHubClient, type ReviewContribution, reviewExternalId } from "../github/client.ts";
 import { refKey } from "../pr/types.ts";
 import type { JobDefinition } from "./scheduler.ts";
 
@@ -169,7 +169,10 @@ export const githubReviewSyncJob: JobDefinition = {
     const token = config.secrets?.githubToken;
     if (!token) return { skipped: true, detail: "no GitHub token configured" };
     const window = syncWindow(cursor, now);
-    const read = await new GitHubClient(token).reviewContributions(window.from, window.to);
+    const read = await createGitHubClient(config, token).reviewContributions(
+      window.from,
+      window.to,
+    );
     const added = await recordReviewContributions(db, read.contributions, window);
     const notes = [
       read.truncated ? "hit the page cap, the next run carries on" : null,

@@ -2,7 +2,7 @@ import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import type { AttentionNavTarget } from "../db/schema.ts";
 import { countEventsByType, REVIEW_EVENT_TYPES } from "../events/service.ts";
-import { GitHubClient } from "../github/client.ts";
+import { createGitHubClient } from "../github/client.ts";
 import { getGithubPrConfig } from "../github/config.ts";
 import { getReviewingList, isReviewComplete } from "../github/reviewing.ts";
 import { type PrInvolvement, type PrSummary, refKey } from "../pr/types.ts";
@@ -112,7 +112,7 @@ export async function findDanglingWork(
   if (!token) {
     unavailable.push("github (no token configured)");
   } else {
-    const gh = new GitHubClient(token);
+    const gh = createGitHubClient(config, token);
     const prConfig = await getGithubPrConfig();
     const lookbackDays = options.lookbackDays ?? prConfig.reviewingLookbackDays;
     try {

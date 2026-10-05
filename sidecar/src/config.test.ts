@@ -3,6 +3,8 @@ import {
   loadInstanceConfig,
   parseAllowedChatIds,
   parseBackgroundWorkers,
+  parseEndpointOverride,
+  parseEndpoints,
   parseInstanceName,
   parseOtpWindowMinutes,
 } from "./config.ts";
@@ -103,5 +105,58 @@ describe("loadInstanceConfig", () => {
     process.env.YARVIS_INSTANCE = "migration-test";
     delete process.env.YARVIS_BACKGROUND_WORKERS;
     expect(loadInstanceConfig().backgroundWorkers).toBe(false);
+  });
+});
+
+describe("parseEndpointOverride", () => {
+  it("accepts a base URL on this machine and trims a trailing slash", () => {
+    expect(parseEndpointOverride("X", "http://127.0.0.1:4010/")).toBe("http://127.0.0.1:4010");
+    expect(parseEndpointOverride("X", "http://localhost:4010/v3")).toBe("http://localhost:4010/v3");
+    expect(parseEndpointOverride("X", "http://[::1]:4010")).toBe("http://[::1]:4010");
+  });
+
+  it("refuses any other host, even over https", () => {
+    expect(parseEndpointOverride("X", "https://ghe.example.com/api/v3")).toBeUndefined();
+    expect(parseEndpointOverride("X", "http://api.example.com")).toBeUndefined();
+  });
+
+  it("refuses credentials, a query or a fragment, which would travel with every request", () => {
+    expect(parseEndpointOverride("X", "http://user:pass@127.0.0.1:4010")).toBeUndefined();
+    expect(parseEndpointOverride("X", "http://127.0.0.1:4010?x=1")).toBeUndefined();
+    expect(parseEndpointOverride("X", "http://127.0.0.1:4010#x")).toBeUndefined();
+  });
+
+  it("treats unset, blank and malformed values as no override", () => {
+    expect(parseEndpointOverride("X", undefined)).toBeUndefined();
+    expect(parseEndpointOverride("X", "  ")).toBeUndefined();
+    expect(parseEndpointOverride("X", "not a url")).toBeUndefined();
+  });
+});
+
+describe("parseEndpoints", () => {
+  it("reads both pairs of overrides", () => {
+    expect(
+      parseEndpoints({
+        YARVIS_GITHUB_API_URL: "http://127.0.0.1:1",
+        YARVIS_GITHUB_GRAPHQL_URL: "http://127.0.0.1:1/graphql",
+        YARVIS_GOOGLE_CALENDAR_API_URL: "http://127.0.0.1:2/calendar/v3",
+        YARVIS_GOOGLE_TOKEN_URL: "http://127.0.0.1:2/token",
+      }),
+    ).toEqual({
+      githubApi: "http://127.0.0.1:1",
+      githubGraphql: "http://127.0.0.1:1/graphql",
+      googleCalendar: "http://127.0.0.1:2/calendar/v3",
+      googleToken: "http://127.0.0.1:2/token",
+    });
+  });
+
+  it("ignores half a pair, so the other half can't send the token to the real service", () => {
+    const endpoints = parseEndpoints({ YARVIS_GITHUB_API_URL: "http://127.0.0.1:1" });
+    expect(endpoints.githubApi).toBeUndefined();
+    expect(endpoints.githubGraphql).toBeUndefined();
+  });
+
+  it("leaves everything unset with no overrides", () => {
+    expect(Object.values(parseEndpoints({})).every((v) => v === undefined)).toBe(true);
   });
 });
