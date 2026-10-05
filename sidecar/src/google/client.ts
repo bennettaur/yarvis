@@ -9,6 +9,8 @@
 
 import type { Config } from "../config.ts";
 
+// Not overridable: it's the consent page the user's browser opens, not a
+// request the sidecar makes.
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 
 /** Where a `GoogleCalendarClient` sends token and Calendar API requests. */
@@ -17,7 +19,7 @@ export interface GoogleEndpoints {
   calendar: string;
 }
 
-export const GOOGLE_DEFAULT_ENDPOINTS: GoogleEndpoints = {
+const GOOGLE_DEFAULT_ENDPOINTS: GoogleEndpoints = {
   token: "https://oauth2.googleapis.com/token",
   calendar: "https://www.googleapis.com/calendar/v3",
 };
@@ -116,7 +118,9 @@ export function toCalendarEvent(item: any): CalendarEvent {
 }
 
 /** A client for the configured Google endpoints, or null until a client id and secret are set. */
-export function createGoogleCalendarClient(config: Config): GoogleCalendarClient | null {
+export function createGoogleCalendarClient(
+  config: Pick<Config, "secrets" | "endpoints">,
+): GoogleCalendarClient | null {
   const { googleClientId, googleClientSecret } = config.secrets;
   if (!googleClientId || !googleClientSecret) return null;
   return new GoogleCalendarClient(googleClientId, googleClientSecret, fetch, {

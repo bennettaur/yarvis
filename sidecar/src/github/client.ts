@@ -616,7 +616,7 @@ export interface GitHubEndpoints {
   graphql: string;
 }
 
-export const GITHUB_DOT_COM: GitHubEndpoints = {
+const GITHUB_DEFAULT_ENDPOINTS: GitHubEndpoints = {
   api: "https://api.github.com",
   graphql: "https://api.github.com/graphql",
 };
@@ -624,8 +624,8 @@ export const GITHUB_DOT_COM: GitHubEndpoints = {
 /** A client for the GitHub the config points at: github.com unless overridden. */
 export function createGitHubClient(config: Pick<Config, "endpoints">, token: string): GitHubClient {
   return new GitHubClient(token, fetch, {
-    api: config.endpoints?.githubApi ?? GITHUB_DOT_COM.api,
-    graphql: config.endpoints?.githubGraphql ?? GITHUB_DOT_COM.graphql,
+    api: config.endpoints?.githubApi ?? GITHUB_DEFAULT_ENDPOINTS.api,
+    graphql: config.endpoints?.githubGraphql ?? GITHUB_DEFAULT_ENDPOINTS.graphql,
   });
 }
 
@@ -633,7 +633,7 @@ export class GitHubClient {
   constructor(
     private readonly token: string,
     private readonly fetchImpl: FetchFn = fetch,
-    private readonly endpoints: GitHubEndpoints = GITHUB_DOT_COM,
+    private readonly endpoints: GitHubEndpoints = GITHUB_DEFAULT_ENDPOINTS,
   ) {}
 
   private async api<T>(path: string): Promise<T> {

@@ -48,8 +48,8 @@ Tasks are grouped into these lists:
   Friday. It only appears when there's something in it.
 - **This week**: tasks with no fixed day.
 
-Each task shows a date chip: Today, Tomorrow, a weekday, or "3d ago" for an
-overdue one.
+Each task shows a date chip: Today, Tomorrow, a weekday, a date such as Oct 14,
+or "3d ago" for an overdue one.
 
 Hover a task to see its actions:
 

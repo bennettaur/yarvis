@@ -241,8 +241,27 @@ async fn supervise(app: AppHandle, port: u16, token: String, restart: Arc<Notify
     }
 }
 
+/// Env vars that point the sidecar's GitHub and Google clients at local fakes.
+/// They exist for the demo recordings, which start the sidecar themselves. The
+/// app must never pass them on: the sidecar would send the Keychain's GitHub
+/// token and Google credentials wherever they point, and they could be planted
+/// in the shell or launchd environment the app inherits.
+const ENDPOINT_OVERRIDE_VARS: [&str; 4] = [
+    "YARVIS_GITHUB_API_URL",
+    "YARVIS_GITHUB_GRAPHQL_URL",
+    "YARVIS_GOOGLE_CALENDAR_API_URL",
+    "YARVIS_GOOGLE_TOKEN_URL",
+];
+
+fn strip_endpoint_overrides(cmd: &mut Command) {
+    for var in ENDPOINT_OVERRIDE_VARS {
+        cmd.env_remove(var);
+    }
+}
+
 fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
     let mut cmd = command_base();
+    strip_endpoint_overrides(&mut cmd);
     cmd.env("YARVIS_SIDECAR_PORT", port.to_string());
     cmd.env("YARVIS_SIDECAR_TOKEN", token);
     cmd.env(
@@ -415,6 +434,22 @@ pub fn restart_sidecar(control: tauri::State<'_, SidecarControl>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn endpoint_overrides_never_reach_the_sidecar() {
+        let mut cmd = Command::new("true");
+        cmd.env("YARVIS_GITHUB_API_URL", "https://attacker.example");
+        strip_endpoint_overrides(&mut cmd);
+        let envs: Vec<_> = cmd.as_std().get_envs().collect();
+        for var in ENDPOINT_OVERRIDE_VARS {
+            // `None` is how Command records a removal, which also stops an
+            // inherited value from passing through.
+            assert!(
+                envs.contains(&(std::ffi::OsStr::new(var), None)),
+                "{var} is not removed"
+            );
+        }
+    }
 
     #[test]
     fn the_origin_list_carries_this_instances_dev_server() {

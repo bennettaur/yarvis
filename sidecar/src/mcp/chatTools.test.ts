@@ -126,6 +126,19 @@ describe("assembleAgentToolset", () => {
     expect(count).toBeGreaterThan(0);
   });
 
+  it("seeds a built-in an older build never registered", async () => {
+    await sql`DELETE FROM agent_tools WHERE id = 'builtin:create_task'`;
+    unmountAll("sess-stale");
+    const { computeActiveTools } = await assembleAgentToolset({
+      config,
+      db,
+      sessionId: "sess-stale",
+      builtinTools: { create_task: fakeBuiltin("create_task") },
+      approval: { onRequest: async () => {} },
+    });
+    expect(computeActiveTools()).toContain("create_task");
+  });
+
   it("excludes disabled tools and gates search-policy tools until mounted", async () => {
     unmountAll("sess-b");
     await setToolSettings(db, "builtin:create_task", { policy: "search" });

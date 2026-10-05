@@ -183,30 +183,31 @@ export interface Config {
   embeddingsSecrets: CustomProviderSecrets;
   telegram: TelegramConfig;
   /**
-   * Where the GitHub and Google clients send requests, when not the public
-   * services. Set from YARVIS_* env vars; the demo recordings point them at
-   * local fakes. Absent means the defaults in each client.
+   * Local stand-ins for GitHub and Google, which the demo recordings point the
+   * clients at. Absent means the real services. See `parseEndpoints`.
    */
   endpoints?: ServiceEndpoints;
 }
 
 export interface ServiceEndpoints {
-  /** GitHub REST base, e.g. `https://api.github.com`. */
+  /** GitHub REST base in place of `https://api.github.com`. */
   githubApi?: string;
-  /** GitHub GraphQL endpoint, e.g. `https://api.github.com/graphql`. */
+  /** GitHub GraphQL endpoint in place of `https://api.github.com/graphql`. */
   githubGraphql?: string;
-  /** Google Calendar API base, e.g. `https://www.googleapis.com/calendar/v3`. */
+  /** Google Calendar API base in place of `https://www.googleapis.com/calendar/v3`. */
   googleCalendar?: string;
-  /** Google's OAuth token endpoint, e.g. `https://oauth2.googleapis.com/token`. */
+  /** Google OAuth token endpoint in place of `https://oauth2.googleapis.com/token`. */
   googleToken?: string;
 }
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 /**
- * Reads one endpoint override. The service's token goes wherever this points,
- * so it must be https, or plain http only to this machine. Anything else is
- * ignored with a warning, leaving the real service in use.
+ * Reads one endpoint override. A service's credentials go wherever this
+ * points, so it must be a plain base URL on this machine: loopback only, with
+ * no username, password, query or fragment to smuggle into the requests
+ * built from it. Anything else is ignored with a warning, which leaves the
+ * real service in use.
  */
 export function parseEndpointOverride(name: string, raw: string | undefined): string | undefined {
   const value = raw?.trim();
@@ -218,27 +219,44 @@ export function parseEndpointOverride(name: string, raw: string | undefined): st
     console.warn(`[config] ignoring ${name}: not a URL`);
     return undefined;
   }
-  const secure = url.protocol === "https:";
-  const local = url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname);
-  if (!(secure || local) || url.username || url.password) {
-    console.warn(`[config] ignoring ${name}: must be https, or http to localhost`);
+  const isLoopback = ["http:", "https:"].includes(url.protocol) && LOOPBACK_HOSTS.has(url.hostname);
+  if (!isLoopback) {
+    console.warn(`[config] ignoring ${name}: must point at localhost`);
     return undefined;
   }
-  return value.replace(/\/+$/, "");
+  if (url.username || url.password || url.search || url.hash) {
+    console.warn(`[config] ignoring ${name}: must be a base URL with no credentials or query`);
+    return undefined;
+  }
+  // Rebuilt from the parsed URL, so what's used is exactly what was checked.
+  return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
 }
 
-function parseEndpoints(env: NodeJS.ProcessEnv): ServiceEndpoints {
+/**
+ * Overrides come in pairs, one pair per service, and a pair is used whole or
+ * not at all: with only one half set, the other would keep sending the same
+ * credentials to the real service. The Rust core strips these variables
+ * before it starts the sidecar, so only a sidecar started by hand (the demo)
+ * ever sees them.
+ */
+export function parseEndpoints(env: NodeJS.ProcessEnv): ServiceEndpoints {
+  const pair = (service: string, names: [string, string]): [string, string] | undefined => {
+    const [a, b] = names.map((n) => parseEndpointOverride(n, env[n]));
+    if (!a && !b) return undefined;
+    if (!a || !b) {
+      console.warn(`[config] ignoring the ${service} overrides: set both ${names.join(" and ")}`);
+      return undefined;
+    }
+    console.log(`[config] ${service} requests go to ${new URL(a).host}`);
+    return [a, b];
+  };
+  const github = pair("GitHub", ["YARVIS_GITHUB_API_URL", "YARVIS_GITHUB_GRAPHQL_URL"]);
+  const google = pair("Google", ["YARVIS_GOOGLE_CALENDAR_API_URL", "YARVIS_GOOGLE_TOKEN_URL"]);
   return {
-    githubApi: parseEndpointOverride("YARVIS_GITHUB_API_URL", env.YARVIS_GITHUB_API_URL),
-    githubGraphql: parseEndpointOverride(
-      "YARVIS_GITHUB_GRAPHQL_URL",
-      env.YARVIS_GITHUB_GRAPHQL_URL,
-    ),
-    googleCalendar: parseEndpointOverride(
-      "YARVIS_GOOGLE_CALENDAR_API_URL",
-      env.YARVIS_GOOGLE_CALENDAR_API_URL,
-    ),
-    googleToken: parseEndpointOverride("YARVIS_GOOGLE_TOKEN_URL", env.YARVIS_GOOGLE_TOKEN_URL),
+    githubApi: github?.[0],
+    githubGraphql: github?.[1],
+    googleCalendar: google?.[0],
+    googleToken: google?.[1],
   };
 }
 

@@ -1,5 +1,4 @@
 import { describe, expect, it } from "bun:test";
-import type { Config } from "../config.ts";
 import {
   buildAuthUrl,
   CALENDAR_SCOPE,
@@ -141,13 +140,36 @@ describe("google endpoints", () => {
       calendar: "http://127.0.0.1:4010/calendar/v3",
     });
     await client.refresh("refresh-token");
+    await client.exchangeCode("code", "http://127.0.0.1/cb");
     await client.listEvents("t", { timeMin: "2026-06-17T00:00:00Z" });
     expect(urls[0]).toBe("http://127.0.0.1:4010/token");
-    expect(urls[1]).toStartWith("http://127.0.0.1:4010/calendar/v3/calendars/primary/events?");
+    expect(urls[1]).toBe("http://127.0.0.1:4010/token");
+    expect(urls[2]).toStartWith("http://127.0.0.1:4010/calendar/v3/calendars/primary/events?");
+  });
+
+  it("builds a client for the configured endpoints", async () => {
+    const original = globalThis.fetch;
+    const urls: string[] = [];
+    globalThis.fetch = (async (url: string) => {
+      urls.push(String(url));
+      return new Response(JSON.stringify({ items: [] }));
+    }) as unknown as typeof fetch;
+    try {
+      const client = createGoogleCalendarClient({
+        secrets: { googleClientId: "cid", googleClientSecret: "secret" },
+        endpoints: {
+          googleCalendar: "http://127.0.0.1:4010/cal",
+          googleToken: "http://127.0.0.1:4010/t",
+        },
+      });
+      await client?.listEvents("t");
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(urls[0]).toStartWith("http://127.0.0.1:4010/cal/calendars/primary/events?");
   });
 
   it("needs a client id and secret before it builds a client", () => {
-    const config = { secrets: {}, endpoints: {} } as unknown as Config;
-    expect(createGoogleCalendarClient(config)).toBeNull();
+    expect(createGoogleCalendarClient({ secrets: {} })).toBeNull();
   });
 });

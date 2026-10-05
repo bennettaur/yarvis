@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { type Tool, type ToolExecutionOptions, tool } from "ai";
 import { z } from "zod";
-import { syncBuiltins } from "../agentTools/registry.ts";
+import { builtinToolIds, syncBuiltins } from "../agentTools/registry.ts";
 import { listRegistryTools, type RegistryTool, searchRegistry } from "../agentTools/store.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
+import { describeError, redactSecrets } from "../llm/errors.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { APPROVAL_TIMEOUT_MS, waitForApproval } from "./approvals.ts";
 import { getMcpManager, type McpClientTool } from "./connectionManager.ts";
@@ -179,6 +180,29 @@ export interface AgentToolset {
 }
 
 /**
+ * The tool registry, seeding the built-ins first if any are missing. Startup seeds them only on an instance that runs background
+ * workers, so a secondary instance with a database of its own, or one whose
+ * database an older build seeded, would otherwise lack some, and a built-in
+ * with no registry row is assembled but never offered to the model.
+ *
+ * A failed seed is logged rather than thrown, so chat still works without the
+ * missing built-ins. Two turns seeding at once insert the same ids; the
+ * loser's insert fails on the primary key and is logged, and its re-read
+ * returns the winner's rows.
+ */
+async function readRegistryWithBuiltins(config: Config, db: Db): Promise<RegistryTool[]> {
+  const registry = await listRegistryTools(db);
+  const registered = new Set(registry.map((t) => t.id));
+  if (builtinToolIds().every((id) => registered.has(id))) return registry;
+  try {
+    await syncBuiltins(db, await chooseEmbedder(config, db));
+  } catch (e) {
+    console.error("[mcp] seeding built-in tools failed:", redactSecrets(describeError(e)));
+  }
+  return listRegistryTools(db);
+}
+
+/**
  * Assembles the agent's tool set for one chat request from the unified registry:
  * non-disabled built-in tools, wrapped live MCP tools, and the meta tools. Also
  * returns a `computeActiveTools` closure for `prepareStep` that gates which tools
@@ -190,26 +214,6 @@ export interface AgentToolset {
  * for one omits `approval`; live MCP tools are then left out of the set rather
  * than exposed with no gate.
  */
-/**
- * The tool registry, seeding the built-ins first if none are there. Startup
- * seeds them only on an instance that runs background workers, so a secondary
- * instance with a database of its own would otherwise start with none, and a
- * built-in with no registry row is assembled but never offered to the model.
- * A failed seed is logged rather than thrown, so chat still works without the
- * built-ins; two turns seeding at once can collide, and the re-read picks up
- * whichever won.
- */
-async function readRegistryWithBuiltins(config: Config, db: Db): Promise<RegistryTool[]> {
-  const registry = await listRegistryTools(db);
-  if (registry.some((t) => t.source === "builtin")) return registry;
-  try {
-    await syncBuiltins(db, await chooseEmbedder(config, db));
-  } catch (e) {
-    console.error("[mcp] seeding built-in tools failed:", e);
-  }
-  return listRegistryTools(db);
-}
-
 export async function assembleAgentToolset(opts: {
   config: Config;
   db: Db;

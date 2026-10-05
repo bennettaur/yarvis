@@ -32,6 +32,9 @@ const TASKS: Task[] = [
   },
 ];
 
+/** What the mocked sidecar returns for tasks; a test may swap it and must restore it. */
+let currentTasks: Task[] = TASKS;
+
 mock.module("../lib/api", () => ({
   sidecarInfo: async () => ({ port: 0, token: "test-token" }),
   // Faithful copy of the real implementation: a naive stub here would leak
@@ -87,7 +90,7 @@ mock.module("../lib/api", () => ({
   getDbHealth: async () => ({ configured: true, reachable: true }),
   streamSSE: async function* streamSSE() {},
   sidecarFetch: async (path: string) =>
-    new Response(JSON.stringify(path.includes("/api/tasks") ? TASKS : {}), {
+    new Response(JSON.stringify(path.includes("/api/tasks") ? currentTasks : {}), {
       status: 200,
       headers: { "content-type": "application/json" },
     }),
@@ -103,6 +106,25 @@ describe("TasksPanel", () => {
 
     const html = await renderToHtml(createElement(TasksPanel));
     expect(html).not.toContain("Loading tasks…");
+  });
+
+  it("shows Upcoming only when a task is due on a later day", async () => {
+    clearResourceCache();
+    expect(await renderToHtml(createElement(TasksPanel))).not.toContain("Upcoming");
+
+    currentTasks = [
+      ...TASKS,
+      { ...TASKS[0], id: "task-friday", title: "Send the plan", targetDate: "2026-06-19" },
+    ];
+    try {
+      clearResourceCache();
+      const html = await renderToHtml(createElement(TasksPanel));
+      expect(html).toContain("Upcoming");
+      expect(html).toContain("Send the plan");
+    } finally {
+      currentTasks = TASKS;
+      clearResourceCache();
+    }
   });
 
   it("renders each open task with a delete affordance", async () => {

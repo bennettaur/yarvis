@@ -40,21 +40,21 @@ export interface TaskGroups {
   today: Task[];
   /** Daily tasks dated after today. */
   upcoming: Task[];
-  /** Weekly tasks, and daily ones with no date. */
+  /** Weekly tasks and undated daily ones, unless overdue. */
   weekly: Task[];
 }
 
 /**
  * Sorts open tasks into the panel's groups. Every task lands in exactly one, so
- * a combination nothing expected (a daily task dated next week, which the
- * assistant's tools allow) still shows up somewhere.
+ * none drops off the panel. A daily task dated after today, which the
+ * assistant's tools can create, goes under Upcoming.
  */
-export function groupTasks(tasks: Task[], today: string): TaskGroups {
+export function groupTasks(tasks: Task[], todayDate: string): TaskGroups {
   const groups: TaskGroups = { overdue: [], today: [], upcoming: [], weekly: [] };
   for (const task of tasks) {
-    if (task.targetDate && task.targetDate < today) groups.overdue.push(task);
+    if (task.targetDate && task.targetDate < todayDate) groups.overdue.push(task);
     else if (task.scope === "weekly" || !task.targetDate) groups.weekly.push(task);
-    else if (task.targetDate === today) groups.today.push(task);
+    else if (task.targetDate === todayDate) groups.today.push(task);
     else groups.upcoming.push(task);
   }
   return groups;

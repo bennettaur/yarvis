@@ -943,6 +943,26 @@ describe("github endpoints", () => {
     expect(urls[1]).toBe("http://127.0.0.1:4010/graphql");
   });
 
+  it("sends requests to the endpoints the config overrides", async () => {
+    const original = globalThis.fetch;
+    const urls: string[] = [];
+    globalThis.fetch = recording(urls);
+    try {
+      await createGitHubClient(
+        {
+          endpoints: {
+            githubApi: "http://127.0.0.1:4010",
+            githubGraphql: "http://127.0.0.1:4011/q",
+          },
+        },
+        "t",
+      ).viewer();
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(urls[0]).toBe("http://127.0.0.1:4010/user");
+  });
+
   it("uses github.com when the config doesn't override it", async () => {
     const original = globalThis.fetch;
     const urls: string[] = [];
