@@ -19,6 +19,9 @@ dist-ssr
 .env.*
 !.env.example
 
+# Screenshots, videos and scratch state from `bun run demo`
+demo/output/
+
 # Sidecar binary compiled at packaging time
 src-tauri/binaries/
 

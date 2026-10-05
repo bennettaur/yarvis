@@ -1,0 +1,34 @@
+---
+name: demo-flow
+description: Turn a plain-English demo script into a Playwright demo flow under demo/flows/, run it, and check the screenshots and video it produces. Use when someone wants screenshots or a video of Yarvis, asks to record a demo, or hands over a list of steps to show in the app.
+---
+
+# Write and record a demo flow
+
+The demo harness is described in `demo/README.md`. Read it first. It drives
+the real frontend in Chromium against a seeded sidecar, with the Rust core
+mocked by `demo/tauriMock.ts`.
+
+## Steps
+
+1. Get the script: a list of steps to show, and the screenshots wanted. If the
+   user gave only a goal ("show off memory"), write the steps yourself and
+   confirm them before going on.
+2. Check each step against what the harness can show. Terminals and agent
+   sessions open empty, and chat needs a provider key in the env. If a step
+   depends on one of those, say so and offer an alternative before writing it.
+3. Find the selectors in the components under `src/components/`. Prefer, in
+   order: `getByRole` with the accessible name, `getByPlaceholder`,
+   `getByText`. Avoid CSS classes, since Tailwind classes change often.
+4. Write `demo/flows/<name>.demo.ts` with the `demo` helpers from
+   `demo/fixture.ts`. After every action that changes the screen, wait for the
+   result with `expect(...).toBeVisible()` before calling `demo.shot`. If the
+   flow needs data the seed lacks, add it to `demo/seed.ts` when other flows
+   could use it too. Otherwise create it in the flow.
+5. Run it: `bun run demo -g "<test title>"`. It needs local Postgres, so
+   outside a sandbox.
+6. Look at every PNG in `demo/output/<title>/`. Check that each one shows what
+   its step promised: no loading spinners, no error banners, nothing cut off.
+   Fix the flow and rerun until they do.
+7. Report the output path. Mention any step that couldn't be shown as
+   written.

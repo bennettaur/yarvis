@@ -32,6 +32,7 @@ Run these from the repo root.
 bun run tauri dev                 # the full app: frontend + Rust core + sidecar
 bun run dev:instance <name>       # a second copy beside your main one
 bun run sidecar:dev               # the sidecar on its own (YARVIS_LOG_DEV_TOKEN=1 prints its API token)
+bun run demo                      # record screenshots and video of the UI (see demo/README.md)
 
 bun run test                      # frontend tests (src/) and dev-script tests (scripts/)
 bun run sidecar:test              # sidecar tests; needs a test database

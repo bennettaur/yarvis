@@ -55,6 +55,9 @@ bun run tauri dev                # full app: frontend + Rust core + sidecar
 bun run dev:instance <name>       # a second app beside the primary one; add
                                   #   YARVIS_DATABASE_URL to give it its own DB
 bun run sidecar:dev               # sidecar only (prints a dev bearer token)
+bun run demo                      # screenshots + video of the real UI in
+                                  #   Chromium, Rust core mocked; see
+                                  #   demo/README.md
 
 bun run test                      # frontend tests (src/, happy-dom) + the
                                   #   dev-script tests (scripts/)
