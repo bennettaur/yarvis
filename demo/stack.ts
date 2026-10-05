@@ -1,17 +1,19 @@
 /**
- * Starts everything a demo needs: a fresh demo database, a sidecar against
- * it, and the Vite dev server serving `demo/index.html`.
+ * Starts everything a demo needs: a fresh demo database, the fake chat model,
+ * a sidecar against both, and the Vite dev server serving `demo/index.html`.
  *
- * The sidecar runs with its home directory, settings file and workspaces root
- * pointed at a scratch directory, so nothing from the real Yarvis install (its
- * memories, Claude Code sessions, workspaces) can show up in a screenshot.
+ * The sidecar's home directory and settings file point into
+ * `demo/output/.state/` and its workspaces root into `/tmp/yarvis-demo/`, so
+ * nothing from the real Yarvis install (its memories, Claude Code sessions,
+ * workspaces) can show up in a screenshot. One run at a time per machine:
+ * runs share the demo database and the workspaces root.
  */
 
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { FAKE_MODEL, startFakeLlm } from "./fakeLlm/server";
 import { OUTPUT_DIR, REPO_ROOT } from "./paths";
 
@@ -20,7 +22,25 @@ const STATE_DIR = join(OUTPUT_DIR, ".state");
  * The app shows a workspace's full path, so workspaces live somewhere that
  * doesn't reveal the developer's username or folder layout.
  */
-const WORKSPACES_ROOT = "/tmp/yarvis-demo/workspaces";
+const DEMO_TMP = "/tmp/yarvis-demo";
+const WORKSPACES_ROOT = join(DEMO_TMP, "workspaces");
+
+/**
+ * Makes `/tmp/yarvis-demo` ours before anything under it is deleted. Any local
+ * user can create paths in /tmp, so one that's a symlink, someone else's, or
+ * writable by others could redirect the cleanup or the workspace writes.
+ */
+function claimDemoTmp(): void {
+  mkdirSync(DEMO_TMP, { recursive: true, mode: 0o700 });
+  const info = lstatSync(DEMO_TMP);
+  const ours = info.isDirectory() && !info.isSymbolicLink() && info.uid === process.getuid?.();
+  if (!ours) {
+    throw new Error(`refusing to use ${DEMO_TMP}: it must be a directory you own, not a symlink`);
+  }
+  // Ours already, so closing it to everyone else is safe; the workspaces
+  // inside are wiped and recreated after this.
+  chmodSync(DEMO_TMP, 0o700);
+}
 
 const DEFAULT_DATABASE_URL = "postgres://localhost:5432/yarvis_demo";
 
@@ -32,7 +52,7 @@ export const PASSTHROUGH_SECRETS = ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "CERE
  * fixture can select it before the page loads.
  */
 export const FAKE_PROVIDER_ID = "00000000-0000-4000-8000-00000000de70";
-export const FAKE_PROVIDER_NAME = "Demo model";
+const FAKE_PROVIDER_NAME = "Demo model";
 
 /**
  * Registers the fake model as a custom provider, written straight into the
@@ -40,7 +60,7 @@ export const FAKE_PROVIDER_NAME = "Demo model";
  */
 function writeFakeProvider(settingsPath: string, fakeLlmUrl: string): void {
   const now = new Date().toISOString();
-  const row = {
+  const provider = {
     id: FAKE_PROVIDER_ID,
     name: FAKE_PROVIDER_NAME,
     baseUrl: `${fakeLlmUrl}/v1`,
@@ -50,8 +70,11 @@ function writeFakeProvider(settingsPath: string, fakeLlmUrl: string): void {
     createdAt: now,
     updatedAt: now,
   };
-  mkdirSync(join(settingsPath, ".."), { recursive: true });
-  writeFileSync(settingsPath, JSON.stringify({ customProviders: { [row.id]: row } }, null, 2));
+  mkdirSync(dirname(settingsPath), { recursive: true });
+  writeFileSync(
+    settingsPath,
+    JSON.stringify({ customProviders: { [provider.id]: provider } }, null, 2),
+  );
 }
 
 export interface Stack {
@@ -215,6 +238,7 @@ export async function startStack(): Promise<Stack> {
   recreateDatabase(demoDatabase(databaseUrl));
 
   rmSync(STATE_DIR, { recursive: true, force: true });
+  claimDemoTmp();
   rmSync(WORKSPACES_ROOT, { recursive: true, force: true });
   const home = join(STATE_DIR, "home");
   mkdirSync(home, { recursive: true });
@@ -228,10 +252,14 @@ export async function startStack(): Promise<Stack> {
   const sidecarToken = randomBytes(24).toString("hex");
   const sidecarUrl = `http://127.0.0.1:${sidecarPort}`;
   const appOrigin = `http://localhost:${vitePort}`;
+  const fakeLlmUrl = `http://127.0.0.1:${fakeLlmPort}`;
 
-  const fakeLlm = await startFakeLlm(fakeLlmPort);
   const settingsPath = join(home, ".yarvis", "settings.json");
-  writeFakeProvider(settingsPath, `http://127.0.0.1:${fakeLlmPort}`);
+  writeFakeProvider(settingsPath, fakeLlmUrl);
+  // Resolved before anything starts: past this point a failure has to stop
+  // what's running, which only the try block below does.
+  const bunPath = resolveBunPath();
+  const fakeLlm = await startFakeLlm(fakeLlmPort);
 
   // Built from scratch rather than inheriting process.env, so a token or key
   // in the developer's shell can't leak into the demo by accident.
@@ -259,12 +287,7 @@ export async function startStack(): Promise<Stack> {
     if (process.env[key]) sidecarEnv[key] = process.env[key];
   }
 
-  const sidecar = startProcess(
-    "sidecar",
-    resolveBunPath(),
-    ["run", "sidecar/src/server.ts"],
-    sidecarEnv,
-  );
+  const sidecar = startProcess("sidecar", bunPath, ["run", "sidecar/src/server.ts"], sidecarEnv);
   // Vite only hands `VITE_*` variables to the page, so it can keep the shell's
   // env. `TAURI_DEV_HOST` is dropped: it would bind the dev server to the LAN.
   const { TAURI_DEV_HOST: _, ...viteEnv } = process.env;

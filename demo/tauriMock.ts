@@ -80,7 +80,8 @@ let settings: Settings = {
 
 const presentSecrets = new Set(config.presentSecrets);
 let alarms: Alarm[] = [];
-let clipboardHistory: ClipboardHistoryItem[] = [];
+// The core records copies made outside the app; the demo has none.
+const clipboardHistory: ClipboardHistoryItem[] = [];
 
 type CommandArgs = Record<string, unknown>;
 
@@ -200,7 +201,6 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
     case "clipboard_history":
       return clipboardHistory;
     case "clipboard_clear_history":
-      clipboardHistory = [];
       return null;
     case "clipboard_write":
       return null;
@@ -224,7 +224,7 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
       terminals.kill(args.id as string);
       return null;
     case "pty_start_claude":
-      terminals.startAgent(`ws-claude:${args.workspaceId as string}`);
+      terminals.startAgent(args.workspaceId as string);
       return null;
     case "pty_resize":
       return null;

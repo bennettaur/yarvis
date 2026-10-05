@@ -56,13 +56,16 @@ either `text`, or a `toolCall` plus the `after` text the model says once the
 tool has run. Replies with `surface: "omni"` answer the Omni tab's layout
 builder instead of chat. Their text is one line of prose followed by a
 ` ```spec ` block of JSON patches, the format Omni's system prompt asks for.
-Widgets there fetch their own data, so pick ones the seed fills: Tasks, Memory,
-Terminal, Alarms, WorkspaceList. Calendar and PR widgets need live Google or
-GitHub access and show empty.
+Widgets there fetch their own data, so pick ones with something to show: Tasks,
+Memory and WorkspaceList (filled by the seed) and Terminal (the scripted shell).
+Alarms is empty unless the flow fires one with `demo.fireAlarm`. Calendar and PR
+widgets need live Google or GitHub access and show empty.
 
 A message no reply matches gets a placeholder answer, which is easy to spot in
-a screenshot. A tool the reply asks for has to be among those the sidecar
-offers that turn; if it isn't, the server logs `[fake-llm]` and answers in text.
+a screenshot. A reply may only call tools listed in `SAFE_TOOLS`, ones that
+touch nothing but the demo database, since the sidecar runs the call for real.
+If the tool isn't listed, or the sidecar didn't offer it that turn, the server
+logs `[fake-llm]` and answers in text.
 
 ## The demo stack
 
@@ -78,7 +81,10 @@ offers that turn; if it isn't, the server logs `[fake-llm]` and answers in text.
    never show up in a screenshot. Workspaces go in `/tmp/yarvis-demo/`, since
    the app shows a workspace's full path. Background workers are off.
 3. Seeds the database with made-up data from `seed.ts`, including a provisioned
-   "Checkout redesign" workspace.
+   "Payment step" workspace.
+
+Run one demo at a time per machine: runs share the demo database and
+`/tmp/yarvis-demo/`, and each run starts by wiping both.
 
 Each flow then opens `demo/index.html`, which installs the Tauri mock and then
 loads the normal app. A flow fails if the app calls a Tauri command the mock

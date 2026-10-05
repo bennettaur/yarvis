@@ -12,7 +12,7 @@ test("omni builder", async ({ demo, page }) => {
   await demo.shot("focus board");
 
   // The board's terminal widget runs a scripted shell.
-  await demo.click(page.locator(".xterm").first());
+  await demo.click(page.locator(".xterm").filter({ visible: true }).first());
   await page.keyboard.type("bun test", { delay: 60 });
   await demo.press("Enter");
   await expect(page.getByText("Ran 5 tests across 2 files.")).toBeVisible();

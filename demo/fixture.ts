@@ -190,8 +190,9 @@ export const test = base.extend<{ demo: Demo }>({
         window.__YARVIS_DEMO_CONFIG__ = config;
         // Skip the first-run setup guide, which would cover every screen.
         localStorage.setItem(setupGuideKey, "1");
-        // Every chat surface reads these. Without them the picker falls back to
-        // Bedrock, which always reports itself available.
+        // Every chat surface reads these (src/lib/useChatThread.ts). Without them
+        // each picks the first available built-in provider instead of the fake
+        // model, and Bedrock always reports itself available.
         localStorage.setItem("yarvis.chat.provider", provider);
         localStorage.setItem("yarvis.chat.model", model);
       },

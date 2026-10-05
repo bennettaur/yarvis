@@ -2,7 +2,7 @@ import { expect, test } from "../fixture";
 
 test("terminal", async ({ demo, page }) => {
   await demo.openTab("Terminal");
-  const terminal = page.locator(".xterm").first();
+  const terminal = page.locator(".xterm").filter({ visible: true }).first();
   await demo.click(terminal);
 
   await page.keyboard.type("git status", { delay: 60 });

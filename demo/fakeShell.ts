@@ -9,10 +9,16 @@
  * emitted tagged with the offset it starts at.
  */
 
+import { agentSessionId, DEFAULT_AGENT_COMMAND } from "../src/components/workspaces/agentTab";
+
 export type EmitOutput = (sessionId: string, chunk: { offset: number; bytes: number[] }) => void;
 
-/** A piece of output and how long to wait before writing it. */
-type Line = { text: string; delayMs?: number };
+/** A piece of output and how long to wait before writing it. Empty text is a pure pause. */
+type OutputChunk = { text: string; delayMs?: number };
+
+/** What xterm sends for Backspace and Ctrl+C. */
+const BACKSPACE = "\x7f";
+const CTRL_C = "\x03";
 
 const ESC = "\x1b";
 const reset = `${ESC}[0m`;
@@ -31,23 +37,27 @@ const RULE = dim("─".repeat(72));
 const AGENT_PROMPT = `${RULE}\r\n> `;
 
 /** Draws `rows` in a rounded box, padding each to the same visible width. */
-function box(rows: string[], width = 52): Line[] {
+function box(rows: string[], width = 52): OutputChunk[] {
   // biome-ignore lint/suspicious/noControlCharactersInRegex: strips ANSI colour codes to measure text.
   const visible = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "").length;
-  const edge = (s: string) => orange(s);
   return [
-    { text: `${edge(`╭${"─".repeat(width)}╮`)}\r\n` },
+    { text: `${orange(`╭${"─".repeat(width)}╮`)}\r\n` },
     ...rows.map((row) => ({
-      text: `${edge("│")} ${row}${" ".repeat(Math.max(0, width - 1 - visible(row)))}${edge("│")}\r\n`,
+      text: `${orange("│")} ${row}${" ".repeat(Math.max(0, width - 1 - visible(row)))}${orange("│")}\r\n`,
     })),
-    { text: `${edge(`╰${"─".repeat(width)}╯`)}\r\n\r\n` },
+    { text: `${orange(`╰${"─".repeat(width)}╯`)}\r\n\r\n` },
   ];
 }
 
 /** xterm treats `\n` as a bare line feed, so every line ends in `\r\n`. */
-const lines = (...texts: string[]): Line[] => texts.map((text) => ({ text: `${text}\r\n` }));
+const lines = (...texts: string[]): OutputChunk[] => texts.map((text) => ({ text: `${text}\r\n` }));
 
-const COMMANDS: Record<string, Line[]> = {
+/**
+ * Canned output, keyed by the command line exactly as typed (trimmed), so
+ * `git status -s` doesn't match `git status`. Use `lines()` for output that
+ * appears at once, or `{ text, delayMs }` chunks to pace it like a real run.
+ */
+const COMMANDS: Record<string, OutputChunk[]> = {
   ls: lines(
     `${cyan("src")}  ${cyan("tests")}  ${cyan("public")}  package.json  bun.lock  README.md  tsconfig.json`,
   ),
@@ -84,13 +94,14 @@ const COMMANDS: Record<string, Line[]> = {
   ],
 };
 
-const AGENT_WELCOME: Line[] = [
+const AGENT_WELCOME: OutputChunk[] = [
+  // The moment Claude Code takes to start.
   { text: "", delayMs: 400 },
   ...box([`${orange("✻")} Welcome to ${bold("Claude Code")}!`, "", `  ${dim(`cwd: ${CWD}`)}`]),
 ];
 
 /** What the agent does with any instruction. Written to read like a real session. */
-const AGENT_REPLY: Line[] = [
+const AGENT_REPLY: OutputChunk[] = [
   { text: `\r\n${RULE}\r\n\r\n`, delayMs: 100 },
   { text: `${orange("✻")} ${dim("Thinking…")}\r\n\r\n`, delayMs: 700 },
   { text: `${green("⏺")} I'll start with the payment step and its tests.\r\n\r\n`, delayMs: 900 },
@@ -117,9 +128,10 @@ const AGENT_REPLY: Line[] = [
 ];
 
 const encoder = new TextEncoder();
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 interface Session {
+  id: string;
   mode: "shell" | "agent";
   bytes: number[];
   /** What's been typed since the last Enter. */
@@ -131,7 +143,11 @@ interface Session {
 export class FakeTerminals {
   private sessions = new Map<string, Session>();
 
-  constructor(private emitOutput: EmitOutput) {}
+  /** `pause` waits out each chunk's delay; tests pass one that doesn't wait. */
+  constructor(
+    private emitOutput: EmitOutput,
+    private pause: (ms: number) => Promise<void> = sleep,
+  ) {}
 
   exists(id: string): boolean {
     return this.sessions.has(id);
@@ -141,20 +157,27 @@ export class FakeTerminals {
   attach(id: string): { scrollback: number[]; endOffset: number } {
     let session = this.sessions.get(id);
     if (!session) {
-      session = { mode: "shell", bytes: [], input: "", queue: Promise.resolve() };
-      this.sessions.set(id, session);
-      // Part of the snapshot rather than emitted, so the new pane shows it at once.
-      session.bytes.push(...encoder.encode(PROMPT));
+      // The prompt is emitted rather than put in the snapshot: an empty first
+      // snapshot is how the panel tells a new session from a reattach.
+      session = this.createSession(id, "shell");
+      this.play(session, [{ text: PROMPT }]);
     }
     return { scrollback: [...session.bytes], endOffset: session.bytes.length };
   }
 
-  /** Starts a workspace's agent session the way the core does: a shell that launches Claude Code. */
-  startAgent(id: string): void {
-    const session: Session = { mode: "agent", bytes: [], input: "", queue: Promise.resolve() };
-    this.sessions.set(id, session);
-    session.bytes.push(...encoder.encode(`${PROMPT}claude --permission-mode auto\r\n`));
-    this.play(session, id, [...AGENT_WELCOME, { text: AGENT_PROMPT }]);
+  /**
+   * Starts a workspace's agent session the way the core does: a shell that
+   * launches Claude Code. Like the core, it leaves an existing session alone.
+   */
+  startAgent(workspaceId: string): void {
+    const id = agentSessionId(workspaceId);
+    if (this.sessions.has(id)) return;
+    const session = this.createSession(id, "agent");
+    this.play(session, [
+      { text: `${PROMPT}${DEFAULT_AGENT_COMMAND}\r\n` },
+      ...AGENT_WELCOME,
+      { text: AGENT_PROMPT },
+    ]);
   }
 
   kill(id: string): void {
@@ -164,30 +187,34 @@ export class FakeTerminals {
   write(id: string, data: string): void {
     const session = this.sessions.get(id);
     if (!session) return;
-    // Arrow keys and other escape sequences: there's no history to move through.
+    // Arrow keys and other escape sequences are dropped: there's no history
+    // or cursor movement to support.
     if (data.startsWith(ESC)) return;
-    for (const char of data) this.key(session, id, char);
+    for (const char of data) this.key(session, char);
   }
 
-  private key(session: Session, id: string, char: string): void {
+  private createSession(id: string, mode: Session["mode"]): Session {
+    const session: Session = { id, mode, bytes: [], input: "", queue: Promise.resolve() };
+    this.sessions.set(id, session);
+    return session;
+  }
+
+  private key(session: Session, char: string): void {
     if (char === "\r") {
       const command = session.input.trim();
       session.input = "";
-      this.play(session, id, [
-        { text: session.mode === "shell" ? "\r\n" : "" },
-        ...this.run(session, command),
-      ]);
-    } else if (char === "\x7f") {
+      this.play(session, this.submit(session, command));
+    } else if (char === BACKSPACE) {
       if (session.input) {
         session.input = session.input.slice(0, -1);
-        this.play(session, id, [{ text: "\b \b" }]);
+        this.play(session, [{ text: "\b \b" }]);
       }
-    } else if (char === "\x03") {
+    } else if (char === CTRL_C) {
       session.input = "";
-      this.play(session, id, [{ text: `^C\r\n${this.prompt(session)}` }]);
+      this.play(session, [{ text: `^C\r\n${this.prompt(session)}` }]);
     } else if (char >= " ") {
       session.input += char;
-      this.play(session, id, [{ text: char }]);
+      this.play(session, [{ text: char }]);
     }
   }
 
@@ -195,31 +222,39 @@ export class FakeTerminals {
     return session.mode === "shell" ? PROMPT : AGENT_PROMPT;
   }
 
-  /** The output for one submitted line, ending with the next prompt. */
-  private run(session: Session, command: string): Line[] {
+  /**
+   * The output for one submitted line, ending with the next prompt. Typing
+   * `claude` switches the session to agent mode; an empty line in agent mode
+   * prints nothing.
+   */
+  private submit(session: Session, command: string): OutputChunk[] {
     if (session.mode === "agent") {
-      return command ? [...AGENT_REPLY, { text: AGENT_PROMPT }] : [{ text: "" }];
+      // AGENT_REPLY opens with its own line break.
+      return command ? [...AGENT_REPLY, { text: AGENT_PROMPT }] : [];
     }
-    if (command === "") return [{ text: PROMPT }];
-    if (command === "clear") return [{ text: `${ESC}[2J${ESC}[H${PROMPT}` }];
+    const newline = { text: "\r\n" };
+    if (command === "") return [newline, { text: PROMPT }];
+    if (command === "clear") return [newline, { text: `${ESC}[2J${ESC}[H${PROMPT}` }];
     if (command === "claude" || command.startsWith("claude ")) {
       session.mode = "agent";
-      return [...AGENT_WELCOME, { text: AGENT_PROMPT }];
+      return [newline, ...AGENT_WELCOME, { text: AGENT_PROMPT }];
     }
     const output = COMMANDS[command] ?? lines(`zsh: command not found: ${command.split(" ")[0]}`);
-    return [...output, { text: PROMPT }];
+    return [newline, ...output, { text: PROMPT }];
   }
 
-  /** Writes `output` after whatever is already playing, honouring each line's delay. */
-  private play(session: Session, id: string, output: Line[]): void {
+  /** Writes `output` after whatever is already playing, honouring each chunk's delay. */
+  private play(session: Session, output: OutputChunk[]): void {
     session.queue = session.queue.then(async () => {
       for (const { text, delayMs } of output) {
-        if (delayMs) await sleep(delayMs);
-        if (!text || !this.sessions.has(id)) continue;
+        if (delayMs) await this.pause(delayMs);
+        // A killed session stops, even if a new one has since taken its id.
+        if (this.sessions.get(session.id) !== session) return;
+        if (!text) continue;
         const bytes = [...encoder.encode(text)];
         const offset = session.bytes.length;
         session.bytes.push(...bytes);
-        this.emitOutput(id, { offset, bytes });
+        this.emitOutput(session.id, { offset, bytes });
       }
     });
   }

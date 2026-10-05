@@ -1,26 +1,58 @@
 /**
- * What the fake model says. The first reply whose `when` matches the user's
- * latest message wins, so put specific patterns before general ones. Replies
- * refer to the data in `demo/seed.ts`; keep the two in step.
+ * What the fake model says. Replies are matched against the user's latest
+ * message, and only replies for the same surface are considered: entries with
+ * `surface: "omni"` answer the Omni tab's layout builder, the rest answer chat.
+ * The first match wins, so put specific patterns before general ones.
+ *
+ * Replies refer to the data in `demo/seed.ts`; keep the two in step. Flows run
+ * in order against one database, so avoid counts that an earlier flow's
+ * additions would make wrong.
  */
 
-export interface CannedReply {
+interface ReplyBase {
   /** Tested against the user's latest message. */
   when: RegExp;
-  /** "omni" answers the Omni tab's layout builder; anything else answers chat. */
-  surface?: "chat" | "omni";
-  /** Markdown for chat; prose plus a ```spec block of JSON patches for Omni. */
-  text?: string;
-  /** A tool the model calls instead of answering straight away. The sidecar runs it for real. */
-  toolCall?: { name: string; args: Record<string, unknown> };
-  /** What the model says once the tool has run. */
-  after?: string;
+  surface?: "omni";
 }
 
-/** The coming Friday, as YYYY-MM-DD. */
+export type Reply = ReplyBase &
+  (
+    | {
+        /** Markdown for chat; one line of prose plus a ```spec block of JSON patches for Omni. */
+        text: string;
+      }
+    | {
+        /** A tool the model calls instead of answering straight away. The sidecar runs it for real. */
+        toolCall: { name: string; args: Record<string, unknown> };
+        /** What the model says once the tool has run. */
+        after: string;
+      }
+  );
+
+/**
+ * Tools a canned reply may call. The sidecar runs whatever the model asks for,
+ * and some built-ins reach outside the demo (shell commands, git, delegating
+ * to a real provider), so only ones that touch the demo database are allowed.
+ */
+export const SAFE_TOOLS = new Set([
+  "create_task",
+  "list_tasks",
+  "complete_task",
+  "update_task",
+  "remember",
+  "recall",
+  "list_memories",
+  "take_note",
+]);
+
+/**
+ * The next Friday after today (a week out when today is Friday), as
+ * YYYY-MM-DD. Uses UTC, as the Tasks panel does when it decides what's "today".
+ */
 function nextFriday(): string {
   const d = new Date();
-  d.setDate(d.getDate() + ((5 - d.getDay() + 7) % 7 || 7));
+  const daysAhead = (5 - d.getUTCDay() + 7) % 7 || 7;
+  d.setUTCDate(d.getUTCDate() + daysAhead);
   return d.toISOString().slice(0, 10);
 }
 
@@ -29,11 +61,11 @@ function spec(...patches: object[]): string {
   return ["```spec", ...patches.map((p) => JSON.stringify(p)), "```", ""].join("\n");
 }
 
-function element(key: string, type: string, props: object, children: string[] = []) {
+function addElement(key: string, type: string, props: object, children: string[] = []) {
   return { op: "add", path: `/elements/${key}`, value: { type, props, children } };
 }
 
-export const REPLIES: CannedReply[] = [
+export const REPLIES: Reply[] = [
   {
     when: /plate|this week|what.*(on|do) i/i,
     text: [
@@ -61,50 +93,51 @@ export const REPLIES: CannedReply[] = [
   {
     when: /looking at|summari[sz]e|this screen/i,
     text: [
-      "You're on your task list. Three things are open:",
+      "You're on your task list. The two due today:",
       "",
-      "1. **Prep demo for Thursday's review**, due today",
-      "2. **Reply to the design feedback thread**, due today",
-      "3. **Get the payment step to code complete**, this week",
+      "1. **Prep demo for Thursday's review**",
+      "2. **Reply to the design feedback thread**",
       "",
       "The demo prep is the one with a hard deadline. Want me to block out an hour for it tomorrow morning, before your 11am cutoff?",
     ].join("\n"),
   },
   {
     surface: "omni",
-    when: /.*/,
+    when: /focus|board|dashboard|checkout/i,
     text: [
-      "Here's a focus board for the checkout work: today's tasks and what Yarvis remembers on the left, with a terminal and your alarms on the right.",
+      "Here's a focus board for the checkout work: today's tasks and what Yarvis remembers on the left, with a terminal and your workspaces on the right.",
       spec(
         { op: "add", path: "/root", value: "main" },
-        element("main", "Column", { gap: 8 }, ["title", "subtitle", "body"]),
-        element("title", "Heading", { text: "Checkout redesign", level: 1 }),
-        element("subtitle", "Text", {
+        addElement("main", "Column", { gap: 8 }, ["title", "subtitle", "body"]),
+        addElement("title", "Heading", { text: "Checkout redesign", level: 1 }),
+        addElement("subtitle", "Text", {
           text: "Ship the new payment step behind a flag · review on Thursday",
           muted: true,
         }),
-        element("body", "Row", { gap: 8 }, ["left", "right"]),
-        element("left", "Column", { gap: 8 }, ["tasks", "memory"]),
-        element("tasks", "Tasks", { title: "Today", height: 340 }),
-        element("memory", "Memory", { title: "What Yarvis knows", height: 340 }),
-        element("right", "Column", { gap: 8 }, ["terminal", "alarms"]),
-        element("terminal", "Terminal", { title: "checkout-web", sessionId: "omni-checkout" }),
-        element("alarms", "Alarms", { title: "Alarms", height: 240 }),
+        addElement("body", "Row", { gap: 8 }, ["left", "right"]),
+        addElement("left", "Column", { gap: 8 }, ["tasks", "memory"]),
+        addElement("tasks", "Tasks", { title: "Today", height: 340 }),
+        addElement("memory", "Memory", { title: "What Yarvis knows", height: 340 }),
+        addElement("right", "Column", { gap: 8 }, ["terminal", "workspaces"]),
+        addElement("terminal", "Terminal", { title: "checkout-web", sessionId: "omni-checkout" }),
+        addElement("workspaces", "WorkspaceList", { title: "Workspaces", height: 240 }),
       ),
     ].join("\n"),
   },
 ];
 
-export const DEFAULT_REPLY: CannedReply = {
+/** For a chat message no reply matches. Worded so it's easy to spot in a screenshot. */
+export const DEFAULT_REPLY: Reply = {
   when: /.*/,
   text: "I can help with that. This is a scripted demo reply; add a matching entry to `demo/fakeLlm/script.ts` for a real answer.",
 };
 
-export const OMNI_DEFAULT_REPLY: CannedReply = {
+/** For an Omni request no reply matches: a bare task list. */
+export const OMNI_DEFAULT_REPLY: Reply = {
   when: /.*/,
   surface: "omni",
-  text: `Here's a simple layout.\n${spec(
+  text: `This is a scripted demo layout; add a matching entry to demo/fakeLlm/script.ts.\n${spec(
     { op: "add", path: "/root", value: "main" },
-    element("main", "Tasks", { title: "Tasks" }),
+    addElement("main", "Tasks", { title: "Tasks" }),
   )}`,
 };

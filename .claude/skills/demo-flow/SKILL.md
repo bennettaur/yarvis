@@ -22,7 +22,9 @@ mocked by `demo/tauriMock.ts`.
    those, say so and offer an alternative before writing it.
 3. Find the selectors in the components under `src/components/`. Prefer, in
    order: `getByRole` with the accessible name, `getByPlaceholder`,
-   `getByText`. Avoid CSS classes, since Tailwind classes change often.
+   `getByText`. Avoid CSS classes, since Tailwind classes change often. The
+   exception is a terminal, which has no accessible name: use
+   `page.locator(".xterm").filter({ visible: true })`.
 4. Write `demo/flows/<name>.demo.ts` with the `demo` helpers from
    `demo/fixture.ts`. Never type a real key, token or personal detail; the
    video records it. After every action that changes the screen, wait for the

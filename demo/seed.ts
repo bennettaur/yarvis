@@ -15,6 +15,14 @@ function inDays(days: number): string {
 }
 
 export async function seed(sidecarUrl: string, sidecarToken: string): Promise<void> {
+  async function get<T>(path: string): Promise<T> {
+    const res = await fetch(`${sidecarUrl}${path}`, {
+      headers: { Authorization: `Bearer ${sidecarToken}` },
+    });
+    if (!res.ok) throw new Error(`reading ${path} failed: ${res.status} ${await res.text()}`);
+    return (await res.json()) as T;
+  }
+
   async function post<T>(path: string, body: unknown): Promise<T> {
     const res = await fetch(`${sidecarUrl}${path}`, {
       method: "POST",
@@ -28,10 +36,12 @@ export async function seed(sidecarUrl: string, sidecarToken: string): Promise<vo
   // The sidecar registers its built-in tools at startup only on an instance
   // that runs background workers, which the demo's doesn't. Listing the tools
   // registers them, and chat can't call `create_task` and the rest without it.
-  const tools = await fetch(`${sidecarUrl}/api/mcp/tools`, {
+  const toolsResponse = await fetch(`${sidecarUrl}/api/mcp/tools`, {
     headers: { Authorization: `Bearer ${sidecarToken}` },
   });
-  if (!tools.ok) throw new Error(`registering built-in tools failed: ${tools.status}`);
+  if (!toolsResponse.ok) {
+    throw new Error(`registering built-in tools failed: ${toolsResponse.status}`);
+  }
 
   const project = await post<{ id: string }>("/api/projects", {
     name: "Checkout redesign",
@@ -57,13 +67,19 @@ export async function seed(sidecarUrl: string, sidecarToken: string): Promise<vo
   }
 
   // A scratch workspace (no repos), so provisioning needs no git or network.
-  // The provision route streams progress; reading it to the end waits for it.
-  const workspace = await post<{ id: string }>("/api/workspaces", { name: "Checkout redesign" });
-  const provision = await fetch(`${sidecarUrl}/api/workspaces/${workspace.id}/provision`, {
+  // The provision route streams progress and reports a failure as an event in
+  // that stream, so reading it to the end waits for it and the status is
+  // checked afterwards.
+  const workspace = await post<{ id: string }>("/api/workspaces", { name: "Payment step" });
+  const provisionResponse = await fetch(`${sidecarUrl}/api/workspaces/${workspace.id}/provision`, {
     method: "POST",
     headers: { Authorization: `Bearer ${sidecarToken}` },
   });
-  await provision.text();
+  await provisionResponse.text();
+  const provisioned = await get<{ status: string }>(`/api/workspaces/${workspace.id}`);
+  if (provisioned.status !== "active") {
+    throw new Error(`provisioning the demo workspace left it "${provisioned.status}"`);
+  }
 
   for (const memory of [
     { kind: "preference", content: "Prefers morning focus blocks with no meetings before 11am." },
