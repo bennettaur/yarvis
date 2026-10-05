@@ -28,6 +28,11 @@ afterAll(async () => {
 });
 
 describe("what a tick considers", () => {
+  it("runs the GitHub review sync before consolidation reads the log", () => {
+    const names = allJobs().map((j) => j.name);
+    expect(names.indexOf("github-review-sync")).toBeLessThan(names.indexOf("consolidate-events"));
+  });
+
   it("adds the user's jobs to the ones that ship as code", async () => {
     const job = await createAgentJob(db, input());
     const names = (await allJobsWithAgentJobs(db)).map((j) => j.name);

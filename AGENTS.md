@@ -414,6 +414,12 @@ back to ad-hoc.
   its input consumed only after its output is stored — `consolidate-events`
   claims a window of events after the summary memory exists, so a failed run
   leaves the window for the next one instead of losing it.
+  - An action that can reach the event log twice — logged by the app as it
+    happens, then read back from the provider by a sync — carries the
+    provider's id in `events.external_id` and is written with `recordEventOnce`,
+    which a unique index makes idempotent. `github-review-sync` is the worked
+    example: the in-app review submit records the same GitHub review id the sync
+    reads, so it doesn't matter which one writes first.
   - The user's own scheduled jobs are rows rather than code, and they reach the
     tick as `JobDefinition`s too (`jobs/agentJobs.ts`): the scheduler takes a
     provider rather than an array, so a job saved in the panel runs on the next

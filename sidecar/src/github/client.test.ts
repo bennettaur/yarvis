@@ -920,3 +920,115 @@ describe("github stack restack detection", () => {
     );
   });
 });
+
+describe("review contributions", () => {
+  const node = (id: string, state: string, number: number) => ({
+    occurredAt: "2026-10-01T10:00:00Z",
+    pullRequestReview: { id, state, submittedAt: "2026-10-01T10:00:05Z" },
+    pullRequest: { number, repository: { name: "r", owner: { login: "o" } } },
+  });
+
+  /** Answers each GraphQL page request in turn, recording the variables sent. */
+  function pagedFetch(pages: unknown[], restricted = 0) {
+    const variables: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      variables.push(JSON.parse(String(init?.body)).variables);
+      const page = pages[Math.min(variables.length - 1, pages.length - 1)];
+      return new Response(
+        JSON.stringify({
+          data: {
+            viewer: {
+              contributionsCollection: {
+                restrictedContributionsCount: restricted,
+                pullRequestReviewContributions: page,
+              },
+            },
+          },
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    return { fetchImpl, variables };
+  }
+
+  const from = new Date("2026-09-30T00:00:00Z");
+  const to = new Date("2026-10-02T00:00:00Z");
+
+  it("follows pages and drops nodes it can't identify", async () => {
+    const { fetchImpl, variables } = pagedFetch(
+      [
+        {
+          pageInfo: { hasNextPage: true, endCursor: "c1" },
+          nodes: [
+            node("R_1", "APPROVED", 1),
+            { pullRequestReview: null },
+            // A name GitHub would never return, which would corrupt the ref key.
+            {
+              ...node("R_x", "APPROVED", 3),
+              pullRequest: { number: 3, repository: { name: "a/b", owner: { login: "o" } } },
+            },
+          ],
+        },
+        {
+          pageInfo: { hasNextPage: false, endCursor: null },
+          nodes: [node("R_2", "CHANGES_REQUESTED", 2)],
+        },
+      ],
+      2,
+    );
+
+    const read = await new GitHubClient("t", fetchImpl).reviewContributions(from, to);
+    expect(variables.map((v) => v.after)).toEqual([null, "c1"]);
+    expect(variables[0]).toMatchObject({ from: from.toISOString(), to: to.toISOString() });
+    expect(read.truncated).toBe(false);
+    expect(read.restrictedCount).toBe(2);
+    expect(read.contributions).toEqual([
+      {
+        reviewId: "R_1",
+        state: "approved",
+        submittedAt: "2026-10-01T10:00:05Z",
+        owner: "o",
+        repo: "r",
+        number: 1,
+      },
+      expect.objectContaining({ reviewId: "R_2", state: "changes_requested", number: 2 }),
+    ]);
+  });
+
+  it("falls back to the contribution's time when the review has no submit time", async () => {
+    const { fetchImpl } = pagedFetch([
+      {
+        pageInfo: { hasNextPage: false },
+        nodes: [
+          { ...node("R_1", "APPROVED", 1), pullRequestReview: { id: "R_1", state: "APPROVED" } },
+        ],
+      },
+    ]);
+    const read = await new GitHubClient("t", fetchImpl).reviewContributions(from, to);
+    expect(read.contributions[0]!.submittedAt).toBe("2026-10-01T10:00:00Z");
+  });
+
+  it("stops at the page cap and says so", async () => {
+    const { fetchImpl, variables } = pagedFetch([
+      { pageInfo: { hasNextPage: true, endCursor: "more" }, nodes: [node("R_1", "APPROVED", 1)] },
+    ]);
+    const read = await new GitHubClient("t", fetchImpl).reviewContributions(from, to);
+    expect(variables.length).toBe(5);
+    expect(read.truncated).toBe(true);
+  });
+
+  it("returns the submitted review's node id", async () => {
+    const gh = new GitHubClient(
+      "t",
+      fakeFetch({ "/repos/o/r/pulls/1/reviews": { id: 9, node_id: "PRR_9" } }),
+    );
+    expect(await gh.submitReview("o", "r", 1, "APPROVE")).toEqual({ nodeId: "PRR_9" });
+  });
+
+  it("still succeeds when the submit reply has no readable node id", async () => {
+    const empty = (async () => new Response("", { status: 200 })) as unknown as typeof fetch;
+    expect(await new GitHubClient("t", empty).submitReview("o", "r", 1, "APPROVE")).toEqual({
+      nodeId: null,
+    });
+  });
+});

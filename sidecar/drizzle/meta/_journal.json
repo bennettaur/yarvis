@@ -225,6 +225,13 @@
       "when": 1790043560917,
       "tag": "0031_damp_cloak",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1791212692069,
+      "tag": "0032_old_the_enforcers",
+      "breakpoints": true
     }
   ]
 }

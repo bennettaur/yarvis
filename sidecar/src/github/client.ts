@@ -498,6 +498,110 @@ function toPrInvolvement(node: any): PrInvolvement {
   };
 }
 
+/**
+ * The event-log `externalId` for a GitHub review, shared by the in-app submit
+ * and the review sync so each recognises what the other logged.
+ */
+export function reviewExternalId(nodeId: string): string {
+  return `github:review:${nodeId}`;
+}
+
+/** One review the viewer submitted, as the contributions API reports it. */
+export interface ReviewContribution {
+  /** The review's GraphQL node id. */
+  reviewId: string;
+  state: ReviewerState;
+  submittedAt: string;
+  owner: string;
+  repo: string;
+  number: number;
+}
+
+export interface ReviewContributions {
+  /** Oldest first. */
+  contributions: ReviewContribution[];
+  /** True when the page cap stopped the read before the end of the window. */
+  truncated: boolean;
+  /**
+   * Contributions GitHub counted but left out because the token can't see them,
+   * e.g. an org that requires SSO the token isn't authorized for.
+   */
+  restrictedCount: number;
+}
+
+interface ReviewContributionsPage {
+  viewer?: {
+    contributionsCollection?: {
+      restrictedContributionsCount?: number;
+      pullRequestReviewContributions?: {
+        pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
+        nodes?: any[];
+      };
+    };
+  };
+}
+
+/**
+ * Caps one read at 500 reviews (5 pages of 100). A read that hits it reports
+ * `truncated`, so the caller can carry on from the last review it got.
+ */
+const MAX_CONTRIBUTION_PAGES = 5;
+
+/** `contributionsCollection` is an expensive query; a stalled one shouldn't hold up the job tick. */
+const CONTRIBUTIONS_TIMEOUT_MS = 20_000;
+
+const REVIEW_CONTRIBUTIONS_QUERY = `
+query($from:DateTime!,$to:DateTime!,$after:String){
+  viewer{
+    contributionsCollection(from:$from, to:$to){
+      restrictedContributionsCount
+      pullRequestReviewContributions(first:100, after:$after, orderBy:{direction:ASC}){
+        pageInfo{ hasNextPage endCursor }
+        nodes{
+          occurredAt
+          pullRequestReview{ id state submittedAt }
+          pullRequest{ number repository{ name owner{login} } }
+        }
+      }
+    }
+  }
+}`;
+
+/**
+ * GitHub's own charset for owner and repo names. Checked here because these
+ * become a `refKey`, which is split on `/` when it's read back.
+ */
+const GITHUB_NAME = /^[A-Za-z0-9._-]+$/;
+
+/** Drops a node missing the fields that identify the review, its PR, or when it happened. */
+function toReviewContribution(node: any): ReviewContribution | null {
+  const review = node?.pullRequestReview;
+  const pr = node?.pullRequest;
+  const owner = pr?.repository?.owner?.login;
+  const repo = pr?.repository?.name;
+  const submittedAt = review?.submittedAt ?? node?.occurredAt;
+  if (
+    typeof review?.id !== "string" ||
+    typeof pr?.number !== "number" ||
+    typeof owner !== "string" ||
+    typeof repo !== "string" ||
+    !GITHUB_NAME.test(owner) ||
+    !GITHUB_NAME.test(repo) ||
+    typeof submittedAt !== "string" ||
+    Number.isNaN(new Date(submittedAt).getTime())
+  ) {
+    return null;
+  }
+  return {
+    reviewId: review.id,
+    state: mapReviewState(review.state),
+    submittedAt,
+    owner,
+    repo,
+    number: pr.number,
+  };
+}
+
 /** Identifies one PR for the batched involvement lookup. */
 export interface PrNumberRef {
   owner: string;
@@ -1172,6 +1276,9 @@ export class GitHubClient {
    * REQUEST_CHANGES blocks it, COMMENT leaves an unbinding comment. The body
    * is optional (GitHub allows a bodyless approval but requires text on a
    * request-changes review; the caller is expected to enforce that).
+   *
+   * Resolves to the review's GraphQL node id, the same id
+   * {@link reviewContributions} reports, or null if GitHub's reply omits it.
    */
   async submitReview(
     owner: string,
@@ -1179,7 +1286,7 @@ export class GitHubClient {
     number: number,
     event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
     body?: string,
-  ): Promise<void> {
+  ): Promise<{ nodeId: string | null }> {
     const res = await this.fetchImpl(
       `https://api.github.com/repos/${owner}/${repo}/pulls/${number}/reviews`,
       {
@@ -1194,6 +1301,40 @@ export class GitHubClient {
       },
     );
     if (!res.ok) throw new Error(`github submit review -> ${res.status}`);
+    // The review is already posted, so an unreadable reply must not turn this into a failure.
+    const review = (await res.json().catch(() => null)) as { node_id?: unknown } | null;
+    if (typeof review?.node_id === "string") return { nodeId: review.node_id };
+    console.warn("[github] submitted review reply had no node_id");
+    return { nodeId: null };
+  }
+
+  /**
+   * The reviews the viewer submitted between `from` and `to`, wherever they
+   * submitted them. GitHub caps one contributions window at a year.
+   */
+  async reviewContributions(from: Date, to: Date): Promise<ReviewContributions> {
+    const contributions: ReviewContribution[] = [];
+    let restrictedCount = 0;
+    let after: string | null = null;
+    for (let page = 0; page < MAX_CONTRIBUTION_PAGES; page++) {
+      const data: ReviewContributionsPage = await this.graphql<ReviewContributionsPage>(
+        REVIEW_CONTRIBUTIONS_QUERY,
+        { from: from.toISOString(), to: to.toISOString(), after },
+        { signal: AbortSignal.timeout(CONTRIBUTIONS_TIMEOUT_MS) },
+      );
+      const collection = data.viewer?.contributionsCollection;
+      restrictedCount = collection?.restrictedContributionsCount ?? 0;
+      const connection = collection?.pullRequestReviewContributions;
+      for (const node of connection?.nodes ?? []) {
+        const contribution = toReviewContribution(node);
+        if (contribution) contributions.push(contribution);
+      }
+      if (!connection?.pageInfo?.hasNextPage || !connection.pageInfo.endCursor) {
+        return { contributions, truncated: false, restrictedCount };
+      }
+      after = connection.pageInfo.endCursor;
+    }
+    return { contributions, truncated: true, restrictedCount };
   }
 
   /**

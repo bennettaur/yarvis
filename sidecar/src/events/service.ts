@@ -104,30 +104,60 @@ export interface RecordEventInput {
   payload?: Record<string, unknown>;
   /** When the action happened; defaults to now. */
   occurredAt?: Date;
+  /** The provider's id for the action, so a second report of it is dropped. */
+  externalId?: string;
 }
 
-/** Inserts an event and returns the row. Throws on failure. */
+function eventValues(input: RecordEventInput) {
+  return {
+    type: input.type,
+    source: input.source ?? null,
+    payload: input.payload ?? null,
+    occurredAt: input.occurredAt ?? new Date(),
+    externalId: input.externalId ?? null,
+  };
+}
+
+/**
+ * Inserts an event and returns the row. Throws on failure, including an
+ * `externalId` the log already holds; use `recordEventOnce` when that's expected.
+ */
 export async function recordEvent(db: Db, input: RecordEventInput): Promise<EventRow> {
+  const [row] = await db.insert(events).values(eventValues(input)).returning();
+  return row!;
+}
+
+/**
+ * Records an action the log may already hold, such as a review submitted in the
+ * app and then read back by the GitHub sync. Returns null when an event with the
+ * same `externalId` exists, which is the expected outcome, not a failure.
+ */
+export async function recordEventOnce(
+  db: Db,
+  input: RecordEventInput & { externalId: string },
+): Promise<EventRow | null> {
   const [row] = await db
     .insert(events)
-    .values({
-      type: input.type,
-      source: input.source ?? null,
-      payload: input.payload ?? null,
-      occurredAt: input.occurredAt ?? new Date(),
-    })
+    .values(eventValues(input))
+    .onConflictDoNothing({ target: events.externalId })
     .returning();
-  return row!;
+  return row ?? null;
 }
 
 /**
  * Best-effort emission for in-process hooks: never let a logging failure break
  * the action that triggered it (creating a task, starting a chat). Errors are
- * logged and swallowed.
+ * logged and swallowed. An input with an `externalId` the log already holds is
+ * dropped.
  */
 export async function emitEvent(db: Db, input: RecordEventInput): Promise<void> {
+  const { externalId } = input;
   try {
-    await recordEvent(db, input);
+    if (externalId) {
+      await recordEventOnce(db, { ...input, externalId });
+    } else {
+      await recordEvent(db, input);
+    }
   } catch (e) {
     console.error(
       `[events] failed to record ${input.type}:`,
@@ -148,6 +178,8 @@ export interface ListEventsOptions {
   search?: string;
   /** Only events not yet folded into memory (processedAt IS NULL). */
   unprocessedOnly?: boolean;
+  /** Only events with no `externalId`. */
+  withoutExternalId?: boolean;
   limit?: number;
   offset?: number;
   /** Oldest-first, which is the order a consolidation run wants to read in. */
@@ -166,6 +198,7 @@ function eventConditions(options: ListEventsOptions): SQL | undefined {
   if (options.since) conditions.push(gte(events.occurredAt, options.since));
   if (options.until) conditions.push(lte(events.occurredAt, options.until));
   if (options.unprocessedOnly) conditions.push(isNull(events.processedAt));
+  if (options.withoutExternalId) conditions.push(isNull(events.externalId));
   const search = options.search?.trim();
   if (search) {
     // The payload shape differs per type, so a free-text browse matches its

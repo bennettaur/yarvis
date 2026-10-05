@@ -31,7 +31,8 @@ Status of the build against the original vision. The full V1 plan lives at
 - **The assistant loop** — the event log covers the working day (review verdicts,
   comments and merges on both providers, issue/JIRA writes, every workspace
   lifecycle step) and is searchable and paginated, from the UI (Memory →
-  Activity) and from the agent. Background jobs consolidate it: four-hourly
+  Activity) and from the agent. Background jobs keep it current and consolidate
+  it: a 30-minute sync of the review verdicts given on github.com, four-hourly
   windows into `activity-summary` memories, an overnight rollup into a
   `day-summary`. Memory is typed by `kind`, and a fact that changed is superseded
   rather than contradicted. Projects hold status, weekly focus and tracked
@@ -348,12 +349,13 @@ The core is shipped; optional extensions remain.
 
 ### 4. Event reconciliation follow-ups
 The reconciliation pass itself is shipped — four-hourly window summaries, an
-overnight day rollup, and the nightly transcript digest, all under
-`sidecar/src/jobs/`. What remains is around the edges:
-- **A PR created/reviewed poller that emits events.** Today an event is recorded
-  when the user acts *in the app*; a PR reviewed on github.com leaves no trace,
-  so the activity log undercounts. The workspace poller already walks the
-  provider on a timer and is the natural place for it.
+overnight day rollup, the nightly transcript digest, and the GitHub review
+sync, all under `sidecar/src/jobs/`. What remains is around the edges:
+- **More activity from outside the app.** Approvals and change requests given
+  on github.com are synced into the activity log every 30 minutes
+  (`github-review-sync`, deduped on `events.external_id`). Still missing:
+  comments left on github.com, PRs opened outside Yarvis, and anything done on
+  dev.azure.com.
 - **Per-job model selection.** Each specialist can name a provider/model and
   otherwise falls back to the default chat model, so a cheap model for the
   summarizers is configuration rather than code — but there is no UI for

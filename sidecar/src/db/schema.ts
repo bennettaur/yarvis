@@ -933,6 +933,12 @@ export const events = pgTable(
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
     processedAt: timestamp("processed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * The provider's own id for the action, e.g. `github:review:<node id>`, when
+     * the same action can reach the log twice: once from the app as it happens,
+     * and again from a sync that reads the provider's history. Null otherwise.
+     */
+    externalId: text("external_id"),
   },
   (t) => [
     // Reconciliation scans unprocessed events oldest-first.
@@ -940,6 +946,8 @@ export const events = pgTable(
     index("events_type_idx").on(t.type),
     // The events browser pages the whole log newest-first, with no type filter.
     index("events_occurred_idx").on(t.occurredAt),
+    // Drops a second report of the same provider action. NULLs never conflict.
+    uniqueIndex("events_external_id_idx").on(t.externalId),
   ],
 );
 

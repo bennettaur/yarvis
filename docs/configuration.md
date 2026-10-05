@@ -30,7 +30,7 @@ reads one back.
 | Gemini API key | Gemini chat, embeddings, cloud voice | `GEMINI_API_KEY` |
 | Cerebras API key | Cerebras chat | `CEREBRAS_API_KEY` |
 | Hugging Face token | Cloud speech to text | `HUGGINGFACE_API_KEY` |
-| GitHub token | PRs, issues, stacks | `GITHUB_TOKEN` |
+| GitHub token | PRs, issues, stacks, review sync | `GITHUB_TOKEN` |
 | Azure DevOps token | Azure PRs, Azure Boards | `AZURE_DEVOPS_TOKEN` |
 | JIRA API token | JIRA issues | `JIRA_API_TOKEN` |
 | Google client secret | Google Calendar | `GOOGLE_CLIENT_SECRET` |
@@ -57,6 +57,9 @@ AWS Bedrock uses the standard AWS credential chain (`~/.aws`, `AWS_PROFILE`,
 - **GitHub.** A classic PAT needs `repo`. A fine-grained PAT needs
   **Contents: Read** (the review reads file bodies to show context) plus pull
   request and issue access. Merging a stack needs write access to the repo.
+  The review sync only sees reviews in repos the token can reach. An org that
+  enforces SAML SSO also needs the token authorized for it. The sync's status
+  under **Settings → Assistant** reports how many contributions were hidden.
 - **Azure DevOps.** A PAT with **Code (read & write)** and **Pull Request
   Threads (read & write)**. Code (read) is enough to browse and comment, but
   voting and publishing a draft write to the PR itself.
