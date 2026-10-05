@@ -20,5 +20,7 @@ export default defineConfig({
     colorScheme: "dark",
     video: { mode: "on", size: VIEWPORT },
     trace: "retain-on-failure",
+    // A selector that matches nothing fails here rather than at the 5-minute test timeout.
+    actionTimeout: 15_000,
   },
 });

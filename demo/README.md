@@ -13,8 +13,9 @@ bun run demo --headed        # watch it run
 ```
 
 The flows in `demo/flows/` cover the Chat tab (including a tool call that
-creates a task), Omni Chat, the Omni layout builder, the Terminal tab, a
-workspace's Claude Code session, and a short tour.
+creates a task), Omni Chat, the Omni layout builder, GitHub PRs and issues,
+the Calendar, the Terminal tab, a workspace's Claude Code session, and a short
+tour.
 
 Output lands in `demo/output/<flow-title>/`, with the test's title lowercased
 and hyphenated ("Memory library" becomes `memory-library/`). It holds numbered
@@ -30,7 +31,7 @@ Before the first run:
 ## What's real and what isn't
 
 The React frontend and the sidecar are real. Data goes through the sidecar's
-HTTP API into Postgres, exactly as in the app. Three things are faked:
+HTTP API into Postgres, exactly as in the app. These are faked:
 
 - **The Rust core** is replaced by `tauriMock.ts`, because Tauri's macOS
   webview (WKWebView) can't be driven by Playwright or WebDriver. Native things
@@ -43,6 +44,13 @@ HTTP API into Postgres, exactly as in the app. Three things are faked:
   from the canned replies in `fakeLlm/script.ts`, streamed so the reply is seen
   being written. A reply can call one of the sidecar's tools, which then runs
   for real: the chat flow's `create_task` call puts a real task on the list.
+- **GitHub and Google Calendar** are `fakeGithub/` and `fakeGoogle/`, local
+  servers the sidecar reaches through its `YARVIS_GITHUB_*` and
+  `YARVIS_GOOGLE_*` endpoint overrides (see `docs/configuration.md`). The PRs
+  tab, PR review, Issues and the Calendar views all show their data, which
+  lives in `fakeGithub/data.ts` and `fakeGoogle/server.ts`. Calendar events are
+  laid out around today. The Stack tab and merging a workspace's stack use the
+  `gh` CLI, which isn't faked.
 - **Terminals** are `fakeShell.ts`: each one shows a prompt, echoes keys, and
   prints canned output for the commands in `COMMANDS` (`git status`,
   `bun test`, …). Typing `claude`, or opening a workspace, starts a scripted
@@ -57,9 +65,9 @@ tool has run. Replies with `surface: "omni"` answer the Omni tab's layout
 builder instead of chat. Their text is one line of prose followed by a
 ` ```spec ` block of JSON patches, the format Omni's system prompt asks for.
 Widgets there fetch their own data, so pick ones with something to show: Tasks,
-Memory and WorkspaceList (filled by the seed) and Terminal (the scripted shell).
-Alarms is empty unless the flow fires one with `demo.fireAlarm`. Calendar and PR
-widgets need live Google or GitHub access and show empty.
+Memory and WorkspaceList (filled by the seed), PullRequests and the Calendar
+widgets (the fake GitHub and Google), and Terminal (the scripted shell). Alarms
+is empty unless the flow fires one with `demo.fireAlarm`.
 
 A message no reply matches gets a placeholder answer, which is easy to spot in
 a screenshot. A reply may only call tools listed in `SAFE_TOOLS`, ones that

@@ -8,6 +8,8 @@ export interface DemoConfig {
   sidecarToken: string;
   /** Secret keys the Settings screen should show as stored. */
   presentSecrets: string[];
+  /** The Google OAuth client id Settings shows; the sidecar has the same one. */
+  googleClientId: string;
 }
 
 /** Prefix of the console warning the mock logs for a command it doesn't answer. */

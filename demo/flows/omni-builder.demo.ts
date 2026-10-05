@@ -9,6 +9,10 @@ test("omni builder", async ({ demo, page }) => {
   await demo.click(page.getByRole("button", { name: "Build", exact: true }));
   await expect(page.getByRole("heading", { name: "Checkout redesign" })).toBeVisible();
   await expect(page.getByText("Prep demo for Thursday's review")).toBeVisible();
+  await expect(
+    page.getByText("Load the payment step lazily behind the checkout flag"),
+  ).toBeVisible();
+  await expect(page.getByText("Design review: payment step")).toBeVisible();
   await demo.shot("focus board");
 
   // The board's terminal widget runs a scripted shell.

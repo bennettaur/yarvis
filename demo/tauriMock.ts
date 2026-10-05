@@ -70,7 +70,7 @@ let settings: Settings = {
   azureDevopsOrgUrl: null,
   jiraBaseUrl: null,
   jiraEmail: null,
-  googleClientId: null,
+  googleClientId: config.googleClientId,
   telegramOtpWindowMinutes: null,
   defaultTelegramOtpWindowMinutes: 120,
   secretBackend: null,

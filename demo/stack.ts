@@ -12,8 +12,11 @@
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import type { Server } from "node:http";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
+import { startFakeGithub } from "./fakeGithub/server";
+import { startFakeGoogle } from "./fakeGoogle/server";
 import { FAKE_MODEL, startFakeLlm } from "./fakeLlm/server";
 import { OUTPUT_DIR, REPO_ROOT } from "./paths";
 
@@ -54,6 +57,9 @@ export const PASSTHROUGH_SECRETS = ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "CERE
 export const FAKE_PROVIDER_ID = "00000000-0000-4000-8000-00000000de70";
 const FAKE_PROVIDER_NAME = "Demo model";
 
+/** Shown in Settings, so it should look like a Google OAuth client id. */
+export const DEMO_GOOGLE_CLIENT_ID = "123456789012-demo.apps.googleusercontent.com";
+
 /**
  * Registers the fake model as a custom provider, written straight into the
  * sidecar's settings file the way its own custom-provider routes store one.
@@ -80,10 +86,28 @@ function writeFakeProvider(settingsPath: string, fakeLlmUrl: string): void {
 export interface Stack {
   /** The app's URL, `demo/index.html` on the Vite dev server. */
   appUrl: string;
+  databaseUrl: string;
   sidecarUrl: string;
   sidecarPort: number;
   sidecarToken: string;
   stop(): Promise<void>;
+}
+
+const closeServers = (servers: Server[]) =>
+  Promise.all(servers.map((s) => new Promise((resolve) => s.close(resolve))));
+
+/** Starts the fake model, GitHub and Google, closing any already running if one fails. */
+async function startFakes(ports: { llm: number; github: number; google: number }) {
+  const started: Server[] = [];
+  try {
+    started.push(await startFakeLlm(ports.llm));
+    started.push(await startFakeGithub(ports.github));
+    started.push(await startFakeGoogle(ports.google));
+  } catch (e) {
+    await closeServers(started);
+    throw e;
+  }
+  return started;
 }
 
 function findFreePort(): Promise<number> {
@@ -244,22 +268,26 @@ export async function startStack(): Promise<Stack> {
   mkdirSync(home, { recursive: true });
   mkdirSync(WORKSPACES_ROOT, { recursive: true });
 
-  const [sidecarPort, vitePort, fakeLlmPort] = await Promise.all([
-    findFreePort(),
-    findFreePort(),
-    findFreePort(),
-  ]);
+  const [sidecarPort, vitePort, fakeLlmPort, fakeGithubPort, fakeGooglePort] = await Promise.all(
+    Array.from({ length: 5 }, findFreePort),
+  );
   const sidecarToken = randomBytes(24).toString("hex");
   const sidecarUrl = `http://127.0.0.1:${sidecarPort}`;
   const appOrigin = `http://localhost:${vitePort}`;
   const fakeLlmUrl = `http://127.0.0.1:${fakeLlmPort}`;
+  const fakeGithubUrl = `http://127.0.0.1:${fakeGithubPort}`;
+  const fakeGoogleUrl = `http://127.0.0.1:${fakeGooglePort}`;
 
   const settingsPath = join(home, ".yarvis", "settings.json");
   writeFakeProvider(settingsPath, fakeLlmUrl);
   // Resolved before anything starts: past this point a failure has to stop
   // what's running, which only the try block below does.
   const bunPath = resolveBunPath();
-  const fakeLlm = await startFakeLlm(fakeLlmPort);
+  const fakes = await startFakes({
+    llm: fakeLlmPort,
+    github: fakeGithubPort,
+    google: fakeGooglePort,
+  });
 
   // Built from scratch rather than inheriting process.env, so a token or key
   // in the developer's shell can't leak into the demo by accident.
@@ -279,6 +307,15 @@ export async function startStack(): Promise<Stack> {
     YARVIS_SETTINGS_PATH: settingsPath,
     // The AI SDK won't send a request without a key. The fake model ignores it.
     YARVIS_CUSTOM_PROVIDER_SECRETS: JSON.stringify({ [FAKE_PROVIDER_ID]: { apiKey: "demo" } }),
+    // GitHub and Google point at the fakes. The credentials only have to be
+    // present for the sidecar to call them; the fakes ignore their values.
+    GITHUB_TOKEN: "demo-github-token",
+    YARVIS_GITHUB_API_URL: fakeGithubUrl,
+    YARVIS_GITHUB_GRAPHQL_URL: `${fakeGithubUrl}/graphql`,
+    GOOGLE_CLIENT_ID: DEMO_GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET: "demo-google-secret",
+    YARVIS_GOOGLE_CALENDAR_API_URL: `${fakeGoogleUrl}/calendar/v3`,
+    YARVIS_GOOGLE_TOKEN_URL: `${fakeGoogleUrl}/token`,
     YARVIS_AGENTS_DIR: join(home, ".yarvis", "agents"),
     YARVIS_WORKSPACES_ROOT: WORKSPACES_ROOT,
     CLAUDE_HOME: join(home, ".claude"),
@@ -297,7 +334,7 @@ export async function startStack(): Promise<Stack> {
   });
   const stop = async () => {
     await Promise.all([sidecar.child, vite.child].map(stopChild));
-    await new Promise((resolve) => fakeLlm.close(resolve));
+    await closeServers(fakes);
   };
 
   try {
@@ -321,6 +358,7 @@ export async function startStack(): Promise<Stack> {
 
   return {
     appUrl: `${appOrigin}/demo/index.html`,
+    databaseUrl,
     sidecarUrl,
     sidecarPort,
     sidecarToken,

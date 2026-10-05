@@ -4,6 +4,9 @@
  * Every name and detail here is made up.
  */
 
+import { spawnSync } from "node:child_process";
+import { OWNER as GITHUB_OWNER, REPO as GITHUB_REPO } from "./fakeGithub/data";
+
 function isoDate(offsetDays = 0): string {
   const d = new Date();
   d.setDate(d.getDate() + offsetDays);
@@ -14,7 +17,30 @@ function inDays(days: number): string {
   return new Date(Date.now() + days * 86_400_000).toISOString();
 }
 
-export async function seed(sidecarUrl: string, sidecarToken: string): Promise<void> {
+/**
+ * Marks Google Calendar as connected. There's no route for it (the token
+ * normally arrives through the OAuth callback), so the row goes straight into
+ * the table. It doesn't expire during a run, so nothing tries to refresh it.
+ */
+function connectGoogle(databaseUrl: string): void {
+  const sql = `INSERT INTO google_tokens (access_token, refresh_token, scope, expires_at)
+    VALUES ('demo-google-access-token', 'demo-google-refresh-token',
+      'https://www.googleapis.com/auth/calendar.events', now() + interval '30 days')`;
+  const result = spawnSync("psql", [databaseUrl, "-v", "ON_ERROR_STOP=1", "-qc", sql], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0) throw new Error(`connecting Google failed: ${result.stderr}`);
+}
+
+export async function seed({
+  sidecarUrl,
+  sidecarToken,
+  databaseUrl,
+}: {
+  sidecarUrl: string;
+  sidecarToken: string;
+  databaseUrl: string;
+}): Promise<void> {
   async function get<T>(path: string): Promise<T> {
     const res = await fetch(`${sidecarUrl}${path}`, {
       headers: { Authorization: `Bearer ${sidecarToken}` },
@@ -32,6 +58,14 @@ export async function seed(sidecarUrl: string, sidecarToken: string): Promise<vo
     if (!res.ok) throw new Error(`seeding ${path} failed: ${res.status} ${await res.text()}`);
     return (await res.json()) as T;
   }
+
+  connectGoogle(databaseUrl);
+  // The Issues tab lists issues from repos that opt in. Registering one clones
+  // nothing; only a workspace that uses it would.
+  await post("/api/repos", {
+    cloneUrl: `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}.git`,
+    pullIssues: true,
+  });
 
   const project = await post<{ id: string }>("/api/projects", {
     name: "Checkout redesign",

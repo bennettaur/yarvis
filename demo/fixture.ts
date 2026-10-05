@@ -15,7 +15,7 @@ import type { Alarm } from "../src/lib/alarms";
 import { type DemoConfig, UNMOCKED_COMMAND_WARNING } from "./demoConfig";
 import { FAKE_MODEL } from "./fakeLlm/server";
 import { flowOutputDir, slugify } from "./paths";
-import { FAKE_PROVIDER_ID, PASSTHROUGH_SECRETS } from "./stack";
+import { DEMO_GOOGLE_CLIENT_ID, FAKE_PROVIDER_ID, PASSTHROUGH_SECRETS } from "./stack";
 
 export const VIEWPORT = { width: 1440, height: 900 };
 
@@ -179,9 +179,13 @@ export const test = base.extend<{ demo: Demo }>({
     const demoConfig: DemoConfig = {
       sidecarPort: Number(process.env.DEMO_SIDECAR_PORT),
       sidecarToken: process.env.DEMO_SIDECAR_TOKEN ?? "",
+      googleClientId: DEMO_GOOGLE_CLIENT_ID,
       // Settings shows a key as stored exactly when the sidecar was given it.
       presentSecrets: [
         "database_url",
+        // The sidecar gets placeholders for these, pointed at the fakes.
+        "github_token",
+        "google_client_secret",
         ...PASSTHROUGH_SECRETS.filter((key) => process.env[key]).map((key) => key.toLowerCase()),
       ],
     };

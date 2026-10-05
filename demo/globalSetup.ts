@@ -8,7 +8,7 @@ import { startStack } from "./stack";
 export default async function globalSetup() {
   const stack = await startStack();
   try {
-    await seed(stack.sidecarUrl, stack.sidecarToken);
+    await seed(stack);
   } catch (e) {
     await stack.stop();
     throw e;
