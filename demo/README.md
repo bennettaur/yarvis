@@ -10,7 +10,15 @@ bun run demo                 # every flow in demo/flows/
 bun run demo -g tour         # one flow, by title
 bun run demo flows/chat.demo.ts  # one flow, by file
 bun run demo --headed        # watch it run
+bun run demo:site            # turn the last run into a static site in demo/site/
 ```
+
+The `Demo site` workflow (`.github/workflows/demo-pages.yml`) records every
+flow nightly and publishes the result, with the showcase deck, to GitHub Pages
+at https://bennettaur.github.io/yarvis/. Run it from the Actions tab to publish
+straight away. A night where any flow fails publishes nothing, and the run
+keeps the failed flows' traces as an artifact. Screenshots from CI use Linux's
+fonts, so they differ a little from a run on a Mac.
 
 The flows in `demo/flows/` cover the Chat tab (including a tool call that
 creates a task), Omni Chat, the Omni layout builder, GitHub PRs and issues,

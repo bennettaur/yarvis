@@ -13,6 +13,7 @@
     "tauri": "tauri",
     "dev:instance": "bun run scripts/dev-instance.ts",
     "demo": "playwright test -c demo/playwright.config.ts",
+    "demo:site": "bun run demo/buildSite.ts",
     "test": "bun test ./src ./scripts ./demo",
     "test:watch": "bun test --watch ./src ./scripts ./demo",
     "sidecar:dev": "bun run --cwd sidecar dev",

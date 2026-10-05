@@ -1,0 +1,88 @@
+name: Demo site
+
+# Records the demo flows against main and publishes them, with the showcase
+# deck, to GitHub Pages. A run with any failing flow publishes nothing, so the
+# site keeps the last good recording. A pull request that touches the demo
+# records without publishing, so a change that breaks a flow shows up there.
+on:
+  schedule:
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'demo/**'
+      - '.github/workflows/demo-pages.yml'
+
+# The record job installs and runs dependencies; it only needs to read. The
+# deploy job asks for the Pages permissions it needs in its own block.
+permissions:
+  contents: read
+
+# Runs on main, which publish, queue rather than cancel one another.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  record:
+    name: Record demos
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # The runner drops and recreates this database, so it must say "demo".
+      YARVIS_DEMO_DATABASE_URL: postgres://postgres:postgres@localhost:5432/yarvis_demo
+      # The fake calendar lays events out in the runner's time zone, and the
+      # browser shows them in its own; pinning both keeps the times sensible.
+      TZ: America/Toronto
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Install Chromium
+        run: bunx playwright install --with-deps chromium
+      - name: Record the flows
+        run: bun run demo
+      - name: Build the site
+        run: bun run demo:site
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+        with:
+          path: demo/site
+      - name: Keep traces of failed flows
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: demo-failures
+          path: demo/output/.playwright
+          retention-days: 7
+
+  deploy:
+    name: Publish
+    needs: record
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5
