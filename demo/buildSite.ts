@@ -1,7 +1,7 @@
 /**
  * Turns a `bun run demo` run into a static site for GitHub Pages: an index
  * with each flow's video and screenshots, plus the showcase deck at
- * `/showcase/`. Reads `demo/output/`, writes `demo/site/`.
+ * `showcase/`. Reads `demo/output/`, writes `demo/site/`.
  *
  *   bun run demo && bun run demo:site
  */
@@ -13,7 +13,11 @@ import { OUTPUT_DIR, REPO_ROOT } from "./paths";
 export const SITE_DIR = join(REPO_ROOT, "demo", "site");
 const SHOWCASE = join(REPO_ROOT, "docs", "showcase", "yarvis-showcase.html");
 
-/** How each flow is introduced on the page, keyed by its output directory. */
+/**
+ * How each flow is introduced on the page, keyed by its output directory. The
+ * page lists flows in this order; one missing here goes last, titled from its
+ * directory name.
+ */
 const FLOW_INTROS: Record<string, { title: string; blurb: string }> = {
   tour: {
     title: "A quick tour",
@@ -53,6 +57,18 @@ function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
+/** A path inside the site, safe to put in an HTML attribute. */
+function sitePath(...parts: string[]): string {
+  return escapeHtml(parts.map(encodeURIComponent).join("/"));
+}
+
+/**
+ * Names the demo harness writes: slugified flow titles and numbered
+ * screenshots. Anything else in the output directory is left off the page.
+ */
+const FLOW_NAME = /^[a-z0-9-]+$/;
+const SHOT_NAME = /^[a-z0-9-]+\.png$/;
+
 /** "02-task-added.png" becomes "Task added". */
 function captionFor(file: string): string {
   const words = file
@@ -66,16 +82,19 @@ function captionFor(file: string): string {
 export function readFlows(outputDir: string): Flow[] {
   if (!existsSync(outputDir)) return [];
   const order = Object.keys(FLOW_INTROS);
-  const rank = (slug: string) => (order.includes(slug) ? order.indexOf(slug) : order.length);
+  const rank = (slug: string) => {
+    const i = order.indexOf(slug);
+    return i === -1 ? order.length : i;
+  };
   return (
     readdirSync(outputDir, { withFileTypes: true })
       // `.state` and `.playwright` are the run's scratch space, not flows.
-      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+      .filter((entry) => entry.isDirectory() && FLOW_NAME.test(entry.name))
       .map((entry) => {
         const files = readdirSync(join(outputDir, entry.name));
         return {
           slug: entry.name,
-          screenshots: files.filter((f) => f.endsWith(".png")).sort(),
+          screenshots: files.filter((f) => SHOT_NAME.test(f)).sort(),
           hasVideo: files.includes("video.webm"),
         };
       })
@@ -90,17 +109,19 @@ export function renderIndex(flows: Flow[], builtFrom: string): string {
       const intro = FLOW_INTROS[flow.slug] ?? { title: captionFor(flow.slug), blurb: "" };
       // The recording opens on a blank page before the app paints, so the
       // first screenshot stands in until it plays.
-      const poster = flow.screenshots[0] ? ` poster="${flow.slug}/${flow.screenshots[0]}"` : "";
+      const poster = flow.screenshots[0]
+        ? ` poster="${sitePath(flow.slug, flow.screenshots[0])}"`
+        : "";
       const video = flow.hasVideo
-        ? `<video src="${flow.slug}/video.webm"${poster} controls muted loop playsinline preload="metadata"></video>`
+        ? `<video src="${sitePath(flow.slug, "video.webm")}"${poster} controls muted loop playsinline preload="metadata"></video>`
         : "";
       const shots = flow.screenshots
         .map(
           (file) =>
-            `<figure><a href="${flow.slug}/${file}"><img src="${flow.slug}/${file}" alt="${escapeHtml(captionFor(file))}" loading="lazy"></a><figcaption>${escapeHtml(captionFor(file))}</figcaption></figure>`,
+            `<figure><a href="${sitePath(flow.slug, file)}"><img src="${sitePath(flow.slug, file)}" alt="${escapeHtml(captionFor(file))}" loading="lazy"></a><figcaption>${escapeHtml(captionFor(file))}</figcaption></figure>`,
         )
         .join("\n");
-      return `<section id="${flow.slug}">
+      return `<section id="${escapeHtml(flow.slug)}">
 <h2>${escapeHtml(intro.title)}</h2>
 ${intro.blurb ? `<p>${escapeHtml(intro.blurb)}</p>` : ""}
 ${video}
@@ -138,7 +159,7 @@ ${video}
 <header>
 <h1>Yarvis in action</h1>
 <p>Recorded automatically from the real app, driven by scripted demo flows. Every name and detail in them is made up.</p>
-<nav><a href="showcase/">Showcase deck</a>${flows.map((f) => `<a href="#${f.slug}">${escapeHtml(FLOW_INTROS[f.slug]?.title ?? captionFor(f.slug))}</a>`).join("")}</nav>
+<nav><a href="showcase/">Showcase deck</a>${flows.map((f) => `<a href="#${escapeHtml(f.slug)}">${escapeHtml(FLOW_INTROS[f.slug]?.title ?? captionFor(f.slug))}</a>`).join("")}</nav>
 </header>
 <main>
 ${sections}
@@ -166,9 +187,10 @@ function buildSite(): void {
   copyFileSync(SHOWCASE, join(SITE_DIR, "showcase", "index.html"));
 
   const sha = process.env.GITHUB_SHA?.slice(0, 7);
-  const builtFrom = `${new Date().toISOString().slice(0, 10)}${sha ? ` from ${sha}` : ""}`;
+  // en-CA formats as YYYY-MM-DD, in the run's own time zone.
+  const builtFrom = `${new Date().toLocaleDateString("en-CA")}${sha ? ` from ${sha}` : ""}`;
   writeFileSync(join(SITE_DIR, "index.html"), renderIndex(flows, builtFrom));
-  console.log(`[demo:site] wrote ${flows.length} flows to ${SITE_DIR}`);
+  console.info(`[demo:site] wrote ${flows.length} flows to ${SITE_DIR}`);
 }
 
 if (import.meta.main) buildSite();

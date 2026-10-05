@@ -2,23 +2,32 @@ name: Demo site
 
 # Records the demo flows against main and publishes them, with the showcase
 # deck, to GitHub Pages. A run with any failing flow publishes nothing, so the
-# site keeps the last good recording. A pull request that touches the demo
-# records without publishing, so a change that breaks a flow shows up there.
+# site keeps the last good recording.
+#
+# A pull request that changes the demo or what it's built from records without
+# publishing, so a change there that breaks a flow shows up on the PR. App
+# changes that break a flow show up in the next scheduled run.
 on:
   schedule:
-    - cron: '0 1 * * *'
+    # 12:23 UTC is 08:23 or 07:23 in the pinned time zone below, so the seeded
+    # meetings for "today" are all still ahead, as on a working morning. Off the
+    # hour because GitHub delays scheduled runs that start on it.
+    - cron: '23 12 * * *'
   workflow_dispatch:
   pull_request:
     paths:
       - 'demo/**'
+      - 'docs/showcase/**'
+      - 'package.json'
+      - 'bun.lock'
       - '.github/workflows/demo-pages.yml'
 
-# The record job installs and runs dependencies; it only needs to read. The
-# deploy job asks for the Pages permissions it needs in its own block.
+# The record job runs third-party packages, so it gets a read-only token. The
+# deploy job asks for the Pages permissions in its own block.
 permissions:
   contents: read
 
-# Runs on main, which publish, queue rather than cancel one another.
+# A new push cancels the pull request run it replaces.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -43,16 +52,23 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      # The runner drops and recreates this database, so it must say "demo".
+      # `bun run demo` drops and recreates this database (with the runner
+      # image's psql), and refuses one without "demo" in its name.
       YARVIS_DEMO_DATABASE_URL: postgres://postgres:postgres@localhost:5432/yarvis_demo
-      # The fake calendar lays events out in the runner's time zone, and the
-      # browser shows them in its own; pinning both keeps the times sensible.
+      # The fake calendar and Chromium both read TZ. A North American zone
+      # makes the recorded times read like a normal working day.
       TZ: America/Toronto
+      # The output is public. Don't add provider keys here: the demo uses its
+      # own fake model and has no use for them.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: latest
+      # Playwright and Vite run under Node, and Vite 8 needs 20.19 or later.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
       - name: Install dependencies
         run: bun install --frozen-lockfile
       - name: Install Chromium
@@ -61,7 +77,8 @@ jobs:
         run: bun run demo
       - name: Build the site
         run: bun run demo:site
-      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
           path: demo/site
       - name: Keep traces of failed flows
@@ -75,11 +92,18 @@ jobs:
   deploy:
     name: Publish
     needs: record
-    if: github.event_name != 'pull_request'
+    # Only main publishes. The github-pages environment allows only the
+    # default branch too, but that's a setting; this keeps it in review.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       pages: write
       id-token: write
+    # One deploy at a time, left to finish rather than cancelled part way
+    # through.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
