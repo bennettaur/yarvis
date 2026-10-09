@@ -1,36 +1,45 @@
 import { LanguageDescription, type LanguageSupport } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { Compartment, EditorState } from "@codemirror/state";
-import { oneDarkTheme } from "@codemirror/theme-one-dark";
+import { oneDark, oneDarkTheme } from "@codemirror/theme-one-dark";
 import { EditorView, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { useEffect, useRef } from "react";
 import type { EditorPlace } from "../../lib/editorPlaces";
 import { PALENIGHT, ZINC } from "../../lib/palette";
+import { type ColorTheme, getColorTheme, onColorTheme } from "../../lib/theme";
 import { palenightHighlighting } from "./palenight";
 import { placeConfig } from "./place";
 
-/** Background, gutter, cursor and selection in the app's Palenight palette.
- *  One Dark supplies only the chrome (search panel, tooltips) underneath. */
+/** Background and gutter, so the editor sits in the app's palette rather than
+ *  One Dark's, whichever colour theme that is. */
 const appSurface = EditorView.theme({
-  "&": {
-    height: "100%",
-    backgroundColor: ZINC[950],
-    color: PALENIGHT.foreground,
-    fontSize: "12px",
-  },
-  ".cm-cursor, .cm-dropCursor": { borderLeftColor: PALENIGHT.cursor },
-  "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground":
-    { backgroundColor: PALENIGHT.selection },
+  "&": { height: "100%", backgroundColor: ZINC[950], fontSize: "12px" },
   ".cm-gutters": {
     backgroundColor: ZINC[950],
     borderRight: `1px solid ${ZINC[800]}`,
-    color: PALENIGHT.comment,
+    color: ZINC[600],
   },
   ".cm-activeLine": { backgroundColor: ZINC[900] },
   ".cm-activeLineGutter": { backgroundColor: ZINC[900], color: ZINC[400] },
   "&.cm-focused": { outline: "none" },
 });
+
+/** Palenight's text, cursor and selection; the default theme takes One Dark's. */
+const palenightSurface = EditorView.theme({
+  "&": { color: PALENIGHT.foreground },
+  ".cm-cursor, .cm-dropCursor": { borderLeftColor: PALENIGHT.cursor },
+  "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground":
+    { backgroundColor: PALENIGHT.selection },
+});
+
+/** One Dark's syntax colours by default; with Palenight, One Dark supplies only
+ *  the chrome (search panel, tooltips) under Palenight's own. */
+const editorTheme = (theme: ColorTheme) =>
+  theme === "palenight" ? [oneDarkTheme, palenightHighlighting, palenightSurface] : oneDark;
+
+/** Holds the colour theme, swapped in place when the user changes it. */
+const THEME_SLOT = new Compartment();
 
 /** Holds the grammar, which arrives after the view is already on screen. A
  *  compartment is a stateless marker, so one shared by every editor is enough. */
@@ -99,8 +108,7 @@ export default function CodeEditor({
         selection: place.selection,
         extensions: [
           basicSetup,
-          oneDarkTheme,
-          palenightHighlighting,
+          THEME_SLOT.of(editorTheme(getColorTheme())),
           appSurface,
           LANGUAGE_SLOT.of([]),
           keymap.of([
@@ -120,7 +128,11 @@ export default function CodeEditor({
       }),
     });
     viewRef.current = view;
+    const unsubscribeTheme = onColorTheme(() =>
+      view.dispatch({ effects: THEME_SLOT.reconfigure(editorTheme(getColorTheme())) }),
+    );
     return () => {
+      unsubscribeTheme();
       view.destroy();
       viewRef.current = null;
     };

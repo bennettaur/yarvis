@@ -2,7 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { useEffect, useId, useImperativeHandle, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
-import { TERMINAL_THEME } from "../lib/palette";
+import { TERMINAL_THEMES } from "../lib/palette";
 import {
   attachPty,
   killPty,
@@ -20,6 +20,7 @@ import {
   TERMINAL_FONT_FAMILY,
 } from "../lib/terminalFont";
 import { resolveTerminalKey } from "../lib/terminalKeys";
+import { getColorTheme, onColorTheme } from "../lib/theme";
 
 /** Handle exposed via `panelRef` so a parent (e.g. TerminalTabs) can move keyboard focus into the xterm. */
 export interface TerminalPanelHandle {
@@ -99,7 +100,7 @@ export default function TerminalPanel({
       cursorBlink: true,
       fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: getTerminalFontSize(),
-      theme: TERMINAL_THEME,
+      theme: TERMINAL_THEMES[getColorTheme()],
     });
     termRef.current = term;
     const fit = new FitAddon();
@@ -242,6 +243,11 @@ export default function TerminalPanel({
       if (resizeTimer) clearTimeout(resizeTimer);
       observer.disconnect();
     });
+    cleanups.push(
+      onColorTheme(() => {
+        term.options.theme = TERMINAL_THEMES[getColorTheme()];
+      }),
+    );
     // A new size changes how many cells fit, so the PTY is told the new grid
     // the same way a container resize would.
     cleanups.push(

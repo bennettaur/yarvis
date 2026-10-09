@@ -15,15 +15,24 @@
   --radius-2xl: 0px;
   --radius-3xl: 0px;
   --radius-4xl: 0px;
+}
 
+/*
+ * Material Palenight, picked in Settings → Appearance: `lib/theme.ts` sets
+ * `data-theme` on the root element. The default theme is Tailwind's own
+ * palette, so this block is the whole of Palenight's colour scheme. It
+ * overrides the theme variables rather than the classes, because every
+ * utility reads its colour through them.
+ */
+:root[data-theme="palenight"] {
   /*
-   * Material Palenight. The neutrals are Tailwind's zinc scale retinted, so
-   * every `zinc-*` class follows without touching a component: 950 is the
-   * theme's background, 400/300 its text and foreground, 600 its comment grey,
-   * 700 its highlight. Each step keeps roughly the contrast zinc had at that
-   * step, and the order is unchanged — panels (900) and controls (800) stay
-   * lighter than the background they sit on. Hard-coded copies for the
-   * surfaces styled from JS live in `lib/palette.ts`.
+   * The neutrals are Tailwind's zinc scale retinted, so every `zinc-*` class
+   * follows without touching a component: 950 is the theme's background,
+   * 400/300 its text and foreground, 600 its comment grey, 700 its highlight.
+   * Each step keeps roughly the contrast zinc had at that step, and the order
+   * is unchanged, so panels (900) and controls (800) stay lighter than the
+   * background they sit on. xterm parses its colours itself, so the terminal's
+   * copy of this palette lives in `lib/palette.ts`.
    */
   --color-zinc-50: #f4f6fb;
   --color-zinc-100: #eeffff;
@@ -196,7 +205,7 @@ body,
 }
 
 /*
- * Syntax colors for the code views (see `src/lib/highlight.ts`), Palenight's.
+ * Syntax colors for the code views (see `src/lib/highlight.ts`).
  *
  * Foregrounds only: a diff row's background is what marks it added or deleted,
  * and the token colors have to sit on top of that rather than compete with it.
@@ -208,68 +217,130 @@ body,
  * Tailwind's utilities — which is what lets these override `rowClass`.
  */
 .syntax {
-  color: #a6accd;
+  color: #c9d1d9;
 }
 .syntax .hljs-comment,
 .syntax .hljs-quote {
-  color: #676e95;
+  color: #8b949e;
   font-style: italic;
 }
 .syntax .hljs-keyword,
 .syntax .hljs-selector-tag,
 .syntax .hljs-literal,
+.syntax .hljs-type,
+.syntax .hljs-tag,
 .syntax .hljs-doctag,
 .syntax .hljs-meta .hljs-keyword,
 .syntax .hljs-template-tag {
-  color: #c792ea;
+  color: #ff7b72;
 }
 .syntax .hljs-title,
-.syntax .hljs-title.function_,
-.syntax .hljs-section {
-  color: #82aaff;
-}
-.syntax .hljs-type,
 .syntax .hljs-title.class_,
-.syntax .hljs-built_in,
-.syntax .hljs-attr,
-.syntax .hljs-attribute,
+.syntax .hljs-title.function_,
+.syntax .hljs-section,
 .syntax .hljs-selector-id,
 .syntax .hljs-selector-class {
-  color: #ffcb6b;
+  color: #d2a8ff;
 }
 .syntax .hljs-string,
+.syntax .hljs-regexp,
 .syntax .hljs-char.escape_,
 .syntax .hljs-subst,
-.syntax .hljs-link {
-  color: #c3e88d;
-}
-.syntax .hljs-number,
-.syntax .hljs-variable.constant_,
-.syntax .hljs-variable.language_,
+.syntax .hljs-link,
 .syntax .hljs-symbol,
 .syntax .hljs-bullet {
-  color: #f78c6c;
+  color: #a5d6ff;
 }
-.syntax .hljs-regexp,
-.syntax .hljs-property,
-.syntax .hljs-selector-attr,
-.syntax .hljs-selector-pseudo,
-.syntax .hljs-operator,
-.syntax .hljs-punctuation {
-  color: #89ddff;
-}
-.syntax .hljs-tag,
+.syntax .hljs-number,
+.syntax .hljs-built_in,
 .syntax .hljs-name,
+.syntax .hljs-attr,
+.syntax .hljs-attribute,
+.syntax .hljs-property,
+.syntax .hljs-variable.constant_,
+.syntax .hljs-variable.language_,
+.syntax .hljs-selector-attr,
+.syntax .hljs-selector-pseudo {
+  color: #79c0ff;
+}
 .syntax .hljs-variable,
 .syntax .hljs-template-variable,
 .syntax .hljs-params,
 .syntax .hljs-meta,
 .syntax .hljs-formula {
-  color: #f07178;
+  color: #ffa657;
 }
 .syntax .hljs-emphasis {
   font-style: italic;
 }
 .syntax .hljs-strong {
+  font-weight: 600;
+}
+
+/* Palenight's token colours, for the same code views. */
+:root[data-theme="palenight"] .syntax {
+  color: #a6accd;
+}
+:root[data-theme="palenight"] .syntax .hljs-comment,
+:root[data-theme="palenight"] .syntax .hljs-quote {
+  color: #676e95;
+  font-style: italic;
+}
+:root[data-theme="palenight"] .syntax .hljs-keyword,
+:root[data-theme="palenight"] .syntax .hljs-selector-tag,
+:root[data-theme="palenight"] .syntax .hljs-literal,
+:root[data-theme="palenight"] .syntax .hljs-doctag,
+:root[data-theme="palenight"] .syntax .hljs-meta .hljs-keyword,
+:root[data-theme="palenight"] .syntax .hljs-template-tag {
+  color: #c792ea;
+}
+:root[data-theme="palenight"] .syntax .hljs-title,
+:root[data-theme="palenight"] .syntax .hljs-title.function_,
+:root[data-theme="palenight"] .syntax .hljs-section {
+  color: #82aaff;
+}
+:root[data-theme="palenight"] .syntax .hljs-type,
+:root[data-theme="palenight"] .syntax .hljs-title.class_,
+:root[data-theme="palenight"] .syntax .hljs-built_in,
+:root[data-theme="palenight"] .syntax .hljs-attr,
+:root[data-theme="palenight"] .syntax .hljs-attribute,
+:root[data-theme="palenight"] .syntax .hljs-selector-id,
+:root[data-theme="palenight"] .syntax .hljs-selector-class {
+  color: #ffcb6b;
+}
+:root[data-theme="palenight"] .syntax .hljs-string,
+:root[data-theme="palenight"] .syntax .hljs-char.escape_,
+:root[data-theme="palenight"] .syntax .hljs-subst,
+:root[data-theme="palenight"] .syntax .hljs-link {
+  color: #c3e88d;
+}
+:root[data-theme="palenight"] .syntax .hljs-number,
+:root[data-theme="palenight"] .syntax .hljs-variable.constant_,
+:root[data-theme="palenight"] .syntax .hljs-variable.language_,
+:root[data-theme="palenight"] .syntax .hljs-symbol,
+:root[data-theme="palenight"] .syntax .hljs-bullet {
+  color: #f78c6c;
+}
+:root[data-theme="palenight"] .syntax .hljs-regexp,
+:root[data-theme="palenight"] .syntax .hljs-property,
+:root[data-theme="palenight"] .syntax .hljs-selector-attr,
+:root[data-theme="palenight"] .syntax .hljs-selector-pseudo,
+:root[data-theme="palenight"] .syntax .hljs-operator,
+:root[data-theme="palenight"] .syntax .hljs-punctuation {
+  color: #89ddff;
+}
+:root[data-theme="palenight"] .syntax .hljs-tag,
+:root[data-theme="palenight"] .syntax .hljs-name,
+:root[data-theme="palenight"] .syntax .hljs-variable,
+:root[data-theme="palenight"] .syntax .hljs-template-variable,
+:root[data-theme="palenight"] .syntax .hljs-params,
+:root[data-theme="palenight"] .syntax .hljs-meta,
+:root[data-theme="palenight"] .syntax .hljs-formula {
+  color: #f07178;
+}
+:root[data-theme="palenight"] .syntax .hljs-emphasis {
+  font-style: italic;
+}
+:root[data-theme="palenight"] .syntax .hljs-strong {
   font-weight: 600;
 }
