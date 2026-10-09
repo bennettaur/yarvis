@@ -5,13 +5,14 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
+import { ccProjectDirFor } from "../cc/sessions.ts";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
 import { workspaceRepos } from "../db/schema.ts";
 import { recordEvent } from "../events/service.ts";
 import type { IssueDetail, IssueSummary } from "../issues/types.ts";
 import { createTask, getTask } from "../tasks/service.ts";
-import { ccProjectDirFor, clearRecapCache } from "./activity.ts";
+import { clearRecapCache } from "./activity.ts";
 import { WORKSPACE_BRIEF_FILE } from "./brief.ts";
 import type { StartClaudeSessionInput } from "./claudeSession.ts";
 import type { GitRunner } from "./git.ts";
@@ -682,7 +683,7 @@ describe("workspace tools", () => {
       });
 
       const result = (await tools.get_workspace_activity.execute!({ workspaceId }, opts)) as {
-        note: string;
+        warning: string;
         workspaces: Array<{
           name: string;
           lastViewedAt: string | null;
@@ -697,7 +698,7 @@ describe("workspace tools", () => {
       expect(ws!.agentSession?.sessionId).toBe("s1");
       expect(ws!.agentSession?.lastActivityAt).toBe("2026-05-01T10:00:00Z");
       // The nonce in the note is the one fencing the recap.
-      const nonce = result.note.match(/<session-recap-(\w+)>/)?.[1];
+      const nonce = result.warning.match(/<session-recap-(\w+)>/)?.[1];
       expect(nonce).toBeDefined();
       expect(ws!.agentSession?.recap).toBe(
         `<session-recap-${nonce}>\nBuilding the login page.\n</session-recap-${nonce}>`,
@@ -715,17 +716,54 @@ describe("workspace tools", () => {
         recapActivity: async () => "Doing the thing.",
       });
 
+      const { workspaceId: archived } = await activeWorkspace("Archived", [
+        "https://github.com/acme/third.git",
+      ]);
+      await sql`UPDATE workspaces SET status = 'archived' WHERE id = ${archived}`;
+
       const result = (await tools.get_workspace_activity.execute!({}, opts)) as {
-        workspaces: Array<{ workspaceId: string; agentSession: unknown; note?: string }>;
+        workspaces: Array<{ workspaceId: string; agentSession: unknown }>;
       };
 
-      expect(result.workspaces).toHaveLength(2);
+      expect(result.workspaces.map((w) => w.workspaceId).sort()).toEqual(
+        [withSession, without].sort(),
+      );
       expect(
         result.workspaces.find((w) => w.workspaceId === withSession)?.agentSession,
       ).not.toBeNull();
       const empty = result.workspaces.find((w) => w.workspaceId === without);
       expect(empty?.agentSession).toBeNull();
-      expect(empty?.note).toBe("no agent session found");
+    });
+
+    it("get_workspace_activity reports one workspace's failure without losing the rest", async () => {
+      const { workspaceId: broken } = await activeWorkspace("Broken");
+      const { workspaceId: fine } = await activeWorkspace("Fine", [
+        "https://github.com/acme/other.git",
+      ]);
+      writeSession((await getWorkspace(db, broken))!.rootPath, "fail please");
+      writeSession((await getWorkspace(db, fine))!.rootPath, "all good");
+      const tools = buildWorkspaceTools(db, config, {
+        gitRunner: okRunner,
+        recapActivity: async ({ activity }) => {
+          if (activity.prompts[0]!.text === "fail please") throw new Error("provider down");
+          return "All good.";
+        },
+      });
+
+      const result = (await tools.get_workspace_activity.execute!({}, opts)) as {
+        workspaces: Array<{
+          workspaceId: string;
+          error?: string;
+          agentSession: { recap: string | null } | null;
+        }>;
+      };
+
+      const failed = result.workspaces.find((w) => w.workspaceId === broken);
+      expect(failed?.error).toBe("provider down");
+      expect(failed?.agentSession).toBeNull();
+      expect(result.workspaces.find((w) => w.workspaceId === fine)?.agentSession?.recap).toContain(
+        "All good.",
+      );
     });
 
     it("get_workspace_activity errors on an unknown workspace", async () => {

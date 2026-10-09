@@ -22,7 +22,6 @@ import {
   type WorkspaceStatus,
   type WorkspaceSummary,
 } from "../lib/workspaces";
-import { useWorkspaceViewEvents } from "../lib/workspaceViews";
 import LoadingIndicator from "./LoadingIndicator";
 import CopyPathButton from "./pr/CopyPathButton";
 import RefreshingIndicator from "./RefreshingIndicator";
@@ -52,6 +51,7 @@ import WorkspaceNameHeading from "./workspaces/WorkspaceNameHeading";
 import WorkspacePrBadges from "./workspaces/WorkspacePrBadges";
 import WorkspacePrStatus from "./workspaces/WorkspacePrStatus";
 import WorkspaceSetupLog from "./workspaces/WorkspaceSetupLog";
+import WorkspaceViewRecorder from "./workspaces/WorkspaceViewRecorder";
 
 // The editor tab pulls CodeMirror in with it — a few hundred kilobytes that a
 // session which never opens a file has no use for, so it is fetched when the
@@ -231,7 +231,6 @@ export default function WorkspacesPanel({
     setViewedWorkspace(selectedId);
     return () => setViewedWorkspace(null);
   }, [selectedId]);
-  useWorkspaceViewEvents(items.find((w) => w.id === selectedId)?.name);
 
   // Honor a cross-tab open request (Issues "Start work"): select the workspace.
   // Nothing about the kick-off rides along — the sidecar holds the prompt on the
@@ -375,6 +374,7 @@ export default function WorkspacesPanel({
 
   return (
     <div className="flex h-full min-h-0">
+      <WorkspaceViewRecorder name={items.find((w) => w.id === selectedId)?.name} />
       <aside className="flex w-72 shrink-0 flex-col border-r border-zinc-800">
         <div className="flex shrink-0 items-center gap-2 px-3 py-2">
           <h2 className="mr-auto text-sm font-medium text-zinc-200">Workspaces</h2>

@@ -117,11 +117,12 @@ The assistant can act on your workspaces in bulk:
   and it says so.
 - **"What's the state of the billing-api workspace?"** It reports the PR,
   checks and mergeability from the last poll (refreshed every minute).
-- **"What was I doing in my workspaces?"** For each workspace it reports when
-  you last had it open in Yarvis and when its Claude Code session last did
-  anything. It also gives a short recap of what you last asked the session and
-  where it got to. A small model writes the recap from the session's latest
-  prompts and reply, using the low complexity tier.
+- **"What was I doing in my workspaces?"** For each active workspace, or the
+  one you name, it reports when you last had it open in Yarvis and when its
+  Claude Code session last did anything. It also gives a short recap of what
+  you last asked the session and where it got to. A small model writes the
+  recap from the session's latest prompts and reply, using the low complexity
+  tier, so check the details.
 - **"Archive the billing-api workspace."** It stops the session, removes the
   worktrees, and completes any linked task. If there are uncommitted changes,
   it asks before throwing them away.
@@ -175,13 +176,14 @@ Yarvis records meaningful actions as events. Examples:
   on,
 - work started on a ticket,
 - a workspace created, its session started, synced or archived,
-- a workspace viewed: open on screen for a few seconds, recorded at most once
-  every 15 minutes per tab kind (agent, shell, other),
+- a workspace viewed: on screen, with the Yarvis window focused, for 3 seconds
+  or more. Recorded at most once every 15 minutes per tab kind (agent, shell,
+  other),
 - tasks created and completed,
 - calendar events booked,
 - the assistant's own todos and projects.
 
-Other clicking around the UI is not an event. Workspace views stay out of the
+Otherwise, clicking around the UI is not an event. Workspace views stay out of the
 4-hour and daily summaries. The log only records what you do *in
 Yarvis*, so a PR you review on github.com doesn't show up.
 
@@ -197,6 +199,7 @@ can read the end of that workspace's latest Claude Code transcript.
 
 - your tasks, projects, todos and memories,
 - the activity log, as events happen,
+- when you last had each workspace open,
 - workspace PR state, checks and mergeability (polled every minute),
 - live GitHub searches: your PRs and review requests,
 - anything a Claude Code session saved to Yarvis memory.
@@ -209,7 +212,8 @@ can read the end of that workspace's latest Claude Code transcript.
 
 **It can't see:**
 
-- terminal output, or a session's live transcript,
+- terminal output. It reads a session's transcript only when you ask about
+  that workspace, and then only the latest prompts and reply,
 - whether an instruction it sent was carried out,
 - the attention bell (a session waiting on a prompt),
 - PRs you reviewed on github.com rather than in Yarvis.
@@ -230,6 +234,13 @@ secrets and other people's data, and summarizing them sends them to your LLM
 provider. The summaries are then stored as memories, which Claude Code
 sessions (over MCP) and the Telegram bot can read back. Only allow
 directories you're comfortable with.
+
+Asking about a workspace's activity is separate from the digest and doesn't
+need it turned on. When you ask, the assistant sends that workspace's latest
+few prompts and the end of the agent's reply to the low complexity tier's
+model to write the recap, with credential-shaped strings such as API keys and
+tokens removed first. The recap isn't saved as a memory. It's kept in memory
+only until the session moves on.
 
 ## What it asks before doing
 

@@ -42,8 +42,15 @@ export function claimView(key: string, now: number, recorded = lastRecordedAt): 
   return true;
 }
 
-/** Records a view of the on-screen workspace once it has held the screen for {@link VIEW_DWELL_MS}. */
-export function useWorkspaceViewEvents(workspaceName: string | undefined): void {
+/**
+ * Records a view of the on-screen workspace once it has held the screen for
+ * {@link VIEW_DWELL_MS}. Re-renders on every focus and tab change, so mount it
+ * in a leaf (`WorkspaceViewRecorder`), not in a large view.
+ */
+export function useWorkspaceViewEvents(
+  workspaceName: string | undefined,
+  record: typeof recordEvent = recordEvent,
+): void {
   const scope = useViewedScope();
   const workspaceId = scope.focused ? scope.workspaceId : null;
   const tab = workspaceId ? viewedTab(scope, workspaceId) : null;
@@ -55,12 +62,12 @@ export function useWorkspaceViewEvents(workspaceName: string | undefined): void 
     if (!workspaceId || !tab) return;
     const timer = setTimeout(() => {
       if (!claimView(`${workspaceId}:${tab}`, Date.now())) return;
-      void recordEvent(
+      void record(
         "workspace.viewed",
         { workspaceId, name: nameRef.current ?? null, tab },
         "workspaces",
       );
     }, VIEW_DWELL_MS);
     return () => clearTimeout(timer);
-  }, [workspaceId, tab]);
+  }, [workspaceId, tab, record]);
 }

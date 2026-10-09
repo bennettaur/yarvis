@@ -30,17 +30,18 @@ const MAX_EVENTS_PER_RUN = 400;
 const MIN_EVENTS_TO_SUMMARIZE = 3;
 
 /**
- * The jobs' own bookkeeping. Consolidation emits `memory.consolidated`, and the
- * transcript sweep emits `cc.session_summarized` — folding those into the next
- * window would have the summarizer describing the act of summarizing. They are
+ * Events claimed but never summarized. Two are the jobs' own bookkeeping:
+ * consolidation emits `memory.consolidated`, and the transcript sweep emits
+ * `cc.session_summarized` — folding those into the next window would have the
+ * summarizer describing the act of summarizing. They are
  * still marked processed, so they don't accumulate as a permanently unprocessed
  * tail that keeps tripping the minimum above.
  */
-const BOOKKEEPING_TYPES: readonly string[] = [
+const UNSUMMARIZED_TYPES: readonly string[] = [
   "memory.consolidated",
   "cc.session_summarized",
-  // Not bookkeeping, but handled the same way: views are frequent and say little
-  // on their own, so they stay in the log for lookups and out of the summaries.
+  // Views are frequent and say little on their own, so they stay in the log for
+  // lookups and out of the summaries.
   "workspace.viewed",
 ];
 
@@ -103,15 +104,15 @@ export const consolidateEventsJob: JobDefinition = {
       limit: MAX_EVENTS_PER_RUN,
       oldestFirst: true,
     });
-    const bookkeeping = claimed.filter((event) => BOOKKEEPING_TYPES.includes(event.type));
-    const candidates = claimed.filter((event) => !BOOKKEEPING_TYPES.includes(event.type));
+    const unsummarized = claimed.filter((event) => UNSUMMARIZED_TYPES.includes(event.type));
+    const candidates = claimed.filter((event) => !UNSUMMARIZED_TYPES.includes(event.type));
     if (candidates.length < MIN_EVENTS_TO_SUMMARIZE) {
-      // The bookkeeping rows are consumed even on a skip: left unprocessed they
+      // The unsummarized rows are consumed even on a skip: left unprocessed they
       // collect at the head of this oldest-first window until they fill it, at
       // which point the job skips forever with real activity queued behind them.
       await markEventsProcessed(
         db,
-        bookkeeping.map((e) => e.id),
+        unsummarized.map((e) => e.id),
       );
       return {
         skipped: true,
@@ -144,12 +145,12 @@ export const consolidateEventsJob: JobDefinition = {
         eventIds: events.map((e) => e.id),
       },
     });
-    // Only what the model actually saw, plus the bookkeeping rows that were
+    // Only what the model actually saw, plus the unsummarized rows that were
     // never candidates. Anything the budget dropped stays unprocessed for the
     // next run rather than being summarized by nobody.
     await markEventsProcessed(
       db,
-      [...events, ...bookkeeping].map((e) => e.id),
+      [...events, ...unsummarized].map((e) => e.id),
     );
     await emitEvent(db, {
       type: "memory.consolidated",

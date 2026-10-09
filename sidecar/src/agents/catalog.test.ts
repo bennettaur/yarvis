@@ -169,6 +169,8 @@ describe("the catalogue", () => {
     // chat default.
     expect(specialists.find((s) => s.name === "session-summarizer")?.complexityTier).toBe("low");
     expect(specialists.find((s) => s.name === "workspace-recap")?.complexityTier).toBe("low");
+    // The two transcript readers act on nothing they read.
+    expect(specialists.find((s) => s.name === "workspace-recap")?.tools).toEqual([]);
     expect(specialists.find((s) => s.name === "activity-consolidator")?.complexityTier).toBe(
       "medium",
     );

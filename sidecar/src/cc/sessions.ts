@@ -172,44 +172,51 @@ export async function getTranscript(
 }
 
 /**
+ * Claude Code's project directory for a working directory: every character
+ * outside `[A-Za-z0-9]` becomes `-`. Assumes the path is short enough that
+ * Claude Code hasn't shortened the name.
+ */
+export function ccProjectDirFor(cwd: string): string {
+  return cwd.replace(/[^A-Za-z0-9]/g, "-");
+}
+
+/**
  * How much of a transcript's end to read for recent activity. A long session's
  * file runs to tens of megabytes, and the last few prompts are near the end.
  */
 const ACTIVITY_TAIL_BYTES = 4 * 1024 * 1024;
 
-export interface SessionActivity extends RecentActivity {
-  sessionId: string;
-  mtimeMs: number;
+/** A project's most recently written transcript, or null when it has none. */
+export async function latestSessionFile(projectDir: string): Promise<SessionFileInfo | null> {
+  const [newest] = await listSessionFiles(projectDir);
+  return newest ?? null;
 }
 
-/**
- * The recent activity of a project's newest session, or null when the project
- * has no transcripts.
- */
-export async function getLatestSessionActivity(
+/** The recent activity in one transcript, read from its last few megabytes. */
+export async function readSessionActivity(
   projectDir: string,
+  session: SessionFileInfo,
   promptLimit: number,
-): Promise<SessionActivity | null> {
-  const [newest] = await listSessionFiles(projectDir);
-  if (!newest) return null;
-  const file = join(projectsDir(), projectDir, `${newest.sessionId}.jsonl`);
+): Promise<RecentActivity> {
+  if (!safeName(projectDir) || !safeName(session.sessionId)) {
+    throw new Error("invalid identifiers");
+  }
+  const file = join(projectsDir(), projectDir, `${session.sessionId}.jsonl`);
+  if (!within(projectsDir(), file)) throw new Error("invalid path");
   const handle = await open(file, "r");
   let tail: string;
   try {
-    const start = Math.max(0, newest.bytes - ACTIVITY_TAIL_BYTES);
-    const buffer = Buffer.alloc(newest.bytes - start);
-    await handle.read(buffer, 0, buffer.length, start);
-    tail = buffer.toString("utf8");
+    const start = Math.max(0, session.bytes - ACTIVITY_TAIL_BYTES);
+    const buffer = Buffer.alloc(session.bytes - start);
+    // The file may have shrunk since it was listed; use only what was read.
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+    tail = buffer.toString("utf8", 0, bytesRead);
     // Starting mid-file lands inside a line; drop it rather than parse half.
     if (start > 0) tail = tail.slice(tail.indexOf("\n") + 1);
   } finally {
     await handle.close();
   }
-  return {
-    sessionId: newest.sessionId,
-    mtimeMs: newest.mtimeMs,
-    ...parseRecentActivity(tail, promptLimit),
-  };
+  return parseRecentActivity(tail, promptLimit);
 }
 
 export async function listPlans(): Promise<PlanInfo[]> {
