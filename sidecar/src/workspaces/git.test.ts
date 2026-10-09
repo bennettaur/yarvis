@@ -23,6 +23,7 @@ import {
   mergeBaseIntoWorktree,
   nearestBaseRef,
   pushBranch,
+  remoteExists,
   removeWorktree,
   updateDefaultBranch,
   worktreeStatus,
@@ -321,6 +322,37 @@ describe("fetchBranch", () => {
     const { runner, calls } = fakeRunner(() => ({}));
     await fetchBranch(runner, "/repo", "feat/login");
     expect(calls[0]).toEqual(["fetch", "origin", "feat/login"]);
+  });
+});
+
+describe("remoteExists", () => {
+  it("runs exactly ls-remote <url> with a 30-second timeout", async () => {
+    const calls: { args: string[]; timeoutMs?: number }[] = [];
+    const runner: GitRunner = async (args, opts) => {
+      calls.push({ args, timeoutMs: opts.timeoutMs });
+      return { stdout: "", stderr: "", exitCode: 0 };
+    };
+    await remoteExists(runner, "git@github.com:acme/widget.git");
+    expect(calls).toEqual([
+      { args: ["ls-remote", "git@github.com:acme/widget.git"], timeoutMs: 30_000 },
+    ]);
+  });
+
+  it("resolves for an empty repo with no refs", async () => {
+    const { runner } = fakeRunner(() => ({ stdout: "" }));
+    await expect(
+      remoteExists(runner, "https://github.com/acme/empty.git"),
+    ).resolves.toBeUndefined();
+  });
+
+  it("throws with git's stderr on failure", async () => {
+    const { runner } = fakeRunner(() => ({
+      exitCode: 128,
+      stderr: "ERROR: Repository not found.",
+    }));
+    await expect(remoteExists(runner, "git@github.com:acme/nope.git")).rejects.toThrow(
+      "Repository not found",
+    );
   });
 });
 
