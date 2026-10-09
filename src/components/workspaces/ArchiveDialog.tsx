@@ -100,7 +100,7 @@ export default function ArchiveDialog({
             <button
               onClick={() => void run(true)}
               disabled={busy}
-              className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium hover:bg-red-500 disabled:opacity-40"
+              className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium hover:bg-red-700 disabled:opacity-40"
             >
               Force remove
             </button>

@@ -34,6 +34,10 @@ so `Ctrl+D` to exit and similar work as usual.
 ### Keys
 
 - **Shift+Enter** inserts a newline in Claude Code instead of submitting.
+- **Cmd+=** and **Cmd+-** make the text larger or smaller, and **Cmd+0**
+  resets it. The size is shared by every terminal, including each
+  workspace's Claude Code session, and is remembered after a restart. These
+  use Cmd only, because Ctrl+- is undo in Claude Code.
 - App shortcuts like Cmd+1–9 and Cmd+/ still work while a terminal has focus.
   See [Keyboard shortcuts](keyboard-shortcuts.md).
 
