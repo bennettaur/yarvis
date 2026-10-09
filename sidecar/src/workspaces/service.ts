@@ -317,6 +317,36 @@ export async function listRepos(db: Db): Promise<Repo[]> {
   return db.select().from(repos).orderBy(repos.name);
 }
 
+/** Whether a clone URL points at github.com, read the way `splitRemote` reads hosts. */
+function isGitHubCloneUrl(url: string): boolean {
+  return splitRemote(url)?.host.toLowerCase() === "github.com";
+}
+
+/**
+ * The registered repo a clone URL names, if any. On github.com an SSH and an
+ * HTTPS URL for one repo are the same repo, so owner/repo decides,
+ * case-insensitively. Elsewhere only the exact (trimmed) URL does:
+ * `parseGitUrl` reads the last two path segments, so every Azure DevOps URL
+ * parses to owner `_git`, and owner/repo would match the wrong repo.
+ */
+export async function findRegisteredRepo(db: Db, cloneUrl: string): Promise<Repo | null> {
+  const url = cloneUrl.trim();
+  const rows = await listRepos(db);
+  if (!isGitHubCloneUrl(url)) return rows.find((r) => r.cloneUrl === url) ?? null;
+  const parsed = parseGitUrl(url);
+  if (!parsed) return null;
+  const owner = parsed.owner.toLowerCase();
+  const repo = parsed.repo.toLowerCase();
+  return (
+    rows.find(
+      (r) =>
+        isGitHubCloneUrl(r.cloneUrl) &&
+        r.owner.toLowerCase() === owner &&
+        r.repo.toLowerCase() === repo,
+    ) ?? null
+  );
+}
+
 export async function getRepo(db: Db, id: string): Promise<Repo | null> {
   const [row] = await db.select().from(repos).where(eq(repos.id, id));
   return row ?? null;
@@ -1003,7 +1033,7 @@ const skipped = (note: string): RepoSyncProgress => ({
  *  `remote:` prose a server-side hook writes, which git relays verbatim: that
  *  stays third-party text, and the chat agent's system prompt is what keeps it
  *  from being read as instruction. */
-function errorText(e: unknown): string {
+export function errorText(e: unknown): string {
   const raw = e instanceof Error ? e.message : String(e);
   return raw.replace(/([a-z][a-z0-9+.-]*:\/\/)[^@/\s]*@/gi, "$1");
 }
