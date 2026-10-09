@@ -11,6 +11,7 @@ import KeychainSection from "./KeychainSection";
 import McpEndpointSection from "./McpEndpointSection";
 import McpServerSection from "./McpServerSection";
 import ModelCatalogSection from "./ModelCatalogSection";
+import PrModelSection from "./PrModelSection";
 import PrReviewSection from "./PrReviewSection";
 import ReposSection from "./ReposSection";
 import SecretBackendSection from "./SecretBackendSection";
@@ -90,7 +91,12 @@ export default function SettingsPanel({
           <JobsSection />
         </div>
       )}
-      {active === "prs" && <PrReviewSection />}
+      {active === "prs" && (
+        <div className="space-y-5">
+          <PrReviewSection />
+          <PrModelSection />
+        </div>
+      )}
       {active === "voice" && <VoiceSection />}
       {active === "embeddings" && <EmbeddingsSection />}
       {active === "telegram" && <TelegramSection />}

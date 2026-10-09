@@ -15,7 +15,8 @@ bun run demo:site            # turn the last run into a static site in demo/site
 
 The `Demo site` workflow (`.github/workflows/demo-pages.yml`) records every
 flow each morning (Toronto time) and publishes the result, with the showcase
-deck, to GitHub Pages at https://bennettaur.github.io/yarvis/. Run it from the
+deck and the showcase video's player (`video/`, see `video/README.md`), to
+GitHub Pages at https://bennettaur.github.io/yarvis/. Run it from the
 Actions tab to publish straight away; only runs on `main` publish. It needs
 the repo's Pages source set to GitHub Actions (Settings → Pages), which it is.
 A run where any flow fails publishes nothing, so the site keeps the last good

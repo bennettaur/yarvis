@@ -82,9 +82,9 @@ cargo test --manifest-path src-tauri/Cargo.toml --all-targets   # Rust tests
 ```
 
 CI (`.github/workflows/ci.yml`) runs all of the above (frontend tests, sidecar
-tests against a `pgvector/pgvector:pg16` service container, both typechecks,
-biome, `bun audit --prod`, `cargo fmt --check`, `cargo clippy`, `cargo test`,
-`cargo audit`). Every job in it runs on a read-only `GITHUB_TOKEN` — ci.yml
+tests against a `pgvector/pgvector:pg16` service container, the frontend,
+sidecar and `video/` typechecks, biome, `bun audit --prod`, `cargo fmt --check`,
+`cargo clippy`, `cargo test`, `cargo audit`). Every job in it runs on a read-only `GITHUB_TOKEN` — ci.yml
 sets that default itself, so a job that needs to write back to GitHub has to
 say so in its own `permissions:` block, where review can see it — and its
 actions are pinned to commit SHAs, with the ref they were resolved from in a
@@ -107,6 +107,13 @@ back to ad-hoc.
 ## Conventions
 
 - Package manager is **Bun** everywhere, including the sidecar workspace.
+- `video/` is a standalone Remotion package for the showcase video, with its
+  own `bun.lock`; it is not a workspace, so the root `bun install` skips it. Its
+  scenes import prop-driven components from `src/`, so changing the props of a
+  component it uses can break it. The root typecheck doesn't cover it: run
+  `bun run typecheck` in `video/`, which CI's `video-typecheck` job also runs.
+  The `Demo site` workflow builds its web player into the Pages site at
+  `video/`.
 - `bun.lock` records no registry: every entry's resolution field stays `""` so
   CI's `--frozen-lockfile` install resolves from the default registry. A machine
   pointed at a private mirror has bun write that mirror's tarball URL into every

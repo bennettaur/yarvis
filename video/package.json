@@ -1,0 +1,33 @@
+{
+  "name": "yarvis-video",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "studio": "remotion studio",
+    "render": "bun run render:reel && bun run render:walkthrough",
+    "render:reel": "remotion render Reel out/yarvis-reel.mp4 --crf=20",
+    "render:walkthrough": "remotion render Walkthrough out/yarvis-walkthrough.mp4 --crf=22",
+    "player:dev": "vite",
+    "player:build": "vite build",
+    "typecheck": "tsc",
+    "publish:videos": "gh release upload showcase-video out/yarvis-reel.mp4 out/yarvis-walkthrough.mp4 --repo bennettaur/yarvis --clobber"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.530",
+    "@remotion/player": "^4.0.530",
+    "@remotion/tailwind-v4": "^4.0.530",
+    "@remotion/transitions": "^4.0.530",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "remotion": "^4.0.530",
+    "tailwindcss": "^4.3.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "typescript": "^5.9",
+    "vite": "^8.1.5"
+  }
+}

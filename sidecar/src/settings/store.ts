@@ -4,13 +4,14 @@ import { dirname, join } from "node:path";
 
 /**
  * Direct sidecar access to `~/.yarvis/settings.json` — the same file the Rust
- * core owns for its own scalar settings (see `src-tauri/src/settings.rs`).
+ * core keeps its own scalar settings in (see `src-tauri/src/settings.rs`).
  *
- * The core never reads or writes the keys this module manages (customProviders,
+ * The core never changes the keys this module manages (customProviders,
  * providerModels, mcpServers, voiceConfig, embeddingsConfig, wipConfig,
  * githubPrConfig, jobConfig): each is a top-level key in the shared document,
- * touched only by its own section, so a read-modify-write here never clobbers
- * the core's fields (or another section's) even though they live in one file.
+ * touched only by its own section. Both sides do a whole-document
+ * read-modify-write, so a save on either side carries the other's keys (and
+ * another section's) across even though they live in one file.
  *
  * One core-owned key is *read* through here and never written: `agentCommand`,
  * so a scheduled Claude Code job launches the same build as the core's PTY
@@ -18,8 +19,9 @@ import { dirname, join } from "node:path";
  * keeps the rule above intact.
  *
  * This is a straight port of the read-modify-write discipline
- * `src-tauri/src/settings.rs` and `src-tauri/src/custom_providers.rs` already
- * use for the Keychain blob: read the whole document, mutate only the one
+ * `src-tauri/src/settings.rs` uses for this file and
+ * `src-tauri/src/custom_providers.rs` uses for the Keychain blob: read the
+ * whole document, mutate only the one
  * section a caller owns, write the whole document back atomically (temp file +
  * rename).
  */

@@ -3,10 +3,14 @@
 //! Non-secret preferences, persisted as `settings.json` in `~/.yarvis` — the
 //! same home-directory convention the sidecar uses for `~/.yarvis/agents` —
 //! written with an atomic rename. Secrets belong in the Keychain
-//! (`keychain.rs`) and settings the sidecar owns belong in its database; this
-//! is only for values the core itself reads or injects into the sidecar's
-//! environment, so the frontend can change them without the core having to ask
-//! the sidecar.
+//! (`keychain.rs`); the fields here are only values the core itself reads or
+//! injects into the sidecar's environment, so the frontend can change them
+//! without the core having to ask the sidecar.
+//!
+//! The core owns only these fields, not the file: the sidecar keeps its own
+//! top-level sections in the same document (`sidecar/src/settings/store.ts`),
+//! so a save writes the core's fields over the document on disk and carries
+//! every other key across unchanged.
 //!
 //! The file is shared across `dev:instance` copies the same way the Keychain
 //! item is, so every setter re-reads it before merging in its one field rather
@@ -214,13 +218,38 @@ impl SettingsState {
             .unwrap_or_default()
     }
 
+    /// The whole document, sidecar sections included, with the same leniency
+    /// as [`Self::read_from_disk`]: a file that isn't a JSON object reads as
+    /// empty, so a save replaces it as it always has.
+    fn read_document(path: &std::path::Path) -> serde_json::Map<String, Value> {
+        match std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        {
+            Some(Value::Object(document)) => document,
+            _ => serde_json::Map::new(),
+        }
+    }
+
     /// Persists the current settings, reporting failure to the caller — unlike
     /// the alarm store this mirrors, every write here is one the user asked for
     /// and is told about, so a silent failure would report a change as saved
     /// that then reverts on the next launch.
+    ///
+    /// The sidecar keeps its own top-level sections in this file
+    /// (`sidecar/src/settings/store.ts`), which `Settings` doesn't model, so the
+    /// save overlays the core's fields onto the document on disk rather than
+    /// replacing it. Every core field is written, `None` as `null`, so clearing
+    /// one overwrites the value on disk instead of leaving it behind.
     fn save(&self) -> Result<(), String> {
         let settings = self.snapshot();
-        let json = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+        let Value::Object(fields) = serde_json::to_value(&settings).map_err(|e| e.to_string())?
+        else {
+            return Err("settings did not serialize to an object".to_string());
+        };
+        let mut document = Self::read_document(&self.path);
+        document.extend(fields);
+        let json = serde_json::to_string_pretty(&document).map_err(|e| e.to_string())?;
         // Atomic write: serialize to a sibling file then rename over the target
         // so a crash mid-write can't leave settings.json truncated.
         let tmp = self.path.with_extension("json.tmp");
@@ -970,6 +999,59 @@ mod tests {
 
         let reloaded = SettingsState::load(store.path.clone());
         assert_eq!(reloaded.snapshot().keychain_settings_migrated, Some(true));
+    }
+
+    fn read_document(store: &SettingsState) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(&store.path).unwrap()).unwrap()
+    }
+
+    /// The sidecar keeps its own sections in this same file
+    /// (`sidecar/src/settings/store.ts`), so a core save must carry them across.
+    #[test]
+    fn a_save_keeps_the_sections_the_sidecar_owns() {
+        let store = temp_store("keeps-sidecar-sections");
+        let providers = json!({ "litellm": { "baseUrl": "http://localhost:4000" } });
+        std::fs::write(
+            &store.path,
+            json!({ "maxPtySessions": 5, "customProviders": providers }).to_string(),
+        )
+        .unwrap();
+
+        store.set_max_pty_sessions(Some(10)).unwrap();
+
+        let doc = read_document(&store);
+        assert_eq!(doc["customProviders"], providers);
+        assert_eq!(doc["maxPtySessions"], 10);
+    }
+
+    #[test]
+    fn a_cleared_field_does_not_keep_its_value_from_disk() {
+        let store = temp_store("cleared-over-disk");
+        std::fs::write(
+            &store.path,
+            json!({ "jiraEmail": "me@example.com", "customProviders": {} }).to_string(),
+        )
+        .unwrap();
+
+        store.set_text_field(None, |s| &mut s.jira_email).unwrap();
+
+        let doc = read_document(&store);
+        assert!(doc["jiraEmail"].is_null(), "{doc}");
+        assert_eq!(doc["customProviders"], json!({}));
+    }
+
+    #[test]
+    fn a_missing_file_saves_as_just_the_core_fields() {
+        let store = temp_store("missing-file");
+
+        store.set_max_pty_sessions(Some(3)).unwrap();
+
+        let doc = read_document(&store);
+        assert_eq!(doc["maxPtySessions"], 3);
+        assert_eq!(
+            doc,
+            serde_json::to_value(SettingsState::load(store.path.clone()).snapshot()).unwrap()
+        );
     }
 
     /// The switch carries the secrets when the new store has room for them.

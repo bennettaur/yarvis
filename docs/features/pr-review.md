@@ -15,6 +15,8 @@ those notes later.
    [Token scopes](../configuration.md#token-scopes) for what each token needs.
 2. Guided reviews and line questions are agent runs, so they also need an LLM
    provider key. See [Getting started](../getting-started.md#5-first-configuration).
+   Both use the default chat model unless you pick one for each under
+   **Settings → PR review → Review models**.
 3. To start a workspace from a PR, register its repo under **Settings →
    Repositories**. See [Workspaces](workspaces.md).
 

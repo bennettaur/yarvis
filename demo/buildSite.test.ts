@@ -45,5 +45,11 @@ describe("renderIndex", () => {
     expect(html).toContain("<figcaption>Week summary</figcaption>");
     expect(html).toContain('src="chat/video.webm"');
     expect(html).toContain('href="showcase/"');
+    expect(html).not.toContain('href="video/"');
+  });
+
+  it("links the showcase video's player when the site includes it", () => {
+    const html = renderIndex([], "2026-10-05", true);
+    expect(html).toContain('href="video/"');
   });
 });

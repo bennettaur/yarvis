@@ -1,17 +1,28 @@
 /**
  * Turns a `bun run demo` run into a static site for GitHub Pages: an index
  * with each flow's video and screenshots, plus the showcase deck at
- * `showcase/`. Reads `demo/output/`, writes `demo/site/`.
+ * `showcase/` and, when it has been built, the showcase video's player at
+ * `video/`. Reads `demo/output/` and `video/dist/`, writes `demo/site/`.
  *
- *   bun run demo && bun run demo:site
+ *   bun run demo && bun run --cwd video player:build && bun run demo:site
  */
 
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { OUTPUT_DIR, REPO_ROOT } from "./paths";
 
 export const SITE_DIR = join(REPO_ROOT, "demo", "site");
 const SHOWCASE = join(REPO_ROOT, "docs", "showcase", "yarvis-showcase.html");
+/** The showcase video's web player, as `bun run --cwd video player:build` leaves it. */
+const VIDEO_PLAYER = join(REPO_ROOT, "video", "dist");
 
 /**
  * How each flow is introduced on the page, keyed by its output directory. The
@@ -103,7 +114,8 @@ export function readFlows(outputDir: string): Flow[] {
   );
 }
 
-export function renderIndex(flows: Flow[], builtFrom: string): string {
+/** `withVideo` adds a link to the showcase video's player, for a site that includes it. */
+export function renderIndex(flows: Flow[], builtFrom: string, withVideo = false): string {
   const sections = flows
     .map((flow) => {
       const intro = FLOW_INTROS[flow.slug] ?? { title: captionFor(flow.slug), blurb: "" };
@@ -159,7 +171,7 @@ ${video}
 <header>
 <h1>Yarvis in action</h1>
 <p>Recorded automatically from the real app, driven by scripted demo flows. Every name and detail in them is made up.</p>
-<nav><a href="showcase/">Showcase deck</a>${flows.map((f) => `<a href="#${escapeHtml(f.slug)}">${escapeHtml(FLOW_INTROS[f.slug]?.title ?? captionFor(f.slug))}</a>`).join("")}</nav>
+<nav>${withVideo ? '<a href="video/">Showcase video</a>' : ""}<a href="showcase/">Showcase deck</a>${flows.map((f) => `<a href="#${escapeHtml(f.slug)}">${escapeHtml(FLOW_INTROS[f.slug]?.title ?? captionFor(f.slug))}</a>`).join("")}</nav>
 </header>
 <main>
 ${sections}
@@ -185,12 +197,22 @@ function buildSite(): void {
   }
   mkdirSync(join(SITE_DIR, "showcase"), { recursive: true });
   copyFileSync(SHOWCASE, join(SITE_DIR, "showcase", "index.html"));
+  const withVideo = existsSync(VIDEO_PLAYER);
+  // Optional locally, but the published site is linked to at video/, so CI
+  // must not quietly publish without it.
+  if (!withVideo && process.env.CI)
+    throw new Error(
+      `no video player in ${VIDEO_PLAYER}; run \`bun run --cwd video player:build\` first`,
+    );
+  if (withVideo) cpSync(VIDEO_PLAYER, join(SITE_DIR, "video"), { recursive: true });
 
   const sha = process.env.GITHUB_SHA?.slice(0, 7);
   // en-CA formats as YYYY-MM-DD, in the run's own time zone.
   const builtFrom = `${new Date().toLocaleDateString("en-CA")}${sha ? ` from ${sha}` : ""}`;
-  writeFileSync(join(SITE_DIR, "index.html"), renderIndex(flows, builtFrom));
-  console.info(`[demo:site] wrote ${flows.length} flows to ${SITE_DIR}`);
+  writeFileSync(join(SITE_DIR, "index.html"), renderIndex(flows, builtFrom, withVideo));
+  console.info(
+    `[demo:site] wrote ${flows.length} flows${withVideo ? " and the video player" : ""} to ${SITE_DIR}`,
+  );
 }
 
 if (import.meta.main) buildSite();

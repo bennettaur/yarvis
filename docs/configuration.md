@@ -166,6 +166,7 @@ has written your providers and MCP servers into it.
 | `chatConfig` | `maxSteps` (100, up to 500), `maxOutputTokens` (none, up to 200000), `compactAtTokens` (200000, from 10000 to 2000000). A model's own compaction threshold in its catalog entry wins over `compactAtTokens`. | Settings → Assistant → Turn budget |
 | `complexityModels` | The provider and model behind the `low`, `medium` and `max` tiers specialists can ask for | Settings → Assistant |
 | `githubPrConfig` | `reviewQuery` for the Needs review tab, `reviewingLookbackDays` for Reviewing | Settings → PR review |
+| `prModels` | The provider and model behind guided reviews (`guide`) and line questions (`ask`). Unset uses the default chat model. | Settings → PR review |
 | `wipConfig` | Which sources feed the **In progress** list in the attention panel (the bell in the top bar), and a GitHub issue label filter | Settings → Work in progress |
 | `jobConfig` | `ccDigestEnabled` and `ccDigestProjectDirs` for the Claude Code transcript digest | Settings → Assistant |
 | `voiceConfig` | Speech providers and models, voice, speak replies, hands-free | Settings → Voice |
@@ -259,7 +260,8 @@ The tabs in **Settings**, in order:
    and the Tool manager.
 4. **Repositories.** The repos workspaces can use, the workspace agent
    command, and the terminal cap.
-5. **PR review.** The Needs review search and the Reviewing lookback.
+5. **PR review.** The Needs review search, the Reviewing lookback, and the
+   models behind guided reviews and line questions.
 6. **Voice.** Speech to text and text to speech.
 7. **Embeddings.** The embeddings endpoint.
 8. **Telegram.** Bot token, allowed chats, and the optional second factor.

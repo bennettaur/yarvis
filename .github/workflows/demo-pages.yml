@@ -1,7 +1,8 @@
 name: Demo site
 
 # Records the demo flows against main and publishes them, with the showcase
-# deck, to GitHub Pages. A run with any failing flow publishes nothing, so the
+# deck and the showcase video's player (video/), to GitHub Pages. A run with
+# any failing flow, or a player that won't build, publishes nothing, so the
 # site keeps the last good recording.
 #
 # A pull request that changes the demo or what it's built from records without
@@ -18,6 +19,7 @@ on:
     paths:
       - 'demo/**'
       - 'docs/showcase/**'
+      - 'video/**'
       - 'package.json'
       - 'bun.lock'
       - '.github/workflows/demo-pages.yml'
@@ -73,6 +75,14 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Install Chromium
         run: bunx playwright install --with-deps chromium
+      # The player is its own package (video/, with its own lockfile). Built
+      # first so a broken one fails in seconds rather than after recording; the
+      # site step copies it in from video/dist.
+      - name: Build the showcase video player
+        run: |
+          bun install --frozen-lockfile --cwd video
+          bun run --cwd video typecheck
+          bun run --cwd video player:build
       - name: Record the flows
         run: bun run demo
       - name: Build the site
