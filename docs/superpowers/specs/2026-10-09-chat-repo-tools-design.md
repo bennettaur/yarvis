@@ -33,21 +33,24 @@ model must not choose a path segment.
 
 Steps:
 
-1. If `repo` matches `^[\w.-]+/[\w.-]+$`, it is the shorthand. Refuse it if
-   either part is `.` or `..`. Otherwise build `git@github.com:owner/repo.git`.
-   This is the SSH form that Settings suggests
+1. If `repo` matches `^[\w.-]+/[\w.-]+$`, it is the shorthand. Build
+   `git@github.com:owner/repo.git`. This is the SSH form that Settings suggests
    (`src/components/ReposSection.tsx:191`).
 2. Otherwise, trim `repo` and use it as the clone URL. It must pass
    `assertSafeCloneUrl` (`service.ts:220-227`), which refuses `ext::`, `fd::`
    and a leading `-`.
 3. Parse owner and repo with `parseGitUrl` (`service.ts:103-108`). If parsing
    fails, return the bad-input error.
-4. Look for a repo that is already registered. If one exists, return it with
+4. Check the parsed owner and the parsed repo with the segment rule (see
+   "Folder helper"). If either fails, refuse and register nothing. The
+   shorthand and a full clone URL go through the same check, so `.` and `..`
+   are refused in both forms.
+5. Look for a repo that is already registered. If one exists, return it with
    `alreadyRegistered: true`. Do not run the network check.
-5. Run `remoteExists`. If it throws, return the error and register nothing.
-6. Call `createRepo` (`service.ts:250-269`).
+6. Run `remoteExists`. If it throws, return the error and register nothing.
+7. Call `createRepo` (`service.ts:250-269`).
 
-The lookup in step 4 depends on the host:
+The lookup in step 5 depends on the host:
 
 - **github.com:** match a registered repo whose clone URL is also on
   github.com, on owner and repo, case-insensitive. An SSH URL and an HTTPS URL
@@ -74,8 +77,6 @@ Rules:
   provisioning (`service.ts:1477-1488`), so the chat must never set them.
 - The tool does not clone. Cloning happens on the first provision
   (`ensurePrimaryClone`, `sidecar/src/workspaces/git.ts:63-71`).
-- A clone URL whose repo part is `.` or `..` can still register if the remote
-  answers. The folder helper refuses it when a workspace uses it.
 
 ## Chat tool: `add_repo_to_workspace({ workspaceId, repoId })`
 
@@ -150,25 +151,10 @@ New in `sidecar/src/workspaces/git.ts`.
 - On a non-zero exit, throw an error that includes git's stderr. The existing
   `git()` helper (`git.ts:49-60`) already does this. With the stderr, the chat
   can tell "not found" from "no access".
-
-SSH prompts:
-
-- The default runner sets `GIT_TERMINAL_PROMPT=0` (`git.ts:45-46`). That stops
-  git's own credential prompt for HTTPS. It does not stop `ssh` from asking for
-  a passphrase or a host key.
-- Nothing sets SSH batch mode today. `scrubbedEnv` passes the user's
-  `GIT_SSH` and `GIT_SSH_COMMAND` through (`exec.ts:31-32`), and nothing adds
-  `BatchMode`.
-- `GitRunner` takes no environment (`git.ts:25-28`), so this call cannot set
-  `GIT_SSH_COMMAND` without a change to the interface. Use git's own setting
-  instead: pass `-c core.sshCommand=ssh -o BatchMode=yes` before `ls-remote`.
-- Respect the user's own SSH command. Add the `-c` setting only when the
-  sidecar's environment has no `GIT_SSH_COMMAND` or `GIT_SSH`, and
-  `git config --get core.sshCommand` returns nothing. `-c` overrides both
-  `GIT_SSH` and a configured `core.sshCommand`, so it must not be added when
-  either one is present. `GIT_SSH_COMMAND` overrides `-c` on its own.
-- With batch mode, an unknown host key fails at once. A provision of the same
-  repo would also stop on that host key, so an early failure is correct.
+- Pass no other arguments and no extra environment. The default runner sets
+  `GIT_TERMINAL_PROMPT=0` (`git.ts:45-46`), which stops git's HTTPS credential
+  prompt. An SSH stall is bounded only by the timeout, which is the same
+  exposure as a clone today.
 
 ## Folder helper
 
@@ -183,7 +169,11 @@ Rule:
 1. Try the lowercased display name (`repo.name`).
 2. If that name is in use, try `name-owner`, both lowercased.
 3. If both are in use, refuse.
-4. Refuse an unsafe result: empty, `.`, `..`, or one that contains `/` or `\`.
+4. Refuse a result that fails the segment rule.
+
+The segment rule refuses a value that is empty, is `.` or `..`, or contains `/`
+or `\`. It is one exported check in `service.ts`. The folder helper and
+`register_repo` both use it.
 
 `createWorkspace` keeps its current behaviour through the helper. For each
 selected repo, it passes the names of the other selected repos as in use. Both
@@ -261,8 +251,9 @@ Follow `tools.ts`: return `{ error }` and do not throw (`errorMessage`,
 
 `register_repo`:
 
-- Bad input, including `.` or `..` in the shorthand: "use owner/repo or a
-  clone URL".
+- Bad input: "use owner/repo or a clone URL".
+- An owner or repo part that fails the segment rule, in the shorthand or a
+  full URL: "unsafe owner or repo name in <value>".
 - Unsafe transport: refused, with the `assertSafeCloneUrl` message.
 - `ls-remote` failure or timeout: "repo not found or no access", with git's
   stderr or the timeout message.
@@ -284,10 +275,7 @@ pure unit tests.
 
 `git.test.ts`, with the `fakeRunner` helper (`git.test.ts:32-44`):
 
-- `remoteExists` runs `ls-remote <url>` with no `--exit-code` and no pattern.
-- It adds the batch-mode `-c` setting when no SSH command is configured.
-- It leaves the setting out when `GIT_SSH_COMMAND`, `GIT_SSH` or
-  `core.sshCommand` is set.
+- `remoteExists` runs exactly `ls-remote <url>`, with a 30-second timeout.
 - It returns on success, including empty output from an empty repo.
 - It throws with stderr on failure.
 
@@ -311,6 +299,8 @@ block (`routes.test.ts:1229`), with `fakeGit` (`routes.test.ts:72-83`):
 
 - The shorthand builds the SSH URL.
 - The shorthand with `.` or `..` is refused.
+- A full URL whose owner or repo is `.` or `..` is refused, and nothing is
+  registered.
 - A URL is used as given.
 - An unsafe URL is refused.
 - A github.com repo already registered under another URL form is found, and
