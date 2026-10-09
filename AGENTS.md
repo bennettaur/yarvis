@@ -489,9 +489,20 @@ back to ad-hoc.
   jobs, the recap and the browser all filter on it. The kinds a *turn* may write
   exclude the ones the jobs author, so hand-written text can't masquerade as a
   consolidated summary. A fact that changed is superseded — the old row stays for
-  the trail and drops out of recall — rather than contradicted by a second
+  the trail and drops out of recall, except a recall `asOf` a time it still
+  held — rather than contradicted by a second
   memory, and an edit re-embeds, since a corrected fact findable only by its old
   wording is worse than no correction.
+  - A memory also records when its claim holds (`valid_from`/`valid_until`),
+    separately from when it was written. An expired memory is still returned by
+    recall, flagged and ranked lower, because the agent can only re-check a
+    claim it can see. A correction closes the old claim's window where the
+    replacement starts, which is what lets `asOf` answer for the past. Recall
+    ranks by similarity scaled by a strength that decays from the last
+    confirmation (`memory/ranking.ts`). Strength is computed at query time, so
+    nothing rewrites rows on a timer, and only an explicit confirmation resets
+    it. Being retrieved does not count, since every top-k hit would reinforce
+    itself.
 - The user's `tasks` and the assistant's `agent_todos` are different tables on
   purpose: one is what the user intends to do, the other is what the assistant
   has taken on. The todo tools are deliberately absent from the MCP endpoint — a

@@ -23,7 +23,18 @@ export interface MemoryRecord {
   metadata: Record<string, unknown> | null;
   createdAt: string;
   supersededAt: string | null;
+  validFrom: string;
+  validUntil: string | null;
+  confirmedAt: string;
+  confirmCount: number;
+  /**
+   * Whether the claim holds now. "expired" means it is past `validUntil`: due a
+   * re-check, or, on a superseded memory, replaced.
+   */
+  validity: "current" | "upcoming" | "expired";
   score?: number;
+  similarity?: number;
+  strength?: number;
 }
 
 /** A page of a paginated list, with the size of the full match. */

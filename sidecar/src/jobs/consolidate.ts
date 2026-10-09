@@ -131,6 +131,9 @@ export const consolidateEventsJob: JobDefinition = {
     const memory = new PgVectorMemoryStore(db, await chooseEmbedder(config, db));
     const record = await memory.add(run.text.trim(), {
       kind: "activity-summary",
+      // Holds from the window it describes, so recall `asOf` a moment inside it
+      // finds this summary even though it was written hours later.
+      validFrom: from,
       sourceRef: {
         type: "events",
         from: from.toISOString(),
@@ -202,6 +205,7 @@ export const dailyRollupJob: JobDefinition = {
 
     const record = await memory.add(run.text.trim(), {
       kind: "day-summary",
+      validFrom: from,
       sourceRef: {
         type: "events",
         from: from.toISOString(),

@@ -193,3 +193,172 @@ describe("pgvector memory store", () => {
     await expect(chooseEmbedder(baseConfig, db)).rejects.toThrow(/dimension/i);
   });
 });
+
+describe("memory validity and decay", () => {
+  const HOUR = 60 * 60_000;
+  const DAY = 24 * HOUR;
+  const start = new Date("2026-10-08T10:00:00Z");
+  let clock = start;
+  const timed = new PgVectorMemoryStore(db, new HashEmbedder(), () => clock);
+  const later = (ms: number) => new Date(start.getTime() + ms);
+
+  beforeEach(() => {
+    clock = start;
+  });
+
+  it("still returns a memory past its validUntil, flagged expired", async () => {
+    await timed.add("GitHub is down", { validUntil: later(HOUR) });
+    expect((await timed.search("GitHub is down", 1))[0]?.validity).toBe("current");
+
+    clock = later(DAY);
+    const [hit] = await timed.search("GitHub is down", 1);
+    expect(hit?.content).toBe("GitHub is down");
+    expect(hit?.validity).toBe("expired");
+  });
+
+  it("ranks an expired memory below a current one that matches as well", async () => {
+    const expiring = await timed.add("GitHub is down", { validUntil: later(HOUR) });
+    const lasting = await timed.add("GitHub is down");
+    clock = later(2 * HOUR);
+
+    const hits = await timed.search("GitHub is down", 2);
+    expect(hits.map((h) => h.id)).toEqual([lasting.id, expiring.id]);
+    expect(hits[0]!.similarity).toBeCloseTo(hits[1]!.similarity!, 5);
+  });
+
+  it("ranks a long-unconfirmed memory below a fresh one that matches as well", async () => {
+    const old = await timed.add("the deploy runs on Fridays");
+    clock = later(365 * DAY);
+    const fresh = await timed.add("the deploy runs on Fridays");
+
+    const hits = await timed.search("the deploy runs on Fridays", 2);
+    expect(hits.map((h) => h.id)).toEqual([fresh.id, old.id]);
+    expect(hits[1]!.strength).toBeLessThan(hits[0]!.strength!);
+  });
+
+  it("confirming restarts decay and gives the original window again from now", async () => {
+    const rec = await timed.add("GitHub is down", { validUntil: later(HOUR) });
+    clock = later(DAY);
+
+    const confirmed = await timed.confirm(rec.id);
+    expect(confirmed?.confirmCount).toBe(1);
+    expect(confirmed?.confirmedAt).toEqual(clock);
+    expect(confirmed?.validUntil).toEqual(later(DAY + HOUR));
+    expect(confirmed?.validity).toBe("current");
+
+    const explicit = await timed.confirm(rec.id, { validUntil: later(DAY + 3 * HOUR) });
+    expect(explicit?.confirmCount).toBe(2);
+    expect(explicit?.validUntil).toEqual(later(DAY + 3 * HOUR));
+  });
+
+  it("won't confirm a memory that has been corrected", async () => {
+    const rec = await timed.add("GitHub is down");
+    await timed.supersede(rec.id, "GitHub is back up");
+    expect(await timed.confirm(rec.id)).toBeNull();
+  });
+
+  it("closes a corrected memory's validity where its replacement starts", async () => {
+    const original = await timed.add("the standup is at 9am");
+    clock = later(DAY);
+    await timed.supersede(original.id, "the standup is at 10am");
+    expect((await timed.get(original.id))?.validUntil).toEqual(later(DAY));
+
+    const backdated = await timed.add("the build uses webpack");
+    clock = later(3 * DAY);
+    await timed.supersede(backdated.id, "the build uses vite", { validFrom: later(2 * DAY) });
+    expect((await timed.get(backdated.id))?.validUntil).toEqual(later(2 * DAY));
+  });
+
+  it("answers asOf from what held then, including memories corrected since", async () => {
+    const design = await timed.add("the events project is in design", { kind: "project" });
+    clock = later(10 * DAY);
+    const shipped = await timed.supersede(design.id, "the events project is shipped");
+
+    const then = await timed.search("events project", 5, { asOf: later(5 * DAY) });
+    expect(then.map((h) => h.id)).toEqual([design.id]);
+    expect(then[0]?.validity).toBe("current");
+
+    const now = await timed.search("events project", 5, { asOf: clock });
+    expect(now.map((h) => h.id)).toEqual([shipped!.id]);
+  });
+
+  it("keeps a future-dated memory upcoming until it starts", async () => {
+    await timed.add("the user is on vacation", { validFrom: later(7 * DAY) });
+
+    expect((await timed.search("vacation", 1))[0]?.validity).toBe("upcoming");
+    expect(await timed.search("vacation", 1, { asOf: clock })).toEqual([]);
+    expect((await timed.search("vacation", 1, { asOf: later(8 * DAY) })).length).toBe(1);
+  });
+
+  it("reads past the limit so a fresher match can outrank a stale, expired one", async () => {
+    await timed.add("GitHub is down", { validUntil: later(HOUR) });
+    clock = later(365 * DAY);
+    const fresh = await timed.add("GitHub is down for everyone today");
+
+    // The stale memory is the closest match, so only a search that reads past
+    // `limit` sees the fresh one at all.
+    const [hit] = await timed.search("GitHub is down", 1);
+    expect(hit?.id).toBe(fresh.id);
+  });
+
+  it("confirming restores full strength and leaves an open-ended memory open-ended", async () => {
+    const rec = await timed.add("the user prefers squash merges", { kind: "preference" });
+    clock = later(400 * DAY);
+    expect((await timed.search("squash merges", 1))[0]!.strength).toBeLessThan(1);
+
+    const confirmed = await timed.confirm(rec.id);
+    expect(confirmed?.validUntil).toBeNull();
+    expect((await timed.search("squash merges", 1))[0]!.strength).toBe(1);
+  });
+
+  it("keeps the window length across repeated confirmations", async () => {
+    const rec = await timed.add("GitHub is down", { validUntil: later(HOUR) });
+    clock = later(DAY);
+    await timed.confirm(rec.id);
+    clock = later(3 * DAY);
+
+    const again = await timed.confirm(rec.id);
+    expect(again?.validUntil).toEqual(later(3 * DAY + HOUR));
+  });
+
+  it("leaves a window that had closed before it was recorded as it is", async () => {
+    clock = later(3 * HOUR);
+    const rec = await timed.add("GitHub was down this morning", {
+      validFrom: start,
+      validUntil: later(HOUR),
+    });
+    clock = later(DAY);
+
+    expect((await timed.confirm(rec.id))?.validUntil).toEqual(later(HOUR));
+  });
+
+  it("won't correct a memory twice, so only one replacement stays live", async () => {
+    const original = await timed.add("the standup is at 9am");
+    const [first, second] = await Promise.all([
+      timed.supersede(original.id, "the standup is at 10am"),
+      timed.supersede(original.id, "the standup is at 11am"),
+    ]);
+
+    expect([first, second].filter(Boolean).length).toBe(1);
+    expect((await timed.list()).length).toBe(1);
+    expect(await timed.supersede(original.id, "the standup is at noon")).toBeNull();
+  });
+
+  it("records a corrected memory that never started as never having held", async () => {
+    const upcoming = await timed.add("the user is on vacation", { validFrom: later(7 * DAY) });
+    await timed.supersede(upcoming.id, "the vacation is cancelled");
+
+    const closed = await timed.get(upcoming.id);
+    expect(closed?.validUntil).toEqual(closed?.validFrom);
+    for (const asOf of [start, later(7 * DAY), later(8 * DAY)]) {
+      const hits = await timed.search("vacation", 5, { asOf });
+      expect(hits.map((h) => h.id)).not.toContain(upcoming.id);
+    }
+  });
+
+  it("refuses a validity window that ends before it starts", async () => {
+    await expect(
+      timed.add("backwards", { validFrom: later(HOUR), validUntil: start }),
+    ).rejects.toThrow();
+  });
+});
