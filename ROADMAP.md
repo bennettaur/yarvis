@@ -336,10 +336,18 @@ The integration is built but unexercised.
 
 ### 3. Memory & knowledge follow-ups
 The core is shipped; optional extensions remain.
-- **OpenMemory backend:** `openmemory-js` was deferred because it boots its own
-  server on import and is mid-rewrite; if its graph/temporal features become
-  worth it, run it as a standalone server and add an HTTP-backed `MemoryService`
-  (the interface already supports swapping).
+- **OpenMemory / LongMemory backend: decided against.** `openmemory-js` was
+  deferred because it booted its own server on import. Its successor,
+  LongMemory 1.0 (evaluated Oct 2026), is SQLite-only, has no delete, list or
+  kind filter, keeps the whole graph in process memory (so instances sharing a
+  database wouldn't see each other's writes), and shipped without a test suite.
+  Instead, the ideas worth having are built into the pgvector store: validity
+  windows with revalidation, `asOf` recall, and decay-weighted ranking.
+- **Recall follow-ups:** hybrid lexical + semantic ranking (Postgres full-text
+  beside the cosine search), dedup on write, and `correct_memory` /
+  `confirm_memory` over the MCP endpoint so a coding session can revalidate an
+  expired memory too. The decay half-lives and floor in `memory/ranking.ts` are
+  first guesses and want tuning against real recall.
 - **Needs from you:** an embeddings provider for good-quality semantic recall —
   either a local Ollama server (no key) or a proxy/Gemini key, configured in
   Settings → Embeddings. Works offline via the hash embedder at lower quality

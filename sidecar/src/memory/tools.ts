@@ -2,7 +2,8 @@ import { tool } from "ai";
 import { z } from "zod";
 import { MEMORY_KINDS, type MemoryKind } from "../db/schema.ts";
 import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
-import type { MemoryService } from "./index.ts";
+import type { MemoryRecord, MemoryService } from "./index.ts";
+import { resolveValidity, validityShape } from "./validity.ts";
 
 /**
  * Memory tools for the chat model: store durable facts the user shares, correct
@@ -33,27 +34,41 @@ const SEARCHABLE_KINDS = MEMORY_KINDS;
  * closing the block and addressing this agent directly.
  */
 
+/** The validity fields a reader needs to judge whether to trust a memory. */
+function validityFields(record: MemoryRecord) {
+  return {
+    validity: record.validity,
+    validFrom: record.validFrom.toISOString(),
+    ...(record.validUntil ? { validUntil: record.validUntil.toISOString() } : {}),
+  };
+}
+
 export function buildMemoryTools(memory: MemoryService, sessionId: string) {
   return {
     remember: tool({
       description:
-        "Store a durable fact, preference, or note the user shares so it can be recalled in future conversations. Pick the kind that fits: 'preference' for how they like to work, 'project' for the state of a project, 'decision' for a choice worth keeping, 'agent-feedback' for guidance about how an agent should behave, 'fact' otherwise.",
+        "Store a durable fact, preference, or note the user shares so it can be recalled in future conversations. Pick the kind that fits: 'preference' for how they like to work, 'project' for the state of a project, 'decision' for a choice worth keeping, 'agent-feedback' for guidance about how an agent should behave, 'fact' otherwise. When the claim only holds for a while — an outage, someone out this week, a temporary workaround — pass validFor so a later recall knows to re-check it.",
       inputSchema: z.object({
         content: z.string().describe("The fact to remember, in a self-contained sentence"),
         kind: z.enum(WRITABLE_KINDS).default("fact"),
+        ...validityShape,
       }),
-      execute: async ({ content, kind }) => {
+      execute: async ({ content, kind, ...request }) => {
+        const validity = resolveValidity(request, new Date());
+        if (!validity.ok) return { error: validity.error };
         const record = await memory.add(content, {
           kind,
           sourceRef: { type: "chat", sessionId },
+          validFrom: validity.validFrom,
+          validUntil: validity.validUntil,
         });
-        return { id: record.id, kind: record.kind };
+        return { id: record.id, kind: record.kind, ...validityFields(record) };
       },
     }),
 
     recall: tool({
       description:
-        "Search the user's stored memories, notes, summaries, and ingested documents for anything relevant to a query. Narrow by kind when you know what you're after — 'session-summary' for past Claude Code sessions, 'day-summary'/'activity-summary' for what they did on a day, 'project' for project state.",
+        "Search the user's stored memories, notes, summaries, and ingested documents for anything relevant to a query. Narrow by kind when you know what you're after — 'session-summary' for past Claude Code sessions, 'day-summary'/'activity-summary' for what they did on a day, 'project' for project state. Each result's validity is 'current', 'upcoming' (not true yet) or 'expired' (past its validUntil, so it may no longer be true).",
       inputSchema: z.object({
         query: z.string(),
         kinds: z
@@ -61,9 +76,18 @@ export function buildMemoryTools(memory: MemoryService, sessionId: string) {
           .optional()
           .describe("Restrict the search to these kinds"),
         limit: z.number().int().min(1).max(20).optional(),
+        asOf: z.iso
+          .datetime({ offset: true, local: true })
+          .optional()
+          .describe(
+            "Ask what held at a past instant (ISO 8601 datetime) instead of now. Includes memories corrected since",
+          ),
       }),
-      execute: async ({ query, kinds, limit }) => {
-        const results = await memory.search(query, limit ?? 5, { kinds });
+      execute: async ({ query, kinds, limit, asOf }) => {
+        const results = await memory.search(query, limit ?? 5, {
+          kinds,
+          asOf: asOf ? new Date(asOf) : undefined,
+        });
         const nonce = newNonce();
         return {
           warning: untrustedWarning(nonce),
@@ -72,6 +96,7 @@ export function buildMemoryTools(memory: MemoryService, sessionId: string) {
             kind: r.kind,
             score: r.score,
             createdAt: r.createdAt.toISOString(),
+            ...validityFields(r),
             content: fence(r.content, nonce),
           })),
         };
@@ -94,6 +119,7 @@ export function buildMemoryTools(memory: MemoryService, sessionId: string) {
             id: r.id,
             kind: r.kind,
             createdAt: r.createdAt.toISOString(),
+            ...validityFields(r),
             content: fence(r.content, nonce),
           })),
         };
@@ -106,14 +132,37 @@ export function buildMemoryTools(memory: MemoryService, sessionId: string) {
       inputSchema: z.object({
         id: z.string().describe("Id of the memory to correct (from recall or list_memories)"),
         content: z.string().describe("What is true now, as a self-contained sentence"),
+        ...validityShape,
       }),
-      execute: async ({ id, content }) => {
+      execute: async ({ id, content, ...request }) => {
+        const validity = resolveValidity(request, new Date());
+        if (!validity.ok) return { error: validity.error };
         const replacement = await memory.supersede(id, content, {
           sourceRef: { type: "chat", sessionId },
+          validFrom: validity.validFrom,
+          validUntil: validity.validUntil,
         });
         return replacement
-          ? { id: replacement.id, supersededId: id }
+          ? { id: replacement.id, supersededId: id, ...validityFields(replacement) }
           : { error: "no memory with that id" };
+      },
+    }),
+
+    confirm_memory: tool({
+      description:
+        "Record that you checked a memory and it still holds — typically one recall marked expired. It ranks as fresh again and, if it had an expiry, gets a new one: the same window as before unless you pass validFor or validUntil. If the check showed it no longer holds, use correct_memory instead.",
+      inputSchema: z.object({
+        id: z.string().describe("Id of the memory you checked (from recall or list_memories)"),
+        validFor: validityShape.validFor,
+        validUntil: validityShape.validUntil,
+      }),
+      execute: async ({ id, validFor, validUntil }) => {
+        const validity = resolveValidity({ validFor, validUntil }, new Date());
+        if (!validity.ok) return { error: validity.error };
+        const confirmed = await memory.confirm(id, { validUntil: validity.validUntil });
+        return confirmed
+          ? { id: confirmed.id, confirmCount: confirmed.confirmCount, ...validityFields(confirmed) }
+          : { error: "no current memory with that id" };
       },
     }),
 

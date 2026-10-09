@@ -131,8 +131,8 @@ pgvector store the in-app chat uses:
 
 | Tool | What it does |
 | --- | --- |
-| `recall` | Searches memory by meaning |
-| `remember` | Stores a durable fact |
+| `recall` | Searches memory by meaning. Each result says whether it is `current`, `upcoming` or `expired` |
+| `remember` | Stores a durable fact, optionally valid only for a while (`validFor: "PT1H"`) |
 | `take_note` | Stores a quick note, which feeds the daily and weekly recaps |
 | `list_memories` | Lists memories, newest first, optionally by `kind` (`fact`, `note`, `session-summary`, …) |
 | `forget` | Deletes a memory |

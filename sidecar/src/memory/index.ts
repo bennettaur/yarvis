@@ -3,11 +3,13 @@ import {
   cosineDistance,
   desc,
   eq,
+  gt,
   gte,
   inArray,
   isNotNull,
   isNull,
   lte,
+  or,
   type SQL,
   sql,
 } from "drizzle-orm";
@@ -16,6 +18,7 @@ import type { MemoryKind, MemoryRow, MemorySourceRef } from "../db/schema.ts";
 import { memories } from "../db/schema.ts";
 import { memoryDebug, preview } from "./debug.ts";
 import type { Embedder, EmbedderIdentity } from "./embedder.ts";
+import { type Ranking, rank, type Validity, validityAt } from "./ranking.ts";
 
 export interface MemoryRecord {
   id: string;
@@ -25,8 +28,18 @@ export interface MemoryRecord {
   metadata: unknown;
   createdAt: Date;
   supersededAt: Date | null;
-  /** Cosine similarity (0–1) when returned from a search. */
+  validFrom: Date;
+  validUntil: Date | null;
+  confirmedAt: Date;
+  confirmCount: number;
+  /** Whether the claim holds now, or at the `asOf` a search asked about. */
+  validity: Validity;
+  /** Search only: what results are ordered by — similarity scaled by strength and validity. */
   score?: number;
+  /** Search only: cosine similarity to the query, 0–1. */
+  similarity?: number;
+  /** Search only: how much weight the memory keeps after going unconfirmed (`memory/ranking.ts`). */
+  strength?: number;
 }
 
 /** Filters for browsing stored memories (management UI, recaps). */
@@ -56,6 +69,12 @@ export interface MemorySearchOptions {
    * resurfacing in recall is exactly what superseding is meant to prevent.
    */
   includeSuperseded?: boolean;
+  /**
+   * Only memories whose claim held at this instant, judged by what is known
+   * now. Superseded memories count, up to when they were corrected, so this
+   * overrides `includeSuperseded`.
+   */
+  asOf?: Date;
 }
 
 /** What a write records beyond the text itself. */
@@ -63,6 +82,19 @@ export interface MemoryWriteInput {
   kind?: MemoryKind;
   sourceRef?: MemorySourceRef | null;
   metadata?: Record<string, unknown>;
+  /** When the claim starts holding. Defaults to now. */
+  validFrom?: Date;
+  /** When the claim needs re-checking. Unset means it holds until corrected. */
+  validUntil?: Date;
+}
+
+export interface MemoryConfirmInput {
+  /**
+   * The new end of the claim's validity. Left out, the memory's original window
+   * is applied again from now, so an outage reported for an hour and confirmed
+   * still ongoing holds for another hour.
+   */
+  validUntil?: Date;
 }
 
 /** One item for a batched memory insert. */
@@ -83,8 +115,8 @@ export interface MemoryPatch {
 
 /**
  * Stores and retrieves freeform memories by semantic similarity. The app
- * depends only on this interface, so the backing store (pgvector today,
- * OpenMemory's server later) can change without touching callers.
+ * depends only on this interface, so the backing store can change without
+ * touching callers.
  */
 export interface MemoryService {
   add(content: string, input?: MemoryWriteInput): Promise<MemoryRecord>;
@@ -100,6 +132,11 @@ export interface MemoryService {
    * its own memory and the old row is marked superseded and pointed at it.
    */
   supersede(id: string, content: string, input?: MemoryWriteInput): Promise<MemoryRecord | null>;
+  /**
+   * Records that a memory was checked and still holds: restarts its decay and
+   * extends its validity. Null for a missing or superseded memory.
+   */
+  confirm(id: string, input?: MemoryConfirmInput): Promise<MemoryRecord | null>;
   delete(id: string): Promise<boolean>;
 }
 
@@ -107,10 +144,21 @@ export interface MemoryService {
  * from list/search selects since it isn't returned to callers). */
 type MemoryRowFields = Pick<
   MemoryRow,
-  "id" | "content" | "kind" | "sourceRef" | "metadata" | "createdAt" | "supersededAt"
+  | "id"
+  | "content"
+  | "kind"
+  | "sourceRef"
+  | "metadata"
+  | "createdAt"
+  | "supersededAt"
+  | "validFrom"
+  | "validUntil"
+  | "confirmedAt"
+  | "confirmCount"
 >;
 
-function toRecord(row: MemoryRowFields, score?: number): MemoryRecord {
+/** `at` is the instant validity is judged against; a search passes its ranking instead. */
+function toRecord(row: MemoryRowFields, at: Date, ranking?: Ranking): MemoryRecord {
   return {
     id: row.id,
     content: row.content,
@@ -119,8 +167,36 @@ function toRecord(row: MemoryRowFields, score?: number): MemoryRecord {
     metadata: row.metadata,
     createdAt: row.createdAt,
     supersededAt: row.supersededAt ?? null,
-    score,
+    validFrom: row.validFrom,
+    validUntil: row.validUntil ?? null,
+    confirmedAt: row.confirmedAt,
+    confirmCount: row.confirmCount,
+    validity: ranking?.validity ?? validityAt(row.validFrom, row.validUntil ?? null, at),
+    ...(ranking
+      ? { score: ranking.score, similarity: ranking.similarity, strength: ranking.strength }
+      : {}),
   };
+}
+
+/**
+ * How many nearest neighbours a search re-ranks. Decay and validity can lift a
+ * slightly weaker match over a stronger one, so it reads past `limit`; 40 is
+ * pgvector's default `hnsw.ef_search`, which caps what an index scan returns.
+ */
+const CANDIDATE_POOL = 40;
+
+/**
+ * Where a confirmation without an explicit end moves `validUntil`: the same
+ * length of window, starting now (or when the claim starts, if that's later).
+ * A window that had already closed when it was recorded — an outage reported
+ * after it ended — stays as it is.
+ */
+function extendedValidUntil(record: MemoryRecord, now: Date): Date | null {
+  if (!record.validUntil) return null;
+  const opened = Math.max(record.validFrom.getTime(), record.confirmedAt.getTime());
+  const window = record.validUntil.getTime() - opened;
+  if (window <= 0) return record.validUntil;
+  return new Date(Math.max(now.getTime(), record.validFrom.getTime()) + window);
 }
 
 /** The columns every read selects; the embedding is deliberately not among them. */
@@ -132,6 +208,10 @@ const RECORD_COLUMNS = {
   metadata: memories.metadata,
   createdAt: memories.createdAt,
   supersededAt: memories.supersededAt,
+  validFrom: memories.validFrom,
+  validUntil: memories.validUntil,
+  confirmedAt: memories.confirmedAt,
+  confirmCount: memories.confirmCount,
 } as const;
 
 /** MemoryService backed by Postgres + pgvector, using a pluggable embedder. */
@@ -139,6 +219,7 @@ export class PgVectorMemoryStore implements MemoryService {
   constructor(
     private readonly db: Db,
     private readonly embedder: Embedder,
+    private readonly now: () => Date = () => new Date(),
   ) {}
 
   /**
@@ -153,6 +234,7 @@ export class PgVectorMemoryStore implements MemoryService {
 
   async add(content: string, input: MemoryWriteInput = {}): Promise<MemoryRecord> {
     const embedding = await this.embedder.embed(content);
+    const now = this.now();
     const [row] = await this.db
       .insert(memories)
       .values({
@@ -161,6 +243,9 @@ export class PgVectorMemoryStore implements MemoryService {
         sourceRef: input.sourceRef ?? null,
         metadata: this.stamp(input.metadata),
         embedding,
+        validFrom: input.validFrom ?? now,
+        validUntil: input.validUntil ?? null,
+        confirmedAt: now,
       })
       .returning();
     memoryDebug(
@@ -168,12 +253,13 @@ export class PgVectorMemoryStore implements MemoryService {
       `add id=${row!.id} kind=${row!.kind} chars=${content.length} ` +
         `embedder=${this.embedder.kind} → stored`,
     );
-    return toRecord(row!);
+    return toRecord(row!, now);
   }
 
   async addMany(items: MemoryInput[]): Promise<MemoryRecord[]> {
     if (items.length === 0) return [];
     const embeddings = await this.embedder.embedMany(items.map((i) => i.content));
+    const now = this.now();
     const rows = await this.db
       .insert(memories)
       .values(
@@ -183,11 +269,14 @@ export class PgVectorMemoryStore implements MemoryService {
           sourceRef: item.sourceRef ?? null,
           metadata: this.stamp(item.metadata),
           embedding: embeddings[i]!,
+          validFrom: item.validFrom ?? now,
+          validUntil: item.validUntil ?? null,
+          confirmedAt: now,
         })),
       )
       .returning();
     memoryDebug("memory", `addMany count=${rows.length} embedder=${this.embedder.kind} → stored`);
-    return rows.map((r) => toRecord(r));
+    return rows.map((r) => toRecord(r, now));
   }
 
   async search(
@@ -199,14 +288,26 @@ export class PgVectorMemoryStore implements MemoryService {
     const distance = cosineDistance(memories.embedding, queryVec);
     const conditions: SQL[] = [];
     if (options.kinds?.length) conditions.push(inArray(memories.kind, [...options.kinds]));
-    if (!options.includeSuperseded) conditions.push(isNull(memories.supersededAt));
+    if (options.asOf) {
+      conditions.push(lte(memories.validFrom, options.asOf));
+      conditions.push(or(isNull(memories.validUntil), gt(memories.validUntil, options.asOf))!);
+    } else if (!options.includeSuperseded) {
+      conditions.push(isNull(memories.supersededAt));
+    }
     const rows = await this.db
       .select({ ...RECORD_COLUMNS, distance })
       .from(memories)
       .where(conditions.length ? and(...conditions) : undefined)
       .orderBy(distance)
-      .limit(limit);
-    const results = rows.map((r) => toRecord(r, 1 - Number(r.distance)));
+      .limit(Math.max(limit, Math.min(limit * 4, CANDIDATE_POOL)));
+    const now = this.now();
+    const validAt = options.asOf ?? now;
+    const results = rows
+      .map((r) =>
+        toRecord(r, validAt, rank({ ...r, similarity: 1 - Number(r.distance) }, now, validAt)),
+      )
+      .sort((a, b) => b.score! - a.score!)
+      .slice(0, limit);
     const top = results[0]?.score;
     memoryDebug(
       "memory",
@@ -234,7 +335,8 @@ export class PgVectorMemoryStore implements MemoryService {
       .orderBy(desc(memories.createdAt))
       .limit(options.limit ?? 100)
       .offset(options.offset ?? 0);
-    return rows.map((r) => toRecord(r));
+    const now = this.now();
+    return rows.map((r) => toRecord(r, now));
   }
 
   async count(options: MemoryListOptions = {}): Promise<number> {
@@ -247,7 +349,7 @@ export class PgVectorMemoryStore implements MemoryService {
 
   async get(id: string): Promise<MemoryRecord | null> {
     const [row] = await this.db.select(RECORD_COLUMNS).from(memories).where(eq(memories.id, id));
-    return row ? toRecord(row) : null;
+    return row ? toRecord(row, this.now()) : null;
   }
 
   async update(id: string, patch: MemoryPatch): Promise<MemoryRecord | null> {
@@ -277,7 +379,7 @@ export class PgVectorMemoryStore implements MemoryService {
       })
       .where(eq(memories.id, id))
       .returning(RECORD_COLUMNS);
-    return row ? toRecord(row) : null;
+    return row ? toRecord(row, this.now()) : null;
   }
 
   async supersede(
@@ -291,13 +393,49 @@ export class PgVectorMemoryStore implements MemoryService {
       kind: input.kind ?? existing.kind,
       sourceRef: input.sourceRef ?? existing.sourceRef,
       metadata: input.metadata,
+      validFrom: input.validFrom,
+      validUntil: input.validUntil,
     });
+    // The old claim held until the new one took over. One already closed
+    // earlier keeps its own end, and one the correction predates entirely
+    // closes at its own start, recording that it never held.
+    const closesAt = Math.max(
+      existing.validFrom.getTime(),
+      Math.min(
+        existing.validUntil?.getTime() ?? Number.POSITIVE_INFINITY,
+        replacement.validFrom.getTime(),
+      ),
+    );
+    const now = this.now();
     await this.db
       .update(memories)
-      .set({ supersededAt: new Date(), supersededById: replacement.id, updatedAt: new Date() })
+      .set({
+        supersededAt: now,
+        supersededById: replacement.id,
+        validUntil: new Date(closesAt),
+        updatedAt: now,
+      })
       .where(eq(memories.id, id));
     memoryDebug("memory", `supersede id=${id} → ${replacement.id}`);
     return replacement;
+  }
+
+  async confirm(id: string, input: MemoryConfirmInput = {}): Promise<MemoryRecord | null> {
+    const existing = await this.get(id);
+    if (!existing || existing.supersededAt) return null;
+    const now = this.now();
+    const [row] = await this.db
+      .update(memories)
+      .set({
+        confirmedAt: now,
+        confirmCount: sql`${memories.confirmCount} + 1`,
+        validUntil: input.validUntil ?? extendedValidUntil(existing, now),
+        updatedAt: now,
+      })
+      .where(eq(memories.id, id))
+      .returning(RECORD_COLUMNS);
+    memoryDebug("memory", `confirm id=${id} count=${row?.confirmCount}`);
+    return row ? toRecord(row, now) : null;
   }
 
   async delete(id: string): Promise<boolean> {

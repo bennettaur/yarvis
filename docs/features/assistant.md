@@ -161,6 +161,30 @@ they can be matched exactly.
 When a fact changes, the assistant corrects the memory instead of storing a
 contradiction. The old version stays for the record but drops out of search.
 
+### When a memory holds
+
+Some facts only hold for a while. Tell the assistant "GitHub is down" and it
+stores that as valid for a short window, an hour say, rather than forever. Once
+the window passes, the memory is marked **expired**. It still comes up in
+search, so the assistant knows the claim exists, but it may no longer be true.
+When the assistant recalls an expired memory, it checks it if it has a tool that
+can, then either confirms it (the memory gets a fresh window) or corrects it. If
+it can't check, it tells you the memory may be out of date.
+
+A memory can also start in the future ("I'm on vacation from the 20th"). Until
+then it shows as **upcoming**. You can ask what held at a past time ("what was
+the state of the events project on the 3rd?"), and the assistant searches
+memory as of that moment, including memories corrected since. Daily and window
+summaries count as holding from the start of the period they describe.
+
+Search also favours memories that were confirmed recently. A memory nobody has
+confirmed in a long time ranks a little lower than an equally good match that
+is fresh, but it never drops out. How fast that happens depends on the kind:
+activity summaries fade within weeks, preferences and decisions over years.
+Each confirmation slows it down. Memory → Memories shows a memory's window and
+whether it has expired. Hover over a search result's match score to see how
+much comes from the text matching and how much from its age.
+
 ### The activity log
 
 Yarvis records meaningful actions as events. Examples:

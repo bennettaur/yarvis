@@ -3,6 +3,7 @@ import {
   bigint,
   bigserial,
   boolean,
+  check,
   date,
   index,
   integer,
@@ -30,9 +31,8 @@ import type { ReviewDecision } from "../pr/types.ts";
 export const EMBED_DIM: number = 1536;
 
 /**
- * Application schema for Yarvis. This holds *our* data — chat sessions/messages
- * and the daily/weekly work-tracking tasks. OpenMemory keeps its own separate
- * store for semantic memory.
+ * Application schema for Yarvis: chat sessions and messages, work tracking,
+ * and the semantic memory store (`memories`, searched through pgvector).
  */
 
 export const messageRole = pgEnum("message_role", ["user", "assistant", "system", "tool"]);
@@ -211,8 +211,31 @@ export const memories = pgTable(
      */
     supersededAt: timestamp("superseded_at", { withTimezone: true }),
     supersededById: uuid("superseded_by_id"),
+    /**
+     * When the claim holds in the world, as opposed to when it was recorded
+     * (`created_at`). `valid_from` can be backdated (a day summary holds from the
+     * start of the day it describes) or future-dated (a vacation next week).
+     * `valid_until` is when the claim stops being trustworthy without a re-check
+     * — an outage reported now holds for an hour, not forever. Null means it
+     * holds until something supersedes it.
+     */
+    validFrom: timestamp("valid_from", { withTimezone: true }).notNull().defaultNow(),
+    validUntil: timestamp("valid_until", { withTimezone: true }),
+    /**
+     * When the memory was last confirmed still true, and how many times. Recall
+     * ranks a memory down as it goes unconfirmed (`memory/ranking.ts`); each
+     * confirmation restarts that clock and slows it.
+     */
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }).notNull().defaultNow(),
+    confirmCount: integer("confirm_count").notNull().default(0),
   },
   (t) => [
+    // Equal bounds are allowed: a correction can close a claim at the instant
+    // it started, which records that it was never true.
+    check(
+      "memories_valid_range",
+      sql`${t.validUntil} is null or ${t.validUntil} >= ${t.validFrom}`,
+    ),
     // The memory UI and the recap read one kind, newest-first, and both exclude
     // superseded rows — so this is partial on that condition rather than carrying
     // a separate index on `superseded_at`, which would never be chosen (the

@@ -29,17 +29,43 @@ function kindColor(kind: string): string {
   return "bg-zinc-700 text-zinc-300";
 }
 
+/** Says when a memory with a validity window holds, or nothing for one that holds until corrected. */
+function validityNote(m: MemoryRecord): string {
+  if (m.validity === "upcoming") return ` · from ${new Date(m.validFrom).toLocaleString()}`;
+  if (!m.validUntil) return "";
+  const until = new Date(m.validUntil).toLocaleString();
+  return m.validity === "expired" ? ` · expired ${until}` : ` · until ${until}`;
+}
+
 function MemoryItem({ m, onDelete }: { m: MemoryRecord; onDelete: (id: string) => void }) {
   const source = (m.metadata as { source?: string } | null)?.source;
   return (
     <li className="flex items-start gap-3 px-4 py-3">
       <span className={`rounded px-1.5 py-0.5 text-xs ${kindColor(m.kind)}`}>{m.kind}</span>
       <div className="min-w-0 flex-1">
-        <p className="text-sm text-zinc-200">{m.content}</p>
+        <p className={`text-sm ${m.validity === "current" ? "text-zinc-200" : "text-zinc-400"}`}>
+          {m.validity !== "current" && (
+            <span className="mr-1.5 rounded bg-zinc-800 px-1 py-0.5 text-xs text-zinc-400">
+              {m.validity}
+            </span>
+          )}
+          {m.content}
+        </p>
         <div className="mt-0.5 text-xs text-zinc-600">
           {new Date(m.createdAt).toLocaleString()}
           {source ? ` · ${source}` : ""}
-          {m.score != null ? ` · ${(m.score * 100).toFixed(0)}% match` : ""}
+          {validityNote(m)}
+          {m.score != null ? (
+            <span
+              title={
+                m.similarity != null && m.strength != null
+                  ? `${(m.similarity * 100).toFixed(0)}% similar · ${(m.strength * 100).toFixed(0)}% strength`
+                  : undefined
+              }
+            >
+              {` · ${(m.score * 100).toFixed(0)}% match`}
+            </span>
+          ) : null}
         </div>
       </div>
       <button
