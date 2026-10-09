@@ -196,6 +196,12 @@ export interface PrDetail {
   /** Viewer may cancel an already-armed auto-merge. */
   canDisableAutoMerge: boolean;
   checks: CheckItem[];
+  /**
+   * True when the provider refused to show some of this PR's checks to the
+   * configured token, so `checks` is incomplete rather than the whole story. A
+   * fine-grained GitHub token can't be granted the Checks permission at all.
+   */
+  checksUnavailable?: boolean;
   reviewThreads: ReviewThread[];
   /** Requested reviewers plus anyone who has already submitted a review. */
   reviewers: Reviewer[];

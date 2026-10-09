@@ -306,6 +306,88 @@ describe("github client", () => {
     );
     const detail = await gh.prDetail("o", "r", 9);
     expect(detail).toMatchObject({ number: 9, draft: true, checks: [] });
+    expect(detail.checksUnavailable).toBeUndefined();
+  });
+
+  // A fine-grained PAT cannot be granted the Checks permission, so GitHub nulls
+  // every CheckRun in the rollup and reports each one as FORBIDDEN.
+  const forbiddenCheck = (i: number) => ({
+    type: "FORBIDDEN",
+    path: [
+      "repository",
+      "pullRequest",
+      "commits",
+      "nodes",
+      0,
+      "commit",
+      "statusCheckRollup",
+      "contexts",
+      "nodes",
+      i,
+    ],
+    message: "Resource not accessible by personal access token",
+  });
+  const detailPayload = (contexts: unknown[]) => ({
+    repository: {
+      pullRequest: {
+        number: 9,
+        title: "T",
+        state: "OPEN",
+        isDraft: false,
+        mergeable: "MERGEABLE",
+        author: { login: "me" },
+        reviewThreads: { nodes: [] },
+        commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: contexts } } } }] },
+      },
+    },
+  });
+
+  it("loads PR detail when the token may not read its checks, and says so", async () => {
+    const gh = new GitHubClient(
+      "t",
+      fakeFetch({
+        "/graphql": {
+          data: detailPayload([
+            null,
+            {
+              __typename: "StatusContext",
+              context: "ci/legacy",
+              state: "SUCCESS",
+              targetUrl: null,
+            },
+            null,
+          ]),
+          errors: [forbiddenCheck(0), forbiddenCheck(2)],
+        },
+      }),
+    );
+    const detail = await gh.prDetail("o", "r", 9);
+    expect(detail.title).toBe("T");
+    expect(detail.checksUnavailable).toBe(true);
+    // What the token could read is still shown.
+    expect(detail.checks).toEqual([
+      { name: "ci/legacy", status: "COMPLETED", conclusion: "SUCCESS", url: null },
+    ]);
+  });
+
+  it("still fails PR detail on an error outside the checks", async () => {
+    const gh = new GitHubClient(
+      "t",
+      fakeFetch({
+        "/graphql": {
+          data: detailPayload([null]),
+          errors: [
+            forbiddenCheck(0),
+            {
+              type: "FORBIDDEN",
+              path: ["repository", "pullRequest", "reviewThreads"],
+              message: "no",
+            },
+          ],
+        },
+      }),
+    );
+    await expect(gh.prDetail("o", "r", 9)).rejects.toThrow("github graphql");
   });
 
   it("reads merge methods and auto-merge state from the detail payload", () => {

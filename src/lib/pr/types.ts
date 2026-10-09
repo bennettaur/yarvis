@@ -135,6 +135,8 @@ export interface PrDetail {
   /** Viewer may cancel an already-armed auto-merge. */
   canDisableAutoMerge: boolean;
   checks: CheckItem[];
+  /** True when the token was refused some of `checks`; see `ChecksList`. */
+  checksUnavailable?: boolean;
   reviewThreads: ReviewThread[];
   /** Requested reviewers plus anyone who has already submitted a review. */
   reviewers: Reviewer[];

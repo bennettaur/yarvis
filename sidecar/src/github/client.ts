@@ -190,6 +190,21 @@ export function summarizeReviewDecision(reviews: any[]): ReviewDecision {
   return "review_required";
 }
 
+interface GraphqlError {
+  type?: string;
+  path?: (string | number)[];
+  message?: string;
+}
+
+function graphqlError(errors: GraphqlError[]): Error {
+  return new Error(`github graphql: ${JSON.stringify(errors)}`);
+}
+
+/** GitHub withholding one check from a token that may not read it, rather than failing the query. */
+function isRefusedCheck(error: GraphqlError): boolean {
+  return error.type === "FORBIDDEN" && (error.path ?? []).includes("statusCheckRollup");
+}
+
 /** Normalizes a GraphQL statusCheckRollup context into a flat CheckItem. */
 function toCheckItem(node: any): CheckItem {
   if (node.__typename === "CheckRun") {
@@ -294,7 +309,8 @@ export function toPrDetail(pr: any, repo?: any): PrDetail {
     autoMergeEnabled: Boolean(pr.autoMergeRequest),
     canEnableAutoMerge: Boolean(pr.viewerCanEnableAutoMerge),
     canDisableAutoMerge: Boolean(pr.viewerCanDisableAutoMerge),
-    checks: rollupNodes.map(toCheckItem),
+    // A check the token may not read comes back as null; see `prDetail`.
+    checks: rollupNodes.filter(Boolean).map(toCheckItem),
     reviewers: toReviewers(pr),
     reviewThreads: threadNodes.map((thread: any) => ({
       path: thread.path ?? null,
@@ -659,6 +675,17 @@ export class GitHubClient {
     variables: Record<string, unknown>,
     { allowPartial = false, signal }: { allowPartial?: boolean; signal?: AbortSignal } = {},
   ): Promise<T> {
+    const payload = await this.graphqlPayload<T>(query, variables, signal);
+    if (payload.errors && !(allowPartial && payload.data)) throw graphqlError(payload.errors);
+    return payload.data as T;
+  }
+
+  /** The raw response, errors included, for a caller that decides which it can live with. */
+  private async graphqlPayload<T>(
+    query: string,
+    variables: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<{ data?: T; errors?: GraphqlError[] }> {
     const res = await this.fetchImpl(this.endpoints.graphql, {
       method: "POST",
       signal,
@@ -669,11 +696,7 @@ export class GitHubClient {
       body: JSON.stringify({ query, variables }),
     });
     if (!res.ok) throw new Error(`github graphql -> ${res.status}`);
-    const payload = (await res.json()) as { data?: T; errors?: unknown };
-    if (payload.errors && !(allowPartial && payload.data)) {
-      throw new Error(`github graphql: ${JSON.stringify(payload.errors)}`);
-    }
-    return payload.data as T;
+    return (await res.json()) as { data?: T; errors?: GraphqlError[] };
   }
 
   viewer(): Promise<{ login: string }> {
@@ -816,12 +839,17 @@ export class GitHubClient {
   }
 
   async prDetail(owner: string, repo: string, number: number): Promise<PrDetail> {
-    const data = await this.graphql<{
+    const { data, errors } = await this.graphqlPayload<{
       repository?: { pullRequest?: any };
     }>(PR_DETAIL_QUERY, { owner, repo, number });
-    const pr = data.repository?.pullRequest;
+    // A fine-grained token can't be granted the Checks permission, so GitHub
+    // refuses every CheckRun in the rollup. That costs the checks, not the PR:
+    // the rest of the page is still worth showing. Any other error still fails.
+    if (errors && !(data && errors.every(isRefusedCheck))) throw graphqlError(errors);
+    const pr = data?.repository?.pullRequest;
     if (!pr) throw new Error(`pull request ${owner}/${repo}#${number} not found`);
-    return toPrDetail(pr, data.repository);
+    const detail = toPrDetail(pr, data?.repository);
+    return errors ? { ...detail, checksUnavailable: true } : detail;
   }
 
   /**

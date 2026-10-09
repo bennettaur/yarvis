@@ -57,6 +57,10 @@ AWS Bedrock uses the standard AWS credential chain (`~/.aws`, `AWS_PROFILE`,
 - **GitHub.** A classic PAT needs `repo`. A fine-grained PAT needs
   **Contents: Read** (the review reads file bodies to show context) plus pull
   request and issue access. Merging a stack needs write access to the repo.
+  Add **Commit statuses: Read** to see legacy status checks. GitHub doesn't
+  offer fine-grained tokens a Checks permission, so CI check runs can't be
+  read with one: the PR still opens, and its **Checks** section says the
+  token can't read them.
 - **Azure DevOps.** A PAT with **Code (read & write)** and **Pull Request
   Threads (read & write)**. Code (read) is enough to browse and comment, but
   voting and publishing a draft write to the PR itself.
