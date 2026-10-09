@@ -27,7 +27,10 @@ export interface MemoryRecord {
   validUntil: string | null;
   confirmedAt: string;
   confirmCount: number;
-  /** Whether the claim holds now: "expired" means it is past `validUntil` and due a re-check. */
+  /**
+   * Whether the claim holds now. "expired" means it is past `validUntil`: due a
+   * re-check, or, on a superseded memory, replaced.
+   */
   validity: "current" | "upcoming" | "expired";
   score?: number;
   similarity?: number;

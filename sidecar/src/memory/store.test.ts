@@ -290,6 +290,72 @@ describe("memory validity and decay", () => {
     expect((await timed.search("vacation", 1, { asOf: later(8 * DAY) })).length).toBe(1);
   });
 
+  it("reads past the limit so a fresher match can outrank a stale, expired one", async () => {
+    await timed.add("GitHub is down", { validUntil: later(HOUR) });
+    clock = later(365 * DAY);
+    const fresh = await timed.add("GitHub is down for everyone today");
+
+    // The stale memory is the closest match, so only a search that reads past
+    // `limit` sees the fresh one at all.
+    const [hit] = await timed.search("GitHub is down", 1);
+    expect(hit?.id).toBe(fresh.id);
+  });
+
+  it("confirming restores full strength and leaves an open-ended memory open-ended", async () => {
+    const rec = await timed.add("the user prefers squash merges", { kind: "preference" });
+    clock = later(400 * DAY);
+    expect((await timed.search("squash merges", 1))[0]!.strength).toBeLessThan(1);
+
+    const confirmed = await timed.confirm(rec.id);
+    expect(confirmed?.validUntil).toBeNull();
+    expect((await timed.search("squash merges", 1))[0]!.strength).toBe(1);
+  });
+
+  it("keeps the window length across repeated confirmations", async () => {
+    const rec = await timed.add("GitHub is down", { validUntil: later(HOUR) });
+    clock = later(DAY);
+    await timed.confirm(rec.id);
+    clock = later(3 * DAY);
+
+    const again = await timed.confirm(rec.id);
+    expect(again?.validUntil).toEqual(later(3 * DAY + HOUR));
+  });
+
+  it("leaves a window that had closed before it was recorded as it is", async () => {
+    clock = later(3 * HOUR);
+    const rec = await timed.add("GitHub was down this morning", {
+      validFrom: start,
+      validUntil: later(HOUR),
+    });
+    clock = later(DAY);
+
+    expect((await timed.confirm(rec.id))?.validUntil).toEqual(later(HOUR));
+  });
+
+  it("won't correct a memory twice, so only one replacement stays live", async () => {
+    const original = await timed.add("the standup is at 9am");
+    const [first, second] = await Promise.all([
+      timed.supersede(original.id, "the standup is at 10am"),
+      timed.supersede(original.id, "the standup is at 11am"),
+    ]);
+
+    expect([first, second].filter(Boolean).length).toBe(1);
+    expect((await timed.list()).length).toBe(1);
+    expect(await timed.supersede(original.id, "the standup is at noon")).toBeNull();
+  });
+
+  it("records a corrected memory that never started as never having held", async () => {
+    const upcoming = await timed.add("the user is on vacation", { validFrom: later(7 * DAY) });
+    await timed.supersede(upcoming.id, "the vacation is cancelled");
+
+    const closed = await timed.get(upcoming.id);
+    expect(closed?.validUntil).toEqual(closed?.validFrom);
+    for (const asOf of [start, later(7 * DAY), later(8 * DAY)]) {
+      const hits = await timed.search("vacation", 5, { asOf });
+      expect(hits.map((h) => h.id)).not.toContain(upcoming.id);
+    }
+  });
+
   it("refuses a validity window that ends before it starts", async () => {
     await expect(
       timed.add("backwards", { validFrom: later(HOUR), validUntil: start }),

@@ -2,10 +2,9 @@ import { describe, expect, it } from "bun:test";
 import {
   EXPIRED_FACTOR,
   HALF_LIFE_DAYS,
-  rank,
   STRENGTH_FLOOR,
+  scoreMemory,
   strengthAt,
-  validityAt,
 } from "./ranking.ts";
 
 const DAY = 24 * 60 * 60_000;
@@ -38,36 +37,31 @@ describe("memory ranking", () => {
     );
   });
 
-  it("tells current, upcoming and expired apart", () => {
-    expect(validityAt(daysAgo(1), null, now)).toBe("current");
-    expect(validityAt(daysAgo(-1), null, now)).toBe("upcoming");
-    expect(validityAt(daysAgo(2), daysAgo(1), now)).toBe("expired");
-    // The end is exclusive: a window that closes now has closed.
-    expect(validityAt(daysAgo(1), now, now)).toBe("expired");
-  });
-
   it("scales an expired memory's score down", () => {
     const base = { kind: "fact" as const, similarity: 0.8, confirmedAt: now, confirmCount: 0 };
-    const current = rank({ ...base, validFrom: daysAgo(1), validUntil: null }, now);
-    const expired = rank({ ...base, validFrom: daysAgo(1), validUntil: daysAgo(0.5) }, now);
+    const current = scoreMemory({ ...base, validFrom: daysAgo(1), validUntil: null }, now);
+    const expired = scoreMemory({ ...base, validFrom: daysAgo(1), validUntil: daysAgo(0.5) }, now);
     expect(current.score).toBeCloseTo(0.8, 6);
     expect(expired.score).toBeCloseTo(0.8 * EXPIRED_FACTOR, 6);
   });
 
   it("judges validity at the instant asked about but decay from now", () => {
-    const ranking = rank(
+    const score = scoreMemory(
       {
         kind: "fact",
         similarity: 1,
         validFrom: daysAgo(10),
         validUntil: daysAgo(5),
-        confirmedAt: daysAgo(10),
+        confirmedAt: daysAgo(HALF_LIFE_DAYS.fact),
         confirmCount: 0,
       },
       now,
       daysAgo(7),
     );
-    expect(ranking.validity).toBe("current");
-    expect(ranking.strength).toBe(strengthAt("fact", daysAgo(10), 0, now));
+    // Held seven days ago, so no expiry penalty; confirmed a half-life ago, so
+    // strength is halfway to the floor.
+    const halfway = STRENGTH_FLOOR + (1 - STRENGTH_FLOOR) / 2;
+    expect(score.strength).toBeCloseTo(halfway, 6);
+    expect(score.score).toBeCloseTo(halfway, 6);
   });
 });

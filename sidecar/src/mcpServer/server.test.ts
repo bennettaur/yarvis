@@ -262,6 +262,7 @@ describe("yarvis mcp server", () => {
         kind: "note",
         createdAt: "2026-01-01T00:00:00.000Z",
         validity: "current",
+        validFrom: "2026-01-01T00:00:00.000Z",
       },
     ]);
   });

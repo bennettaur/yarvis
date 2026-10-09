@@ -37,6 +37,12 @@ function validityNote(m: MemoryRecord): string {
   return m.validity === "expired" ? ` · expired ${until}` : ` · until ${until}`;
 }
 
+/** A search hit's match score split into how well the text matched and how fresh the memory is. */
+function scoreBreakdown(m: MemoryRecord): string | undefined {
+  if (m.similarity == null || m.strength == null) return undefined;
+  return `${(m.similarity * 100).toFixed(0)}% similar · ${(m.strength * 100).toFixed(0)}% strength`;
+}
+
 function MemoryItem({ m, onDelete }: { m: MemoryRecord; onDelete: (id: string) => void }) {
   const source = (m.metadata as { source?: string } | null)?.source;
   return (
@@ -56,15 +62,7 @@ function MemoryItem({ m, onDelete }: { m: MemoryRecord; onDelete: (id: string) =
           {source ? ` · ${source}` : ""}
           {validityNote(m)}
           {m.score != null ? (
-            <span
-              title={
-                m.similarity != null && m.strength != null
-                  ? `${(m.similarity * 100).toFixed(0)}% similar · ${(m.strength * 100).toFixed(0)}% strength`
-                  : undefined
-              }
-            >
-              {` · ${(m.score * 100).toFixed(0)}% match`}
-            </span>
+            <span title={scoreBreakdown(m)}>{` · ${(m.score * 100).toFixed(0)}% match`}</span>
           ) : null}
         </div>
       </div>
