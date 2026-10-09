@@ -1,12 +1,14 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { open, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   type HistoryEntry,
   parseHistory,
   parsePlanTitle,
+  parseRecentActivity,
   parseSessionSummary,
   parseTranscript,
+  type RecentActivity,
   type SessionSummary,
   type TranscriptEntry,
 } from "./parse.ts";
@@ -167,6 +169,47 @@ export async function getTranscript(
   const file = join(projectsDir(), projectDir, `${sessionId}.jsonl`);
   if (!within(projectsDir(), file)) throw new Error("invalid path");
   return parseTranscript(await readFile(file, "utf8"));
+}
+
+/**
+ * How much of a transcript's end to read for recent activity. A long session's
+ * file runs to tens of megabytes, and the last few prompts are near the end.
+ */
+const ACTIVITY_TAIL_BYTES = 4 * 1024 * 1024;
+
+export interface SessionActivity extends RecentActivity {
+  sessionId: string;
+  mtimeMs: number;
+}
+
+/**
+ * The recent activity of a project's newest session, or null when the project
+ * has no transcripts.
+ */
+export async function getLatestSessionActivity(
+  projectDir: string,
+  promptLimit: number,
+): Promise<SessionActivity | null> {
+  const [newest] = await listSessionFiles(projectDir);
+  if (!newest) return null;
+  const file = join(projectsDir(), projectDir, `${newest.sessionId}.jsonl`);
+  const handle = await open(file, "r");
+  let tail: string;
+  try {
+    const start = Math.max(0, newest.bytes - ACTIVITY_TAIL_BYTES);
+    const buffer = Buffer.alloc(newest.bytes - start);
+    await handle.read(buffer, 0, buffer.length, start);
+    tail = buffer.toString("utf8");
+    // Starting mid-file lands inside a line; drop it rather than parse half.
+    if (start > 0) tail = tail.slice(tail.indexOf("\n") + 1);
+  } finally {
+    await handle.close();
+  }
+  return {
+    sessionId: newest.sessionId,
+    mtimeMs: newest.mtimeMs,
+    ...parseRecentActivity(tail, promptLimit),
+  };
 }
 
 export async function listPlans(): Promise<PlanInfo[]> {

@@ -157,6 +157,7 @@ describe("the catalogue", () => {
       "project-manager",
       "session-summarizer",
       "work-scout",
+      "workspace-recap",
       "yarvis-guide",
     ]);
     expect(specialists.every((s) => s.source === "builtin")).toBe(true);
@@ -164,9 +165,10 @@ describe("the catalogue", () => {
     const granted = specialists.filter((s) => s.unattended.length > 0);
     expect(granted.map((s) => s.name)).toEqual(["project-manager"]);
     expect(granted[0]!.unattended).toEqual(["jira_create_issue"]);
-    // The two shipped specialists cheap enough to opt into a tier rather than
-    // the chat default.
+    // The shipped specialists cheap enough to opt into a tier rather than the
+    // chat default.
     expect(specialists.find((s) => s.name === "session-summarizer")?.complexityTier).toBe("low");
+    expect(specialists.find((s) => s.name === "workspace-recap")?.complexityTier).toBe("low");
     expect(specialists.find((s) => s.name === "activity-consolidator")?.complexityTier).toBe(
       "medium",
     );
@@ -207,14 +209,14 @@ describe("the catalogue", () => {
     expect(problems.length).toBe(1);
     expect(problems[0]!.message).toContain("frontmatter fence");
     // The rest still load.
-    expect(specialists.length).toBe(6);
+    expect(specialists.length).toBe(7);
   });
 
   it("treats a missing directory as no user definitions", async () => {
     rmSync(dir, { recursive: true, force: true });
     const { specialists, problems } = await reloadCatalog();
     expect(problems).toEqual([]);
-    expect(specialists.length).toBe(6);
+    expect(specialists.length).toBe(7);
     mkdirSync(dir, { recursive: true });
   });
 
@@ -223,7 +225,7 @@ describe("the catalogue", () => {
     mkdirSync(join(dir, "nested.md"));
     const { specialists, problems } = await reloadCatalog();
     expect(problems).toEqual([]);
-    expect(specialists.length).toBe(6);
+    expect(specialists.length).toBe(7);
   });
 
   it("resolves a name case-insensitively, and answers null for an unknown one", async () => {
@@ -258,6 +260,6 @@ describe("choosing a specialist", () => {
   });
 
   it("returns everything for an empty query rather than nothing", async () => {
-    expect((await searchSpecialists("")).length).toBe(6);
+    expect((await searchSpecialists("")).length).toBe(7);
   });
 });

@@ -36,7 +36,13 @@ const MIN_EVENTS_TO_SUMMARIZE = 3;
  * still marked processed, so they don't accumulate as a permanently unprocessed
  * tail that keeps tripping the minimum above.
  */
-const BOOKKEEPING_TYPES: readonly string[] = ["memory.consolidated", "cc.session_summarized"];
+const BOOKKEEPING_TYPES: readonly string[] = [
+  "memory.consolidated",
+  "cc.session_summarized",
+  // Not bookkeeping, but handled the same way: views are frequent and say little
+  // on their own, so they stay in the log for lookups and out of the summaries.
+  "workspace.viewed",
+];
 
 export interface EventBatch {
   /** The events that fit the budget, oldest-first. */

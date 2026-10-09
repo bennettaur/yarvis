@@ -1,5 +1,5 @@
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
@@ -8,8 +8,10 @@ import postgres from "postgres";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
 import { workspaceRepos } from "../db/schema.ts";
+import { recordEvent } from "../events/service.ts";
 import type { IssueDetail, IssueSummary } from "../issues/types.ts";
 import { createTask, getTask } from "../tasks/service.ts";
+import { ccProjectDirFor, clearRecapCache } from "./activity.ts";
 import { WORKSPACE_BRIEF_FILE } from "./brief.ts";
 import type { StartClaudeSessionInput } from "./claudeSession.ts";
 import type { GitRunner } from "./git.ts";
@@ -607,6 +609,133 @@ describe("workspace tools", () => {
 
     const rows = (await tools.list_workspaces.execute!({}, opts)) as Array<{ name: string }>;
     expect(rows.some((w) => w.name === "WS One")).toBe(true);
+  });
+
+  describe("workspace activity", () => {
+    let claudeHome: string;
+    const previousHome = process.env.CLAUDE_HOME;
+
+    beforeEach(async () => {
+      await sql`TRUNCATE events RESTART IDENTITY`;
+      claudeHome = mkdtempSync(join(tmpdir(), "yarvis-claude-"));
+      process.env.CLAUDE_HOME = claudeHome;
+      clearRecapCache();
+    });
+
+    afterEach(() => {
+      if (previousHome === undefined) delete process.env.CLAUDE_HOME;
+      else process.env.CLAUDE_HOME = previousHome;
+      rmSync(claudeHome, { recursive: true, force: true });
+    });
+
+    function viewedAt(workspaceId: string, iso: string) {
+      return recordEvent(db, {
+        type: "workspace.viewed",
+        payload: { workspaceId, tab: "agent" },
+        occurredAt: new Date(iso),
+      });
+    }
+
+    function writeSession(rootPath: string, prompt: string) {
+      const dir = join(claudeHome, "projects", ccProjectDirFor(rootPath));
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, "s1.jsonl"),
+        `${JSON.stringify({
+          type: "user",
+          timestamp: "2026-05-01T10:00:00Z",
+          message: { role: "user", content: prompt },
+        })}\n`,
+      );
+    }
+
+    it("list_workspaces reports when each workspace was last viewed", async () => {
+      const { workspaceId } = await activeWorkspace("Viewed");
+      const { workspaceId: neverViewed } = await activeWorkspace("Never viewed", [
+        "https://github.com/acme/other.git",
+      ]);
+      await viewedAt(workspaceId, "2026-05-01T09:00:00Z");
+      await viewedAt(workspaceId, "2026-05-01T11:00:00Z");
+      const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
+
+      const rows = (await tools.list_workspaces.execute!({}, opts)) as Array<{
+        id: string;
+        lastViewedAt: string | null;
+      }>;
+
+      expect(rows.find((w) => w.id === workspaceId)?.lastViewedAt).toBe("2026-05-01T11:00:00.000Z");
+      expect(rows.find((w) => w.id === neverViewed)?.lastViewedAt).toBeNull();
+    });
+
+    it("get_workspace_activity recaps the session, fenced as data", async () => {
+      const { workspaceId } = await activeWorkspace("Login page");
+      await viewedAt(workspaceId, "2026-05-01T11:00:00Z");
+      const detail = await getWorkspace(db, workspaceId);
+      writeSession(detail!.rootPath, "add a login page");
+      const recapped: string[] = [];
+      const tools = buildWorkspaceTools(db, config, {
+        gitRunner: okRunner,
+        recapActivity: async ({ activity }) => {
+          recapped.push(activity.prompts.map((p) => p.text).join(" | "));
+          return "Building the login page.";
+        },
+      });
+
+      const result = (await tools.get_workspace_activity.execute!({ workspaceId }, opts)) as {
+        note: string;
+        workspaces: Array<{
+          name: string;
+          lastViewedAt: string | null;
+          agentSession: { sessionId: string; lastActivityAt: string; recap: string } | null;
+        }>;
+      };
+
+      expect(recapped).toEqual(["add a login page"]);
+      const [ws] = result.workspaces;
+      expect(ws!.name).toBe("Login page");
+      expect(ws!.lastViewedAt).toBe("2026-05-01T11:00:00.000Z");
+      expect(ws!.agentSession?.sessionId).toBe("s1");
+      expect(ws!.agentSession?.lastActivityAt).toBe("2026-05-01T10:00:00Z");
+      // The nonce in the note is the one fencing the recap.
+      const nonce = result.note.match(/<session-recap-(\w+)>/)?.[1];
+      expect(nonce).toBeDefined();
+      expect(ws!.agentSession?.recap).toBe(
+        `<session-recap-${nonce}>\nBuilding the login page.\n</session-recap-${nonce}>`,
+      );
+    });
+
+    it("get_workspace_activity covers every active workspace, with or without a session", async () => {
+      const { workspaceId: withSession } = await activeWorkspace("Has session");
+      const { workspaceId: without } = await activeWorkspace("No session", [
+        "https://github.com/acme/other.git",
+      ]);
+      writeSession((await getWorkspace(db, withSession))!.rootPath, "do the thing");
+      const tools = buildWorkspaceTools(db, config, {
+        gitRunner: okRunner,
+        recapActivity: async () => "Doing the thing.",
+      });
+
+      const result = (await tools.get_workspace_activity.execute!({}, opts)) as {
+        workspaces: Array<{ workspaceId: string; agentSession: unknown; note?: string }>;
+      };
+
+      expect(result.workspaces).toHaveLength(2);
+      expect(
+        result.workspaces.find((w) => w.workspaceId === withSession)?.agentSession,
+      ).not.toBeNull();
+      const empty = result.workspaces.find((w) => w.workspaceId === without);
+      expect(empty?.agentSession).toBeNull();
+      expect(empty?.note).toBe("no agent session found");
+    });
+
+    it("get_workspace_activity errors on an unknown workspace", async () => {
+      const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
+      const result = (await tools.get_workspace_activity.execute!(
+        { workspaceId: "00000000-0000-0000-0000-000000000000" },
+        opts,
+      )) as { error?: string };
+      expect(result.error).toBe("workspace not found");
+    });
   });
 
   it("list_repo_issues returns a repo's open issues", async () => {

@@ -22,6 +22,7 @@ import {
   type WorkspaceStatus,
   type WorkspaceSummary,
 } from "../lib/workspaces";
+import { useWorkspaceViewEvents } from "../lib/workspaceViews";
 import LoadingIndicator from "./LoadingIndicator";
 import CopyPathButton from "./pr/CopyPathButton";
 import RefreshingIndicator from "./RefreshingIndicator";
@@ -230,6 +231,7 @@ export default function WorkspacesPanel({
     setViewedWorkspace(selectedId);
     return () => setViewedWorkspace(null);
   }, [selectedId]);
+  useWorkspaceViewEvents(items.find((w) => w.id === selectedId)?.name);
 
   // Honor a cross-tab open request (Issues "Start work"): select the workspace.
   // Nothing about the kick-off rides along — the sidecar holds the prompt on the
