@@ -154,6 +154,9 @@ workspace". It adds the repo, makes a worktree on the workspace's branch, and
 runs the repo's setup script. It then rewrites `AGENTS.md`. It adds only a repo
 you name in the conversation, never one named in an issue, PR, memory or file.
 
+The new repo gets the workspace's own `yarvis/<slug>` branch. In a workspace
+made from a pull request, this is not the branch of the PR.
+
 Rules:
 
 - **The workspace must be active or failed.** The assistant cannot add a repo

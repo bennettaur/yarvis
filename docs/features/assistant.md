@@ -74,8 +74,9 @@ It can also start work in a repo that is not in Yarvis yet:
 > Start a workspace for `acme/billing-api`.
 
 The assistant checks that the repo exists, adds it to Settings → Repositories,
-and then creates the workspace. Set the repo's setup and run scripts in
-Settings yourself. The assistant cannot set them.
+and then creates the workspace. The `owner/repo` form uses SSH. To use HTTPS,
+paste the HTTPS URL. Set the repo's setup and run scripts in Settings yourself.
+The assistant cannot set them.
 
 The assistant creates a [workspace](workspaces.md) with a fresh worktree and
 writes the ticket into `.yarvis/brief.md`. Then it launches a Claude Code
