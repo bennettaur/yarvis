@@ -149,7 +149,7 @@ interface ActionConfig {
 const APPROVE: ActionConfig = {
   key: "approve",
   label: "Approve",
-  className: "bg-emerald-600 hover:bg-emerald-500",
+  className: "bg-emerald-600 hover:bg-emerald-700",
   confirmInline: true,
   requireBody: false,
   placeholder: "Optional comment for the approval…",
@@ -159,7 +159,7 @@ const APPROVE: ActionConfig = {
 const REQUEST_CHANGES: ActionConfig = {
   key: "request_changes",
   label: "Request changes",
-  className: "bg-red-600 hover:bg-red-500",
+  className: "bg-red-600 hover:bg-red-700",
   confirmInline: true,
   requireBody: true,
   placeholder: "What needs to change?",
@@ -401,7 +401,7 @@ export default function PrFloatingHeader({
   };
 
   return (
-    <div aria-busy={loading} className="shrink-0 border-b border-zinc-800 bg-[#0a0a0a] px-6 py-3">
+    <div aria-busy={loading} className="shrink-0 border-b border-zinc-800 bg-zinc-950 px-6 py-3">
       <div className="flex items-center gap-3">
         <button
           onClick={onBack}
@@ -486,7 +486,7 @@ export default function PrFloatingHeader({
             <MergeMenu
               label="Merge"
               title="Merge this PR now, using the method you pick"
-              className="bg-emerald-600 hover:bg-emerald-500"
+              className="bg-emerald-600 hover:bg-emerald-700"
               methods={detail.mergeMethods}
               pending={mergePending}
               isOpen={mergeMenu === "merge"}
@@ -499,7 +499,7 @@ export default function PrFloatingHeader({
             <MergeMenu
               label="Enable auto-merge"
               title="Merge this PR automatically once its required checks and reviews pass, using the method you pick"
-              className="bg-sky-600 hover:bg-sky-500"
+              className="bg-sky-600 hover:bg-sky-700"
               methods={detail.mergeMethods}
               pending={mergePending}
               isOpen={mergeMenu === "auto_merge"}

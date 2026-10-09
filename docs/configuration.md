@@ -269,4 +269,7 @@ The tabs in **Settings**, in order:
    attention panel.
 10. **Assistant.** Turn budget, complexity tiers, specialists, and background
     jobs.
-11. **Diagnostics.** The sidecar log.
+11. **Appearance.** The color theme: **Default** or **Palenight**. It applies
+    straight away, to terminals and code too, and is stored on this computer
+    rather than in `settings.json`.
+12. **Diagnostics.** The sidecar log.

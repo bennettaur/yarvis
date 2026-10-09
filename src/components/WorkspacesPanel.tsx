@@ -589,7 +589,7 @@ function NewWorkspaceForm({
         {error && <p className="mb-2 text-sm text-red-400">{error}</p>}
         <pre
           ref={logRef}
-          className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap rounded-lg border border-zinc-800 bg-[#09090b] p-3 font-mono text-xs text-zinc-300"
+          className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap rounded-lg border border-zinc-800 bg-zinc-950 p-3 font-mono text-xs text-zinc-300"
         >
           {log || "Starting…"}
         </pre>
@@ -1345,7 +1345,7 @@ function WorkspaceDetailView({
       )}
 
       {provisionLog !== null ? (
-        <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap bg-[#09090b] p-3 font-mono text-xs text-zinc-300">
+        <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap bg-zinc-950 p-3 font-mono text-xs text-zinc-300">
           {provisionLog || "Starting…"}
         </pre>
       ) : detail.status === "archived" ? (
