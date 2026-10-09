@@ -5,7 +5,7 @@
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
-import { relative } from "node:path";
+import { basename, relative } from "node:path";
 import { and, eq, getTableColumns, inArray, isNotNull, ne } from "drizzle-orm";
 import { publish } from "../attention/hub.ts";
 import { clearAttentionScope, createAttention } from "../attention/service.ts";
@@ -224,6 +224,20 @@ export function assertSafeCloneUrl(url: string): void {
   if (!ALLOWED_CLONE_URL.test(url.trim())) {
     throw new Error(`unsupported clone URL transport: ${url}`);
   }
+}
+
+/**
+ * Whether a thrown value is Postgres's unique-violation. Drizzle wraps the
+ * driver error, so the code is on a `cause` rather than on what is caught.
+ */
+export function isUniqueViolation(error: unknown): boolean {
+  for (let current: unknown = error, depth = 0; current && depth < 4; depth++) {
+    if (typeof current === "object" && (current as { code?: unknown }).code === "23505") {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 /**
@@ -502,6 +516,59 @@ export async function createWorkspace(
   });
 
   return created;
+}
+
+/**
+ * Adds a registered repo to an existing workspace as a `pending` row. Does not
+ * provision: the caller runs `provisionWorkspace`, which skips the repos that
+ * are already ready and rewrites the workspace files. Refused mid-provision
+ * because a run in flight works from a snapshot taken before this row existed.
+ */
+export async function addRepoToWorkspace(
+  db: Db,
+  workspaceId: string,
+  repoId: string,
+): Promise<WorkspaceRepo> {
+  const detail = await getWorkspace(db, workspaceId);
+  if (!detail) throw new Error("workspace not found");
+  if (detail.status !== "active" && detail.status !== "error") {
+    throw new Error(`cannot add a repo to a workspace that is ${detail.status}`);
+  }
+  if (provisioning.has(workspaceId)) {
+    throw new Error("provisioning is still running for this workspace");
+  }
+  const repo = await getRepo(db, repoId);
+  if (!repo) throw new Error("repo not found");
+  const alreadyIn = `${repo.name} is already in this workspace`;
+  if (detail.repos.some((wr) => wr.repoId === repoId)) throw new Error(alreadyIn);
+
+  const inUse = new Set(detail.repos.map((wr) => basename(wr.worktreePath)));
+  const folder = workspaceRepoFolder(repo, inUse);
+
+  let row: WorkspaceRepo | undefined;
+  try {
+    [row] = await db
+      .insert(workspaceRepos)
+      .values({
+        workspaceId,
+        repoId,
+        branch: `yarvis/${detail.slug}`,
+        baseBranch: repo.defaultBranch ?? "main",
+        worktreePath: `${detail.rootPath}/${folder}`,
+      })
+      .returning();
+  } catch (e) {
+    // Two adds can both pass the read above; the unique index picks the loser.
+    if (isUniqueViolation(e)) throw new Error(alreadyIn);
+    throw e;
+  }
+
+  void emitEvent(db, {
+    type: "workspace.repo_added",
+    source: "workspaces",
+    payload: { workspaceId, name: detail.name, repo: `${repo.owner}/${repo.name}` },
+  });
+  return row!;
 }
 
 /**
