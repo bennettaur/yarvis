@@ -15,6 +15,12 @@ export interface ChatConfig {
   /** Output tokens one reply may use. Null leaves the provider's own limit. */
   maxOutputTokens: number | null;
   /**
+   * Characters of each tool result kept for the chat's activity list and stored
+   * with the message. The model always sees the whole result; this only decides
+   * how much of it a person can read back, so it is raised when debugging a tool.
+   */
+  toolResultChars: number;
+  /**
    * Estimated history size, in tokens, past which the older messages are
    * summarized. Set it under the smallest context window of any model you chat
    * with: the estimate is rough, and the system prompt, tools and reply come on
@@ -36,12 +42,15 @@ const SETTINGS_KEY = "chatConfig";
 export const DEFAULT_CHAT_CONFIG: ChatConfig = {
   maxSteps: 100,
   maxOutputTokens: null,
+  toolResultChars: 400,
   compactAtTokens: 200_000,
 };
 
 /** Bounds the routes validate against, so a typo can't cost a fortune. */
 export const MAX_STEPS_CEILING = 500;
 export const MAX_OUTPUT_TOKENS_CEILING = 200_000;
+/** `read_browser_page` returns at most 60,000 characters, so this keeps a whole one plus its wrapping. */
+export const MAX_TOOL_RESULT_CHARS_CEILING = 100_000;
 export const MIN_COMPACT_AT_TOKENS = 10_000;
 export const MAX_COMPACT_AT_TOKENS = 2_000_000;
 
@@ -52,6 +61,7 @@ export async function getChatConfig(): Promise<ChatConfig> {
   return {
     maxSteps: stored.maxSteps ?? DEFAULT_CHAT_CONFIG.maxSteps,
     maxOutputTokens: stored.maxOutputTokens ?? DEFAULT_CHAT_CONFIG.maxOutputTokens,
+    toolResultChars: stored.toolResultChars ?? DEFAULT_CHAT_CONFIG.toolResultChars,
     compactAtTokens: stored.compactAtTokens ?? DEFAULT_CHAT_CONFIG.compactAtTokens,
   };
 }
@@ -78,6 +88,7 @@ export async function saveChatConfig(input: ChatConfig): Promise<ChatConfig> {
     const next: ChatConfig = {
       maxSteps: input.maxSteps,
       maxOutputTokens: input.maxOutputTokens ?? null,
+      toolResultChars: input.toolResultChars,
       compactAtTokens: input.compactAtTokens,
     };
     return { next, result: next };

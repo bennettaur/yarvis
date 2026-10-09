@@ -1,5 +1,6 @@
 import configuration from "../../../docs/configuration.md" with { type: "text" };
 import assistant from "../../../docs/features/assistant.md" with { type: "text" };
+import browser from "../../../docs/features/browser.md" with { type: "text" };
 import calendarAndAlarms from "../../../docs/features/calendar-and-alarms.md" with { type: "text" };
 import clipboard from "../../../docs/features/clipboard.md" with { type: "text" };
 import issuesAndTasks from "../../../docs/features/issues-and-tasks.md" with { type: "text" };
@@ -31,6 +32,7 @@ const DOCS: Record<string, string> = {
   configuration,
   "voice-server": voiceServer,
   "features/assistant": assistant,
+  "features/browser": browser,
   "features/calendar-and-alarms": calendarAndAlarms,
   "features/clipboard": clipboard,
   "features/issues-and-tasks": issuesAndTasks,

@@ -103,6 +103,22 @@ export default function ChatBudgetSection() {
           </div>
 
           <label className="block">
+            <span className="block text-sm text-zinc-100">Tool result shown in chat</span>
+            <span className="mb-1 block text-xs text-zinc-500">
+              Characters of each tool's result kept in the chat's activity list. The model always
+              sees the whole result; raise this to read it back when debugging a tool.
+            </span>
+            <input
+              type="number"
+              min={100}
+              max={100000}
+              value={config.toolResultChars}
+              onChange={(e) => setConfig({ ...config, toolResultChars: Number(e.target.value) })}
+              className="w-32 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-zinc-500"
+            />
+          </label>
+
+          <label className="block">
             <span className="block text-sm text-zinc-100">Summarize the chat past (tokens)</span>
             <span className="mb-1 block text-xs text-zinc-500">
               Once a chat's history is estimated to pass this, its older messages are replaced by a
