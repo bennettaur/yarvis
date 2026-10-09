@@ -58,6 +58,7 @@ export const EVENT_TYPES = [
   "azure_boards.item.commented",
   "azure_boards.work_started",
   "workspace.created",
+  "workspace.repo_added",
   "workspace.session_started",
   "workspace.instruction_sent",
   "workspace.synced",

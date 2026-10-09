@@ -1,5 +1,5 @@
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { afterAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
@@ -11,9 +11,17 @@ import { workspaceRepos } from "../db/schema.ts";
 import type { IssueDetail, IssueSummary } from "../issues/types.ts";
 import { createTask, getTask } from "../tasks/service.ts";
 import { WORKSPACE_BRIEF_FILE } from "./brief.ts";
-import type { StartClaudeSessionInput } from "./claudeSession.ts";
+import type { ClaudeSessionStarter, StartClaudeSessionInput } from "./claudeSession.ts";
 import type { GitRunner } from "./git.ts";
-import { AGENT_KICKOFF_INSTRUCTION, createRepo, getWorkspace, listWorkspaces } from "./service.ts";
+import {
+  AGENT_KICKOFF_INSTRUCTION,
+  addRepoToWorkspace,
+  createRepo,
+  getWorkspace,
+  listRepos,
+  listWorkspaces,
+  provisionWorkspace,
+} from "./service.ts";
 import { buildWorkspaceTools, type WorkspaceGitHubClient } from "./tools.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -1254,5 +1262,410 @@ describe("workspace tools", () => {
 
     expect(result.error).toBe("workspace not found");
     expect(sends).toBe(0);
+  });
+});
+
+/** Records every git call, and answers ls-remote as told. */
+function remoteRunner(
+  lsRemote: () => Promise<{ stdout: string; stderr: string; exitCode: number }>,
+) {
+  const calls: string[][] = [];
+  const runner: GitRunner = async (args, runOpts) => {
+    calls.push(args);
+    if (args[0] === "ls-remote") return lsRemote();
+    return okRunner(args, runOpts);
+  };
+  return { runner, calls };
+}
+const reachable = async () => ({ stdout: "", stderr: "", exitCode: 0 });
+
+type RegisterResult = {
+  error?: string;
+  id?: string;
+  cloneUrl?: string;
+  alreadyRegistered?: boolean;
+  note?: string;
+};
+
+describe("register_repo", () => {
+  const register = (runner: GitRunner, repo: string) =>
+    buildWorkspaceTools(db, config, { gitRunner: runner }).register_repo.execute!(
+      { repo },
+      opts,
+    ) as Promise<RegisterResult>;
+
+  it("builds the SSH URL from owner/repo", async () => {
+    const { runner, calls } = remoteRunner(reachable);
+    const result = await register(runner, "acme/widget");
+    expect(result).toMatchObject({
+      cloneUrl: "git@github.com:acme/widget.git",
+      alreadyRegistered: false,
+    });
+    expect(result.note).toContain("Settings");
+    expect(calls).toContainEqual(["ls-remote", "git@github.com:acme/widget.git"]);
+  });
+
+  // Review Focus: one trailing .git in the shorthand is not part of the name.
+  it("drops a trailing .git from the shorthand", async () => {
+    const { runner } = remoteRunner(reachable);
+    const result = await register(runner, "acme/widget.git");
+    expect(result.cloneUrl).toBe("git@github.com:acme/widget.git");
+  });
+
+  it("refuses . or .. in the shorthand", async () => {
+    const { runner, calls } = remoteRunner(reachable);
+    for (const bad of ["../widget", "acme/..", "./x"]) {
+      const result = await register(runner, bad);
+      expect(result.error).toContain("unsafe owner or repo name");
+    }
+    expect(calls).toHaveLength(0);
+    expect(await listRepos(db)).toHaveLength(0);
+  });
+
+  it("refuses a full URL whose owner or repo is . or ..", async () => {
+    const { runner, calls } = remoteRunner(reachable);
+    for (const bad of ["git@evil.example:../widget.git", "https://evil.example/acme/.."]) {
+      const result = await register(runner, bad);
+      expect(result.error).toContain("unsafe owner or repo name");
+    }
+    expect(calls).toHaveLength(0);
+    expect(await listRepos(db)).toHaveLength(0);
+  });
+
+  it("uses a clone URL as given", async () => {
+    const { runner } = remoteRunner(reachable);
+    const result = await register(runner, "  https://gitlab.example/team/tool.git ");
+    expect(result.cloneUrl).toBe("https://gitlab.example/team/tool.git");
+  });
+
+  it("refuses an unsafe transport", async () => {
+    const { runner, calls } = remoteRunner(reachable);
+    const result = await register(runner, "ext::sh -c touch% /tmp/pwned");
+    expect(result.error).toContain("unsupported clone URL transport");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("refuses an scp-style URL whose user starts with -", async () => {
+    const { runner, calls } = remoteRunner(reachable);
+    const result = await register(runner, "-ox@github.com:acme/widget.git");
+    expect(result.error).toContain("unsupported clone URL transport");
+    expect(calls).toHaveLength(0);
+    expect(await listRepos(db)).toHaveLength(0);
+  });
+
+  it("finds a github.com repo under another URL form", async () => {
+    const existing = await createRepo(db, config, { cloneUrl: "git@github.com:Acme/Widget.git" });
+    const { runner, calls } = remoteRunner(reachable);
+    const result = await register(runner, "https://github.com/acme/widget");
+    expect(result).toMatchObject({ id: existing.id, alreadyRegistered: true });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("matches another host only on the exact trimmed URL", async () => {
+    await createRepo(db, config, { cloneUrl: "https://gitlab.example/team/tool.git" });
+    const { runner } = remoteRunner(reachable);
+    const same = await register(runner, " https://gitlab.example/team/tool.git ");
+    expect(same.alreadyRegistered).toBe(true);
+    // The same owner/repo under another URL is not a lookup match; the unique
+    // index (exact owner and repo) still refuses it, by name.
+    const other = await register(runner, "https://gitlab.example/team/tool");
+    expect(other.error).toContain("already registered: tool");
+    expect(await listRepos(db)).toHaveLength(1);
+  });
+
+  it("registers nothing when ls-remote fails", async () => {
+    const { runner } = remoteRunner(async () => ({
+      stdout: "",
+      stderr: "ERROR: Repository not found.",
+      exitCode: 128,
+    }));
+    const result = await register(runner, "acme/nope");
+    expect(result.error).toContain("repo not found or no access");
+    expect(result.error).toContain("Repository not found");
+    expect(await listRepos(db)).toHaveLength(0);
+  });
+
+  // Review Focus: a timeout throws rather than exiting non-zero.
+  it("registers nothing when ls-remote times out", async () => {
+    const { runner } = remoteRunner(async () => {
+      throw new Error("command timed out after 30000ms: git ls-remote x");
+    });
+    const result = await register(runner, "acme/slow");
+    expect(result.error).toContain("repo not found or no access");
+    expect(await listRepos(db)).toHaveLength(0);
+  });
+
+  // Review Focus: a pasted URL's credentials must not reach the model.
+  it("strips credentials from the git error", async () => {
+    const { runner } = remoteRunner(async () => ({
+      stdout: "",
+      stderr: "fatal: Authentication failed for 'https://user:ghp_secret@github.com/acme/x.git/'",
+      exitCode: 128,
+    }));
+    const result = await register(runner, "https://user:ghp_secret@github.com/acme/x.git");
+    expect(result.error).not.toContain("ghp_secret");
+  });
+
+  it("is named in the list_repos and create_workspace_session descriptions", () => {
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
+    expect(tools.list_repos.description).toContain("register_repo");
+    expect(tools.create_workspace_session.description).toContain("register_repo");
+  });
+});
+
+/** okRunner, but creates the worktree folder as real git does, so the
+ *  workspace root exists and AGENTS.md can be written into it. */
+const dirRunner: GitRunner = async (args, runOpts) => {
+  if (args[0] === "worktree" && args[1] === "add") {
+    const path = args[2] === "-b" ? args[4] : args[2];
+    if (path) mkdirSync(path, { recursive: true });
+  }
+  return okRunner(args, runOpts);
+};
+
+/** Fails only the clone of the given repo name. */
+const failCloneOf =
+  (name: string): GitRunner =>
+  async (args, runOpts) =>
+    args[0] === "clone" && (args[1] ?? "").includes(name)
+      ? { stdout: "", stderr: "fatal: could not read from remote", exitCode: 128 }
+      : dirRunner(args, runOpts);
+
+type AddResult = {
+  error?: string;
+  workspaceId?: string;
+  name?: string;
+  status?: string;
+  repo?: { name: string; worktreePath: string; branch: string; status: string } | null;
+  retried?: { repo: string; status: string }[];
+  failures?: { repo: string; message: string }[];
+  kickOffStarted?: boolean;
+  note?: string;
+};
+
+describe("add_repo_to_workspace", () => {
+  const started: StartClaudeSessionInput[] = [];
+  const recordingStarter: ClaudeSessionStarter = async (input) => {
+    started.push(input);
+    return { sessionKey: `ws-claude:${input.workspaceId}` };
+  };
+  const toolsWith = (runner: GitRunner, startClaudeSession = recordingStarter) =>
+    buildWorkspaceTools(db, config, { gitRunner: runner, startClaudeSession });
+  const add = (
+    runner: GitRunner,
+    workspaceId: string,
+    repoId: string,
+    startClaudeSession = recordingStarter,
+  ) =>
+    toolsWith(runner, startClaudeSession).add_repo_to_workspace.execute!(
+      { workspaceId, repoId },
+      opts,
+    ) as Promise<AddResult>;
+
+  beforeEach(() => {
+    started.length = 0;
+  });
+
+  async function workspaceWith(cloneUrl: string, runner: GitRunner, brief?: string) {
+    const repo = await createRepo(db, config, { cloneUrl });
+    const created = (await toolsWith(runner).create_workspace_session.execute!(
+      { name: `ws ${repo.repo}`, repoIds: [repo.id], brief, startWork: true },
+      opts,
+    )) as { workspaceId: string };
+    return created.workspaceId;
+  }
+
+  it("provisions only the new repo and lists it in AGENTS.md", async () => {
+    const workspaceId = await workspaceWith("https://github.com/acme/widget.git", dirRunner);
+    const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+    const calls: string[][] = [];
+    const recording: GitRunner = async (args, runOpts) => {
+      calls.push(args);
+      return dirRunner(args, runOpts);
+    };
+
+    const result = await add(recording, workspaceId, gadget.id);
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe("active");
+    expect(result.repo).toMatchObject({ name: "gadget", status: "ready" });
+    expect(result.kickOffStarted).toBe(false);
+    expect(result.note).toContain("send_workspace_instruction");
+    const worktreeAdds = calls.filter((a) => a[0] === "worktree" && a[1] === "add");
+    expect(worktreeAdds).toHaveLength(1);
+    expect(worktreeAdds[0]!.join(" ")).toContain("/gadget");
+    const detail = await getWorkspace(db, workspaceId);
+    const agents = readFileSync(join(detail!.rootPath, "AGENTS.md"), "utf8");
+    expect(agents).toContain("acme/gadget");
+  });
+
+  it("retries the other failed repos in an error workspace", async () => {
+    const workspaceId = await workspaceWith(
+      "https://github.com/acme/widget.git",
+      failCloneOf("widget"),
+    );
+    expect((await getWorkspace(db, workspaceId))?.status).toBe("error");
+    const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+
+    const result = await add(dirRunner, workspaceId, gadget.id);
+
+    expect(result.status).toBe("active");
+    expect(result.retried).toEqual([expect.objectContaining({ repo: "widget", status: "ready" })]);
+  });
+
+  it("starts an owed kick-off and says so", async () => {
+    const workspaceId = await workspaceWith(
+      "https://github.com/acme/widget.git",
+      failCloneOf("widget"),
+      "Add rate limiting",
+    );
+    expect((await getWorkspace(db, workspaceId))?.pendingBrief).not.toBeNull();
+    expect(started).toHaveLength(0);
+    const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+
+    const result = await add(dirRunner, workspaceId, gadget.id);
+
+    expect(result.kickOffStarted).toBe(true);
+    expect(result.note).toContain("kick-off session started");
+    expect(started).toHaveLength(1);
+    expect(started[0]!.instruction).toBe(AGENT_KICKOFF_INSTRUCTION);
+  });
+
+  it("says an owed kick-off could not start", async () => {
+    const workspaceId = await workspaceWith(
+      "https://github.com/acme/widget.git",
+      failCloneOf("widget"),
+      "Add rate limiting",
+    );
+    const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+    const errorLog = spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const result = await add(dirRunner, workspaceId, gadget.id, async () => {
+        throw new Error("not logged in");
+      });
+
+      expect(result.kickOffStarted).toBe(false);
+      expect(result.note).toContain("could not start");
+      expect(result.note).not.toContain("already running");
+    } finally {
+      errorLog.mockRestore();
+    }
+    expect((await getWorkspace(db, workspaceId))?.pendingBrief).not.toBeNull();
+  });
+
+  it("says an owed kick-off waits while a repo is failed", async () => {
+    const workspaceId = await workspaceWith(
+      "https://github.com/acme/widget.git",
+      failCloneOf("widget"),
+      "Add rate limiting",
+    );
+    const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+
+    const result = await add(failCloneOf("widget"), workspaceId, gadget.id);
+
+    expect(result.note).toContain("starts once every repo is ready");
+    expect(started).toHaveLength(0);
+  });
+
+  it("softens the note when no kick-off was owed", async () => {
+    const workspaceId = await workspaceWith("https://github.com/acme/widget.git", dirRunner);
+    const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+    const result = await add(dirRunner, workspaceId, gadget.id);
+    expect(result.note).toContain("If a session is already running here");
+  });
+
+  // Review Focus: the new repo itself fails.
+  it("reports a failed provision of the new repo", async () => {
+    const workspaceId = await workspaceWith("https://github.com/acme/widget.git", dirRunner);
+    const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+
+    const result = await add(failCloneOf("gadget"), workspaceId, gadget.id);
+
+    expect(result.error).toBeDefined();
+    expect(result.status).toBe("error");
+    expect(result.failures).toEqual([expect.objectContaining({ repo: "gadget" })]);
+    expect(result.kickOffStarted).toBe(false);
+  });
+
+  it("reports an error when a retried repo fails again", async () => {
+    const workspaceId = await workspaceWith(
+      "https://github.com/acme/widget.git",
+      failCloneOf("widget"),
+    );
+    const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+
+    const result = await add(failCloneOf("widget"), workspaceId, gadget.id);
+
+    expect(result.error).toContain("ended in status error");
+    expect(result.status).toBe("error");
+    expect(result.repo).toMatchObject({ name: "gadget", status: "ready" });
+    expect(result.failures).toEqual([expect.objectContaining({ repo: "widget" })]);
+  });
+
+  it("retries a repo that was still pending", async () => {
+    const workspaceId = await workspaceWith("https://github.com/acme/widget.git", dirRunner);
+    const stranded = await createRepo(db, config, {
+      cloneUrl: "https://github.com/acme/stranded.git",
+    });
+    await addRepoToWorkspace(db, workspaceId, stranded.id);
+    const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+
+    const result = await add(dirRunner, workspaceId, gadget.id);
+
+    expect(result.retried).toEqual([
+      expect.objectContaining({ repo: "stranded", status: "ready" }),
+    ]);
+  });
+
+  // Another run can begin between the add and this tool's own provision, and
+  // joins rather than starts one. Its snapshot predates the new row.
+  it("reports a repo another run left pending as pending", async () => {
+    const workspaceId = await workspaceWith(
+      "https://github.com/acme/widget.git",
+      failCloneOf("widget"),
+    );
+    const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+    const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+    const { promise: entered, resolve: markEntered } = Promise.withResolvers<void>();
+    const gatedRunner: GitRunner = async (args, runOpts) => {
+      if (args[0] === "clone") {
+        markEntered();
+        await gate;
+      }
+      return dirRunner(args, runOpts);
+    };
+    const realInsert = db.insert.bind(db);
+    const insert = spyOn(db, "insert").mockImplementation(((table: unknown) => {
+      const builder = realInsert(table as never);
+      if (table !== workspaceRepos) return builder;
+      return {
+        values: (row: never) => ({
+          returning: async () => {
+            void provisionWorkspace(db, workspaceId, () => undefined, { runner: gatedRunner });
+            await entered;
+            setTimeout(release, 100);
+            return builder.values(row).returning();
+          },
+        }),
+      };
+    }) as never);
+
+    let result: AddResult;
+    try {
+      result = await add(dirRunner, workspaceId, gadget.id);
+    } finally {
+      insert.mockRestore();
+    }
+
+    expect(result.error).toContain("still pending");
+    expect(result.error).not.toContain("failed to provision");
+    expect(result.repo).toMatchObject({ name: "gadget", status: "pending" });
+    expect(result.failures).toEqual([]);
+  });
+
+  it("returns a refusal as an error", async () => {
+    const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+    const result = await add(dirRunner, "00000000-0000-0000-0000-000000000000", gadget.id);
+    expect(result.error).toBe("workspace not found");
   });
 });

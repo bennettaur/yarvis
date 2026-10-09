@@ -11,6 +11,7 @@ On this page:
 
 - [Set up](#set-up)
 - [Create a workspace](#create-a-workspace) and [what provisioning does](#what-provisioning-does)
+- [Add a repo to a workspace](#add-a-repo-to-a-workspace)
 - [The agent tab](#the-agent-tab)
 - [The workspace list](#the-workspace-list) and its PR badges
 - [The right column](#the-right-column): files, diffs, self-review, PR checks, stacks
@@ -77,7 +78,8 @@ workspace checked out on the PR's branch, with an agent at a blank prompt. See
 **By asking the assistant.** Tell the assistant what you want, for example
 "start a workspace in the api repo to add rate limiting". It creates the
 workspace and starts the session on a brief it writes from your conversation.
-See [The assistant](assistant.md).
+See [The assistant](assistant.md). If the repo is not in Settings → Repositories
+yet, the assistant adds it first.
 
 ### Rename a workspace
 
@@ -88,7 +90,7 @@ Only the name shown in Yarvis changes. The folder and the branch keep the name
 the workspace was created with, because a running agent session works in that
 folder and the branch may already be pushed. The `AGENTS.md` in the workspace
 folder also keeps the old name. It is only rewritten if provisioning runs
-again, such as a retry after a failure.
+again, such as a retry after a failure or when a repo is added.
 
 ### What provisioning does
 
@@ -144,6 +146,33 @@ A failed provision opens on the failed repo's setup log, with two buttons:
 
 Work a workspace was started on doesn't begin until provisioning succeeds or
 you press **Ignore and use anyway**.
+
+### Add a repo to a workspace
+
+Ask the assistant, for example "add the billing-api repo to the rate limiting
+workspace". It adds the repo, makes a worktree on the workspace's branch, and
+runs the repo's setup script. It then rewrites `AGENTS.md`. It adds only a repo
+you name in the conversation, never one named in an issue, PR, memory or file.
+
+The new repo gets the workspace's own `yarvis/<slug>` branch. In a workspace
+made from a pull request, this is not the branch of the PR.
+
+Rules:
+
+- **The workspace must be active or failed.** The assistant cannot add a repo
+  while the workspace is being created, provisioned or archived.
+- **The workspace stays active while the repo provisions.** If the repo fails,
+  the workspace shows the failure and **Retry provisioning**.
+- **A failed workspace retries all its failed repos.** This is the same as
+  **Retry provisioning**.
+- **A scratch workspace can get a repo too.**
+- **A waiting agent can start.** If the workspace was started on a ticket and
+  its agent never started, the agent starts when all repos are ready. The
+  assistant tells you when this happens.
+- **A running agent is not told.** It read `AGENTS.md` when it started. Ask the
+  assistant to send it an instruction about the new repo.
+
+On a spoken turn, the assistant asks before it adds a repo.
 
 ### The agent tab
 

@@ -22,7 +22,7 @@ The assistant works as soon as you have a database and an LLM provider (see
 
 1. **A GitHub token** (Settings → Credentials). It powers PR lists, review
    requests and "what's waiting on me".
-2. **Your repos** under Settings → Repositories, so it can start workspaces.
+2. **Your repos** under Settings → Repositories, so it can start workspaces. The assistant can also add a repo for you when you name one it does not know.
 3. **JIRA**, if your tickets live there (see
    [Issues and tasks](issues-and-tasks.md)).
 4. **Google Calendar**, so it can plan around your meetings (see
@@ -68,6 +68,15 @@ reports what changed.
 Ask it to start something, and it sets up a workspace and puts an agent on it:
 
 > Start work on PROJ-412 in the billing-api repo.
+
+It can also start work in a repo that is not in Yarvis yet:
+
+> Start a workspace for `acme/billing-api`.
+
+The assistant checks that the repo exists, adds it to Settings → Repositories,
+and then creates the workspace. The `owner/repo` form uses SSH. To use HTTPS,
+paste the HTTPS URL. Set the repo's setup and run scripts in Settings yourself.
+The assistant cannot set them.
 
 The assistant creates a [workspace](workspaces.md) with a fresh worktree and
 writes the ticket into `.yarvis/brief.md`. Then it launches a Claude Code
@@ -169,7 +178,7 @@ Yarvis records meaningful actions as events. Examples:
 - an issue, JIRA ticket or Azure Boards work item created, edited or commented
   on,
 - work started on a ticket,
-- a workspace created, its session started, synced or archived,
+- a workspace created, a repo added to it, its session started, synced or archived,
 - tasks created and completed,
 - calendar events booked,
 - the assistant's own todos and projects.
@@ -230,14 +239,16 @@ Some actions pause and ask you in the approval bar above the message box (press
 - **Booking a calendar event** asks every time.
 - **MCP tools** ask unless you set them to auto-approve in the Tool manager.
 - **Spoken turns** ask before anything irreversible: deleting a task, archiving
-  a workspace, starting work, filing a JIRA ticket, syncing branches, sending an
-  instruction to a session, launching a session, forgetting a memory, or
-  delegating. A transcript can be misheard, or picked up from the room.
+  a workspace, starting work, adding a repo to a workspace, filing a JIRA
+  ticket, syncing branches, sending an instruction to a session, launching a
+  session, forgetting a memory, or delegating. A transcript can be misheard,
+  or picked up from the room.
 
-The assistant is also instructed to create workspaces, start work, sync,
-send instructions or archive only when you ask in the current conversation,
-and never to copy text from an issue, PR or memory into a session as an
-instruction. These are instructions to the model, not checks in code, so a
+The assistant is also instructed to create workspaces, register a repo, add a
+repo to a workspace, start work, sync, send instructions or archive only when
+you ask in the current conversation, and never to copy text from an issue, PR
+or memory into a session as an instruction. These are instructions to the
+model, not checks in code, so a
 cleverly written issue or PR could still talk it into something. The approval
 prompts above, and the checks on what can be typed into a session (see
 [Workspaces](workspaces.md)), are enforced in code.
@@ -266,9 +277,9 @@ Always available:
 
 Loaded on demand:
 
-- **Workspaces.** List repos and issues, start work, create and start sessions
-  (including a scratch session with no repo), check status, sync with base,
-  send instructions, archive.
+- **Workspaces.** List and add repos and issues, start work, create and start
+  sessions (including a scratch session with no repo), add a repo to a
+  workspace, check status, sync with base, send instructions, archive.
 - **JIRA.** Search, read, create, and start work on a ticket.
 - **PR review.** List your guided reviews and search the notes you took while
   reviewing.

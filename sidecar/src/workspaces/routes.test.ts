@@ -24,13 +24,16 @@ import {
   workspaceRepos,
   workspaces,
 } from "../db/schema.ts";
+import { listEvents } from "../events/service.ts";
 import { createTask } from "../tasks/service.ts";
 import type { StartClaudeSessionInput } from "./claudeSession.ts";
 import type { RunResult } from "./exec.ts";
 import { defaultGitRunner, type GitRunner } from "./git.ts";
 import {
+  addRepoToWorkspace,
   archiveWorkspace,
   assertSafeBranchName,
+  createRepo,
   createWorkspace,
   getWorkspace,
   ignoreWorkspaceError,
@@ -1223,6 +1226,202 @@ describe("workspace issue links", () => {
     const rows = await db.select().from(issueLinks);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.workspaceId).toBe(second);
+  });
+});
+
+describe("createWorkspace repo folders", () => {
+  it("gives both repos in a clashing pair name-owner", async () => {
+    const db = getDb(url).db;
+    const a = await createRepo(db, config, { cloneUrl: "git@github.com:acme/widget.git" });
+    const b = await createRepo(db, config, { cloneUrl: "git@github.com:other/widget.git" });
+    const ws = await createWorkspace(db, config, { name: "pair", repoIds: [a.id, b.id] });
+    const detail = await getWorkspace(db, ws.id);
+    const folders = detail!.repos.map((wr) => basename(wr.worktreePath)).sort();
+    expect(folders).toEqual(["widget-acme", "widget-other"]);
+  });
+
+  it("refuses a pair whose name-owner also clashes", async () => {
+    const db = getDb(url).db;
+    // Same owner, same display name: both would land in "api-acme".
+    const a = await createRepo(db, config, { cloneUrl: "git@github.com:acme/api.git" });
+    const b = await createRepo(db, config, {
+      cloneUrl: "git@github.com:acme/api-v2.git",
+      name: "api",
+    });
+    await expect(
+      createWorkspace(db, config, { name: "clash", repoIds: [a.id, b.id] }),
+    ).rejects.toThrow("both in use");
+  });
+
+  it("refuses a display name that is not a safe folder", async () => {
+    const db = getDb(url).db;
+    const repo = await createRepo(db, config, {
+      cloneUrl: "git@github.com:acme/widget.git",
+      name: "..",
+    });
+    await expect(
+      createWorkspace(db, config, { name: "escape", repoIds: [repo.id] }),
+    ).rejects.toThrow("unsafe folder name");
+  });
+});
+
+/** The event is fire-and-forget (`void emitEvent`), so poll briefly for it. */
+async function repoAddedEvents(workspaceId: string) {
+  for (let i = 0; i < 40; i++) {
+    const rows = await listEvents(getDb(url).db, { type: "workspace.repo_added" });
+    const hits = rows.filter(
+      (r) => (r.payload as { workspaceId?: string }).workspaceId === workspaceId,
+    );
+    if (hits.length) return hits;
+    await Bun.sleep(25);
+  }
+  return [];
+}
+
+/** A provisioned, active workspace holding the given repos. */
+async function activeWith(name: string, cloneUrls: string[]) {
+  const db = getDb(url).db;
+  const ids = [];
+  for (const cloneUrl of cloneUrls) ids.push((await createRepo(db, config, { cloneUrl })).id);
+  const ws = await createWorkspace(db, config, { name, repoIds: ids });
+  await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+  return ws;
+}
+
+describe("addRepoToWorkspace", () => {
+  it("adds a pending row on the workspace branch", async () => {
+    const db = getDb(url).db;
+    const ws = await activeWith("feature", ["git@github.com:acme/widget.git"]);
+    const repo = await createRepo(db, config, { cloneUrl: "git@github.com:acme/gadget.git" });
+
+    const row = await addRepoToWorkspace(db, ws.id, repo.id);
+
+    expect(row).toMatchObject({
+      workspaceId: ws.id,
+      repoId: repo.id,
+      status: "pending",
+      branch: `yarvis/${ws.slug}`,
+      baseBranch: "main",
+      existingBranch: false,
+      worktreePath: `${ws.rootPath}/gadget`,
+    });
+    const events = await repoAddedEvents(ws.id);
+    expect(events[0]?.payload).toMatchObject({ workspaceId: ws.id, repo: "acme/gadget" });
+  });
+
+  it("uses name-owner when the folder is taken", async () => {
+    const db = getDb(url).db;
+    const ws = await activeWith("clash", ["git@github.com:acme/widget.git"]);
+    const repo = await createRepo(db, config, { cloneUrl: "git@github.com:other/widget.git" });
+    const row = await addRepoToWorkspace(db, ws.id, repo.id);
+    expect(basename(row.worktreePath)).toBe("widget-other");
+  });
+
+  it("refuses when both folder names are taken", async () => {
+    const db = getDb(url).db;
+    const ws = await activeWith("full", ["git@github.com:acme/widget.git"]);
+    const squatter = await createRepo(db, config, {
+      cloneUrl: "git@github.com:zeta/thing.git",
+      name: "widget-other",
+    });
+    await addRepoToWorkspace(db, ws.id, squatter.id);
+    const repo = await createRepo(db, config, { cloneUrl: "git@github.com:other/widget.git" });
+    await expect(addRepoToWorkspace(db, ws.id, repo.id)).rejects.toThrow("both in use");
+  });
+
+  it("refuses a repo whose name is not a safe folder", async () => {
+    const db = getDb(url).db;
+    const ws = await activeWith("unsafe", []);
+    const repo = await createRepo(db, config, {
+      cloneUrl: "git@github.com:acme/widget.git",
+      name: "..",
+    });
+    await expect(addRepoToWorkspace(db, ws.id, repo.id)).rejects.toThrow("unsafe folder name");
+    expect((await getWorkspace(db, ws.id))?.repos).toHaveLength(0);
+  });
+
+  it("accepts a repo in a scratch workspace", async () => {
+    const db = getDb(url).db;
+    const ws = await activeWith("scratch", []);
+    const repo = await createRepo(db, config, { cloneUrl: "git@github.com:acme/widget.git" });
+    const row = await addRepoToWorkspace(db, ws.id, repo.id);
+    expect(row.worktreePath).toBe(`${ws.rootPath}/widget`);
+  });
+
+  it("refuses an unknown workspace", async () => {
+    const db = getDb(url).db;
+    const repo = await createRepo(db, config, { cloneUrl: "git@github.com:acme/widget.git" });
+    await expect(
+      addRepoToWorkspace(db, "00000000-0000-0000-0000-000000000000", repo.id),
+    ).rejects.toThrow("workspace not found");
+  });
+
+  it("refuses a workspace that is not active or error", async () => {
+    const db = getDb(url).db;
+    const repo = await createRepo(db, config, { cloneUrl: "git@github.com:acme/widget.git" });
+    const ws = await createWorkspace(db, config, { name: "creating", repoIds: [] });
+    await expect(addRepoToWorkspace(db, ws.id, repo.id)).rejects.toThrow(
+      "workspace that is creating",
+    );
+  });
+
+  it("refuses while a provision is running", async () => {
+    const db = getDb(url).db;
+    const first = await createRepo(db, config, { cloneUrl: "git@github.com:acme/widget.git" });
+    const ws = await createWorkspace(db, config, { name: "busy", repoIds: [first.id] });
+    const failGit: GitRunner = async (args, opts) =>
+      args[0] === "worktree" && args[1] === "add"
+        ? { stdout: "", stderr: "boom", exitCode: 1 }
+        : fakeGit(args, opts);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: failGit }); // -> error
+
+    const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+    const slowGit: GitRunner = async (args, opts) => {
+      if (args[0] === "worktree" && args[1] === "add") await gate;
+      return fakeGit(args, opts);
+    };
+    const retry = provisionWorkspace(db, ws.id, () => {}, { runner: slowGit });
+    await Bun.sleep(50);
+
+    const repo = await createRepo(db, config, { cloneUrl: "git@github.com:acme/gadget.git" });
+    await expect(addRepoToWorkspace(db, ws.id, repo.id)).rejects.toThrow(
+      "provisioning is still running",
+    );
+    release();
+    await retry;
+  });
+
+  it("refuses an unknown repo", async () => {
+    const db = getDb(url).db;
+    const ws = await activeWith("norepo", []);
+    await expect(
+      addRepoToWorkspace(db, ws.id, "00000000-0000-0000-0000-000000000000"),
+    ).rejects.toThrow("repo not found");
+  });
+
+  it("refuses a repo already in the workspace", async () => {
+    const db = getDb(url).db;
+    const ws = await activeWith("dupe", ["git@github.com:acme/widget.git"]);
+    const detail = await getWorkspace(db, ws.id);
+    await expect(addRepoToWorkspace(db, ws.id, detail!.repos[0]!.repoId)).rejects.toThrow(
+      "already in this workspace",
+    );
+  });
+
+  // Review Focus: both calls pass the read; the unique index decides.
+  it("turns a concurrent double add into the same refusal", async () => {
+    const db = getDb(url).db;
+    const ws = await activeWith("race", []);
+    const repo = await createRepo(db, config, { cloneUrl: "git@github.com:acme/widget.git" });
+    const results = await Promise.allSettled([
+      addRepoToWorkspace(db, ws.id, repo.id),
+      addRepoToWorkspace(db, ws.id, repo.id),
+    ]);
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(rejected).toHaveLength(1);
+    expect(String((rejected[0] as PromiseRejectedResult).reason)).toContain(
+      "already in this workspace",
+    );
   });
 });
 

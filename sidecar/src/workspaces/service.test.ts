@@ -2,10 +2,13 @@ import { describe, expect, it } from "bun:test";
 import type { Config } from "../config.ts";
 import {
   assertSafeCloneUrl,
+  errorText,
+  isSafePathSegment,
   parseGitUrl,
   parseRepoRemote,
   primaryClonePath,
   slugify,
+  workspaceRepoFolder,
 } from "./service.ts";
 
 const config = { workspacesRoot: "/home/me/dev/yarvis-workspaces" } as Config;
@@ -167,6 +170,30 @@ describe("assertSafeCloneUrl", () => {
     expect(() => assertSafeCloneUrl("ext::sh -c touch/owner/repo")).toThrow();
     expect(() => assertSafeCloneUrl("--upload-pack=evil")).toThrow();
   });
+
+  it("rejects an scp-style remote whose user starts with -", () => {
+    // git ls-remote reads -ox@host:path as the -o server option.
+    expect(() => assertSafeCloneUrl("-ox@github.com:acme/widget.git")).toThrow(
+      "unsupported clone URL transport",
+    );
+  });
+});
+
+describe("errorText", () => {
+  it("strips userinfo from a URL in the message", () => {
+    expect(errorText(new Error("fatal: unable to access 'https://user:tok@host/o/r.git/'"))).toBe(
+      "fatal: unable to access 'https://host/o/r.git/'",
+    );
+  });
+
+  it("strips userinfo whose password holds an @", () => {
+    const text = errorText(new Error("fatal: unable to access 'https://user:p@ss@github.com/o/r'"));
+    expect(text).toBe("fatal: unable to access 'https://github.com/o/r'");
+  });
+
+  it("keeps an @ in the path", () => {
+    expect(errorText(new Error("see https://host/o/r@v1"))).toBe("see https://host/o/r@v1");
+  });
 });
 
 describe("primaryClonePath", () => {
@@ -180,5 +207,45 @@ describe("primaryClonePath", () => {
     expect(primaryClonePath(config, "Acme", "Widget")).toBe(
       "/home/me/dev/yarvis-workspaces/.repos/acme-widget",
     );
+  });
+});
+
+describe("isSafePathSegment", () => {
+  it("accepts a plain folder name", () => {
+    expect(isSafePathSegment("widget")).toBe(true);
+  });
+
+  it("refuses empty, dot and dot-dot", () => {
+    for (const bad of ["", ".", ".."]) expect(isSafePathSegment(bad)).toBe(false);
+  });
+
+  it("refuses a slash or a backslash", () => {
+    for (const bad of ["a/b", "a\\b", "/", "\\"]) expect(isSafePathSegment(bad)).toBe(false);
+  });
+});
+
+describe("workspaceRepoFolder", () => {
+  const repo = { name: "Widget", owner: "Acme" };
+
+  it("uses the lowercased display name when free", () => {
+    expect(workspaceRepoFolder(repo, new Set())).toBe("widget");
+  });
+
+  it("falls back to name-owner when the name is taken", () => {
+    expect(workspaceRepoFolder(repo, new Set(["widget"]))).toBe("widget-acme");
+  });
+
+  it("refuses when both names are taken", () => {
+    expect(() => workspaceRepoFolder(repo, new Set(["widget", "widget-acme"]))).toThrow(
+      "both in use",
+    );
+  });
+
+  it("refuses an unsafe folder name", () => {
+    for (const name of ["", "..", ".", "a/b", "a\\b"]) {
+      expect(() => workspaceRepoFolder({ name, owner: "acme" }, new Set())).toThrow(
+        "unsafe folder name",
+      );
+    }
   });
 });

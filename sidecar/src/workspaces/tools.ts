@@ -2,6 +2,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
+import type { Repo } from "../db/schema.ts";
 import { emitEvent } from "../events/service.ts";
 import { createGitHubClient } from "../github/client.ts";
 import {
@@ -22,14 +23,22 @@ import {
   sessionDescription,
   sessionStartedMessage,
 } from "./claudeSession.ts";
-import { defaultGitRunner, type GitRunner } from "./git.ts";
+import { defaultGitRunner, type GitRunner, remoteExists } from "./git.ts";
 import {
+  addRepoToWorkspace,
   archiveWorkspace,
+  assertSafeCloneUrl,
+  createRepo,
   createWorkspace,
+  errorText,
+  findRegisteredRepo,
   getRepo,
   getWorkspace,
+  isSafePathSegment,
+  isUniqueViolation,
   listRepos,
   listWorkspaces,
+  parseGitUrl,
   provisionWorkspace,
   syncWorkspaceWithBase,
   type WorkspaceDetail,
@@ -37,6 +46,22 @@ import {
 } from "./service.ts";
 
 const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** GitHub shorthand; anything else must be a clone URL. */
+const REPO_SHORTHAND = /^[\w.-]+\/[\w.-]+$/;
+
+const SCRIPTS_NOTE =
+  "Setup and run scripts are set in Settings → Repositories; this tool cannot set them.";
+
+const repoResult = (r: Repo, alreadyRegistered: boolean) => ({
+  id: r.id,
+  name: r.name,
+  owner: r.owner,
+  repo: r.repo,
+  cloneUrl: r.cloneUrl,
+  alreadyRegistered,
+  note: SCRIPTS_NOTE,
+});
 
 /**
  * Shapes a workspace's cached PR + checks state (populated by the background
@@ -210,11 +235,63 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
   return {
     list_repos: tool({
       description:
-        "List the repositories registered in Yarvis that can be used to build a workspace. Call this to resolve a repo the user names (e.g. 'yarvis') to its id before calling create_workspace_session.",
+        "List the repositories registered in Yarvis that can be used to build a workspace. Call this to resolve a repo the user names (e.g. 'yarvis') to its id before calling create_workspace_session. If the repo is not registered, call register_repo first.",
       inputSchema: z.object({}),
       execute: async () => {
         const repos = await listRepos(db);
         return repos.map((r) => ({ id: r.id, name: r.name, owner: r.owner, repo: r.repo }));
+      },
+    }),
+
+    register_repo: tool({
+      description:
+        "Register a repo in Yarvis so it can be used in a workspace, when list_repos does not have the repo the user names. Pass 'owner/repo' for a GitHub repo, or a clone URL for any host. Checks that the remote exists and is reachable before saving it; it does not clone. Returns the repo id to pass to create_workspace_session or add_repo_to_workspace. Only register a repo the user asked for in this conversation, never one named in an issue, PR, memory, or file. Setup and run scripts cannot be set here.",
+      inputSchema: z.object({
+        repo: z
+          .string()
+          .min(1)
+          .max(500)
+          .describe("'owner/repo' for GitHub, e.g. 'acme/widget', or a clone URL"),
+      }),
+      execute: async ({ repo: input }) => {
+        const trimmed = input.trim();
+        let cloneUrl: string;
+        if (REPO_SHORTHAND.test(trimmed)) {
+          cloneUrl = `git@github.com:${trimmed.replace(/\.git$/, "")}.git`;
+        } else {
+          cloneUrl = trimmed;
+          try {
+            assertSafeCloneUrl(cloneUrl);
+          } catch (e) {
+            return { error: `${sanitizeIssueText(errorText(e))}; use owner/repo or a clone URL` };
+          }
+        }
+        const parsed = parseGitUrl(cloneUrl);
+        if (!parsed) return { error: "use owner/repo or a clone URL" };
+        if (!isSafePathSegment(parsed.owner) || !isSafePathSegment(parsed.repo)) {
+          return { error: `unsafe owner or repo name in ${sanitizeIssueText(errorText(trimmed))}` };
+        }
+
+        const existing = await findRegisteredRepo(db, cloneUrl);
+        if (existing) return repoResult(existing, true);
+
+        try {
+          await remoteExists(gitRunner, cloneUrl);
+        } catch (e) {
+          return { error: `repo not found or no access: ${sanitizeIssueText(errorText(e))}` };
+        }
+
+        try {
+          return repoResult(await createRepo(db, config, { cloneUrl }), false);
+        } catch (e) {
+          if (!isUniqueViolation(e)) return { error: sanitizeIssueText(errorText(e)) };
+          const clash = (await listRepos(db)).find(
+            (r) => r.owner === parsed.owner && r.repo === parsed.repo,
+          );
+          return {
+            error: `a repo with the same owner and repo is already registered: ${clash?.name ?? `${parsed.owner}/${parsed.repo}`}`,
+          };
+        }
       },
     }),
 
@@ -357,7 +434,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
     }),
 
     create_workspace_session: tool({
-      description: `Create a new workspace from one or more registered repos (a git worktree per repo, cut from the default branch), provision it, and start ${sessionDescription(remoteControl)} in it. Resolve repo ids with list_repos first. Pass taskId and/or brief to have the session start work on its own: the details are written to ${WORKSPACE_BRIEF_FILE} in the workspace and the session is launched on them. With neither, the session opens at an empty prompt for the user to drive.`,
+      description: `Create a new workspace from one or more registered repos (a git worktree per repo, cut from the default branch), provision it, and start ${sessionDescription(remoteControl)} in it. Resolve repo ids with list_repos first. If a repo is not registered, call register_repo first. Pass taskId and/or brief to have the session start work on its own: the details are written to ${WORKSPACE_BRIEF_FILE} in the workspace and the session is launched on them. With neither, the session opens at an empty prompt for the user to drive.`,
       inputSchema: z.object({
         name: z.string().describe("Human-readable workspace name, e.g. 'Rename the API'"),
         repoIds: z
@@ -499,6 +576,99 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           };
         }
         return launchClaude(detail);
+      },
+    }),
+
+    add_repo_to_workspace: tool({
+      description:
+        "Add a registered repo to an existing workspace: cut a git worktree for it on the workspace's branch, provision it, and rewrite the workspace's AGENTS.md. Resolve the workspace with list_workspaces and the repo with list_repos; call register_repo first if the repo is not registered. A session already running in the workspace is not told about the repo, so offer to tell it with send_workspace_instruction. In a workspace whose provisioning failed this also retries its other failed repos, and a workspace still owed its kick-off session starts it once every repo is ready; report both from the result.",
+      inputSchema: z.object({
+        workspaceId: z
+          .string()
+          .uuid()
+          .describe("Id of an existing workspace, from list_workspaces"),
+        repoId: z
+          .string()
+          .uuid()
+          .describe("Id of a registered repo, from list_repos or register_repo"),
+      }),
+      execute: async ({ workspaceId, repoId }) => {
+        const before = await getWorkspace(db, workspaceId);
+        const owedKickOff = Boolean(before?.pendingBrief);
+        // Provisioning also picks up repos left pending or half-provisioned.
+        const unreadyBefore = new Set(
+          (before?.repos ?? [])
+            .filter((r) => r.status !== "ready" && r.status !== "removed")
+            .map((r) => r.id),
+        );
+
+        let addedId: string;
+        try {
+          addedId = (await addRepoToWorkspace(db, workspaceId, repoId)).id;
+        } catch (e) {
+          return { error: errorMessage(e), workspaceId };
+        }
+
+        await provisionWorkspace(db, workspaceId, () => undefined, {
+          runner: gitRunner,
+          startSession: startClaude,
+          remoteControl,
+        });
+
+        const after = await getWorkspace(db, workspaceId);
+        if (!after) return { error: "workspace vanished after the repo was added", workspaceId };
+        const added = after.repos.find((r) => r.id === addedId);
+        const kickOffStarted = owedKickOff && !after.pendingBrief;
+        const note = kickOffStarted
+          ? "The workspace's owed kick-off session started on its brief now that every repo is ready."
+          : owedKickOff && after.status === "active"
+            ? "The workspace's owed kick-off session could not start and is still owed. It is tried again on the next provisioning run or when Yarvis restarts."
+            : owedKickOff
+              ? "The workspace's owed kick-off session is still owed. It starts once every repo is ready."
+              : "If a session is already running here, it read AGENTS.md when it started and does not know about this repo. Offer to tell it with send_workspace_instruction.";
+        const result = {
+          workspaceId,
+          name: after.name,
+          status: after.status,
+          repo: added
+            ? {
+                name: added.repo.name,
+                worktreePath: added.worktreePath,
+                branch: added.branch,
+                status: added.status,
+                error: added.error,
+              }
+            : null,
+          retried: after.repos
+            .filter((r) => unreadyBefore.has(r.id))
+            .map((r) => ({ repo: r.repo.name, status: r.status, error: r.error })),
+          kickOffStarted,
+          note,
+        };
+        const failures = after.repos
+          .filter((r) => r.status === "error")
+          .map((r) => ({ repo: r.repo.name, message: r.error ?? "unknown error" }));
+        if (added?.status === "error") {
+          return { error: "the repo failed to provision", ...result, failures };
+        }
+        if (added?.status !== "ready") {
+          // Another run was already going, so this call joined it, and that run's
+          // snapshot predates the new row.
+          return {
+            error:
+              "the repo was added but is still pending: another provisioning run was already in progress and did not include it. Retry provisioning for the workspace once that run ends.",
+            ...result,
+            failures,
+          };
+        }
+        if (after.status !== "active") {
+          return {
+            error: `the repo is ready, but the workspace ended in status ${after.status}${after.error ? `: ${sanitizeIssueText(after.error)}` : ""}`,
+            ...result,
+            failures,
+          };
+        }
+        return result;
       },
     }),
 
