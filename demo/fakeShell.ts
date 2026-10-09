@@ -21,6 +21,13 @@ const BACKSPACE = "\x7f";
 const CTRL_C = "\x03";
 
 const ESC = "\x1b";
+/**
+ * Claude Code turns on bracketed paste, so xterm wraps a paste in these
+ * markers and its line breaks don't submit it line by line.
+ */
+const BRACKETED_PASTE_ON = `${ESC}[?2004h`;
+const PASTE_START = `${ESC}[200~`;
+const PASTE_END = `${ESC}[201~`;
 const reset = `${ESC}[0m`;
 const dim = (s: string) => `${ESC}[2m${s}${reset}`;
 const bold = (s: string) => `${ESC}[1m${s}${reset}`;
@@ -98,6 +105,7 @@ const AGENT_WELCOME: OutputChunk[] = [
   // The moment Claude Code takes to start.
   { text: "", delayMs: 400 },
   ...box([`${orange("✻")} Welcome to ${bold("Claude Code")}!`, "", `  ${dim(`cwd: ${CWD}`)}`]),
+  { text: BRACKETED_PASTE_ON },
 ];
 
 /** What the agent does with any instruction. Written to read like a real session. */
@@ -127,6 +135,37 @@ const AGENT_REPLY: OutputChunk[] = [
   },
 ];
 
+/**
+ * What the agent does with review comments pasted from a workspace's Comments
+ * view. Answers the two comments the local-comments flow leaves.
+ */
+const AGENT_REVIEW_REPLY: OutputChunk[] = [
+  { text: `\r\n${RULE}\r\n\r\n`, delayMs: 100 },
+  { text: `${orange("✻")} ${dim("Thinking…")}\r\n\r\n`, delayMs: 700 },
+  { text: `${green("⏺")} I'll work through the 2 review comments.\r\n\r\n`, delayMs: 900 },
+  { text: `${green("⏺")} ${bold("Update")}(src/checkout/PaymentStep.tsx)\r\n`, delayMs: 800 },
+  { text: `  ⎿  Updated src/checkout/PaymentStep.tsx with 3 additions\r\n`, delayMs: 300 },
+  { text: `       ${green("+ useEffect(() => {")}\r\n`, delayMs: 80 },
+  {
+    text: `       ${green('+   if (cards?.length === 0) void import("./CardForm");')}\r\n`,
+    delayMs: 80,
+  },
+  { text: `       ${green("+ }, [cards]);")}\r\n\r\n`, delayMs: 80 },
+  { text: `${green("⏺")} ${bold("Update")}(src/checkout/usePaymentIntent.ts)\r\n`, delayMs: 800 },
+  {
+    text: `  ⎿  Updated src/checkout/usePaymentIntent.ts with 1 addition and 1 removal\r\n`,
+    delayMs: 300,
+  },
+  { text: `       ${red("-   retry: 3,")}\r\n`, delayMs: 80 },
+  { text: `       ${green("+   retry: 1,")}\r\n\r\n`, delayMs: 80 },
+  { text: `${green("⏺")} ${bold("Bash")}(bun test tests/checkout)\r\n`, delayMs: 800 },
+  { text: `  ⎿  ${green("5 pass")}, 0 fail\r\n\r\n`, delayMs: 1200 },
+  {
+    text: `${green("⏺")} Both comments are addressed. The card form now prefetches when there are\r\n  no saved cards, and a declined card retries once.\r\n\r\n`,
+    delayMs: 700,
+  },
+];
+
 const encoder = new TextEncoder();
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -134,8 +173,10 @@ interface Session {
   id: string;
   mode: "shell" | "agent";
   bytes: number[];
-  /** What's been typed since the last Enter. */
+  /** What's been typed or pasted since the last Enter. */
   input: string;
+  /** How many pastes this session has had, for numbering their placeholders. */
+  pastes: number;
   /** Output still being played; keystrokes wait behind it. */
   queue: Promise<void>;
 }
@@ -187,14 +228,35 @@ export class FakeTerminals {
   write(id: string, data: string): void {
     const session = this.sessions.get(id);
     if (!session) return;
+    // xterm sends a whole paste in one write, markers and all.
+    if (data.startsWith(PASTE_START)) {
+      this.paste(session, data.slice(PASTE_START.length).replace(PASTE_END, ""));
+      return;
+    }
     // Arrow keys and other escape sequences are dropped: there's no history
     // or cursor movement to support.
     if (data.startsWith(ESC)) return;
     for (const char of data) this.key(session, char);
   }
 
+  /** Adds a paste to the input and shows Claude Code's placeholder for it. */
+  private paste(session: Session, text: string): void {
+    session.input += text;
+    session.pastes += 1;
+    // xterm turns a paste's line breaks into \r, as if Enter were pressed.
+    const extraLines = text.split("\r").length - 1;
+    this.play(session, [{ text: dim(`[Pasted text #${session.pastes} +${extraLines} lines]`) }]);
+  }
+
   private createSession(id: string, mode: Session["mode"]): Session {
-    const session: Session = { id, mode, bytes: [], input: "", queue: Promise.resolve() };
+    const session: Session = {
+      id,
+      mode,
+      bytes: [],
+      input: "",
+      pastes: 0,
+      queue: Promise.resolve(),
+    };
     this.sessions.set(id, session);
     return session;
   }
@@ -229,8 +291,11 @@ export class FakeTerminals {
    */
   private submit(session: Session, command: string): OutputChunk[] {
     if (session.mode === "agent") {
-      // AGENT_REPLY opens with its own line break.
-      return command ? [...AGENT_REPLY, { text: AGENT_PROMPT }] : [];
+      if (!command) return [];
+      // "Copy for Claude" text opens "Please address the following N review
+      // comments". Both replies open with their own line break.
+      const reply = /review comments?\b/i.test(command) ? AGENT_REVIEW_REPLY : AGENT_REPLY;
+      return [...reply, { text: AGENT_PROMPT }];
     }
     const newline = { text: "\r\n" };
     if (command === "") return [newline, { text: PROMPT }];

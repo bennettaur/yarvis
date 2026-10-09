@@ -16,6 +16,7 @@ import type { Alarm } from "../src/lib/alarms";
 import type { ClipboardHistoryItem } from "../src/lib/clipboard";
 import type { Settings } from "../src/lib/settings";
 import { type DemoConfig, UNMOCKED_COMMAND_WARNING } from "./demoConfig";
+import { SITE_URL as JIRA_SITE_URL, VIEWER as JIRA_VIEWER } from "./fakeJira/data";
 import { FakeTerminals } from "./fakeShell";
 
 declare global {
@@ -24,6 +25,8 @@ declare global {
     __yarvisDemoControls?: {
       emit: typeof emit;
       fireAlarm: (alarm: Omit<Alarm, "status">) => Promise<void>;
+      /** What the app last put on the clipboard, for a flow to paste. */
+      clipboardText: () => string;
     };
   }
 }
@@ -68,8 +71,9 @@ let settings: Settings = {
   defaultAgentCommand: "claude --permission-mode auto",
   agentCommandOverriddenByEnv: false,
   azureDevopsOrgUrl: null,
-  jiraBaseUrl: null,
-  jiraEmail: null,
+  // What the sidecar was started with (demo/stack.ts), so Settings agrees.
+  jiraBaseUrl: JIRA_SITE_URL,
+  jiraEmail: JIRA_VIEWER.emailAddress,
   googleClientId: config.googleClientId,
   telegramOtpWindowMinutes: null,
   defaultTelegramOtpWindowMinutes: 120,
@@ -80,8 +84,17 @@ let settings: Settings = {
 
 const presentSecrets = new Set(config.presentSecrets);
 let alarms: Alarm[] = [];
-// The core records copies made outside the app; the demo has none.
-const clipboardHistory: ClipboardHistoryItem[] = [];
+// What the core's clipboard poller would have recorded, newest first.
+let clipboardHistory: ClipboardHistoryItem[] = [
+  { text: "bun test tests/checkout", minutesAgo: 3 },
+  { text: "https://github.com/acme/checkout-web/pull/477", minutesAgo: 12 },
+  { text: "Saved cards now load before the new-card form", minutesAgo: 26 },
+  { text: "usePaymentIntent", minutesAgo: 41 },
+].map(({ text, minutesAgo }, i) => ({
+  id: `clip-${i}`,
+  text,
+  capturedAtMs: Date.now() - minutesAgo * 60_000,
+}));
 
 type CommandArgs = Record<string, unknown>;
 
@@ -201,8 +214,14 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
     case "clipboard_history":
       return clipboardHistory;
     case "clipboard_clear_history":
+      clipboardHistory = [];
       return null;
+    // The core's poller puts the app's own copies at the front of history too.
     case "clipboard_write":
+      clipboardHistory = [
+        { id: crypto.randomUUID(), text: args.text as string, capturedAtMs: Date.now() },
+        ...clipboardHistory.filter((item) => item.text !== args.text),
+      ];
       return null;
 
     case "get_agent_config":
@@ -248,4 +267,8 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
 mockIPC((cmd, payload) => handleCommand(cmd, (payload ?? {}) as CommandArgs), {
   shouldMockEvents: true,
 });
-window.__yarvisDemoControls = { emit, fireAlarm };
+window.__yarvisDemoControls = {
+  emit,
+  fireAlarm,
+  clipboardText: () => clipboardHistory[0]?.text ?? "",
+};

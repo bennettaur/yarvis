@@ -6,7 +6,7 @@ import { getDb } from "../db/client.ts";
 import { emitEvent } from "../events/service.ts";
 import { buildIssuePrompt, upsertLink } from "../issues/service.ts";
 import { createWorkspace, startKickOff } from "../workspaces/service.ts";
-import { isAllowedJiraBaseUrl, JiraClient } from "./client.ts";
+import { createJiraClient, isAllowedJiraBaseUrl, type JiraClient } from "./client.ts";
 import { applyJiraStartWorkSideEffects } from "./service.ts";
 
 /**
@@ -92,7 +92,7 @@ export function createJiraRoutes(config: Config): Hono {
     // A malformed or non-atlassian.net base URL is rejected so the API token is
     // never sent to an unexpected host.
     if (!isAllowedJiraBaseUrl(jiraBaseUrl)) return { ok: false, reason: "invalid_base_url" };
-    return { ok: true, client: new JiraClient(jiraBaseUrl, jiraEmail, jiraApiToken) };
+    return { ok: true, client: createJiraClient(config, jiraBaseUrl, jiraEmail, jiraApiToken) };
   };
 
   /** Resolves the JIRA client or returns a 400 naming which secret to fix. */

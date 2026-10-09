@@ -241,16 +241,18 @@ async fn supervise(app: AppHandle, port: u16, token: String, restart: Arc<Notify
     }
 }
 
-/// Env vars that point the sidecar's GitHub and Google clients at local fakes.
-/// They exist for the demo recordings, which start the sidecar themselves. The
-/// app must never pass them on: the sidecar would send the Keychain's GitHub
-/// token and Google credentials wherever they point, and they could be planted
-/// in the shell or launchd environment the app inherits.
-const ENDPOINT_OVERRIDE_VARS: [&str; 4] = [
+/// Env vars that point the sidecar's GitHub, Google and JIRA clients at local
+/// fakes. They exist for the demo recordings, which start the sidecar
+/// themselves. The app must never pass them on: the sidecar would send the
+/// Keychain's GitHub token, Google credentials and JIRA token wherever they
+/// point, and they could be planted in the shell or launchd environment the
+/// app inherits.
+const ENDPOINT_OVERRIDE_VARS: [&str; 5] = [
     "YARVIS_GITHUB_API_URL",
     "YARVIS_GITHUB_GRAPHQL_URL",
     "YARVIS_GOOGLE_CALENDAR_API_URL",
     "YARVIS_GOOGLE_TOKEN_URL",
+    "YARVIS_JIRA_API_URL",
 ];
 
 fn strip_endpoint_overrides(cmd: &mut Command) {

@@ -15,9 +15,16 @@ import type { Alarm } from "../src/lib/alarms";
 import { type DemoConfig, UNMOCKED_COMMAND_WARNING } from "./demoConfig";
 import { FAKE_MODEL } from "./fakeLlm/server";
 import { flowOutputDir, slugify } from "./paths";
-import { DEMO_GOOGLE_CLIENT_ID, FAKE_PROVIDER_ID, PASSTHROUGH_SECRETS } from "./stack";
+import { DEMO_GOOGLE_CLIENT_ID, FAKE_PROVIDER, PASSTHROUGH_SECRETS } from "./stack";
 
 export const VIEWPORT = { width: 1440, height: 900 };
+
+/** A sidecar API URL, for a flow that sets up data the UI can't create quickly. */
+export const sidecarUrl = (path: string) =>
+  `http://127.0.0.1:${process.env.DEMO_SIDECAR_PORT}${path}`;
+export const sidecarHeaders = () => ({
+  Authorization: `Bearer ${process.env.DEMO_SIDECAR_TOKEN}`,
+});
 
 /** Matches `SETUP_GUIDE_SEEN_KEY` in `src/lib/onboarding.ts`. */
 const SETUP_GUIDE_SEEN_KEY = "yarvis.setupGuide.seen";
@@ -118,6 +125,15 @@ export class Demo {
     await this.pause(300);
   }
 
+  /**
+   * The row holding `text` in a diff, in a PR review or a workspace. Rows have
+   * no accessible name, so this goes by the `group/line` class that shows their
+   * hover buttons.
+   */
+  diffLine(text: string): Locator {
+    return this.page.locator('div[class*="group/line"]').filter({ hasText: text }).first();
+  }
+
   /** Opens a nav rail tab by its label ("Tasks", "Memory", "Settings"). */
   async openTab(label: string): Promise<void> {
     // A tab with a badge appends a hint to its accessible name ("PRs — 2 need review").
@@ -125,6 +141,25 @@ export class Demo {
     const name = new RegExp(`^${escaped}( —|$)`);
     await this.click(this.page.getByRole("navigation").getByRole("button", { name }));
     await this.pause(600);
+  }
+
+  /**
+   * Clicks into `target` and pastes what the app last copied, as Cmd+V would.
+   * The page can't read the real clipboard, and the mock never writes to it.
+   * Works on a terminal too: Claude Code gets it as one bracketed paste.
+   */
+  async paste(target: Locator): Promise<void> {
+    await this.click(target);
+    await this.page.evaluate(() => {
+      const controls = window.__yarvisDemoControls;
+      if (!controls) throw new Error("the Tauri mock isn't installed");
+      const clipboardData = new DataTransfer();
+      clipboardData.setData("text/plain", controls.clipboardText());
+      document.activeElement?.dispatchEvent(
+        new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
+      );
+    });
+    await this.pause(400);
   }
 
   async press(key: string): Promise<void> {
@@ -183,9 +218,10 @@ export const test = base.extend<{ demo: Demo }>({
       // Settings shows a key as stored exactly when the sidecar was given it.
       presentSecrets: [
         "database_url",
-        // The sidecar is given placeholder values for these, for the fake GitHub and Google.
+        // The sidecar is given placeholder values for these, for the fake GitHub, Google and JIRA.
         "github_token",
         "google_client_secret",
+        "jira_api_token",
         ...PASSTHROUGH_SECRETS.filter((key) => process.env[key]).map((key) => key.toLowerCase()),
       ],
     };
@@ -203,7 +239,7 @@ export const test = base.extend<{ demo: Demo }>({
       {
         config: demoConfig,
         setupGuideKey: SETUP_GUIDE_SEEN_KEY,
-        provider: `custom:${FAKE_PROVIDER_ID}`,
+        provider: FAKE_PROVIDER,
         model: FAKE_MODEL,
       },
     );

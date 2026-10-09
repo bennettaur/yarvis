@@ -236,10 +236,12 @@ copy of the app, or for debugging.
 | `AWS_PROFILE`, `AWS_REGION`, … | The usual AWS credential chain, for Bedrock |
 | `YARVIS_GITHUB_API_URL`, `YARVIS_GITHUB_GRAPHQL_URL` | Send GitHub REST and GraphQL requests to a local stand-in, such as the demo's fake GitHub. Set both or neither. |
 | `YARVIS_GOOGLE_CALENDAR_API_URL`, `YARVIS_GOOGLE_TOKEN_URL` | Send Google Calendar API and OAuth token requests to a local stand-in. Set both or neither. The Calendar value is a base, e.g. `http://127.0.0.1:4010/calendar/v3`. |
+| `YARVIS_JIRA_API_URL` | Send JIRA REST requests to a local stand-in instead of your `JIRA_BASE_URL` site. Links into JIRA still point at the site. A base without `/rest/api/3`, e.g. `http://127.0.0.1:4020`. |
 
-The four endpoint overrides are for a sidecar you start yourself, as the demo
+The five endpoint overrides are for a sidecar you start yourself, as the demo
 recordings do (`demo/README.md`). The app strips them before it starts its
-sidecar, since they decide where your GitHub token and Google credentials go.
+sidecar, since they decide where your GitHub token, Google credentials and
+JIRA token go.
 The sidecar also refuses any value that isn't a plain `http://` or `https://`
 URL on `localhost`, `127.0.0.1` or `[::1]`, and ignores half a pair, logging a
 warning either way.

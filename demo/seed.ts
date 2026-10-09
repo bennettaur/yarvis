@@ -6,6 +6,7 @@
 
 import { spawnSync } from "node:child_process";
 import { OWNER as GITHUB_OWNER, REPO as GITHUB_REPO } from "./fakeGithub/data";
+import { createCheckoutRepo, writeWorkInProgress } from "./seedRepo";
 
 function isoDate(offsetDays = 0): string {
   const d = new Date();
@@ -63,8 +64,9 @@ export async function seed({
 
   connectGoogle(databaseUrl);
   // The Issues tab lists issues from repos that opt in. Registering one clones
-  // nothing; only a workspace that uses it would.
-  await post("/api/repos", {
+  // nothing; a workspace that uses it finds the local clone made here.
+  createCheckoutRepo();
+  const repo = await post<{ id: string }>("/api/repos", {
     cloneUrl: `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}.git`,
     pullIssues: true,
   });
@@ -92,20 +94,30 @@ export async function seed({
     await post("/api/tasks", task);
   }
 
-  // A scratch workspace (no repos), so provisioning needs no git or network.
   // The provision route streams progress and reports a failure as an event in
   // that stream, so reading it to the end waits for it and the status is
   // checked afterwards.
-  const workspace = await post<{ id: string }>("/api/workspaces", { name: "Payment step" });
+  const workspace = await post<{ id: string }>("/api/workspaces", {
+    name: "Payment step",
+    repoIds: [repo.id],
+  });
   const provisionResponse = await fetch(`${sidecarUrl}/api/workspaces/${workspace.id}/provision`, {
     method: "POST",
     headers: { Authorization: `Bearer ${sidecarToken}` },
   });
   await provisionResponse.text();
-  const provisioned = await get<{ status: string }>(`/api/workspaces/${workspace.id}`);
-  if (provisioned.status !== "active") {
-    throw new Error(`provisioning the demo workspace left it "${provisioned.status}"`);
+  const provisioned = await get<{
+    status: string;
+    repos: { status: string; error: string | null; worktreePath: string }[];
+  }>(`/api/workspaces/${workspace.id}`);
+  const [checkout] = provisioned.repos;
+  if (provisioned.status !== "active" || checkout?.status !== "ready") {
+    const repoState = checkout ? (checkout.error ?? `repo ${checkout.status}`) : "no repo";
+    throw new Error(
+      `provisioning the demo workspace left it "${provisioned.status}": ${repoState}`,
+    );
   }
+  writeWorkInProgress(checkout.worktreePath);
 
   for (const memory of [
     { kind: "preference", content: "Prefers morning focus blocks with no meetings before 11am." },

@@ -46,15 +46,47 @@ const FLOW_INTROS: Record<string, { title: string; blurb: string }> = {
     title: "Omni layouts",
     blurb: "Describe a dashboard and watch it assemble from live widgets.",
   },
+  voice: {
+    title: "Voice",
+    blurb: "Say what you need, and the assistant answers out loud and adds the task.",
+  },
   github: {
     title: "Pull requests and issues",
     blurb: "Your PRs, the reviews waiting on you, and issues.",
   },
+  "pr-review": {
+    title: "Asking about a pull request",
+    blurb: "Ask the model about a line of the diff, post its answer, and leave a comment.",
+  },
+  issues: {
+    title: "GitHub issues",
+    blurb: "File an issue, reply on another, and start a workspace on it.",
+  },
+  jira: {
+    title: "JIRA",
+    blurb: "Comment on a ticket, move it to review, and start work on the next one.",
+  },
+  "scheduled-jobs": {
+    title: "Scheduled jobs",
+    blurb: "Put a prompt on a weekday schedule, run it now, and read what the agent wrote.",
+  },
   calendar: { title: "Calendar", blurb: "The week ahead, with an alarm armed for a meeting." },
   terminal: { title: "Terminal", blurb: "Shells inside the app, next to everything else." },
+  "terminal-panes": {
+    title: "Split panes and tabs",
+    blurb: "Split a terminal right and down, open a tab, and come back to the panes.",
+  },
+  clipboard: {
+    title: "Clipboard",
+    blurb: "Saved snippets and recent copies, searchable from one palette.",
+  },
   "workspace-agent": {
     title: "Workspaces",
     blurb: "A workspace with a Claude Code session working through a change.",
+  },
+  "local-comments": {
+    title: "Review comments for Claude",
+    blurb: "Comment on your own changes, then paste the comments into Claude Code.",
   },
 };
 

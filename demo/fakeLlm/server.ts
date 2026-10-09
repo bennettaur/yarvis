@@ -3,10 +3,21 @@
  * sidecar can use it as an ordinary custom provider. It answers from the
  * canned replies in `script.ts`, streamed a few characters at a time so a
  * recording shows the reply being written.
+ *
+ * It also answers the OpenAI audio endpoints, so the same provider can back
+ * voice: every recording transcribes to `VOICE_TRANSCRIPT`, and speech comes
+ * back as silence about as long as the text would take to say.
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { DEFAULT_REPLY, OMNI_DEFAULT_REPLY, REPLIES, type Reply, SAFE_TOOLS } from "./script";
+import {
+  DEFAULT_REPLY,
+  OMNI_DEFAULT_REPLY,
+  REPLIES,
+  type Reply,
+  SAFE_TOOLS,
+  VOICE_TRANSCRIPT,
+} from "./script";
 
 export const FAKE_MODEL = "demo-model";
 
@@ -181,7 +192,46 @@ async function readBody(req: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+const SPEECH_SAMPLE_RATE = 16_000;
+/** Roughly a speaking pace, so "Speaking…" stays up about as long as the words would. */
+const SPEECH_SECONDS_PER_WORD = 0.3;
+
+/** A 16-bit mono WAV of silence: the standard 44-byte RIFF header, then zeroed samples. */
+function silentWav(seconds: number): Buffer {
+  const dataBytes = Math.round(seconds * SPEECH_SAMPLE_RATE) * 2;
+  const wav = Buffer.alloc(44 + dataBytes);
+  wav.write("RIFF", 0);
+  wav.writeUInt32LE(36 + dataBytes, 4);
+  wav.write("WAVE", 8);
+  wav.write("fmt ", 12);
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(SPEECH_SAMPLE_RATE, 24);
+  wav.writeUInt32LE(SPEECH_SAMPLE_RATE * 2, 28);
+  wav.writeUInt16LE(2, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write("data", 36);
+  wav.writeUInt32LE(dataBytes, 40);
+  return wav;
+}
+
 async function handleRequest(req: IncomingMessage, res: ServerResponse, pace: Pacing) {
+  if (req.method === "POST" && req.url?.endsWith("/audio/transcriptions")) {
+    // Read and ignored: the recording is Chromium's fake-microphone beep.
+    await readBody(req);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ text: VOICE_TRANSCRIPT }));
+    return;
+  }
+  if (req.method === "POST" && req.url?.endsWith("/audio/speech")) {
+    const { input = "" } = JSON.parse(await readBody(req)) as { input?: string };
+    const words = input.split(/\s+/).filter(Boolean).length;
+    res.writeHead(200, { "Content-Type": "audio/wav" });
+    // At least half a second, so even a one-word reply shows "Speaking…".
+    res.end(silentWav(Math.max(0.5, words * SPEECH_SECONDS_PER_WORD)));
+    return;
+  }
   if (req.method !== "POST" || !req.url?.endsWith("/chat/completions")) {
     res.writeHead(404).end();
     return;

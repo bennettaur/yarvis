@@ -28,8 +28,10 @@ Mac.
 
 The flows in `demo/flows/` cover the Chat tab (including a tool call that
 creates a task), Omni Chat, the Omni layout builder, GitHub PRs and issues,
-the Calendar, the Terminal tab, a workspace's Claude Code session, and a short
-tour.
+asking about a PR's lines and posting the answer, JIRA tickets, the Calendar,
+the Terminal tab with its split panes and tabs, the clipboard palette, a
+workspace's Claude Code session, local review comments pasted into it, a
+spoken chat turn, a scheduled job, and a short tour.
 
 Output lands in `demo/output/<flow-title>/`, with the test's title lowercased
 and hyphenated ("Memory library" becomes `memory-library/`). It holds numbered
@@ -58,17 +60,34 @@ HTTP API into Postgres, exactly as in the app. These are faked:
   from the canned replies in `fakeLlm/script.ts`, streamed so the reply is seen
   being written. A reply can call one of the sidecar's tools, which then runs
   for real: the chat flow's `create_task` call puts a real task on the list.
-- **GitHub and Google Calendar** are `fakeGithub/` and `fakeGoogle/`, local
-  servers the sidecar reaches through its `YARVIS_GITHUB_*` and
-  `YARVIS_GOOGLE_*` endpoint overrides (see `docs/configuration.md`). The PRs
-  tab, PR review, Issues and the Calendar views all show their data, which
-  lives in `fakeGithub/data.ts` and `fakeGoogle/server.ts`. Calendar events are
-  laid out around today. The Stack tab and merging a workspace's stack use the
-  `gh` CLI, which isn't faked.
+  PR line questions and guided reviews use it too, through the `prModels`
+  setting, and so does the `standup-writer` specialist the stack writes for the
+  scheduled-jobs flow, so a job never falls back to a real provider. It also
+  answers the OpenAI audio endpoints, so it can back voice: every recording
+  transcribes to `VOICE_TRANSCRIPT` in `script.ts`, and spoken replies come
+  back as silence. The voice flow records Chromium's fake
+  microphone.
+- **GitHub, Google Calendar and JIRA** are `fakeGithub/`, `fakeGoogle/` and
+  `fakeJira/`, local servers the sidecar reaches through its `YARVIS_GITHUB_*`,
+  `YARVIS_GOOGLE_*` and `YARVIS_JIRA_API_URL` endpoint overrides (see
+  `docs/configuration.md`). The PRs tab, PR review, Issues and the Calendar
+  views all show their data, which lives in `fakeGithub/data.ts`,
+  `fakeGoogle/server.ts` and `fakeJira/data.ts`. New issues and comments, and
+  every JIRA change, are kept until the run ends. Calendar events are laid out
+  around today. The Stack tab and merging a workspace's stack use the `gh`
+  CLI, which isn't faked.
+- **The checkout-web repo** is a local git repo (`seedRepo.ts`). The seed puts
+  a clone where the sidecar keeps its primary clones, so a workspace using the
+  repo, or an issue's Start work, provisions with no network. The seeded
+  workspace has the payment-step changes uncommitted, for its diff views.
 - **Terminals** are `fakeShell.ts`: each one shows a prompt, echoes keys, and
   prints canned output for the commands in `COMMANDS` (`git status`,
   `bun test`, …). Typing `claude`, or opening a workspace, starts a scripted
-  Claude Code session that answers any instruction the same way.
+  Claude Code session that answers any instruction the same way, except for
+  pasted review comments, which get their own reply.
+- **The clipboard** is a list in the mock. It starts with a few made-up clips,
+  and whatever the app copies goes to its front, as the core's poller would
+  put it. `demo.paste` pastes the latest one.
 
 ## Canned replies
 
@@ -97,15 +116,15 @@ logs `[fake-llm]` and answers in text.
    `YARVIS_DEMO_DATABASE_URL`. Since this step deletes the database, the
    runner only accepts a local one with "demo" in its name, and refuses query
    parameters such as `?dbname=` that would point the sidecar elsewhere.
-2. Starts the fake model, GitHub and Google, the sidecar against that
-   database, and Vite. The
-   sidecar's `HOME`, `settings.json`, agents directory and `CLAUDE_HOME` point
-   into `demo/output/.state/`, so your real memories, sessions and workspaces
-   never show up in a screenshot. Workspaces go in `/tmp/yarvis-demo/`, since
+2. Starts the fake model, GitHub, Google and JIRA, the sidecar against that
+   database, and Vite. The sidecar's `HOME`, `settings.json`, agents directory
+   and `CLAUDE_HOME` point into `demo/output/.state/`, so your real memories,
+   sessions and workspaces never show up in a screenshot. Workspaces go in `/tmp/yarvis-demo/`, since
    the app shows a workspace's full path. Background workers are off.
 3. Seeds the database with made-up data from `seed.ts`: tasks, memories, a
-   provisioned "Payment step" workspace, the fake GitHub repo for the Issues
-   tab, and a Google token so Calendar shows as connected.
+   provisioned "Payment step" workspace on the local checkout-web repo, which
+   the Issues tab also lists issues from, and a Google token so Calendar shows
+   as connected.
 
 Run one demo at a time per machine: runs share the demo database and
 `/tmp/yarvis-demo/`, and each run starts by wiping both.
@@ -146,6 +165,8 @@ target, and ripples on click. Typing goes one key at a time.
 | `type(locator, text)` | Clicks into a field and types at a readable speed. |
 | `press(key)` | Presses a key, e.g. `"Enter"`. |
 | `hover(locator)` | Moves the cursor without clicking. |
+| `paste(locator)` | Clicks into a field or terminal and pastes what the app last copied. |
+| `diffLine(text)` | The diff row holding `text`, in a PR review or a workspace diff. |
 | `pause(ms)` | Holds still so a viewer can take in the screen. |
 | `shot(name, { target, cursor })` | Saves the next numbered PNG. Pass `target` to capture one element. The cursor is hidden unless `cursor: true`. |
 | `fireAlarm(alarm)` | Rings an alarm, as the core's scheduler would. |
