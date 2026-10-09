@@ -1,3 +1,5 @@
+import { constants } from "node:fs";
+import { open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -61,4 +63,20 @@ export function parseInstance(value: unknown): Instance | null {
  */
 export function ownedByMe(stat: { uid: number; mode: number }, myUid: number): boolean {
   return stat.uid === myUid && (stat.mode & 0o022) === 0;
+}
+
+/**
+ * Reads a discovery file only if `ownedByMe` passes for that same file. The
+ * check and the read go through one open handle, so the file can't be swapped
+ * between them, and a symlink in its place is refused rather than followed.
+ * Null when it isn't this user's to trust.
+ */
+export async function readTrustedEntry(path: string, myUid: number): Promise<Instance | null> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    if (!ownedByMe(await handle.stat(), myUid)) return null;
+    return parseInstance(JSON.parse(await handle.readFile("utf8")));
+  } finally {
+    await handle.close();
+  }
 }

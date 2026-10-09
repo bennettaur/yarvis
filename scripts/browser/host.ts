@@ -9,10 +9,10 @@
  * never sees a sidecar's port or token — both come from the discovery files each
  * sidecar writes on launch.
  */
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { encodeFrame, FrameDecoder } from "./frames.ts";
-import { type Instance, instancesDir, ownedByMe, parseInstance } from "./instances.ts";
+import { type Instance, instancesDir, ownedByMe, readTrustedEntry } from "./instances.ts";
 
 const RETRY_MS = 3_000;
 const RESCAN_MS = 3_000;
@@ -167,10 +167,7 @@ async function rescan(): Promise<void> {
   for (const file of files) {
     let instance: Instance | null = null;
     try {
-      const path = join(dir, file);
-      if (ownedByMe(await stat(path), me)) {
-        instance = parseInstance(JSON.parse(await readFile(path, "utf8")));
-      }
+      instance = await readTrustedEntry(join(dir, file), me);
     } catch {
       // Half-written or not ours; the next scan will see it whole.
     }

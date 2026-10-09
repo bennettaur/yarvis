@@ -1,5 +1,8 @@
-import { describe, expect, it } from "bun:test";
-import { ownedByMe, parseInstance } from "./instances.ts";
+import { afterEach, describe, expect, it } from "bun:test";
+import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ownedByMe, parseInstance, readTrustedEntry } from "./instances.ts";
 
 const TOKEN = "a".repeat(64);
 
@@ -40,5 +43,39 @@ describe("ownedByMe", () => {
     expect(ownedByMe({ uid: 502, mode: 0o100600 }, 501)).toBe(false);
     expect(ownedByMe({ uid: 501, mode: 0o100620 }, 501)).toBe(false);
     expect(ownedByMe({ uid: 501, mode: 0o100602 }, 501)).toBe(false);
+  });
+});
+
+describe("readTrustedEntry", () => {
+  let dir: string | undefined;
+  const me = process.getuid?.() ?? -1;
+  const entry = { name: "main", port: 8765, token: TOKEN, pid: 42 };
+
+  afterEach(async () => {
+    if (dir) await rm(dir, { recursive: true, force: true });
+    dir = undefined;
+  });
+
+  async function file(mode: number): Promise<string> {
+    dir = await mkdtemp(join(tmpdir(), "yarvis-instances-"));
+    const path = join(dir, "main-42.json");
+    await writeFile(path, JSON.stringify(entry));
+    await chmod(path, mode);
+    return path;
+  }
+
+  it("reads a file only this user can write", async () => {
+    expect(await readTrustedEntry(await file(0o600), me)).toEqual(entry);
+  });
+
+  it("ignores a file others can write", async () => {
+    expect(await readTrustedEntry(await file(0o666), me)).toBeNull();
+  });
+
+  it("refuses a symlink in place of the file", async () => {
+    const target = await file(0o600);
+    const link = join(dir as string, "link.json");
+    await symlink(target, link);
+    await expect(readTrustedEntry(link, me)).rejects.toThrow();
   });
 });
