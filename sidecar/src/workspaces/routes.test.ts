@@ -1329,6 +1329,17 @@ describe("addRepoToWorkspace", () => {
     await expect(addRepoToWorkspace(db, ws.id, repo.id)).rejects.toThrow("both in use");
   });
 
+  it("refuses a repo whose name is not a safe folder", async () => {
+    const db = getDb(url).db;
+    const ws = await activeWith("unsafe", []);
+    const repo = await createRepo(db, config, {
+      cloneUrl: "git@github.com:acme/widget.git",
+      name: "..",
+    });
+    await expect(addRepoToWorkspace(db, ws.id, repo.id)).rejects.toThrow("unsafe folder name");
+    expect((await getWorkspace(db, ws.id))?.repos).toHaveLength(0);
+  });
+
   it("accepts a repo in a scratch workspace", async () => {
     const db = getDb(url).db;
     const ws = await activeWith("scratch", []);

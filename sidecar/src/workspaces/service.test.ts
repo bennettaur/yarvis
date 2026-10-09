@@ -242,7 +242,7 @@ describe("workspaceRepoFolder", () => {
   });
 
   it("refuses an unsafe folder name", () => {
-    for (const name of ["..", ".", "a/b", "a\\b"]) {
+    for (const name of ["", "..", ".", "a/b", "a\\b"]) {
       expect(() => workspaceRepoFolder({ name, owner: "acme" }, new Set())).toThrow(
         "unsafe folder name",
       );
