@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
@@ -1400,5 +1400,139 @@ describe("register_repo", () => {
     const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
     expect(tools.list_repos.description).toContain("register_repo");
     expect(tools.create_workspace_session.description).toContain("register_repo");
+  });
+});
+
+/** okRunner, but creates the worktree folder as real git does, so the
+ *  workspace root exists and AGENTS.md can be written into it. */
+const dirRunner: GitRunner = async (args, runOpts) => {
+  if (args[0] === "worktree" && args[1] === "add") {
+    const path = args[2] === "-b" ? args[4] : args[2];
+    if (path) mkdirSync(path, { recursive: true });
+  }
+  return okRunner(args, runOpts);
+};
+
+/** Fails only the clone of the given repo name. */
+const failCloneOf =
+  (name: string): GitRunner =>
+  async (args, runOpts) =>
+    args[0] === "clone" && (args[1] ?? "").includes(name)
+      ? { stdout: "", stderr: "fatal: could not read from remote", exitCode: 128 }
+      : dirRunner(args, runOpts);
+
+type AddResult = {
+  error?: string;
+  workspaceId?: string;
+  name?: string;
+  status?: string;
+  repo?: { name: string; worktreePath: string; branch: string; status: string } | null;
+  retried?: { repo: string; status: string }[];
+  failures?: { repo: string; message: string }[];
+  kickOffStarted?: boolean;
+  note?: string;
+};
+
+describe("add_repo_to_workspace", () => {
+  const started: StartClaudeSessionInput[] = [];
+  const toolsWith = (runner: GitRunner) =>
+    buildWorkspaceTools(db, config, {
+      gitRunner: runner,
+      startClaudeSession: async (input) => {
+        started.push(input);
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+  const add = (runner: GitRunner, workspaceId: string, repoId: string) =>
+    toolsWith(runner).add_repo_to_workspace.execute!(
+      { workspaceId, repoId },
+      opts,
+    ) as Promise<AddResult>;
+
+  beforeEach(() => {
+    started.length = 0;
+  });
+
+  async function workspaceWith(cloneUrl: string, runner: GitRunner, brief?: string) {
+    const repo = await createRepo(db, config, { cloneUrl });
+    const created = (await toolsWith(runner).create_workspace_session.execute!(
+      { name: `ws ${repo.repo}`, repoIds: [repo.id], brief, startWork: true },
+      opts,
+    )) as { workspaceId: string };
+    return created.workspaceId;
+  }
+
+  it("provisions only the new repo and lists it in AGENTS.md", async () => {
+    const workspaceId = await workspaceWith("https://github.com/acme/widget.git", dirRunner);
+    const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+    const calls: string[][] = [];
+    const recording: GitRunner = async (args, runOpts) => {
+      calls.push(args);
+      return dirRunner(args, runOpts);
+    };
+
+    const result = await add(recording, workspaceId, gadget.id);
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe("active");
+    expect(result.repo).toMatchObject({ name: "gadget", status: "ready" });
+    expect(result.kickOffStarted).toBe(false);
+    expect(result.note).toContain("send_workspace_instruction");
+    const worktreeAdds = calls.filter((a) => a[0] === "worktree" && a[1] === "add");
+    expect(worktreeAdds).toHaveLength(1);
+    expect(worktreeAdds[0]!.join(" ")).toContain("/gadget");
+    const detail = await getWorkspace(db, workspaceId);
+    const agents = readFileSync(join(detail!.rootPath, "AGENTS.md"), "utf8");
+    expect(agents).toContain("acme/gadget");
+  });
+
+  it("retries the other failed repos in an error workspace", async () => {
+    const workspaceId = await workspaceWith(
+      "https://github.com/acme/widget.git",
+      failCloneOf("widget"),
+    );
+    expect((await getWorkspace(db, workspaceId))?.status).toBe("error");
+    const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+
+    const result = await add(dirRunner, workspaceId, gadget.id);
+
+    expect(result.status).toBe("active");
+    expect(result.retried).toEqual([expect.objectContaining({ repo: "widget", status: "ready" })]);
+  });
+
+  it("starts an owed kick-off and says so", async () => {
+    const workspaceId = await workspaceWith(
+      "https://github.com/acme/widget.git",
+      failCloneOf("widget"),
+      "Add rate limiting",
+    );
+    expect((await getWorkspace(db, workspaceId))?.pendingBrief).not.toBeNull();
+    expect(started).toHaveLength(0);
+    const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+
+    const result = await add(dirRunner, workspaceId, gadget.id);
+
+    expect(result.kickOffStarted).toBe(true);
+    expect(started).toHaveLength(1);
+    expect(started[0]!.instruction).toBe(AGENT_KICKOFF_INSTRUCTION);
+  });
+
+  // Review Focus: the new repo itself fails.
+  it("reports a failed provision of the new repo", async () => {
+    const workspaceId = await workspaceWith("https://github.com/acme/widget.git", dirRunner);
+    const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+
+    const result = await add(failCloneOf("gadget"), workspaceId, gadget.id);
+
+    expect(result.error).toBeDefined();
+    expect(result.status).toBe("error");
+    expect(result.failures).toEqual([expect.objectContaining({ repo: "gadget" })]);
+    expect(result.kickOffStarted).toBe(false);
+  });
+
+  it("returns a refusal as an error", async () => {
+    const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+    const result = await add(dirRunner, "00000000-0000-0000-0000-000000000000", gadget.id);
+    expect(result.error).toBe("workspace not found");
   });
 });

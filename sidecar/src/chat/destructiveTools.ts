@@ -42,6 +42,9 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "create_workspace_session",
   "create_scratch_workspace_session",
   "start_workspace_session",
+  // Clones code that an auto-mode agent will read, and can start a kick-off
+  // session a failed provision still owed.
+  "add_repo_to_workspace",
   // Merges and pushes across every active workspace by default, publishing a
   // branch that had never been pushed before.
   "sync_workspaces_with_base",

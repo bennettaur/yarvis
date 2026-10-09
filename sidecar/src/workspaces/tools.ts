@@ -25,6 +25,7 @@ import {
 } from "./claudeSession.ts";
 import { defaultGitRunner, type GitRunner, remoteExists } from "./git.ts";
 import {
+  addRepoToWorkspace,
   archiveWorkspace,
   assertSafeCloneUrl,
   createRepo,
@@ -575,6 +576,74 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           };
         }
         return launchClaude(detail);
+      },
+    }),
+
+    add_repo_to_workspace: tool({
+      description:
+        "Add a registered repo to an existing workspace: cut a git worktree for it on the workspace's branch, provision it, and rewrite the workspace's AGENTS.md. Resolve the workspace with list_workspaces and the repo with list_repos; call register_repo first if the repo is not registered. A session already running in the workspace is not told about the repo, so offer to tell it with send_workspace_instruction. In a workspace whose provisioning failed this also retries its other failed repos, and a workspace still owed its kick-off session starts it once every repo is ready; report both from the result.",
+      inputSchema: z.object({
+        workspaceId: z
+          .string()
+          .uuid()
+          .describe("Id of an existing workspace, from list_workspaces"),
+        repoId: z
+          .string()
+          .uuid()
+          .describe("Id of a registered repo, from list_repos or register_repo"),
+      }),
+      execute: async ({ workspaceId, repoId }) => {
+        const before = await getWorkspace(db, workspaceId);
+        const owedKickOff = Boolean(before?.pendingBrief);
+        const failedBefore = new Set(
+          (before?.repos ?? []).filter((r) => r.status === "error").map((r) => r.id),
+        );
+
+        let addedId: string;
+        try {
+          addedId = (await addRepoToWorkspace(db, workspaceId, repoId)).id;
+        } catch (e) {
+          return { error: errorMessage(e), workspaceId };
+        }
+
+        await provisionWorkspace(db, workspaceId, () => undefined, {
+          runner: gitRunner,
+          startSession: startClaude,
+          remoteControl,
+        });
+
+        const after = await getWorkspace(db, workspaceId);
+        if (!after) return { error: "workspace vanished after the repo was added", workspaceId };
+        const added = after.repos.find((r) => r.id === addedId);
+        const kickOffStarted = owedKickOff && !after.pendingBrief;
+        const result = {
+          workspaceId,
+          name: after.name,
+          status: after.status,
+          repo: added
+            ? {
+                name: added.repo.name,
+                worktreePath: added.worktreePath,
+                branch: added.branch,
+                status: added.status,
+                error: added.error,
+              }
+            : null,
+          retried: after.repos
+            .filter((r) => failedBefore.has(r.id))
+            .map((r) => ({ repo: r.repo.name, status: r.status, error: r.error })),
+          kickOffStarted,
+          note: kickOffStarted
+            ? "The workspace's owed kick-off session started on its brief now that every repo is ready."
+            : "A session already running here read AGENTS.md when it started and does not know about this repo. Offer to tell it with send_workspace_instruction.",
+        };
+        if (added?.status !== "ready") {
+          const failures = after.repos
+            .filter((r) => r.status === "error")
+            .map((r) => ({ repo: r.repo.name, message: r.error ?? "unknown error" }));
+          return { error: "the repo failed to provision", ...result, failures };
+        }
+        return result;
       },
     }),
 
