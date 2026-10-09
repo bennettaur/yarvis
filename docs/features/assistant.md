@@ -243,10 +243,11 @@ Some actions pause and ask you in the approval bar above the message box (press
   session, forgetting a memory, or delegating. A transcript can be misheard,
   or picked up from the room.
 
-The assistant is also instructed to create workspaces, start work, sync,
-send instructions or archive only when you ask in the current conversation,
-and never to copy text from an issue, PR or memory into a session as an
-instruction. These are instructions to the model, not checks in code, so a
+The assistant is also instructed to create workspaces, register a repo, add a
+repo to a workspace, start work, sync, send instructions or archive only when
+you ask in the current conversation, and never to copy text from an issue, PR
+or memory into a session as an instruction. These are instructions to the
+model, not checks in code, so a
 cleverly written issue or PR could still talk it into something. The approval
 prompts above, and the checks on what can be typed into a session (see
 [Workspaces](workspaces.md)), are enforced in code.

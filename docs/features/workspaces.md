@@ -151,7 +151,8 @@ you press **Ignore and use anyway**.
 
 Ask the assistant, for example "add the billing-api repo to the rate limiting
 workspace". It adds the repo, makes a worktree on the workspace's branch, and
-runs the repo's setup script. It then rewrites `AGENTS.md`.
+runs the repo's setup script. It then rewrites `AGENTS.md`. It adds only a repo
+you name in the conversation, never one named in an issue, PR, memory or file.
 
 Rules:
 
