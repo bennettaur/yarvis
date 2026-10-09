@@ -86,10 +86,11 @@ body,
 }
 
 /*
- * So the page itself never moves. macOS rubber-bands the root on a scroll that
- * reaches it, even when nothing overflows, and the bounce uncovered the default
- * white background below the shell. The background is the shell's own colour
- * in case a WebKit build ignores `overscroll-behavior` on the root.
+ * Keeps the page itself from moving. macOS rubber-bands the root on a scroll
+ * that reaches it, even when nothing overflows, and the bounce would show the
+ * default white background below the shell. The background matches the shell's
+ * `bg-zinc-950` (see `components/shell/AppShell.tsx`) in case the webview
+ * ignores `overscroll-behavior` on the root.
  */
 html,
 body {
