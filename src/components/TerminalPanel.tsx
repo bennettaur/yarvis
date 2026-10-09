@@ -2,6 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { useEffect, useId, useImperativeHandle, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
+import { TERMINAL_THEME } from "../lib/palette";
 import {
   attachPty,
   killPty,
@@ -11,6 +12,13 @@ import {
   resizePty,
   writePty,
 } from "../lib/pty";
+import {
+  getTerminalFontSize,
+  onTerminalFontSize,
+  resolveFontSizeKey,
+  stepTerminalFontSize,
+  TERMINAL_FONT_FAMILY,
+} from "../lib/terminalFont";
 import { resolveTerminalKey } from "../lib/terminalKeys";
 
 /** Handle exposed via `panelRef` so a parent (e.g. TerminalTabs) can move keyboard focus into the xterm. */
@@ -89,15 +97,21 @@ export default function TerminalPanel({
 
     const term = new Terminal({
       cursorBlink: true,
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Code", monospace',
-      fontSize: 13,
-      theme: { background: "#09090b", foreground: "#e4e4e7" },
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: getTerminalFontSize(),
+      theme: TERMINAL_THEME,
     });
     termRef.current = term;
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(container);
     term.attachCustomKeyEventHandler((e) => {
+      const step = resolveFontSizeKey(e);
+      if (step) {
+        e.preventDefault();
+        if (e.type === "keydown") stepTerminalFontSize(step);
+        return false;
+      }
       const action = resolveTerminalKey(e);
       if (action.passToXterm) return true;
       // xterm doesn't cancel an event a custom handler rejects, so the browser
@@ -206,27 +220,36 @@ export default function TerminalPanel({
     let resizeTimer: ReturnType<typeof setTimeout> | undefined;
     let lastCols = term.cols;
     let lastRows = term.rows;
+    const refit = () => {
+      try {
+        fit.fit();
+        // Only notify the PTY when the grid actually changed.
+        if (term.cols !== lastCols || term.rows !== lastRows) {
+          lastCols = term.cols;
+          lastRows = term.rows;
+          void resizePty(id, term.cols, term.rows);
+        }
+      } catch {
+        // Ignore transient sizing errors during layout changes.
+      }
+    };
     const observer = new ResizeObserver(() => {
       if (resizeTimer) clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(() => {
-        try {
-          fit.fit();
-          // Only notify the PTY when the grid actually changed.
-          if (term.cols !== lastCols || term.rows !== lastRows) {
-            lastCols = term.cols;
-            lastRows = term.rows;
-            void resizePty(id, term.cols, term.rows);
-          }
-        } catch {
-          // Ignore transient sizing errors during layout changes.
-        }
-      }, RESIZE_DEBOUNCE_MS);
+      resizeTimer = setTimeout(refit, RESIZE_DEBOUNCE_MS);
     });
     observer.observe(container);
     cleanups.push(() => {
       if (resizeTimer) clearTimeout(resizeTimer);
       observer.disconnect();
     });
+    // A new size changes how many cells fit, so the PTY is told the new grid
+    // the same way a container resize would.
+    cleanups.push(
+      onTerminalFontSize((size) => {
+        term.options.fontSize = size;
+        refit();
+      }),
+    );
 
     term.focus();
 
@@ -249,7 +272,7 @@ export default function TerminalPanel({
   };
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col bg-[#09090b]">
+    <div className="flex h-full min-h-0 w-full flex-col bg-zinc-950">
       {!embedded && (
         <div className="flex shrink-0 items-center justify-end gap-2 px-2 py-1">
           {exited && <span className="text-xs text-zinc-500">exited</span>}

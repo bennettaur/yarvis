@@ -1,32 +1,31 @@
 import { LanguageDescription, type LanguageSupport } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { Compartment, EditorState } from "@codemirror/state";
-import { oneDark } from "@codemirror/theme-one-dark";
+import { oneDarkTheme } from "@codemirror/theme-one-dark";
 import { EditorView, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { useEffect, useRef } from "react";
 import type { EditorPlace } from "../../lib/editorPlaces";
+import { PALENIGHT, ZINC } from "../../lib/palette";
+import { palenightHighlighting } from "./palenight";
 import { placeConfig } from "./place";
 
-/** The Tailwind zinc steps the rest of the app reaches through classes. Spelled
- *  out here because CodeMirror is styled through a JS theme, not the class list,
- *  and a palette change has to be able to find them. */
-const ZINC = {
-  950: "#09090b",
-  900: "#18181b",
-  800: "#27272a",
-  600: "#52525b",
-  400: "#a1a1aa",
-};
-
-/** Background and gutter, so the editor sits in the app's palette rather than
- *  One Dark's. The syntax colours are One Dark's and left alone. */
+/** Background, gutter, cursor and selection in the app's Palenight palette.
+ *  One Dark supplies only the chrome (search panel, tooltips) underneath. */
 const appSurface = EditorView.theme({
-  "&": { height: "100%", backgroundColor: ZINC[950], fontSize: "12px" },
+  "&": {
+    height: "100%",
+    backgroundColor: ZINC[950],
+    color: PALENIGHT.foreground,
+    fontSize: "12px",
+  },
+  ".cm-cursor, .cm-dropCursor": { borderLeftColor: PALENIGHT.cursor },
+  "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground":
+    { backgroundColor: PALENIGHT.selection },
   ".cm-gutters": {
     backgroundColor: ZINC[950],
     borderRight: `1px solid ${ZINC[800]}`,
-    color: ZINC[600],
+    color: PALENIGHT.comment,
   },
   ".cm-activeLine": { backgroundColor: ZINC[900] },
   ".cm-activeLineGutter": { backgroundColor: ZINC[900], color: ZINC[400] },
@@ -100,7 +99,8 @@ export default function CodeEditor({
         selection: place.selection,
         extensions: [
           basicSetup,
-          oneDark,
+          oneDarkTheme,
+          palenightHighlighting,
           appSurface,
           LANGUAGE_SLOT.of([]),
           keymap.of([

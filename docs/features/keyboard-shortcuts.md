@@ -40,6 +40,8 @@ scrollback that has scrolled off screen are not searched.
 | Cmd+W | Close the tab (asks first if something is running) |
 | Cmd+D | Split the pane to the right |
 | Cmd+Shift+D | Split the pane downward |
+| Cmd+= / Cmd+- | Larger / smaller text in every terminal |
+| Cmd+0 | Reset the terminal text size |
 | Shift+Enter | New line in Claude Code, instead of submitting |
 
 These use Cmd only, so Ctrl+D, Ctrl+T and Ctrl+W still reach the shell. See

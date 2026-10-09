@@ -606,7 +606,7 @@ export default function TerminalTabs({
   // one the user just closed still has to render its strip, or there is no "+" to
   // open a terminal with.
   return (
-    <div ref={rootRef} className="flex h-full min-h-0 w-full min-w-0 flex-col bg-[#09090b]">
+    <div ref={rootRef} className="flex h-full min-h-0 w-full min-w-0 flex-col bg-zinc-950">
       <TabStrip
         tabs={state.tabs}
         pinnedTabs={pinnedTabs}
