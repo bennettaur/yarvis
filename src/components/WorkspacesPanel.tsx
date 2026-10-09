@@ -361,6 +361,8 @@ export default function WorkspacesPanel({
     setSelectedId(id);
   };
 
+  const [listRatio, setListRatio] = usePersistedRatio("yarvis.workspaces.listRatio", 0.22);
+
   const onRepoAdded = useCallback((repo: Repo) => {
     // Through the updater form for the same reason the `setState` one was used
     // before: a load landing between this render and the click would otherwise
@@ -371,117 +373,130 @@ export default function WorkspacesPanel({
     });
   }, []);
 
-  return (
-    <div className="flex h-full min-h-0">
-      <aside className="flex w-72 shrink-0 flex-col border-r border-zinc-800">
-        <div className="flex shrink-0 items-center gap-2 px-3 py-2">
-          <h2 className="mr-auto text-sm font-medium text-zinc-200">Workspaces</h2>
-          <RefreshingIndicator active={listRes.refreshing || reposRes.refreshing} />
-          <button
-            type="button"
-            onClick={beginNew}
-            className="rounded-md bg-indigo-600 px-2 py-1 text-xs font-medium hover:bg-indigo-500"
-          >
-            New
-          </button>
-        </div>
-        {error && <p className="px-3 pb-2 text-xs text-red-400">{error}</p>}
-        <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-          {groups.length === 0 && (
-            <p className="px-1 py-2 text-xs text-zinc-500">
-              {showArchived || archivedCount === 0 ? "No workspaces yet." : "No active workspaces."}
-            </p>
-          )}
-          {groups.map((group) => (
-            <div key={group.key} className="mb-3">
-              <div className="px-1 py-1 text-xs font-medium uppercase tracking-wide text-zinc-500">
-                {group.label}
-              </div>
-              <ul>
-                {group.items.map((ws) => {
-                  const needsAttention = workspacesNeedingAttention.has(ws.id);
-                  return (
-                    <li key={ws.id}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setCreating(false);
-                          setSelectedId(ws.id);
-                          setFocusSession(null);
-                        }}
-                        title={needsAttention ? `${ws.name} — needs you` : ws.name}
-                        className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-zinc-800/60 ${
-                          selectedId === ws.id
-                            ? "bg-zinc-800 text-zinc-100"
-                            : needsAttention
-                              ? "text-amber-300"
-                              : "text-zinc-300"
-                        }`}
-                      >
-                        <span className="flex min-w-0 items-center gap-1.5">
-                          {/* Marks a workspace asking for the user while they're
-                              looking at a different one. */}
-                          {needsAttention && (
-                            <span
-                              title="Needs you"
-                              className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400"
-                            />
-                          )}
-                          <span className="truncate">{ws.name}</span>
-                        </span>
-                        <span className="flex shrink-0 items-center gap-1.5">
-                          <WorkspacePrBadges prs={ws.prs} />
-                          <StatusBadge status={ws.status} />
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          ))}
-          {archivedCount > 0 && (
-            <button
-              onClick={() => setShowArchived((v) => !v)}
-              className="mt-1 w-full rounded-md px-2 py-1 text-left text-xs text-zinc-500 hover:bg-zinc-800/40 hover:text-zinc-300"
-            >
-              {showArchived ? "Hide archived" : `Show archived (${archivedCount})`}
-            </button>
-          )}
-        </div>
-      </aside>
-
-      <main className="min-w-0 flex-1">
-        {creating ? (
-          <NewWorkspaceForm
-            // Key on the prefill so a fresh handoff (e.g. a second task's
-            // "Start work" while the form is already open) resets every field
-            // — the form's state is initialized only on mount.
-            key={newWorkspacePrefill?.taskId ?? "blank"}
-            repos={repos}
-            prefill={newWorkspacePrefill}
-            onCancel={() => {
-              setCreating(false);
-              setNewWorkspacePrefill(null);
-            }}
-            onCreated={onCreated}
-            onRepoAdded={onRepoAdded}
-          />
-        ) : selectedId ? (
-          <WorkspaceDetailView
-            key={selectedId}
-            id={selectedId}
-            onChanged={refresh}
-            focusSession={focusSession?.id === selectedId ? focusSession.sessionKey : undefined}
-            onFocusSessionHandled={() => setFocusSession(null)}
-          />
-        ) : (
-          <div className="flex h-full items-center justify-center text-sm text-zinc-500">
-            Select a workspace or create a new one.
-          </div>
+  // The list's width is the user's to set: a long workspace name or a narrow
+  // window can each want the room the other side has.
+  const list = (
+    <aside className="flex h-full flex-col">
+      <div className="flex shrink-0 items-center gap-2 px-3 py-2">
+        <h2 className="mr-auto text-sm font-medium text-zinc-200">Workspaces</h2>
+        <RefreshingIndicator active={listRes.refreshing || reposRes.refreshing} />
+        <button
+          type="button"
+          onClick={beginNew}
+          className="rounded-md bg-indigo-600 px-2 py-1 text-xs font-medium hover:bg-indigo-500"
+        >
+          New
+        </button>
+      </div>
+      {error && <p className="px-3 pb-2 text-xs text-red-400">{error}</p>}
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+        {groups.length === 0 && (
+          <p className="px-1 py-2 text-xs text-zinc-500">
+            {showArchived || archivedCount === 0 ? "No workspaces yet." : "No active workspaces."}
+          </p>
         )}
-      </main>
-    </div>
+        {groups.map((group) => (
+          <div key={group.key} className="mb-3">
+            <div className="px-1 py-1 text-xs font-medium uppercase tracking-wide text-zinc-500">
+              {group.label}
+            </div>
+            <ul>
+              {group.items.map((ws) => {
+                const needsAttention = workspacesNeedingAttention.has(ws.id);
+                return (
+                  <li key={ws.id}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCreating(false);
+                        setSelectedId(ws.id);
+                        setFocusSession(null);
+                      }}
+                      title={needsAttention ? `${ws.name} — needs you` : ws.name}
+                      className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-zinc-800/60 ${
+                        selectedId === ws.id
+                          ? "bg-zinc-800 text-zinc-100"
+                          : needsAttention
+                            ? "text-amber-300"
+                            : "text-zinc-300"
+                      }`}
+                    >
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        {/* Marks a workspace asking for the user while they're
+                              looking at a different one. */}
+                        {needsAttention && (
+                          <span
+                            title="Needs you"
+                            className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400"
+                          />
+                        )}
+                        <span className="truncate">{ws.name}</span>
+                      </span>
+                      <span className="flex shrink-0 items-center gap-1.5">
+                        <WorkspacePrBadges prs={ws.prs} />
+                        <StatusBadge status={ws.status} />
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ))}
+        {archivedCount > 0 && (
+          <button
+            onClick={() => setShowArchived((v) => !v)}
+            className="mt-1 w-full rounded-md px-2 py-1 text-left text-xs text-zinc-500 hover:bg-zinc-800/40 hover:text-zinc-300"
+          >
+            {showArchived ? "Hide archived" : `Show archived (${archivedCount})`}
+          </button>
+        )}
+      </div>
+    </aside>
+  );
+
+  const main = (
+    <main className="h-full min-w-0">
+      {creating ? (
+        <NewWorkspaceForm
+          // Key on the prefill so a fresh handoff (e.g. a second task's
+          // "Start work" while the form is already open) resets every field
+          // — the form's state is initialized only on mount.
+          key={newWorkspacePrefill?.taskId ?? "blank"}
+          repos={repos}
+          prefill={newWorkspacePrefill}
+          onCancel={() => {
+            setCreating(false);
+            setNewWorkspacePrefill(null);
+          }}
+          onCreated={onCreated}
+          onRepoAdded={onRepoAdded}
+        />
+      ) : selectedId ? (
+        <WorkspaceDetailView
+          key={selectedId}
+          id={selectedId}
+          onChanged={refresh}
+          focusSession={focusSession?.id === selectedId ? focusSession.sessionKey : undefined}
+          onFocusSessionHandled={() => setFocusSession(null)}
+        />
+      ) : (
+        <div className="flex h-full items-center justify-center text-sm text-zinc-500">
+          Select a workspace or create a new one.
+        </div>
+      )}
+    </main>
+  );
+
+  return (
+    <SplitPane
+      className="h-full"
+      orientation="horizontal"
+      ratio={listRatio}
+      onRatioChange={setListRatio}
+      first={list}
+      second={main}
+    />
   );
 }
 
