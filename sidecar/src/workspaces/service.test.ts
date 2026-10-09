@@ -169,6 +169,13 @@ describe("assertSafeCloneUrl", () => {
     expect(() => assertSafeCloneUrl("ext::sh -c touch/owner/repo")).toThrow();
     expect(() => assertSafeCloneUrl("--upload-pack=evil")).toThrow();
   });
+
+  it("rejects an scp-style remote whose user starts with -", () => {
+    // git ls-remote reads -ox@host:path as the -o server option.
+    expect(() => assertSafeCloneUrl("-ox@github.com:acme/widget.git")).toThrow(
+      "unsupported clone URL transport",
+    );
+  });
 });
 
 describe("primaryClonePath", () => {

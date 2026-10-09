@@ -215,9 +215,12 @@ export function parseRepoRemote(url: string): RepoRemote | null {
 /**
  * Allowed clone-URL transports. Git's `ext::`/`fd::` remote helpers execute
  * arbitrary commands, and a leading `-` is read as a flag — both would turn a
- * registry entry into code execution, so only these schemes are accepted.
+ * registry entry into code execution, so only these schemes are accepted. The
+ * scp-style user therefore cannot start with `-` either: `-ox@host:path` is
+ * the `-o` server option to `git ls-remote`.
  */
-const ALLOWED_CLONE_URL = /^(https?:\/\/|git:\/\/|ssh:\/\/|[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:)/;
+const ALLOWED_CLONE_URL =
+  /^(https?:\/\/|git:\/\/|ssh:\/\/|[A-Za-z0-9_][A-Za-z0-9._-]*@[A-Za-z0-9._-]+:)/;
 
 /** Throws if a clone URL uses a transport that could execute arbitrary code. */
 export function assertSafeCloneUrl(url: string): void {

@@ -1343,6 +1343,14 @@ describe("register_repo", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("refuses an scp-style URL whose user starts with -", async () => {
+    const { runner, calls } = remoteRunner(reachable);
+    const result = await register(runner, "-ox@github.com:acme/widget.git");
+    expect(result.error).toContain("unsupported clone URL transport");
+    expect(calls).toHaveLength(0);
+    expect(await listRepos(db)).toHaveLength(0);
+  });
+
   it("finds a github.com repo under another URL form", async () => {
     const existing = await createRepo(db, config, { cloneUrl: "git@github.com:Acme/Widget.git" });
     const { runner, calls } = remoteRunner(reachable);
