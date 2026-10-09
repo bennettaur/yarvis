@@ -1038,7 +1038,8 @@ const skipped = (note: string): RepoSyncProgress => ({
  *  from being read as instruction. */
 export function errorText(e: unknown): string {
   const raw = e instanceof Error ? e.message : String(e);
-  return raw.replace(/([a-z][a-z0-9+.-]*:\/\/)[^@/\s]*@/gi, "$1");
+  // Userinfo runs to the last `@` before the path: a password may hold its own.
+  return raw.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s]*@/gi, "$1");
 }
 
 /**

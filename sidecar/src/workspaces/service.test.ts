@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { Config } from "../config.ts";
 import {
   assertSafeCloneUrl,
+  errorText,
   isSafePathSegment,
   parseGitUrl,
   parseRepoRemote,
@@ -175,6 +176,23 @@ describe("assertSafeCloneUrl", () => {
     expect(() => assertSafeCloneUrl("-ox@github.com:acme/widget.git")).toThrow(
       "unsupported clone URL transport",
     );
+  });
+});
+
+describe("errorText", () => {
+  it("strips userinfo from a URL in the message", () => {
+    expect(errorText(new Error("fatal: unable to access 'https://user:tok@host/o/r.git/'"))).toBe(
+      "fatal: unable to access 'https://host/o/r.git/'",
+    );
+  });
+
+  it("strips userinfo whose password holds an @", () => {
+    const text = errorText(new Error("fatal: unable to access 'https://user:p@ss@github.com/o/r'"));
+    expect(text).toBe("fatal: unable to access 'https://github.com/o/r'");
+  });
+
+  it("keeps an @ in the path", () => {
+    expect(errorText(new Error("see https://host/o/r@v1"))).toBe("see https://host/o/r@v1");
   });
 });
 
