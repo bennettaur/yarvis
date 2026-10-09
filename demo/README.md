@@ -21,8 +21,10 @@ Actions tab to publish straight away; only runs on `main` publish. It needs
 the repo's Pages source set to GitHub Actions (Settings → Pages), which it is.
 A run where any flow fails publishes nothing, so the site keeps the last good
 recording, and the failed flows' Playwright traces are kept for a week as the
-`demo-failures` artifact. Screenshots from CI use Linux's fonts, so they
-differ a little from a run on a Mac.
+`demo-failures` artifact. A pull request that changes anything under `demo/`
+records the flows without publishing; other pull requests don't run it.
+Screenshots from CI use Linux's fonts, so they differ a little from a run on a
+Mac.
 
 The flows in `demo/flows/` cover the Chat tab (including a tool call that
 creates a task), Omni Chat, the Omni layout builder, GitHub PRs and issues,
