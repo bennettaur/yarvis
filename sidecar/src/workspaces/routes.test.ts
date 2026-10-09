@@ -31,6 +31,7 @@ import { defaultGitRunner, type GitRunner } from "./git.ts";
 import {
   archiveWorkspace,
   assertSafeBranchName,
+  createRepo,
   createWorkspace,
   getWorkspace,
   ignoreWorkspaceError,
@@ -1223,6 +1224,42 @@ describe("workspace issue links", () => {
     const rows = await db.select().from(issueLinks);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.workspaceId).toBe(second);
+  });
+});
+
+describe("createWorkspace repo folders", () => {
+  it("gives both repos in a clashing pair name-owner", async () => {
+    const db = getDb(url).db;
+    const a = await createRepo(db, config, { cloneUrl: "git@github.com:acme/widget.git" });
+    const b = await createRepo(db, config, { cloneUrl: "git@github.com:other/widget.git" });
+    const ws = await createWorkspace(db, config, { name: "pair", repoIds: [a.id, b.id] });
+    const detail = await getWorkspace(db, ws.id);
+    const folders = detail!.repos.map((wr) => basename(wr.worktreePath)).sort();
+    expect(folders).toEqual(["widget-acme", "widget-other"]);
+  });
+
+  it("refuses a pair whose name-owner also clashes", async () => {
+    const db = getDb(url).db;
+    // Same owner, same display name: both would land in "api-acme".
+    const a = await createRepo(db, config, { cloneUrl: "git@github.com:acme/api.git" });
+    const b = await createRepo(db, config, {
+      cloneUrl: "git@github.com:acme/api-v2.git",
+      name: "api",
+    });
+    await expect(
+      createWorkspace(db, config, { name: "clash", repoIds: [a.id, b.id] }),
+    ).rejects.toThrow("both in use");
+  });
+
+  it("refuses a display name that is not a safe folder", async () => {
+    const db = getDb(url).db;
+    const repo = await createRepo(db, config, {
+      cloneUrl: "git@github.com:acme/widget.git",
+      name: "..",
+    });
+    await expect(
+      createWorkspace(db, config, { name: "escape", repoIds: [repo.id] }),
+    ).rejects.toThrow("unsafe folder name");
   });
 });
 

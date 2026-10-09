@@ -247,6 +247,37 @@ export function primaryClonePath(config: Config, owner: string, repo: string): s
   return `${config.workspacesRoot}/.repos/${owner.toLowerCase()}-${repo.toLowerCase()}`;
 }
 
+/**
+ * Whether a value can be one path segment under a workspace root. A display
+ * name or a parsed owner/repo ends up in a worktree path, so anything that
+ * could climb out of the root or split into two segments is refused.
+ */
+export function isSafePathSegment(value: string): boolean {
+  return value !== "" && value !== "." && value !== ".." && !/[/\\]/.test(value);
+}
+
+/**
+ * The folder a repo's worktree gets inside a workspace. `inUse` holds folders
+ * a sibling already has or claims; existing folders cannot move, so only the
+ * repo being placed falls back to `name-owner`, and a second clash is refused
+ * rather than putting two repos in one folder.
+ */
+export function workspaceRepoFolder(
+  repo: Pick<Repo, "name" | "owner">,
+  inUse: ReadonlySet<string>,
+): string {
+  const plain = repo.name.toLowerCase();
+  const withOwner = `${plain}-${repo.owner.toLowerCase()}`;
+  const folder = !inUse.has(plain) ? plain : !inUse.has(withOwner) ? withOwner : null;
+  if (folder === null) {
+    throw new Error(`folders "${plain}" and "${withOwner}" are both in use in this workspace`);
+  }
+  if (!isSafePathSegment(folder)) {
+    throw new Error(`unsafe folder name for ${repo.owner}/${repo.name}: "${folder}"`);
+  }
+  return folder;
+}
+
 export async function createRepo(db: Db, config: Config, input: CreateRepoInput): Promise<Repo> {
   assertSafeCloneUrl(input.cloneUrl);
   const parsed = parseGitUrl(input.cloneUrl);
@@ -408,11 +439,15 @@ export async function createWorkspace(
   const rootPath = `${config.workspacesRoot}/${slug}`;
   const branch = `yarvis/${slug}`;
 
-  // Distinct subfolder per repo; disambiguate name collisions with the owner.
-  const nameCounts = new Map<string, number>();
+  // Distinct subfolder per repo. Each repo treats its siblings' names, and the
+  // folders already handed out, as taken.
+  const folders = new Map<string, string>();
   for (const repo of selected) {
-    const lowerName = repo.name.toLowerCase();
-    nameCounts.set(lowerName, (nameCounts.get(lowerName) ?? 0) + 1);
+    const inUse = new Set<string>(folders.values());
+    for (const other of selected) {
+      if (other.id !== repo.id) inUse.add(other.name.toLowerCase());
+    }
+    folders.set(repo.id, workspaceRepoFolder(repo, inUse));
   }
 
   // Sanitized here rather than at each caller so every producer (issues, JIRA,
@@ -440,11 +475,7 @@ export async function createWorkspace(
             branch: existing || branch,
             existingBranch: Boolean(existing),
             baseBranch: repo.defaultBranch ?? "main",
-            worktreePath: `${rootPath}/${
-              (nameCounts.get(repo.name.toLowerCase()) ?? 0) > 1
-                ? `${repo.name.toLowerCase()}-${repo.owner.toLowerCase()}`
-                : repo.name.toLowerCase()
-            }`,
+            worktreePath: `${rootPath}/${folders.get(repo.id)}`,
           };
         }),
       );

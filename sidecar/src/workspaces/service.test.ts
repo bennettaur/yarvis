@@ -2,10 +2,12 @@ import { describe, expect, it } from "bun:test";
 import type { Config } from "../config.ts";
 import {
   assertSafeCloneUrl,
+  isSafePathSegment,
   parseGitUrl,
   parseRepoRemote,
   primaryClonePath,
   slugify,
+  workspaceRepoFolder,
 } from "./service.ts";
 
 const config = { workspacesRoot: "/home/me/dev/yarvis-workspaces" } as Config;
@@ -180,5 +182,45 @@ describe("primaryClonePath", () => {
     expect(primaryClonePath(config, "Acme", "Widget")).toBe(
       "/home/me/dev/yarvis-workspaces/.repos/acme-widget",
     );
+  });
+});
+
+describe("isSafePathSegment", () => {
+  it("accepts a plain folder name", () => {
+    expect(isSafePathSegment("widget")).toBe(true);
+  });
+
+  it("refuses empty, dot and dot-dot", () => {
+    for (const bad of ["", ".", ".."]) expect(isSafePathSegment(bad)).toBe(false);
+  });
+
+  it("refuses a slash or a backslash", () => {
+    for (const bad of ["a/b", "a\\b", "/", "\\"]) expect(isSafePathSegment(bad)).toBe(false);
+  });
+});
+
+describe("workspaceRepoFolder", () => {
+  const repo = { name: "Widget", owner: "Acme" };
+
+  it("uses the lowercased display name when free", () => {
+    expect(workspaceRepoFolder(repo, new Set())).toBe("widget");
+  });
+
+  it("falls back to name-owner when the name is taken", () => {
+    expect(workspaceRepoFolder(repo, new Set(["widget"]))).toBe("widget-acme");
+  });
+
+  it("refuses when both names are taken", () => {
+    expect(() => workspaceRepoFolder(repo, new Set(["widget", "widget-acme"]))).toThrow(
+      "both in use",
+    );
+  });
+
+  it("refuses an unsafe folder name", () => {
+    for (const name of ["..", ".", "a/b", "a\\b"]) {
+      expect(() => workspaceRepoFolder({ name, owner: "acme" }, new Set())).toThrow(
+        "unsafe folder name",
+      );
+    }
   });
 });
