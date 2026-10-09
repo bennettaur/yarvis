@@ -149,6 +149,16 @@ describe("runAgentTurn", () => {
     expect(stored.map((m) => m.role)).toEqual(["user", "assistant"]);
   });
 
+  it("tells the model how to register and add a repo", async () => {
+    const session = await createSession(db, null);
+    const model = streamingModel([...text("ok"), finish("stop")]);
+    await collect(model, session.id);
+    const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+    expect(prompt).toContain("register_repo");
+    expect(prompt).toContain("add_repo_to_workspace");
+    expect(prompt).toContain("register a repo");
+  });
+
   // A turn that spends its last step on a tool call used to persist an empty
   // assistant row and end silently, which is what "the chat just stopped"
   // looked like from the outside.
