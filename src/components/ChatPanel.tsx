@@ -24,20 +24,25 @@ const EMPTY_HINT =
  * `active` is false while the host keeps the panel mounted but off screen, so a
  * turn keeps streaming after the user switches away. `sessionStorageKey`
  * reopens the last session on mount; each mounted instance needs its own key,
- * or they overwrite each other's.
+ * or they overwrite each other's. `focusOnShow` moves focus to the composer
+ * each time the panel comes on screen; it is for the Chat tab, not for a panel
+ * that appears beside other inputs, such as an Omni widget.
  */
 export default function ChatPanel({
   active = true,
   sessionStorageKey,
+  focusOnShow = false,
 }: {
   active?: boolean;
   sessionStorageKey?: string;
+  focusOnShow?: boolean;
 }) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionsError, setSessionsError] = useState<DisplayError | null>(null);
   const [input, setInput] = useState("");
   const [reasoning, setReasoning] = useReasoningPreference();
   const threadRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
 
   const addSession = useCallback((session: ChatSession) => {
     setSessions((prev) => [session, ...prev]);
@@ -80,6 +85,12 @@ export default function ChatPanel({
   useEffect(() => {
     if (!active) cancelVoice();
   }, [active, cancelVoice]);
+
+  // Focus via a ref rather than `autoFocus`, which Biome flags. Held back while
+  // the overlay is up, since it has a composer of its own.
+  useEffect(() => {
+    if (focusOnShow && active && !overlayOpen) composerRef.current?.focus();
+  }, [focusOnShow, active, overlayOpen]);
 
   // Refetched on each return to the panel: sessions other surfaces created, and
   // titles the sidecar assigned, arrive while it sits hidden. Merged rather than
@@ -124,7 +135,7 @@ export default function ChatPanel({
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
-          onClick={() => void newChat()}
+          onClick={() => void newChat().then(() => composerRef.current?.focus())}
           className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800"
         >
           New chat
@@ -236,6 +247,7 @@ export default function ChatPanel({
         submitLabel="Send"
         maxHeight={360}
         onStop={stop}
+        inputRef={composerRef}
       />
 
       <VoiceControls voice={voice} />
