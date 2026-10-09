@@ -595,8 +595,11 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
       execute: async ({ workspaceId, repoId }) => {
         const before = await getWorkspace(db, workspaceId);
         const owedKickOff = Boolean(before?.pendingBrief);
-        const failedBefore = new Set(
-          (before?.repos ?? []).filter((r) => r.status === "error").map((r) => r.id),
+        // Provisioning also picks up repos left pending or half-provisioned.
+        const unreadyBefore = new Set(
+          (before?.repos ?? [])
+            .filter((r) => r.status !== "ready" && r.status !== "removed")
+            .map((r) => r.id),
         );
 
         let addedId: string;
@@ -616,6 +619,13 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         if (!after) return { error: "workspace vanished after the repo was added", workspaceId };
         const added = after.repos.find((r) => r.id === addedId);
         const kickOffStarted = owedKickOff && !after.pendingBrief;
+        const note = kickOffStarted
+          ? "The workspace's owed kick-off session started on its brief now that every repo is ready."
+          : owedKickOff && after.status === "active"
+            ? "The workspace's owed kick-off session could not start and is still owed. It is tried again on the next provisioning run or when Yarvis restarts."
+            : owedKickOff
+              ? "The workspace's owed kick-off session is still owed. It starts once every repo is ready."
+              : "If a session is already running here, it read AGENTS.md when it started and does not know about this repo. Offer to tell it with send_workspace_instruction.";
         const result = {
           workspaceId,
           name: after.name,
@@ -630,18 +640,33 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
               }
             : null,
           retried: after.repos
-            .filter((r) => failedBefore.has(r.id))
+            .filter((r) => unreadyBefore.has(r.id))
             .map((r) => ({ repo: r.repo.name, status: r.status, error: r.error })),
           kickOffStarted,
-          note: kickOffStarted
-            ? "The workspace's owed kick-off session started on its brief now that every repo is ready."
-            : "A session already running here read AGENTS.md when it started and does not know about this repo. Offer to tell it with send_workspace_instruction.",
+          note,
         };
-        if (added?.status !== "ready") {
-          const failures = after.repos
-            .filter((r) => r.status === "error")
-            .map((r) => ({ repo: r.repo.name, message: r.error ?? "unknown error" }));
+        const failures = after.repos
+          .filter((r) => r.status === "error")
+          .map((r) => ({ repo: r.repo.name, message: r.error ?? "unknown error" }));
+        if (added?.status === "error") {
           return { error: "the repo failed to provision", ...result, failures };
+        }
+        if (added?.status !== "ready") {
+          // Another run was already going, so this call joined it, and that run's
+          // snapshot predates the new row.
+          return {
+            error:
+              "the repo was added but is still pending: another provisioning run was already in progress and did not include it. Retry provisioning for the workspace once that run ends.",
+            ...result,
+            failures,
+          };
+        }
+        if (after.status !== "active") {
+          return {
+            error: `the repo is ready, but the workspace ended in status ${after.status}${after.error ? `: ${sanitizeIssueText(after.error)}` : ""}`,
+            ...result,
+            failures,
+          };
         }
         return result;
       },

@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,14 +11,16 @@ import { workspaceRepos } from "../db/schema.ts";
 import type { IssueDetail, IssueSummary } from "../issues/types.ts";
 import { createTask, getTask } from "../tasks/service.ts";
 import { WORKSPACE_BRIEF_FILE } from "./brief.ts";
-import type { StartClaudeSessionInput } from "./claudeSession.ts";
+import type { ClaudeSessionStarter, StartClaudeSessionInput } from "./claudeSession.ts";
 import type { GitRunner } from "./git.ts";
 import {
   AGENT_KICKOFF_INSTRUCTION,
+  addRepoToWorkspace,
   createRepo,
   getWorkspace,
   listRepos,
   listWorkspaces,
+  provisionWorkspace,
 } from "./service.ts";
 import { buildWorkspaceTools, type WorkspaceGitHubClient } from "./tools.ts";
 
@@ -1443,16 +1445,19 @@ type AddResult = {
 
 describe("add_repo_to_workspace", () => {
   const started: StartClaudeSessionInput[] = [];
-  const toolsWith = (runner: GitRunner) =>
-    buildWorkspaceTools(db, config, {
-      gitRunner: runner,
-      startClaudeSession: async (input) => {
-        started.push(input);
-        return { sessionKey: `ws-claude:${input.workspaceId}` };
-      },
-    });
-  const add = (runner: GitRunner, workspaceId: string, repoId: string) =>
-    toolsWith(runner).add_repo_to_workspace.execute!(
+  const recordingStarter: ClaudeSessionStarter = async (input) => {
+    started.push(input);
+    return { sessionKey: `ws-claude:${input.workspaceId}` };
+  };
+  const toolsWith = (runner: GitRunner, startClaudeSession = recordingStarter) =>
+    buildWorkspaceTools(db, config, { gitRunner: runner, startClaudeSession });
+  const add = (
+    runner: GitRunner,
+    workspaceId: string,
+    repoId: string,
+    startClaudeSession = recordingStarter,
+  ) =>
+    toolsWith(runner, startClaudeSession).add_repo_to_workspace.execute!(
       { workspaceId, repoId },
       opts,
     ) as Promise<AddResult>;
@@ -1521,8 +1526,52 @@ describe("add_repo_to_workspace", () => {
     const result = await add(dirRunner, workspaceId, gadget.id);
 
     expect(result.kickOffStarted).toBe(true);
+    expect(result.note).toContain("kick-off session started");
     expect(started).toHaveLength(1);
     expect(started[0]!.instruction).toBe(AGENT_KICKOFF_INSTRUCTION);
+  });
+
+  it("says an owed kick-off could not start", async () => {
+    const workspaceId = await workspaceWith(
+      "https://github.com/acme/widget.git",
+      failCloneOf("widget"),
+      "Add rate limiting",
+    );
+    const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+    const errorLog = spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const result = await add(dirRunner, workspaceId, gadget.id, async () => {
+        throw new Error("not logged in");
+      });
+
+      expect(result.kickOffStarted).toBe(false);
+      expect(result.note).toContain("could not start");
+      expect(result.note).not.toContain("already running");
+    } finally {
+      errorLog.mockRestore();
+    }
+    expect((await getWorkspace(db, workspaceId))?.pendingBrief).not.toBeNull();
+  });
+
+  it("says an owed kick-off waits while a repo is failed", async () => {
+    const workspaceId = await workspaceWith(
+      "https://github.com/acme/widget.git",
+      failCloneOf("widget"),
+      "Add rate limiting",
+    );
+    const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+
+    const result = await add(failCloneOf("widget"), workspaceId, gadget.id);
+
+    expect(result.note).toContain("starts once every repo is ready");
+    expect(started).toHaveLength(0);
+  });
+
+  it("softens the note when no kick-off was owed", async () => {
+    const workspaceId = await workspaceWith("https://github.com/acme/widget.git", dirRunner);
+    const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+    const result = await add(dirRunner, workspaceId, gadget.id);
+    expect(result.note).toContain("If a session is already running here");
   });
 
   // Review Focus: the new repo itself fails.
@@ -1536,6 +1585,82 @@ describe("add_repo_to_workspace", () => {
     expect(result.status).toBe("error");
     expect(result.failures).toEqual([expect.objectContaining({ repo: "gadget" })]);
     expect(result.kickOffStarted).toBe(false);
+  });
+
+  it("reports an error when a retried repo fails again", async () => {
+    const workspaceId = await workspaceWith(
+      "https://github.com/acme/widget.git",
+      failCloneOf("widget"),
+    );
+    const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+
+    const result = await add(failCloneOf("widget"), workspaceId, gadget.id);
+
+    expect(result.error).toContain("ended in status error");
+    expect(result.status).toBe("error");
+    expect(result.repo).toMatchObject({ name: "gadget", status: "ready" });
+    expect(result.failures).toEqual([expect.objectContaining({ repo: "widget" })]);
+  });
+
+  it("retries a repo that was still pending", async () => {
+    const workspaceId = await workspaceWith("https://github.com/acme/widget.git", dirRunner);
+    const stranded = await createRepo(db, config, {
+      cloneUrl: "https://github.com/acme/stranded.git",
+    });
+    await addRepoToWorkspace(db, workspaceId, stranded.id);
+    const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+
+    const result = await add(dirRunner, workspaceId, gadget.id);
+
+    expect(result.retried).toEqual([
+      expect.objectContaining({ repo: "stranded", status: "ready" }),
+    ]);
+  });
+
+  // Another run can begin between the add and this tool's own provision, and
+  // joins rather than starts one. Its snapshot predates the new row.
+  it("reports a repo another run left pending as pending", async () => {
+    const workspaceId = await workspaceWith(
+      "https://github.com/acme/widget.git",
+      failCloneOf("widget"),
+    );
+    const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+    const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+    const { promise: entered, resolve: markEntered } = Promise.withResolvers<void>();
+    const gatedRunner: GitRunner = async (args, runOpts) => {
+      if (args[0] === "clone") {
+        markEntered();
+        await gate;
+      }
+      return dirRunner(args, runOpts);
+    };
+    const realInsert = db.insert.bind(db);
+    const insert = spyOn(db, "insert").mockImplementation(((table: unknown) => {
+      const builder = realInsert(table as never);
+      if (table !== workspaceRepos) return builder;
+      return {
+        values: (row: never) => ({
+          returning: async () => {
+            void provisionWorkspace(db, workspaceId, () => undefined, { runner: gatedRunner });
+            await entered;
+            setTimeout(release, 100);
+            return builder.values(row).returning();
+          },
+        }),
+      };
+    }) as never);
+
+    let result: AddResult;
+    try {
+      result = await add(dirRunner, workspaceId, gadget.id);
+    } finally {
+      insert.mockRestore();
+    }
+
+    expect(result.error).toContain("still pending");
+    expect(result.error).not.toContain("failed to provision");
+    expect(result.repo).toMatchObject({ name: "gadget", status: "pending" });
+    expect(result.failures).toEqual([]);
   });
 
   it("returns a refusal as an error", async () => {
