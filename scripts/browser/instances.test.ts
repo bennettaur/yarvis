@@ -76,6 +76,19 @@ describe("readTrustedEntry", () => {
     const target = await file(0o600);
     const link = join(dir as string, "link.json");
     await symlink(target, link);
-    await expect(readTrustedEntry(link, me)).rejects.toThrow();
+    await expect(readTrustedEntry(link, me)).rejects.toMatchObject({ code: "ELOOP" });
+  });
+
+  it("skips a FIFO named like an entry instead of waiting on it", async () => {
+    dir = await mkdtemp(join(tmpdir(), "yarvis-instances-"));
+    const fifo = join(dir, "main-1.json");
+    Bun.spawnSync(["mkfifo", fifo]);
+    expect(await readTrustedEntry(fifo, me)).toBeNull();
+  });
+
+  it("skips a file too big to be an entry", async () => {
+    const path = await file(0o600);
+    await writeFile(path, " ".repeat(5000));
+    expect(await readTrustedEntry(path, me)).toBeNull();
   });
 });
