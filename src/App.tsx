@@ -347,7 +347,7 @@ export default function App() {
         {/* Chat stays mounted while another tab is showing, so a turn keeps
             streaming instead of being cancelled by the unmount. */}
         <div className={tab === "chat" ? "h-full" : "hidden"}>
-          <ChatPanel active={tab === "chat"} sessionStorageKey={CHAT_TAB_SESSION_KEY} />
+          <ChatPanel active={tab === "chat"} sessionStorageKey={CHAT_TAB_SESSION_KEY} focusOnShow />
         </div>
         {/* Omni fills the region and manages its own layout; page-like views
             scroll as a padded document. Chat is rendered above. */}
