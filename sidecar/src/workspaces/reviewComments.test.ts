@@ -362,10 +362,18 @@ describe("review comment routes", () => {
       body: "Still needed — this archive did not finish.",
     });
 
-    const dirtyGit: GitRunner = async (args, opts) =>
-      args[0] === "worktree" && args[1] === "remove" && !args.includes("--force")
-        ? { stdout: "", stderr: "worktree contains modified files", exitCode: 1 }
-        : fakeGit(args, opts);
+    // The refused worktree stays listed, since git still has it registered.
+    let refused = "";
+    const dirtyGit: GitRunner = async (args, opts) => {
+      if (args[0] === "worktree" && args[1] === "remove" && !args.includes("--force")) {
+        refused = args[2] ?? "";
+        return { stdout: "", stderr: "worktree contains modified files", exitCode: 1 };
+      }
+      if (args[0] === "worktree" && args[1] === "list") {
+        return { stdout: `worktree ${refused}\0\0`, stderr: "", exitCode: 0 };
+      }
+      return fakeGit(args, opts);
+    };
 
     const result = await archiveWorkspace(db, ws.id, {}, dirtyGit);
     expect(result.status).toBe("archiving");

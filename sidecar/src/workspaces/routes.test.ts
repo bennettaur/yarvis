@@ -586,13 +586,20 @@ async function addRepo(cloneUrl = "git@github.com:acme/widget.git"): Promise<{ i
   return (await res.json()) as { id: string };
 }
 
-/** Refuses a worktree removal until it's forced, as a dirty worktree does. */
+/** Refuses a worktree removal until it's forced, as a dirty worktree does, and
+ *  keeps listing the refused worktree since git still has it registered. */
 const dirtyGit: GitRunner = async (args, opts) => {
   if (args[0] === "worktree" && args[1] === "remove" && !args.includes("--force")) {
+    refusedWorktrees.add(args[2] ?? "");
     return { stdout: "", stderr: "worktree contains modified files", exitCode: 1 };
+  }
+  if (args[0] === "worktree" && args[1] === "list") {
+    const stdout = [...refusedWorktrees].map((path) => `worktree ${path}\0\0`).join("");
+    return { stdout, stderr: "", exitCode: 0 };
   }
   return fakeGit(args, opts);
 };
+const refusedWorktrees = new Set<string>();
 
 /** Polls a workspace the way a client does, for work finishing in the
  *  background (an archive's worktree teardown). */

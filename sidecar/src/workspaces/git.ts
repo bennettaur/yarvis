@@ -11,7 +11,7 @@
  * (merge, push) likewise run in a worktree, never in the primary clone.
  */
 
-import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { run } from "./exec.ts";
 
@@ -479,7 +479,14 @@ export async function addExistingBranchWorktree(
   await git(runner, ["worktree", "add", worktreePath, branch], primaryClonePath);
 }
 
-/** Removes a worktree and prunes its metadata. `force` discards uncommitted work. */
+/**
+ * Removes a worktree and prunes its metadata. `force` discards uncommitted work.
+ *
+ * A worktree git no longer knows about is not an error, so an archive can finish
+ * after the folder was deleted out of band or a previous attempt got partway.
+ * What's left on disk at that path is no worktree's files, so it's deleted only
+ * with `force`; without it the removal throws so the user sees what would go.
+ */
 export async function removeWorktree(
   runner: GitRunner,
   primaryClonePath: string,
@@ -487,8 +494,31 @@ export async function removeWorktree(
   opts: { force: boolean },
 ): Promise<void> {
   const args = ["worktree", "remove", ...(opts.force ? ["--force"] : []), worktreePath];
-  await git(runner, args, primaryClonePath, REMOVAL_TIMEOUT_MS);
+  try {
+    await git(runner, args, primaryClonePath, REMOVAL_TIMEOUT_MS);
+  } catch (e) {
+    // Prune first so a worktree whose folder is already gone stops counting.
+    await git(runner, ["worktree", "prune"], primaryClonePath);
+    const target = canonicalPath(worktreePath);
+    const registered = (await listWorktrees(runner, primaryClonePath)).some(
+      (entry) => canonicalPath(entry.path) === target,
+    );
+    if (registered) throw e;
+    removeLeftover(worktreePath, opts.force);
+    return;
+  }
   await git(runner, ["worktree", "prune"], primaryClonePath);
+}
+
+function removeLeftover(worktreePath: string, force: boolean): void {
+  if (!existsSync(worktreePath)) return;
+  const leftover = !statSync(worktreePath).isDirectory() || readdirSync(worktreePath).length > 0;
+  if (leftover && !force) {
+    throw new Error(
+      `${worktreePath} is no longer a git worktree but still has files in it — force remove to delete them`,
+    );
+  }
+  rmSync(worktreePath, { recursive: true, force: true });
 }
 
 /**
