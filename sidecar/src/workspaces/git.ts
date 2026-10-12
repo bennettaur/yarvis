@@ -419,22 +419,13 @@ export async function existingWorktree(
   primaryClonePath: string,
   worktreePath: string,
 ): Promise<ExistingWorktree | null> {
-  await git(runner, ["worktree", "prune"], primaryClonePath);
-  const target = canonicalPath(worktreePath);
-  const match = (await listWorktrees(runner, primaryClonePath)).find(
-    (entry) => canonicalPath(entry.path) === target,
-  );
+  const match = await registeredWorktree(runner, primaryClonePath, worktreePath);
   if (match) return { branch: match.branch };
 
-  // `statSync` rather than a bare `readdirSync`: a plain file on the path would
-  // otherwise raise ENOTDIR in place of the message this block exists to give.
-  if (existsSync(worktreePath)) {
-    const occupied = !statSync(worktreePath).isDirectory() || readdirSync(worktreePath).length > 0;
-    if (occupied) {
-      throw new Error(
-        `${worktreePath} already exists and is not a worktree of ${primaryClonePath} — remove it to provision again`,
-      );
-    }
+  if (existsSync(worktreePath) && isOccupied(worktreePath)) {
+    throw new Error(
+      `${worktreePath} already exists and is not a worktree of ${primaryClonePath} — remove it to provision again`,
+    );
   }
   return null;
 }
@@ -482,43 +473,72 @@ export async function addExistingBranchWorktree(
 /**
  * Removes a worktree and prunes its metadata. `force` discards uncommitted work.
  *
- * A worktree git no longer knows about is not an error, so an archive can finish
- * after the folder was deleted out of band or a previous attempt got partway.
- * What's left on disk at that path is no worktree's files, so it's deleted only
- * with `force`; without it the removal throws so the user sees what would go.
+ * A worktree git no longer has registered is not an error, so an archive can
+ * finish after the folder was deleted out of band or a previous attempt got
+ * partway. Files still at that path belong to no worktree: they're deleted only
+ * with `force`, and without it the removal throws naming the folder, so the user
+ * sees what would go.
+ *
+ * `workspaceRoot` bounds that delete. The path is built from the repo's display
+ * name, which isn't validated, so a name like `..` must not reach `rmSync`.
  */
 export async function removeWorktree(
   runner: GitRunner,
   primaryClonePath: string,
   worktreePath: string,
-  opts: { force: boolean },
+  opts: { force: boolean; workspaceRoot: string },
 ): Promise<void> {
   const args = ["worktree", "remove", ...(opts.force ? ["--force"] : []), worktreePath];
   try {
     await git(runner, args, primaryClonePath, REMOVAL_TIMEOUT_MS);
   } catch (e) {
-    // Prune first so a worktree whose folder is already gone stops counting.
-    await git(runner, ["worktree", "prune"], primaryClonePath);
-    const target = canonicalPath(worktreePath);
-    const registered = (await listWorktrees(runner, primaryClonePath)).some(
-      (entry) => canonicalPath(entry.path) === target,
-    );
-    if (registered) throw e;
-    removeLeftover(worktreePath, opts.force);
+    if (await registeredWorktree(runner, primaryClonePath, worktreePath)) throw e;
+    removeLeftover(worktreePath, opts);
     return;
   }
   await git(runner, ["worktree", "prune"], primaryClonePath);
 }
 
-function removeLeftover(worktreePath: string, force: boolean): void {
+function removeLeftover(
+  worktreePath: string,
+  opts: { force: boolean; workspaceRoot: string },
+): void {
   if (!existsSync(worktreePath)) return;
-  const leftover = !statSync(worktreePath).isDirectory() || readdirSync(worktreePath).length > 0;
-  if (leftover && !force) {
+  const resolved = resolve(worktreePath);
+  if (canonicalPath(dirname(resolved)) !== canonicalPath(opts.workspaceRoot)) {
     throw new Error(
-      `${worktreePath} is no longer a git worktree but still has files in it — force remove to delete them`,
+      `${worktreePath} is no longer a git worktree, and is outside its workspace folder, so it was left in place`,
     );
   }
-  rmSync(worktreePath, { recursive: true, force: true });
+  if (isOccupied(worktreePath) && !opts.force) {
+    throw new Error(
+      `${worktreePath} is no longer a git worktree but something is still there — force remove to delete it`,
+    );
+  }
+  rmSync(resolved, { recursive: true, force: true });
+}
+
+/**
+ * The worktree registered at `worktreePath`, if any. Prunes first, so a folder
+ * deleted out of band no longer counts. Compares canonical paths, since git
+ * reports the path with symlinks resolved (`/private/var` for `/var` on macOS).
+ */
+async function registeredWorktree(
+  runner: GitRunner,
+  primaryClonePath: string,
+  worktreePath: string,
+): Promise<WorktreeEntry | undefined> {
+  await git(runner, ["worktree", "prune"], primaryClonePath);
+  const target = canonicalPath(worktreePath);
+  return (await listWorktrees(runner, primaryClonePath)).find(
+    (entry) => canonicalPath(entry.path) === target,
+  );
+}
+
+/** A non-empty folder, or anything that isn't a folder. `statSync` comes first
+ *  because a bare `readdirSync` on a file raises ENOTDIR. */
+function isOccupied(path: string): boolean {
+  return !statSync(path).isDirectory() || readdirSync(path).length > 0;
 }
 
 /**

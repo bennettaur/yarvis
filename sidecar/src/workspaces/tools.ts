@@ -627,7 +627,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
 
     archive_workspace: tool({
       description:
-        "Archive a workspace: stop its Claude session, tear down its git worktrees, and mark it archived (completing any linked task). Resolve the workspace id with list_workspaces first. If a worktree has uncommitted changes, or git has let go of it but its folder still has files, the archive is refused and stays in 'archiving'; retry with force=true to discard that work. Report back the returned status and any errors.",
+        "Archive a workspace: stop its Claude session, tear down its git worktrees, and mark it archived (completing any linked task). Resolve the workspace id with list_workspaces first. If a worktree has uncommitted changes, or git no longer tracks it but its folder still has files, the archive is refused and stays in 'archiving'; retry with force=true to discard that work. Report back the returned status and any errors.",
       inputSchema: z.object({
         workspaceId: z
           .string()

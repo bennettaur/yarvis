@@ -492,6 +492,19 @@ describe("reconcileOrphans", () => {
     expect(b?.status).toBe("archiving");
     expect(b?.error).toBe("one or more worktrees could not be removed");
   });
+
+  it("leaves an archive that may still be running alone", async () => {
+    const [running] = await db
+      .insert(workspaces)
+      .values({ name: "c", slug: "c", rootPath: "/tmp/c", status: "archiving" })
+      .returning();
+
+    await reconcileOrphans(db);
+
+    const [c] = await db.select().from(workspaces).where(eq(workspaces.id, running!.id));
+    expect(c?.status).toBe("archiving");
+    expect(c?.error).toBeNull();
+  });
 });
 
 function eqWr(wrId: string) {

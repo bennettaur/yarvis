@@ -347,9 +347,9 @@ describe("addExistingBranchWorktree", () => {
 });
 
 describe("removeWorktree", () => {
-  /** A real clone with one commit, and a path beside it for a worktree. */
-  function cloneWithWorktreePath(): { clone: string; worktreePath: string } {
-    const parent = mkdtempSync(join(tmpdir(), "yarvis-rm-"));
+  /** A real clone with one commit, and a worktree of it inside a workspace folder. */
+  function cloneWithWorktree(): { clone: string; workspaceRoot: string; worktreePath: string } {
+    const parent = mkdtempSync(join(tmpdir(), "yarvis-wt-"));
     tmpDirs.push(parent);
     const clone = join(parent, "clone");
     mkdirSync(clone);
@@ -359,75 +359,105 @@ describe("removeWorktree", () => {
     writeFileSync(join(clone, "a.txt"), "a");
     git("add", "-A");
     git("commit", "-qm", "init");
-    const worktreePath = join(parent, "ws", "service-a");
+    const workspaceRoot = join(parent, "ws");
+    const worktreePath = join(workspaceRoot, "service-a");
     git("worktree", "add", "-q", "-b", "task", worktreePath);
-    return { clone, worktreePath };
+    return { clone, workspaceRoot, worktreePath };
   }
 
-  const registered = async (clone: string) =>
+  const registeredWorktreePaths = async (clone: string) =>
     (await listWorktrees(defaultGitRunner, clone)).map((e) => realpathSync(e.path));
 
   it("removes a registered worktree", async () => {
-    const { clone, worktreePath } = cloneWithWorktreePath();
-    await removeWorktree(defaultGitRunner, clone, worktreePath, { force: false });
+    const { clone, workspaceRoot, worktreePath } = cloneWithWorktree();
+    await removeWorktree(defaultGitRunner, clone, worktreePath, { force: false, workspaceRoot });
     expect(existsSync(worktreePath)).toBe(false);
-    expect(await registered(clone)).toEqual([realpathSync(clone)]);
+    expect(await registeredWorktreePaths(clone)).toEqual([realpathSync(clone)]);
   });
 
   it("refuses a dirty worktree without force, and discards it with force", async () => {
-    const { clone, worktreePath } = cloneWithWorktreePath();
+    const { clone, workspaceRoot, worktreePath } = cloneWithWorktree();
     writeFileSync(join(worktreePath, "a.txt"), "changed");
     await expect(
-      removeWorktree(defaultGitRunner, clone, worktreePath, { force: false }),
+      removeWorktree(defaultGitRunner, clone, worktreePath, { force: false, workspaceRoot }),
     ).rejects.toThrow("worktree remove");
-    await removeWorktree(defaultGitRunner, clone, worktreePath, { force: true });
+    await removeWorktree(defaultGitRunner, clone, worktreePath, { force: true, workspaceRoot });
     expect(existsSync(worktreePath)).toBe(false);
   });
 
   it("treats a worktree whose folder is already gone as removed", async () => {
-    const { clone, worktreePath } = cloneWithWorktreePath();
+    const { clone, workspaceRoot, worktreePath } = cloneWithWorktree();
     rmSync(worktreePath, { recursive: true, force: true });
-    await removeWorktree(defaultGitRunner, clone, worktreePath, { force: false });
-    expect(await registered(clone)).toEqual([realpathSync(clone)]);
+    await removeWorktree(defaultGitRunner, clone, worktreePath, { force: false, workspaceRoot });
+    expect(await registeredWorktreePaths(clone)).toEqual([realpathSync(clone)]);
   });
 
   it("succeeds on a retry after git already let go of the worktree", async () => {
-    const { clone, worktreePath } = cloneWithWorktreePath();
-    await removeWorktree(defaultGitRunner, clone, worktreePath, { force: false });
-    await removeWorktree(defaultGitRunner, clone, worktreePath, { force: false });
+    const { clone, workspaceRoot, worktreePath } = cloneWithWorktree();
+    await removeWorktree(defaultGitRunner, clone, worktreePath, { force: false, workspaceRoot });
+    await removeWorktree(defaultGitRunner, clone, worktreePath, { force: false, workspaceRoot });
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(await registeredWorktreePaths(clone)).toEqual([realpathSync(clone)]);
   });
 
   it("keeps leftover files without force, and deletes them with force", async () => {
-    const { clone, worktreePath } = cloneWithWorktreePath();
-    await removeWorktree(defaultGitRunner, clone, worktreePath, { force: false });
+    const { clone, workspaceRoot, worktreePath } = cloneWithWorktree();
+    await removeWorktree(defaultGitRunner, clone, worktreePath, { force: false, workspaceRoot });
     mkdirSync(join(worktreePath, "node_modules"), { recursive: true });
     writeFileSync(join(worktreePath, "node_modules", "x.js"), "");
 
     await expect(
-      removeWorktree(defaultGitRunner, clone, worktreePath, { force: false }),
-    ).rejects.toThrow("force remove to delete them");
+      removeWorktree(defaultGitRunner, clone, worktreePath, { force: false, workspaceRoot }),
+    ).rejects.toThrow("force remove to delete it");
     expect(existsSync(worktreePath)).toBe(true);
 
-    await removeWorktree(defaultGitRunner, clone, worktreePath, { force: true });
+    await removeWorktree(defaultGitRunner, clone, worktreePath, { force: true, workspaceRoot });
+    expect(existsSync(worktreePath)).toBe(false);
+  });
+
+  it("treats a plain file at the path as leftover too", async () => {
+    const { clone, workspaceRoot, worktreePath } = cloneWithWorktree();
+    await removeWorktree(defaultGitRunner, clone, worktreePath, { force: false, workspaceRoot });
+    writeFileSync(worktreePath, "");
+    await expect(
+      removeWorktree(defaultGitRunner, clone, worktreePath, { force: false, workspaceRoot }),
+    ).rejects.toThrow("force remove to delete it");
+    await removeWorktree(defaultGitRunner, clone, worktreePath, { force: true, workspaceRoot });
     expect(existsSync(worktreePath)).toBe(false);
   });
 
   it("clears an empty leftover folder without force", async () => {
-    const { clone, worktreePath } = cloneWithWorktreePath();
-    await removeWorktree(defaultGitRunner, clone, worktreePath, { force: false });
+    const { clone, workspaceRoot, worktreePath } = cloneWithWorktree();
+    await removeWorktree(defaultGitRunner, clone, worktreePath, { force: false, workspaceRoot });
     mkdirSync(worktreePath);
-    await removeWorktree(defaultGitRunner, clone, worktreePath, { force: false });
+    await removeWorktree(defaultGitRunner, clone, worktreePath, { force: false, workspaceRoot });
     expect(existsSync(worktreePath)).toBe(false);
   });
 
+  // The path comes from the repo's display name, which isn't validated: a repo
+  // named `..` must not turn a force archive into deleting the workspaces root.
+  it("never deletes a path that isn't directly inside the workspace folder, even with force", async () => {
+    const { clone, workspaceRoot, worktreePath } = cloneWithWorktree();
+    await removeWorktree(defaultGitRunner, clone, worktreePath, { force: false, workspaceRoot });
+    writeFileSync(join(workspaceRoot, "AGENTS.md"), "");
+
+    for (const path of [join(workspaceRoot, ".."), join(workspaceRoot, "."), workspaceRoot]) {
+      await expect(
+        removeWorktree(defaultGitRunner, clone, path, { force: true, workspaceRoot }),
+      ).rejects.toThrow("outside its workspace folder");
+    }
+    expect(existsSync(join(workspaceRoot, "AGENTS.md"))).toBe(true);
+    expect(existsSync(clone)).toBe(true);
+  });
+
   it("gives the removal longer than the default two-minute timeout", async () => {
-    const { clone, worktreePath } = cloneWithWorktreePath();
+    const { clone, workspaceRoot, worktreePath } = cloneWithWorktree();
     const timeouts: (number | undefined)[] = [];
     const runner: GitRunner = async (args, opts) => {
       if (args[1] === "remove") timeouts.push(opts.timeoutMs);
       return defaultGitRunner(args, opts);
     };
-    await removeWorktree(runner, clone, worktreePath, { force: false });
+    await removeWorktree(runner, clone, worktreePath, { force: false, workspaceRoot });
     expect(timeouts[0]).toBeGreaterThan(120_000);
   });
 });

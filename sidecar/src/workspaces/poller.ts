@@ -234,7 +234,7 @@ export async function reconcileOrphans(db: Db): Promise<void> {
   // An interrupted archive stays in the archive flow, where the next step is
   // archiving again; as `error` it would offer to provision the worktrees back.
   // One that already stopped on an error isn't running, so it's left alone.
-  await db
+  const interruptedArchives = await db
     .update(workspaces)
     .set({ error: "archive interrupted; archive again to finish", updatedAt: new Date() })
     .where(
@@ -243,7 +243,13 @@ export async function reconcileOrphans(db: Db): Promise<void> {
         isNull(workspaces.error),
         lt(workspaces.updatedAt, cutoff),
       ),
+    )
+    .returning({ id: workspaces.id });
+  if (interruptedArchives.length) {
+    console.warn(
+      `[workspace poller] flagged ${interruptedArchives.length} interrupted archive(s) for retry`,
     );
+  }
 
   const stuck = await db
     .update(workspaces)
