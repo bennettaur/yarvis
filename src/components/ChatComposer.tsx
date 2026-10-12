@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { type Ref, useEffect, useImperativeHandle, useRef } from "react";
 
 /** Tallest the textarea grows before it starts scrolling internally (px). */
 const DEFAULT_MAX_HEIGHT = 160;
@@ -20,6 +20,7 @@ export default function ChatComposer({
   className = "flex gap-2",
   textareaClassName = "",
   maxHeight = DEFAULT_MAX_HEIGHT,
+  inputRef,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -41,8 +42,15 @@ export default function ChatComposer({
   textareaClassName?: string;
   /** Tallest the textarea grows before it scrolls internally (px). */
   maxHeight?: number;
+  /** The textarea, for a host that moves focus into it. */
+  inputRef?: Ref<HTMLTextAreaElement | null>;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
+  useImperativeHandle<HTMLTextAreaElement | null, HTMLTextAreaElement | null>(
+    inputRef,
+    () => ref.current,
+    [],
+  );
 
   // Re-measure after each value change. scrollHeight excludes the border so
   // it's added back under border-box; past the cap the textarea scrolls.
@@ -51,6 +59,10 @@ export default function ChatComposer({
     const el = ref.current;
     if (!el) return;
     el.style.height = "auto";
+    // Under `display: none` (the Chat tab mounts behind whichever tab is open)
+    // there is no layout, so scrollHeight is 0. Pinning that would leave the
+    // box at its padding's height once shown; left at auto, it shows one row.
+    if (el.scrollHeight === 0) return;
     const style = window.getComputedStyle(el);
     const borderY = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
     el.style.height = `${Math.min(el.scrollHeight + borderY, maxHeight)}px`;

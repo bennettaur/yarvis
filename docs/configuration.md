@@ -54,7 +54,7 @@ AWS Bedrock uses the standard AWS credential chain (`~/.aws`, `AWS_PROFILE`,
 
 ### Token scopes
 
-- **GitHub.** A classic PAT needs `repo`. A fine-grained PAT needs
+- **GitHub.** A classic PAT needs `repo` and `read:org`. A fine-grained PAT needs
   **Contents: Read** (the review reads file bodies to show context) plus pull
   request and issue access. Merging a stack needs write access to the repo.
 - **Azure DevOps.** A PAT with **Code (read & write)** and **Pull Request
