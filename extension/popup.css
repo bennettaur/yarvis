@@ -1,0 +1,91 @@
+:root {
+  --text: #1f2328;
+  --muted: #656d76;
+  --border: #d0d7de;
+  --ok: #2e7d32;
+  --off: #9aa0a6;
+  --bg: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #e6edf3;
+    --muted: #8d96a0;
+    --border: #3d444d;
+    --off: #6e7681;
+    --bg: #1f2328;
+  }
+}
+body {
+  width: 300px;
+  margin: 0;
+  padding: 12px 14px;
+  font: 13px/1.4 system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+h1 {
+  font-size: 15px;
+  margin: 0 0 10px;
+}
+h2 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 14px 0 6px;
+}
+label {
+  display: block;
+  margin-bottom: 4px;
+}
+form {
+  display: flex;
+  gap: 6px;
+}
+input {
+  flex: 1;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+button {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.hint {
+  color: var(--muted);
+  margin: 6px 0 0;
+}
+ul {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0 0;
+}
+li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--off);
+  flex: none;
+}
+.dot.on {
+  background: var(--ok);
+}
+.port {
+  color: var(--muted);
+  margin-left: auto;
+}

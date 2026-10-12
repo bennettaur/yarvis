@@ -211,6 +211,7 @@ Each integration is independent. Set up the ones you need, in any order.
 | Better memory search | Add a Gemini key, or configure **Settings → Embeddings**. Without either, memory search uses a weaker offline embedder. | [Configuration](configuration.md#embeddings) |
 | Voice | Run the local speech server and point Settings → Voice at it. | [Voice server](voice-server.md) |
 | MCP servers | Add servers under **Settings → Tools & MCP**. | [MCP](features/mcp.md) |
+| Reading your browser | Load the `extension/` folder in Chrome, then run `bun run browser:install <extension-id>`. | [Browser](features/browser.md) |
 | Telegram | Create a bot with @BotFather and save its token. | [Telegram](features/telegram.md) |
 | Transcript digest | Turn on the transcript digest under **Settings → Assistant** so the assistant learns what happened in your Claude Code sessions. | [The assistant](features/assistant.md) |
 
