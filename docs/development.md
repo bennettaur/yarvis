@@ -295,4 +295,5 @@ sidecar/        Bun + TS service (Hono)
   drizzle/         generated SQL migrations
 scripts/        dev tooling (dev-instance.ts)
 demo/           Playwright demo recordings: mocked Rust core, seeded demo DB (see demo/README.md)
+video/          the showcase video: a standalone Remotion package (see video/README.md)
 ```

@@ -1,0 +1,16 @@
+@import "../../src/index.css";
+@source "../../src";
+@source "./";
+@source "../player";
+
+/*
+ * Every frame is rendered on its own, so a CSS transition or keyframe
+ * animation would be caught at a random point. Motion in the video comes from
+ * the frame number instead.
+ */
+*,
+*::before,
+*::after {
+  transition: none !important;
+  animation: none !important;
+}
