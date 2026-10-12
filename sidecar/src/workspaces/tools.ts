@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { emitEvent } from "../events/service.ts";
-import { GitHubClient } from "../github/client.ts";
+import { createGitHubClient } from "../github/client.ts";
 import {
   applyStartWorkSideEffects,
   buildIssuePrompt,
@@ -161,7 +161,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
     deps.githubClient !== undefined
       ? deps.githubClient
       : config.secrets?.githubToken
-        ? new GitHubClient(config.secrets.githubToken)
+        ? createGitHubClient(config, config.secrets.githubToken)
         : null;
 
   /**

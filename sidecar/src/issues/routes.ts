@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { emitEvent } from "../events/service.ts";
-import { GitHubClient } from "../github/client.ts";
+import { createGitHubClient } from "../github/client.ts";
 import { noTraversal } from "../pr/codeTools.ts";
 import { createWorkspace, startKickOff } from "../workspaces/service.ts";
 import {
@@ -161,7 +161,7 @@ export function createIssueRoutes(config: Config): Hono {
 
   const db = () => getDb(config.databaseUrl as string).db;
   const github = () =>
-    config.secrets.githubToken ? new GitHubClient(config.secrets.githubToken) : null;
+    config.secrets.githubToken ? createGitHubClient(config, config.secrets.githubToken) : null;
 
   // --- Configured repos (for grouping + the "all open" scope) ---
 

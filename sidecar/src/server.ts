@@ -93,8 +93,9 @@ if (config.databaseUrl) {
       // Seed the built-in tools into the unified registry so the Tool Manager
       // and tool search see them. Best-effort: a failure here (e.g. embedder
       // misconfig) must not take the service down. Gated with the rest because
-      // it embeds and upserts against the shared database; the tool routes seed
-      // the registry lazily, so a secondary instance still reads a correct one.
+      // it embeds and upserts against the shared database; the tool routes sync
+      // the built-ins on first use and chat seeds any it finds missing, so a
+      // secondary instance still reads a correct one.
       try {
         const db = getDb(config.databaseUrl as string).db;
         await syncBuiltins(db, await chooseEmbedder(config, db));

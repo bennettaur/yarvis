@@ -35,6 +35,31 @@ function isOverdue(target: string | null): boolean {
   return target < todayIso();
 }
 
+export interface TaskGroups {
+  overdue: Task[];
+  today: Task[];
+  /** Daily tasks dated after today. */
+  upcoming: Task[];
+  /** Weekly tasks and undated daily ones, unless overdue. */
+  weekly: Task[];
+}
+
+/**
+ * Sorts open tasks into the panel's groups. Every task lands in exactly one, so
+ * none drops off the panel. A daily task dated after today, which the
+ * assistant's tools can create, goes under Upcoming.
+ */
+export function groupTasks(tasks: Task[], todayDate: string): TaskGroups {
+  const groups: TaskGroups = { overdue: [], today: [], upcoming: [], weekly: [] };
+  for (const task of tasks) {
+    if (task.targetDate && task.targetDate < todayDate) groups.overdue.push(task);
+    else if (task.scope === "weekly" || !task.targetDate) groups.weekly.push(task);
+    else if (task.targetDate === todayDate) groups.today.push(task);
+    else groups.upcoming.push(task);
+  }
+  return groups;
+}
+
 function TaskRow({
   task,
   onComplete,
@@ -232,14 +257,10 @@ export default function TasksPanel() {
     [refresh],
   );
 
-  const { daily, weekly, overdue } = useMemo(() => {
-    const today = todayIso();
-    return {
-      overdue: tasks.filter((t) => t.targetDate && t.targetDate < today),
-      daily: tasks.filter((t) => t.scope === "daily" && t.targetDate === today),
-      weekly: tasks.filter((t) => t.scope === "weekly" || (t.scope === "daily" && !t.targetDate)),
-    };
-  }, [tasks]);
+  const { overdue, today, upcoming, weekly } = useMemo(
+    () => groupTasks(tasks, todayIso()),
+    [tasks],
+  );
 
   return (
     <div className="mx-auto max-w-3xl space-y-5">
@@ -293,11 +314,21 @@ export default function TasksPanel() {
 
           <TaskGroup
             title="Today"
-            tasks={daily}
+            tasks={today}
             onComplete={onComplete}
             onDelete={onDelete}
             accent="indigo"
           />
+          {upcoming.length > 0 && (
+            <TaskGroup
+              title="Upcoming"
+              caption="Due on a later day"
+              tasks={upcoming}
+              onComplete={onComplete}
+              onDelete={onDelete}
+              accent="indigo"
+            />
+          )}
           <TaskGroup
             title="This week"
             caption="No fixed day"

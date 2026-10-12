@@ -54,7 +54,7 @@ AWS Bedrock uses the standard AWS credential chain (`~/.aws`, `AWS_PROFILE`,
 
 ### Token scopes
 
-- **GitHub.** A classic PAT needs `repo`. A fine-grained PAT needs
+- **GitHub.** A classic PAT needs `repo` and `read:org`. A fine-grained PAT needs
   **Contents: Read** (the review reads file bodies to show context) plus pull
   request and issue access. Merging a stack needs write access to the repo.
   The review sync only sees reviews in repos the token can reach. An org that
@@ -169,6 +169,7 @@ has written your providers and MCP servers into it.
 | `chatConfig` | `maxSteps` (100, up to 500), `maxOutputTokens` (none, up to 200000), `compactAtTokens` (200000, from 10000 to 2000000). A model's own compaction threshold in its catalog entry wins over `compactAtTokens`. | Settings → Assistant → Turn budget |
 | `complexityModels` | The provider and model behind the `low`, `medium` and `max` tiers specialists can ask for | Settings → Assistant |
 | `githubPrConfig` | `reviewQuery` for the Needs review tab, `reviewingLookbackDays` for Reviewing | Settings → PR review |
+| `prModels` | The provider and model behind guided reviews (`guide`) and line questions (`ask`). Unset uses the default chat model. | Settings → PR review |
 | `wipConfig` | Which sources feed the **In progress** list in the attention panel (the bell in the top bar), and a GitHub issue label filter | Settings → Work in progress |
 | `jobConfig` | `ccDigestEnabled` and `ccDigestProjectDirs` for the Claude Code transcript digest | Settings → Assistant |
 | `voiceConfig` | Speech providers and models, voice, speak replies, hands-free | Settings → Voice |
@@ -236,6 +237,15 @@ copy of the app, or for debugging.
 | `TAURI_DEV_HOST` | Serve the Vite dev server on this host. Also turns on the HMR socket port. |
 | `CLAUDE_HOME` | Where Claude Code keeps sessions. Default `~/.claude`. |
 | `AWS_PROFILE`, `AWS_REGION`, … | The usual AWS credential chain, for Bedrock |
+| `YARVIS_GITHUB_API_URL`, `YARVIS_GITHUB_GRAPHQL_URL` | Send GitHub REST and GraphQL requests to a local stand-in, such as the demo's fake GitHub. Set both or neither. |
+| `YARVIS_GOOGLE_CALENDAR_API_URL`, `YARVIS_GOOGLE_TOKEN_URL` | Send Google Calendar API and OAuth token requests to a local stand-in. Set both or neither. The Calendar value is a base, e.g. `http://127.0.0.1:4010/calendar/v3`. |
+
+The four endpoint overrides are for a sidecar you start yourself, as the demo
+recordings do (`demo/README.md`). The app strips them before it starts its
+sidecar, since they decide where your GitHub token and Google credentials go.
+The sidecar also refuses any value that isn't a plain `http://` or `https://`
+URL on `localhost`, `127.0.0.1` or `[::1]`, and ignores half a pair, logging a
+warning either way.
 
 The sidecar inherits the environment of the shell that started the app. A
 `DATABASE_URL` or provider key exported in that shell reaches the sidecar
@@ -253,7 +263,8 @@ The tabs in **Settings**, in order:
    and the Tool manager.
 4. **Repositories.** The repos workspaces can use, the workspace agent
    command, and the terminal cap.
-5. **PR review.** The Needs review search and the Reviewing lookback.
+5. **PR review.** The Needs review search, the Reviewing lookback, and the
+   models behind guided reviews and line questions.
 6. **Voice.** Speech to text and text to speech.
 7. **Embeddings.** The embeddings endpoint.
 8. **Telegram.** Bot token, allowed chats, and the optional second factor.

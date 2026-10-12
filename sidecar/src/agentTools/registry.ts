@@ -98,6 +98,14 @@ export function nameForBuiltinId(id: string): string {
   return id.replace(/^builtin:/, "");
 }
 
+let cachedBuiltinIds: string[] | undefined;
+
+/** Registry ids of every built-in tool, the set `syncBuiltins` writes. Fixed for a build. */
+export function builtinToolIds(): string[] {
+  cachedBuiltinIds ??= builtinDescriptors().map((d) => d.id);
+  return cachedBuiltinIds;
+}
+
 /**
  * Upserts the built-in tools into the registry, each seeded with its family's
  * policy. Existing rows keep whatever policy the user set. Run on startup and

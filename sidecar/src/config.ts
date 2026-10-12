@@ -182,6 +182,82 @@ export interface Config {
    */
   embeddingsSecrets: CustomProviderSecrets;
   telegram: TelegramConfig;
+  /**
+   * Local stand-ins for GitHub and Google, which the demo recordings point the
+   * clients at. Absent means the real services. See `parseEndpoints`.
+   */
+  endpoints?: ServiceEndpoints;
+}
+
+export interface ServiceEndpoints {
+  /** GitHub REST base in place of `https://api.github.com`. */
+  githubApi?: string;
+  /** GitHub GraphQL endpoint in place of `https://api.github.com/graphql`. */
+  githubGraphql?: string;
+  /** Google Calendar API base in place of `https://www.googleapis.com/calendar/v3`. */
+  googleCalendar?: string;
+  /** Google OAuth token endpoint in place of `https://oauth2.googleapis.com/token`. */
+  googleToken?: string;
+}
+
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * Reads one endpoint override. A service's credentials go wherever this
+ * points, so it must be a plain base URL on this machine: loopback only, with
+ * no username, password, query or fragment to smuggle into the requests
+ * built from it. Anything else is ignored with a warning, which leaves the
+ * real service in use.
+ */
+export function parseEndpointOverride(name: string, raw: string | undefined): string | undefined {
+  const value = raw?.trim();
+  if (!value) return undefined;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    console.warn(`[config] ignoring ${name}: not a URL`);
+    return undefined;
+  }
+  const isLoopback = ["http:", "https:"].includes(url.protocol) && LOOPBACK_HOSTS.has(url.hostname);
+  if (!isLoopback) {
+    console.warn(`[config] ignoring ${name}: must point at localhost`);
+    return undefined;
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    console.warn(`[config] ignoring ${name}: must be a base URL with no credentials or query`);
+    return undefined;
+  }
+  // Rebuilt from the parsed URL, so what's used is exactly what was checked.
+  return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+}
+
+/**
+ * Overrides come in pairs, one pair per service, and a pair is used whole or
+ * not at all: with only one half set, the other would keep sending the same
+ * credentials to the real service. The Rust core strips these variables
+ * before it starts the sidecar, so only a sidecar started by hand (the demo)
+ * ever sees them.
+ */
+export function parseEndpoints(env: NodeJS.ProcessEnv): ServiceEndpoints {
+  const pair = (service: string, names: [string, string]): [string, string] | undefined => {
+    const [a, b] = names.map((n) => parseEndpointOverride(n, env[n]));
+    if (!a && !b) return undefined;
+    if (!a || !b) {
+      console.warn(`[config] ignoring the ${service} overrides: set both ${names.join(" and ")}`);
+      return undefined;
+    }
+    console.log(`[config] ${service} requests go to ${new URL(a).host}`);
+    return [a, b];
+  };
+  const github = pair("GitHub", ["YARVIS_GITHUB_API_URL", "YARVIS_GITHUB_GRAPHQL_URL"]);
+  const google = pair("Google", ["YARVIS_GOOGLE_CALENDAR_API_URL", "YARVIS_GOOGLE_TOKEN_URL"]);
+  return {
+    githubApi: github?.[0],
+    githubGraphql: github?.[1],
+    googleCalendar: google?.[0],
+    googleToken: google?.[1],
+  };
 }
 
 /** Parses one `{ apiKey?, headers }` secret bundle from untrusted JSON. */
@@ -416,6 +492,7 @@ export function loadConfig(): Config {
       otpSecret: env.TELEGRAM_OTP_SECRET || undefined,
       otpWindowMinutes: parseOtpWindowMinutes(env.TELEGRAM_OTP_WINDOW_MINUTES),
     },
+    endpoints: parseEndpoints(env),
   };
 }
 

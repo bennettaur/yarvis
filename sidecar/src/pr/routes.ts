@@ -6,9 +6,9 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import type { AttentionNavTarget, PrGuideRow } from "../db/schema.ts";
 import { emitEvent } from "../events/service.ts";
-import { GitHubClient } from "../github/client.ts";
+import { createGitHubClient } from "../github/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
-import { availableProviders, pickDefaultModel, resolveModel } from "../llm/providers.ts";
+import { resolveModel } from "../llm/providers.ts";
 import { askAboutCode } from "./ask.ts";
 import { deleteGuide, getGuide, isStale, saveGuide, setGuideProgress } from "./guides.ts";
 import {
@@ -18,6 +18,7 @@ import {
   markInsightPosted,
   saveInsight,
 } from "./insights.ts";
+import { type PrModelFeature, resolvePrModel } from "./models.ts";
 import { azurePrSource, githubPrSource, type PrCodeSource } from "./source.ts";
 import { generateTour } from "./tour.ts";
 import { type PrRef, parseRefKey, refKey } from "./types.ts";
@@ -142,7 +143,7 @@ export function createPrRoutes(config: Config): Hono {
     if (ref.provider === "github") {
       const token = config.secrets.githubToken;
       if (!token) return { error: "github token not configured" };
-      return githubPrSource(new GitHubClient(token), ref);
+      return githubPrSource(createGitHubClient(config, token), ref);
     }
     const { azureDevopsToken, azureDevopsOrgUrl } = config.secrets;
     if (!azureDevopsToken || !azureDevopsOrgUrl) return { error: "azure devops not configured" };
@@ -178,16 +179,18 @@ export function createPrRoutes(config: Config): Hono {
   };
 
   /**
-   * Resolves the model an agent run should use, falling back to the configured
-   * default when the caller names none. Returns a message rather than throwing
-   * so the route can answer 400 with something the user can act on — "no LLM
-   * provider is configured" is a settings problem, not a server fault.
+   * Resolves the model an agent run should use: the one the caller names, else
+   * the one saved for `feature` in Settings, else the default chat model.
+   * Returns a message rather than throwing so the route can answer 400 with
+   * something the user can act on — "no LLM provider is configured" is a
+   * settings problem, not a server fault.
    */
   const modelFor = async (
+    feature: PrModelFeature,
     providerId?: string,
     modelId?: string,
   ): Promise<{ model: Awaited<ReturnType<typeof resolveModel>> } | { error: string }> => {
-    const fallback = pickDefaultModel(await availableProviders(config, "chat"));
+    const fallback = await resolvePrModel(config, feature);
     const provider = providerId ?? fallback?.provider;
     const model = modelId ?? fallback?.model;
     if (!provider || !model) return { error: "no LLM provider is configured" };
@@ -210,7 +213,7 @@ export function createPrRoutes(config: Config): Hono {
     if ("error" in source) return c.json({ error: source.error }, 400);
 
     const dbh = db();
-    const resolved = await modelFor(parsed.data.provider, parsed.data.model);
+    const resolved = await modelFor("guide", parsed.data.provider, parsed.data.model);
     if ("error" in resolved) return c.json({ error: resolved.error }, 400);
 
     try {
@@ -280,7 +283,11 @@ export function createPrRoutes(config: Config): Hono {
     const token = config.secrets.githubToken;
     if (!token) return c.json({ error: "github token not configured" }, 400);
     try {
-      const stack = await new GitHubClient(token).prStack(ref.owner, ref.repo, ref.number);
+      const stack = await createGitHubClient(config, token).prStack(
+        ref.owner,
+        ref.repo,
+        ref.number,
+      );
       return c.json({ stack });
     } catch (e) {
       console.error("[pr] could not read the stack:", describeError(e));
@@ -311,7 +318,7 @@ export function createPrRoutes(config: Config): Hono {
     if ("error" in source) return c.json({ error: source.error }, 400);
 
     const dbh = db();
-    const resolved = await modelFor(parsed.data.provider, parsed.data.model);
+    const resolved = await modelFor("ask", parsed.data.provider, parsed.data.model);
     if ("error" in resolved) return c.json({ error: resolved.error }, 400);
 
     try {
@@ -411,7 +418,7 @@ export function createPrRoutes(config: Config): Hono {
     if (ref.provider === "github") {
       const token = config.secrets.githubToken;
       if (!token) throw new Error("github token not configured");
-      await new GitHubClient(token).postComment(ref.owner, ref.repo, ref.number, comment);
+      await createGitHubClient(config, token).postComment(ref.owner, ref.repo, ref.number, comment);
       return;
     }
     const { azureDevopsToken, azureDevopsOrgUrl } = config.secrets;
