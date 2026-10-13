@@ -126,6 +126,12 @@ The assistant can act on your workspaces in bulk:
   and it says so.
 - **"What's the state of the billing-api workspace?"** It reports the PR,
   checks and mergeability from the last poll (refreshed every minute).
+- **"What was I doing in my workspaces?"** For each active workspace, or the
+  one you name, it reports when you last had it open in Yarvis and when its
+  Claude Code session last did anything. It also gives a short recap of what
+  you last asked the session and where it got to. A small model writes the
+  recap from the session's latest prompts and reply, using the low complexity
+  tier, so check the details.
 - **"Archive the billing-api workspace."** It stops the session, removes the
   worktrees, and completes any linked task. If there are uncommitted changes,
   it asks before throwing them away.
@@ -170,6 +176,36 @@ they can be matched exactly.
 When a fact changes, the assistant corrects the memory instead of storing a
 contradiction. The old version stays for the record but drops out of search.
 
+### When a memory holds
+
+Some facts only hold for a while. Tell the assistant "GitHub is down" and it
+stores that as valid for a short window, an hour say, rather than forever. Once
+the window passes, the memory is marked **expired**. It still comes up in
+search, ranked below current memories, so the assistant knows the claim exists
+but treats it as possibly out of date. When an expired memory bears on what you
+asked, the assistant re-checks it with a read-only tool it already has, then
+either confirms it (the memory gets a fresh window) or corrects it. If the only
+evidence is someone else's text, such as an issue comment, it tells you what it
+found and asks before correcting. If it can't check, it tells you the memory
+may be out of date.
+
+A memory can also start in the future ("I'm on vacation from the 20th"). Until
+then it shows as **upcoming**. You can ask what held at a past time ("what was
+the state of the events project on the 3rd?"), and the assistant searches
+memory as of that moment, including memories corrected since. That means a
+corrected memory can still come back for a question about the past; to get rid
+of one for good, ask the assistant to forget it. Day summaries and activity
+summaries count as holding from the start of the period they describe.
+
+Search also favours memories that were written or confirmed recently. A memory
+nobody has confirmed in a long time ranks a little lower than an equally good
+match that is fresh, but it never drops out. How fast that happens depends on
+the kind: activity summaries fade within weeks, preferences and decisions over
+years. Each confirmation slows it down. Memory → Memories shows a memory's
+window and whether it has expired. Hover over a search result's match score to
+see how much comes from the text matching and how much from how long it has
+gone unconfirmed.
+
 ### The activity log
 
 Yarvis records meaningful actions as events. Examples:
@@ -179,11 +215,15 @@ Yarvis records meaningful actions as events. Examples:
   on,
 - work started on a ticket,
 - a workspace created, a repo added to it, its session started, synced or archived,
+- a workspace viewed: on screen, with the Yarvis window focused, for 3 seconds
+  or more. Recorded at most once every 15 minutes per tab kind (agent, shell,
+  other),
 - tasks created and completed,
 - calendar events booked,
 - the assistant's own todos and projects.
 
-Clicking around the UI is not an event. The log only records what you do *in
+Otherwise, clicking around the UI is not an event. Workspace views stay out of the
+4-hour and daily summaries. The log only records what you do *in
 Yarvis*, so a PR you review on github.com doesn't show up.
 
 Browse and search it under **Memory → Activity**.
@@ -191,12 +231,14 @@ Browse and search it under **Memory → Activity**.
 ## What it can see
 
 The assistant sees your work through the activity log, the PR poller and
-memory. It does not watch your terminals.
+memory. It does not watch your terminals. When you ask about a workspace, it
+can read the end of that workspace's latest Claude Code transcript.
 
 **It sees right away:**
 
 - your tasks, projects, todos and memories,
 - the activity log, as events happen,
+- when you last had each workspace open,
 - workspace PR state, checks and mergeability (polled every minute),
 - live GitHub searches: your PRs and review requests,
 - anything a Claude Code session saved to Yarvis memory.
@@ -209,7 +251,8 @@ memory. It does not watch your terminals.
 
 **It can't see:**
 
-- terminal output, or a session's live transcript,
+- terminal output. It reads a session's transcript only when you ask about
+  that workspace, and then only the latest prompts and reply,
 - whether an instruction it sent was carried out,
 - the attention bell (a session waiting on a prompt),
 - PRs you reviewed on github.com rather than in Yarvis.
@@ -230,6 +273,13 @@ secrets and other people's data, and summarizing them sends them to your LLM
 provider. The summaries are then stored as memories, which Claude Code
 sessions (over MCP) and the Telegram bot can read back. Only allow
 directories you're comfortable with.
+
+Asking about a workspace's activity is separate from the digest and doesn't
+need it turned on. When you ask, the assistant sends that workspace's latest
+few prompts and the end of the agent's reply to the low complexity tier's
+model to write the recap, with credential-shaped strings such as API keys and
+tokens removed first. The recap isn't saved as a memory. It's kept in memory
+only until the session moves on.
 
 ## What it asks before doing
 
@@ -265,7 +315,7 @@ Always available:
 
 - **Tasks.** Create, list, update, complete, delete, roll over and find
   finished tasks.
-- **Memory.** Remember, recall, correct, list, forget and take notes.
+- **Memory.** Remember, recall, correct, confirm, list, forget and take notes.
 - **Projects.** Create, read and update projects, and track, list and untrack
   tickets with priorities.
 - **Todos.** The assistant's own todo list.
@@ -306,6 +356,7 @@ The shipped specialists:
 | `project-manager` | Reconciles a project's tracked tickets against JIRA. Files new tickets only when asked. | You, via chat |
 | `activity-consolidator` | Summarizes a window of events into prose. | The background jobs |
 | `session-summarizer` | Summarizes one Claude Code transcript into work, decisions and feedback. Has no tools, on purpose. | The transcript digest |
+| `workspace-recap` | Says in a few sentences what a workspace's agent session is working on and where it got to. Has no tools, on purpose. | The assistant, when you ask about workspace activity |
 | `yarvis-guide` | Answers "where is X?" and "how do I set up Y?" about Yarvis itself, from these docs. Replies with steps and links that open the right page or Settings tab. | You, via chat or **Help → Ask Yarvis** |
 
 A delegated run has limits:

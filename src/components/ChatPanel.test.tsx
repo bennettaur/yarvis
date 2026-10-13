@@ -109,11 +109,20 @@ const settle = (ms = 80) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A host that can take the panel off screen and back, as the tab switch does. */
 let setHostActive: (active: boolean) => void = () => {};
-function TogglingHost() {
-  const [active, setActive] = useState(true);
+function TogglingHost({
+  initiallyActive = true,
+  focusOnShow = false,
+}: {
+  initiallyActive?: boolean;
+  focusOnShow?: boolean;
+}) {
+  const [active, setActive] = useState(initiallyActive);
   setHostActive = setActive;
-  return createElement(ChatPanel, { active });
+  return createElement(ChatPanel, { active, focusOnShow });
 }
+
+const composerOf = (host: HTMLElement) =>
+  host.querySelector<HTMLTextAreaElement>('textarea[placeholder="Message..."]');
 
 /** Types a message into the composer and presses Send. */
 async function say(host: HTMLElement, text: string) {
@@ -404,6 +413,52 @@ describe("ChatPanel", () => {
     await settle();
 
     expect(second.host.querySelector("select")?.value).toBe("new-session-1");
+  });
+
+  it("focuses the composer after New chat", async () => {
+    const mounted = await mountForInteraction(createElement(ChatPanel));
+    unmount = mounted.unmount;
+    const newChat = Array.from(mounted.host.querySelectorAll("button")).find(
+      (b) => b.textContent === "New chat",
+    );
+    newChat?.focus();
+    newChat?.click();
+    await settle(50);
+
+    expect(document.activeElement).toBe(composerOf(mounted.host));
+  });
+
+  it("focuses the composer when it comes into view", async () => {
+    const mounted = await mountForInteraction(
+      createElement(TogglingHost, { initiallyActive: false, focusOnShow: true }),
+    );
+    unmount = mounted.unmount;
+    expect(document.activeElement).not.toBe(composerOf(mounted.host));
+
+    setHostActive(true);
+    await settle();
+    expect(document.activeElement).toBe(composerOf(mounted.host));
+  });
+
+  // An Omni widget sits beside the layout builder's own composer.
+  it("leaves focus alone without focusOnShow", async () => {
+    const mounted = await mountForInteraction(createElement(ChatPanel));
+    unmount = mounted.unmount;
+
+    expect(document.activeElement).not.toBe(composerOf(mounted.host));
+  });
+
+  it("leaves focus alone under the Omni Chat overlay", async () => {
+    const mounted = await mountForInteraction(
+      createElement(
+        OmniChatOverlayProvider,
+        { value: true },
+        createElement(ChatPanel, { focusOnShow: true }),
+      ),
+    );
+    unmount = mounted.unmount;
+
+    expect(document.activeElement).not.toBe(composerOf(mounted.host));
   });
 });
 
