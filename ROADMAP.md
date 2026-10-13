@@ -184,7 +184,9 @@ Status of the build against the original vision. The full V1 plan lives at
   store), and a management UI to search/delete (Memory tab). Reuses the
   `memories` table, typed by a `kind` column (fact, preference, note, doc, the
   three summary kinds, agent-feedback, project, decision) with corrections that
-  supersede rather than contradict.
+  supersede rather than contradict. Memories carry validity windows (expired
+  ones are flagged for re-checking, and recall can ask `asOf` a past time), and
+  recall ranks by similarity scaled by how long a memory has gone unconfirmed.
 - **Google Calendar** — desktop OAuth (`calendar.events`: read plus create, with
   no update or delete anywhere in the client or the tools) + a date-range events
   fetch backing a
@@ -336,10 +338,20 @@ The integration is built but unexercised.
 
 ### 3. Memory & knowledge follow-ups
 The core is shipped; optional extensions remain.
-- **OpenMemory backend:** `openmemory-js` was deferred because it boots its own
-  server on import and is mid-rewrite; if its graph/temporal features become
-  worth it, run it as a standalone server and add an HTTP-backed `MemoryService`
-  (the interface already supports swapping).
+- **OpenMemory / LongMemory backend: decided against.** `openmemory-js` was
+  deferred because it booted its own server on import. Its successor,
+  LongMemory 1.0 (evaluated Oct 2026), is SQLite-only, has no delete, list or
+  kind filter, keeps the whole graph in process memory (so instances sharing a
+  database wouldn't see each other's writes), and shipped without a test suite.
+  Instead, the ideas worth having are built into the pgvector store: validity
+  windows with revalidation, `asOf` recall, and decay-weighted ranking.
+- **Recall follow-ups:** hybrid lexical + semantic ranking (Postgres full-text
+  beside the cosine search), dedup on write (restating a fact should confirm the
+  existing memory rather than add a copy), and `correct_memory` /
+  `confirm_memory` over the MCP endpoint so a coding session can revalidate an
+  expired memory too. A future-dated correction supersedes the old memory
+  straight away, so plain recall loses what holds until the change starts. The decay half-lives and floor in `memory/ranking.ts` are
+  first guesses and want tuning against real recall.
 - **Needs from you:** an embeddings provider for good-quality semantic recall —
   either a local Ollama server (no key) or a proxy/Gemini key, configured in
   Settings → Embeddings. Works offline via the hash embedder at lower quality

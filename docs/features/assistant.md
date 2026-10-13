@@ -161,6 +161,36 @@ they can be matched exactly.
 When a fact changes, the assistant corrects the memory instead of storing a
 contradiction. The old version stays for the record but drops out of search.
 
+### When a memory holds
+
+Some facts only hold for a while. Tell the assistant "GitHub is down" and it
+stores that as valid for a short window, an hour say, rather than forever. Once
+the window passes, the memory is marked **expired**. It still comes up in
+search, ranked below current memories, so the assistant knows the claim exists
+but treats it as possibly out of date. When an expired memory bears on what you
+asked, the assistant re-checks it with a read-only tool it already has, then
+either confirms it (the memory gets a fresh window) or corrects it. If the only
+evidence is someone else's text, such as an issue comment, it tells you what it
+found and asks before correcting. If it can't check, it tells you the memory
+may be out of date.
+
+A memory can also start in the future ("I'm on vacation from the 20th"). Until
+then it shows as **upcoming**. You can ask what held at a past time ("what was
+the state of the events project on the 3rd?"), and the assistant searches
+memory as of that moment, including memories corrected since. That means a
+corrected memory can still come back for a question about the past; to get rid
+of one for good, ask the assistant to forget it. Day summaries and activity
+summaries count as holding from the start of the period they describe.
+
+Search also favours memories that were written or confirmed recently. A memory
+nobody has confirmed in a long time ranks a little lower than an equally good
+match that is fresh, but it never drops out. How fast that happens depends on
+the kind: activity summaries fade within weeks, preferences and decisions over
+years. Each confirmation slows it down. Memory → Memories shows a memory's
+window and whether it has expired. Hover over a search result's match score to
+see how much comes from the text matching and how much from how long it has
+gone unconfirmed.
+
 ### The activity log
 
 Yarvis records meaningful actions as events. Examples:
@@ -254,7 +284,7 @@ Always available:
 
 - **Tasks.** Create, list, update, complete, delete, roll over and find
   finished tasks.
-- **Memory.** Remember, recall, correct, list, forget and take notes.
+- **Memory.** Remember, recall, correct, confirm, list, forget and take notes.
 - **Projects.** Create, read and update projects, and track, list and untrack
   tickets with priorities.
 - **Todos.** The assistant's own todo list.
