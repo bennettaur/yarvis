@@ -401,6 +401,21 @@ Safety rules:
   can't see what the agent is showing. If a permission prompt is up, the text
   answers that prompt.
 
+### Asking what a workspace is up to
+
+Ask "what was I doing in my workspaces?" or "where did the billing-api session
+get to?". For each active workspace, or the one you name, the assistant reports:
+
+- when you last had it open in Yarvis,
+- when its Claude Code session last did anything,
+- a few-sentence recap of your latest prompts to that session and where it got
+  to.
+
+A small model writes the recap, so check the details. It only finds sessions
+started at the workspace's root, which is where Yarvis starts them. A workspace
+counts as viewed once it has stayed on screen for a few seconds. See
+[The assistant](assistant.md#what-it-can-see).
+
 ## Archiving
 
 Press **Archive** in the workspace header when the work is done. The dialog

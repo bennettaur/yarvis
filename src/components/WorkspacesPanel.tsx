@@ -51,6 +51,7 @@ import WorkspaceNameHeading from "./workspaces/WorkspaceNameHeading";
 import WorkspacePrBadges from "./workspaces/WorkspacePrBadges";
 import WorkspacePrStatus from "./workspaces/WorkspacePrStatus";
 import WorkspaceSetupLog from "./workspaces/WorkspaceSetupLog";
+import WorkspaceViewRecorder from "./workspaces/WorkspaceViewRecorder";
 
 // The editor tab pulls CodeMirror in with it — a few hundred kilobytes that a
 // session which never opens a file has no use for, so it is fetched when the
@@ -489,14 +490,17 @@ export default function WorkspacesPanel({
   );
 
   return (
-    <SplitPane
-      className="h-full"
-      orientation="horizontal"
-      ratio={listRatio}
-      onRatioChange={setListRatio}
-      first={list}
-      second={main}
-    />
+    <>
+      <WorkspaceViewRecorder name={items.find((w) => w.id === selectedId)?.name} />
+      <SplitPane
+        className="h-full"
+        orientation="horizontal"
+        ratio={listRatio}
+        onRatioChange={setListRatio}
+        first={list}
+        second={main}
+      />
+    </>
   );
 }
 
