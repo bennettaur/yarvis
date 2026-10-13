@@ -56,19 +56,37 @@ describe("chat config", () => {
     const saved = await saveChatConfig({
       maxSteps: 40,
       maxOutputTokens: 8000,
+      toolResultChars: 20_000,
       compactAtTokens: 120_000,
     });
-    expect(saved).toEqual({ maxSteps: 40, maxOutputTokens: 8000, compactAtTokens: 120_000 });
+    expect(saved).toEqual({
+      maxSteps: 40,
+      maxOutputTokens: 8000,
+      toolResultChars: 20_000,
+      compactAtTokens: 120_000,
+    });
     expect(await getChatConfig()).toEqual(saved);
   });
 
   // Null is a value here, not an absent field: it means "leave the provider's
   // own limit alone", which is not the same as "fall back to a default cap".
   it("keeps an explicit null output cap", async () => {
-    await saveChatConfig({ maxSteps: 40, maxOutputTokens: 8000, compactAtTokens: 200_000 });
-    expect(
-      await saveChatConfig({ maxSteps: 40, maxOutputTokens: null, compactAtTokens: 200_000 }),
-    ).toEqual({ maxSteps: 40, maxOutputTokens: null, compactAtTokens: 200_000 });
+    const both = { toolResultChars: 400, compactAtTokens: 200_000 };
+    await saveChatConfig({ maxSteps: 40, maxOutputTokens: 8000, ...both });
+    expect(await saveChatConfig({ maxSteps: 40, maxOutputTokens: null, ...both })).toEqual({
+      maxSteps: 40,
+      maxOutputTokens: null,
+      ...both,
+    });
+  });
+
+  // A settings file written before the field existed must not read as undefined.
+  it("fills in the tool result length for a file saved before it existed", async () => {
+    await withSection<{ maxSteps: number }, void>("chatConfig", () => ({
+      next: { maxSteps: 12 },
+      result: undefined,
+    }));
+    expect((await getChatConfig()).toolResultChars).toBe(DEFAULT_CHAT_CONFIG.toolResultChars);
   });
 
   it("leaves the other sections of the settings file alone", async () => {
@@ -76,13 +94,23 @@ describe("chat config", () => {
       next: { keep: true },
       result: undefined,
     }));
-    await saveChatConfig({ maxSteps: 12, maxOutputTokens: null, compactAtTokens: 200_000 });
+    await saveChatConfig({
+      maxSteps: 12,
+      maxOutputTokens: null,
+      toolResultChars: 400,
+      compactAtTokens: 200_000,
+    });
     expect(await readSection<{ keep: boolean }>("voiceConfig")).toEqual({ keep: true });
   });
 
   describe("getChatBudget", () => {
     it("uses the model's own threshold over the global one", async () => {
-      await saveChatConfig({ maxSteps: 40, maxOutputTokens: null, compactAtTokens: 300_000 });
+      await saveChatConfig({
+        maxSteps: 40,
+        maxOutputTokens: null,
+        toolResultChars: 400,
+        compactAtTokens: 300_000,
+      });
       await saveProviderModel({
         providerId: "anthropic",
         modelId: "custom-model",
@@ -95,13 +123,23 @@ describe("chat config", () => {
     });
 
     it("falls back to the global threshold for an unknown provider or model", async () => {
-      await saveChatConfig({ maxSteps: 40, maxOutputTokens: null, compactAtTokens: 300_000 });
+      await saveChatConfig({
+        maxSteps: 40,
+        maxOutputTokens: null,
+        toolResultChars: 400,
+        compactAtTokens: 300_000,
+      });
       expect((await getChatBudget(appConfig, "nope", "x")).compactAtTokens).toBe(300_000);
       expect((await getChatBudget(appConfig, "anthropic", "nope")).compactAtTokens).toBe(300_000);
     });
 
     it("falls back to the global threshold for a model with none", async () => {
-      await saveChatConfig({ maxSteps: 40, maxOutputTokens: null, compactAtTokens: 300_000 });
+      await saveChatConfig({
+        maxSteps: 40,
+        maxOutputTokens: null,
+        toolResultChars: 400,
+        compactAtTokens: 300_000,
+      });
       await saveProviderModel({
         providerId: "anthropic",
         modelId: "custom-model",

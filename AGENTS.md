@@ -52,6 +52,9 @@ Run from the repo root unless noted.
 bun install                      # install deps (root + sidecar workspace)
 
 bun run tauri dev                # full app: frontend + Rust core + sidecar
+bun run tauri:preview            # same, but on the production frontend build
+                                  #   (no Vite dev server, React prod mode)
+bun run tauri:build              # release bundle, with the compiled sidecar
 bun run dev:instance <name>       # a second app beside the primary one; add
                                   #   YARVIS_DATABASE_URL to give it its own DB
 bun run sidecar:dev               # sidecar only (prints a dev bearer token)
@@ -495,9 +498,20 @@ back to ad-hoc.
   jobs, the recap and the browser all filter on it. The kinds a *turn* may write
   exclude the ones the jobs author, so hand-written text can't masquerade as a
   consolidated summary. A fact that changed is superseded — the old row stays for
-  the trail and drops out of recall — rather than contradicted by a second
+  the trail and drops out of recall, except a recall `asOf` a time it still
+  held — rather than contradicted by a second
   memory, and an edit re-embeds, since a corrected fact findable only by its old
   wording is worse than no correction.
+  - A memory also records when its claim holds (`valid_from`/`valid_until`),
+    separately from when it was written. An expired memory is still returned by
+    recall, flagged and ranked lower, because the agent can only re-check a
+    claim it can see. A correction closes the old claim's window where the
+    replacement starts, which is what lets `asOf` answer for the past. Recall
+    ranks by similarity scaled by a strength that decays from the last
+    confirmation (`memory/ranking.ts`). Strength is computed at query time, so
+    nothing rewrites rows on a timer, and only an explicit confirmation resets
+    it. Being retrieved does not count, since every top-k hit would reinforce
+    itself.
 - The user's `tasks` and the assistant's `agent_todos` are different tables on
   purpose: one is what the user intends to do, the other is what the assistant
   has taken on. The todo tools are deliberately absent from the MCP endpoint — a
@@ -509,5 +523,26 @@ back to ad-hoc.
   so an agent can put a meeting on the calendar and only the user can move it. A
   suggestion the user declines is recorded as a dismissal keyed by ref, because
   "not that one" has to survive the next planning turn.
+- Yarvis reads the user's Chrome through an extension (`extension/`) that can only
+  connect *out*, so the direction is reversed: a native-messaging host
+  (`scripts/browser/host.ts`) long-polls the sidecar's `/browser/next` and posts
+  answers to `/browser/result`, behind a scoped token like attention-ingest and
+  `/mcp`. The token and the (per-launch) port reach the host through one file per
+  instance in `~/.yarvis/browser/instances/`, and the host polls every live
+  instance — nothing about the browser is singular to the machine, so this is
+  deliberately not behind `instance.rs`. Each Chrome profile polls under an id
+  and a name the user sets in the extension's popup, and every tool takes that
+  name as `profile`. Everything a page says is third-party text — a Slack DM is prime
+  injection material — so `browser/tools.ts` fences it with a per-request nonce.
+  The tools may click, scroll and navigate but the extension holds the line, not
+  the sidecar: it stays on the tab's origin, refuses controls that send or
+  change things, and there is no tool that types. The two that act
+  (`click_browser_element`, `navigate_browser_tab`) are in `destructiveTools.ts`,
+  so a spoken turn asks first. Everything that runs inside the page is
+  `extension/page.js`, and every way of picking a click target — a listed ref, an
+  inspected one, a CSS selector the model wrote — ends in its one set of
+  screens, applied to what the click actually lands on. Per-site behaviour goes
+  in `extension/adapters/` and may change what a tool returns, never what it may
+  do.
 - Follow the repo's existing comment style: comments explain *why*, not
   *what* — no restating what a well-named function already says.

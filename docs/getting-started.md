@@ -211,6 +211,7 @@ Each integration is independent. Set up the ones you need, in any order.
 | Better memory search | Add a Gemini key, or configure **Settings → Embeddings**. Without either, memory search uses a weaker offline embedder. | [Configuration](configuration.md#embeddings) |
 | Voice | Run the local speech server and point Settings → Voice at it. | [Voice server](voice-server.md) |
 | MCP servers | Add servers under **Settings → Tools & MCP**. | [MCP](features/mcp.md) |
+| Reading your browser | Load the `extension/` folder in Chrome, then run `bun run browser:install <extension-id>`. | [Browser](features/browser.md) |
 | Telegram | Create a bot with @BotFather and save its token. | [Telegram](features/telegram.md) |
 | Transcript digest | Turn on the transcript digest under **Settings → Assistant** so the assistant learns what happened in your Claude Code sessions. | [The assistant](features/assistant.md) |
 
@@ -271,9 +272,9 @@ with filters by level and scope, and a button to copy it.
 
 A `.dmg` is published to the
 [`nightly` release](https://github.com/bennettaur/yarvis/releases/tag/nightly),
-but it doesn't run yet, because release builds don't bundle the sidecar. Use
-the dev build above. [Development](development.md#nightly-builds) has the
-details.
+but it isn't notarized, so macOS blocks its first launch.
+[Development](development.md#nightly-builds) explains how to open it. The dev
+build above is still the way to work on Yarvis.
 
 ## Set up with Claude Code
 

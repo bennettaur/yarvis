@@ -119,7 +119,7 @@ jobs:
           done
 
       - name: Build app
-        run: bun run tauri build
+        run: bun run tauri:build
 
       - name: Verify macOS code signature
         if: matrix.platform == 'macos-latest'

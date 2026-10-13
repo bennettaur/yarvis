@@ -1,5 +1,5 @@
 {
-  "id": "296dcaea-fdca-4eca-8b78-16c411316dc6",
+  "id": "f4a4246d-6020-4987-9d72-ab52655790cf",
   "prevId": "05f68b3b-0533-4825-864a-80228c0c0a69",
   "version": "7",
   "dialect": "postgresql",
@@ -1005,12 +1005,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "external_id": {
-          "name": "external_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -1061,21 +1055,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "events_external_id_idx": {
-          "name": "events_external_id_idx",
-          "columns": [
-            {
-              "expression": "external_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -1835,6 +1814,33 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
+        },
+        "valid_from": {
+          "name": "valid_from",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "valid_until": {
+          "name": "valid_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "confirmed_at": {
+          "name": "confirmed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "confirm_count": {
+          "name": "confirm_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         }
       },
       "indexes": {
@@ -1882,7 +1888,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "memories_valid_range": {
+          "name": "memories_valid_range",
+          "value": "\"memories\".\"valid_until\" is null or \"memories\".\"valid_until\" >= \"memories\".\"valid_from\""
+        }
+      },
       "isRLSEnabled": false
     },
     "public.omni_layouts": {

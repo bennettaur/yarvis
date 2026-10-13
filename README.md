@@ -46,6 +46,7 @@ Then, in the app, open **Settings → Credentials**. Save the database URL
 | [Calendar and alarms](docs/features/calendar-and-alarms.md) | Google Calendar, and full-screen meeting alarms |
 | [Clipboard](docs/features/clipboard.md) | Copy buttons everywhere, and a palette of saved snippets and history |
 | [MCP](docs/features/mcp.md) | Connect MCP servers to Yarvis, and give Claude Code sessions Yarvis's memory |
+| [Browser](docs/features/browser.md) | Let the assistant read Slack, Gmail, Calendar and other pages open in your Chrome |
 | [Telegram](docs/features/telegram.md) | Drive the assistant from your phone |
 | [Scheduled jobs](docs/features/scheduled-jobs.md) | Run a prompt on a cron schedule |
 | [Keyboard shortcuts](docs/features/keyboard-shortcuts.md) | Every shortcut in one place |

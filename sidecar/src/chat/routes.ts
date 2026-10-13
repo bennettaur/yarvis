@@ -16,6 +16,7 @@ import {
   MAX_COMPACT_AT_TOKENS,
   MAX_OUTPUT_TOKENS_CEILING,
   MAX_STEPS_CEILING,
+  MAX_TOOL_RESULT_CHARS_CEILING,
   MIN_COMPACT_AT_TOKENS,
   saveChatConfig,
 } from "./config.ts";
@@ -67,6 +68,8 @@ const approvalSchema = z.object({ approved: z.boolean() });
 const configSchema = z.object({
   maxSteps: z.number().int().min(1).max(MAX_STEPS_CEILING),
   maxOutputTokens: z.number().int().min(256).max(MAX_OUTPUT_TOKENS_CEILING).nullable(),
+  // Optional so a client that predates the field leaves the stored value alone.
+  toolResultChars: z.number().int().min(100).max(MAX_TOOL_RESULT_CHARS_CEILING).optional(),
   compactAtTokens: z.number().int().min(MIN_COMPACT_AT_TOKENS).max(MAX_COMPACT_AT_TOKENS),
 });
 
@@ -105,7 +108,8 @@ export function createChatRoutes(config: Config): Hono {
   router.put("/config", async (c) => {
     const parsed = configSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const saved: ChatConfig = await saveChatConfig(parsed.data);
+    const toolResultChars = parsed.data.toolResultChars ?? (await getChatConfig()).toolResultChars;
+    const saved: ChatConfig = await saveChatConfig({ ...parsed.data, toolResultChars });
     return c.json({ config: saved });
   });
 
