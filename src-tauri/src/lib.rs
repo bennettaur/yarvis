@@ -5,6 +5,9 @@ mod custom_providers;
 mod embeddings_secrets;
 mod instance;
 mod keychain;
+// Only a release build reads it; `tauri dev` already has the terminal's `PATH`.
+#[cfg_attr(debug_assertions, allow(dead_code))]
+mod login_path;
 mod mcp;
 mod onepassword;
 mod pty;
