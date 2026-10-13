@@ -157,6 +157,8 @@ has written your providers and MCP servers into it.
 | `jiraEmail` | unset | The Atlassian account the JIRA token belongs to |
 | `googleClientId` | unset | The Google OAuth client id. The secret half goes in the Keychain. |
 | `telegramOtpWindowMinutes` | `120` | How long `/unlock` keeps the Telegram bot open |
+| `colorTheme` | `"default"` | `"default"` or `"palenight"`. An unknown name falls back to the default. |
+| `terminalFontSize` | `16` | Text size in every terminal (10–32). Cmd+= and Cmd+- change it. |
 
 `null` and a missing key both mean "use the default".
 
@@ -276,6 +278,6 @@ The tabs in **Settings**, in order:
 10. **Assistant.** Turn budget, complexity tiers, specialists, and background
     jobs.
 11. **Appearance.** The color theme: **Default** or **Palenight**. It applies
-    straight away, to terminals and code too, and is stored on this computer
-    rather than in `settings.json`.
+    straight away, to terminals and code too, and is saved as `colorTheme` in
+    `settings.json`.
 12. **Diagnostics.** The sidecar log.

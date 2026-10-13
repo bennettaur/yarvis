@@ -1,9 +1,11 @@
 /**
  * The font every terminal renders with, and the one size they all share. The
  * Terminal tab and each workspace's agent session are the same `TerminalPanel`,
- * so a size change applies to every open terminal at once and is remembered
- * across restarts.
+ * so a size change applies to every open terminal at once. It is kept in
+ * `settings.json`, so it survives a restart.
  */
+
+import { saveTerminalFontSize } from "./settings";
 
 /**
  * Menlo rather than SF Mono: rounder and more open at reading sizes, which
@@ -18,38 +20,43 @@ export const DEFAULT_TERMINAL_FONT_SIZE = 16;
 export const MIN_TERMINAL_FONT_SIZE = 10;
 export const MAX_TERMINAL_FONT_SIZE = 32;
 
-const STORAGE_KEY = "yarvis.terminalFontSize";
-
 const clamp = (size: number) =>
   Math.min(MAX_TERMINAL_FONT_SIZE, Math.max(MIN_TERMINAL_FONT_SIZE, Math.round(size)));
 
-function readStored(): number {
-  try {
-    const raw = Number(localStorage.getItem(STORAGE_KEY));
-    return Number.isFinite(raw) && raw > 0 ? clamp(raw) : DEFAULT_TERMINAL_FONT_SIZE;
-  } catch {
-    return DEFAULT_TERMINAL_FONT_SIZE;
-  }
-}
-
-let current: number | null = null;
+let current = DEFAULT_TERMINAL_FONT_SIZE;
 const listeners = new Set<(size: number) => void>();
+// Cmd+= held down steps faster than a save completes; chaining the saves keeps
+// the file on the last size rather than whichever write happened to land last.
+let saving: Promise<unknown> = Promise.resolve();
 
 export function getTerminalFontSize(): number {
-  current ??= readStored();
   return current;
 }
 
+/**
+ * Takes the stored size at launch, from `settings.json`'s `terminalFontSize`.
+ * Clamped here rather than trusted, since the file is hand-editable.
+ */
+export function loadTerminalFontSize(raw: unknown): void {
+  current =
+    typeof raw === "number" && Number.isFinite(raw) && raw > 0
+      ? clamp(raw)
+      : DEFAULT_TERMINAL_FONT_SIZE;
+}
+
+/**
+ * Applies the size to every terminal and saves it. Nothing waits on the save:
+ * it is driven from a key chord with nowhere to show an error, and a failed one
+ * only means the size reverts at the next launch.
+ */
 export function setTerminalFontSize(size: number): void {
   const next = clamp(size);
-  if (next === getTerminalFontSize()) return;
+  if (next === current) return;
   current = next;
-  try {
-    localStorage.setItem(STORAGE_KEY, String(next));
-  } catch {
-    // Unpersisted is fine: the size still applies for this run.
-  }
   for (const listener of listeners) listener(next);
+  saving = saving
+    .then(() => saveTerminalFontSize(next === DEFAULT_TERMINAL_FONT_SIZE ? null : next))
+    .catch((e) => console.error("[terminal] saving the font size failed:", e));
 }
 
 /** Calls `listener` with each new size; returns the unsubscribe. */

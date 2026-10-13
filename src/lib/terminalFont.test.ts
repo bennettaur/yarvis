@@ -1,14 +1,32 @@
-import { beforeEach, describe, expect, it } from "bun:test";
-import {
+import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { nativeInvoke } from "../test/nativeInvoke";
+
+const saved: unknown[] = [];
+
+mock.module("@tauri-apps/api/core", () => ({
+  invoke: async (command: string, args: { value?: unknown }) => {
+    if (command === "set_terminal_font_size") {
+      saved.push(args.value);
+      return;
+    }
+    return nativeInvoke(command);
+  },
+}));
+
+const {
   DEFAULT_TERMINAL_FONT_SIZE,
   getTerminalFontSize,
+  loadTerminalFontSize,
   MAX_TERMINAL_FONT_SIZE,
   MIN_TERMINAL_FONT_SIZE,
   onTerminalFontSize,
   resolveFontSizeKey,
   setTerminalFontSize,
   stepTerminalFontSize,
-} from "./terminalFont";
+} = await import("./terminalFont");
+
+/** Lets the chained saves run. */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 const key = (
   overrides: Partial<Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey">>,
@@ -41,7 +59,11 @@ describe("resolveFontSizeKey", () => {
 });
 
 describe("terminal font size", () => {
-  beforeEach(() => setTerminalFontSize(DEFAULT_TERMINAL_FONT_SIZE));
+  beforeEach(async () => {
+    setTerminalFontSize(DEFAULT_TERMINAL_FONT_SIZE);
+    await settle();
+    saved.length = 0;
+  });
 
   it("steps by one and resets to the default", () => {
     stepTerminalFontSize("increase");
@@ -60,14 +82,27 @@ describe("terminal font size", () => {
     expect(getTerminalFontSize()).toBe(MIN_TERMINAL_FONT_SIZE);
   });
 
-  it("persists the size and tells every subscriber", () => {
+  it("saves each size in order and tells every subscriber", async () => {
     const seen: number[] = [];
     const off = onTerminalFontSize((size) => seen.push(size));
     setTerminalFontSize(20);
     off();
     setTerminalFontSize(21);
+    stepTerminalFontSize("reset");
+    await settle();
     expect(seen).toEqual([20]);
-    expect(localStorage.getItem("yarvis.terminalFontSize")).toBe("21");
+    expect(saved).toEqual([20, 21, null]);
+  });
+
+  it("clamps a stored size and ignores one that isn't a size", () => {
+    loadTerminalFontSize(18);
+    expect(getTerminalFontSize()).toBe(18);
+    loadTerminalFontSize(500);
+    expect(getTerminalFontSize()).toBe(MAX_TERMINAL_FONT_SIZE);
+    loadTerminalFontSize("big");
+    expect(getTerminalFontSize()).toBe(DEFAULT_TERMINAL_FONT_SIZE);
+    loadTerminalFontSize(null);
+    expect(getTerminalFontSize()).toBe(DEFAULT_TERMINAL_FONT_SIZE);
   });
 
   it("does not notify when the size is unchanged", () => {

@@ -79,6 +79,14 @@ pub struct Settings {
     pub one_password_vault: Option<String>,
     /// Title of the 1Password item holding the secrets blob.
     pub one_password_item: Option<String>,
+    /// The app's colour theme, chosen in Settings → Appearance. Only the
+    /// webview reads it, which maps a name it doesn't know to its default
+    /// (`lib/theme.ts`), so the core stores it as plain text.
+    pub color_theme: Option<String>,
+    /// Font size every terminal renders at. The webview clamps it to the range
+    /// it supports on read (`lib/terminalFont.ts`), so a hand edit can't push
+    /// it out of bounds.
+    pub terminal_font_size: Option<u32>,
     /// Set once [`migrate_keychain_settings`] has run, so steady-state startup
     /// never re-reads the Keychain to check for values that can no longer be
     /// there — the whole point of the migration is one Keychain access, not
@@ -364,6 +372,21 @@ impl SettingsState {
             let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
             *settings = Self::read_from_disk(&self.path);
             settings.telegram_otp_window_minutes = value;
+        }
+        self.save()
+    }
+
+    /// Stores the terminal font size, or clears it back to the webview's
+    /// default with `None`. Zero is rejected for the same reason as the OTP
+    /// window: it can only be a bug, never a choice.
+    fn set_terminal_font_size(&self, value: Option<u32>) -> Result<(), String> {
+        if value == Some(0) {
+            return Err("the terminal font size must be at least 1".to_string());
+        }
+        {
+            let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
+            *settings = Self::read_from_disk(&self.path);
+            settings.terminal_font_size = value;
         }
         self.save()
     }
@@ -671,6 +694,28 @@ pub fn set_telegram_otp_window_minutes(
     Ok(state.snapshot().into())
 }
 
+/// Sets the colour theme, or clears it back to the default on `None`/blank.
+/// Applied by the webview as it is chosen; this only makes it survive a restart.
+#[tauri::command]
+pub fn set_color_theme(
+    state: tauri::State<'_, SettingsState>,
+    value: Option<String>,
+) -> Result<SettingsView, String> {
+    state.set_text_field(value, |s| &mut s.color_theme)?;
+    Ok(state.snapshot().into())
+}
+
+/// Sets the terminal font size, or clears it back to the default with `None`.
+/// See `SettingsState::set_terminal_font_size`.
+#[tauri::command]
+pub fn set_terminal_font_size(
+    state: tauri::State<'_, SettingsState>,
+    value: Option<u32>,
+) -> Result<SettingsView, String> {
+    state.set_terminal_font_size(value)?;
+    Ok(state.snapshot().into())
+}
+
 /// Points the app at the macOS Keychain or at a 1Password item, copying the
 /// stored secrets into the new store first. See
 /// `SettingsState::set_secret_backend` for the ordering and what is rejected.
@@ -807,6 +852,8 @@ mod tests {
         assert!(json["secretBackend"].is_null());
         assert!(json["onePasswordVault"].is_null());
         assert!(json["onePasswordItem"].is_null());
+        assert!(json["colorTheme"].is_null());
+        assert!(json["terminalFontSize"].is_null());
     }
 
     #[test]
@@ -884,6 +931,26 @@ mod tests {
             .unwrap();
 
         assert_eq!(store.snapshot().azure_devops_org_url, None);
+    }
+
+    #[test]
+    fn a_stored_appearance_survives_a_reload() {
+        let store = temp_store("appearance-round-trip");
+        store
+            .set_text_field(Some("palenight".to_string()), |s| &mut s.color_theme)
+            .unwrap();
+        store.set_terminal_font_size(Some(18)).unwrap();
+
+        let reloaded = SettingsState::load(store.path.clone()).snapshot();
+        assert_eq!(reloaded.color_theme.as_deref(), Some("palenight"));
+        assert_eq!(reloaded.terminal_font_size, Some(18));
+    }
+
+    #[test]
+    fn a_zero_terminal_font_size_is_rejected_and_nothing_is_stored() {
+        let store = temp_store("terminal-font-size-zero");
+        assert!(store.set_terminal_font_size(Some(0)).is_err());
+        assert_eq!(store.snapshot().terminal_font_size, None);
     }
 
     #[test]
