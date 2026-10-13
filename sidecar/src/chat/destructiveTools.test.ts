@@ -13,10 +13,17 @@ describe("DESTRUCTIVE_BUILTIN_TOOLS", () => {
   it("asks before adding a repo to a workspace", () => {
     expect(DESTRUCTIVE_BUILTIN_TOOLS.has("add_repo_to_workspace")).toBe(true);
   });
+});
 
-  // It only saves a row after the exists check; no repo code runs.
-  it("does not ask before registering a repo", () => {
+describe("ALWAYS_CONFIRM_BUILTIN_TOOLS", () => {
+  // A registered repo is one later tools clone and run, and its name may come
+  // from injected text, so a typed turn asks too.
+  it("asks before registering a repo", () => {
+    expect(ALWAYS_CONFIRM_BUILTIN_TOOLS.has("register_repo")).toBe(true);
+  });
+
+  // The spoken-turn set adds nothing to a tool that already asks every turn.
+  it("does not also list it as destructive", () => {
     expect(DESTRUCTIVE_BUILTIN_TOOLS.has("register_repo")).toBe(false);
-    expect(ALWAYS_CONFIRM_BUILTIN_TOOLS.has("register_repo")).toBe(false);
   });
 });

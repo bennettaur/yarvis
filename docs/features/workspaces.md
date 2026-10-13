@@ -79,7 +79,8 @@ workspace checked out on the PR's branch, with an agent at a blank prompt. See
 "start a workspace in the api repo to add rate limiting". It creates the
 workspace and starts the session on a brief it writes from your conversation.
 See [The assistant](assistant.md). If the repo is not in Settings → Repositories
-yet, the assistant adds it first.
+yet, the assistant adds it first. It asks you to approve the exact repo each
+time, whether you typed or spoke.
 
 ### Rename a workspace
 

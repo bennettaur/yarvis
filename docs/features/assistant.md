@@ -287,6 +287,9 @@ Some actions pause and ask you in the approval bar above the message box (press
 **A** to approve, **D** to deny):
 
 - **Booking a calendar event** asks every time.
+- **Registering a repo** asks every time. Later tools clone the repo and run
+  its code, and a repo name can come from an issue or a look-alike name. Check
+  the exact repo before you approve.
 - **MCP tools** ask unless you set them to auto-approve in the Tool manager.
 - **Spoken turns** ask before anything irreversible: deleting a task, archiving
   a workspace, starting work, adding a repo to a workspace, filing a JIRA

@@ -123,9 +123,9 @@ async function collect(
 beforeEach(async () => {
   await sql`TRUNCATE chat_messages, chat_sessions, agent_tools RESTART IDENTITY CASCADE`;
   // Only tools the registry marks "always" are offered to the model each step,
-  // and nothing has synced the built-ins into this database. Register the two
+  // and nothing has synced the built-ins into this database. Register the ones
   // these tests drive.
-  for (const name of ["list_tasks", "create_calendar_event"]) {
+  for (const name of ["list_tasks", "create_calendar_event", "register_repo"]) {
     await sql`
       INSERT INTO agent_tools (id, source, server_id, name, description, policy, content_hash)
       VALUES (${`builtin:${name}`}, 'builtin', NULL, ${name}, '', 'always', '')
@@ -235,6 +235,23 @@ describe("runAgentTurn", () => {
     expect(events.find((e) => e.type === "tool_result")).toMatchObject({ status: "denied" });
     const [, assistant] = await getMessages(db, session.id);
     expect(assistant?.toolCalls?.map((a) => a.status)).toEqual(["denied"]);
+  });
+
+  // A repo name can come from an issue the user just read, so a typed turn asks
+  // as well as a spoken one. Denied proves the call reached the approval bar
+  // rather than running.
+  it("asks before registering a repo on a typed turn", async () => {
+    const session = await createSession(db, null);
+    const events = await collect(
+      streamingModel(
+        [toolCall("c1", "register_repo", { repo: "acme/widget" }), finish("tool-calls")],
+        [...text("told them no"), finish("stop")],
+      ),
+      session.id,
+      denyingApproval,
+    );
+
+    expect(events.find((e) => e.type === "tool_result")).toMatchObject({ status: "denied" });
   });
 
   it("names the MCP server a tool belongs to", async () => {
