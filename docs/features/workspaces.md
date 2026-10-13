@@ -176,6 +176,9 @@ handed a flag it doesn't know.
 
 ## The workspace list
 
+Drag the line between the list and the open workspace to make the list wider
+or narrower. The width is remembered.
+
 Each row shows the workspace's status and a badge for each repo that has a
 pull request. The badge shows whatever needs acting on first, so a red build on
 an approved PR still reads as failing. Hover a badge to see the repo, PR number
