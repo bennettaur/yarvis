@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Yarvis activity</title>
+    <link rel="stylesheet" href="popup.css" />
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Yarvis activity</h1>
+      <button id="clear" type="button">Clear</button>
+    </header>
+    <p class="hint">
+      What Yarvis asked this browser to do, newest first, with the full result. Kept until
+      Chrome quits.
+    </p>
+    <p id="empty" class="hint" hidden>Nothing yet.</p>
+    <ol id="entries"></ol>
+    <script type="module" src="sidepanel.js"></script>
+  </body>
+</html>

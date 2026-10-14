@@ -236,6 +236,8 @@ export interface ChatConfig {
   maxSteps: number;
   /** Null leaves the provider's own output limit in place. */
   maxOutputTokens: number | null;
+  /** How much of each tool result the chat keeps to show; the model sees all of it. */
+  toolResultChars: number;
   /** Estimated history size, in tokens, past which older messages are summarized. */
   compactAtTokens: number;
 }

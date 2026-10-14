@@ -54,7 +54,7 @@ AWS Bedrock uses the standard AWS credential chain (`~/.aws`, `AWS_PROFILE`,
 
 ### Token scopes
 
-- **GitHub.** A classic PAT needs `repo`. A fine-grained PAT needs
+- **GitHub.** A classic PAT needs `repo` and `read:org`. A fine-grained PAT needs
   **Contents: Read** (the review reads file bodies to show context) plus pull
   request and issue access. Merging a stack needs write access to the repo.
   Add **Commit statuses: Read** to see legacy status checks. GitHub doesn't
@@ -250,7 +250,9 @@ warning either way.
 
 The sidecar inherits the environment of the shell that started the app. A
 `DATABASE_URL` or provider key exported in that shell reaches the sidecar
-unless the Keychain has its own value for it.
+unless the Keychain has its own value for it. A release build opened from
+Finder has no such shell: it only takes `PATH` from your login shell, and the
+other variables above don't reach it.
 
 ## Settings screen map
 

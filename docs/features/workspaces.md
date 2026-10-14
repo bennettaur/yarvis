@@ -176,6 +176,9 @@ handed a flag it doesn't know.
 
 ## The workspace list
 
+Drag the line between the list and the open workspace to make the list wider
+or narrower. The width is remembered.
+
 Each row shows the workspace's status and a badge for each repo that has a
 pull request. The badge shows whatever needs acting on first, so a red build on
 an approved PR still reads as failing. Hover a badge to see the repo, PR number
@@ -397,6 +400,21 @@ Safety rules:
 - **A send confirms delivery only, never that the work was done.** Yarvis
   can't see what the agent is showing. If a permission prompt is up, the text
   answers that prompt.
+
+### Asking what a workspace is up to
+
+Ask "what was I doing in my workspaces?" or "where did the billing-api session
+get to?". For each active workspace, or the one you name, the assistant reports:
+
+- when you last had it open in Yarvis,
+- when its Claude Code session last did anything,
+- a few-sentence recap of your latest prompts to that session and where it got
+  to.
+
+A small model writes the recap, so check the details. It only finds sessions
+started at the workspace's root, which is where Yarvis starts them. A workspace
+counts as viewed once it has stayed on screen for a few seconds. See
+[The assistant](assistant.md#what-it-can-see).
 
 ## Archiving
 
