@@ -47,13 +47,33 @@ export default function PrChecks({ prRef }: { prRef: PrRef }) {
 
   if (error) return <p className="text-sm text-red-400">{error}</p>;
   if (loading || !data) return <LoadingIndicator />;
+  return <ChecksList checks={data.checks} unavailable={data.checksUnavailable} />;
+}
 
-  const checks = data.checks;
+/**
+ * The checks themselves. `unavailable` means the token was refused some of
+ * them, so an empty list is unknown rather than "no CI" — saying "No checks
+ * reported" there would tell the user a PR is unchecked when it isn't.
+ */
+export function ChecksList({
+  checks,
+  unavailable,
+}: {
+  checks: CheckItem[];
+  unavailable?: boolean;
+}) {
+  const refused = unavailable ? (
+    <p className="text-sm text-zinc-500">
+      This GitHub token can't read this pull request's checks. A fine-grained token can't be given
+      the Checks permission, so open the PR on GitHub to see them.
+    </p>
+  ) : null;
   if (checks.length === 0) {
-    return <p className="text-sm text-zinc-600">No checks reported.</p>;
+    return refused ?? <p className="text-sm text-zinc-600">No checks reported.</p>;
   }
   return (
     <>
+      {refused}
       <div className="mb-1 flex items-center gap-1 text-xs text-zinc-600">
         <span>
           {checks.length} check{checks.length === 1 ? "" : "s"}
