@@ -100,7 +100,7 @@ export function createPinnedFetch(options: PinnedFetchOptions = {}): typeof fetc
         // server's answer makes it throw would otherwise crash the process.
         (res) => {
           try {
-            resolve(toResponse(res));
+            resolve(toResponse(res, request.method));
           } catch (e) {
             res.destroy();
             reject(e);
@@ -115,7 +115,7 @@ export function createPinnedFetch(options: PinnedFetchOptions = {}): typeof fetc
 }
 
 /** Wraps a Node response as a web `Response`, decoding the body as `fetch` would. */
-function toResponse(res: http.IncomingMessage): Response {
+function toResponse(res: http.IncomingMessage, method: string): Response {
   const status = res.statusCode ?? 0;
   // Node's parser accepts any three digits; `Response` throws outside these.
   if (status !== 101 && (status < 200 || status > 599)) {
@@ -126,7 +126,7 @@ function toResponse(res: http.IncomingMessage): Response {
     if (value === undefined) continue;
     for (const v of Array.isArray(value) ? value : [value]) headers.append(name, v);
   }
-  if (NULL_BODY_STATUSES.has(status)) {
+  if (NULL_BODY_STATUSES.has(status) || method === "HEAD") {
     res.resume();
     return new Response(null, { status, statusText: res.statusMessage, headers });
   }
@@ -135,10 +135,15 @@ function toResponse(res: http.IncomingMessage): Response {
   const stages: Transform[] = [];
   const declaredLength = Number(res.headers["content-length"]);
   if (Number.isFinite(declaredLength)) stages.push(lengthCheck(declaredLength));
-  const encoding = headers.get("content-encoding")?.trim().toLowerCase() ?? "";
-  const makeDecoder = DECODERS.get(encoding);
-  if (makeDecoder) {
-    stages.push(makeDecoder());
+  // Encodings are listed in the order they were applied, so they come off in
+  // reverse. One we don't know leaves the body as it came, header included.
+  const encodings = (headers.get("content-encoding") ?? "")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+  const makeDecoders = encodings.map((e) => DECODERS.get(e));
+  if (makeDecoders.length > 0 && makeDecoders.every((make) => make !== undefined)) {
+    for (const make of makeDecoders.reverse()) stages.push(make!());
     // The decoded length isn't known, and the encoding no longer applies.
     headers.delete("content-encoding");
     headers.delete("content-length");
@@ -208,8 +213,8 @@ export async function guardedFetch(
     const location = response.headers.get("location");
     if (!location) break;
     redirects += 1;
-    if (redirects > MAX_REDIRECTS) throw new TooManyRedirectsError();
     await discardBody(response);
+    if (redirects > MAX_REDIRECTS) throw new TooManyRedirectsError();
     const next = new URL(location, current).toString();
     current = (await assertResolvableOutbound(next, { allowLoopback })).toString();
 

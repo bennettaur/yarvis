@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import net from "node:net";
-import { gzipSync } from "node:zlib";
+import { brotliCompressSync, gzipSync } from "node:zlib";
 import {
   CrossOriginRedirectError,
   createPinnedFetch,
@@ -32,6 +32,11 @@ beforeAll(() => {
         });
       }
       if (path === "/empty") return new Response(null, { status: 204 });
+      if (path === "/stacked") {
+        return new Response(brotliCompressSync(gzipSync("twice compressed")), {
+          headers: { "content-encoding": "gzip, br" },
+        });
+      }
       if (path === "/odd-encoding") {
         return new Response("plain", { headers: { "content-encoding": "constructor" } });
       }
@@ -127,6 +132,17 @@ describe("createPinnedFetch", () => {
     const res = await createPinnedFetch({ allowLoopback: true })(local("/gzip"));
     expect(res.headers.get("content-encoding")).toBeNull();
     expect(await res.text()).toBe("compressed hello");
+  });
+
+  it("answers a HEAD request with an empty body despite its Content-Length", async () => {
+    const res = await createPinnedFetch({ allowLoopback: true })(local("/ok"), { method: "HEAD" });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("");
+  });
+
+  it("undoes stacked encodings in reverse order", async () => {
+    const res = await createPinnedFetch({ allowLoopback: true })(local("/stacked"));
+    expect(await res.text()).toBe("twice compressed");
   });
 
   it("answers a no-content status with an empty body", async () => {
