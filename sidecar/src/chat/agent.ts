@@ -374,7 +374,7 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
     // Standing consent for an MCP tool was given about typed turns. A spoken one
     // was never read back, so it asks again for everything.
     honourStandingConsent: !spoken,
-    reviewer: approval && !spoken ? await createToolCallReviewer(config) : undefined,
+    reviewer: approval && !spoken ? await createToolCallReviewer(config, message) : undefined,
     liveTools,
   });
 

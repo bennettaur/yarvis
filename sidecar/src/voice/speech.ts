@@ -1,5 +1,5 @@
 import type { CustomProviderSecrets } from "../config.ts";
-import { assertResolvableOutbound } from "../lib/urlSafety.ts";
+import { type GuardedFetchOptions, guardedFetch } from "../lib/guardedFetch.ts";
 import { redactSecrets } from "../llm/errors.ts";
 
 /**
@@ -37,9 +37,6 @@ const TRANSCRIBE_TIMEOUT_MS = 60_000;
  * reply behind it.
  */
 const SYNTHESIZE_TIMEOUT_MS = 30_000;
-
-/** Redirect hops followed before giving up, matching `memory/ingest.ts`. */
-const MAX_REDIRECTS = 5;
 
 export interface TranscribeInput {
   audio: Uint8Array;
@@ -193,56 +190,6 @@ function readTranscript(payload: unknown): string {
     throw new Error(`transcript exceeds ${MAX_TRANSCRIPT_CHARS} characters`);
   }
   return text.trim();
-}
-
-export interface GuardedFetchOptions {
-  fetchImpl: typeof fetch;
-  timeoutMs: number;
-  allowLoopback: boolean;
-}
-
-/**
- * Fetches with the SSRF guard applied to every hop, not just the first.
- *
- * `redirect: "manual"` is what makes that possible: under the default
- * `"follow"`, a 302 from the configured host to a private address is followed
- * before anything can re-check it, and `fetch` strips only `Authorization` on a
- * cross-origin redirect — a custom provider's own auth headers would ride
- * along to wherever the redirect pointed. The deadline covers the whole chain,
- * since these calls sit directly in the user's latency path.
- */
-export async function guardedFetch(
-  url: string,
-  init: RequestInit,
-  { fetchImpl, timeoutMs, allowLoopback }: GuardedFetchOptions,
-): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    await assertResolvableOutbound(url, { allowLoopback });
-    let current = url;
-    let res = await fetchImpl(current, {
-      ...init,
-      redirect: "manual",
-      signal: controller.signal,
-    });
-    let hops = 0;
-    while (res.status >= 300 && res.status < 400) {
-      const location = res.headers.get("location");
-      if (!location) break;
-      if (hops++ >= MAX_REDIRECTS) throw new Error("too many redirects");
-      current = new URL(location, current).toString();
-      await assertResolvableOutbound(current, { allowLoopback });
-      res = await fetchImpl(current, {
-        ...init,
-        redirect: "manual",
-        signal: controller.signal,
-      });
-    }
-    return res;
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 /**

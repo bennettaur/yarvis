@@ -1,11 +1,11 @@
 import { generateText, Output } from "ai";
 import { z } from "zod";
 import type { Config } from "../config.ts";
-import { type CustomProviderRow, listCustomProviders } from "../customProviders/service.ts";
+import type { CustomProviderRow } from "../customProviders/service.ts";
+import { guardedFetch } from "../lib/guardedFetch.ts";
 import { readSection, withSection } from "../settings/store.ts";
-import { guardedFetch } from "../voice/speech.ts";
 import type { ModelSelection } from "./complexity.ts";
-import { CUSTOM_PROVIDER_PREFIX, resolveModel } from "./providers.ts";
+import { availableProviders, findCustomProvider, ollamaUrl, resolveModel } from "./providers.ts";
 
 /**
  * The decision model: one model, tagged `decision` in the catalogue, that
@@ -15,17 +15,13 @@ import { CUSTOM_PROVIDER_PREFIX, resolveModel } from "./providers.ts";
  * the next call with no restart.
  */
 
-export interface DecisionConfig {
+export interface DecisionModelConfig {
   model: ModelSelection | null;
-  /**
-   * Let the decision model approve an MCP tool call before the user is asked.
-   * Only an approval skips the prompt: a refusal, an error or a timeout still
-   * asks the user.
-   */
+  /** Let the decision model approve an MCP tool call before the user is asked. */
   autoApproveTools: boolean;
 }
 
-export const DEFAULT_DECISION_CONFIG: DecisionConfig = {
+export const DEFAULT_DECISION_MODEL_CONFIG: DecisionModelConfig = {
   model: null,
   autoApproveTools: false,
 };
@@ -36,29 +32,57 @@ const SETTINGS_KEY = "decisionModel";
  * Long enough for a small local model to load and answer, short enough that a
  * stuck one falls back to the user's prompt before they wonder what happened.
  */
-export const DECISION_TIMEOUT_MS = 20_000;
+const DECISION_TIMEOUT_MS = 20_000;
 
-export async function getDecisionConfig(): Promise<DecisionConfig> {
-  const stored = await readSection<Partial<DecisionConfig>>(SETTINGS_KEY);
-  return { ...DEFAULT_DECISION_CONFIG, ...stored };
+/**
+ * Ollama's context window for a decision call. Its default can be smaller than
+ * a review prompt, and Ollama drops the overflow from the front without an
+ * error — which is where the instructions sit.
+ */
+const OLLAMA_NUM_CTX = 8192;
+
+/** A verdict is a few booleans and a sentence; anything longer is a model looping. */
+const OLLAMA_NUM_PREDICT = 256;
+
+export async function getDecisionModelConfig(): Promise<DecisionModelConfig> {
+  const stored = await readSection<Partial<DecisionModelConfig>>(SETTINGS_KEY);
+  return { ...DEFAULT_DECISION_MODEL_CONFIG, ...stored };
 }
 
 /** Merges the given fields onto the stored config; `model: null` clears the selection. */
-export async function saveDecisionConfig(input: Partial<DecisionConfig>): Promise<DecisionConfig> {
-  return withSection<Partial<DecisionConfig>, DecisionConfig>(SETTINGS_KEY, (current) => {
-    const next = { ...DEFAULT_DECISION_CONFIG, ...current, ...input };
+export async function saveDecisionModelConfig(
+  input: Partial<DecisionModelConfig>,
+): Promise<DecisionModelConfig> {
+  return withSection<Partial<DecisionModelConfig>, DecisionModelConfig>(SETTINGS_KEY, (current) => {
+    const next = { ...DEFAULT_DECISION_MODEL_CONFIG, ...current, ...input };
     return { next, result: next };
   });
+}
+
+/**
+ * The saved decision model, or null when none is saved or it is no longer a
+ * usable `decision` model — untagged in the catalogue, or its provider lost its
+ * key. A safety check has to run on the model the user chose for the job.
+ */
+export async function resolveDecisionModel(
+  config: Config,
+  selection: ModelSelection | null,
+): Promise<ModelSelection | null> {
+  if (!selection) return null;
+  const provider = (await availableProviders(config, "decision")).find(
+    (p) => p.id === selection.provider,
+  );
+  const usable = provider?.available && provider.models.some((m) => m.id === selection.model);
+  return usable ? selection : null;
 }
 
 export interface DecisionRequest<T> {
   system: string;
   prompt: string;
   schema: z.ZodType<T>;
-  /** Cancels the call along with the turn it serves. Ollama calls are bounded by `timeoutMs` alone. */
+  /** Cancels the call along with the turn it serves. */
   signal?: AbortSignal;
-  timeoutMs?: number;
-  /** Injected by tests in place of the network. */
+  /** Injected by tests in place of the network. Used on the Ollama path. */
   fetchImpl?: typeof fetch;
 }
 
@@ -72,32 +96,28 @@ export async function decide<T>(
   selection: ModelSelection,
   request: DecisionRequest<T>,
 ): Promise<T> {
-  const timeoutMs = request.timeoutMs ?? DECISION_TIMEOUT_MS;
-  const ollama = await ollamaProvider(selection.provider);
-  if (ollama) return decideWithOllama(config, ollama, selection.model, request, timeoutMs);
+  const signal = AbortSignal.any(
+    [AbortSignal.timeout(DECISION_TIMEOUT_MS), request.signal].filter(
+      (s): s is AbortSignal => s !== undefined,
+    ),
+  );
+  const custom = await findCustomProvider(selection.provider);
+  if (custom?.apiKind === "ollama") {
+    return decideWithOllama(config, custom, selection.model, request, signal);
+  }
 
   const model = await resolveModel(config, selection.provider, selection.model);
-  const signals = [AbortSignal.timeout(timeoutMs), request.signal].filter(
-    (s): s is AbortSignal => s !== undefined,
-  );
   const { output } = await generateText({
     model,
     system: request.system,
     prompt: request.prompt,
     output: Output.object({ schema: request.schema }),
-    abortSignal: AbortSignal.any(signals),
+    abortSignal: signal,
   });
-  return request.schema.parse(output);
+  return output;
 }
 
-async function ollamaProvider(providerId: string): Promise<CustomProviderRow | null> {
-  if (!providerId.startsWith(CUSTOM_PROVIDER_PREFIX)) return null;
-  const id = providerId.slice(CUSTOM_PROVIDER_PREFIX.length);
-  const row = (await listCustomProviders()).find((r) => r.id === id);
-  return row?.apiKind === "ollama" ? row : null;
-}
-
-const ollamaChatResponse = z.object({
+const ollamaChatResponseSchema = z.object({
   message: z.object({ content: z.string() }),
 });
 
@@ -111,7 +131,7 @@ async function decideWithOllama<T>(
   row: CustomProviderRow,
   modelId: string,
   request: DecisionRequest<T>,
-  timeoutMs: number,
+  signal: AbortSignal,
 ): Promise<T> {
   const secrets = config.customProviderSecrets[row.id] ?? { headers: {} };
   const headers: Record<string, string> = {
@@ -121,7 +141,7 @@ async function decideWithOllama<T>(
   if (secrets.apiKey) headers.Authorization = `Bearer ${secrets.apiKey}`;
 
   const res = await guardedFetch(
-    `${row.baseUrl.replace(/\/+$/, "")}/api/chat`,
+    ollamaUrl(row.baseUrl, "/api/chat"),
     {
       method: "POST",
       headers,
@@ -134,14 +154,22 @@ async function decideWithOllama<T>(
         format: z.toJSONSchema(request.schema),
         stream: false,
         // A judgement should come out the same way twice.
-        options: { temperature: 0 },
+        options: { temperature: 0, num_ctx: OLLAMA_NUM_CTX, num_predict: OLLAMA_NUM_PREDICT },
       }),
+      // Also bounds reading the body, which outlives guardedFetch's own deadline.
+      signal,
     },
-    { fetchImpl: request.fetchImpl ?? fetch, timeoutMs, allowLoopback: true },
+    {
+      fetchImpl: request.fetchImpl ?? fetch,
+      timeoutMs: DECISION_TIMEOUT_MS,
+      allowLoopback: true,
+      // The body is the user's conversation.
+      sameOriginOnly: true,
+    },
   );
   if (!res.ok) {
     throw new Error(`decision model call failed (${res.status})`);
   }
-  const { message } = ollamaChatResponse.parse(await res.json());
+  const { message } = ollamaChatResponseSchema.parse(await res.json());
   return request.schema.parse(JSON.parse(message.content));
 }

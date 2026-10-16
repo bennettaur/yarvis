@@ -49,6 +49,8 @@ export interface ApprovalHooks {
   signal?: AbortSignal;
 }
 
+const STOPPED = { denied: true, message: "The user stopped this turn." };
+
 /**
  * Wraps a tool so that calling it first requires explicit user approval. On
  * denial or timeout it returns a structured result the model can read and move
@@ -74,12 +76,19 @@ export function wrapToolWithApproval(
   const wrapped = {
     ...t,
     async execute(args: unknown, opts: ToolExecutionOptions<unknown>) {
-      if (
-        reviewer &&
-        (await reviewer({ id, args, messages: opts.messages, signal: hooks.signal }))
-      ) {
-        return run(args, opts);
-      }
+      const autoApproved = reviewer
+        ? await reviewer({
+            id,
+            description: typeof t.description === "string" ? t.description : undefined,
+            args,
+            messages: opts.messages,
+            signal: hooks.signal,
+          })
+        : false;
+      // A review takes long enough for the user to stop the turn meanwhile. A
+      // stopped turn neither runs the call nor raises a prompt nobody can answer.
+      if (hooks.signal?.aborted) return STOPPED;
+      if (autoApproved) return run(args, opts);
       await hooks.onRequest({ toolCallId: opts.toolCallId, id, args });
       const approved = await waitForApproval(opts.toolCallId, {
         signal: hooks.signal,

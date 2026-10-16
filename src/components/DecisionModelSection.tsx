@@ -58,6 +58,12 @@ export default function DecisionModelSection() {
   const selection = config.model;
   const modelsFor = (providerId: string) =>
     providers.find((p) => p.id === providerId)?.models ?? [];
+  // A saved model that lost its `decision` tag or its key is ignored by the
+  // sidecar. Showing it as such beats a picker silently showing "None".
+  const stale =
+    selection !== null &&
+    (!providers.find((p) => p.id === selection.provider)?.available ||
+      !modelsFor(selection.provider).some((m) => m.id === selection.model));
 
   return (
     <section>
@@ -82,6 +88,9 @@ export default function DecisionModelSection() {
             }}
           >
             <option value="">None</option>
+            {stale && selection && !providers.some((p) => p.id === selection.provider) && (
+              <option value={selection.provider}>{selection.provider} (unavailable)</option>
+            )}
             {providers.map((p) => (
               <option key={p.id} value={p.id} disabled={!p.available}>
                 {p.label}
@@ -99,6 +108,7 @@ export default function DecisionModelSection() {
               void save({ model: { provider: selection.provider, model: e.target.value } });
             }}
           >
+            {stale && selection && <option value={selection.model}>{selection.model}</option>}
             {modelsFor(selection?.provider ?? "").map((m) => (
               <option key={m.id} value={m.id}>
                 {m.id}
@@ -106,6 +116,12 @@ export default function DecisionModelSection() {
             ))}
           </select>
         </div>
+        {stale && (
+          <p className="text-xs text-amber-400">
+            This model is no longer tagged decision or its provider has no key, so auto mode is off
+            until you pick another.
+          </p>
+        )}
 
         <label className="flex items-start gap-2 text-sm text-zinc-300">
           <input
@@ -120,7 +136,9 @@ export default function DecisionModelSection() {
             <span className="block text-xs text-zinc-600">
               Before asking you to approve an MCP tool call, the decision model checks whether it
               matches what you asked for and is neither risky nor destructive. If it is sure, the
-              call runs. Otherwise you are asked as usual. Spoken turns always ask.
+              call runs. Otherwise you are asked as usual. Spoken turns always ask. Each review
+              sends your message, recent conversation and tool results to the decision model, so
+              pick one you trust with them; a local model keeps them on this machine.
             </span>
           </span>
         </label>

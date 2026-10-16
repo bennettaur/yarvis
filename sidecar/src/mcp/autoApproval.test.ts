@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { tool } from "ai";
+import { type Tool, tool } from "ai";
 import postgres from "postgres";
 import { z } from "zod";
 import { syncBuiltins } from "../agentTools/registry.ts";
@@ -266,5 +266,50 @@ describe("auto mode's decision model", () => {
     await tools[modelToolKey(ASK_ID)]?.execute?.({}, executeOptions);
     expect(reviewed).toEqual([]);
     expect(asked).toEqual([ASK_ID]);
+  });
+
+  // The built-ins that ask are the ones whose answer must come from the user.
+  it("never reviews a built-in that has to be confirmed", async () => {
+    const reviewed: string[] = [];
+    const asked: string[] = [];
+    const { tools } = await assembleAgentToolset({
+      config,
+      db,
+      sessionId: `sess-${crypto.randomUUID()}`,
+      builtinTools: { register_repo: liveTool("register_repo") as unknown as Tool },
+      confirmBuiltins: new Set(["register_repo"]),
+      approval: {
+        onRequest: async ({ toolCallId, id }) => {
+          asked.push(id);
+          resolveApproval(toolCallId, false);
+        },
+      },
+      reviewer: async ({ id }) => {
+        reviewed.push(id);
+        return true;
+      },
+      liveTools: {},
+    });
+
+    await tools.register_repo?.execute?.({}, executeOptions);
+    expect(reviewed).toEqual([]);
+    expect(asked).toEqual(["register_repo"]);
+  });
+
+  it("neither runs the call nor asks when the turn is stopped during the review", async () => {
+    const controller = new AbortController();
+    const asked: string[] = [];
+    const { tools } = await assemble(
+      { signal: controller.signal, onRequest: async ({ id }) => void asked.push(id) },
+      true,
+      async () => {
+        controller.abort();
+        return true;
+      },
+    );
+
+    const result = await tools[modelToolKey(ASK_ID)]?.execute?.({}, executeOptions);
+    expect(result).toMatchObject({ denied: true });
+    expect(asked).toEqual([]);
   });
 });

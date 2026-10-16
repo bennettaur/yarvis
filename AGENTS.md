@@ -222,12 +222,14 @@ back to ad-hoc.
   is set to. Which speech backends to use lives in `~/.yarvis/settings.json`
   (`sidecar/src/voice/config.ts`), not in the frontend, because the Telegram bot
   runs in the sidecar and needs the same settings (#226).
-- Outbound speech calls go through `guardedFetch` in that same file, never a
-  bare `fetch`: it re-runs the SSRF guard on every redirect hop rather than only
+- Outbound speech and Ollama decision calls go through `guardedFetch` in
+  `sidecar/src/lib/guardedFetch.ts`, never a bare `fetch`: it re-runs the SSRF guard on every redirect hop rather than only
   the first (`redirect: "manual"`, mirroring `memory/ingest.ts`) and puts a
   deadline on the whole chain. `fetch` strips `Authorization` across origins but
   not a custom provider's own auth headers, so following a redirect unchecked
-  would hand those to whatever host it named.
+  would hand those to whatever host it named. A call whose body is private (the
+  decision model's review carries the conversation) also sets `sameOriginOnly`,
+  since a redirect replays the body too.
 - What a surface can do without asking depends on whether the user proof-read
   the turn. `ChatMessageMetadata.source` records where it came from, and
   `runAgentTurn` uses it: a `voice` turn puts the tools in
