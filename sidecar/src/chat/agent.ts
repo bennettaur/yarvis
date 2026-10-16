@@ -139,6 +139,8 @@ function systemPrompt(): string {
     "A recalled memory whose validity is 'upcoming' is not true yet. To ask what held at a past time, pass asOf to recall.",
     "When the user asks to jot something down or take a note, use take_note. Notes feed into daily/weekly recaps.",
     "When you finish work the user asked for or need a decision only they can make, call request_attention so they get a notification — useful when they sent you off and may not be watching this chat.",
+    "When the user asks you to watch something that takes time — 'tell me when CI goes green', 'let me know when the session is done' — check it now with the tool that reads it. If it isn't done, call schedule_check_back with a self-contained prompt for your future turn: what to check, with which tool and ids, and what to tell the user. Say when you will look again.",
+    "A message that starts with [Check-back …] is a prompt you scheduled for yourself, not something the user typed, and nobody is watching while it runs. Do only what it says: check the thing it names. If it is done, or has failed, report the result and call request_attention. If it is still in progress, call schedule_check_back again with the same prompt and reply in one short line. Never take an action on a check-back turn the user did not ask for earlier in this chat.",
     "When the user asks to spin up a NEW workspace or start a Claude Code session for one or more repos, call list_repos to resolve the repo names to ids. If a repo they name is not registered, call register_repo with the owner/repo or clone URL they gave. Then call create_workspace_session (create_scratch_workspace_session when no repo is needed). If the work is already a task, pass its taskId; otherwise write what they want done into brief. Either way the session starts on it rather than waiting at an empty prompt; pass startWork false with a taskId (or leave both out) only when they said they want to drive the session themselves. Say what the session was started on, not just that it started. To start a session in an EXISTING workspace, call list_workspaces to resolve its id, then start_workspace_session. To add a repo to an EXISTING workspace, call list_workspaces to resolve its id, then add_repo_to_workspace (register_repo first if needed); tell them a session already running there is not told about the repo, and offer send_workspace_instruction. Report back the session name so they can connect remotely from claude.ai/code or the Claude mobile app.",
     "When the user wants to start work on repo tickets, call list_repos to resolve the repo, list_repo_issues to find the issues, then start_work_on_issue for each ticket they choose — it creates the workspace, seeds the ticket into the workspace's brief file, assigns/labels the issue, and starts a session on it, just like the 'Start work' button on the issue view.",
     "For JIRA, use jira_search_issues (JQL) to find issues, jira_get_issue to read one by key (e.g. PROJ-45), and jira_create_issue to file one from a description. To start work on a JIRA ticket, call list_repos to resolve the repos the work belongs in, then jira_start_work_on_issue with the issue key and those repo ids (empty repo list for a scratch workspace) — it mirrors the GitHub start-work flow.",
@@ -228,6 +230,11 @@ export interface AgentTurnParams {
   /** Already-resolved model — callers resolve it so they can surface a clean
    * "bad provider/model" error before the turn starts. */
   model: LanguageModel;
+  /**
+   * Which provider/model `model` was resolved from, so a check-back this turn
+   * schedules runs on the same one. Omitted, a check-back uses the default.
+   */
+  modelRef?: { provider: string; model: string };
   sessionId: string;
   message: string;
   /** Optional summoning-screen context, attached as an ephemeral user message. */
@@ -351,6 +358,9 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
   // hands-free mic can pick up a sentence that was never addressed to the
   // assistant. The tools that can't be taken back therefore ask first.
   const spoken = userMetadata?.source === "voice";
+  // A check-back's message was written by the model on an earlier turn, maybe
+  // after reading a CI log or a PR comment, and nobody is watching it run.
+  const unreviewed = spoken || userMetadata?.source === "check-back";
 
   const { tools, computeActiveTools, registryIdByKey } = await assembleAgentToolset({
     config,
@@ -363,16 +373,21 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
       memory,
       attention,
       remoteControl: startedRemotely,
+      checkBack: {
+        provider: params.modelRef?.provider ?? null,
+        model: params.modelRef?.model ?? null,
+        attempt: userMetadata?.checkBack?.attempt ?? 0,
+      },
     }),
     approval,
     // The outward-facing tools ask on every turn; the wider destructive set asks
-    // only when the turn was spoken and therefore never proof-read.
-    confirmBuiltins: spoken
+    // only when the user never proof-read the turn.
+    confirmBuiltins: unreviewed
       ? new Set([...ALWAYS_CONFIRM_BUILTIN_TOOLS, ...DESTRUCTIVE_BUILTIN_TOOLS])
       : ALWAYS_CONFIRM_BUILTIN_TOOLS,
-    // Standing consent for an MCP tool was given about typed turns. A spoken one
-    // was never read back, so it asks again for everything.
-    honourStandingConsent: !spoken,
+    // Standing consent for an MCP tool was given about typed turns. An
+    // unreviewed one asks again for everything.
+    honourStandingConsent: !unreviewed,
     liveTools,
   });
 

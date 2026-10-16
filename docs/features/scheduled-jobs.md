@@ -81,9 +81,9 @@ Other limits on a Claude Code job:
 
 ## Background jobs that ship with the app
 
-These are code, not rows in the Jobs tab. They write memory rather than output
-you read, and they are what lets the assistant answer "what did I do
-yesterday?". Their status and a manual trigger are under **Settings →
+These are code, not rows in the Jobs tab. All but the check-backs write memory
+rather than output you read, and they are what lets the assistant answer "what
+did I do yesterday?". Their status and a manual trigger are under **Settings →
 Assistant**.
 
 | Job | When | What it does |
@@ -91,6 +91,7 @@ Assistant**.
 | Transcript digest (`cc-session-digest`) | Daily at 02:00. **Off until you turn it on.** | Reads new or grown Claude Code transcripts under `~/.claude/projects` in the directories you allow, and writes a `session-summary` memory for each. Also writes an `agent-feedback` memory when a session held instructions about how an agent should behave. |
 | Event consolidation (`consolidate-events`) | Every 4 hours | Folds activity-log events nobody has summarized yet into one `activity-summary` memory |
 | Daily rollup (`daily-rollup`) | Daily at 03:00 | Folds yesterday's activity and session summaries into a single `day-summary` |
+| Check-backs (`check-backs`) | Every minute | Runs the check-backs the assistant scheduled for itself, each as a turn in the chat that asked for it. See [Waiting on something](assistant.md#waiting-on-something). |
 
 About the transcript digest: transcripts are local files that often hold
 pasted secrets and other people's data. Summarizing them sends them to your
