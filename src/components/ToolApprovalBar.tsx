@@ -75,6 +75,9 @@ export default function ToolApprovalBar({
 
   if (!current) return null;
   const canRemember = onAlwaysAllow && current.toolId?.startsWith("mcp:");
+  // A URL is the part of a fetch worth judging, since its query string can carry
+  // data out, so it is shown in full rather than behind the arguments toggle.
+  const url = (current.args as { url?: unknown } | null | undefined)?.url;
 
   return (
     <div className="rounded-lg border border-amber-700/60 bg-amber-950/40 px-3 py-2 text-sm">
@@ -127,6 +130,9 @@ export default function ToolApprovalBar({
           </button>
         </div>
       </div>
+      {typeof url === "string" && (
+        <div className="mt-1 break-all font-mono text-xs text-amber-200">{url}</div>
+      )}
       {showArgs && (
         <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-zinc-950/70 p-2 text-xs text-zinc-400">
           {JSON.stringify(current.args, null, 2)}

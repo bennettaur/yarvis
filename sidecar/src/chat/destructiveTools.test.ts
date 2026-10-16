@@ -41,7 +41,7 @@ describe("conditionalConfirmations", () => {
     const conditions = conditionalConfirmations({ spoken: false, reads, isUserGivenUrl: given });
     const deleteTask = conditions.get("delete_task");
     expect(deleteTask?.({})).toBe(false);
-    reads.webPage = true;
+    reads.hasReadWebPage = true;
     expect(deleteTask?.({})).toBe(true);
   });
 

@@ -88,10 +88,13 @@ export function wrapToolWithConditionalApproval(
     ...t,
     async execute(args: unknown, opts: ToolExecutionOptions<unknown>) {
       if (!needsApproval(args)) return run(args, opts);
+      // Not `denied`: the user didn't refuse anything, and the model is told a
+      // denial is the user's answer.
       if (!hooks) {
         return {
-          denied: true,
-          message: "This call needs the user's approval, and this surface can't ask for it.",
+          needsApproval: true,
+          message:
+            "This call needs the user's approval, which this surface can't ask for. Tell the user to make the request from the Yarvis app instead.",
         };
       }
       await hooks.onRequest({ toolCallId: opts.toolCallId, id, args });
@@ -291,7 +294,8 @@ export async function assembleAgentToolset(opts: {
   // A built-in this turn wants confirmed is wrapped like an MCP tool — but only
   // when there is a channel to ask on. With no `approval` hooks nobody could
   // answer the prompt, so it is dropped instead: on a surface that can't ask,
-  // silently running it is the one thing that must not happen.
+  // silently running it is the one thing that must not happen. A built-in in
+  // `confirmBuiltinsWhen` stays, and only its calls that need asking are refused.
   for (const [name, t] of Object.entries(builtinTools)) {
     if (policyById.get(`builtin:${name}`) === "disabled") continue;
     if (confirmBuiltins?.has(name)) {
@@ -320,13 +324,17 @@ export async function assembleAgentToolset(opts: {
       const key = modelToolKey(id);
       if (registryIdByKey.has(key)) collided.add(key);
       registryIdByKey.set(key, id);
-      const consent = honourStandingConsent;
-      if (approvalById.get(id) !== "auto" || consent === false) {
+      if (approvalById.get(id) !== "auto" || honourStandingConsent === false) {
         tools[key] = wrapToolWithApproval(id, t, approval);
-      } else if (consent === true) {
+      } else if (honourStandingConsent === true) {
         tools[key] = t as unknown as Tool;
       } else {
-        tools[key] = wrapToolWithConditionalApproval(id, t, approval, () => !consent());
+        tools[key] = wrapToolWithConditionalApproval(
+          id,
+          t,
+          approval,
+          () => !honourStandingConsent(),
+        );
       }
     }
     // Neither side of a collision is offered: keeping either would let one

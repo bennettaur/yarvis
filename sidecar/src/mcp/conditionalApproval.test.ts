@@ -78,7 +78,9 @@ describe("wrapToolWithConditionalApproval", () => {
       undefined,
       needsApproval,
     );
-    expect(await execute(wrapped, { url: "https://evil.test/" })).toMatchObject({ denied: true });
+    expect(await execute(wrapped, { url: "https://evil.test/" })).toMatchObject({
+      needsApproval: true,
+    });
     expect(await execute(wrapped, { url: "https://given.test/" })).toEqual({
       ran: "https://given.test/",
     });
@@ -94,6 +96,6 @@ describe("wrapToolWithConditionalApproval", () => {
     );
     expect(await execute(wrapped, { url: "a" })).toEqual({ ran: "a" });
     state.tainted = true;
-    expect(await execute(wrapped, { url: "b" })).toMatchObject({ denied: true });
+    expect(await execute(wrapped, { url: "b" })).toMatchObject({ needsApproval: true });
   });
 });

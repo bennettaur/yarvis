@@ -1,5 +1,5 @@
 import type { CustomProviderSecrets } from "../config.ts";
-import { guardedFetch as guardedFetchChain } from "../lib/guardedFetch.ts";
+import { guardedFetch } from "../lib/guardedFetch.ts";
 import { redactSecrets } from "../llm/errors.ts";
 
 /**
@@ -192,7 +192,7 @@ function readTranscript(payload: unknown): string {
   return text.trim();
 }
 
-interface GuardedFetchOptions {
+interface DeadlineFetchOptions {
   /** Replaces the pinned transport from `lib/guardedFetch.ts`; tests pass a fake. */
   fetchImpl?: typeof fetch;
   timeoutMs: number;
@@ -207,15 +207,15 @@ interface GuardedFetchOptions {
  * wherever a redirect pointed. The deadline covers the whole chain, since these
  * calls sit directly in the user's latency path.
  */
-async function guardedFetch(
+async function fetchWithDeadline(
   url: string,
   init: RequestInit,
-  { fetchImpl, timeoutMs, allowLoopback }: GuardedFetchOptions,
+  { fetchImpl, timeoutMs, allowLoopback }: DeadlineFetchOptions,
 ): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const { response } = await guardedFetchChain(url, init, {
+    const { response } = await guardedFetch(url, init, {
       fetchImpl,
       allowLoopback,
       signal: controller.signal,
@@ -244,7 +244,7 @@ export class HuggingFaceSpeech implements SpeechClient {
   }
 
   async transcribe({ audio, contentType, model }: TranscribeInput): Promise<string> {
-    const res = await guardedFetch(
+    const res = await fetchWithDeadline(
       this.modelUrl(model),
       {
         method: "POST",
@@ -262,7 +262,7 @@ export class HuggingFaceSpeech implements SpeechClient {
   }
 
   async synthesize({ text, model }: SynthesizeInput): Promise<SpeechAudio> {
-    const res = await guardedFetch(
+    const res = await fetchWithDeadline(
       this.modelUrl(model),
       {
         method: "POST",
@@ -385,7 +385,7 @@ export class GeminiSpeech implements SpeechClient {
   }
 
   private async call(model: string, body: unknown, what: string, timeoutMs: number) {
-    const res = await guardedFetch(
+    const res = await fetchWithDeadline(
       this.modelUrl(model),
       {
         method: "POST",
@@ -533,7 +533,7 @@ export class OpenAICompatibleSpeech implements SpeechClient {
     return headers;
   }
 
-  private fetchOptions(timeoutMs: number): GuardedFetchOptions {
+  private fetchOptions(timeoutMs: number): DeadlineFetchOptions {
     return { fetchImpl: this.fetchImpl, timeoutMs, allowLoopback: this.allowLoopback };
   }
 
@@ -548,7 +548,7 @@ export class OpenAICompatibleSpeech implements SpeechClient {
     form.set("response_format", "json");
     if (language) form.set("language", language);
 
-    const res = await guardedFetch(
+    const res = await fetchWithDeadline(
       `${this.baseUrl}/audio/transcriptions`,
       {
         method: "POST",
@@ -588,7 +588,7 @@ export class OpenAICompatibleSpeech implements SpeechClient {
       body[key] = value;
     }
 
-    const res = await guardedFetch(
+    const res = await fetchWithDeadline(
       `${this.baseUrl}/audio/speech`,
       {
         method: "POST",

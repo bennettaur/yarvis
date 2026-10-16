@@ -1,4 +1,4 @@
-import { BodyTooLargeError, guardedFetch, readCapped } from "../lib/guardedFetch.ts";
+import { BodyTooLargeError, discardBody, guardedFetch, readCapped } from "../lib/guardedFetch.ts";
 import { validateOutboundUrl } from "../lib/urlSafety.ts";
 import type { MemoryService } from "./index.ts";
 
@@ -131,12 +131,17 @@ export async function fetchUrlText(
       { headers: { "User-Agent": "yarvis/0.1 (+local assistant)" } },
       { fetchImpl, signal: controller.signal },
     ));
-    if (!res.ok) throw new Error(`fetch ${url} -> ${res.status}`);
+    if (!res.ok) {
+      await discardBody(res);
+      throw new Error(`fetch ${url} -> ${res.status}`);
+    }
 
     const contentLength = Number(res.headers.get("content-length") ?? 0);
     if (contentLength > MAX_FETCH_BYTES) {
+      await discardBody(res);
       throw new Error(`response too large: ${contentLength} bytes`);
     }
+    if (!res.body) throw new Error("empty response body");
     bytes = await readCapped(res, MAX_FETCH_BYTES);
   } catch (e) {
     if (e instanceof BodyTooLargeError) {

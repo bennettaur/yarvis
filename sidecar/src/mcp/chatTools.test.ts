@@ -332,8 +332,9 @@ describe("assembleAgentToolset with confirmed built-ins", () => {
       confirmBuiltinsWhen: new Map([["delete_task", () => true]]),
     });
 
+    expect(Object.keys(tools)).toContain("delete_task");
     const result = await tools.delete_task!.execute!({}, executeOptions);
-    expect(result).toMatchObject({ denied: true });
+    expect(result).toMatchObject({ needsApproval: true });
   });
 
   it("drops a tool needing confirmation when there is no way to ask", async () => {

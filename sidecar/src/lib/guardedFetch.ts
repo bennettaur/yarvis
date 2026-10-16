@@ -2,14 +2,17 @@
  * Outbound HTTP for URLs the sidecar doesn't fully trust: a page the user
  * linked, a document to ingest, a custom speech provider.
  *
- * Three things have to hold on every request, and they are kept in one place
- * because the copies had drifted apart (one's deadline missed the body read,
- * one hard-coded its redirect cap):
+ * Three things have to hold on every request, so they live in one place:
  *
  *   - the SSRF guard runs on every redirect hop, not just the first, because
  *     under `redirect: "follow"` a 302 to a private address is followed before
- *     anything can check it, and `fetch` strips only `Authorization` across
- *     origins, so a provider's own auth headers would ride along;
+ *     anything can check it;
+ *   - a redirect to another origin carries none of the caller's headers but a
+ *     few harmless ones, and no body: `fetch` strips only `Authorization`, so a
+ *     provider's own auth header, or the user's recorded audio, would otherwise
+ *     go to whichever site the redirect named;
+ *   - a server's answer can't crash the process, and a body nobody reads still
+ *     releases its connection;
  *   - the connection goes to the address that was checked (`pinnedFetch`), so a
  *     DNS-rebinding host can't pass the check and then resolve somewhere else;
  *   - a body is read with a size cap, so a lying or missing Content-Length
@@ -18,16 +21,32 @@
 
 import http from "node:http";
 import https from "node:https";
-import { Readable } from "node:stream";
+import { pipeline, Readable, Transform } from "node:stream";
 import zlib from "node:zlib";
 import {
   assertResolvableOutbound,
   createSafeLookup,
   type OutboundUrlOptions,
   type Resolver,
+  validateOutboundUrl,
 } from "./urlSafety.ts";
 
 export const MAX_REDIRECTS = 5;
+
+/**
+ * The content encodings decoded for callers, as `fetch` does. A Map, not an
+ * object literal: the encoding is the server's text, and `constructor` or
+ * `__proto__` must not find something on a prototype.
+ */
+const DECODERS = new Map<string, () => Transform>([
+  ["gzip", zlib.createGunzip],
+  ["x-gzip", zlib.createGunzip],
+  ["deflate", zlib.createInflate],
+  ["br", zlib.createBrotliDecompress],
+]);
+
+/** Request headers that say nothing about who is asking, so they may follow a redirect anywhere. */
+const PORTABLE_HEADERS = new Set(["accept", "accept-language", "user-agent"]);
 
 /** Statuses whose response must not carry a body, which `Response` enforces. */
 const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
@@ -41,9 +60,11 @@ export interface PinnedFetchOptions extends OutboundUrlOptions {
  * A `fetch` that connects only to addresses the SSRF guard accepted.
  *
  * Bun's `fetch` resolves hosts itself with no hook to check the answer, so this
- * goes through `node:http(s)` instead, whose `lookup` option is the hook. It
- * never follows redirects (callers loop with `guardedFetch`), and it doesn't go
- * through an HTTP proxy from the environment the way Bun's `fetch` does.
+ * goes through `node:http(s)` instead, whose `lookup` option is the hook. A
+ * literal IP never reaches a lookup, so it gets the static check here. It never
+ * follows redirects (callers loop with `guardedFetch`), and it doesn't go
+ * through an HTTP proxy from the environment the way Bun's `fetch` does. A
+ * request body is buffered in full before it is sent.
  */
 export function createPinnedFetch(options: PinnedFetchOptions = {}): typeof fetch {
   const lookup = createSafeLookup(options);
@@ -52,7 +73,7 @@ export function createPinnedFetch(options: PinnedFetchOptions = {}): typeof fetc
     // included, into bytes plus the Content-Type it implies.
     const request =
       input instanceof Request ? new Request(input, init) : new Request(input.toString(), init);
-    const url = new URL(request.url);
+    const url = validateOutboundUrl(request.url, options);
     // Read before the body: Bun drops the implied multipart Content-Type from
     // the headers' iterator once a FormData body has been consumed.
     const headers = Object.fromEntries(request.headers);
@@ -70,9 +91,21 @@ export function createPinnedFetch(options: PinnedFetchOptions = {}): typeof fetc
           method: request.method,
           headers,
           lookup: lookup as unknown as http.RequestOptions["lookup"],
-          signal: init?.signal ?? undefined,
+          // A fresh connection every time. A pooled socket was opened under
+          // whichever lookup ran first, so reusing one could skip this check.
+          agent: false,
+          signal: request.signal,
         },
-        (res) => resolve(toResponse(res)),
+        // This callback runs outside the promise's protection, so anything the
+        // server's answer makes it throw would otherwise crash the process.
+        (res) => {
+          try {
+            resolve(toResponse(res));
+          } catch (e) {
+            res.destroy();
+            reject(e);
+          }
+        },
       );
       req.on("error", reject);
       req.end(body);
@@ -81,12 +114,13 @@ export function createPinnedFetch(options: PinnedFetchOptions = {}): typeof fetc
   return pinned as typeof fetch;
 }
 
-/**
- * Wraps a Node response as a web `Response`. Bun's `fetch` decompresses for
- * its callers, so this does too.
- */
+/** Wraps a Node response as a web `Response`, decoding the body as `fetch` would. */
 function toResponse(res: http.IncomingMessage): Response {
-  const status = res.statusCode ?? 502;
+  const status = res.statusCode ?? 0;
+  // Node's parser accepts any three digits; `Response` throws outside these.
+  if (status !== 101 && (status < 200 || status > 599)) {
+    throw new Error(`the server answered with an invalid status (${status})`);
+  }
   const headers = new Headers();
   for (const [name, value] of Object.entries(res.headers)) {
     if (value === undefined) continue;
@@ -96,25 +130,48 @@ function toResponse(res: http.IncomingMessage): Response {
     res.resume();
     return new Response(null, { status, statusText: res.statusMessage, headers });
   }
-  let source: Readable = res;
-  const encoding = headers.get("content-encoding")?.trim().toLowerCase();
-  const decoder =
-    encoding === "gzip" || encoding === "x-gzip"
-      ? zlib.createGunzip()
-      : encoding === "deflate"
-        ? zlib.createInflate()
-        : encoding === "br"
-          ? zlib.createBrotliDecompress()
-          : null;
-  if (decoder) {
-    source = res.pipe(decoder);
-    res.on("error", (e) => decoder.destroy(e));
+  // `pipeline`, not `pipe`: an early close, an error or a cancel on any stage
+  // has to tear down all of them, or a read can wait past every deadline.
+  const stages: Transform[] = [];
+  const declaredLength = Number(res.headers["content-length"]);
+  if (Number.isFinite(declaredLength)) stages.push(lengthCheck(declaredLength));
+  const encoding = headers.get("content-encoding")?.trim().toLowerCase() ?? "";
+  const makeDecoder = DECODERS.get(encoding);
+  if (makeDecoder) {
+    stages.push(makeDecoder());
     // The decoded length isn't known, and the encoding no longer applies.
     headers.delete("content-encoding");
     headers.delete("content-length");
   }
+  const source: Readable =
+    stages.length === 0
+      ? res
+      : (pipeline as (...streams: unknown[]) => Readable)(res, ...stages, () => {});
   const stream = Readable.toWeb(source) as unknown as ReadableStream<Uint8Array>;
   return new Response(stream, { status, statusText: res.statusMessage, headers });
+}
+
+/**
+ * Fails a body that ends short of its Content-Length. Bun's `node:http` ends
+ * the stream quietly when the connection drops, where `fetch` would reject, so
+ * a cut-off page would otherwise read as a complete one.
+ */
+function lengthCheck(expected: number): Transform {
+  let received = 0;
+  return new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      received += chunk.byteLength;
+      callback(null, chunk);
+    },
+    flush(callback) {
+      callback(received < expected ? new Error("the response ended early") : null);
+    },
+  });
+}
+
+/** Releases a response's connection without reading the rest of it. */
+export async function discardBody(res: Response): Promise<void> {
+  await res.body?.cancel().catch(() => {});
 }
 
 export interface GuardedFetchOptions extends OutboundUrlOptions {
@@ -126,29 +183,69 @@ export interface GuardedFetchOptions extends OutboundUrlOptions {
 
 /**
  * Fetches `url`, following up to `MAX_REDIRECTS` redirects with the SSRF guard
- * on each hop. Returns the final response; its body is not read. A 3xx with no
- * Location is returned as-is for the caller to report.
+ * on each hop and `fetch`'s rules for when a redirect turns into a GET. Returns
+ * the final response; its body is not read. A 3xx with no Location is returned
+ * as-is for the caller to report.
  */
 export async function guardedFetch(
   url: string,
-  init: RequestInit,
+  init: Omit<RequestInit, "signal" | "redirect">,
   { fetchImpl, signal, allowLoopback = false }: GuardedFetchOptions = {},
 ): Promise<{ response: Response; url: string }> {
   const transport = fetchImpl ?? createPinnedFetch({ allowLoopback });
-  const request: RequestInit = { ...init, redirect: "manual", signal };
   let current = (await assertResolvableOutbound(url, { allowLoopback })).toString();
-  let response = await transport(current, request);
+  const origin = new URL(current).origin;
+  let method = (init.method ?? "GET").toUpperCase();
+  let body = init.body;
+  // The caller's own headers go out untouched until a redirect has to change them.
+  let headers: RequestInit["headers"] = init.headers;
+  const send = () =>
+    transport(current, { ...init, method, body, headers, redirect: "manual", signal });
+
+  let response = await send();
   let redirects = 0;
   while (response.status >= 300 && response.status < 400) {
     const location = response.headers.get("location");
     if (!location) break;
     redirects += 1;
     if (redirects > MAX_REDIRECTS) throw new TooManyRedirectsError();
+    await discardBody(response);
     const next = new URL(location, current).toString();
     current = (await assertResolvableOutbound(next, { allowLoopback })).toString();
-    response = await transport(current, request);
+
+    const becomesGet =
+      (response.status === 303 && method !== "HEAD") ||
+      ((response.status === 301 || response.status === 302) && method === "POST");
+    if (becomesGet) {
+      method = "GET";
+      body = undefined;
+      const withoutBody = new Headers(headers);
+      withoutBody.delete("content-type");
+      withoutBody.delete("content-length");
+      headers = withoutBody;
+    }
+    if (new URL(current).origin !== origin) {
+      if (body != null) throw new CrossOriginRedirectError();
+      headers = portableHeaders(headers);
+    }
+    response = await send();
   }
   return { response, url: current };
+}
+
+function portableHeaders(headers: RequestInit["headers"]): Headers {
+  const kept = new Headers();
+  for (const [name, value] of new Headers(headers)) {
+    if (PORTABLE_HEADERS.has(name)) kept.set(name, value);
+  }
+  return kept;
+}
+
+export class CrossOriginRedirectError extends Error {
+  constructor() {
+    super("refusing to resend a request body to another site");
+    this.name = "CrossOriginRedirectError";
+  }
 }
 
 export class TooManyRedirectsError extends Error {

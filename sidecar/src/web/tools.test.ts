@@ -85,12 +85,12 @@ describe("read_web_page", () => {
   });
 
   it("records that the turn read a web page, but not when the read failed", async () => {
-    const reads = { webPage: false };
+    const reads = { hasReadWebPage: false };
     const failing = buildWebTools({ fetchImpl: serving({}).fetchImpl, reads });
     await (
       failing.read_web_page as unknown as { execute: (i: unknown, o: unknown) => Promise<unknown> }
     ).execute({ url: PAGE }, opts);
-    expect(reads.webPage).toBe(false);
+    expect(reads.hasReadWebPage).toBe(false);
     const working = buildWebTools({
       fetchImpl: serving({ [PAGE]: () => html("<p>x</p>") }).fetchImpl,
       reads,
@@ -98,7 +98,7 @@ describe("read_web_page", () => {
     await (
       working.read_web_page as unknown as { execute: (i: unknown, o: unknown) => Promise<unknown> }
     ).execute({ url: PAGE }, opts);
-    expect(reads.webPage).toBe(true);
+    expect(reads.hasReadWebPage).toBe(true);
   });
 
   it("follows a public redirect and reports where it ended up", async () => {

@@ -172,7 +172,6 @@ export function validateOutboundUrl(input: string, options: OutboundUrlOptions =
   return parsed;
 }
 
-/**
 /** Resolves a hostname to every address it has, the way `dns.lookup(host, { all: true })` does. */
 export type Resolver = (hostname: string) => Promise<LookupAddress[]>;
 

@@ -1,5 +1,6 @@
 import {
   BodyTooLargeError,
+  discardBody,
   guardedFetch,
   MAX_REDIRECTS,
   readCapped,
@@ -73,16 +74,21 @@ export async function fetchWebPage(
       },
       { fetchImpl, signal: controller.signal },
     );
-    if (!res.ok) throw new WebFetchError(`the page answered ${res.status}`);
+    if (!res.ok) {
+      await discardBody(res);
+      throw new WebFetchError(`the page answered ${res.status}`);
+    }
 
     const header = res.headers.get("content-type") ?? "";
     const declared = (header.split(";")[0] ?? "").trim().toLowerCase();
     if (declared && !TEXT_TYPES.includes(declared)) {
+      await discardBody(res);
       const named = MEDIA_TYPE.test(declared) ? `${declared} content` : "that content type";
       throw new WebFetchError(`can't read ${named}, only web pages and plain text`);
     }
     const contentLength = Number(res.headers.get("content-length") ?? 0);
     if (contentLength > MAX_FETCH_BYTES) {
+      await discardBody(res);
       throw new WebFetchError(`the page is too large (${contentLength} bytes)`);
     }
 

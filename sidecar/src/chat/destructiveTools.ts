@@ -70,11 +70,11 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
 
 /** What a turn has read so far that someone else wrote. The tools that read it set it. */
 export interface UntrustedReads {
-  webPage: boolean;
+  hasReadWebPage: boolean;
 }
 
 export function newUntrustedReads(): UntrustedReads {
-  return { webPage: false };
+  return { hasReadWebPage: false };
 }
 
 /**
@@ -98,7 +98,7 @@ export function conditionalConfirmations(options: {
   const { spoken, reads, isUserGivenUrl } = options;
   const conditions = new Map<string, (args: unknown) => boolean>();
   if (!spoken) {
-    for (const name of DESTRUCTIVE_BUILTIN_TOOLS) conditions.set(name, () => reads.webPage);
+    for (const name of DESTRUCTIVE_BUILTIN_TOOLS) conditions.set(name, () => reads.hasReadWebPage);
   }
   conditions.set("read_web_page", (args) => {
     const url = (args as { url?: unknown } | null)?.url;

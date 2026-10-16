@@ -62,7 +62,7 @@ export function buildWebTools({ fetchImpl, reads }: WebToolDeps = {}) {
         } catch (e) {
           return { error: `Couldn't read ${url}: ${describeFetchError(e)}` };
         }
-        if (reads) reads.webPage = true;
+        if (reads) reads.hasReadWebPage = true;
 
         const extracted = page.contentType.includes("html")
           ? extractVisibleText(page.body, page.url)

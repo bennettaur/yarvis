@@ -182,15 +182,17 @@ export function createChatRoutes(config: Config): Hono {
         approval: {
           signal: c.req.raw.signal,
           onRequest: async ({ toolCallId, id, args }) => {
+            // An MCP tool's id is `mcp:<server>:<tool>`; a built-in's is its bare name.
             const [, serverId = "", ...rest] = id.split(":");
+            const builtin = !id.includes(":");
             await safeWrite({
               type: "tool_approval_request",
               id: toolCallId,
               // The registry id, so the client can offer "always allow" for
               // this tool without having to reassemble it from the parts.
               toolId: id,
-              name: rest.join(":"),
-              server: serverNames.get(serverId) ?? serverId,
+              name: builtin ? id : rest.join(":"),
+              server: builtin ? "" : (serverNames.get(serverId) ?? serverId),
               args,
             });
           },
