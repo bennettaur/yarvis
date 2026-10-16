@@ -660,7 +660,8 @@ pub fn send_session_instruction(
 ) -> Result<(), String> {
     let text = prepare_instruction(instruction)?;
     let id = format!("ws-claude:{workspace_id}");
-    // Read before taking the lock: the first read runs the user's login shell.
+    // Read before taking the sessions lock: the first call runs the user's login
+    // shell, which can take seconds, and every other PTY command waits on that lock.
     let search_path = agent_search_path();
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = sessions
@@ -740,7 +741,9 @@ fn agent_search_path() -> Option<String> {
 /// identify.
 fn foreground_is_agent(app: &AppHandle, session: &PtySession, search_path: Option<&str>) -> bool {
     let Some(pid) = foreground_pid(session) else {
-        eprintln!("[pty] refused instruction: the shell holds the session's foreground");
+        eprintln!(
+            "[pty] refused instruction: no process other than the shell holds the session's foreground"
+        );
         return false;
     };
     let Some(exe) = process_executable(pid) else {
@@ -753,8 +756,10 @@ fn foreground_is_agent(app: &AppHandle, session: &PtySession, search_path: Optio
     };
     let matched = executable_is_command(Path::new(&exe), argv0, search_path);
     if !matched {
+        // The command itself isn't logged: it is user-written and can carry an
+        // inline `VAR=secret` assignment.
         eprintln!(
-            "[pty] refused instruction: foreground executable {exe} is not the agent command `{argv0}`"
+            "[pty] refused instruction: foreground executable {exe} is not the configured agent"
         );
     }
     matched
@@ -762,7 +767,9 @@ fn foreground_is_agent(app: &AppHandle, session: &PtySession, search_path: Optio
 
 /// True when `exe` is the program the command word `argv0` runs: it has the
 /// same file name, or it is the file `argv0` resolves to once symlinks are
-/// followed. A bare name is looked up in each directory of `search_path`.
+/// followed. A bare name is looked up in each directory of `search_path`, and a
+/// match in any of them counts, not only the first a shell would pick: the
+/// session's own `PATH` can differ from the login shell's.
 ///
 /// The symlink case is how Claude Code's native installer works: `claude` on
 /// `PATH` links to `~/.local/share/claude/versions/<version>`, and the OS
@@ -772,22 +779,32 @@ fn executable_is_command(exe: &Path, argv0: &str, search_path: Option<&str>) -> 
     if exe.file_name() == Some(expected) {
         return true;
     }
-    let Ok(exe) = exe.canonicalize() else {
+    let Ok(canonical_exe) = exe.canonicalize() else {
         return false;
     };
     let candidates: Vec<PathBuf> = if argv0.contains('/') {
-        vec![PathBuf::from(argv0)]
+        // A relative path would resolve against the app's working directory, not
+        // the session's.
+        Path::new(argv0)
+            .is_absolute()
+            .then(|| PathBuf::from(argv0))
+            .into_iter()
+            .collect()
     } else {
         search_path
             .unwrap_or_default()
             .split(':')
+            // A relative entry would resolve against the app's working directory,
+            // not the session's.
             .filter(|dir| dir.starts_with('/'))
             .map(|dir| Path::new(dir).join(argv0))
             .collect()
     };
-    candidates
-        .iter()
-        .any(|candidate| candidate.canonicalize().is_ok_and(|c| c == exe))
+    candidates.iter().any(|candidate| {
+        candidate
+            .canonicalize()
+            .is_ok_and(|resolved| resolved == canonical_exe)
+    })
 }
 
 /// Absolute path to a running process's executable, or None when it can't be
@@ -1093,6 +1110,7 @@ mod tests {
         DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK,
         MAX_SESSION_NAME_CHARS,
     };
+    use std::path::{Path, PathBuf};
     use std::sync::Mutex;
 
     #[test]
@@ -1206,30 +1224,47 @@ mod tests {
 
     /// Lays out an agent the way Claude Code's native installer does: a
     /// version-numbered executable, and a `claude` symlink to it in a bin dir.
+    /// The directory is removed when this is dropped.
     #[cfg(unix)]
-    fn native_install(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-        let root =
-            std::env::temp_dir().join(format!("yarvis-agent-exe-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let versions = root.join("versions");
-        let bin = root.join("bin");
-        std::fs::create_dir_all(&versions).unwrap();
-        std::fs::create_dir_all(&bin).unwrap();
-        let exe = versions.join("2.1.301");
-        std::fs::write(&exe, b"").unwrap();
-        std::os::unix::fs::symlink(&exe, bin.join("claude")).unwrap();
-        (exe, bin)
+    struct NativeInstall {
+        root: PathBuf,
+        exe: PathBuf,
+        bin: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl NativeInstall {
+        fn new(name: &str) -> Self {
+            let root = std::env::temp_dir()
+                .join(format!("yarvis-agent-exe-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            let versions = root.join("versions");
+            let bin = root.join("bin");
+            std::fs::create_dir_all(&versions).unwrap();
+            std::fs::create_dir_all(&bin).unwrap();
+            let exe = versions.join("2.1.301");
+            std::fs::write(&exe, b"").unwrap();
+            std::os::unix::fs::symlink(&exe, bin.join("claude")).unwrap();
+            Self { root, exe, bin }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for NativeInstall {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
     }
 
     #[test]
     fn executable_is_command_matches_on_file_name() {
         assert!(executable_is_command(
-            std::path::Path::new("/opt/homebrew/bin/claude"),
+            Path::new("/opt/homebrew/bin/claude"),
             "claude",
             None
         ));
         assert!(!executable_is_command(
-            std::path::Path::new("/usr/bin/vim"),
+            Path::new("/usr/bin/vim"),
             "claude",
             None
         ));
@@ -1238,31 +1273,50 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn executable_is_command_follows_a_symlink_found_on_the_search_path() {
-        let (exe, bin) = native_install("path");
-        let search_path = format!("/nonexistent:{}", bin.display());
-        assert!(executable_is_command(&exe, "claude", Some(&search_path)));
-        assert!(!executable_is_command(&exe, "claude", Some("/nonexistent")));
-        assert!(!executable_is_command(&exe, "claude", None));
+        let install = NativeInstall::new("path");
+        let search_path = format!("/nonexistent:{}", install.bin.display());
+        assert!(executable_is_command(
+            &install.exe,
+            "claude",
+            Some(&search_path)
+        ));
+        assert!(!executable_is_command(
+            &install.exe,
+            "claude",
+            Some("/nonexistent")
+        ));
+        assert!(!executable_is_command(&install.exe, "claude", None));
     }
 
     #[cfg(unix)]
     #[test]
     fn executable_is_command_follows_a_symlink_given_as_a_path() {
-        let (exe, bin) = native_install("absolute");
-        let argv0 = bin.join("claude");
-        assert!(executable_is_command(&exe, argv0.to_str().unwrap(), None));
+        let install = NativeInstall::new("absolute");
+        let argv0 = install.bin.join("claude");
+        assert!(executable_is_command(
+            &install.exe,
+            argv0.to_str().unwrap(),
+            None
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executable_is_command_refuses_a_relative_path() {
+        let install = NativeInstall::new("relative");
+        assert!(!executable_is_command(&install.exe, "bin/claude", None));
     }
 
     #[cfg(unix)]
     #[test]
     fn executable_is_command_refuses_another_program_beside_the_agent() {
-        let (exe, bin) = native_install("other");
-        let other = exe.with_file_name("node");
+        let install = NativeInstall::new("other");
+        let other = install.exe.with_file_name("node");
         std::fs::write(&other, b"").unwrap();
         assert!(!executable_is_command(
             &other,
             "claude",
-            Some(bin.to_str().unwrap())
+            Some(install.bin.to_str().unwrap())
         ));
     }
 
