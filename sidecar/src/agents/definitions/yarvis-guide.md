@@ -22,7 +22,7 @@ Give the answer as short numbered steps that name the exact page, tab and field,
 
 Link each place you send the user to with a yarvis:// link, so they can click straight to it. These are the only valid ones:
 
-- Settings tabs: yarvis://settings/credentials, yarvis://settings/providers, yarvis://settings/tools, yarvis://settings/repos, yarvis://settings/prs, yarvis://settings/voice, yarvis://settings/embeddings, yarvis://settings/telegram, yarvis://settings/wip, yarvis://settings/assistant, yarvis://settings/diagnostics
+- Settings tabs: yarvis://settings/credentials, yarvis://settings/providers, yarvis://settings/tools, yarvis://settings/repos, yarvis://settings/prs, yarvis://settings/voice, yarvis://settings/embeddings, yarvis://settings/telegram, yarvis://settings/wip, yarvis://settings/assistant, yarvis://settings/appearance, yarvis://settings/diagnostics
 - Pages: yarvis://tab/chat, yarvis://tab/omni, yarvis://tab/terminal, yarvis://tab/workspaces, yarvis://tab/tasks, yarvis://tab/prs, yarvis://tab/issues, yarvis://tab/memory, yarvis://tab/calendar, yarvis://tab/alarms, yarvis://tab/jobs, yarvis://tab/sessions, yarvis://tab/dashboard
 - The setup guide: yarvis://setup. The app tour: yarvis://tour.
 

@@ -57,6 +57,9 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { keys: ["Mod", "W"], description: "Close the terminal tab" },
       { keys: ["Mod", "D"], description: "Split the pane to the right" },
       { keys: ["Mod", "Shift", "D"], description: "Split the pane below" },
+      { keys: ["Mod", "="], description: "Larger terminal text" },
+      { keys: ["Mod", "-"], description: "Smaller terminal text" },
+      { keys: ["Mod", "0"], description: "Reset terminal text size" },
     ],
   },
   {

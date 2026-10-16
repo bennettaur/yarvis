@@ -52,7 +52,7 @@ export default function AlarmOverlay({ alarm, remaining }: { alarm: Alarm; remai
               openExternal(alarm.meetLink);
               await acknowledgeAlarm(alarm.id);
             }}
-            className="rounded-lg bg-emerald-600 px-8 py-3 text-lg font-medium hover:bg-emerald-500"
+            className="rounded-lg bg-emerald-600 px-8 py-3 text-lg font-medium hover:bg-emerald-700"
           >
             Join meeting
           </button>

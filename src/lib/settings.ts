@@ -48,6 +48,11 @@ export interface Settings {
   onePasswordVault: string | null;
   /** Title of the 1Password item holding the secrets blob. */
   onePasswordItem: string | null;
+  /** The colour theme's key (`lib/theme`); null means the default theme. */
+  colorTheme: string | null;
+  /** Font size every terminal renders at (`lib/terminalFont`); null means the
+   *  default size. */
+  terminalFontSize: number | null;
 }
 
 /** Stores the secrets blob can live in; mirrors `secret_store.rs`. */
@@ -65,6 +70,16 @@ export const setMaxPtySessions = (value: number | null) =>
  * started — no restart. Rejects a value spanning more than one line. */
 export const setAgent = (name: string | null, command: string | null) =>
   invoke<Settings>("set_agent", { name, command });
+
+/** Stores the colour theme; `null` clears it back to the default. The webview
+ * applies a theme as it is chosen, so this only makes it survive a restart. */
+export const saveColorTheme = (value: string | null) =>
+  invoke<Settings>("set_color_theme", { value });
+
+/** Stores the terminal font size; `null` clears it back to the default. Like
+ * the theme, it is already applied by the time this is called. */
+export const saveTerminalFontSize = (value: number | null) =>
+  invoke<Settings>("set_terminal_font_size", { value });
 
 /**
  * The settings below are injected into the sidecar's environment at spawn

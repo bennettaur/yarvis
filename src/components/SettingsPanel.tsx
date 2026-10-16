@@ -1,5 +1,6 @@
 import { SETTINGS_TABS, type SettingsTabKey, useSettingsTab } from "../lib/settingsTabs";
 import AgentSection from "./AgentSection";
+import AppearanceSection from "./AppearanceSection";
 import ChatBudgetSection from "./ChatBudgetSection";
 import ComplexityModelSection from "./ComplexityModelSection";
 import CustomProviderSection from "./CustomProviderSection";
@@ -101,6 +102,7 @@ export default function SettingsPanel({
       {active === "embeddings" && <EmbeddingsSection />}
       {active === "telegram" && <TelegramSection />}
       {active === "wip" && <WipSection />}
+      {active === "appearance" && <AppearanceSection />}
       {active === "diagnostics" && <DiagnosticsSection />}
     </div>
   );
