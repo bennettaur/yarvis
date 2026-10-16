@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -660,6 +660,8 @@ pub fn send_session_instruction(
 ) -> Result<(), String> {
     let text = prepare_instruction(instruction)?;
     let id = format!("ws-claude:{workspace_id}");
+    // Read before taking the lock: the first read runs the user's login shell.
+    let search_path = agent_search_path();
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = sessions
         .get_mut(&id)
@@ -667,7 +669,7 @@ pub fn send_session_instruction(
     if !matches!(session.child.try_wait(), Ok(None)) {
         return Err("the agent session has exited".into());
     }
-    if !foreground_is_agent(app, session) {
+    if !foreground_is_agent(app, session, search_path.as_deref()) {
         return Err(
             "the configured agent is not what is reading that session's prompt; open the workspace and check what is running there".into(),
         );
@@ -714,9 +716,17 @@ fn foreground_pid(session: &PtySession) -> Option<u32> {
     }
 }
 
+/// The `PATH` used to find the agent command's executable: the login shell's,
+/// since that is close to what the session's own shell searches, or the
+/// inherited one when it couldn't be read.
+fn agent_search_path() -> Option<String> {
+    crate::login_path::get()
+        .map(str::to_string)
+        .or_else(|| std::env::var("PATH").ok())
+}
+
 /// True when the process reading the PTY's input is the agent the session was
-/// launched with, matched on the executable's file name against the launch
-/// command's first word.
+/// launched with. See `executable_is_command` for how the two are matched.
 ///
 /// Matching on the executable rather than on "anything that isn't the shell" is
 /// what makes this a gate: `vim`, a language REPL, or a test run left in the
@@ -725,21 +735,59 @@ fn foreground_pid(session: &PtySession) -> Option<u32> {
 ///
 /// It fails closed, and an agent installed as a script rather than a binary
 /// fails with it: the foreground executable is then the interpreter (`node`,
-/// `bun`), which doesn't match the command's first word, so the send is refused
-/// rather than delivered to a process this can't identify.
-fn foreground_is_agent(app: &AppHandle, session: &PtySession) -> bool {
+/// `bun`), which is neither named like the command nor the file it resolves to,
+/// so the send is refused rather than delivered to a process this can't
+/// identify.
+fn foreground_is_agent(app: &AppHandle, session: &PtySession, search_path: Option<&str>) -> bool {
     let Some(pid) = foreground_pid(session) else {
+        eprintln!("[pty] refused instruction: the shell holds the session's foreground");
         return false;
     };
     let Some(exe) = process_executable(pid) else {
+        eprintln!("[pty] refused instruction: could not read the executable of pid {pid}");
         return false;
     };
     let command = agent_command(app);
     let Some(argv0) = command.split_whitespace().next() else {
         return false;
     };
+    let matched = executable_is_command(Path::new(&exe), argv0, search_path);
+    if !matched {
+        eprintln!(
+            "[pty] refused instruction: foreground executable {exe} is not the agent command `{argv0}`"
+        );
+    }
+    matched
+}
+
+/// True when `exe` is the program the command word `argv0` runs: it has the
+/// same file name, or it is the file `argv0` resolves to once symlinks are
+/// followed. A bare name is looked up in each directory of `search_path`.
+///
+/// The symlink case is how Claude Code's native installer works: `claude` on
+/// `PATH` links to `~/.local/share/claude/versions/<version>`, and the OS
+/// reports that version-numbered file as the running executable.
+fn executable_is_command(exe: &Path, argv0: &str, search_path: Option<&str>) -> bool {
     let expected = Path::new(argv0).file_name().unwrap_or(argv0.as_ref());
-    Path::new(&exe).file_name() == Some(expected)
+    if exe.file_name() == Some(expected) {
+        return true;
+    }
+    let Ok(exe) = exe.canonicalize() else {
+        return false;
+    };
+    let candidates: Vec<PathBuf> = if argv0.contains('/') {
+        vec![PathBuf::from(argv0)]
+    } else {
+        search_path
+            .unwrap_or_default()
+            .split(':')
+            .filter(|dir| dir.starts_with('/'))
+            .map(|dir| Path::new(dir).join(argv0))
+            .collect()
+    };
+    candidates
+        .iter()
+        .any(|candidate| candidate.canonicalize().is_ok_and(|c| c == exe))
 }
 
 /// Absolute path to a running process's executable, or None when it can't be
@@ -1039,10 +1087,11 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_launch_command, attention_workspace_id, is_unsafe_name_char, lock_scrollback,
-        prepare_instruction, remote_control_command, resolve_agent_command, resolve_max_sessions,
-        session_env, snapshot, Scrollback, DEFAULT_AGENT_COMMAND, DEFAULT_MAX_SESSIONS,
-        MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
+        agent_launch_command, attention_workspace_id, executable_is_command, is_unsafe_name_char,
+        lock_scrollback, prepare_instruction, remote_control_command, resolve_agent_command,
+        resolve_max_sessions, session_env, snapshot, Scrollback, DEFAULT_AGENT_COMMAND,
+        DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK,
+        MAX_SESSION_NAME_CHARS,
     };
     use std::sync::Mutex;
 
@@ -1153,6 +1202,68 @@ mod tests {
             resolve_agent_command(None, Some("  codex --yolo  ".to_string())),
             "codex --yolo"
         );
+    }
+
+    /// Lays out an agent the way Claude Code's native installer does: a
+    /// version-numbered executable, and a `claude` symlink to it in a bin dir.
+    #[cfg(unix)]
+    fn native_install(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let root =
+            std::env::temp_dir().join(format!("yarvis-agent-exe-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let versions = root.join("versions");
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&versions).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = versions.join("2.1.301");
+        std::fs::write(&exe, b"").unwrap();
+        std::os::unix::fs::symlink(&exe, bin.join("claude")).unwrap();
+        (exe, bin)
+    }
+
+    #[test]
+    fn executable_is_command_matches_on_file_name() {
+        assert!(executable_is_command(
+            std::path::Path::new("/opt/homebrew/bin/claude"),
+            "claude",
+            None
+        ));
+        assert!(!executable_is_command(
+            std::path::Path::new("/usr/bin/vim"),
+            "claude",
+            None
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executable_is_command_follows_a_symlink_found_on_the_search_path() {
+        let (exe, bin) = native_install("path");
+        let search_path = format!("/nonexistent:{}", bin.display());
+        assert!(executable_is_command(&exe, "claude", Some(&search_path)));
+        assert!(!executable_is_command(&exe, "claude", Some("/nonexistent")));
+        assert!(!executable_is_command(&exe, "claude", None));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executable_is_command_follows_a_symlink_given_as_a_path() {
+        let (exe, bin) = native_install("absolute");
+        let argv0 = bin.join("claude");
+        assert!(executable_is_command(&exe, argv0.to_str().unwrap(), None));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executable_is_command_refuses_another_program_beside_the_agent() {
+        let (exe, bin) = native_install("other");
+        let other = exe.with_file_name("node");
+        std::fs::write(&other, b"").unwrap();
+        assert!(!executable_is_command(
+            &other,
+            "claude",
+            Some(bin.to_str().unwrap())
+        ));
     }
 
     #[cfg(unix)]
