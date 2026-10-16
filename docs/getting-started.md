@@ -11,6 +11,9 @@ Prefer to be walked through it? Install
 commands once you approve them, and tells you what to enter in the app. See
 [Set up with Claude Code](#set-up-with-claude-code).
 
+In a hurry? With mise installed and the repo cloned, `mise run yarvis-init`
+runs the install commands from steps 2 and 3. Then pick up at step 4.
+
 ## What you are setting up
 
 Yarvis is a Tauri desktop app made of three processes:

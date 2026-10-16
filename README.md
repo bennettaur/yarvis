@@ -5,7 +5,7 @@
 <h1 align="center">Yarvis</h1>
 
 <p align="center">
-  Run your week with an assistant that can start the work.
+  Leverage a second brain to help manage your workload, context switch, and simply remember where you left off.
 </p>
 
 <p align="center">
@@ -29,55 +29,50 @@ servers to Yarvis, and let Claude Code use Yarvis's memory).
 ## Demo
 
 <a href="https://bennettaur.github.io/yarvis/video/">
-  <img src="docs/images/showcase-reel-poster.png" alt="Play the 90-second Yarvis showcase reel" width="100%">
+  <img src="docs/images/showcase-reel.gif" alt="Yarvis starting work on a ticket, then showing which of several parallel workspaces needs you" width="100%">
 </a>
 
-The 90-second reel shows a week with Yarvis: setting priorities, starting work,
-parallel workspaces, PR review, alarms and the Friday wrap-up. Click the image
-to play it, or download the
-[MP4](https://github.com/bennettaur/yarvis/releases/download/showcase-video/yarvis-reel.mp4).
-There is also a 3½-minute
-[walkthrough](https://github.com/bennettaur/yarvis/releases/download/showcase-video/yarvis-walkthrough.mp4)
-that covers every feature. The [demo site](https://bennettaur.github.io/yarvis/)
-has screenshots and recordings of the real app, and the slide deck.
+Check out the [quick showcase](https://bennettaur.github.io/yarvis/video/), or
+watch the more
+[in-depth walkthrough](https://bennettaur.github.io/yarvis/video/?cut=walkthrough).
+The [demo site](https://bennettaur.github.io/yarvis/) has screenshots of the
+real app too.
 
 ## Quick start
 
 You need macOS, [Homebrew](https://brew.sh), and the Xcode Command Line Tools
 (`xcode-select --install`). Setup takes about 30 minutes, most of it the first
-Rust compile. If you already have Bun, Rust and Postgres with pgvector, skip to
-step 2.
+Rust compile.
 
 Prefer to be walked through it? Install
 [Claude Code](https://claude.com/claude-code), clone the repo, run `claude` in
 it, and type `/yarvis-setup`.
 
-1. Install [mise](https://mise.jdx.dev), which installs Bun and Rust in step 3,
-   and PostgreSQL 17 with pgvector:
+1. Install [mise](https://mise.jdx.dev) and clone the repo:
 
    ```bash
-   brew install mise postgresql@17 pgvector
-   brew services start postgresql@17
-   echo 'eval "$(mise activate zsh)"' >> ~/.zshrc
-   echo "export PATH=\"$(brew --prefix postgresql@17)/bin:\$PATH\"" >> ~/.zshrc
-   exec zsh
-   ```
-
-2. Create the database:
-
-   ```bash
-   createdb yarvis
-   psql -d yarvis -c 'CREATE EXTENSION IF NOT EXISTS vector;'
-   ```
-
-3. Clone the repo, install dependencies and start the app:
-
-   ```bash
+   brew install mise
    git clone https://github.com/bennettaur/yarvis.git && cd yarvis
-   mise install   # skip if you installed Bun and Rust another way
-   bun install
-   bun run tauri dev
    ```
+
+2. Set up everything else:
+
+   ```bash
+   mise run yarvis-init
+   ```
+
+   This installs Bun, Rust, and PostgreSQL 17 with pgvector. It creates the
+   `yarvis` database and installs the app's dependencies. It's safe to re-run,
+   and if a Postgres is already running on `localhost:5432`, it uses that one.
+
+3. Start the app:
+
+   ```bash
+   mise exec -- bun run tauri dev
+   ```
+
+   If mise is [activated](https://mise.jdx.dev/getting-started.html) in your
+   shell, `bun run tauri dev` is enough.
 
 4. In the app, follow the setup guide that opens on first launch. To do it by
    hand, open **Settings → Credentials**, save the database URL
