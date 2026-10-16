@@ -57,8 +57,8 @@ to replace the files on the `showcase-video` release, which the page links to.
 
 The repo README plays `docs/images/showcase-reel.gif`, 0:21 to 0:42 of the
 reel. GitHub strips `<video>` tags from a README, so it has to be a GIF, and a
-short one: the whole reel comes out around 25 MB. Remake it when that part of
-the reel changes:
+short one: a GIF of the whole reel comes out around 25 MB. Remake it when that
+part of the reel changes, from this directory after `bun run render:reel`:
 
 ```bash
 ffmpeg -ss 21 -t 21 -i out/yarvis-reel.mp4 -loop 0 \

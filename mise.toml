@@ -2,27 +2,36 @@
 bun = "latest"
 rust = "latest"
 
-# Safe to re-run: each step skips what is already there. `mise run` installs
-# Bun and Rust first.
+# Safe to re-run: every step is a no-op when its work is already done.
+# `mise run` installs Bun and Rust first.
 [tasks.yarvis-init]
 description = "Install Postgres 17 with pgvector, create the yarvis database, and install dependencies"
 run = """
-# Without this, brew upgrades an outdated install, and the cleanup after it
+command -v brew >/dev/null || { echo "Install Homebrew first: https://brew.sh" >&2; exit 1; }
+
+# Without these, brew upgrades an outdated install, and the cleanup after it
 # deletes the binaries a running server was started from.
-HOMEBREW_NO_INSTALL_UPGRADE=1 brew install postgresql@17 pgvector
+HOMEBREW_NO_INSTALL_UPGRADE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install postgresql@17 pgvector
 pg="$(brew --prefix postgresql@17)/bin"
 
-# Any Postgres already on localhost:5432 is used as is, so a 16 or 18 install
-# isn't fought over the port.
-if ! "$pg/pg_isready" -q -h localhost; then
+# Connect over TCP, the same way the app does.
+export PGHOST=localhost PGPORT=5432
+
+# If a Postgres is already listening on localhost:5432, use it instead of
+# starting a second server that can't get the port.
+if ! "$pg/pg_isready" -q; then
   brew services start postgresql@17
   for _ in $(seq 1 30); do
-    "$pg/pg_isready" -q -h localhost && break
+    "$pg/pg_isready" -q && break
     sleep 1
   done
+  "$pg/pg_isready" -q || {
+    echo "Postgres didn't start on localhost:5432. Check: brew services info postgresql@17" >&2
+    exit 1
+  }
 fi
 
-if ! "$pg/psql" -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = 'yarvis'" | grep -q 1; then
+if ! "$pg/psql" -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = 'yarvis'" | grep -qx 1; then
   "$pg/createdb" yarvis
 fi
 "$pg/psql" -d yarvis -c 'CREATE EXTENSION IF NOT EXISTS vector;'
@@ -31,5 +40,5 @@ bun install
 
 echo
 echo "Done. Start the app with: mise exec -- bun run tauri dev"
-echo "Then save postgres://localhost:5432/yarvis and an LLM provider key in Settings -> Credentials."
+echo "Then follow the setup guide in the app, or save postgres://localhost:5432/yarvis and an LLM provider key in Settings -> Credentials."
 """

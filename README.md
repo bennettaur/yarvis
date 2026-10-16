@@ -62,8 +62,10 @@ it, and type `/yarvis-setup`.
    ```
 
    This installs Bun, Rust, and PostgreSQL 17 with pgvector. It creates the
-   `yarvis` database and installs the app's dependencies. It's safe to re-run,
-   and if a Postgres is already running on `localhost:5432`, it uses that one.
+   `yarvis` database and installs the app's dependencies. If mise asks whether
+   to trust the repo's config, say yes. It's safe to re-run. If a Postgres is
+   already running on `localhost:5432`, it uses that one, which then needs
+   pgvector. Homebrew's pgvector works with Postgres 17 and 18.
 
 3. Start the app:
 
