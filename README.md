@@ -1,4 +1,19 @@
-# Yarvis
+<p align="center">
+  <img src="src-tauri/icons/128x128@2x.png" alt="" width="128" height="128">
+</p>
+
+<h1 align="center">Yarvis</h1>
+
+<p align="center">
+  Run your week with an assistant that can start the work.
+</p>
+
+<p align="center">
+  <a href="https://bennettaur.github.io/yarvis/">Demo site</a> ·
+  <a href="https://bennettaur.github.io/yarvis/video/">Showcase video</a> ·
+  <a href="docs/getting-started.md">Getting started</a> ·
+  <a href="https://github.com/bennettaur/yarvis/releases/tag/nightly">Nightly build</a>
+</p>
 
 A personal-assistant desktop app for macOS, built for developers who run
 several coding agents at once.
@@ -11,25 +26,65 @@ day needs: terminals, PR review with guided tours, your calendar with
 full-screen meeting alarms, voice, a clipboard palette, and MCP (connect
 servers to Yarvis, and let Claude Code use Yarvis's memory).
 
-## Get started
+## Demo
 
-- Follow [Getting started](docs/getting-started.md). It covers requirements,
-  PostgreSQL with pgvector on a Mac, the first launch, and the first
-  configuration.
-- Or let Claude Code walk you through it (needs Claude Code installed): clone
-  the repo, run `claude` in it, and type `/yarvis-setup`.
+<a href="https://bennettaur.github.io/yarvis/video/">
+  <img src="docs/images/showcase-reel-poster.png" alt="Play the 90-second Yarvis showcase reel" width="100%">
+</a>
 
-The short version, for those who have Bun, Rust and Postgres already:
+The 90-second reel shows a week with Yarvis: setting priorities, starting work,
+parallel workspaces, PR review, alarms and the Friday wrap-up. Click the image
+to play it, or download the
+[MP4](https://github.com/bennettaur/yarvis/releases/download/showcase-video/yarvis-reel.mp4).
+There is also a 3½-minute
+[walkthrough](https://github.com/bennettaur/yarvis/releases/download/showcase-video/yarvis-walkthrough.mp4)
+that covers every feature.
 
-```bash
-git clone https://github.com/bennettaur/yarvis.git && cd yarvis
-createdb yarvis && psql -d yarvis -c 'CREATE EXTENSION IF NOT EXISTS vector;'
-bun install
-bun run tauri dev
-```
+## Quick start
 
-Then, in the app, open **Settings → Credentials**. Save the database URL
-`postgres://localhost:5432/yarvis` and one LLM provider key.
+You need macOS, [Homebrew](https://brew.sh), and the Xcode Command Line Tools
+(`xcode-select --install`). Setup takes about 30 minutes, most of it the first
+Rust compile. If you already have Bun, Rust and Postgres with pgvector, skip to
+step 2.
+
+1. Install Bun and Rust (through [mise](https://mise.jdx.dev)), and
+   PostgreSQL 17 with pgvector:
+
+   ```bash
+   brew install mise postgresql@17 pgvector
+   brew services start postgresql@17
+   echo 'eval "$(mise activate zsh)"' >> ~/.zshrc
+   echo "export PATH=\"$(brew --prefix postgresql@17)/bin:\$PATH\"" >> ~/.zshrc
+   exec zsh
+   ```
+
+2. Create the database:
+
+   ```bash
+   createdb yarvis
+   psql -d yarvis -c 'CREATE EXTENSION IF NOT EXISTS vector;'
+   ```
+
+3. Clone the repo, install dependencies and start the app:
+
+   ```bash
+   git clone https://github.com/bennettaur/yarvis.git && cd yarvis
+   mise install
+   bun install
+   bun run tauri dev
+   ```
+
+4. In the app, follow the setup guide that opens on first launch. To do it by
+   hand, open **Settings → Credentials**, save the database URL
+   `postgres://localhost:5432/yarvis`, and save one LLM provider key
+   (Anthropic, Gemini or Cerebras). Then open **Chat** (Cmd+1) and say hello.
+
+Prefer to be walked through it? Install
+[Claude Code](https://claude.com/claude-code), clone the repo, run `claude` in
+it, and type `/yarvis-setup`.
+
+[Getting started](docs/getting-started.md) is the full guide: requirements,
+optional features like GitHub, workspaces and voice, and troubleshooting.
 
 ## Features
 
