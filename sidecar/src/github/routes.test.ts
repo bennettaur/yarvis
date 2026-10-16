@@ -1,13 +1,22 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
+import * as schema from "../db/schema.ts";
+import { listEvents } from "../events/service.ts";
+import { recordReviewContributions } from "../jobs/githubReviewSync.ts";
+import { reviewExternalId } from "./client.ts";
 
 /**
  * Config wired with a GitHub token + a database URL so the GitHub routes run
  * their request validation. The bad inputs below are all rejected before any
  * GitHub or database access, so no real services are needed.
  */
-function appWith(secrets: Config["secrets"]): ReturnType<typeof createApp> {
+function appWith(
+  secrets: Config["secrets"],
+  databaseUrl = "postgres://localhost/unused",
+): ReturnType<typeof createApp> {
   return createApp({
     port: 0,
     token: "test-token",
@@ -15,7 +24,7 @@ function appWith(secrets: Config["secrets"]): ReturnType<typeof createApp> {
     attentionToken: "test-attention-token",
     mcpToken: "test-mcp-token",
     allowedOrigins: null,
-    databaseUrl: "postgres://localhost/unused",
+    databaseUrl,
     workspacesRoot: "/tmp/yarvis-test-workspaces",
     secrets,
     customProviderSecrets: {},
@@ -152,5 +161,79 @@ describe("github not-configured handling", () => {
       body: JSON.stringify({ event: "APPROVE" }),
     });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("github review submission logging", () => {
+  const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
+  const sql = postgres(url, { max: 1 });
+  const db = drizzle(sql, { schema });
+  const app = appWith({ githubToken: "ghp_test" }, url);
+  const realFetch = globalThis.fetch;
+
+  beforeEach(async () => {
+    await sql`TRUNCATE events, pr_guides RESTART IDENTITY CASCADE`;
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+  afterAll(async () => {
+    await sql.end();
+  });
+
+  function stubSubmit(reply: unknown) {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(reply), { status: 200 })) as unknown as typeof fetch;
+  }
+
+  /** The event is emitted after the response is sent, so wait for it to land. */
+  async function loggedEvents() {
+    for (let i = 0; i < 50; i++) {
+      const rows = await listEvents(db);
+      if (rows.length > 0) return rows;
+      await Bun.sleep(10);
+    }
+    return [];
+  }
+
+  const approve = () =>
+    app.request("/api/github/pr/o/r/1/reviews", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ event: "APPROVE" }),
+    });
+
+  it("logs the review under its GitHub id, which the sync then recognises", async () => {
+    stubSubmit({ id: 9, node_id: "PRR_9" });
+    expect((await approve()).status).toBe(201);
+    const [event] = await loggedEvents();
+    expect(event).toMatchObject({ type: "pr.approved", externalId: reviewExternalId("PRR_9") });
+
+    // Hours away from the in-app event, so only the id can match it.
+    const synced = await recordReviewContributions(
+      db,
+      [
+        {
+          reviewId: "PRR_9",
+          state: "approved",
+          submittedAt: new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(),
+          owner: "o",
+          repo: "r",
+          number: 1,
+        },
+      ],
+      {
+        from: new Date(Date.now() - 60 * 60 * 1000),
+        to: new Date(Date.now() + 4 * 60 * 60 * 1000),
+      },
+    );
+    expect(synced).toBe(0);
+  });
+
+  it("still logs the review when GitHub's reply has no node id", async () => {
+    stubSubmit({});
+    expect((await approve()).status).toBe(201);
+    const [event] = await loggedEvents();
+    expect(event).toMatchObject({ type: "pr.approved", externalId: null });
   });
 });

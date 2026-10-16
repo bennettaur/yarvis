@@ -232,6 +232,13 @@
       "when": 1791558956482,
       "tag": "0032_slow_longshot",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1791900150947,
+      "tag": "0033_foamy_black_cat",
+      "breakpoints": true
     }
   ]
 }
