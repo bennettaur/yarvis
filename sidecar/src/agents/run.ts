@@ -105,6 +105,10 @@ const NEVER_DELEGATABLE: ReadonlySet<string> = new Set(["delegate", "list_specia
 const NEEDS_EXPLICIT_GRANT: ReadonlySet<string> = new Set([
   ...ALWAYS_CONFIRM_BUILTIN_TOOLS,
   ...DESTRUCTIVE_BUILTIN_TOOLS,
+  // Writes nothing, but the URL it fetches is the model's choice, so an
+  // instruction in the material a specialist reads could send data out in a
+  // query string with nobody watching.
+  "read_web_page",
 ]);
 
 export interface SelectToolsOptions {

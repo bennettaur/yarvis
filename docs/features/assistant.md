@@ -349,7 +349,10 @@ Manager**.
 Paste a link and ask the assistant to read, summarize or answer questions
 about it. It fetches the page as a logged-out visitor would: no cookies, no
 sign-in, and nothing on your local network. For a page behind a login, open it
-in Chrome and use the [browser](browser.md) tools instead.
+in Chrome and use the [browser](browser.md) tools instead. It reads web pages
+and plain text, not PDFs or images, and returns about the first 20,000
+characters of a long page. What it reads goes into the chat like any other
+tool result, so it reaches your LLM provider and stays in the chat history.
 
 A web page can carry text written for an AI rather than for you, such as an
 instruction tucked into a hidden block. Before the assistant sees a page,
@@ -357,7 +360,8 @@ Yarvis:
 
 - removes elements a browser wouldn't show: `hidden`, `aria-hidden`, closed
   dialogs, common hiding classes like `sr-only`, and inline styles such as
-  `display: none`, zero font size or zero opacity,
+  `display: none`, zero font size, zero opacity or off-screen positions,
+- removes HTML comments from Markdown and plain-text pages,
 - removes characters that render as nothing, such as zero-width spaces,
   direction overrides and Unicode tag characters,
 - flags text that looks like instructions to an AI, whether it was visible or
@@ -369,6 +373,12 @@ match its background, still comes through, and the flagging is pattern-based.
 Only the actions listed in [What it asks before doing](#what-it-asks-before-doing)
 are stopped in code, so read what the assistant proposes after it reads a page
 you don't trust.
+
+The assistant is told to fetch only links you gave it, or links on a page you
+asked it to follow, and never to put your conversation or memories into a URL.
+That's an instruction to the model, not a check in code, and reading a page
+never asks for approval. Specialists and scheduled jobs can't read web pages
+unless you grant it to them.
 
 ## Specialists
 

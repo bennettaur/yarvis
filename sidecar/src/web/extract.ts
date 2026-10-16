@@ -68,20 +68,29 @@ const HIDING_CLASSES = new Set([
   "screen-reader-text",
 ]);
 
-/** Inline style declarations that keep text off screen, matched with whitespace removed. */
+/**
+ * Classes that show an element again at a breakpoint: Tailwind's `md:block`,
+ * Bootstrap's `d-md-block`. `hidden md:block` is desktop content, not hidden.
+ */
+const RESPONSIVE_DISPLAY =
+  /^(?:[a-z0-9-]+:)+(?:block|flex|grid|inline|inline-block|inline-flex|table|contents)$|^d-(?:sm|md|lg|xl|xxl)-(?!none)/;
+
+/** Inline style declarations that keep text off screen, matched with whitespace and comments removed. */
 const HIDING_STYLES = [
   /(?:^|;)display:none/,
   /(?:^|;)visibility:(?:hidden|collapse)/,
+  /(?:^|;)content-visibility:hidden/,
   /(?:^|;)opacity:(?:0+(?:\.0*)?|\.0+)(?:;|$|!)/,
-  /(?:^|;)font-size:0+(?:\.0+)?(?:px|em|rem|pt|%)?(?:;|$|!)/,
+  /(?:^|;)font-size:(?:0+(?:\.0+)?(?:px|em|rem|pt|%)?|0?\.\d+px|1px)(?:;|$|!)/,
   /(?:^|;)color:transparent/,
-  /(?:^|;)(?:text-indent|left|top):-\d{4,}/,
+  /(?:^|;)(?:text-indent|left|right|top|margin-left|margin-top):-\d{3,}/,
+  /(?:^|;)transform:scale\(0(?:\.0+)?[,)]/,
   /(?:^|;)clip:rect\(0/,
-  /(?:^|;)clip-path:inset\(50%/,
+  /(?:^|;)clip-path:inset\((?:50|100)%/,
 ];
 
-/** A zero-sized box hides its text only when its overflow is clipped too. */
-const ZERO_SIZE = /(?:^|;)(?:max-)?(?:height|width):0+(?:px)?(?:;|$|!)/;
+/** A box of a pixel or less hides its text only when its overflow is clipped too. */
+const TINY_BOX = /(?:^|;)(?:max-)?(?:height|width):(?:0+(?:px)?|1px)(?:;|$|!)/;
 const CLIPPED = /(?:^|;)overflow:hidden/;
 
 /**
@@ -125,16 +134,43 @@ export interface ExtractedPage {
   hiddenText: string;
 }
 
-function hides(name: string, attribs: Record<string, string>): boolean {
+/**
+ * Removes `/* … *\/` comments, which a browser ignores but which would split
+ * `display:/**\/none` past the style patterns. A loop rather than a lazy regex,
+ * which backtracks quadratically on a run of unclosed comments.
+ */
+function stripCssComments(style: string): string {
+  let out = "";
+  let i = 0;
+  while (i < style.length) {
+    const open = style.indexOf("/*", i);
+    if (open === -1) return out + style.slice(i);
+    out += style.slice(i, open);
+    const close = style.indexOf("*/", open + 2);
+    if (close === -1) return out;
+    i = close + 2;
+  }
+  return out;
+}
+
+function isHiddenElement(name: string, attribs: Record<string, string>): boolean {
   if ("hidden" in attribs) return true;
+  // aria-hidden text is usually drawn on screen (an icon's label, a price beside
+  // its spoken form), but it is also a common way to put text in front of a
+  // model and not a screen reader, so it is treated as hidden.
   if (attribs["aria-hidden"]?.toLowerCase() === "true") return true;
   if (name === "dialog" && !("open" in attribs)) return true;
   if (name === "input" && attribs.type?.toLowerCase() === "hidden") return true;
   const classes = attribs.class?.toLowerCase().split(/\s+/) ?? [];
-  if (classes.some((c) => HIDING_CLASSES.has(c))) return true;
-  const style = attribs.style?.toLowerCase().replace(/\s+/g, "");
+  if (
+    classes.some((c) => HIDING_CLASSES.has(c)) &&
+    !classes.some((c) => RESPONSIVE_DISPLAY.test(c))
+  ) {
+    return true;
+  }
+  const style = attribs.style && stripCssComments(attribs.style.toLowerCase()).replace(/\s+/g, "");
   if (!style) return false;
-  if (ZERO_SIZE.test(style) && CLIPPED.test(style)) return true;
+  if (TINY_BOX.test(style) && CLIPPED.test(style)) return true;
   return HIDING_STYLES.some((pattern) => pattern.test(style));
 }
 
@@ -154,45 +190,58 @@ function linkTarget(href: string | undefined, base: string): string | null {
 
 const isHeading = (name: string) => /^h[1-6]$/.test(name);
 
-interface OpenElement {
-  name: string;
-  skip: "non-text" | "hidden" | null;
-}
+type Skip = "non-text" | "hidden" | null;
 
-/** Extracts the visible text of an HTML page. `baseUrl` resolves relative links. */
+/**
+ * Extracts the visible text of an HTML page. `baseUrl` resolves relative links.
+ *
+ * Nesting is tracked with counters rather than by searching the open-element
+ * stack, since unclosed tags can make that stack as deep as the page is long.
+ */
 export function extractVisibleText(html: string, baseUrl: string): ExtractedPage {
-  const out: string[] = [];
+  const visible: string[] = [];
   const hidden: string[] = [];
   let hiddenLength = 0;
   let hiddenBlocks = 0;
   let title = "";
   let inTitle = false;
 
-  const stack: OpenElement[] = [];
-  let skipDepth = 0;
-  // Whether the hidden element currently open at the top of a skipped region held text.
+  const skips: Skip[] = [];
+  let nonTextDepth = 0;
+  let hiddenDepth = 0;
+  let svgDepth = 0;
+  // Whether the outermost open hidden element held any text, so empty hidden
+  // wrappers (icons, spacers) aren't counted.
   let hiddenRegionHasText = false;
   let preDepth = 0;
-  let openLink: { href: string | null; label: string[] } | null = null;
-  const write = (text: string) => (openLink?.label ?? out).push(text);
+  let openLink: { href: string | null; labelParts: string[] } | null = null;
+  const write = (text: string) => (openLink?.labelParts ?? visible).push(text);
 
   const parser = new Parser(
     {
       onopentag(name, attribs) {
-        if (name === "title" && !title && !stack.some((e) => e.name === "svg")) inTitle = true;
+        // An <svg> has a <title> of its own, and one inside a hidden element
+        // isn't shown either; only the document's counts. It sits inside
+        // <head>, which is skipped, so it is captured before the skip check.
+        if (name === "title" && !title && svgDepth === 0 && hiddenDepth === 0) inTitle = true;
+        if (name === "svg") svgDepth++;
 
-        let skip: OpenElement["skip"] = null;
+        let skip: Skip = null;
         if (NON_TEXT.has(name)) skip = "non-text";
-        else if (hides(name, attribs)) skip = "hidden";
-        stack.push({ name, skip });
-        if (skip) {
-          if (skipDepth === 0 && skip === "hidden") hiddenRegionHasText = false;
-          skipDepth++;
+        else if (isHiddenElement(name, attribs)) skip = "hidden";
+        skips.push(skip);
+        if (skip === "non-text") nonTextDepth++;
+        if (skip === "hidden") {
+          if (hiddenDepth === 0) hiddenRegionHasText = false;
+          hiddenDepth++;
         }
-        if (skipDepth > 0) return;
+        if (nonTextDepth > 0 || hiddenDepth > 0) return;
 
-        if (name === "pre") preDepth++;
-        else if (name === "a") openLink = { href: linkTarget(attribs.href, baseUrl), label: [] };
+        if (name === "pre") {
+          preDepth++;
+          write("\n\n");
+        } else if (name === "a")
+          openLink = { href: linkTarget(attribs.href, baseUrl), labelParts: [] };
         else if (name === "br") write("\n");
         else if (name === "li") write("\n- ");
         else if (isHeading(name)) write(`\n\n${"#".repeat(Number(name[1]))} `);
@@ -204,9 +253,9 @@ export function extractVisibleText(html: string, baseUrl: string): ExtractedPage
           title += text;
           return;
         }
-        if (skipDepth > 0) {
-          const outer = stack.find((e) => e.skip);
-          if (outer?.skip === "hidden" && text.trim()) {
+        if (nonTextDepth > 0) return;
+        if (hiddenDepth > 0) {
+          if (text.trim()) {
             hiddenRegionHasText = true;
             if (hiddenLength < MAX_HIDDEN_CHARS) {
               hidden.push(text);
@@ -219,28 +268,38 @@ export function extractVisibleText(html: string, baseUrl: string): ExtractedPage
       },
       onclosetag(name) {
         if (name === "title") inTitle = false;
-        const element = stack.pop();
-        if (element?.skip) {
-          skipDepth--;
-          if (skipDepth === 0 && element.skip === "hidden" && hiddenRegionHasText) {
+        if (name === "svg") svgDepth = Math.max(0, svgDepth - 1);
+        const skip = skips.pop();
+        if (skip === "non-text") {
+          nonTextDepth--;
+          return;
+        }
+        if (skip === "hidden") {
+          hiddenDepth--;
+          if (hiddenDepth === 0 && hiddenRegionHasText) {
             hiddenBlocks++;
             hidden.push("\n");
           }
           return;
         }
-        if (skipDepth > 0) return;
+        if (nonTextDepth > 0 || hiddenDepth > 0) return;
 
-        if (name === "pre") preDepth = Math.max(0, preDepth - 1);
-        else if (name === "a" && openLink) {
-          const { href, label: parts } = openLink;
+        if (name === "pre") {
+          // A stray </pre> in malformed HTML must not push the depth negative.
+          preDepth = Math.max(0, preDepth - 1);
+          write("\n\n");
+        } else if (name === "a" && openLink) {
+          const { href, labelParts } = openLink;
           openLink = null;
-          const label = parts
+          // Escaped so a bracket in the text can't end the label early.
+          const label = labelParts
             .join("")
+            .replace(/\s+/g, " ")
             .trim()
             .replace(/[\\[\]]/g, "\\$&");
           if (!label) return;
           write(href ? `[${label}](${href})` : label);
-        } else if (isHeading(name) || BLOCKS.has(name) || name === "pre") write("\n\n");
+        } else if (isHeading(name) || BLOCKS.has(name)) write("\n\n");
       },
     },
     { decodeEntities: true },
@@ -248,11 +307,12 @@ export function extractVisibleText(html: string, baseUrl: string): ExtractedPage
   parser.write(html.replace(/\r\n?/g, "\n"));
   parser.end();
 
-  const text = out
+  const text = visible
     .join("")
     .replace(/\u00a0/g, " ")
     .split("\n")
-    .map((line) => line.replace(/[ \t]+$/, ""))
+    // trimEnd, not a `[ \t]+$` regex, which backtracks quadratically on a long run of spaces.
+    .map((line) => line.trimEnd())
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -265,6 +325,27 @@ export function extractVisibleText(html: string, baseUrl: string): ExtractedPage
   };
 }
 
+/**
+ * Removes `<!-- … -->` comments from text that isn't parsed as HTML, such as
+ * Markdown, where a comment renders as nothing. Returns the comments separately
+ * so they can be screened like hidden elements.
+ */
+export function stripHtmlComments(text: string): { text: string; comments: string[] } {
+  const comments: string[] = [];
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    const open = text.indexOf("<!--", i);
+    if (open === -1) return { text: out + text.slice(i), comments };
+    out += text.slice(i, open);
+    const close = text.indexOf("-->", open + 4);
+    const end = close === -1 ? text.length : close;
+    comments.push(text.slice(open + 4, end));
+    i = close === -1 ? text.length : close + 3;
+  }
+  return { text: out, comments };
+}
+
 interface InjectionRule {
   reason: string;
   pattern: RegExp;
@@ -274,6 +355,10 @@ interface InjectionRule {
  * Phrasings that address an AI reader rather than a person. A heuristic: it
  * catches the common shapes, and a match is surfaced to the user rather than
  * blocking the page, since articles about prompt injection quote these too.
+ *
+ * Every pattern must stay linear on pathological input — this runs on up to
+ * 5MB of page text on the sidecar's event loop. Bounded windows like
+ * `[^.\n]{0,40}` are fine; an unbounded quantifier next to `\s` is not.
  */
 const INJECTION_RULES: InjectionRule[] = [
   {
@@ -284,22 +369,24 @@ const INJECTION_RULES: InjectionRule[] = [
   {
     reason: "tries to give the reader a new role or new instructions",
     pattern:
-      /\b(?:you are now|from now on,? you|your new (?:task|instructions?|role)|new instructions:|developer mode|system prompt)\b/i,
+      /\b(?:you are now|from now on,? you|your new (?:task|instructions?|role)|new instructions:)|\b(?:reveal|print|repeat|output)\b[^.\n]{0,20}\b(?:your|the) system prompt\b/i,
   },
   {
     reason: "contains chat-template or role markers",
+    // Horizontal whitespace only around the role: `\s*` would also match the
+    // newlines between lines and backtrack across every one of them.
     pattern:
-      /<\|(?:im_start|im_end|system|endoftext)\|>|\[\/?INST\]|<\/?(?:system|assistant|user)>|^\s*(?:system|assistant)\s*:/im,
+      /<\|(?:im_start|im_end|system|endoftext)\|>|\[\/?INST\]|<\/?(?:system|assistant)>|^[ \t]*(?:system|assistant)[ \t]*:/im,
   },
   {
     reason: "addresses an AI assistant directly",
     pattern:
-      /\b(?:attention|note|message|instructions?)\s+(?:to|for)\s+(?:the\s+|any\s+)?(?:ai|assistant|llm|language model|agent|chatbot)s?\b|\bif you are an? (?:ai|assistant|llm|language model|agent|bot)\b/i,
+      /\b(?:attention|note|message|instructions?)[ \t]+(?:to|for)[ \t]+(?:the[ \t]+|any[ \t]+)?(?:ai|assistant|llm|language model|agent|chatbot)s?\b|\bif you are an? (?:ai|assistant|llm|language model|agent|bot)\b|\b(?:ai|llm|language model)s? (?:agents? )?reading this\b/i,
   },
   {
-    reason: "asks for conversation data or credentials to be sent somewhere",
+    reason: "asks for the user's data to be sent to a URL",
     pattern:
-      /\b(?:send|post|forward|email|upload|fetch|visit|append|include)\b[^.\n]{0,60}\b(?:conversation|chat history|memories|system prompt|api keys?|credentials|access tokens?)\b/i,
+      /(?:https?:\/\/|\b(?:url|link|endpoint|query string)\b)[^\n]{0,80}\b(?:conversation|chat history|memories|system prompt|the user'?s (?:tasks|notes|memories|messages|data|conversation|chat))\b|\b(?:conversation|chat history|memories|system prompt|the user'?s (?:tasks|notes|memories|messages|data|conversation|chat))\b[^\n]{0,80}(?:https?:\/\/|\b(?:url|link|endpoint|query string)\b)/i,
   },
 ];
 
