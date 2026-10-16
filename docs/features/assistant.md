@@ -291,6 +291,12 @@ Some actions pause and ask you in the approval bar above the message box (press
   its code, and a repo name can come from an issue or a look-alike name. Check
   the exact repo before you approve.
 - **MCP tools** ask unless you set them to auto-approve in the Tool manager.
+- **Reading a web page** asks when the link isn't one you typed in the
+  conversation, such as a link the assistant found on a page. A link can carry
+  data out in its address, so you see the exact URL first.
+- **After it reads a web page**, the rest of that turn asks before anything
+  irreversible, the same list as spoken turns below, and auto-approved MCP
+  tools ask again too. The page may have been written to steer it.
 - **Spoken turns** ask before anything irreversible: deleting a task, archiving
   a workspace, starting work, adding a repo to a workspace, filing a JIRA
   ticket, syncing branches, sending an instruction to a session, launching a
@@ -370,15 +376,15 @@ Yarvis:
 
 This is a screen, not a guarantee. Text hidden by a stylesheet, or colored to
 match its background, still comes through, and the flagging is pattern-based.
-Only the actions listed in [What it asks before doing](#what-it-asks-before-doing)
-are stopped in code, so read what the assistant proposes after it reads a page
-you don't trust.
+Fetching a link you typed doesn't ask. Any other link asks first, and so does
+anything irreversible for the rest of the turn (see
+[What it asks before doing](#what-it-asks-before-doing)). On Telegram, where
+it can't ask, those calls are refused instead. Specialists and scheduled jobs
+can't read web pages unless you grant it to them.
 
-The assistant is told to fetch only links you gave it, or links on a page you
-asked it to follow, and never to put your conversation or memories into a URL.
-That's an instruction to the model, not a check in code, and reading a page
-never asks for approval. Specialists and scheduled jobs can't read web pages
-unless you grant it to them.
+Requests go straight to the site's address after it is checked, which keeps a
+site from passing the check and then pointing its name at your local network.
+That also means they don't go through an HTTP proxy set in your environment.
 
 ## Specialists
 

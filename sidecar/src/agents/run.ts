@@ -6,6 +6,7 @@ import { buildBuiltinTools } from "../chat/builtinTools.ts";
 import {
   ALWAYS_CONFIRM_BUILTIN_TOOLS,
   DESTRUCTIVE_BUILTIN_TOOLS,
+  newUntrustedReads,
 } from "../chat/destructiveTools.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
@@ -235,6 +236,9 @@ export async function runSpecialistDefinition(input: RunDefinitionInput): Promis
     // A delegated run is not the user asking for a session, so nothing it starts
     // is made remotely controllable.
     remoteControl: false,
+    // Nothing reads this: a delegated run has no approval channel, and its
+    // outward-facing tools need an explicit grant instead.
+    untrustedReads: newUntrustedReads(),
   });
   const disabled = new Set((await listDisabledToolIds(db)).map((t) => t.id));
   const tools = selectTools(allTools, specialist.tools.map(builtinIdForName), {

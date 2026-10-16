@@ -39,7 +39,7 @@ const html = (body: string, headers: Record<string, string> = {}) =>
   new Response(body, { headers: { "content-type": "text/html; charset=utf-8", ...headers } });
 
 async function read(fetchImpl: typeof fetch, input: Record<string, unknown>): Promise<PageResult> {
-  const t = buildWebTools(fetchImpl).read_web_page as unknown as {
+  const t = buildWebTools({ fetchImpl }).read_web_page as unknown as {
     execute: (i: unknown, o: unknown) => Promise<PageResult>;
   };
   return t.execute(input, opts);
@@ -82,6 +82,23 @@ describe("read_web_page", () => {
       "tries to give the reader a new role or new instructions",
       "addresses an AI assistant directly",
     ]);
+  });
+
+  it("records that the turn read a web page, but not when the read failed", async () => {
+    const reads = { webPage: false };
+    const failing = buildWebTools({ fetchImpl: serving({}).fetchImpl, reads });
+    await (
+      failing.read_web_page as unknown as { execute: (i: unknown, o: unknown) => Promise<unknown> }
+    ).execute({ url: PAGE }, opts);
+    expect(reads.webPage).toBe(false);
+    const working = buildWebTools({
+      fetchImpl: serving({ [PAGE]: () => html("<p>x</p>") }).fetchImpl,
+      reads,
+    });
+    await (
+      working.read_web_page as unknown as { execute: (i: unknown, o: unknown) => Promise<unknown> }
+    ).execute({ url: PAGE }, opts);
+    expect(reads.webPage).toBe(true);
   });
 
   it("follows a public redirect and reports where it ended up", async () => {

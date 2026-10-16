@@ -16,6 +16,7 @@ import { buildTodoTools } from "../todos/tools.ts";
 import { buildWebTools } from "../web/tools.ts";
 import { buildWorkspaceTools } from "../workspaces/tools.ts";
 import { type AttentionState, buildAttentionTool, newAttentionState } from "./attentionTools.ts";
+import { newUntrustedReads, type UntrustedReads } from "./destructiveTools.ts";
 import { buildTaskTools } from "./tools.ts";
 
 /**
@@ -38,6 +39,8 @@ export interface BuiltinToolDeps {
   attention: AttentionState;
   /** Whether sessions this turn starts should be remotely controllable. */
   remoteControl: boolean;
+  /** Records which third-party content this turn has read, for its approvals. */
+  untrustedReads: UntrustedReads;
 }
 
 /**
@@ -49,7 +52,7 @@ export interface BuiltinToolDeps {
  * silently make a tool unreachable or always-on.
  */
 export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Record<string, Tool>> {
-  const { db, config, sessionId, memory, attention, remoteControl } = deps;
+  const { db, config, sessionId, memory, attention, remoteControl, untrustedReads } = deps;
   return {
     tasks: buildTaskTools(db, sessionId),
     memory: buildMemoryTools(memory, sessionId),
@@ -64,7 +67,7 @@ export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Recor
     prReview: buildPrReviewTools(db),
     calendar: buildCalendarTools(db, config),
     browser: buildBrowserTools(),
-    web: buildWebTools(),
+    web: buildWebTools({ reads: untrustedReads }),
     help: buildHelpTools(config),
   };
 }
@@ -99,5 +102,6 @@ function inertDeps(): BuiltinToolDeps {
     // A metadata read starts no sessions, so remote control is irrelevant here —
     // it only shapes wording in two tool descriptions.
     remoteControl: false,
+    untrustedReads: newUntrustedReads(),
   };
 }

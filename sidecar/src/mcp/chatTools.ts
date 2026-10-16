@@ -62,11 +62,38 @@ export function wrapToolWithApproval(
   t: Tool | McpClientTool,
   hooks: ApprovalHooks,
 ): Tool {
+  return wrapToolWithConditionalApproval(id, t, hooks, () => true);
+}
+
+/**
+ * Like {@link wrapToolWithApproval}, but asks only when `needsApproval` says so,
+ * decided when the tool is called rather than when the turn is assembled. That
+ * is what a condition on the arguments (a URL the user never gave) or on what
+ * the turn has done so far (it read a web page) needs.
+ *
+ * With no `hooks` a call that needs approval is refused rather than run: the
+ * tool can't be left out of the turn up front, since most of its calls won't
+ * need asking.
+ */
+export function wrapToolWithConditionalApproval(
+  id: string,
+  t: Tool | McpClientTool,
+  hooks: ApprovalHooks | undefined,
+  needsApproval: (args: unknown) => boolean,
+): Tool {
   const original = (t as McpClientTool).execute;
   if (!original) return t as unknown as Tool;
+  const run = original as (a: unknown, o: ToolExecutionOptions<unknown>) => unknown;
   const wrapped = {
     ...t,
     async execute(args: unknown, opts: ToolExecutionOptions<unknown>) {
+      if (!needsApproval(args)) return run(args, opts);
+      if (!hooks) {
+        return {
+          denied: true,
+          message: "This call needs the user's approval, and this surface can't ask for it.",
+        };
+      }
       await hooks.onRequest({ toolCallId: opts.toolCallId, id, args });
       const approved = await waitForApproval(opts.toolCallId, {
         signal: hooks.signal,
@@ -75,7 +102,7 @@ export function wrapToolWithApproval(
       if (!approved) {
         return { denied: true, message: "The user denied this tool call." };
       }
-      return (original as (a: unknown, o: ToolExecutionOptions<unknown>) => unknown)(args, opts);
+      return run(args, opts);
     },
   };
   return wrapped as unknown as Tool;
@@ -228,12 +255,18 @@ export async function assembleAgentToolset(opts: {
    */
   confirmBuiltins?: ReadonlySet<string>;
   /**
+   * Built-ins that ask only when their condition holds at call time. A tool in
+   * `confirmBuiltins` too always asks; that set wins.
+   */
+  confirmBuiltinsWhen?: ReadonlyMap<string, (args: unknown) => boolean>;
+  /**
    * False on a turn the user didn't proof-read, which makes every MCP tool ask
    * regardless of stored consent. Consent is given in Settings or from the chat
    * bar — both places where the turn was typed and read back — and a spoken
-   * turn is neither.
+   * turn is neither. A function is checked at call time, for consent that lapses
+   * partway through a turn (once it has read a web page).
    */
-  honourStandingConsent?: boolean;
+  honourStandingConsent?: boolean | (() => boolean);
   /** The connected MCP tools to assemble; defaults to whatever is live. */
   liveTools?: Record<string, McpClientTool>;
 }): Promise<AgentToolset> {
@@ -244,6 +277,7 @@ export async function assembleAgentToolset(opts: {
     builtinTools,
     approval,
     confirmBuiltins,
+    confirmBuiltinsWhen,
     honourStandingConsent = true,
   } = opts;
   const registry = await readRegistryWithBuiltins(config, db);
@@ -265,7 +299,8 @@ export async function assembleAgentToolset(opts: {
       tools[name] = wrapToolWithApproval(name, t, approval);
       continue;
     }
-    tools[name] = t;
+    const condition = confirmBuiltinsWhen?.get(name);
+    tools[name] = condition ? wrapToolWithConditionalApproval(name, t, approval, condition) : t;
   }
 
   // Live MCP tools: keyed by `modelToolKey`, wrapped with approval, excluded when
@@ -285,10 +320,14 @@ export async function assembleAgentToolset(opts: {
       const key = modelToolKey(id);
       if (registryIdByKey.has(key)) collided.add(key);
       registryIdByKey.set(key, id);
-      tools[key] =
-        honourStandingConsent && approvalById.get(id) === "auto"
-          ? (t as unknown as Tool)
-          : wrapToolWithApproval(id, t, approval);
+      const consent = honourStandingConsent;
+      if (approvalById.get(id) !== "auto" || consent === false) {
+        tools[key] = wrapToolWithApproval(id, t, approval);
+      } else if (consent === true) {
+        tools[key] = t as unknown as Tool;
+      } else {
+        tools[key] = wrapToolWithConditionalApproval(id, t, approval, () => !consent());
+      }
     }
     // Neither side of a collision is offered: keeping either would let one
     // server's tool answer to the name the model has for another's.

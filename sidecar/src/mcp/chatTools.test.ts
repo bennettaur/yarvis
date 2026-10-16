@@ -220,6 +220,7 @@ describe("assembleAgentToolset with confirmed built-ins", () => {
     name: string,
     opts: {
       confirmBuiltins?: ReadonlySet<string>;
+      confirmBuiltinsWhen?: ReadonlyMap<string, (args: unknown) => boolean>;
       approval?: Parameters<typeof assembleAgentToolset>[0]["approval"];
       sessionId: string;
     },
@@ -231,6 +232,7 @@ describe("assembleAgentToolset with confirmed built-ins", () => {
       builtinTools: { [name]: fakeBuiltin(name), create_task: fakeBuiltin("create_task") },
       approval: opts.approval,
       confirmBuiltins: opts.confirmBuiltins,
+      confirmBuiltinsWhen: opts.confirmBuiltinsWhen,
     });
     return tools;
   }
@@ -299,6 +301,39 @@ describe("assembleAgentToolset with confirmed built-ins", () => {
 
     await tools.delete_task!.execute!({}, executeOptions);
     expect(asked).toEqual([]);
+  });
+
+  it("asks for a conditionally confirmed tool only once its condition holds", async () => {
+    const state = { readWebPage: false };
+    const asked: string[] = [];
+    const tools = await run("delete_task", {
+      sessionId: "sess-conditional",
+      confirmBuiltinsWhen: new Map([["delete_task", () => state.readWebPage]]),
+      approval: {
+        onRequest: async ({ toolCallId, id }) => {
+          asked.push(id);
+          resolveApproval(toolCallId, true);
+        },
+      },
+    });
+
+    await tools.delete_task!.execute!({}, { toolCallId: "call-before", messages: [] } as never);
+    expect(asked).toEqual([]);
+    state.readWebPage = true;
+    await tools.delete_task!.execute!({}, { toolCallId: "call-after", messages: [] } as never);
+    expect(asked).toEqual(["delete_task"]);
+  });
+
+  // Unlike an always-confirmed tool it stays in the turn, since most of its
+  // calls won't need asking; the ones that do are refused.
+  it("keeps a conditionally confirmed tool where nobody can ask, refusing when it would", async () => {
+    const tools = await run("delete_task", {
+      sessionId: "sess-conditional-no-channel",
+      confirmBuiltinsWhen: new Map([["delete_task", () => true]]),
+    });
+
+    const result = await tools.delete_task!.execute!({}, executeOptions);
+    expect(result).toMatchObject({ denied: true });
   });
 
   it("drops a tool needing confirmation when there is no way to ask", async () => {

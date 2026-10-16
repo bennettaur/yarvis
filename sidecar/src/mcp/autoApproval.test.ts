@@ -91,7 +91,7 @@ afterAll(async () => {
 
 async function assemble(
   approval?: Parameters<typeof assembleAgentToolset>[0]["approval"],
-  honourStandingConsent = true,
+  honourStandingConsent: boolean | (() => boolean) = true,
 ) {
   return assembleAgentToolset({
     config,
@@ -163,6 +163,30 @@ describe("auto-approved MCP tools", () => {
     );
 
     await tools[modelToolKey(AUTO_ID)]?.execute?.({}, executeOptions);
+    expect(asked).toEqual([AUTO_ID]);
+  });
+
+  // Once a turn has read a web page, the request reaching the tool may be the
+  // page's, so consent stops applying from that point in the turn.
+  it("asks again once the turn has read a web page", async () => {
+    await setToolSettings(db, AUTO_ID, { approval: "auto" });
+    const state = { readWebPage: false };
+    const asked: string[] = [];
+    const { tools } = await assemble(
+      {
+        onRequest: async ({ toolCallId, id }) => {
+          asked.push(id);
+          resolveApproval(toolCallId, true);
+        },
+      },
+      () => !state.readWebPage,
+    );
+
+    const auto = tools[modelToolKey(AUTO_ID)];
+    await auto?.execute?.({}, { toolCallId: "call-before", messages: [] } as never);
+    expect(asked).toEqual([]);
+    state.readWebPage = true;
+    await auto?.execute?.({}, { toolCallId: "call-after", messages: [] } as never);
     expect(asked).toEqual([AUTO_ID]);
   });
 
