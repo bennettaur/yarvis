@@ -2,12 +2,13 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 /**
  * Generates the `.claude/settings.json` hook config that makes a Yarvis-launched
- * Claude Code session signal the app when it needs the user. Split out from the
+ * Claude Code session signal the app when it needs the user, and lets the app
+ * answer its permission prompts. Split out from the
  * workspace service so the hook↔ingest contract and the merge semantics are unit
  * testable without touching the filesystem.
  */
 
-/** Mark our hook commands so re-provision can replace them without duplicating. */
+/** Marks our hook commands so re-provision can replace them without duplicating. */
 const INGEST_MARKERS = ["/ingest/attention", "/ingest/permission"];
 
 /**
@@ -17,7 +18,7 @@ const INGEST_MARKERS = ["/ingest/attention", "/ingest/permission"];
  */
 export const PERMISSION_HOOK_TIMEOUT_S = 250;
 
-export type AttentionHookKind = "permission" | "idle" | "completed";
+export type AttentionHookKind = "idle" | "completed";
 
 /**
  * Characters allowed in the values baked into the hook command. Both land in a
@@ -84,10 +85,16 @@ function assertShellSafe(...values: string[]): void {
  *
  * Every failure prints nothing: outside a Yarvis terminal, with the app closed,
  * or past the hold, Claude Code shows its normal dialog as if no hook ran.
+ * Outside a Yarvis terminal the port is unset, and curl would read the bare
+ * `127.0.0.1:` as port 80 and print whatever answers there as a decision, so
+ * the command stops before curl instead.
  */
 export function permissionHookCommand(workspaceId: string, fallbackSessionKey: string): string {
   assertShellSafe(workspaceId, fallbackSessionKey);
+  // curl gives up a little before Claude Code would kill the hook, so a stalled
+  // sidecar still ends in the empty "no decision" output rather than a kill.
   return (
+    `{ [ -n "\${YARVIS_SIDECAR_PORT}" ] && [ -n "\${YARVIS_ATTENTION_TOKEN}" ]; } || { cat >/dev/null; exit 0; }; ` +
     `curl -sf -m ${PERMISSION_HOOK_TIMEOUT_S - 5} -X POST "http://127.0.0.1:\${YARVIS_SIDECAR_PORT}/ingest/permission" ` +
     `-H "Authorization: Bearer \${YARVIS_ATTENTION_TOKEN}" ` +
     `-H "Content-Type: application/json" ` +

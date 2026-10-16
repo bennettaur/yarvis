@@ -8,9 +8,9 @@ function item(overrides: Partial<AttentionItem> & { id: string; seq: number }): 
     source: "claude-hook",
     sessionKey: "ws-claude:w1",
     workspaceId: "w1",
-    kind: "permission",
+    kind: "idle",
     title: "Fix API",
-    body: "Needs permission",
+    body: "Waiting for your input",
     status: "pending",
     navTarget: { type: "workspace-claude", workspaceId: "w1" },
     createdAt: "2026-07-12T00:00:00Z",
@@ -66,12 +66,23 @@ describe("clearTargetsFor", () => {
     const viewing = scope({ sessionKeys: new Set(["ws:w1/t1/p1"]) });
     const items = [
       item({ id: "a", seq: 1, sessionKey: "ws:w1/t1/p1" }),
-      item({ id: "b", seq: 2, sessionKey: "ws:w1/t1/p1", kind: "idle" }),
+      item({ id: "b", seq: 2, sessionKey: "ws:w1/t1/p1", kind: "error" }),
     ];
     expect(clearTargetsFor(items, viewing)).toEqual({
       sessionKeys: ["ws:w1/t1/p1"],
       itemIds: [],
     });
+  });
+
+  it("keeps a permission prompt the user is looking at, and clears the rest around it", () => {
+    // The terminal may not show the prompt while Yarvis holds it, so the bell
+    // item is the user's only way to answer it.
+    const viewing = scope({ sessionKeys: new Set(["ws:w1/t1/p1"]) });
+    const items = [
+      item({ id: "a", seq: 1, sessionKey: "ws:w1/t1/p1", kind: "permission" }),
+      item({ id: "b", seq: 2, sessionKey: "ws:w1/t1/p1" }),
+    ];
+    expect(clearTargetsFor(items, viewing)).toEqual({ sessionKeys: [], itemIds: ["b"] });
   });
 
   it("leaves items whose tab is not on screen", () => {

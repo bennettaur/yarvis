@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
+import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import { readSessionActivityById } from "../cc/sessions.ts";
@@ -10,12 +11,15 @@ import { type AttentionNavTarget, workspaces } from "../db/schema.ts";
 import { type AttentionStreamEvent, publish, subscribe } from "./hub.ts";
 import {
   awaitPermissionDecision,
+  canHoldAnotherPermission,
   decidePermission,
   hasPendingPermission,
   hookOutputFor,
   listPendingPermissions,
   type PermissionDecision,
+  type PermissionRequestInfo,
   summarizePermission,
+  truncate,
 } from "./permissions.ts";
 import {
   type AttentionKind,
@@ -23,6 +27,7 @@ import {
   clearAttentionScope,
   createAttention,
   listAttention,
+  resolvePermissionItems,
   updateAttentionStatus,
 } from "./service.ts";
 
@@ -67,6 +72,12 @@ export const ingestSchema = z.object({
  */
 export const PERMISSION_HOLD_MS = 240_000;
 
+/**
+ * Largest hook body accepted. A Write's input carries the whole file, so this
+ * is generous, but it stops a token holder parking huge bodies in memory.
+ */
+const MAX_PERMISSION_BODY_BYTES = 2 * 1024 * 1024;
+
 /** Caps on what a reply or prompt pulled from the transcript adds to the request. */
 const MAX_CONTEXT_CHARS = 2_000;
 
@@ -92,8 +103,7 @@ const permissionOriginSchema = z.object({
   sessionKey: z.string().min(1).max(MAX_SESSION_KEY),
 });
 
-const clip = (text: string | undefined | null) =>
-  text ? (text.length > MAX_CONTEXT_CHARS ? `${text.slice(0, MAX_CONTEXT_CHARS)}…` : text) : null;
+const clip = (text: string | undefined | null) => (text ? truncate(text, MAX_CONTEXT_CHARS) : null);
 
 /** A human summary for each kind, used when the hook carries no message. */
 function defaultBody(kind: AttentionKind): string {
@@ -127,8 +137,9 @@ function navTargetFor(sessionKey: string, workspaceId?: string): AttentionNavTar
 /**
  * Attention-ingest, mounted at `/ingest` OUTSIDE the main bearer wall. Its own
  * middleware accepts only the scoped attention token, and it can only create
- * attention items — so a Claude session shell holding that token can raise a
- * flag without gaining access to the rest of the API.
+ * attention items and put permission prompts in front of the user — so a Claude
+ * session shell holding that token can raise a flag, or ask, without gaining
+ * access to the rest of the API. Answering a prompt needs the main bearer.
  */
 export function createAttentionIngestRoutes(config: Config): Hono {
   const router = new Hono();
@@ -141,6 +152,28 @@ export function createAttentionIngestRoutes(config: Config): Hono {
   });
 
   const db = () => getDb(config.databaseUrl as string).db;
+
+  /**
+   * Raises (or refreshes) the session's permission item to show this request.
+   * A failure to store it is logged and never blocks the request itself.
+   */
+  const raisePermissionItem = (info: PermissionRequestInfo): Promise<void> => {
+    const summary = summarizePermission(info.toolName, info.toolInput);
+    return createAttention(db(), {
+      source: "claude-hook",
+      sessionKey: info.sessionKey,
+      workspaceId: info.workspaceId,
+      kind: "permission",
+      title: info.workspaceName ?? "Claude session",
+      body: summary,
+      navTarget: navTargetFor(info.sessionKey, info.workspaceId ?? undefined),
+      payload: { requestId: info.id, toolName: info.toolName },
+    })
+      .then(publish)
+      .catch((e) => {
+        console.error("[attention] could not raise a permission item:", e?.message ?? e);
+      });
+  };
 
   router.post("/attention", async (c) => {
     const parsed = ingestSchema.safeParse(await c.req.json().catch(() => null));
@@ -171,86 +204,82 @@ export function createAttentionIngestRoutes(config: Config): Hono {
   // Holds the hook's connection until the user answers in the app. The reply
   // is the hook's stdout: a decision, or an empty body to leave the prompt to
   // Claude Code's own dialog.
-  router.post("/permission", async (c) => {
-    const origin = permissionOriginSchema.safeParse({
-      workspaceId: c.req.header("x-yarvis-workspace-id") || undefined,
-      sessionKey: c.req.header("x-yarvis-session-key"),
-    });
-    if (!origin.success) return c.json({ error: origin.error.flatten() }, 400);
-    const parsed = permissionHookSchema.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const { workspaceId, sessionKey } = origin.data;
-    const hook = parsed.data;
+  router.post(
+    "/permission",
+    // A refusal prints nothing from the hook, so Claude Code shows its own dialog.
+    bodyLimit({ maxSize: MAX_PERMISSION_BODY_BYTES, onError: (c) => c.body(null, 413) }),
+    async (c) => {
+      const arrivedAt = Date.now();
+      if (!canHoldAnotherPermission()) return c.body(null, 204);
+      const origin = permissionOriginSchema.safeParse({
+        workspaceId: c.req.header("x-yarvis-workspace-id") || undefined,
+        sessionKey: c.req.header("x-yarvis-session-key"),
+      });
+      if (!origin.success) return c.json({ error: origin.error.flatten() }, 400);
+      const parsed = permissionHookSchema.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+      const { workspaceId, sessionKey } = origin.data;
+      const hook = parsed.data;
 
-    const [ws] = workspaceId
-      ? await db()
-          .select({ name: workspaces.name })
-          .from(workspaces)
-          .where(eq(workspaces.id, workspaceId))
-      : [];
+      const [ws] = workspaceId
+        ? await db()
+            .select({ name: workspaces.name })
+            .from(workspaces)
+            .where(eq(workspaces.id, workspaceId))
+        : [];
 
-    // What the agent said just before asking is the best answer to "why does it
-    // want this". Missing context never blocks the request.
-    const activity =
-      hook.cwd && hook.session_id
-        ? await readSessionActivityById(hook.cwd, hook.session_id, 1).catch(() => null)
-        : null;
+      // What the agent said just before asking is the best answer to "why does it
+      // want this". Missing context never blocks the request.
+      const activity =
+        hook.cwd && hook.session_id
+          ? await readSessionActivityById(hook.cwd, hook.session_id, 1).catch(() => null)
+          : null;
 
-    const summary = summarizePermission(hook.tool_name, hook.tool_input);
-    let raised: Promise<string | null> = Promise.resolve(null);
+      let raised: Promise<void> = Promise.resolve();
 
-    const decision = await awaitPermissionDecision(
-      {
-        sessionKey,
-        workspaceId: workspaceId ?? null,
-        workspaceName: ws?.name ?? null,
-        toolName: hook.tool_name,
-        toolInput: hook.tool_input,
-        cwd: hook.cwd ?? null,
-        permissionMode: hook.permission_mode ?? null,
-        lastReply: clip(activity?.lastReply?.text),
-        lastPrompt: clip(activity?.prompts.at(-1)?.text),
-      },
-      {
-        timeoutMs: PERMISSION_HOLD_MS,
-        signal: c.req.raw.signal,
-        onRegistered: (requestId) => {
-          raised = createAttention(db(), {
-            source: "claude-hook",
-            sessionKey,
-            workspaceId: workspaceId ?? null,
-            kind: "permission",
-            title: ws?.name ?? "Claude session",
-            body: summary,
-            navTarget: navTargetFor(sessionKey, workspaceId),
-            payload: { requestId, toolName: hook.tool_name, summary },
-          })
-            .then((item) => {
-              publish(item);
-              return item.id;
-            })
-            .catch((e) => {
-              console.error("[attention] could not raise a permission item:", e?.message ?? e);
-              return null;
-            });
+      const decision = await awaitPermissionDecision(
+        {
+          sessionKey,
+          workspaceId: workspaceId ?? null,
+          workspaceName: ws?.name ?? null,
+          toolName: hook.tool_name,
+          toolInput: hook.tool_input,
+          cwd: hook.cwd ?? null,
+          permissionMode: hook.permission_mode ?? null,
+          lastReply: clip(activity?.lastReply?.text),
+          lastPrompt: clip(activity?.prompts.at(-1)?.text),
         },
-      },
-    );
+        {
+          // Counted from arrival, so the lookups above can't push the reply
+          // past curl's own deadline.
+          timeoutMs: PERMISSION_HOLD_MS - (Date.now() - arrivedAt),
+          signal: c.req.raw.signal,
+          onRegistered: (info) => {
+            raised = raisePermissionItem(info);
+          },
+        },
+      );
 
-    // Answered (here or in the terminal, which ends the hook) means nobody is
-    // blocked any more. A timeout or a hand-back leaves the terminal dialog
-    // waiting, so the item stays for the user to follow.
-    const handled = decision !== null && decision.behavior !== "terminal";
-    const abandoned = decision === null && c.req.raw.signal.aborted;
-    const itemId = await raised;
-    if (itemId && (handled || abandoned) && !hasPendingPermission(sessionKey)) {
-      const row = await updateAttentionStatus(db(), itemId, "resolved").catch(() => undefined);
-      if (row) publish(row);
-    }
+      // Answered, or the hook ended (Claude Code killed it), means this request
+      // no longer blocks anyone. A timeout or a hand-back leaves the terminal
+      // dialog waiting, so the item stays for the user to follow.
+      const handled = decision !== null && decision.behavior !== "terminal";
+      const hookGone = decision === null && c.req.raw.signal.aborted;
+      // The item may still be on its way in; resolving first would leave it pending.
+      await raised;
+      if ((handled || hookGone) && !hasPendingPermission(sessionKey)) {
+        const rows = await resolvePermissionItems(db(), sessionKey).catch(() => []);
+        for (const row of rows) publish(row);
+        // Another request from the session may have arrived while that ran;
+        // raise its item again so it isn't lost.
+        const next = listPendingPermissions({ sessionKey }).at(-1);
+        if (next) await raisePermissionItem(next);
+      }
 
-    const output = hookOutputFor(decision);
-    return output ? c.json(output) : c.body(null, 204);
-  });
+      const output = hookOutputFor(decision);
+      return output ? c.json(output) : c.body(null, 204);
+    },
+  );
 
   return router;
 }

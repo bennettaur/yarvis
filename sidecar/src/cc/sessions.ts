@@ -232,15 +232,11 @@ export async function readSessionActivityById(
   if (!safeName(projectDir) || !safeName(sessionId)) return null;
   const file = join(projectsDir(), projectDir, `${sessionId}.jsonl`);
   if (!within(projectsDir(), file)) return null;
-  let s: Awaited<ReturnType<typeof stat>>;
-  try {
-    s = await stat(file);
-  } catch {
-    return null;
-  }
+  const info = await stat(file).catch(() => null);
+  if (!info) return null;
   return readSessionActivity(
     projectDir,
-    { sessionId, mtimeMs: s.mtimeMs, bytes: s.size },
+    { sessionId, mtimeMs: info.mtimeMs, bytes: info.size },
     promptLimit,
   );
 }

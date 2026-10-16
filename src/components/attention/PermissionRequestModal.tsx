@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   decidePermission,
   getPermissionRequests,
@@ -38,29 +38,48 @@ export default function PermissionRequestModal({
   onGoToSession: () => void;
 }) {
   const [requests, setRequests] = useState<PermissionRequest[] | null>(null);
+  // Kept apart so a poll that succeeds clears its own blip but not an answer's error.
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [armed, setArmed] = useState(false);
   const current = requests?.[0] ?? null;
+  // Only the newest load may land: a poll sent before an answer would otherwise
+  // put the answered request back in front.
+  const loadSeq = useRef(0);
+  const busyRef = useRef(false);
 
-  const refresh = useCallback(async () => {
-    if (!sessionKey) return;
+  const load = useCallback(async () => {
+    if (!sessionKey) return null;
+    const seq = ++loadSeq.current;
     try {
-      setRequests(await getPermissionRequests(sessionKey));
+      const list = await getPermissionRequests(sessionKey);
+      if (seq !== loadSeq.current) return null;
+      setRequests(list);
+      setLoadError(null);
+      return list;
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (seq === loadSeq.current) setLoadError(e instanceof Error ? e.message : String(e));
+      return null;
     }
   }, [sessionKey]);
 
   useEffect(() => {
     setRequests(null);
+    setLoadError(null);
     setError(null);
     if (!sessionKey) return;
-    void refresh();
-    const timer = setInterval(() => void refresh(), REFRESH_MS);
-    return () => clearInterval(timer);
-  }, [sessionKey, refresh]);
+    void load();
+    const timer = setInterval(() => {
+      if (!busyRef.current) void load();
+    }, REFRESH_MS);
+    return () => {
+      clearInterval(timer);
+      // Drops any load still in flight for this session.
+      loadSeq.current++;
+    };
+  }, [sessionKey, load]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-arm per request
   useEffect(() => {
@@ -87,18 +106,21 @@ export default function PermissionRequestModal({
   const answer = async (decision: PermissionDecision) => {
     if (!current || !armed || busy) return;
     setBusy(true);
+    busyRef.current = true;
     setError(null);
     try {
       const delivered = await decidePermission(current.id, decision);
       if (!delivered) setError("That prompt was already answered or timed out.");
-      const remaining = await getPermissionRequests(sessionKey);
-      setRequests(remaining);
+      const remaining = await load();
+      // The user asked for the terminal, and that's where the prompt is even
+      // when this one had already timed out.
       if (decision.behavior === "terminal") onGoToSession();
-      else if (delivered && remaining.length === 0) onClose();
+      else if (delivered && remaining?.length === 0) onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+      busyRef.current = false;
     }
   };
 
@@ -141,17 +163,17 @@ export default function PermissionRequestModal({
         </header>
 
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-3 text-sm">
-          {requests === null && !error && <p className="text-xs text-zinc-500">Loading…</p>}
+          {requests === null && !loadError && <p className="text-xs text-zinc-500">Loading…</p>}
           {requests !== null && !current && (
             <p className="text-xs text-zinc-400">
-              This session isn't waiting on Yarvis any more. It was answered in the terminal, or
-              waited too long and handed the prompt back to it. Open the session to see where it is.
+              This session isn't waiting on Yarvis any more. It was answered, or Yarvis handed the
+              prompt back to Claude Code in the terminal. Open the session to see where it is.
             </p>
           )}
           {current && <RequestDetails request={current} />}
-          {error && (
+          {(error ?? loadError) && (
             <p role="alert" className="text-xs text-red-400">
-              {error}
+              {error ?? loadError}
             </p>
           )}
         </div>
@@ -228,11 +250,14 @@ export default function PermissionRequestModal({
 }
 
 function RequestDetails({ request }: { request: PermissionRequest }) {
-  const command = typeof request.toolInput.command === "string" ? request.toolInput.command : null;
-  const description =
-    typeof request.toolInput.description === "string" ? request.toolInput.description : null;
-  // Bash shows its command on its own; other tools show their whole input.
-  const input = command ?? JSON.stringify(request.toolInput, null, 2);
+  const { command, description, ...rest } = request.toolInput;
+  const isBash = request.toolName === "Bash" && typeof command === "string";
+  // Bash shows its command on its own, with any other fields below it so a
+  // flag like dangerouslyDisableSandbox is never hidden. Other tools show
+  // their whole input.
+  const input = isBash ? command : JSON.stringify(request.toolInput, null, 2);
+  const otherFields = isBash && Object.keys(rest).length > 0 ? JSON.stringify(rest, null, 2) : null;
+  const unsandboxed = request.toolInput.dangerouslyDisableSandbox === true;
 
   return (
     <>
@@ -241,10 +266,25 @@ function RequestDetails({ request }: { request: PermissionRequest }) {
           <span className="font-medium text-zinc-100">{request.toolName}</span>
           <span className="text-[11px] text-zinc-500">{formatRelativeTime(request.createdAt)}</span>
         </div>
-        {description && <p className="mb-1 text-xs text-zinc-400">{description}</p>}
+        {unsandboxed && (
+          <p className="mb-1 rounded border border-red-800 bg-red-950/40 px-2 py-1 text-xs text-red-300">
+            Runs outside the sandbox
+          </p>
+        )}
         <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-zinc-950/70 p-2 font-mono text-xs text-zinc-200">
           {input}
         </pre>
+        {otherFields && (
+          <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded bg-zinc-950/70 p-2 font-mono text-xs text-zinc-400">
+            {otherFields}
+          </pre>
+        )}
+        {isBash && typeof description === "string" && (
+          <p className="mt-1 text-xs text-zinc-400">
+            <span className="text-zinc-500">Claude's description: </span>
+            {description}
+          </p>
+        )}
       </div>
 
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">

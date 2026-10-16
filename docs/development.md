@@ -291,7 +291,8 @@ sidecar/        Bun + TS service (Hono)
                    teardown, self-review comments, gh-stack bridge, file editor
   src/mcp/         MCP client: connected servers, OAuth, tool registry, approvals
   src/mcpServer/   the MCP endpoint Yarvis serves
-  src/attention/   attention stream: hook ingest, SSE, clearing
+  src/attention/   attention stream: hook ingest, SSE, clearing, held
+                   permission prompts
   drizzle/         generated SQL migrations
 scripts/        dev tooling (dev-instance.ts)
 demo/           Playwright demo recordings: mocked Rust core, seeded demo DB (see demo/README.md)
