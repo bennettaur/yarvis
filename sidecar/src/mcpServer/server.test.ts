@@ -432,7 +432,7 @@ describe("yarvis mcp server in a workspace", () => {
     expect(store.comments[0]?.resolvedAt).toBeNull();
   });
 
-  it("reports a comment that isn't in this workspace as an error", async () => {
+  it("reports an unknown comment id as an error", async () => {
     const { client } = await connectToWorkspace();
     const result = await client.callTool({
       name: "resolve_review_comment",

@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { WorkspaceReviewComment } from "../db/schema.ts";
 import type { LocatedReviewComment } from "../workspaces/reviewComments.ts";
-import { jsonResult, toolError, UUID, userError } from "./results.ts";
+import { callerError, jsonResult, toolError, UUID } from "./results.ts";
 
 /**
  * The self-review comments the user left on a workspace's diffs, served over
@@ -35,7 +35,7 @@ export function registerReviewCommentTools(
     {
       title: "List review comments",
       description:
-        "Read the review comments the user left in Yarvis on this workspace's diffs. Open comments are feedback to address. Each comment's path is relative to its worktreePath, and its lines are new-file line numbers at commitSha, so re-read the file when it has changed since. Once a comment is addressed, mark it with resolve_review_comment.",
+        "Read the review comments the user left in Yarvis on this workspace's diffs. Open comments are requests to address. `path` is relative to `worktreePath`, and `startLine`/`endLine` are new-file line numbers as of `commitSha`, so if the file has changed since, find the same code before editing. After addressing a comment, call resolve_review_comment with its id.",
       inputSchema: {
         includeResolved: z
           .boolean()
@@ -76,7 +76,7 @@ export function registerReviewCommentTools(
     {
       title: "Resolve a review comment",
       description:
-        "Mark one of this workspace's review comments resolved after addressing it, or reopen it with resolved: false. Ids come from list_review_comments.",
+        "Mark one of this workspace's review comments resolved after addressing it, or reopen it with resolved: false. Leave a comment open if you could not address it or need the user's input. Ids come from list_review_comments.",
       inputSchema: {
         id: UUID.describe("Id of the review comment"),
         resolved: z
@@ -84,12 +84,20 @@ export function registerReviewCommentTools(
           .optional()
           .describe("False reopens a resolved comment (default true)"),
       },
-      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ id, resolved }) => {
       try {
         const updated = await store().setResolved(workspaceId, id, resolved ?? true);
-        if (!updated) return userError(`No review comment ${id} in this workspace.`);
+        if (!updated)
+          return callerError(
+            `No review comment ${id} in this workspace. Call list_review_comments for current ids.`,
+          );
         return jsonResult({ id: updated.id, resolved: updated.resolvedAt !== null });
       } catch (e) {
         return toolError("resolve_review_comment", e);

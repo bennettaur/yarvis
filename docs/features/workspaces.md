@@ -114,7 +114,7 @@ writes these files into the root:
 | `.claude/settings.json` | The attention hooks that tell Yarvis when the session needs you |
 | `.claude/skills/`, `.claude/agents/` | Copies of each repo's own skills and agents |
 | `.claude/.yarvis-copied.json` | A list of the copies above, so they can be cleaned up |
-| `.mcp.json` | Points the session at Yarvis's MCP endpoint, so it can read and write Yarvis memory. See [MCP](mcp.md). |
+| `.mcp.json` | Points the session at Yarvis's MCP endpoint, so it can read and write Yarvis memory and work through this workspace's review comments. See [MCP](mcp.md). |
 | `.yarvis/brief.md` | The work the session was started on, when there is one |
 
 Some details:
@@ -302,7 +302,8 @@ workspace, with a count of open comments. A comment's heading opens its diff.
 
 The agent session can also fetch the comments itself. Ask it to "address the
 feedback left in Yarvis" and it reads the open comments over Yarvis's MCP
-endpoint, then marks each one resolved as it finishes it. See
+endpoint, then marks each one resolved as it finishes it. The **Comments** tab picks up
+what it resolved within a few seconds. See
 [MCP](mcp.md#workspace-review-comments).
 
 Archiving a workspace deletes its comments once the worktrees are gone. If the

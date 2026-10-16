@@ -229,15 +229,15 @@ describe("review comment routes", () => {
     await post(mine.id, { ...base, workspaceRepoId: mine.repoIds[1], body: "In api." });
     await post(theirs.id, { ...base, workspaceRepoId: theirs.repoId, body: "Elsewhere." });
 
-    const comments = await listLocatedReviewComments(db, mine.id);
-    expect(comments.map((c) => [c.body, c.repoName])).toEqual([
-      ["In web.", "web"],
-      ["In api.", "api"],
-    ]);
     const detail = await getWorkspace(db, mine.id);
-    expect(comments.map((c) => c.worktreePath)).toEqual(
-      (detail?.repos ?? []).map((r) => r.worktreePath),
+    const worktreeOf = new Map<string, string>(
+      (detail?.repos ?? []).map((r) => [r.id, r.worktreePath]),
     );
+    const comments = await listLocatedReviewComments(db, mine.id);
+    expect(comments.map((c) => [c.body, c.repoName, c.worktreePath])).toEqual([
+      ["In web.", "web", worktreeOf.get(mine.repoIds[0] ?? "") ?? ""],
+      ["In api.", "api", worktreeOf.get(mine.repoIds[1] ?? "") ?? ""],
+    ]);
   });
 
   // The copied text numbers entries in list order, so the order is a contract.

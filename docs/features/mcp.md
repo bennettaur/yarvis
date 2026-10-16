@@ -179,7 +179,9 @@ is provisioned.
 When Yarvis provisions a workspace, it writes a `.mcp.json` at the workspace
 root. That file points at `${YARVIS_SIDECAR_PORT}` with an
 `Authorization: Bearer ${YARVIS_MCP_TOKEN}` header. The Rust core puts both
-variables into the session's shell, so the file on disk holds no secret.
+variables into the session's shell, so the file on disk holds no secret. It
+also sends an `X-Yarvis-Workspace` header with the workspace id, which isn't a
+secret and is written as-is.
 
 Claude Code asks you to approve the project's MCP server the first time it sees
 it.
@@ -222,8 +224,7 @@ and never printed. Set `YARVIS_MCP_TOKEN` yourself to point a client at one.
 
 - The endpoint is `POST http://127.0.0.1:<sidecar port>/mcp`.
 - It uses a **scoped token** that grants the memory and review comment tools
-  and nothing else. The
-  rest of the sidecar API keeps its own bearer token.
+  and nothing else. The rest of the sidecar API keeps its own bearer token.
 - It checks the `Host` header. A web page that points a name it controls at
   127.0.0.1 can't reach it.
 - Memory contents are treated as untrusted data on the way out. `recall` and

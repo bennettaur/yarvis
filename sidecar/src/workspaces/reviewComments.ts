@@ -93,6 +93,9 @@ export async function listLocatedReviewComments(
  * can't reach another workspace's worktree by guessing an id. The range is
  * taken as given — the route schema is what rejects a backwards one, so there
  * is one answer to that input rather than two.
+ *
+ * The user is the only author: the MCP endpoint hands bodies to an agent
+ * unfenced on that basis, so any other writer has to change that first.
  */
 export async function createReviewComment(
   db: Db,

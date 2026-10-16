@@ -9,7 +9,7 @@ import {
   validityFields,
   validityWindowShape,
 } from "../memory/validity.ts";
-import { jsonResult, toolError, UUID, userError } from "./results.ts";
+import { callerError, jsonResult, toolError, UUID } from "./results.ts";
 
 /**
  * The memory tools Yarvis serves over MCP, so Claude Code (or any other MCP
@@ -102,7 +102,7 @@ export function registerMemoryTools(server: McpServer, memory: () => Promise<Mem
     async ({ content, ...windowRequest }) => {
       const requested = resolveValidityWindow(windowRequest, new Date());
       if (!requested.ok) {
-        return userError(requested.error);
+        return callerError(requested.error);
       }
       try {
         const record = await (await memory()).add(content, {
