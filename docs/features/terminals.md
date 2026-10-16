@@ -100,6 +100,34 @@ What this gives you:
   Yarvis writes points at the endpoint. For the Terminal tab, or any other
   client, see [MCP](mcp.md).
 
+## Answering permission prompts
+
+When a Claude session in a workspace asks permission to run something, the bell
+shows what it wants, for example `Bash: bun test`. Click the item to answer it
+in a window over whatever page you're on. It shows:
+
+- the tool and its full input, with Claude's own description of a command,
+- the workspace and the directory the session runs in,
+- what Claude said just before asking, and the last prompt you typed.
+
+You can **Approve**, **Deny**, or type what Claude should do instead and press
+**Send**, which denies the request and passes your note to Claude. **Answer in
+terminal** hands the prompt back to Claude Code's own dialog, for its other
+options such as "don't ask again". **Go to session** opens the terminal without
+answering.
+
+Some details:
+
+- **Yarvis holds the prompt for about four minutes.** After that, Claude Code
+  shows its own dialog in the terminal and the bell item stays until you answer
+  there.
+- **Several prompts from one session queue up.** The window shows the oldest
+  first with a count of the rest.
+- **Only the app instance that launched the session can answer it.** Another
+  instance sharing the database shows the item but not the prompt.
+- **A Claude run outside Yarvis is unaffected.** The hook can't reach the app,
+  so Claude Code shows its normal dialog.
+
 ## Known gap
 
 When a shell exits, the pane shows "[process exited]" and has no restart
