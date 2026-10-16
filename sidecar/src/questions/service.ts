@@ -1,4 +1,4 @@
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, notExists, sql } from "drizzle-orm";
 import { publish } from "../attention/hub.ts";
 import { navTargetFor } from "../attention/navTarget.ts";
 import { createAttention } from "../attention/service.ts";
@@ -8,10 +8,12 @@ import {
   type AgentQuestionContext,
   type AgentQuestionItem,
   type AgentQuestionRow,
+  type AttentionNavTarget,
   agentQuestions,
   attentionItems,
   workspaces,
 } from "../db/schema.ts";
+import { describeError } from "../llm/errors.ts";
 
 /**
  * Questions a coding agent asks the user through the MCP `ask_user` tool. Asking
@@ -35,6 +37,16 @@ function preview(questions: AgentQuestionItem[]): string {
   const first = questions[0]?.question ?? "Has a question for you";
   const text = first.length > BODY_PREVIEW_CHARS ? `${first.slice(0, BODY_PREVIEW_CHARS)}…` : first;
   return questions.length > 1 ? `${text} (+${questions.length - 1} more)` : text;
+}
+
+/** Where "Go to session" lands: the asking terminal, else its workspace. */
+function questionNavTarget(
+  sessionKey: string | null,
+  workspaceId: string | null,
+): AttentionNavTarget | null {
+  if (sessionKey) return navTargetFor(sessionKey, workspaceId ?? undefined);
+  if (workspaceId) return { type: "workspace", workspaceId };
+  return null;
 }
 
 /**
@@ -62,17 +74,15 @@ export async function askQuestions(db: Db, input: AskInput): Promise<AgentQuesti
     .returning();
 
   const item = await createAttention(db, {
+    // `claude-hook` is what the hook route ingests; a question arrives over
+    // MCP instead, which is what `system` is set aside for.
     source: "system",
     sessionKey: input.sessionKey,
     workspaceId,
     kind: "question",
     title: ws?.name ?? "Claude session",
     body: preview(input.questions),
-    navTarget: input.sessionKey
-      ? navTargetFor(input.sessionKey, workspaceId ?? undefined)
-      : workspaceId
-        ? { type: "workspace", workspaceId }
-        : null,
+    navTarget: questionNavTarget(input.sessionKey, workspaceId),
     // A session's question items coalesce into one, so the dialog lists that
     // session's pending questions; a sessionless item is found by this id.
     payload: { questionId: row!.id },
@@ -98,9 +108,11 @@ export async function listPendingQuestions(
     .orderBy(agentQuestions.createdAt);
 }
 
-export type Reply = { status: "answered"; answers: AgentQuestionAnswer[] } | { status: "declined" };
+export type QuestionReply =
+  | { status: "answered"; answers: AgentQuestionAnswer[] }
+  | { status: "declined" };
 
-export type ReplyResult =
+export type ReplyOutcome =
   | { ok: true; row: AgentQuestionRow }
   | { ok: false; reason: "not-found" | "not-pending" | "invalid"; message: string };
 
@@ -109,7 +121,7 @@ export type ReplyResult =
  * labels must be offered ones, a single-select question takes at most one, and
  * every question gets either a pick or some text.
  */
-export function validateAnswers(
+function validateAnswers(
   questions: AgentQuestionItem[],
   answers: AgentQuestionAnswer[],
 ): string | null {
@@ -135,7 +147,11 @@ export function validateAnswers(
  * Records the user's reply and wakes the waiting tool call. The update only
  * matches a pending row, so two surfaces answering at once can't both win.
  */
-export async function replyToQuestion(db: Db, id: string, reply: Reply): Promise<ReplyResult> {
+export async function replyToQuestion(
+  db: Db,
+  id: string,
+  reply: QuestionReply,
+): Promise<ReplyOutcome> {
   const existing = await getQuestion(db, id);
   if (!existing) return { ok: false, reason: "not-found", message: "no such question" };
   if (existing.status !== "pending") {
@@ -157,8 +173,13 @@ export async function replyToQuestion(db: Db, id: string, reply: Reply): Promise
     .returning();
   if (!row) return { ok: false, reason: "not-pending", message: "question was already answered" };
 
-  await resolveAttentionFor(db, row);
+  // The reply is stored, so the agent gets it even if the bell can't be cleared.
   wake(id);
+  try {
+    await resolveAttentionFor(db, row);
+  } catch (e) {
+    console.error(`[questions] failed to clear the bell for ${id}:`, describeError(e));
+  }
   return { ok: true, row };
 }
 
@@ -168,34 +189,30 @@ export async function replyToQuestion(db: Db, id: string, reply: Reply): Promise
  * first of two leaves it up for the second.
  */
 async function resolveAttentionFor(db: Db, row: AgentQuestionRow): Promise<void> {
-  if (row.sessionKey) {
-    const [stillWaiting] = await db
-      .select({ id: agentQuestions.id })
-      .from(agentQuestions)
-      .where(
-        and(
-          eq(agentQuestions.sessionKey, row.sessionKey),
-          eq(agentQuestions.status, "pending"),
-          ne(agentQuestions.id, row.id),
+  // One statement, so a question asked between a "still waiting?" check and
+  // the update can't have its bell cleared under it.
+  const scope = row.sessionKey
+    ? and(
+        eq(attentionItems.sessionKey, row.sessionKey),
+        notExists(
+          db
+            .select({ id: agentQuestions.id })
+            .from(agentQuestions)
+            .where(
+              and(
+                eq(agentQuestions.sessionKey, row.sessionKey),
+                eq(agentQuestions.status, "pending"),
+              ),
+            ),
         ),
       )
-      .limit(1);
-    if (stillWaiting) return;
-  }
+    : sql`${attentionItems.payload}->>'questionId' = ${row.id}`;
 
   const now = new Date();
   const resolved = await db
     .update(attentionItems)
     .set({ status: "resolved", resolvedAt: now, updatedAt: now })
-    .where(
-      and(
-        eq(attentionItems.kind, "question"),
-        ne(attentionItems.status, "resolved"),
-        row.sessionKey
-          ? eq(attentionItems.sessionKey, row.sessionKey)
-          : sql`${attentionItems.payload}->>'questionId' = ${row.id}`,
-      ),
-    )
+    .where(and(eq(attentionItems.kind, "question"), eq(attentionItems.status, "pending"), scope))
     .returning();
   for (const item of resolved) publish(item);
 }
@@ -226,30 +243,44 @@ export async function waitForReply(
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<AgentQuestionRow | undefined> {
-  let done = () => {};
   // Registered before the first read, so a reply landing between the read and
   // the wait still wakes it.
+  const { replied, release } = addWaiter(id, timeoutMs, signal);
+
+  const current = await getQuestion(db, id);
+  if (current?.status !== "pending" || signal?.aborted) {
+    release();
+    return current;
+  }
+  await replied;
+  return getQuestion(db, id);
+}
+
+/**
+ * Registers a waiter that settles on a reply, the timeout, or an abort,
+ * whichever comes first. `release` settles it early and cleans up.
+ */
+function addWaiter(
+  id: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): { replied: Promise<void>; release: () => void } {
+  let release = () => {};
   const replied = new Promise<void>((resolve) => {
-    done = () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    release = () => {
       clearTimeout(timer);
-      signal?.removeEventListener("abort", done);
+      signal?.removeEventListener("abort", release);
       const set = waiters.get(id);
-      set?.delete(done);
+      set?.delete(release);
       if (set?.size === 0) waiters.delete(id);
       resolve();
     };
-    const timer = setTimeout(done, timeoutMs);
-    signal?.addEventListener("abort", done, { once: true });
-    let set = waiters.get(id);
-    if (!set) {
-      set = new Set();
-      waiters.set(id, set);
-    }
-    set.add(done);
+    timer = setTimeout(release, timeoutMs);
+    signal?.addEventListener("abort", release, { once: true });
+    const set = waiters.get(id) ?? new Set();
+    set.add(release);
+    waiters.set(id, set);
   });
-
-  const current = await getQuestion(db, id);
-  if (current?.status === "pending" && !signal?.aborted) await replied;
-  else done();
-  return current?.status === "pending" ? getQuestion(db, id) : current;
+  return { replied, release };
 }

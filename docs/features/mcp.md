@@ -3,9 +3,10 @@
 Yarvis speaks the [Model Context Protocol](https://modelcontextprotocol.io) in
 both directions. It connects **out** to MCP servers you add, so the assistant
 can use their tools. It also **serves** its own MCP endpoint, so Claude Code
-and other clients can read and write Yarvis's memory. The second is what lets a
-coding session look up what you told Yarvis last week and write back what it
-learned.
+and other clients can read and write Yarvis's memory and ask you questions. The
+second is what lets a coding session look up what you told Yarvis last week,
+write back what it learned, and ask you for a decision you answer from the
+attention bell.
 
 ## Connecting MCP servers to Yarvis
 
@@ -223,8 +224,11 @@ and never printed. Set `YARVIS_MCP_TOKEN` yourself to point a client at one.
 - The endpoint is `POST http://127.0.0.1:<sidecar port>/mcp`.
 - It uses a **scoped token** that grants the memory and question tools and
   nothing else. The rest of the sidecar API keeps its own bearer token.
-- The session and workspace headers are the caller's claim. They only decide
-  where a question is shown, the same trust attention hooks get.
+- The session and workspace headers are the caller's claim, the same trust
+  attention hooks get. They decide where a question is shown, and
+  `wait_for_answer` only returns a question to the session that asked it. A
+  session could still claim another's key, so the dialog reminds you that
+  answers go back to the asking agent and not to type secrets.
 - It checks the `Host` header. A web page that points a name it controls at
   127.0.0.1 can't reach it.
 - Memory contents are treated as untrusted data on the way out. `recall` and

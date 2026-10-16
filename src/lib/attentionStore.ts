@@ -225,12 +225,13 @@ export async function markAttentionScope(
   scope: AttentionScope,
   status: Exclude<AttentionStatus, "pending">,
 ): Promise<void> {
-  const next = snapshot.filter(
-    (i) =>
-      (status === "read" && i.kind === "question") ||
-      (!(scope.workspaceId && i.workspaceId === scope.workspaceId) &&
-        !(scope.sessionKey && i.sessionKey === scope.sessionKey)),
-  );
+  const next = snapshot.filter((i) => {
+    const inScope =
+      (scope.workspaceId && i.workspaceId === scope.workspaceId) ||
+      (scope.sessionKey && i.sessionKey === scope.sessionKey);
+    const staysPending = status === "read" && i.kind === "question";
+    return staysPending || !inScope;
+  });
   if (next.length !== snapshot.length) {
     snapshot = next;
     emit();

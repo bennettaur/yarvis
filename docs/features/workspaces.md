@@ -488,7 +488,7 @@ How the bell behaves:
 - **Cleared by looking.** Opening the workspace or terminal tab that raised an
   item marks it read. An item raised by something already on screen never
   sends an OS notification. Nothing clears itself while the window is in the
-  background.
+  background. Questions are the exception; see below.
 - **Marked where it happened.** A workspace with something pending is marked in
   the workspace list, and its tab is marked in the tab strip.
 - **Questions are answered in place.** When a session asks you something

@@ -5,7 +5,7 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { type MemoryService, PgVectorMemoryStore } from "../memory/index.ts";
-import { askQuestions, waitForReply } from "../questions/service.ts";
+import { askQuestions, getQuestion, waitForReply } from "../questions/service.ts";
 import type { QuestionOrigin } from "./questionTools.ts";
 import { createYarvisMcpServer } from "./server.ts";
 
@@ -44,8 +44,8 @@ function allowedHosts(port: number): string[] {
 }
 
 /** Headers a workspace's `.mcp.json` sets from the PTY's environment (`workspaces/mcpConfig.ts`). */
-export const SESSION_KEY_HEADER = "x-yarvis-session-key";
-export const WORKSPACE_ID_HEADER = "x-yarvis-workspace-id";
+const SESSION_KEY_HEADER = "x-yarvis-session-key";
+const WORKSPACE_ID_HEADER = "x-yarvis-workspace-id";
 
 const UUID_SHAPE = /^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/;
 const MAX_SESSION_KEY = 256;
@@ -90,6 +90,7 @@ export function createMcpEndpointRoutes(config: Config): Hono {
     const server = createYarvisMcpServer(memory, {
       origin: questionOrigin(c.req.raw.headers),
       ask: (input) => askQuestions(db(), input),
+      getQuestion: (id) => getQuestion(db(), id),
       waitForReply: (id, timeoutMs) => waitForReply(db(), id, timeoutMs, signal),
     });
     const transport = new StreamableHTTPTransport({
