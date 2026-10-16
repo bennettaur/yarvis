@@ -234,7 +234,8 @@ back to ad-hoc.
   `chat/destructiveTools.ts` behind the same approval prompt MCP tools use,
   because a transcript can be misheard or picked up from the room. A surface
   that can't prompt gets those tools dropped rather than run unattended —
-  silently doing the irreversible thing is the one unacceptable outcome.
+  silently doing the irreversible thing is the one unacceptable outcome. A
+  `check-back` turn (below) is unreviewed in the same way.
 - Secrets flow one way — the webview writes them to the Keychain, the core
   injects them into the sidecar at spawn. MCP OAuth tokens are the single
   exception, because an authorization server refreshes them on its own schedule
@@ -458,6 +459,20 @@ back to ad-hoc.
     delegation. Output goes through `redactSecrets` (credential *shapes*, not
     general scrubbing) and is truncated before it is stored — it is
     model-composed text that is kept and displayed.
+- A check-back (`sidecar/src/checkBacks/`) is a prompt the chat agent schedules
+  for itself, run later by the `check-backs` job as a turn in the same chat —
+  how "tell me when CI goes green" waits without a shell. The prompt is
+  model-composed, often just after reading a CI log or a PR comment, so three
+  things hold it down. The turn gets only `CHECK_BACK_TOOLS`
+  (`chat/destructiveTools.ts`), a read-only allowlist, because anything it
+  writes would be read back later as if the user had agreed. Its stored row
+  has the user role so the thread reads in order, but it reaches the model
+  fenced as the assistant's own note (`checkBacks/message.ts`), on its own turn
+  and every later one, since a typed turn runs the destructive tools without
+  asking. And a chain is bounded by an attempt counter that comes from the row,
+  never from the model. Unlike the memory jobs, a row is marked fired *before*
+  its turn runs: a sidecar that dies mid-turn loses one check rather than
+  replaying it into the chat on every restart.
 - Delegation is files, not rows. A specialist (`sidecar/src/agents/`) is a
   markdown file: frontmatter for its tools, model (or complexity tier — see
   `sidecar/src/llm/complexity.ts`) and step budget, body as its system prompt.

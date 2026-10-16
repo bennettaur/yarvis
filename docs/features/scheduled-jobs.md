@@ -81,9 +81,9 @@ Other limits on a Claude Code job:
 
 ## Background jobs that ship with the app
 
-These are code, not rows in the Jobs tab. All but the check-backs write memory
-rather than output you read, and they are what lets the assistant answer "what
-did I do yesterday?". Their status and a manual trigger are under **Settings →
+These are code, not rows in the Jobs tab. The first three write memory rather
+than output you read, and they are what lets the assistant answer "what did I
+do yesterday?". The check-backs job runs the assistant's own follow-ups. Their status and a manual trigger are under **Settings →
 Assistant**.
 
 | Job | When | What it does |
