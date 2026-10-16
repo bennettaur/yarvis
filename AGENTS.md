@@ -284,7 +284,13 @@ back to ad-hoc.
   prompt forbids relaying third-party text as an instruction. What no layer can
   establish is *what the agent is showing*, so a send is reported as delivered,
   never as done. Anything new that forwards text into a session owes the same
-  three.
+  three. Which process is the agent comes from the pids Claude Code's
+  SessionStart hook registered (`workspaces/agentSessions.ts`), with the
+  executable's file name as the fallback for an agent that registers nothing.
+  A registered pid counts only while its process group holds the PTY's
+  foreground, so a stale pid, or one registered from another terminal, matches
+  nothing. Anything running in the agent's own PTY holds the ingest token and
+  could register itself, but it already has that terminal.
 - A workspace root's `.claude` directory is jointly owned. Provisioning copies
   each repo's skills and agents up into it (`workspaces/claudeAssets.ts`) because
   Claude Code discovers them only under the directory it starts in and the

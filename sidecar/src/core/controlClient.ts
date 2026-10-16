@@ -143,16 +143,20 @@ export async function killClaudeSession(workspaceId: string): Promise<void> {
 /**
  * Asks the core to type `instruction` at the prompt of a workspace's running
  * agent session and submit it. Rejects when no session is running, when the
- * agent has exited, or when the instruction sanitizes to nothing — see
- * `send_session_instruction` in `src-tauri/src/pty.rs`.
+ * agent has exited, when neither a registered `agentPids` entry nor the
+ * configured agent's executable is what holds the prompt, or when the
+ * instruction sanitizes to nothing — see `send_session_instruction` in
+ * `src-tauri/src/pty.rs`.
  */
 export async function sendClaudeInstruction(input: {
   workspaceId: string;
   instruction: string;
+  agentPids?: number[];
 }): Promise<void> {
   await rpc("claude.send", {
     workspaceId: input.workspaceId,
     instruction: input.instruction,
+    agentPids: input.agentPids ?? [],
   });
 }
 

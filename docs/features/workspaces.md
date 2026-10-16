@@ -108,7 +108,7 @@ writes these files into the root:
 | File | What it's for |
 | --- | --- |
 | `AGENTS.md` and `CLAUDE.md` | Tells the agent which repos are present and on what branch. `CLAUDE.md` just includes `AGENTS.md`. |
-| `.claude/settings.json` | The attention hooks that tell Yarvis when the session needs you |
+| `.claude/settings.json` | The attention hooks that tell Yarvis when the session needs you, and the hooks that register each Claude Code session with the workspace |
 | `.claude/skills/`, `.claude/agents/` | Copies of each repo's own skills and agents |
 | `.claude/.yarvis-copied.json` | A list of the copies above, so they can be cleaned up |
 | `.mcp.json` | Points the session at Yarvis's MCP endpoint, so it can read and write Yarvis memory. See [MCP](mcp.md). |
@@ -394,7 +394,11 @@ Safety rules:
 
 - **The send is refused unless the configured agent is what's reading the
   prompt.** If the agent exited, or something else is running in that
-  terminal, nothing is typed.
+  terminal, nothing is typed. Yarvis knows which process is Claude because
+  each Claude Code session registers itself with the workspace when it starts.
+  A session started before its workspace had the registration hooks isn't
+  known that way. Yarvis then goes by the agent's executable name, which fails
+  for Claude Code's native installer, so restart that session once.
 - **An instruction can't start with `!`, `/`, `#` or `@`.** The agent reads
   those as commands, not requests.
 - **A send confirms delivery only, never that the work was done.** Yarvis

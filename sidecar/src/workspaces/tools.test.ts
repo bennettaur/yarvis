@@ -13,6 +13,7 @@ import { recordEvent } from "../events/service.ts";
 import type { IssueDetail, IssueSummary } from "../issues/types.ts";
 import { createTask, getTask } from "../tasks/service.ts";
 import { clearRecapCache } from "./activity.ts";
+import { recordAgentSessionStart } from "./agentSessions.ts";
 import { WORKSPACE_BRIEF_FILE } from "./brief.ts";
 import type { StartClaudeSessionInput } from "./claudeSession.ts";
 import type { GitRunner } from "./git.ts";
@@ -1382,8 +1383,44 @@ describe("workspace tools", () => {
       {
         workspaceId: created.workspaceId,
         instruction: "resolve the merge conflicts and commit",
+        agentPids: [],
       },
     ]);
+  });
+
+  it("send_workspace_instruction passes the agent pids registered for the agent tab", async () => {
+    const created = await activeWorkspace("Registered");
+    const sessionKey = `ws-claude:${created.workspaceId}`;
+    // This process stands in for a running Claude, so its pid is alive.
+    await recordAgentSessionStart(db, {
+      workspaceId: created.workspaceId,
+      sessionKey,
+      claudeSessionId: "agent-tab",
+      pid: process.pid,
+      source: "startup",
+    });
+    // One started by hand in a terminal pane is not who reads the agent tab.
+    await recordAgentSessionStart(db, {
+      workspaceId: created.workspaceId,
+      sessionKey: `ws:${created.workspaceId}/t1/p1`,
+      claudeSessionId: "pane",
+      pid: process.ppid,
+      source: "startup",
+    });
+    const sent: Array<{ agentPids?: number[] }> = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      sendSessionInstruction: async (input) => {
+        sent.push(input);
+      },
+    });
+
+    await tools.send_workspace_instruction.execute!(
+      { workspaceId: created.workspaceId, instruction: "commit" },
+      opts,
+    );
+
+    expect(sent.map((s) => s.agentPids)).toEqual([[process.pid]]);
   });
 
   it("send_workspace_instruction reports a session that isn't running", async () => {
@@ -1403,6 +1440,24 @@ describe("workspace tools", () => {
     expect(result.error).toContain("no agent session is running");
     expect(result.note).toContain("start_workspace_session");
     expect(result.delivered).toBe(false);
+  });
+
+  it("send_workspace_instruction says when no session has registered itself", async () => {
+    const created = await activeWorkspace("Unregistered");
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      sendSessionInstruction: async () => {
+        throw new Error("the configured agent is not what is reading that session's prompt");
+      },
+    });
+
+    const result = (await tools.send_workspace_instruction.execute!(
+      { workspaceId: created.workspaceId, instruction: "commit" },
+      opts,
+    )) as { registeredAgentSessions?: number; note?: string };
+
+    expect(result.registeredAgentSessions).toBe(0);
+    expect(result.note).toContain("restarting it");
   });
 
   it("send_workspace_instruction errors on an unknown workspace without sending", async () => {

@@ -88,6 +88,12 @@ export interface SendSessionInstructionInput {
   workspaceId: string;
   /** What to type at the session's prompt, as the user would have typed it. */
   instruction: string;
+  /**
+   * Pids of the Claude processes registered for the session's PTY. The core
+   * accepts any of them leading the foreground as the agent, on top of its own
+   * executable-name check.
+   */
+  agentPids?: number[];
 }
 
 /** Injectable sender so the workspace tool is testable without the core. */

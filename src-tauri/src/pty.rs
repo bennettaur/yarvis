@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -644,8 +644,13 @@ fn prepare_instruction(text: &str) -> Result<String, String> {
 /// interrupted, leaving the bare shell — where the text would run as a command
 /// line — or replaced by whatever the user ran next, and text plus a carriage
 /// return typed into `vim` or a REPL is no better. The check needs the
-/// foreground process's executable, so it is refused on platforms that can't
-/// report one.
+/// foreground process group, so it is refused on platforms that can't report
+/// one.
+///
+/// `agent_pids` are the agent processes the sidecar has on record for this
+/// session (see `foreground_is_agent`). They only widen what is recognised as
+/// the agent: a pid that has exited or sits outside the foreground matches
+/// nothing.
 ///
 /// What it still cannot establish is *what the agent is showing*. An agent
 /// sitting on a permission prompt or any select-list dialog also holds the
@@ -657,12 +662,10 @@ pub fn send_session_instruction(
     state: &PtyState,
     workspace_id: &str,
     instruction: &str,
+    agent_pids: &[u32],
 ) -> Result<(), String> {
     let text = prepare_instruction(instruction)?;
     let id = format!("ws-claude:{workspace_id}");
-    // Read before taking the sessions lock: the first call runs the user's login
-    // shell, which can take seconds, and every other PTY command waits on that lock.
-    let search_path = agent_search_path();
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = sessions
         .get_mut(&id)
@@ -670,7 +673,7 @@ pub fn send_session_instruction(
     if !matches!(session.child.try_wait(), Ok(None)) {
         return Err("the agent session has exited".into());
     }
-    if !foreground_is_agent(app, session, search_path.as_deref()) {
+    if !foreground_is_agent(app, session, agent_pids) {
         return Err(
             "the configured agent is not what is reading that session's prompt; open the workspace and check what is running there".into(),
         );
@@ -717,35 +720,42 @@ fn foreground_pid(session: &PtySession) -> Option<u32> {
     }
 }
 
-/// The `PATH` used to find the agent command's executable: the login shell's,
-/// since that is close to what the session's own shell searches, or the
-/// inherited one when it couldn't be read.
-fn agent_search_path() -> Option<String> {
-    crate::login_path::get()
-        .map(str::to_string)
-        .or_else(|| std::env::var("PATH").ok())
-}
-
 /// True when the process reading the PTY's input is the agent the session was
-/// launched with. See `executable_is_command` for how the two are matched.
+/// launched with. Two ways to know that:
 ///
-/// Matching on the executable rather than on "anything that isn't the shell" is
+/// - `agent_pids`, the Claude Code processes that registered themselves for
+///   this session through the workspace's SessionStart hook. A match is exact:
+///   the foreground process group is the one that agent leads, however the
+///   agent was installed or updated since.
+/// - Otherwise, the foreground executable's file name against the launch
+///   command's first word. This covers an agent that registers nothing (a
+///   non-Claude agent, or a session started before the hook was installed).
+///   Claude Code's native installer fails it: `claude` links to
+///   `versions/<version>`, and that version-numbered file is what the OS
+///   reports.
+///
+/// Matching on the process rather than on "anything that isn't the shell" is
 /// what makes this a gate: `vim`, a language REPL, or a test run left in the
 /// foreground would all pass the weaker check and then be handed a line of text
 /// and a carriage return.
 ///
-/// It fails closed, and an agent installed as a script rather than a binary
-/// fails with it: the foreground executable is then the interpreter (`node`,
-/// `bun`), which is neither named like the command nor the file it resolves to,
-/// so the send is refused rather than delivered to a process this can't
-/// identify.
-fn foreground_is_agent(app: &AppHandle, session: &PtySession, search_path: Option<&str>) -> bool {
+/// It fails closed, and an unregistered agent installed as a script rather than
+/// a binary fails with it: the foreground executable is then the interpreter
+/// (`node`, `bun`), which doesn't match the command's first word, so the send is
+/// refused rather than delivered to a process this can't identify.
+fn foreground_is_agent(app: &AppHandle, session: &PtySession, agent_pids: &[u32]) -> bool {
     let Some(pid) = foreground_pid(session) else {
         eprintln!(
             "[pty] refused instruction: no process other than the shell holds the session's foreground"
         );
         return false;
     };
+    if agent_pids
+        .iter()
+        .any(|&agent| process_group(agent) == Some(pid))
+    {
+        return true;
+    }
     let Some(exe) = process_executable(pid) else {
         eprintln!("[pty] refused instruction: could not read the executable of pid {pid}");
         return false;
@@ -754,57 +764,36 @@ fn foreground_is_agent(app: &AppHandle, session: &PtySession, search_path: Optio
     let Some(argv0) = command.split_whitespace().next() else {
         return false;
     };
-    let matched = executable_is_command(Path::new(&exe), argv0, search_path);
+    let expected = Path::new(argv0).file_name().unwrap_or(argv0.as_ref());
+    let matched = Path::new(&exe).file_name() == Some(expected);
     if !matched {
         // The command itself isn't logged: it is user-written and can carry an
         // inline `VAR=secret` assignment.
         eprintln!(
-            "[pty] refused instruction: foreground executable {exe} is not the configured agent"
+            "[pty] refused instruction: foreground executable {exe} is not the configured agent, and none of the {} registered agent pid(s) leads the foreground",
+            agent_pids.len()
         );
     }
     matched
 }
 
-/// True when `exe` is the program the command word `argv0` runs: it has the
-/// same file name, or it is the file `argv0` resolves to once symlinks are
-/// followed. A bare name is looked up in each directory of `search_path`, and a
-/// match in any of them counts, not only the first a shell would pick: the
-/// session's own `PATH` can differ from the login shell's.
-///
-/// The symlink case is how Claude Code's native installer works: `claude` on
-/// `PATH` links to `~/.local/share/claude/versions/<version>`, and the OS
-/// reports that version-numbered file as the running executable.
-fn executable_is_command(exe: &Path, argv0: &str, search_path: Option<&str>) -> bool {
-    let expected = Path::new(argv0).file_name().unwrap_or(argv0.as_ref());
-    if exe.file_name() == Some(expected) {
-        return true;
+/// The process group `pid` belongs to, or None when it has exited or the
+/// platform can't say. Compared against the PTY's foreground group, which is
+/// the group leader's pid, so an agent started through a wrapper script still
+/// matches.
+fn process_group(pid: u32) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        let pid = libc::pid_t::try_from(pid).ok()?;
+        // SAFETY: `getpgid` only reads the pid by value.
+        let group = unsafe { libc::getpgid(pid) };
+        u32::try_from(group).ok().filter(|&g| g > 0)
     }
-    let Ok(canonical_exe) = exe.canonicalize() else {
-        return false;
-    };
-    let candidates: Vec<PathBuf> = if argv0.contains('/') {
-        // A relative path would resolve against the app's working directory, not
-        // the session's.
-        Path::new(argv0)
-            .is_absolute()
-            .then(|| PathBuf::from(argv0))
-            .into_iter()
-            .collect()
-    } else {
-        search_path
-            .unwrap_or_default()
-            .split(':')
-            // A relative entry would resolve against the app's working directory,
-            // not the session's.
-            .filter(|dir| dir.starts_with('/'))
-            .map(|dir| Path::new(dir).join(argv0))
-            .collect()
-    };
-    candidates.iter().any(|candidate| {
-        candidate
-            .canonicalize()
-            .is_ok_and(|resolved| resolved == canonical_exe)
-    })
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        None
+    }
 }
 
 /// Absolute path to a running process's executable, or None when it can't be
@@ -1104,13 +1093,12 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_launch_command, attention_workspace_id, executable_is_command, is_unsafe_name_char,
-        lock_scrollback, prepare_instruction, remote_control_command, resolve_agent_command,
+        agent_launch_command, attention_workspace_id, is_unsafe_name_char, lock_scrollback,
+        prepare_instruction, process_group, remote_control_command, resolve_agent_command,
         resolve_max_sessions, session_env, snapshot, Scrollback, DEFAULT_AGENT_COMMAND,
         DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK,
         MAX_SESSION_NAME_CHARS,
     };
-    use std::path::{Path, PathBuf};
     use std::sync::Mutex;
 
     #[test]
@@ -1222,102 +1210,18 @@ mod tests {
         );
     }
 
-    /// Lays out an agent the way Claude Code's native installer does: a
-    /// version-numbered executable, and a `claude` symlink to it in a bin dir.
-    /// The directory is removed when this is dropped.
     #[cfg(unix)]
-    struct NativeInstall {
-        root: PathBuf,
-        exe: PathBuf,
-        bin: PathBuf,
-    }
-
-    #[cfg(unix)]
-    impl NativeInstall {
-        fn new(name: &str) -> Self {
-            let root = std::env::temp_dir()
-                .join(format!("yarvis-agent-exe-{}-{name}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&root);
-            let versions = root.join("versions");
-            let bin = root.join("bin");
-            std::fs::create_dir_all(&versions).unwrap();
-            std::fs::create_dir_all(&bin).unwrap();
-            let exe = versions.join("2.1.301");
-            std::fs::write(&exe, b"").unwrap();
-            std::os::unix::fs::symlink(&exe, bin.join("claude")).unwrap();
-            Self { root, exe, bin }
-        }
-    }
-
-    #[cfg(unix)]
-    impl Drop for NativeInstall {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.root);
-        }
-    }
-
     #[test]
-    fn executable_is_command_matches_on_file_name() {
-        assert!(executable_is_command(
-            Path::new("/opt/homebrew/bin/claude"),
-            "claude",
-            None
-        ));
-        assert!(!executable_is_command(
-            Path::new("/usr/bin/vim"),
-            "claude",
-            None
-        ));
+    fn process_group_reports_the_group_a_live_process_is_in() {
+        // SAFETY: `getpgrp` takes no arguments and only reads process state.
+        let own_group = unsafe { libc::getpgrp() } as u32;
+        assert_eq!(process_group(std::process::id()), Some(own_group));
     }
 
     #[cfg(unix)]
     #[test]
-    fn executable_is_command_follows_a_symlink_found_on_the_search_path() {
-        let install = NativeInstall::new("path");
-        let search_path = format!("/nonexistent:{}", install.bin.display());
-        assert!(executable_is_command(
-            &install.exe,
-            "claude",
-            Some(&search_path)
-        ));
-        assert!(!executable_is_command(
-            &install.exe,
-            "claude",
-            Some("/nonexistent")
-        ));
-        assert!(!executable_is_command(&install.exe, "claude", None));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn executable_is_command_follows_a_symlink_given_as_a_path() {
-        let install = NativeInstall::new("absolute");
-        let argv0 = install.bin.join("claude");
-        assert!(executable_is_command(
-            &install.exe,
-            argv0.to_str().unwrap(),
-            None
-        ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn executable_is_command_refuses_a_relative_path() {
-        let install = NativeInstall::new("relative");
-        assert!(!executable_is_command(&install.exe, "bin/claude", None));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn executable_is_command_refuses_another_program_beside_the_agent() {
-        let install = NativeInstall::new("other");
-        let other = install.exe.with_file_name("node");
-        std::fs::write(&other, b"").unwrap();
-        assert!(!executable_is_command(
-            &other,
-            "claude",
-            Some(install.bin.to_str().unwrap())
-        ));
+    fn process_group_is_none_for_a_pid_that_cannot_exist() {
+        assert_eq!(process_group(u32::MAX), None);
     }
 
     #[cfg(unix)]
