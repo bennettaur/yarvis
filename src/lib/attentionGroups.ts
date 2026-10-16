@@ -21,15 +21,16 @@ export interface AttentionGroup {
 }
 
 /**
- * Urgency order for picking a group's lead: blocked (permission, idle) beats
- * broken, which beats a nudge, which beats finished. Lower sorts first.
+ * Urgency order for picking a group's lead: blocked (permission, question, idle)
+ * beats broken, which beats a nudge, which beats finished. Lower sorts first.
  */
 const KIND_RANK: Record<AttentionKind, number> = {
   permission: 0,
-  idle: 1,
-  error: 2,
-  info: 3,
-  completed: 4,
+  question: 1,
+  idle: 2,
+  error: 3,
+  info: 4,
+  completed: 5,
 };
 
 function moreUrgent(a: AttentionItem, b: AttentionItem): boolean {

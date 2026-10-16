@@ -97,11 +97,13 @@ describe("mcp endpoint", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { result: { tools: { name: string }[] } };
     expect(body.result.tools.map((t) => t.name).sort()).toEqual([
+      "ask_user",
       "forget",
       "list_memories",
       "recall",
       "remember",
       "take_note",
+      "wait_for_answer",
     ]);
   });
 

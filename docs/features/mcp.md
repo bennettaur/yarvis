@@ -126,8 +126,11 @@ YARVIS_DEBUG_MCP=1 bun run tauri dev
 
 ## Yarvis as an MCP server
 
-Yarvis serves an MCP endpoint that exposes its memory tools over the same
-pgvector store the in-app chat uses:
+Yarvis serves an MCP endpoint with two families of tools: memory, over the
+same pgvector store the in-app chat uses, and questions, which let a coding
+session ask you something and wait for the answer.
+
+Memory tools:
 
 | Tool | What it does |
 | --- | --- |
@@ -148,12 +151,35 @@ Not exposed, on purpose:
   rewriting another's.
 - **Projects.** These are in-app only too.
 
+### Asking you questions
+
+| Tool | What it does |
+| --- | --- |
+| `ask_user` | Asks one to four questions, each with optional choices, and waits for your answer. The agent must say what it is working on (`task`) and may say why it is asking (`reason`) |
+| `wait_for_answer` | Keeps waiting on an `ask_user` call that came back `pending` |
+
+A question rings the attention bell. Its row opens a dialog over whatever page
+you are on, so you can answer without switching to the session. See
+[Workspaces](workspaces.md#the-attention-bell).
+
+One call waits up to four minutes. The sidecar closes a connection that sends
+nothing for longer than that, so past it the tool returns `pending` with a
+`questionId`, and the agent calls `wait_for_answer` to keep waiting. An answer
+given in between is kept and returned straight away.
+
+The question is shown against the workspace and terminal it came from. The
+session tells Yarvis which ones through two headers in the workspace's
+`.mcp.json`. A client Yarvis didn't launch sends neither, so its questions show
+as "Claude session" with no workspace.
+
 ### Sessions Yarvis launches need no setup
 
 When Yarvis provisions a workspace, it writes a `.mcp.json` at the workspace
 root. That file points at `${YARVIS_SIDECAR_PORT}` with an
-`Authorization: Bearer ${YARVIS_MCP_TOKEN}` header. The Rust core puts both
-variables into the session's shell, so the file on disk holds no secret.
+`Authorization: Bearer ${YARVIS_MCP_TOKEN}` header. It also sends
+`X-Yarvis-Session-Key` and `X-Yarvis-Workspace-Id`, so a question shows up
+against the right session. The Rust core puts these variables into the
+session's shell, so the file on disk holds no secret.
 
 Claude Code asks you to approve the project's MCP server the first time it sees
 it.
@@ -183,7 +209,7 @@ pointing by hand.
 
 The command puts the token in your shell history, and Claude Code saves it in
 `~/.claude.json`. That exposure is limited: the token only grants the memory
-tools, and it changes every time Yarvis relaunches.
+and question tools, and it changes every time Yarvis relaunches.
 
 The port and token are made once per app launch. Restarting the sidecar (which
 saving a secret does) keeps them. Relaunching Yarvis picks new ones, so copy
@@ -195,8 +221,10 @@ and never printed. Set `YARVIS_MCP_TOKEN` yourself to point a client at one.
 ### Security
 
 - The endpoint is `POST http://127.0.0.1:<sidecar port>/mcp`.
-- It uses a **scoped token** that grants the memory tools and nothing else. The
-  rest of the sidecar API keeps its own bearer token.
+- It uses a **scoped token** that grants the memory and question tools and
+  nothing else. The rest of the sidecar API keeps its own bearer token.
+- The session and workspace headers are the caller's claim. They only decide
+  where a question is shown, the same trust attention hooks get.
 - It checks the `Host` header. A web page that points a name it controls at
   127.0.0.1 can't reach it.
 - Memory contents are treated as untrusted data on the way out. `recall` and
