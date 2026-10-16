@@ -48,6 +48,7 @@ spoken turn, the assistant asks before anything irreversible:
 - deleting a task or forgetting a memory,
 - archiving a workspace,
 - starting work on an issue, or launching a session,
+- adding a repo to a workspace,
 - filing a JIRA ticket,
 - syncing branches,
 - sending an instruction to a running session,

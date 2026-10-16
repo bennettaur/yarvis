@@ -5,7 +5,7 @@
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
-import { relative } from "node:path";
+import { basename, relative } from "node:path";
 import { and, eq, getTableColumns, inArray, isNotNull, ne } from "drizzle-orm";
 import { publish } from "../attention/hub.ts";
 import { clearAttentionScope, createAttention } from "../attention/service.ts";
@@ -215,15 +215,32 @@ export function parseRepoRemote(url: string): RepoRemote | null {
 /**
  * Allowed clone-URL transports. Git's `ext::`/`fd::` remote helpers execute
  * arbitrary commands, and a leading `-` is read as a flag — both would turn a
- * registry entry into code execution, so only these schemes are accepted.
+ * registry entry into code execution, so only these schemes are accepted. The
+ * scp-style user therefore cannot start with `-` either: `-ox@host:path` is
+ * the `-o` server option to `git ls-remote`.
  */
-const ALLOWED_CLONE_URL = /^(https?:\/\/|git:\/\/|ssh:\/\/|[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:)/;
+const ALLOWED_CLONE_URL =
+  /^(https?:\/\/|git:\/\/|ssh:\/\/|[A-Za-z0-9_][A-Za-z0-9._-]*@[A-Za-z0-9._-]+:)/;
 
 /** Throws if a clone URL uses a transport that could execute arbitrary code. */
 export function assertSafeCloneUrl(url: string): void {
   if (!ALLOWED_CLONE_URL.test(url.trim())) {
     throw new Error(`unsupported clone URL transport: ${url}`);
   }
+}
+
+/**
+ * Whether a thrown value is Postgres's unique-violation. Drizzle wraps the
+ * driver error, so the code is on a `cause` rather than on what is caught.
+ */
+export function isUniqueViolation(error: unknown): boolean {
+  for (let current: unknown = error, depth = 0; current && depth < 4; depth++) {
+    if (typeof current === "object" && (current as { code?: unknown }).code === "23505") {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 /**
@@ -245,6 +262,37 @@ export function assertSafeBranchName(branch: string): void {
 /** Absolute path to a repo's primary clone under the workspaces root. */
 export function primaryClonePath(config: Config, owner: string, repo: string): string {
   return `${config.workspacesRoot}/.repos/${owner.toLowerCase()}-${repo.toLowerCase()}`;
+}
+
+/**
+ * Whether a value can be one path segment under a workspace root. A display
+ * name or a parsed owner/repo ends up in a worktree path, so anything that
+ * could climb out of the root or split into two segments is refused.
+ */
+export function isSafePathSegment(value: string): boolean {
+  return value !== "" && value !== "." && value !== ".." && !/[/\\]/.test(value);
+}
+
+/**
+ * The folder a repo's worktree gets inside a workspace. `inUse` holds folders
+ * a sibling already has or claims; existing folders cannot move, so only the
+ * repo being placed falls back to `name-owner`, and a second clash is refused
+ * rather than putting two repos in one folder.
+ */
+export function workspaceRepoFolder(
+  repo: Pick<Repo, "name" | "owner">,
+  inUse: ReadonlySet<string>,
+): string {
+  const plain = repo.name.toLowerCase();
+  const withOwner = `${plain}-${repo.owner.toLowerCase()}`;
+  const folder = !inUse.has(plain) ? plain : !inUse.has(withOwner) ? withOwner : null;
+  if (folder === null) {
+    throw new Error(`folders "${plain}" and "${withOwner}" are both in use in this workspace`);
+  }
+  if (!isSafePathSegment(folder)) {
+    throw new Error(`unsafe folder name for ${repo.owner}/${repo.name}: "${folder}"`);
+  }
+  return folder;
 }
 
 export async function createRepo(db: Db, config: Config, input: CreateRepoInput): Promise<Repo> {
@@ -270,6 +318,36 @@ export async function createRepo(db: Db, config: Config, input: CreateRepoInput)
 
 export async function listRepos(db: Db): Promise<Repo[]> {
   return db.select().from(repos).orderBy(repos.name);
+}
+
+/** Whether a clone URL points at github.com, read the way `splitRemote` reads hosts. */
+function isGitHubCloneUrl(url: string): boolean {
+  return splitRemote(url)?.host.toLowerCase() === "github.com";
+}
+
+/**
+ * The registered repo a clone URL names, if any. On github.com an SSH and an
+ * HTTPS URL for one repo are the same repo, so owner/repo decides,
+ * case-insensitively. Elsewhere only the exact (trimmed) URL does:
+ * `parseGitUrl` reads the last two path segments, so every Azure DevOps URL
+ * parses to owner `_git`, and owner/repo would match the wrong repo.
+ */
+export async function findRegisteredRepo(db: Db, cloneUrl: string): Promise<Repo | null> {
+  const url = cloneUrl.trim();
+  const rows = await listRepos(db);
+  if (!isGitHubCloneUrl(url)) return rows.find((r) => r.cloneUrl === url) ?? null;
+  const parsed = parseGitUrl(url);
+  if (!parsed) return null;
+  const owner = parsed.owner.toLowerCase();
+  const repo = parsed.repo.toLowerCase();
+  return (
+    rows.find(
+      (r) =>
+        isGitHubCloneUrl(r.cloneUrl) &&
+        r.owner.toLowerCase() === owner &&
+        r.repo.toLowerCase() === repo,
+    ) ?? null
+  );
 }
 
 export async function getRepo(db: Db, id: string): Promise<Repo | null> {
@@ -408,11 +486,15 @@ export async function createWorkspace(
   const rootPath = `${config.workspacesRoot}/${slug}`;
   const branch = `yarvis/${slug}`;
 
-  // Distinct subfolder per repo; disambiguate name collisions with the owner.
-  const nameCounts = new Map<string, number>();
+  // Distinct subfolder per repo. Each repo treats its siblings' names, and the
+  // folders already handed out, as taken.
+  const folders = new Map<string, string>();
   for (const repo of selected) {
-    const lowerName = repo.name.toLowerCase();
-    nameCounts.set(lowerName, (nameCounts.get(lowerName) ?? 0) + 1);
+    const inUse = new Set<string>(folders.values());
+    for (const other of selected) {
+      if (other.id !== repo.id) inUse.add(other.name.toLowerCase());
+    }
+    folders.set(repo.id, workspaceRepoFolder(repo, inUse));
   }
 
   // Sanitized here rather than at each caller so every producer (issues, JIRA,
@@ -440,11 +522,7 @@ export async function createWorkspace(
             branch: existing || branch,
             existingBranch: Boolean(existing),
             baseBranch: repo.defaultBranch ?? "main",
-            worktreePath: `${rootPath}/${
-              (nameCounts.get(repo.name.toLowerCase()) ?? 0) > 1
-                ? `${repo.name.toLowerCase()}-${repo.owner.toLowerCase()}`
-                : repo.name.toLowerCase()
-            }`,
+            worktreePath: `${rootPath}/${folders.get(repo.id)}`,
           };
         }),
       );
@@ -471,6 +549,59 @@ export async function createWorkspace(
   });
 
   return created;
+}
+
+/**
+ * Adds a registered repo to an existing workspace as a `pending` row. Does not
+ * provision: the caller runs `provisionWorkspace`, which skips the repos that
+ * are already ready and rewrites the workspace files. Refused mid-provision
+ * because a run in flight works from a snapshot taken before this row existed.
+ */
+export async function addRepoToWorkspace(
+  db: Db,
+  workspaceId: string,
+  repoId: string,
+): Promise<WorkspaceRepo> {
+  const detail = await getWorkspace(db, workspaceId);
+  if (!detail) throw new Error("workspace not found");
+  if (detail.status !== "active" && detail.status !== "error") {
+    throw new Error(`cannot add a repo to a workspace that is ${detail.status}`);
+  }
+  if (provisioning.has(workspaceId)) {
+    throw new Error("provisioning is still running for this workspace");
+  }
+  const repo = await getRepo(db, repoId);
+  if (!repo) throw new Error("repo not found");
+  const alreadyIn = `${repo.name} is already in this workspace`;
+  if (detail.repos.some((wr) => wr.repoId === repoId)) throw new Error(alreadyIn);
+
+  const inUse = new Set(detail.repos.map((wr) => basename(wr.worktreePath)));
+  const folder = workspaceRepoFolder(repo, inUse);
+
+  let row: WorkspaceRepo | undefined;
+  try {
+    [row] = await db
+      .insert(workspaceRepos)
+      .values({
+        workspaceId,
+        repoId,
+        branch: `yarvis/${detail.slug}`,
+        baseBranch: repo.defaultBranch ?? "main",
+        worktreePath: `${detail.rootPath}/${folder}`,
+      })
+      .returning();
+  } catch (e) {
+    // Two adds can both pass the read above; the unique index picks the loser.
+    if (isUniqueViolation(e)) throw new Error(alreadyIn);
+    throw e;
+  }
+
+  void emitEvent(db, {
+    type: "workspace.repo_added",
+    source: "workspaces",
+    payload: { workspaceId, name: detail.name, repo: `${repo.owner}/${repo.name}` },
+  });
+  return row!;
 }
 
 /**
@@ -905,9 +1036,10 @@ const skipped = (note: string): RepoSyncProgress => ({
  *  `remote:` prose a server-side hook writes, which git relays verbatim: that
  *  stays third-party text, and the chat agent's system prompt is what keeps it
  *  from being read as instruction. */
-function errorText(e: unknown): string {
+export function errorText(e: unknown): string {
   const raw = e instanceof Error ? e.message : String(e);
-  return raw.replace(/([a-z][a-z0-9+.-]*:\/\/)[^@/\s]*@/gi, "$1");
+  // Userinfo runs to the last `@` before the path: a password may hold its own.
+  return raw.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s]*@/gi, "$1");
 }
 
 /**

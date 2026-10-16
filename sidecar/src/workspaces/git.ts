@@ -30,6 +30,10 @@ export type GitRunner = (
 /** Network git operations (clone/fetch) can legitimately take a while. */
 const NETWORK_TIMEOUT_MS = 10 * 60 * 1000;
 
+/** A reachability check answers in seconds or not at all; an SSH prompt with
+ *  no terminal to answer it would otherwise hold the chat turn for minutes. */
+const REMOTE_CHECK_TIMEOUT_MS = 30 * 1000;
+
 /** Deleting a worktree with a big `node_modules` can outlast the default
  *  timeout, and a removal killed partway leaves a half-deleted worktree behind.
  *  It runs in the background, so nothing is held waiting on it. */
@@ -68,6 +72,17 @@ export async function ensurePrimaryClone(
   if (existsSync(`${primaryClonePath}/.git`)) return;
   mkdirSync(dirname(primaryClonePath), { recursive: true });
   await git(runner, ["clone", cloneUrl, primaryClonePath], undefined, NETWORK_TIMEOUT_MS);
+}
+
+/**
+ * Resolves when the remote answers `ls-remote`, so a repo can be registered
+ * only once it is known to exist and be reachable. No `--exit-code` or ref
+ * pattern: an empty repo has no HEAD yet and still counts as found. Throws
+ * with git's stderr, which is what tells "not found" from "no access". The
+ * URL must already have passed `assertSafeCloneUrl`.
+ */
+export async function remoteExists(runner: GitRunner, cloneUrl: string): Promise<void> {
+  await git(runner, ["ls-remote", cloneUrl], undefined, REMOTE_CHECK_TIMEOUT_MS);
 }
 
 /**
