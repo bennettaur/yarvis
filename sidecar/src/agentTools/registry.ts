@@ -42,6 +42,7 @@ const FAMILY_POLICY: Record<string, ToolPolicy> = {
   prReview: "search",
   calendar: "search",
   browser: "search",
+  web: "search",
   help: "search",
 };
 
