@@ -37,7 +37,7 @@ describe("fetchWebPage", () => {
       });
     const five = await fetchWebPage(PAGE, chain(5));
     expect(five.url).toBe("https://203.0.113.10/a?i=5");
-    await expect(fetchWebPage(PAGE, chain(6))).rejects.toThrow("too many redirects");
+    await expect(fetchWebPage(PAGE, chain(6))).rejects.toThrow("redirected more than 5 times");
   });
 
   it("reports a redirect with no Location as its status", async () => {

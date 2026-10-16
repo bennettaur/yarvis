@@ -1,5 +1,5 @@
 import type { CustomProviderSecrets } from "../config.ts";
-import { assertResolvableOutbound } from "../lib/urlSafety.ts";
+import { guardedFetch as guardedFetchChain } from "../lib/guardedFetch.ts";
 import { redactSecrets } from "../llm/errors.ts";
 
 /**
@@ -37,9 +37,6 @@ const TRANSCRIBE_TIMEOUT_MS = 60_000;
  * reply behind it.
  */
 const SYNTHESIZE_TIMEOUT_MS = 30_000;
-
-/** Redirect hops followed before giving up, matching `memory/ingest.ts`. */
-const MAX_REDIRECTS = 5;
 
 export interface TranscribeInput {
   audio: Uint8Array;
@@ -196,20 +193,19 @@ function readTranscript(payload: unknown): string {
 }
 
 interface GuardedFetchOptions {
-  fetchImpl: typeof fetch;
+  /** Replaces the pinned transport from `lib/guardedFetch.ts`; tests pass a fake. */
+  fetchImpl?: typeof fetch;
   timeoutMs: number;
   allowLoopback: boolean;
 }
 
 /**
- * Fetches with the SSRF guard applied to every hop, not just the first.
- *
- * `redirect: "manual"` is what makes that possible: under the default
- * `"follow"`, a 302 from the configured host to a private address is followed
- * before anything can re-check it, and `fetch` strips only `Authorization` on a
- * cross-origin redirect — a custom provider's own auth headers would ride
- * along to wherever the redirect pointed. The deadline covers the whole chain,
- * since these calls sit directly in the user's latency path.
+ * Fetches through `lib/guardedFetch.ts`, which re-runs the SSRF guard on every
+ * redirect hop and pins the connection to the checked address. That matters
+ * here because `fetch` strips only `Authorization` on a cross-origin redirect,
+ * so a custom provider's own auth headers would otherwise ride along to
+ * wherever a redirect pointed. The deadline covers the whole chain, since these
+ * calls sit directly in the user's latency path.
  */
 async function guardedFetch(
   url: string,
@@ -219,27 +215,12 @@ async function guardedFetch(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    await assertResolvableOutbound(url, { allowLoopback });
-    let current = url;
-    let res = await fetchImpl(current, {
-      ...init,
-      redirect: "manual",
+    const { response } = await guardedFetchChain(url, init, {
+      fetchImpl,
+      allowLoopback,
       signal: controller.signal,
     });
-    let hops = 0;
-    while (res.status >= 300 && res.status < 400) {
-      const location = res.headers.get("location");
-      if (!location) break;
-      if (hops++ >= MAX_REDIRECTS) throw new Error("too many redirects");
-      current = new URL(location, current).toString();
-      await assertResolvableOutbound(current, { allowLoopback });
-      res = await fetchImpl(current, {
-        ...init,
-        redirect: "manual",
-        signal: controller.signal,
-      });
-    }
-    return res;
+    return response;
   } finally {
     clearTimeout(timer);
   }
@@ -255,7 +236,7 @@ export class HuggingFaceSpeech implements SpeechClient {
   constructor(
     private readonly apiKey: string,
     private readonly baseUrl: string = HUGGINGFACE_BASE_URL,
-    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly fetchImpl?: typeof fetch,
   ) {}
 
   private modelUrl(model: string): string {
@@ -396,7 +377,7 @@ export class GeminiSpeech implements SpeechClient {
   constructor(
     private readonly apiKey: string,
     private readonly baseUrl: string = GEMINI_BASE_URL,
-    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly fetchImpl?: typeof fetch,
   ) {}
 
   private modelUrl(model: string): string {
@@ -537,13 +518,13 @@ export class OpenAICompatibleSpeech implements SpeechClient {
   private readonly baseUrl: string;
   private readonly secrets: CustomProviderSecrets;
   private readonly allowLoopback: boolean;
-  private readonly fetchImpl: typeof fetch;
+  private readonly fetchImpl?: typeof fetch;
 
   constructor(options: OpenAISpeechOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.secrets = options.secrets ?? { headers: {} };
     this.allowLoopback = options.allowLoopback ?? false;
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.fetchImpl = options.fetchImpl;
   }
 
   private headers(extra: Record<string, string> = {}): Record<string, string> {

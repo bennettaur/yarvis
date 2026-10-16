@@ -1,10 +1,15 @@
-import { assertResolvableOutbound } from "../lib/urlSafety.ts";
+import {
+  BodyTooLargeError,
+  guardedFetch,
+  MAX_REDIRECTS,
+  readCapped,
+  TooManyRedirectsError,
+} from "../lib/guardedFetch.ts";
 
 /** Hard cap on a page's body, after which the read is aborted. */
 const MAX_FETCH_BYTES = 5 * 1024 * 1024;
 /** Covers the whole redirect chain and the body read, so a slow host can't stall a turn. */
 const FETCH_TIMEOUT_MS = 15_000;
-const MAX_REDIRECTS = 5;
 
 /**
  * Content types read as text. Anything else (PDFs, images, archives) is refused
@@ -46,40 +51,28 @@ export interface FetchWebPageOptions {
 }
 
 /**
- * Fetches a public web page as text.
- *
- * The SSRF guard runs on every redirect hop, not just the first, so a page that
- * redirects to a LAN or metadata address is refused — the same loop as
- * `guardedFetch` in `voice/speech.ts`, with the deadline also covering the body
- * read. No cookies or credentials are sent: this reads the page as an anonymous
- * visitor would see it.
+ * Fetches a public web page as text, through `lib/guardedFetch.ts`: the SSRF
+ * guard on every redirect hop, and a connection pinned to the address it
+ * checked. The deadline covers the body read too. No cookies or credentials are
+ * sent, so this reads the page as an anonymous visitor would see it.
  */
 export async function fetchWebPage(
   url: string,
-  { fetchImpl = fetch, timeoutMs = FETCH_TIMEOUT_MS }: FetchWebPageOptions = {},
+  { fetchImpl, timeoutMs = FETCH_TIMEOUT_MS }: FetchWebPageOptions = {},
 ): Promise<FetchedPage> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const init: RequestInit = {
-    headers: {
-      "User-Agent": "yarvis/0.1 (+local assistant)",
-      Accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
-    },
-    redirect: "manual",
-    signal: controller.signal,
-  };
   try {
-    let current = (await assertResolvableOutbound(url)).toString();
-    let res = await fetchImpl(current, init);
-    let redirects = 0;
-    while (res.status >= 300 && res.status < 400) {
-      const location = res.headers.get("location");
-      if (!location) break;
-      redirects += 1;
-      if (redirects > MAX_REDIRECTS) throw new WebFetchError("too many redirects");
-      current = (await assertResolvableOutbound(new URL(location, current).toString())).toString();
-      res = await fetchImpl(current, init);
-    }
+    const { response: res, url: finalUrl } = await guardedFetch(
+      url,
+      {
+        headers: {
+          "User-Agent": "yarvis/0.1 (+local assistant)",
+          Accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
+        },
+      },
+      { fetchImpl, signal: controller.signal },
+    );
     if (!res.ok) throw new WebFetchError(`the page answered ${res.status}`);
 
     const header = res.headers.get("content-type") ?? "";
@@ -93,43 +86,24 @@ export async function fetchWebPage(
       throw new WebFetchError(`the page is too large (${contentLength} bytes)`);
     }
 
-    const body = decode(await readCapped(res), header);
+    const body = decode(await readCapped(res, MAX_FETCH_BYTES), header);
     // With no declared type a browser sniffs, so a server can't skip the
     // hidden-text screen by leaving the header off.
     const contentType =
       declared || (HTML_START.test(body.slice(0, 1024)) ? "text/html" : "text/plain");
-    return { url: current, contentType, body };
+    return { url: finalUrl, contentType, body };
   } catch (e) {
     if (controller.signal.aborted) throw new WebFetchError("the page took too long to load");
+    if (e instanceof BodyTooLargeError) {
+      throw new WebFetchError(`the page is larger than ${MAX_FETCH_BYTES} bytes`);
+    }
+    if (e instanceof TooManyRedirectsError) {
+      throw new WebFetchError(`the page redirected more than ${MAX_REDIRECTS} times`);
+    }
     throw e;
   } finally {
     clearTimeout(timer);
   }
-}
-
-/** Streams the body so a response with a missing or lying Content-Length is cut off. */
-async function readCapped(res: Response): Promise<Uint8Array> {
-  const reader = res.body?.getReader();
-  if (!reader) return new Uint8Array();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > MAX_FETCH_BYTES) {
-      await reader.cancel();
-      throw new WebFetchError(`the page is larger than ${MAX_FETCH_BYTES} bytes`);
-    }
-    chunks.push(value);
-  }
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return merged;
 }
 
 /** Decodes with the charset the server named, falling back to UTF-8 for one `TextDecoder` rejects. */
