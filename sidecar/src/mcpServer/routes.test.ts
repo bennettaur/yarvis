@@ -36,7 +36,12 @@ const INITIALIZE = {
 /** Host a real client presents when it dials the loopback endpoint. */
 const HOST = "127.0.0.1:8765";
 
-function post(body: unknown, token = "test-mcp-token", host = HOST): RequestInit {
+function post(
+  body: unknown,
+  token = "test-mcp-token",
+  host = HOST,
+  extraHeaders: Record<string, string> = {},
+): RequestInit {
   return {
     method: "POST",
     headers: {
@@ -44,6 +49,7 @@ function post(body: unknown, token = "test-mcp-token", host = HOST): RequestInit
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
       Host: host,
+      ...extraHeaders,
     },
     body: JSON.stringify(body),
   };
@@ -103,6 +109,26 @@ describe("mcp endpoint", () => {
       "remember",
       "take_note",
     ]);
+  });
+
+  it("adds the review comment tools for a session that names a workspace", async () => {
+    const app = createApp(testConfig());
+    const listTools = async (workspace: string) => {
+      const res = await app.request(
+        "/mcp",
+        post({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }, undefined, HOST, {
+          "X-Yarvis-Workspace": workspace,
+        }),
+      );
+      const body = (await res.json()) as { result: { tools: { name: string }[] } };
+      return body.result.tools.map((t) => t.name);
+    };
+
+    expect(await listTools("11111111-1111-4111-8111-111111111111")).toContain(
+      "resolve_review_comment",
+    );
+    // A mangled id falls back to the memory tools rather than failing the session.
+    expect(await listTools("not-a-uuid")).not.toContain("list_review_comments");
   });
 
   it("refuses a request addressed to a host that is not ours", async () => {

@@ -11,6 +11,7 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import {
+  repos,
   type WorkspaceReviewComment,
   workspaceRepos,
   workspaceReviewComments,
@@ -55,6 +56,35 @@ export async function listReviewComments(
     .from(workspaceReviewComments)
     .where(inArray(workspaceReviewComments.workspaceRepoId, repoIds))
     .orderBy(asc(workspaceReviewComments.createdAt));
+}
+
+/** A review comment with the repo and worktree it was left in. */
+export interface LocatedReviewComment extends WorkspaceReviewComment {
+  repoName: string;
+  worktreePath: string;
+}
+
+/**
+ * Every review comment in a workspace with where its file lives, oldest first.
+ * A comment's `path` is relative to its worktree, so an agent working from the
+ * workspace root needs the worktree to open the file.
+ */
+export async function listLocatedReviewComments(
+  db: Db,
+  workspaceId: string,
+): Promise<LocatedReviewComment[]> {
+  const rows = await db
+    .select({
+      comment: workspaceReviewComments,
+      repoName: repos.name,
+      worktreePath: workspaceRepos.worktreePath,
+    })
+    .from(workspaceReviewComments)
+    .innerJoin(workspaceRepos, eq(workspaceRepos.id, workspaceReviewComments.workspaceRepoId))
+    .innerJoin(repos, eq(repos.id, workspaceRepos.repoId))
+    .where(eq(workspaceRepos.workspaceId, workspaceId))
+    .orderBy(asc(workspaceReviewComments.createdAt));
+  return rows.map((r) => ({ ...r.comment, repoName: r.repoName, worktreePath: r.worktreePath }));
 }
 
 /**

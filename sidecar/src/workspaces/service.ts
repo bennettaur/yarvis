@@ -1449,7 +1449,7 @@ function writeWorkspaceFiles(detail: WorkspaceDetail): void {
   }
 
   writeClaudeSettings(detail.rootPath, detail.id);
-  writeMcpConfig(detail.rootPath);
+  writeMcpConfig(detail.rootPath, detail.id);
 }
 
 /**

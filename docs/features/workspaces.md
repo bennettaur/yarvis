@@ -300,6 +300,11 @@ workspace, with a count of open comments. A comment's heading opens its diff.
 - **Resolve** marks a comment dealt with. It stays in the list but leaves the
   copied text. **Reopen** puts it back. **×** deletes it.
 
+The agent session can also fetch the comments itself. Ask it to "address the
+feedback left in Yarvis" and it reads the open comments over Yarvis's MCP
+endpoint, then marks each one resolved as it finishes it. See
+[MCP](mcp.md#workspace-review-comments).
+
 Archiving a workspace deletes its comments once the worktrees are gone. If the
 archive stops partway (a worktree won't remove), the workspace can still be
 reopened, so its comments are kept.

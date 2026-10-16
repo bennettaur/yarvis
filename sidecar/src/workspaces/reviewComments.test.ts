@@ -7,7 +7,7 @@ import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import type { GitRunner } from "./git.ts";
-import { createReviewComment } from "./reviewComments.ts";
+import { createReviewComment, listLocatedReviewComments } from "./reviewComments.ts";
 import { archiveWorkspace, createWorkspace, getWorkspace, provisionWorkspace } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -219,6 +219,25 @@ describe("review comment routes", () => {
     const comments = await list(ws.id);
     expect(comments.map((c) => c.body)).toEqual(["In the first repo.", "In the second repo."]);
     expect(new Set(comments.map((c) => c.workspaceRepoId))).toEqual(new Set(ws.repoIds));
+  });
+
+  it("names each comment's repo and worktree for an agent working from the root", async () => {
+    const mine = await workspaceWithRepos("located", ["web", "api"]);
+    const theirs = await workspaceWithRepo("elsewhere");
+    const base = { path: "src/a.ts", startLine: 1, endLine: 1 };
+    await post(mine.id, { ...base, workspaceRepoId: mine.repoIds[0], body: "In web." });
+    await post(mine.id, { ...base, workspaceRepoId: mine.repoIds[1], body: "In api." });
+    await post(theirs.id, { ...base, workspaceRepoId: theirs.repoId, body: "Elsewhere." });
+
+    const comments = await listLocatedReviewComments(db, mine.id);
+    expect(comments.map((c) => [c.body, c.repoName])).toEqual([
+      ["In web.", "web"],
+      ["In api.", "api"],
+    ]);
+    const detail = await getWorkspace(db, mine.id);
+    expect(comments.map((c) => c.worktreePath)).toEqual(
+      (detail?.repos ?? []).map((r) => r.worktreePath),
+    );
   });
 
   // The copied text numbers entries in list order, so the order is a contract.
