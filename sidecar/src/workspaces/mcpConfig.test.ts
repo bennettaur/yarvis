@@ -11,8 +11,14 @@ describe("workspace .mcp.json", () => {
       type: "http",
       // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
       url: "http://127.0.0.1:${YARVIS_SIDECAR_PORT}/mcp",
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
-      headers: { Authorization: "Bearer ${YARVIS_MCP_TOKEN}" },
+      headers: {
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
+        Authorization: "Bearer ${YARVIS_MCP_TOKEN}",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
+        "X-Yarvis-Session-Key": "${YARVIS_SESSION_KEY:-}",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
+        "X-Yarvis-Workspace-Id": "${YARVIS_WORKSPACE_ID:-}",
+      },
     });
   });
 

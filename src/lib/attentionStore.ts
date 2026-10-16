@@ -217,7 +217,9 @@ export async function markAttention(
 
 /**
  * Marks every pending item in a scope — a whole workspace, or one terminal
- * session — in a single request. Optimistic like `markAttention`.
+ * session — in a single request. Optimistic like `markAttention`. Marking read
+ * leaves questions pending, matching the server: seeing a question doesn't
+ * answer it.
  */
 export async function markAttentionScope(
   scope: AttentionScope,
@@ -225,8 +227,9 @@ export async function markAttentionScope(
 ): Promise<void> {
   const next = snapshot.filter(
     (i) =>
-      !(scope.workspaceId && i.workspaceId === scope.workspaceId) &&
-      !(scope.sessionKey && i.sessionKey === scope.sessionKey),
+      (status === "read" && i.kind === "question") ||
+      (!(scope.workspaceId && i.workspaceId === scope.workspaceId) &&
+        !(scope.sessionKey && i.sessionKey === scope.sessionKey)),
   );
   if (next.length !== snapshot.length) {
     snapshot = next;
@@ -266,6 +269,8 @@ export function clearTargetsFor(
   const sessionKeys = new Set<string>();
   const itemIds: string[] = [];
   for (const item of items) {
+    // A question stays up until it is answered, even with its session on screen.
+    if (item.kind === "question") continue;
     if (isBacklogged(item.id) || !isInView(scope, item)) continue;
     if (item.sessionKey) sessionKeys.add(item.sessionKey);
     else itemIds.push(item.id);
