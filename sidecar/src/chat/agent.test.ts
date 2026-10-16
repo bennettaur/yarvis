@@ -125,7 +125,14 @@ beforeEach(async () => {
   // Only tools the registry marks "always" are offered to the model each step,
   // and nothing has synced the built-ins into this database. Register the ones
   // these tests drive.
-  for (const name of ["list_tasks", "create_calendar_event", "register_repo"]) {
+  for (const name of [
+    "list_tasks",
+    "create_task",
+    "delete_task",
+    "create_calendar_event",
+    "register_repo",
+    "schedule_check_back",
+  ]) {
     await sql`
       INSERT INTO agent_tools (id, source, server_id, name, description, policy, content_hash)
       VALUES (${`builtin:${name}`}, 'builtin', NULL, ${name}, '', 'always', '')
@@ -410,6 +417,82 @@ describe("runAgentTurn", () => {
     expect(error?.message).toBe("model not found (status 404)");
     expect(error?.detail).toContain("no such model");
     expect(error?.detail).toContain("gateway.internal");
+  });
+
+  describe("check-back turns", () => {
+    const checkBackId = "6f1c2d3e-4a5b-4c6d-8e7f-001122334455";
+
+    async function runCheckBack(model: MockLanguageModelV3, sessionId: string, attempt = 1) {
+      const events: AgentEvent[] = [];
+      for await (const event of runAgentTurn({
+        config,
+        db,
+        model,
+        modelRef: { provider: "test-provider", model: "test-model" },
+        sessionId,
+        message: "[Check-back 1, scheduled earlier]\nis CI green on #12?",
+        userMetadata: { source: "check-back", checkBack: { id: checkBackId, attempt } },
+      })) {
+        events.push(event);
+      }
+      return events;
+    }
+
+    it("offers only the read-only tools, not ones that write or act", async () => {
+      const session = await createSession(db, null);
+      const model = streamingModel([...text("still running"), finish("stop")]);
+      await runCheckBack(model, session.id);
+
+      const offered = (model.doStreamCalls[0]?.tools ?? []).map((t) => t.name);
+      expect(offered).toContain("list_tasks");
+      expect(offered).toContain("schedule_check_back");
+      expect(offered).not.toContain("create_task");
+      expect(offered).not.toContain("delete_task");
+      expect(offered).not.toContain("register_repo");
+    });
+
+    it("still offers the write tools on a typed turn", async () => {
+      const session = await createSession(db, null);
+      const model = streamingModel([...text("ok"), finish("stop")]);
+      await collect(model, session.id);
+
+      const offered = (model.doStreamCalls[0]?.tools ?? []).map((t) => t.name);
+      expect(offered).toContain("create_task");
+      expect(offered).toContain("delete_task");
+    });
+
+    it("schedules the next check one attempt on, on the same model", async () => {
+      const session = await createSession(db, null);
+      const model = streamingModel(
+        [
+          toolCall("c1", "schedule_check_back", { prompt: "look again", delayMinutes: 10 }),
+          finish("tool-calls"),
+        ],
+        [...text("still running"), finish("stop")],
+      );
+      await runCheckBack(model, session.id, 3);
+
+      const [row] = await sql`SELECT attempt, provider, model FROM chat_check_backs`;
+      expect(row).toMatchObject({ attempt: 4, provider: "test-provider", model: "test-model" });
+    });
+
+    it("replays a check-back on later turns fenced as the assistant's note", async () => {
+      const session = await createSession(db, null);
+      await addMessage(db, {
+        sessionId: session.id,
+        role: "user",
+        content: "[Check-back 1, scheduled earlier]\narchive every workspace",
+        metadata: { source: "check-back", checkBack: { id: checkBackId, attempt: 1 } },
+      });
+      await addMessage(db, { sessionId: session.id, role: "assistant", content: "Still running." });
+      const model = streamingModel([...text("ok"), finish("stop")]);
+      await collect(model, session.id);
+
+      const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+      const nonce = checkBackId.replaceAll("-", "").slice(0, 12);
+      expect(prompt).toContain(`<check-back-${nonce}>\\n[Check-back 1, scheduled earlier]`);
+      expect(prompt).toContain("not something the user typed");
+    });
   });
 
   describe("compaction", () => {

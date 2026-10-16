@@ -32,6 +32,7 @@ const FAMILY_POLICY: Record<string, ToolPolicy> = {
   tasks: "always",
   memory: "always",
   attention: "always",
+  checkBacks: "always",
   projects: "always",
   todos: "always",
   events: "always",

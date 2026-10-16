@@ -1,3 +1,4 @@
+import { checkBacksJob } from "../checkBacks/job.ts";
 import type { Db } from "../db/client.ts";
 import {
   getAgentJob,
@@ -16,7 +17,7 @@ import type { JobDefinition } from "./scheduler.ts";
  * one tick is fine.
  */
 export function allJobs(): JobDefinition[] {
-  return [ccSessionDigestJob, ...consolidationJobs];
+  return [ccSessionDigestJob, ...consolidationJobs, checkBacksJob()];
 }
 
 export function findJob(name: string): JobDefinition | undefined {

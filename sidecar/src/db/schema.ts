@@ -49,7 +49,7 @@ export const messageRole = pgEnum("message_role", ["user", "assistant", "system"
  * confirmation for it.
  */
 export interface ChatMessageMetadata {
-  source?: "telegram" | "voice";
+  source?: "telegram" | "voice" | "check-back";
   telegramUserId?: number;
   telegramUsername?: string;
   telegramFirstName?: string;
@@ -58,6 +58,8 @@ export interface ChatMessageMetadata {
    * row's content is the summary; replay resumes after `throughMessageId`.
    */
   compaction?: { throughMessageId: string };
+  /** Set on a check-back's turn: the assistant wrote this message, not the user. */
+  checkBack?: { id: string; attempt: number };
 }
 
 /**
@@ -1468,3 +1470,40 @@ export type ScheduledJob = typeof scheduledJobs.$inferSelect;
 export type NewScheduledJob = typeof scheduledJobs.$inferInsert;
 export type ScheduledJobRun = typeof scheduledJobRuns.$inferSelect;
 export type NewScheduledJobRun = typeof scheduledJobRuns.$inferInsert;
+
+/**
+ * A prompt the chat agent left for itself to run later in the same chat — "is CI
+ * green yet?" — so it can start something, move on, and come back to it.
+ *
+ * One row is one future turn. Something that isn't finished when it is checked
+ * is followed by a fresh row the check-back turn schedules, carrying `attempt`
+ * one higher, which is what bounds a chain that never resolves.
+ */
+export const chatCheckBacks = pgTable(
+  "chat_check_backs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => chatSessions.id, { onDelete: "cascade" }),
+    /** The instructions the agent wrote for its future turn. */
+    prompt: text("prompt").notNull(),
+    /** The provider/model the scheduling turn ran on; null falls back to the default. */
+    provider: text("provider"),
+    model: text("model"),
+    /** 1 for one the user's own turn scheduled; each re-schedule adds one. */
+    attempt: integer("attempt").notNull().default(1),
+    dueAt: timestamp("due_at", { withTimezone: true }).notNull(),
+    status: text("status").$type<"pending" | "fired" | "cancelled">().notNull().default("pending"),
+    firedAt: timestamp("fired_at", { withTimezone: true }),
+    /** Why the turn failed, when it did. Redacted before it is stored. */
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("chat_check_backs_due_idx").on(t.status, t.dueAt),
+    index("chat_check_backs_session_idx").on(t.sessionId, t.status),
+  ],
+);
+
+export type ChatCheckBack = typeof chatCheckBacks.$inferSelect;

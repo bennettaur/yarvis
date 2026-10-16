@@ -136,6 +136,33 @@ The assistant can act on your workspaces in bulk:
   worktrees, and completes any linked task. If there are uncommitted changes,
   it asks before throwing them away.
 
+### Waiting on something
+
+Ask the assistant to watch something that takes a while, like **"Let me know
+when CI on the billing-api PR goes green."** It checks right away. If the thing
+isn't done, it leaves itself a **check-back**: a prompt it will run later in
+the same chat, saying what to look at and what to tell you. When the check-back
+runs and it still isn't done, the assistant schedules another one. When it is
+done, or has failed, it posts the result in the chat and sends you a
+notification.
+
+- Check-back messages show in the chat as **Yarvis · check-back**, so you can
+  tell them from what you typed.
+- A check-back turn runs with nobody watching, so it only gets tools that read:
+  it can look things up, report, notify you and schedule the next check. It
+  can't write tasks or memories, start sessions, or use MCP tools. If you want
+  something done once the thing finishes, ask when you get the notification.
+- A chain stops after 24 checks. A chat can have 5 check-backs waiting at once.
+  Ask "what are you watching?" to list them, or "stop watching CI" to cancel
+  one.
+- If a check-back fails to run (for example, the model is unavailable or it
+  times out after 5 minutes), you get a notification saying so. You also get
+  one when a chain stops after 24 checks without an answer.
+- Check-backs report in the app, not in Telegram, even when you asked for one
+  from Telegram.
+- A chat that is open when a check-back runs doesn't show the new messages
+  until you reopen it.
+
 ### Friday: what did I get done?
 
 Ask "what did I get done this week?" The assistant gathers the week's
@@ -296,6 +323,8 @@ Some actions pause and ask you in the approval bar above the message box (press
   ticket, syncing branches, sending an instruction to a session, launching a
   session, forgetting a memory, or delegating. A transcript can be misheard,
   or picked up from the room.
+- **Check-back turns** can't ask, because nobody is watching them. They only
+  get tools that read. See [Waiting on something](#waiting-on-something).
 
 The assistant is also instructed to create workspaces, register a repo, add a
 repo to a workspace, start work, sync, send instructions or archive only when
@@ -327,6 +356,8 @@ Always available:
   suggestion, and summarize the week.
 - **Delegation.** List specialists and delegate to one.
 - **Attention.** Raise a notification when it needs you.
+- **Check-backs.** Schedule, list and cancel a prompt it runs later in the same
+  chat.
 
 Loaded on demand:
 
