@@ -23,6 +23,7 @@ import {
 import { type ChatConfig, DEFAULT_CHAT_CONFIG } from "./config.ts";
 import { ALWAYS_CONFIRM_BUILTIN_TOOLS, DESTRUCTIVE_BUILTIN_TOOLS } from "./destructiveTools.ts";
 import { addMessage, getMessages } from "./service.ts";
+import { createToolCallReviewer } from "./toolReview.ts";
 
 /**
  * Why a turn ended with nothing to say. A model that spends its last step on a
@@ -373,6 +374,7 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
     // Standing consent for an MCP tool was given about typed turns. A spoken one
     // was never read back, so it asks again for everything.
     honourStandingConsent: !spoken,
+    reviewer: approval && !spoken ? await createToolCallReviewer(config) : undefined,
     liveTools,
   });
 

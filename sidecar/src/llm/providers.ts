@@ -174,6 +174,10 @@ export function pickDefaultModel(
   };
 }
 
+export function ollamaOpenAiBaseUrl(baseUrl: string): string {
+  return `${baseUrl.replace(/\/+$/, "")}/v1`;
+}
+
 function resolveCustom(row: CustomProviderRow, config: Config, modelId: string): LanguageModel {
   // Defense-in-depth: the create/update routes already validate, but DB rows
   // can have been seeded by an earlier version, so re-check at resolve time.
@@ -195,6 +199,10 @@ function resolveCustom(row: CustomProviderRow, config: Config, modelId: string):
       return createOpenAI(options).chat(modelId);
     case "anthropic":
       return createAnthropic(options)(modelId);
+    case "ollama":
+      // The base URL names the Ollama server itself, which decision calls reach
+      // at `/api/chat`; a chat turn goes through its OpenAI-compatible `/v1`.
+      return createOpenAI({ ...options, baseURL: ollamaOpenAiBaseUrl(row.baseUrl) }).chat(modelId);
     default:
       throw new Error(`unsupported apiKind: ${row.apiKind}`);
   }

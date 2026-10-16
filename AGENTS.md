@@ -202,7 +202,7 @@ back to ad-hoc.
   worktree does.
 - What models a provider offers is data, not code: `llm/catalog.ts` holds the
   bundled defaults and the capability tags (`chat`, `stt`, `tts`, `vision`,
-  `embed`), and entries in `~/.yarvis/settings.json`'s `providerModels` section
+  `embed`, `decision`), and entries in `~/.yarvis/settings.json`'s `providerModels` section
   take a provider's catalogue over the moment the user saves one — no database
   needed, so custom providers and the model catalogue work even without
   Postgres configured. Surfaces ask for the capability they need rather than
@@ -322,7 +322,12 @@ back to ad-hoc.
   and a resync that finds a tool's description or schema changed resets it to
   "ask", since consent was given for the tool as it was described then. Neither
   mechanism gives MCP tools to a surface that cannot prompt: that still requires
-  `approval` hooks to exist at all.
+  `approval` hooks to exist at all. Auto mode (`chat/toolReview.ts`) is a third
+  gate in front of the same prompt, and it can only say yes: the decision model
+  reviews an MCP call against the chat, and anything short of a clear approval —
+  a refusal, an error, a timeout — raises the prompt as before. It follows
+  standing consent's limits (off on a spoken turn) and never reviews a built-in,
+  since the built-ins that ask are the ones whose answer must come from the user.
 - A list a tab shows is read through `lib/resourceCache`, not fetched into local
   state on mount. `App` renders one panel at a time (the Chat tab aside, kept
   mounted so a turn outlives the switch), so a tab switch unmounts a page

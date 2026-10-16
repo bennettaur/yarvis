@@ -195,7 +195,7 @@ function readTranscript(payload: unknown): string {
   return text.trim();
 }
 
-interface GuardedFetchOptions {
+export interface GuardedFetchOptions {
   fetchImpl: typeof fetch;
   timeoutMs: number;
   allowLoopback: boolean;
@@ -211,7 +211,7 @@ interface GuardedFetchOptions {
  * along to wherever the redirect pointed. The deadline covers the whole chain,
  * since these calls sit directly in the user's latency path.
  */
-async function guardedFetch(
+export async function guardedFetch(
   url: string,
   init: RequestInit,
   { fetchImpl, timeoutMs, allowLoopback }: GuardedFetchOptions,
