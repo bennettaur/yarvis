@@ -5,6 +5,8 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { type MemoryService, PgVectorMemoryStore } from "../memory/index.ts";
+import { askQuestions, getQuestion, waitForReply } from "../questions/service.ts";
+import type { QuestionOrigin } from "./questionTools.ts";
 import { createYarvisMcpServer } from "./server.ts";
 
 /**
@@ -41,6 +43,28 @@ function allowedHosts(port: number): string[] {
   return [`127.0.0.1:${port}`, `localhost:${port}`];
 }
 
+/** Headers a workspace's `.mcp.json` sets from the PTY's environment (`workspaces/mcpConfig.ts`). */
+const SESSION_KEY_HEADER = "x-yarvis-session-key";
+const WORKSPACE_ID_HEADER = "x-yarvis-workspace-id";
+
+const UUID_SHAPE = /^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/;
+const MAX_SESSION_KEY = 256;
+
+/**
+ * Which session is asking. These are the caller's claims, held to the same
+ * trust as the attention-ingest body: they only decide where a question is
+ * shown. A missing or malformed value reads as absent, since a client Yarvis
+ * didn't launch sends neither, and an unset variable expands to an empty string.
+ */
+export function questionOrigin(headers: Headers): QuestionOrigin {
+  const sessionKey = headers.get(SESSION_KEY_HEADER)?.trim() ?? "";
+  const workspaceId = headers.get(WORKSPACE_ID_HEADER)?.trim() ?? "";
+  return {
+    sessionKey: sessionKey && sessionKey.length <= MAX_SESSION_KEY ? sessionKey : null,
+    workspaceId: UUID_SHAPE.test(workspaceId) ? workspaceId : null,
+  };
+}
+
 export function createMcpEndpointRoutes(config: Config): Hono {
   const router = new Hono();
 
@@ -59,7 +83,16 @@ export function createMcpEndpointRoutes(config: Config): Hono {
   };
 
   router.post("/", async (c) => {
-    const server = createYarvisMcpServer(memory);
+    const db = () => getDb(config.databaseUrl as string).db;
+    // A client that disconnects stops its wait, rather than holding a waiter
+    // until the timeout.
+    const signal = c.req.raw.signal;
+    const server = createYarvisMcpServer(memory, {
+      origin: questionOrigin(c.req.raw.headers),
+      ask: (input) => askQuestions(db(), input),
+      getQuestion: (id) => getQuestion(db(), id),
+      waitForReply: (id, timeoutMs) => waitForReply(db(), id, timeoutMs, signal),
+    });
     const transport = new StreamableHTTPTransport({
       enableJsonResponse: true,
       enableDnsRebindingProtection: true,

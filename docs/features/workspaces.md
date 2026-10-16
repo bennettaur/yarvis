@@ -488,8 +488,14 @@ How the bell behaves:
 - **Cleared by looking.** Opening the workspace or terminal tab that raised an
   item marks it read. An item raised by something already on screen never
   sends an OS notification. Nothing clears itself while the window is in the
-  background.
+  background. Questions are the exception; see below.
 - **Marked where it happened.** A workspace with something pending is marked in
   the workspace list, and its tab is marked in the tab strip.
+- **Questions are answered in place.** When a session asks you something
+  through Yarvis's `ask_user` tool, its row opens a dialog with the workspace,
+  what the agent is working on, and its questions. Pick an option or type an
+  answer and press **Send answers**, or **Skip** to tell the agent to carry on
+  without you. Looking at the session doesn't clear a question; only answering,
+  skipping or dismissing it does. See [MCP](mcp.md#asking-you-questions).
 
 The assistant doesn't read the bell. It is for you.

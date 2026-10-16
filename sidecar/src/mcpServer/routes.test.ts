@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
+import { questionOrigin } from "./routes.ts";
 
 function testConfig(overrides: Partial<Config> = {}): Config {
   return {
@@ -97,11 +98,13 @@ describe("mcp endpoint", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { result: { tools: { name: string }[] } };
     expect(body.result.tools.map((t) => t.name).sort()).toEqual([
+      "ask_user",
       "forget",
       "list_memories",
       "recall",
       "remember",
       "take_note",
+      "wait_for_answer",
     ]);
   });
 
@@ -189,5 +192,31 @@ describe("mcp endpoint over a real store", () => {
 
     const listed = await callTool(5, "list_memories", {});
     expect(listed.memories).toEqual([]);
+  });
+});
+
+describe("questionOrigin", () => {
+  const origin = (headers: Record<string, string>) => questionOrigin(new Headers(headers));
+
+  it("reads the session and workspace a workspace's .mcp.json sends", () => {
+    expect(
+      origin({
+        "X-Yarvis-Session-Key": "ws-claude:11111111-1111-1111-1111-111111111111",
+        "X-Yarvis-Workspace-Id": "11111111-1111-1111-1111-111111111111",
+      }),
+    ).toEqual({
+      sessionKey: "ws-claude:11111111-1111-1111-1111-111111111111",
+      workspaceId: "11111111-1111-1111-1111-111111111111",
+    });
+  });
+
+  it("treats missing, empty, malformed or oversized values as absent", () => {
+    const absent = { sessionKey: null, workspaceId: null };
+    expect(origin({})).toEqual(absent);
+    // What an unset `${VAR:-}` expands to.
+    expect(origin({ "X-Yarvis-Session-Key": "", "X-Yarvis-Workspace-Id": "" })).toEqual(absent);
+    expect(
+      origin({ "X-Yarvis-Session-Key": "x".repeat(257), "X-Yarvis-Workspace-Id": "not-a-uuid" }),
+    ).toEqual(absent);
   });
 });

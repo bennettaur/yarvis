@@ -5,6 +5,7 @@ import AlarmsPanel from "./components/AlarmsPanel";
 import AlarmTakeover from "./components/AlarmTakeover";
 import AttentionAutoClear from "./components/attention/AttentionAutoClear";
 import AttentionPanel from "./components/attention/AttentionPanel";
+import QuestionDialog from "./components/attention/QuestionDialog";
 import ChatPanel from "./components/ChatPanel";
 import CalendarView from "./components/calendar/CalendarView";
 import ClipboardPalette from "./components/clipboard/ClipboardPalette";
@@ -69,6 +70,7 @@ export default function App() {
   const [clipboardOpen, setClipboardOpen] = useState(false);
   const [attention, setAttention] = useState<string | null>(null);
   const [attentionPanelOpen, setAttentionPanelOpen] = useState(false);
+  const [questionItem, setQuestionItem] = useState<AttentionItem | null>(null);
   const [wip, setWip] = useState<WipItem[]>([]);
   const [wipLoading, setWipLoading] = useState(false);
   // A PR another view (workspaces, omni) has asked us to open. PrsPanel reads
@@ -297,11 +299,28 @@ export default function App() {
 
   const openAttentionItem = useCallback(
     (item: AttentionItem) => {
+      // A question is answered in place; it leaves the stream once answered,
+      // not when it is opened. The panel closes so Esc reaches only the dialog.
+      if (item.kind === "question") {
+        setAttentionPanelOpen(false);
+        setQuestionItem(item);
+        return;
+      }
       void markAttention(item.id, "read");
       navigateTo(item.navTarget, item.title);
     },
     [navigateTo],
   );
+
+  const openQuestionSession = useCallback(
+    (item: AttentionItem) => {
+      setQuestionItem(null);
+      navigateTo(item.navTarget, item.title);
+    },
+    [navigateTo],
+  );
+
+  const closeQuestion = useCallback(() => setQuestionItem(null), []);
 
   const openWipItem = useCallback(
     (item: WipItem) => navigateTo(item.navTarget, item.title),
@@ -421,6 +440,12 @@ export default function App() {
           setTab("alarms");
           setAttentionPanelOpen(false);
         }}
+      />
+
+      <QuestionDialog
+        item={questionItem}
+        onClose={closeQuestion}
+        onOpenSession={openQuestionSession}
       />
 
       <AttentionAutoClear />

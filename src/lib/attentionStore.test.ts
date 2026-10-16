@@ -74,6 +74,12 @@ describe("clearTargetsFor", () => {
     });
   });
 
+  it("leaves a question pending with its session on screen", () => {
+    const viewing = scope({ sessionKeys: new Set(["ws:w1/t1/p1"]) });
+    const items = [item({ id: "a", seq: 1, sessionKey: "ws:w1/t1/p1", kind: "question" })];
+    expect(clearTargetsFor(items, viewing)).toEqual({ sessionKeys: [], itemIds: [] });
+  });
+
   it("leaves items whose tab is not on screen", () => {
     const viewing = scope({ workspaceId: "w1", sessionKeys: new Set(["ws:w1/t1/p1"]) });
     const items = [item({ id: "a", seq: 1, sessionKey: "ws:w1/t9/p1" })];
