@@ -55,6 +55,10 @@ then `bun run demo` and `bun run demo:site` at the repo root, put it in
 The MP4s are not in git. Render them on a Mac, then run `bun run publish:videos`
 to replace the files on the `showcase-video` release, which the page links to.
 
+The repo README shows `docs/images/showcase-reel-poster.png`, the reel's frame
+at 0:40 with a play button drawn on it. Replace it when that part of the reel
+changes.
+
 ## Layout
 
 - `src/videos.tsx`: the scene list. Each scene says how long it runs and

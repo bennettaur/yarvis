@@ -38,7 +38,8 @@ to play it, or download the
 [MP4](https://github.com/bennettaur/yarvis/releases/download/showcase-video/yarvis-reel.mp4).
 There is also a 3½-minute
 [walkthrough](https://github.com/bennettaur/yarvis/releases/download/showcase-video/yarvis-walkthrough.mp4)
-that covers every feature.
+that covers every feature. The [demo site](https://bennettaur.github.io/yarvis/)
+has screenshots and recordings of the real app, and the slide deck.
 
 ## Quick start
 
@@ -47,8 +48,12 @@ You need macOS, [Homebrew](https://brew.sh), and the Xcode Command Line Tools
 Rust compile. If you already have Bun, Rust and Postgres with pgvector, skip to
 step 2.
 
-1. Install Bun and Rust (through [mise](https://mise.jdx.dev)), and
-   PostgreSQL 17 with pgvector:
+Prefer to be walked through it? Install
+[Claude Code](https://claude.com/claude-code), clone the repo, run `claude` in
+it, and type `/yarvis-setup`.
+
+1. Install [mise](https://mise.jdx.dev), which installs Bun and Rust in step 3,
+   and PostgreSQL 17 with pgvector:
 
    ```bash
    brew install mise postgresql@17 pgvector
@@ -69,7 +74,7 @@ step 2.
 
    ```bash
    git clone https://github.com/bennettaur/yarvis.git && cd yarvis
-   mise install
+   mise install   # skip if you installed Bun and Rust another way
    bun install
    bun run tauri dev
    ```
@@ -77,14 +82,20 @@ step 2.
 4. In the app, follow the setup guide that opens on first launch. To do it by
    hand, open **Settings → Credentials**, save the database URL
    `postgres://localhost:5432/yarvis`, and save one LLM provider key
-   (Anthropic, Gemini or Cerebras). Then open **Chat** (Cmd+1) and say hello.
+   (Anthropic, Gemini or Cerebras). Then open **Chat** (Cmd+1), pick the
+   provider and a model at the top, and say hello.
 
-Prefer to be walked through it? Install
-[Claude Code](https://claude.com/claude-code), clone the repo, run `claude` in
-it, and type `/yarvis-setup`.
+That database URL has no password because Homebrew's Postgres trusts every
+local connection. If other people or programs share your Mac, see
+[Getting started](docs/getting-started.md#2-install-postgresql-with-pgvector)
+for how to add one.
 
 [Getting started](docs/getting-started.md) is the full guide: requirements,
-optional features like GitHub, workspaces and voice, and troubleshooting.
+optional features like GitHub, workspaces and voice, and troubleshooting. A
+prebuilt `.dmg` is on the
+[nightly release](https://github.com/bennettaur/yarvis/releases/tag/nightly),
+but it isn't notarized, so macOS blocks its first launch.
+[Development](docs/development.md#nightly-builds) explains how to open it.
 
 ## Features
 
@@ -117,9 +128,8 @@ optional features like GitHub, workspaces and voice, and troubleshooting.
   second instance, nightly builds, and the project layout.
 - [Showcase deck](docs/showcase/yarvis-showcase.html): a slide deck on the
   weekly workflow. Open it in a browser.
-- [Showcase video](https://bennettaur.github.io/yarvis/video/): a 90-second reel and a
-  full walkthrough, rendered with Remotion from the app's own components. The
-  source is in [`video/`](video/README.md).
+- [Showcase video source](video/README.md): the reel and walkthrough, rendered
+  with Remotion from the app's own components.
 - [`AGENTS.md`](AGENTS.md): conventions for changing the code.
 - [`ROADMAP.md`](ROADMAP.md): what's shipped and what's next.
 
