@@ -13,7 +13,7 @@ import {
 } from "../workspaces/claudeSession.ts";
 import { defaultGitRunner, type GitRunner } from "../workspaces/git.ts";
 import { createWorkspace, getWorkspace, provisionWorkspace } from "../workspaces/service.ts";
-import { isAllowedJiraBaseUrl, JiraClient } from "./client.ts";
+import { createJiraClient, isAllowedJiraBaseUrl, type JiraClient } from "./client.ts";
 import { applyJiraStartWorkSideEffects } from "./service.ts";
 import type { JiraIssueDetail } from "./types.ts";
 
@@ -44,7 +44,7 @@ function clientFromConfig(config: Config): JiraClient | null {
   const { jiraBaseUrl, jiraEmail, jiraApiToken } = config.secrets;
   if (!jiraBaseUrl || !jiraEmail || !jiraApiToken) return null;
   if (!isAllowedJiraBaseUrl(jiraBaseUrl)) return null;
-  return new JiraClient(jiraBaseUrl, jiraEmail, jiraApiToken);
+  return createJiraClient(config, jiraBaseUrl, jiraEmail, jiraApiToken);
 }
 
 /**

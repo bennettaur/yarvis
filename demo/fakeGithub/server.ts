@@ -16,8 +16,20 @@ import { type FakeIssue, type FakePull, ISSUES, OWNER, PEOPLE, PULLS, REPO, VIEW
 const REPO_HTML_URL = `https://github.com/${OWNER}/${REPO}`;
 const REPO_API_URL = `https://api.github.com/repos/${OWNER}/${REPO}`;
 
+/**
+ * The issues as this run has left them. New issues and comments are kept, so
+ * the detail a flow reopens after writing shows what it wrote. Copied, so the
+ * seed data in `data.ts` stays as written.
+ */
+const issues: FakeIssue[] = ISSUES.map((i) => ({ ...i, comments: [...i.comments] }));
+
 const findPull = (number: unknown) => PULLS.find((p) => p.number === Number(number));
-const findIssue = (number: unknown) => ISSUES.find((i) => i.number === Number(number));
+const findIssue = (number: unknown) => issues.find((i) => i.number === Number(number));
+
+/** The next number GitHub would hand out, after every PR and issue so far. */
+function nextNumber(): number {
+  return Math.max(...PULLS.map((p) => p.number), ...issues.map((i) => i.number)) + 1;
+}
 
 /** A pull request as the REST search and pulls endpoints return it. */
 function toRestPull(pr: FakePull) {
@@ -56,6 +68,10 @@ function toRestIssue(issue: FakeIssue) {
     updated_at: issue.createdAt,
     comments: issue.comments.length,
   };
+}
+
+function toRestComment(c: FakeIssue["comments"][number]) {
+  return { user: { login: c.author }, body: c.body, created_at: c.createdAt };
 }
 
 /** The combined check state, as GitHub reports it: any failure wins over anything still running. */
@@ -189,7 +205,7 @@ function searchIssues(q: string): FakeResponse {
       .replace(/\S+:\S+/g, "")
       .trim()
       .toLowerCase();
-    items = ISSUES.filter((i) => !words || i.title.toLowerCase().includes(words)).map(toRestIssue);
+    items = issues.filter((i) => !words || i.title.toLowerCase().includes(words)).map(toRestIssue);
   }
   return { json: { total_count: items.length, items } };
 }
@@ -245,8 +261,23 @@ function handleRest({ method, url, body }: FakeRequest): FakeResponse {
 
   if (repoPath === "/issues" && method === "GET") {
     const assignee = url.searchParams.get("assignee");
-    const issues = ISSUES.filter((i) => !assignee || i.assignees.includes(assignee));
-    return { json: issues.map(toRestIssue) };
+    const listed = issues.filter((i) => !assignee || i.assignees.includes(assignee));
+    return { json: listed.map(toRestIssue) };
+  }
+  if (repoPath === "/issues" && method === "POST") {
+    const input = body as { title: string; body?: string };
+    const issue: FakeIssue = {
+      number: nextNumber(),
+      title: input.title,
+      author: VIEWER,
+      assignees: [],
+      labels: [],
+      body: input.body ?? "",
+      createdAt: new Date().toISOString(),
+      comments: [],
+    };
+    issues.unshift(issue);
+    return { status: 201, json: toRestIssue(issue) };
   }
   const issueNumber = matchNumber(/^\/issues\/(\d+)$/);
   if (issueNumber && method === "GET") {
@@ -255,21 +286,26 @@ function handleRest({ method, url, body }: FakeRequest): FakeResponse {
   }
   const commentsIssueNumber = matchNumber(/^\/issues\/(\d+)\/comments$/);
   if (commentsIssueNumber && method === "GET") {
-    return {
-      json: (findIssue(commentsIssueNumber)?.comments ?? []).map((c) => ({
-        user: { login: c.author },
-        body: c.body,
-        created_at: c.createdAt,
-      })),
+    return { json: (findIssue(commentsIssueNumber)?.comments ?? []).map(toRestComment) };
+  }
+  if (commentsIssueNumber && method === "POST") {
+    const issue = findIssue(commentsIssueNumber);
+    if (!issue) return { status: 404, json: { message: "Not Found" } };
+    const comment = {
+      author: VIEWER,
+      body: (body as { body: string }).body,
+      createdAt: new Date().toISOString(),
     };
+    issue.comments.push(comment);
+    return { status: 201, json: toRestComment(comment) };
   }
   if (repoPath === "/labels") {
-    return { json: [...new Map(ISSUES.flatMap((i) => i.labels).map((l) => [l.name, l])).values()] };
+    return { json: [...new Map(issues.flatMap((i) => i.labels).map((l) => [l.name, l])).values()] };
   }
   if (repoPath === "/assignees") {
     return { json: PEOPLE.map((login) => ({ login })) };
   }
-  // Writes (new issues, comments, labels, assignees) succeed without being kept.
+  // Other writes (labels, assignees, edits) succeed without being kept.
   if (method !== "GET") {
     return {
       status: 201,

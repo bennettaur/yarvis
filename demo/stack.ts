@@ -1,7 +1,7 @@
 /**
  * Starts everything a demo needs: a fresh demo database, the fake chat model,
- * GitHub and Google servers, a sidecar pointed at all of them, and the Vite
- * dev server serving `demo/index.html`.
+ * GitHub, Google and JIRA servers, a sidecar pointed at all of them, and the
+ * Vite dev server serving `demo/index.html`.
  *
  * The sidecar's home directory and settings file point into
  * `demo/output/.state/` and its workspaces root into `/tmp/yarvis-demo/`, so
@@ -18,6 +18,8 @@ import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { startFakeGithub } from "./fakeGithub/server";
 import { startFakeGoogle } from "./fakeGoogle/server";
+import { SITE_URL as JIRA_SITE_URL, VIEWER as JIRA_VIEWER } from "./fakeJira/data";
+import { startFakeJira } from "./fakeJira/server";
 import { FAKE_MODEL, startFakeLlm } from "./fakeLlm/server";
 import { OUTPUT_DIR, REPO_ROOT } from "./paths";
 
@@ -26,8 +28,8 @@ const STATE_DIR = join(OUTPUT_DIR, ".state");
  * The app shows a workspace's full path, so workspaces live somewhere that
  * doesn't reveal the developer's username or folder layout.
  */
-const DEMO_TMP = "/tmp/yarvis-demo";
-const WORKSPACES_ROOT = join(DEMO_TMP, "workspaces");
+export const DEMO_TMP = "/tmp/yarvis-demo";
+export const WORKSPACES_ROOT = join(DEMO_TMP, "workspaces");
 
 /**
  * Makes `/tmp/yarvis-demo` ours before anything under it is deleted. Any local
@@ -56,6 +58,8 @@ export const PASSTHROUGH_SECRETS = ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "CERE
  * fixture can select it before the page loads.
  */
 export const FAKE_PROVIDER_ID = "00000000-0000-4000-8000-00000000de70";
+/** The fake model's provider id as the sidecar and the chat pickers name it. */
+export const FAKE_PROVIDER = `custom:${FAKE_PROVIDER_ID}`;
 const FAKE_PROVIDER_NAME = "Demo model";
 
 /** Shown in Settings, so it should look like a Google OAuth client id. */
@@ -64,6 +68,9 @@ export const DEMO_GOOGLE_CLIENT_ID = "123456789012-demo.apps.googleusercontent.c
 /**
  * Registers the fake model as a custom provider, written straight into the
  * sidecar's settings file the way its own custom-provider routes store one.
+ * PR line questions and guided reviews pick their model on the sidecar, not
+ * from the page, so they're pinned to it too: otherwise a provider key passed
+ * through from the runner's env would send them to a real model.
  */
 function writeFakeProvider(settingsPath: string, fakeLlmUrl: string): void {
   const now = new Date().toISOString();
@@ -77,10 +84,45 @@ function writeFakeProvider(settingsPath: string, fakeLlmUrl: string): void {
     createdAt: now,
     updatedAt: now,
   };
+  const fakeModel = { provider: FAKE_PROVIDER, model: FAKE_MODEL };
   mkdirSync(dirname(settingsPath), { recursive: true });
   writeFileSync(
     settingsPath,
-    JSON.stringify({ customProviders: { [provider.id]: provider } }, null, 2),
+    JSON.stringify(
+      {
+        customProviders: { [provider.id]: provider },
+        prModels: { guide: fakeModel, ask: fakeModel },
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+/** The specialist the scheduled-jobs flow runs, by the `name:` the Specialist picker lists. */
+export const DEMO_SPECIALIST = "standup-writer";
+
+/**
+ * Writes a specialist that runs on the fake model. A job on the default agent
+ * would run on the default chat model, which is a real provider whenever the
+ * runner passes a provider key through.
+ */
+function writeDemoSpecialist(agentsDir: string): void {
+  mkdirSync(agentsDir, { recursive: true });
+  writeFileSync(
+    join(agentsDir, `${DEMO_SPECIALIST}.md`),
+    [
+      "---",
+      `name: ${DEMO_SPECIALIST}`,
+      "description: Drafts a standup update from the user's tasks.",
+      "tools: [list_tasks]",
+      `model: ${FAKE_PROVIDER}/${FAKE_MODEL}`,
+      "maxSteps: 4",
+      "---",
+      "",
+      "You draft the user's standup update from their task list. Keep it to three short sections: yesterday, today, blockers.",
+      "",
+    ].join("\n"),
   );
 }
 
@@ -97,13 +139,14 @@ export interface Stack {
 const closeServers = (servers: Server[]) =>
   Promise.all(servers.map((s) => new Promise((resolve) => s.close(resolve))));
 
-/** Starts the fake model, GitHub and Google, closing any already running if one fails. */
-async function startFakes(ports: { llm: number; github: number; google: number }) {
+/** Starts the fake model, GitHub, Google and JIRA, closing any already running if one fails. */
+async function startFakes(ports: { llm: number; github: number; google: number; jira: number }) {
   const started: Server[] = [];
   try {
     started.push(await startFakeLlm(ports.llm));
     started.push(await startFakeGithub(ports.github));
     started.push(await startFakeGoogle(ports.google));
+    started.push(await startFakeJira(ports.jira));
   } catch (e) {
     await closeServers(started);
     throw e;
@@ -269,18 +312,20 @@ export async function startStack(): Promise<Stack> {
   mkdirSync(home, { recursive: true });
   mkdirSync(WORKSPACES_ROOT, { recursive: true });
 
-  const [sidecarPort, vitePort, fakeLlmPort, fakeGithubPort, fakeGooglePort] = await Promise.all(
-    Array.from({ length: 5 }, findFreePort),
-  );
+  const [sidecarPort, vitePort, fakeLlmPort, fakeGithubPort, fakeGooglePort, fakeJiraPort] =
+    await Promise.all(Array.from({ length: 6 }, findFreePort));
   const sidecarToken = randomBytes(24).toString("hex");
   const sidecarUrl = `http://127.0.0.1:${sidecarPort}`;
   const appOrigin = `http://localhost:${vitePort}`;
   const fakeLlmUrl = `http://127.0.0.1:${fakeLlmPort}`;
   const fakeGithubUrl = `http://127.0.0.1:${fakeGithubPort}`;
   const fakeGoogleUrl = `http://127.0.0.1:${fakeGooglePort}`;
+  const fakeJiraUrl = `http://127.0.0.1:${fakeJiraPort}`;
 
   const settingsPath = join(home, ".yarvis", "settings.json");
   writeFakeProvider(settingsPath, fakeLlmUrl);
+  const agentsDir = join(home, ".yarvis", "agents");
+  writeDemoSpecialist(agentsDir);
   // Resolved before anything starts: past this point a failure has to stop
   // what's running, which only the try block below does.
   const bunPath = resolveBunPath();
@@ -288,6 +333,7 @@ export async function startStack(): Promise<Stack> {
     llm: fakeLlmPort,
     github: fakeGithubPort,
     google: fakeGooglePort,
+    jira: fakeJiraPort,
   });
 
   // Built from scratch rather than inheriting process.env, so a token or key
@@ -308,8 +354,8 @@ export async function startStack(): Promise<Stack> {
     YARVIS_SETTINGS_PATH: settingsPath,
     // The AI SDK won't send a request without a key. The fake model ignores it.
     YARVIS_CUSTOM_PROVIDER_SECRETS: JSON.stringify({ [FAKE_PROVIDER_ID]: { apiKey: "demo" } }),
-    // GitHub and Google point at the fakes. The credentials only have to be
-    // present for the sidecar to call them; the fakes ignore their values.
+    // GitHub, Google and JIRA point at the fakes. The credentials only have to
+    // be present for the sidecar to call them; the fakes ignore their values.
     GITHUB_TOKEN: "demo-github-token",
     YARVIS_GITHUB_API_URL: fakeGithubUrl,
     YARVIS_GITHUB_GRAPHQL_URL: `${fakeGithubUrl}/graphql`,
@@ -317,7 +363,12 @@ export async function startStack(): Promise<Stack> {
     GOOGLE_CLIENT_SECRET: "demo-google-secret",
     YARVIS_GOOGLE_CALENDAR_API_URL: `${fakeGoogleUrl}/calendar/v3`,
     YARVIS_GOOGLE_TOKEN_URL: `${fakeGoogleUrl}/token`,
-    YARVIS_AGENTS_DIR: join(home, ".yarvis", "agents"),
+    // The site is what links into JIRA show; requests go to the fake.
+    JIRA_BASE_URL: JIRA_SITE_URL,
+    JIRA_EMAIL: JIRA_VIEWER.emailAddress,
+    JIRA_API_TOKEN: "demo-jira-token",
+    YARVIS_JIRA_API_URL: fakeJiraUrl,
+    YARVIS_AGENTS_DIR: agentsDir,
     YARVIS_WORKSPACES_ROOT: WORKSPACES_ROOT,
     CLAUDE_HOME: join(home, ".claude"),
   };

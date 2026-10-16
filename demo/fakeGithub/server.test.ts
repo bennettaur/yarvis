@@ -4,6 +4,8 @@ import { handleGithubRequest } from "./server";
 
 const get = (path: string) =>
   handleGithubRequest({ method: "GET", url: new URL(path, "http://fake"), body: undefined });
+const post = (path: string, body: unknown) =>
+  handleGithubRequest({ method: "POST", url: new URL(path, "http://fake"), body });
 const graphql = (query: string, variables: Record<string, unknown>) =>
   handleGithubRequest({
     method: "POST",
@@ -47,6 +49,23 @@ describe("fake GitHub", () => {
     });
     expect(data.pr0.pullRequest.number).toBe(471);
     expect(data.pr1.pullRequest).toBeNull();
+  });
+
+  it("keeps a new issue and its comments, numbered after everything else", () => {
+    const created = post("/repos/acme/checkout-web/issues", { title: "Test issue", body: "Hi" });
+    const { number } = created.json as { number: number };
+    expect(created.status).toBe(201);
+    expect(number).toBeGreaterThan(Math.max(...PULLS.map((p) => p.number)));
+
+    post(`/repos/acme/checkout-web/issues/${number}/comments`, { body: "On it" });
+    expect((get(`/repos/acme/checkout-web/issues/${number}`).json as { title: string }).title).toBe(
+      "Test issue",
+    );
+    const comments = get(`/repos/acme/checkout-web/issues/${number}/comments`).json as {
+      user: { login: string };
+      body: string;
+    }[];
+    expect(comments).toEqual([expect.objectContaining({ body: "On it", user: { login: VIEWER } })]);
   });
 
   it("serves a PR's files with their patches", () => {

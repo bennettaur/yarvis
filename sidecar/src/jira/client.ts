@@ -10,6 +10,7 @@
  * org URL — it is validated against an allowlist before any credential is sent.
  */
 
+import type { Config } from "../config.ts";
 import type { IssueComment, IssueLabel, IssueSummary } from "../issues/types.ts";
 import { adfToMarkdown, textToAdf } from "./adf.ts";
 import type {
@@ -80,18 +81,34 @@ function toIssueLabels(raw: unknown): IssueLabel[] {
     .map((name) => ({ name, color: null }));
 }
 
+/**
+ * A client for the JIRA site at `baseUrl`, with its API requests sent wherever
+ * the config overrides them to. Callers check `baseUrl` with
+ * `isAllowedJiraBaseUrl` first.
+ */
+export function createJiraClient(
+  config: Pick<Config, "endpoints">,
+  baseUrl: string,
+  email: string,
+  token: string,
+): JiraClient {
+  return new JiraClient(baseUrl, email, token, fetch, config.endpoints?.jiraApi);
+}
+
 export class JiraClient {
   private readonly baseUrl: string;
   private readonly apiBase: string;
 
+  /** `apiUrl` is where REST requests go, when that isn't the site itself. */
   constructor(
     baseUrl: string,
     private readonly email: string,
     private readonly token: string,
     private readonly fetchImpl: FetchFn = fetch,
+    apiUrl: string = baseUrl,
   ) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
-    this.apiBase = `${this.baseUrl}/rest/api/3`;
+    this.apiBase = `${apiUrl.replace(/\/+$/, "")}/rest/api/3`;
   }
 
   private authHeader(): string {

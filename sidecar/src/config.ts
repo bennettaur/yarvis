@@ -183,8 +183,8 @@ export interface Config {
   embeddingsSecrets: CustomProviderSecrets;
   telegram: TelegramConfig;
   /**
-   * Local stand-ins for GitHub and Google, which the demo recordings point the
-   * clients at. Absent means the real services. See `parseEndpoints`.
+   * Local stand-ins for GitHub, Google and JIRA, which the demo recordings
+   * point the clients at. Absent means the real services. See `parseEndpoints`.
    */
   endpoints?: ServiceEndpoints;
 }
@@ -198,6 +198,11 @@ export interface ServiceEndpoints {
   googleCalendar?: string;
   /** Google OAuth token endpoint in place of `https://oauth2.googleapis.com/token`. */
   googleToken?: string;
+  /**
+   * Where JIRA REST requests go in place of the `JIRA_BASE_URL` site. Links
+   * into JIRA still use the site, so they point where a real one would.
+   */
+  jiraApi?: string;
 }
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -233,11 +238,11 @@ export function parseEndpointOverride(name: string, raw: string | undefined): st
 }
 
 /**
- * Overrides come in pairs, one pair per service, and a pair is used whole or
- * not at all: with only one half set, the other would keep sending the same
- * credentials to the real service. The Rust core strips these variables
- * before it starts the sidecar, so only a sidecar started by hand (the demo)
- * ever sees them.
+ * GitHub and Google overrides come in pairs, and a pair is used whole or not
+ * at all: with only one half set, the other would keep sending the same
+ * credentials to the real service. JIRA has a single endpoint. The Rust core
+ * strips these variables before it starts the sidecar, so only a sidecar
+ * started by hand (the demo) ever sees them.
  */
 export function parseEndpoints(env: NodeJS.ProcessEnv): ServiceEndpoints {
   const pair = (service: string, names: [string, string]): [string, string] | undefined => {
@@ -252,11 +257,14 @@ export function parseEndpoints(env: NodeJS.ProcessEnv): ServiceEndpoints {
   };
   const github = pair("GitHub", ["YARVIS_GITHUB_API_URL", "YARVIS_GITHUB_GRAPHQL_URL"]);
   const google = pair("Google", ["YARVIS_GOOGLE_CALENDAR_API_URL", "YARVIS_GOOGLE_TOKEN_URL"]);
+  const jira = parseEndpointOverride("YARVIS_JIRA_API_URL", env.YARVIS_JIRA_API_URL);
+  if (jira) console.log(`[config] JIRA requests go to ${new URL(jira).host}`);
   return {
     githubApi: github?.[0],
     githubGraphql: github?.[1],
     googleCalendar: google?.[0],
     googleToken: google?.[1],
+    jiraApi: jira,
   };
 }
 

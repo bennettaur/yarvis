@@ -66,6 +66,35 @@ function addElement(key: string, type: string, props: object, children: string[]
 }
 
 export const REPLIES: Reply[] = [
+  // The scheduled-jobs flow's prompt. It reads the task list, then drafts from
+  // the seeded tasks. No later pattern matches it.
+  {
+    when: /standup update/i,
+    toolCall: { name: "list_tasks", args: {} },
+    after: [
+      "**Yesterday**",
+      "- Kept going on the payment step (code complete is this week's goal)",
+      "",
+      "**Today**",
+      "- Prep demo for Thursday's review",
+      "- Reply to the design feedback thread",
+      "",
+      "**Blockers**",
+      "- None",
+    ].join("\n"),
+  },
+  // A PR line question. Ahead of the screen-summary reply, because its prompt
+  // says "a reviewer is looking at lines…", which that reply also matches.
+  {
+    when: /Their question: .*lazy/i,
+    text: [
+      "It keeps the card form out of the first paint for returning customers.",
+      "",
+      "`CardForm` pulls in the card-entry bundle, and most people on this step already have a saved card. With `lazy()` and the `Suspense` boundary below it, `SavedCards` renders straight away and the form loads behind `CardFormSkeleton`.",
+      "",
+      "One gap: a customer with **no saved cards** now waits on the lazy import before they can type anything. Prefetching `./CardForm` when `cards` comes back empty would close it.",
+    ].join("\n"),
+  },
   {
     when: /plate|this week|what.*(on|do) i/i,
     text: [
@@ -80,6 +109,17 @@ export const REPLIES: Reply[] = [
       "",
       "Priya's payment-step PR is your most urgent review, and it's due tomorrow. For Thursday, you noted you want to show the new payment step and the load-time chart.",
     ].join("\n"),
+  },
+  // What the voice flow "says" (VOICE_TRANSCRIPT). Above the "remind me" reply,
+  // which would also match it.
+  {
+    when: /load-time chart/i,
+    toolCall: {
+      name: "create_task",
+      args: { title: "Send Priya the load-time chart", scope: "weekly" },
+    },
+    after:
+      "Got it. **Send Priya the load-time chart** is on this week's list, so it'll be ready before Thursday's review.",
   },
   {
     when: /rollout plan|remind me|add a task/i,
@@ -125,6 +165,13 @@ export const REPLIES: Reply[] = [
     ].join("\n"),
   },
 ];
+
+/**
+ * What the fake speech-to-text endpoint hears in every recording. There's no
+ * real speech to transcribe: the flow records Chromium's fake microphone.
+ */
+export const VOICE_TRANSCRIPT =
+  "Remind me to send Priya the load-time chart before Thursday's review";
 
 /** For a chat message no reply matches. Worded so it's easy to spot in a screenshot. */
 export const DEFAULT_REPLY: Reply = {

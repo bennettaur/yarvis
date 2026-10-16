@@ -1,4 +1,4 @@
-/** Plumbing shared by the fake GitHub and Google servers. */
+/** Plumbing shared by the fake GitHub, Google and JIRA servers. */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
