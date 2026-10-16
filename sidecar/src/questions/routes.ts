@@ -2,22 +2,30 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import { getQuestion, listPendingQuestions, type ReplyResult, replyToQuestion } from "./service.ts";
+import {
+  getQuestion,
+  listPendingQuestions,
+  type ReplyOutcome,
+  replyToQuestion,
+} from "./service.ts";
 
 const UUID = z
   .string()
   .regex(/^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/, "must be a uuid");
 
 const answerSchema = z.object({
-  answers: z.array(
-    z.object({
-      selected: z.array(z.string().max(80)).max(6),
-      text: z.string().max(4000).optional(),
-    }),
-  ),
+  // Bounds match what `ask_user` accepts: up to 4 questions of up to 6 options.
+  answers: z
+    .array(
+      z.object({
+        selected: z.array(z.string().max(80)).max(6),
+        text: z.string().max(4000).optional(),
+      }),
+    )
+    .max(4),
 });
 
-const STATUS_FOR: Record<Exclude<ReplyResult, { ok: true }>["reason"], 404 | 409 | 400> = {
+const STATUS_FOR: Record<Exclude<ReplyOutcome, { ok: true }>["reason"], 404 | 409 | 400> = {
   "not-found": 404,
   "not-pending": 409,
   invalid: 400,

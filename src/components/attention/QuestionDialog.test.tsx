@@ -27,15 +27,36 @@ const QUESTION: AgentQuestion = {
   createdAt: "2026-10-16T12:00:00.000Z",
 };
 
+const SECOND: AgentQuestion = {
+  ...QUESTION,
+  id: "q2",
+  context: { task: "Writing the migration" },
+  questions: [{ question: "Should the old column be dropped?" }],
+};
+
+/** What the mocked sidecar has waiting; a reply removes the set it answers. */
+let waiting: AgentQuestion[] = [];
+let failNextSend: Error | null = null;
 const answered: { id: string; answers: QuestionAnswer[] }[] = [];
 const declined: string[] = [];
 
+function settleSet(id: string) {
+  if (failNextSend) {
+    const error = failNextSend;
+    failNextSend = null;
+    throw error;
+  }
+  waiting = waiting.filter((q) => q.id !== id);
+}
+
 mock.module("../../lib/questions", () => ({
-  questionsForItem: async () => [QUESTION],
+  questionsForItem: async () => waiting,
   answerQuestion: async (id: string, answers: QuestionAnswer[]) => {
+    settleSet(id);
     answered.push({ id, answers });
   },
   declineQuestion: async (id: string) => {
+    settleSet(id);
     declined.push(id);
   },
 }));
@@ -65,12 +86,14 @@ let closed = 0;
 afterEach(() => {
   unmount?.();
   unmount = null;
+  failNextSend = null;
   answered.length = 0;
   declined.length = 0;
   closed = 0;
 });
 
-async function mountDialog(): Promise<HTMLElement> {
+async function mountDialog(sets: AgentQuestion[] = [QUESTION]): Promise<HTMLElement> {
+  waiting = [...sets];
   const mounted = await mountForInteraction(
     createElement(QuestionDialog, {
       item: ITEM,
@@ -139,5 +162,38 @@ describe("QuestionDialog", () => {
     await settle();
     expect(declined).toEqual(["q1"]);
     expect(closed).toBe(1);
+  });
+
+  it("moves on to the session's next question, then closes after the last", async () => {
+    const host = await mountDialog([QUESTION, SECOND]);
+    expect(host.textContent).toContain("2 waiting");
+
+    button(host, "Skip").click();
+    await settle();
+    expect(closed).toBe(0);
+    expect(host.textContent).toContain("Should the old column be dropped?");
+    expect(host.textContent).not.toContain("2 waiting");
+
+    button(host, "Skip").click();
+    await settle();
+    expect(declined).toEqual(["q1", "q2"]);
+    expect(closed).toBe(1);
+  });
+
+  it("stays open with the error and keeps the user's draft when a send fails", async () => {
+    const host = await mountDialog();
+    button(host, "Token bucket").click();
+    const free = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Answer 2"]');
+    type(free!, "Keep it per-user");
+    await settle();
+
+    failNextSend = new Error("sidecar unreachable");
+    button(host, "Send answers").click();
+    await settle();
+
+    expect(closed).toBe(0);
+    expect(host.textContent).toContain("sidecar unreachable");
+    expect(button(host, "Token bucket").getAttribute("aria-pressed")).toBe("true");
+    expect(button(host, "Send answers").disabled).toBe(false);
   });
 });

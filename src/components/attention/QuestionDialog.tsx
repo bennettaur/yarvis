@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AttentionItem } from "../../lib/attention";
 import { type DisplayError, formatError } from "../../lib/errors";
 import {
@@ -24,8 +24,9 @@ interface Draft {
   text: string;
 }
 
-const emptyDrafts = (set: AgentQuestion): Draft[] =>
-  set.questions.map(() => ({ selected: [], text: "" }));
+const EMPTY_DRAFT: Draft = { selected: [], text: "" };
+
+const emptyDrafts = (set: AgentQuestion): Draft[] => set.questions.map(() => EMPTY_DRAFT);
 
 const isAnswered = (draft: Draft) => draft.selected.length > 0 || draft.text.trim() !== "";
 
@@ -49,14 +50,15 @@ function QuestionField({
 }) {
   const options = question.options ?? [];
   const toggle = (label: string) => {
-    const on = draft.selected.includes(label);
-    const selected = question.multiSelect
-      ? on
+    const isSelected = draft.selected.includes(label);
+    let selected: string[];
+    if (question.multiSelect) {
+      selected = isSelected
         ? draft.selected.filter((l) => l !== label)
-        : [...draft.selected, label]
-      : on
-        ? []
-        : [label];
+        : [...draft.selected, label];
+    } else {
+      selected = isSelected ? [] : [label];
+    }
     onChange({ ...draft, selected });
   };
 
@@ -72,15 +74,15 @@ function QuestionField({
       {options.length > 0 && (
         <div className="space-y-1.5">
           {options.map((option) => {
-            const on = draft.selected.includes(option.label);
+            const isSelected = draft.selected.includes(option.label);
             return (
               <button
                 key={option.label}
                 type="button"
-                aria-pressed={on}
+                aria-pressed={isSelected}
                 onClick={() => toggle(option.label)}
                 className={`block w-full rounded-md border px-3 py-2 text-left ${
-                  on
+                  isSelected
                     ? "border-sky-500 bg-sky-950/40"
                     : "border-zinc-700 bg-zinc-900 hover:border-zinc-500"
                 }`}
@@ -117,21 +119,33 @@ export default function QuestionDialog({
   /** Jumps to the asking session, for a question that needs more than a reply. */
   onOpenSession: (item: AttentionItem) => void;
 }) {
-  const [sets, setSets] = useState<AgentQuestion[] | null>(null);
+  const [questionSets, setQuestionSets] = useState<AgentQuestion[] | null>(null);
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [error, setError] = useState<DisplayError | null>(null);
   const [sending, setSending] = useState(false);
 
+  /**
+   * Shows what the session has waiting now. Drafts reset only when the set on
+   * screen changes, so a failed send keeps what the user typed.
+   */
+  const shownId = useRef<string | undefined>(undefined);
+  const show = useCallback((loaded: AgentQuestion[]) => {
+    if (shownId.current !== loaded[0]?.id) {
+      shownId.current = loaded[0]?.id;
+      setDrafts(loaded[0] ? emptyDrafts(loaded[0]) : []);
+    }
+    setQuestionSets(loaded);
+  }, []);
+
   useEffect(() => {
     if (!item) return;
     let cancelled = false;
-    setSets(null);
+    setQuestionSets(null);
     setError(null);
+    shownId.current = undefined;
     questionsForItem(item)
       .then((loaded) => {
-        if (cancelled) return;
-        setSets(loaded);
-        setDrafts(loaded[0] ? emptyDrafts(loaded[0]) : []);
+        if (!cancelled) show(loaded);
       })
       .catch((e) => {
         if (!cancelled) setError(formatError(e));
@@ -139,7 +153,7 @@ export default function QuestionDialog({
     return () => {
       cancelled = true;
     };
-  }, [item]);
+  }, [item, show]);
 
   useEffect(() => {
     if (!item) return;
@@ -155,30 +169,39 @@ export default function QuestionDialog({
 
   if (!item) return null;
 
-  const current = sets?.[0];
+  const current = questionSets?.[0];
 
-  /** Sends the reply, then moves to the session's next question set or closes. */
+  /**
+   * Sends the reply, then reloads the session's questions: that picks up a set
+   * asked while the dialog was open, and drops one answered elsewhere after a
+   * failed send. Closes once nothing is left.
+   */
   const reply = async (send: (id: string) => Promise<void>) => {
-    if (!current || !sets) return;
+    if (!current) return;
     setSending(true);
     setError(null);
+    let sent = false;
     try {
       await send(current.id);
-      const rest = sets.slice(1);
-      if (rest.length === 0) {
+      sent = true;
+    } catch (e) {
+      setError(formatError(e));
+    }
+    try {
+      const remaining = await questionsForItem(item);
+      if (sent && remaining.length === 0) {
         onClose();
         return;
       }
-      setSets(rest);
-      setDrafts(emptyDrafts(rest[0]!));
+      show(remaining);
     } catch (e) {
-      setError(formatError(e));
+      if (sent) setError(formatError(e));
     } finally {
       setSending(false);
     }
   };
 
-  const complete = drafts.length > 0 && drafts.every(isAnswered);
+  const canSend = drafts.length > 0 && drafts.every(isAnswered);
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
@@ -200,8 +223,8 @@ export default function QuestionDialog({
             {current && <div className="mt-0.5 text-xs text-zinc-400">{current.context.task}</div>}
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            {sets && sets.length > 1 && (
-              <span className="text-[11px] text-zinc-500">{sets.length} waiting</span>
+            {questionSets && questionSets.length > 1 && (
+              <span className="text-[11px] text-zinc-500">{questionSets.length} waiting</span>
             )}
             <button
               type="button"
@@ -219,8 +242,14 @@ export default function QuestionDialog({
             <p className="whitespace-pre-wrap text-xs text-zinc-400">{current.context.reason}</p>
           )}
           {error && <ErrorNotice error={error} onDismiss={() => setError(null)} />}
-          {!sets && !error && <LoadingIndicator className="text-xs text-zinc-500" />}
-          {sets && !current && (
+          {current && (
+            <p className="text-[11px] text-zinc-500">
+              The agent wrote these questions, and your answers go back to it. Don't type passwords,
+              tokens or other secrets.
+            </p>
+          )}
+          {!questionSets && !error && <LoadingIndicator className="text-xs text-zinc-500" />}
+          {questionSets && !current && (
             <p className="text-xs text-zinc-500">This question has already been answered.</p>
           )}
           {current?.questions.map((question, i) => (
@@ -230,7 +259,7 @@ export default function QuestionDialog({
               key={i}
               index={i}
               question={question}
-              draft={drafts[i] ?? { selected: [], text: "" }}
+              draft={drafts[i] ?? EMPTY_DRAFT}
               onChange={(draft) => setDrafts((prev) => prev.map((d, j) => (j === i ? draft : d)))}
             />
           ))}
@@ -257,7 +286,7 @@ export default function QuestionDialog({
               </button>
               <button
                 type="button"
-                disabled={sending || !complete}
+                disabled={sending || !canSend}
                 onClick={() => void reply((id) => answerQuestion(id, toAnswers(drafts)))}
                 className="rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-50"
               >

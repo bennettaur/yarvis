@@ -38,8 +38,21 @@ afterAll(async () => {
   await sql.end();
 });
 
-/** Calls an MCP tool the way a workspace's Claude session would, headers included. */
-async function callTool(name: string, args: Record<string, unknown>) {
+interface Origin {
+  sessionKey?: string;
+  workspaceId?: string;
+}
+
+/**
+ * Calls an MCP tool the way a workspace's Claude session would, headers
+ * included. Pass an origin to ask as another session, or `{}` for a client
+ * Yarvis didn't launch.
+ */
+async function callTool(
+  name: string,
+  args: Record<string, unknown>,
+  origin: Origin = { sessionKey, workspaceId },
+) {
   const res = await app.request("/mcp", {
     method: "POST",
     headers: {
@@ -47,8 +60,8 @@ async function callTool(name: string, args: Record<string, unknown>) {
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
       Host: "127.0.0.1:8765",
-      "X-Yarvis-Session-Key": sessionKey,
-      "X-Yarvis-Workspace-Id": workspaceId,
+      ...(origin.sessionKey ? { "X-Yarvis-Session-Key": origin.sessionKey } : {}),
+      ...(origin.workspaceId ? { "X-Yarvis-Workspace-Id": origin.workspaceId } : {}),
     },
     body: JSON.stringify({
       jsonrpc: "2.0",
@@ -61,7 +74,9 @@ async function callTool(name: string, args: Record<string, unknown>) {
   const body = (await res.json()) as {
     result: { isError?: boolean; content: { text: string }[] };
   };
-  return { isError: body.result.isError, value: JSON.parse(body.result.content[0]?.text ?? "{}") };
+  const text = body.result.content[0]?.text ?? "{}";
+  // Failures come back as plain text rather than JSON.
+  return { isError: body.result.isError, value: body.result.isError ? text : JSON.parse(text) };
 }
 
 const ASK = {
@@ -77,18 +92,30 @@ const ASK = {
   ],
 };
 
-/** Waits for the blocked `ask_user` call to have stored its question. */
-async function pendingQuestionId(): Promise<string> {
+/** Waits for blocked `ask_user` calls to have stored `count` pending questions, oldest first. */
+async function pendingQuestionIds(count = 1): Promise<string[]> {
   for (let i = 0; i < 100; i++) {
-    const res = await app.request(`/api/questions?sessionKey=${encodeURIComponent(sessionKey)}`, {
-      headers: bearer,
-    });
-    const rows = (await res.json()) as { id: string }[];
-    if (rows[0]) return rows[0].id;
+    const rows = await sql<{ id: string }[]>`
+      SELECT id FROM agent_questions WHERE status = 'pending' ORDER BY created_at`;
+    if (rows.length >= count) return rows.map((r) => r.id);
     await Bun.sleep(20);
   }
-  throw new Error("question never appeared");
+  throw new Error("questions never appeared");
 }
+
+async function pendingQuestionId(): Promise<string> {
+  return (await pendingQuestionIds())[0]!;
+}
+
+const answer = (id: string, answers: unknown) =>
+  app.request(`/api/questions/${id}/answer`, {
+    method: "POST",
+    headers: bearer,
+    body: JSON.stringify({ answers }),
+  });
+
+const decline = (id: string) =>
+  app.request(`/api/questions/${id}/decline`, { method: "POST", headers: bearer });
 
 describe("ask_user over MCP", () => {
   it("raises a question in the attention stream and returns the user's answers", async () => {
@@ -108,13 +135,10 @@ describe("ask_user over MCP", () => {
     ).json()) as { context: unknown };
     expect(question.context).toEqual({ task: ASK.task, reason: ASK.reason });
 
-    const answered = await app.request(`/api/questions/${id}/answer`, {
-      method: "POST",
-      headers: bearer,
-      body: JSON.stringify({
-        answers: [{ selected: ["Token bucket"] }, { selected: [], text: "Keep it per-user" }],
-      }),
-    });
+    const answered = await answer(id, [
+      { selected: ["Token bucket"] },
+      { selected: [], text: "Keep it per-user" },
+    ]);
     expect(answered.status).toBe(200);
 
     const { value } = await call;
@@ -133,41 +157,27 @@ describe("ask_user over MCP", () => {
   it("tells the agent when the user declines", async () => {
     const call = callTool("ask_user", ASK);
     const id = await pendingQuestionId();
-    const res = await app.request(`/api/questions/${id}/decline`, {
-      method: "POST",
-      headers: bearer,
-    });
+    const res = await decline(id);
     expect(res.status).toBe(200);
     expect((await call).value.status).toBe("declined");
 
-    const again = await app.request(`/api/questions/${id}/decline`, {
-      method: "POST",
-      headers: bearer,
-    });
+    const again = await decline(id);
     expect(again.status).toBe(409);
   });
 
   it("rejects answers that don't fit the questions", async () => {
     const call = callTool("ask_user", ASK);
     const id = await pendingQuestionId();
-    const answer = (answers: unknown) =>
-      app.request(`/api/questions/${id}/answer`, {
-        method: "POST",
-        headers: bearer,
-        body: JSON.stringify({ answers }),
-      });
+    const status = async (answers: unknown) => (await answer(id, answers)).status;
 
-    expect((await answer([{ selected: ["Token bucket"] }])).status).toBe(400);
+    expect(await status([{ selected: ["Token bucket"] }])).toBe(400);
+    expect(await status([{ selected: ["Leaky bucket"] }, { selected: [], text: "x" }])).toBe(400);
     expect(
-      (await answer([{ selected: ["Leaky bucket"] }, { selected: [], text: "x" }])).status,
+      await status([{ selected: ["Token bucket", "Fixed window"] }, { selected: [], text: "x" }]),
     ).toBe(400);
-    expect(
-      (await answer([{ selected: ["Token bucket", "Fixed window"] }, { selected: [], text: "x" }]))
-        .status,
-    ).toBe(400);
-    expect((await answer([{ selected: ["Token bucket"] }, { selected: [] }])).status).toBe(400);
+    expect(await status([{ selected: ["Token bucket"] }, { selected: [] }])).toBe(400);
 
-    await app.request(`/api/questions/${id}/decline`, { method: "POST", headers: bearer });
+    await decline(id);
     await call;
   });
 
@@ -182,17 +192,105 @@ describe("ask_user over MCP", () => {
     });
     expect(await cleared.json()).toEqual([]);
 
-    await app.request(`/api/questions/${id}/decline`, { method: "POST", headers: bearer });
+    await decline(id);
     await call;
   });
 
   it("returns an answer already given to wait_for_answer without waiting", async () => {
     const call = callTool("ask_user", ASK);
     const id = await pendingQuestionId();
-    await app.request(`/api/questions/${id}/decline`, { method: "POST", headers: bearer });
+    await decline(id);
     await call;
 
     const { value } = await callTool("wait_for_answer", { questionId: id });
     expect(value.status).toBe("declined");
+  });
+
+  it("keeps a session's bell up until its last question is answered", async () => {
+    const first = callTool("ask_user", ASK);
+    await pendingQuestionIds(1);
+    const second = callTool("ask_user", { ...ASK, task: "A second question" });
+    const [firstId, secondId] = await pendingQuestionIds(2);
+
+    const listed = await app.request(
+      `/api/questions?sessionKey=${encodeURIComponent(sessionKey)}`,
+      { headers: bearer },
+    );
+    expect(((await listed.json()) as { id: string }[]).map((q) => q.id)).toEqual([
+      firstId!,
+      secondId!,
+    ]);
+    // Both questions share the session's one attention item.
+    expect(await sql`SELECT id FROM attention_items`).toHaveLength(1);
+
+    await decline(firstId!);
+    await first;
+    const [stillUp] = await sql`SELECT status FROM attention_items`;
+    expect(stillUp?.status).toBe("pending");
+
+    await decline(secondId!);
+    await second;
+    const [cleared] = await sql`SELECT status FROM attention_items`;
+    expect(cleared?.status).toBe("resolved");
+  });
+
+  it("clears a question from a client Yarvis didn't launch by its own id", async () => {
+    const call = callTool("ask_user", ASK, {});
+    const id = await pendingQuestionId();
+
+    const [item] =
+      await sql`SELECT session_key, workspace_id, title, nav_target FROM attention_items`;
+    expect(item).toMatchObject({
+      session_key: null,
+      workspace_id: null,
+      title: "Claude session",
+      nav_target: null,
+    });
+
+    await decline(id);
+    expect((await call).value.status).toBe("declined");
+    const [after] = await sql`SELECT status FROM attention_items`;
+    expect(after?.status).toBe("resolved");
+  });
+
+  it("drops a workspace header that names no workspace", async () => {
+    const call = callTool("ask_user", ASK, {
+      sessionKey: "terminal/t1/p1",
+      workspaceId: "22222222-2222-2222-2222-222222222222",
+    });
+    const id = await pendingQuestionId();
+    const [question] = await sql`SELECT workspace_id FROM agent_questions`;
+    expect(question?.workspace_id).toBeNull();
+
+    await decline(id);
+    await call;
+  });
+
+  it("refuses duplicate option labels", async () => {
+    const { isError } = await callTool("ask_user", {
+      ...ASK,
+      questions: [{ question: "Which?", options: [{ label: "Same" }, { label: "Same" }] }],
+    });
+    expect(isError).toBe(true);
+    expect(await sql`SELECT id FROM agent_questions`).toHaveLength(0);
+  });
+
+  it("only lets the asking session wait on its question", async () => {
+    const call = callTool("ask_user", ASK);
+    const id = await pendingQuestionId();
+    await decline(id);
+    await call;
+
+    const other = await callTool(
+      "wait_for_answer",
+      { questionId: id },
+      { sessionKey: "ws-claude:someone-else" },
+    );
+    expect(other).toEqual({ isError: true, value: "No question with that id." });
+
+    const unknown = await callTool("wait_for_answer", {
+      questionId: "33333333-3333-3333-3333-333333333333",
+    });
+    expect(unknown.isError).toBe(true);
   });
 });

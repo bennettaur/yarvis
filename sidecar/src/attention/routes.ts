@@ -49,7 +49,10 @@ export const ingestSchema = z.object({
   hookEvent: z.string().max(64).optional(),
 });
 
-/** A human summary for each kind, used when the hook carries no message. */
+/**
+ * A human summary for each kind, used when the hook carries no message. Typed on
+ * the ingest enum, which leaves out `question`: only `ask_user` raises those.
+ */
 function defaultBody(kind: z.infer<typeof KIND>): string {
   switch (kind) {
     case "permission":
