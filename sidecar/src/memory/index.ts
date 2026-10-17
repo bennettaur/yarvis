@@ -328,7 +328,11 @@ export class PgVectorMemoryStore implements MemoryService {
     options: MemorySearchOptions = {},
   ): Promise<MemoryRecord[]> {
     const queryVec = await this.embedder.embedQuery(query);
-    const distance = cosineDistance(memories.embedding, queryVec);
+    const rawDistance = cosineDistance(memories.embedding, queryVec);
+    // `+ 0` keeps the planner off the HNSW index, which can only serve the bare
+    // operator. The same expression is selected and sorted on, so each row's
+    // distance is computed once.
+    const distance = options.exact ? sql<number>`(${rawDistance}) + 0` : rawDistance;
     const conditions: SQL[] = [];
     if (options.kinds?.length) conditions.push(inArray(memories.kind, [...options.kinds]));
     if (options.asOf) {
@@ -341,8 +345,7 @@ export class PgVectorMemoryStore implements MemoryService {
       .select({ ...RECORD_COLUMNS, distance })
       .from(memories)
       .where(conditions.length ? and(...conditions) : undefined)
-      // `+ 0` keeps the planner off the HNSW index, which can only serve the bare operator.
-      .orderBy(options.exact ? sql`(${distance}) + 0` : distance)
+      .orderBy(distance)
       .limit(Math.max(limit, Math.min(limit * CANDIDATE_MULTIPLIER, MAX_CANDIDATES)));
     const now = this.now();
     const validAt = options.asOf ?? now;
