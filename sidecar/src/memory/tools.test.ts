@@ -110,3 +110,71 @@ describe("chat memory tools", () => {
     ).toEqual({ error: "no current memory with that id" });
   });
 });
+
+describe("decision tools", () => {
+  const situation = "PR acme/api#12 is ready and waiting on review in the billing project";
+  const question = "Should I ask for review in #billing-reviews?";
+
+  type Consulted = { verdict: string; choice?: string; reason?: string; precedentIds: string[] };
+
+  it("decides from an answer recorded in the same situation", async () => {
+    await tools.record_decision.execute!(
+      { situation, question, choice: "post in #billing-reviews", answer: "yes, tag nobody" },
+      opts,
+    );
+
+    const result = (await tools.consult_decisions.execute!(
+      { situation, question },
+      opts,
+    )) as Consulted;
+    expect(result.verdict).toBe("decide");
+    expect(result.choice).toContain("post in #billing-reviews");
+  });
+
+  it("asks when no answer was ever recorded", async () => {
+    await store.add("The billing project ships next week", { kind: "fact" });
+
+    const result = (await tools.consult_decisions.execute!(
+      { situation, question },
+      opts,
+    )) as Consulted;
+    expect(result).toMatchObject({ verdict: "ask", reason: "no-precedent" });
+  });
+
+  it("ignores a decision stored with plain remember, which has no answer to weigh", async () => {
+    await store.add(`${situation}\nQuestion: ${question}`, { kind: "decision" });
+
+    const result = (await tools.consult_decisions.execute!(
+      { situation, question },
+      opts,
+    )) as Consulted;
+    expect(result.verdict).toBe("ask");
+  });
+
+  it("stops counting a decision once its window has passed", async () => {
+    const recorded = (await tools.record_decision.execute!(
+      { situation, question, choice: "post in #billing-reviews", validFor: "PT1H" },
+      opts,
+    )) as { id: string };
+    await sql`UPDATE memories SET valid_from = now() - interval '2 hours', valid_until = now() - interval '1 hour' WHERE id = ${recorded.id}`;
+
+    const result = (await tools.consult_decisions.execute!(
+      { situation, question },
+      opts,
+    )) as Consulted;
+    expect(result.verdict).toBe("ask");
+  });
+
+  it("only weighs answers about the action being asked about", async () => {
+    await tools.record_decision.execute!(
+      { situation, question, choice: "approve", action: "archive_workspace" },
+      opts,
+    );
+
+    const result = (await tools.consult_decisions.execute!(
+      { situation, question, action: "start_work_on_issue" },
+      opts,
+    )) as Consulted;
+    expect(result.verdict).toBe("ask");
+  });
+});

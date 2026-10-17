@@ -2,6 +2,14 @@ import { tool } from "ai";
 import { z } from "zod";
 import { MEMORY_KINDS, type MemoryKind } from "../db/schema.ts";
 import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
+import {
+  type DecisionDetail,
+  decisionContent,
+  decisionQuery,
+  type Precedent,
+  readDecision,
+  weighPrecedents,
+} from "./decisions.ts";
 import type { MemoryService } from "./index.ts";
 import {
   isoInstant,
@@ -43,7 +51,7 @@ export function buildMemoryTools(memory: MemoryService, sessionId: string) {
   return {
     remember: tool({
       description:
-        "Store a durable fact, preference, or note the user shares so it can be recalled in future conversations. Pick the kind that fits: 'preference' for how they like to work, 'project' for the state of a project, 'decision' for a choice worth keeping, 'agent-feedback' for guidance about how an agent should behave, 'fact' otherwise. When the claim only holds for a while — an outage, someone out this week, a temporary workaround — give it a window (validFor or validUntil) so a later recall knows to re-check it.",
+        "Store a durable fact, preference, or note the user shares so it can be recalled in future conversations. Pick the kind that fits: 'preference' for how they like to work, 'project' for the state of a project, 'decision' for a choice worth keeping (an answer to a question you asked goes through record_decision instead, so it can be weighed later), 'agent-feedback' for guidance about how an agent should behave, 'fact' otherwise. When the claim only holds for a while — an outage, someone out this week, a temporary workaround — give it a window (validFor or validUntil) so a later recall knows to re-check it.",
       inputSchema: z.object({
         content: z.string().describe("The fact to remember, in a self-contained sentence"),
         kind: z.enum(WRITABLE_KINDS).default("fact"),
@@ -190,5 +198,113 @@ export function buildMemoryTools(memory: MemoryService, sessionId: string) {
         return { id: record.id };
       },
     }),
+
+    consult_decisions: tool({
+      description:
+        "Before asking the user how to proceed, check how they answered the same question before. Returns verdict 'decide' with the choice to act on when they answered it in this same situation, or gave the same answer in several related ones. Returns verdict 'ask' otherwise: no precedent, too few, or past answers that conflict. Not for questions about facts only they know.",
+      inputSchema: z.object({
+        situation: z
+          .string()
+          .max(1000)
+          .describe(
+            "What is going on, self-contained: the project, the ticket or PR, who is involved, what is at stake",
+          ),
+        question: z.string().max(500).describe("The question you would ask the user"),
+        action: z
+          .string()
+          .max(100)
+          .optional()
+          .describe("The tool the question is about, e.g. start_work_on_issue, when there is one"),
+      }),
+      execute: async ({ situation, question, action }) => {
+        const results = await memory.search(
+          decisionQuery(situation, question),
+          DECISION_CANDIDATES,
+          {
+            kinds: ["decision"],
+            exact: true,
+          },
+        );
+        const precedents: (Precedent & { detail: DecisionDetail })[] = [];
+        for (const r of results) {
+          const detail = readDecision(r);
+          // An expired decision ("only this week") no longer speaks for the user.
+          if (!detail || r.validity !== "current") continue;
+          precedents.push({
+            id: r.id,
+            choice: detail.choice,
+            action: detail.action,
+            similarity: r.similarity ?? 0,
+            createdAt: r.createdAt,
+            detail,
+          });
+        }
+        const verdict = weighPrecedents(precedents, action ?? null);
+        const counted = new Set(verdict.precedentIds);
+        const nonce = newNonce();
+        return {
+          ...verdict,
+          ...(verdict.verdict === "decide" ? { choice: fence(verdict.choice, nonce) } : {}),
+          warning: untrustedWarning(nonce),
+          precedents: precedents
+            .filter((p) => counted.has(p.id))
+            .map((p) => ({
+              id: p.id,
+              similarity: Number(p.similarity.toFixed(3)),
+              createdAt: p.createdAt.toISOString(),
+              choice: fence(p.detail.choice, nonce),
+              content: fence(decisionContent(p.detail), nonce),
+            })),
+        };
+      },
+    }),
+
+    record_decision: tool({
+      description:
+        "Record the user's answer after you asked them how to proceed, so consult_decisions can answer the same question next time. Also record it when they overrule a choice you made from precedent. Only record what the user actually answered in this conversation, never a choice you made yourself.",
+      inputSchema: z.object({
+        situation: z
+          .string()
+          .max(1000)
+          .describe("The situation you passed to consult_decisions, or would have"),
+        question: z.string().max(500).describe("The question you asked"),
+        choice: z
+          .string()
+          .min(1)
+          .max(80)
+          .describe(
+            "A short label for the answer. Reuse a precedent's label when the answer is the same, since answers are compared by label",
+          ),
+        answer: z
+          .string()
+          .max(1000)
+          .optional()
+          .describe("Their answer in their own words, when it says more than the label"),
+        action: z.string().max(100).optional().describe("The tool the question was about, if any"),
+        ...validityWindowShape,
+      }),
+      execute: async ({ situation, question, choice, answer, action, ...windowRequest }) => {
+        const requested = resolveValidityWindow(windowRequest, new Date());
+        if (!requested.ok) return { error: requested.error };
+        const detail: DecisionDetail = {
+          situation,
+          question,
+          choice,
+          answer: answer ?? null,
+          action: action ?? null,
+        };
+        const record = await memory.add(decisionContent(detail), {
+          kind: "decision",
+          sourceRef: { type: "chat", sessionId },
+          metadata: { decision: detail },
+          validFrom: requested.validFrom,
+          validUntil: requested.validUntil,
+        });
+        return { id: record.id, ...validityFields(record) };
+      },
+    }),
   };
 }
+
+/** How many of the closest decisions consult_decisions weighs. */
+const DECISION_CANDIDATES = 10;

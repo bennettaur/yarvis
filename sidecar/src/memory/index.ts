@@ -78,6 +78,14 @@ export interface MemorySearchOptions {
    * search scans every row; that is acceptable only because it is rare.
    */
   asOf?: Date;
+  /**
+   * Rank every row that passes the filters instead of the HNSW index's
+   * candidates. The index applies a `kind` filter after choosing its
+   * candidates, so a search for a kind that is rare among all memories can
+   * come back empty though matching rows exist. Only for kinds small enough to
+   * scan.
+   */
+  exact?: boolean;
 }
 
 /** What a write records beyond the text itself. */
@@ -318,7 +326,8 @@ export class PgVectorMemoryStore implements MemoryService {
       .select({ ...RECORD_COLUMNS, distance })
       .from(memories)
       .where(conditions.length ? and(...conditions) : undefined)
-      .orderBy(distance)
+      // `+ 0` keeps the planner off the HNSW index, which can only serve the bare operator.
+      .orderBy(options.exact ? sql`(${distance}) + 0` : distance)
       .limit(Math.max(limit, Math.min(limit * CANDIDATE_MULTIPLIER, MAX_CANDIDATES)));
     const now = this.now();
     const validAt = options.asOf ?? now;

@@ -176,6 +176,30 @@ they can be matched exactly.
 When a fact changes, the assistant corrects the memory instead of storing a
 contradiction. The old version stays for the record but drops out of search.
 
+### Decisions it learns from you
+
+When the assistant has to ask you how to proceed, such as whether to start
+work on a ticket or where to ask for a review, it first checks how you
+answered the same question before:
+
+- **You answered it in the same situation before.** It goes with your most
+  recent answer instead of asking, and tells you it did, so you can overrule
+  it.
+- **You gave the same answer in at least three related situations.** It goes
+  with that answer too.
+- **Otherwise it asks.** That covers no past answer, too few, or past answers
+  that disagree.
+
+Each answer you give is saved as a `decision` memory, with the situation, the
+question and your answer, so the next time has more to go on. When you
+overrule a choice it made, that is saved too, and your newest answer wins from
+then on. An answer that only holds for a while ("don't tag Sam this week")
+gets a window like any other memory, and stops counting once it expires. To
+make it forget an answer, find it under Memory → Memories and delete it.
+
+It only does this for choices, not for facts only you know, like a date or a
+name. A tool that asks for your approval still asks every time.
+
 ### When a memory holds
 
 Some facts only hold for a while. Tell the assistant "GitHub is down" and it
