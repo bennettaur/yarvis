@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import * as schema from "../db/schema.ts";
+import { PendingQuestions } from "./decisions.ts";
 import { HashEmbedder } from "./embedder.ts";
 import { PgVectorMemoryStore } from "./index.ts";
 import { buildMemoryTools } from "./tools.ts";
@@ -115,66 +116,148 @@ describe("decision tools", () => {
   const situation = "PR acme/api#12 is ready and waiting on review in the billing project";
   const question = "Should I ask for review in #billing-reviews?";
 
-  type Consulted = { verdict: string; choice?: string; reason?: string; precedentIds: string[] };
+  type Consulted = {
+    verdict: string;
+    choice?: string;
+    reason?: string;
+    basis?: string;
+    questionId: string;
+    warning?: string;
+    precedents: { id: string; similarity: number }[];
+  };
+  type Recorded = { id?: string; error?: string };
+  type Answer = { choice: string; answer?: string; action?: string; validFor?: string };
 
-  it("decides from an answer recorded in the same situation", async () => {
-    await tools.record_decision.execute!(
-      { situation, question, choice: "post in #billing-reviews", answer: "yes, tag nobody" },
-      opts,
-    );
+  let questions: PendingQuestions;
+  beforeEach(() => {
+    questions = new PendingQuestions();
+  });
 
-    const result = (await tools.consult_decisions.execute!(
-      { situation, question },
+  /** Each chat turn builds its tools afresh, which is how a later turn is told apart. */
+  const newTurn = () => buildMemoryTools(store, "session-1", questions);
+
+  async function consult(turn: ReturnType<typeof newTurn>, action?: string) {
+    return (await turn.consult_decisions.execute!(
+      { situation, question, action },
       opts,
     )) as Consulted;
-    expect(result.verdict).toBe("decide");
+  }
+
+  /** Asks in one turn and records the user's answer in the next, as a real exchange does. */
+  async function askAndRecord(answer: Answer) {
+    const asked = await consult(newTurn(), answer.action);
+    return (await newTurn().record_decision.execute!(
+      { questionId: asked.questionId, situation, question, ...answer },
+      opts,
+    )) as Recorded;
+  }
+
+  it("decides from an answer recorded in the same situation", async () => {
+    const recorded = await askAndRecord({ choice: "post in #billing-reviews", answer: "yes" });
+
+    const result = await consult(newTurn());
+    expect(result).toMatchObject({ verdict: "decide", basis: "same-situation" });
     expect(result.choice).toContain("post in #billing-reviews");
+    expect(result.warning).toBeString();
+    expect(result.precedents.map((p) => p.id)).toEqual([recorded.id!]);
+  });
+
+  it("matches a decision by its situation and question, not by the answer stored with it", async () => {
+    await askAndRecord({ choice: "post in #billing-reviews", answer: "yes, and tag nobody" });
+
+    const [precedent] = (await consult(newTurn())).precedents;
+    expect(precedent?.similarity).toBeCloseTo(1, 3);
   });
 
   it("asks when no answer was ever recorded", async () => {
     await store.add("The billing project ships next week", { kind: "fact" });
 
-    const result = (await tools.consult_decisions.execute!(
-      { situation, question },
-      opts,
-    )) as Consulted;
-    expect(result).toMatchObject({ verdict: "ask", reason: "no-precedent" });
+    expect(await consult(newTurn())).toMatchObject({ verdict: "ask", reason: "no-precedent" });
   });
 
   it("ignores a decision stored with plain remember, which has no answer to weigh", async () => {
     await store.add(`${situation}\nQuestion: ${question}`, { kind: "decision" });
 
-    const result = (await tools.consult_decisions.execute!(
-      { situation, question },
-      opts,
-    )) as Consulted;
-    expect(result.verdict).toBe("ask");
+    expect(await consult(newTurn())).toMatchObject({ verdict: "ask", reason: "no-precedent" });
   });
 
   it("stops counting a decision once its window has passed", async () => {
-    const recorded = (await tools.record_decision.execute!(
-      { situation, question, choice: "post in #billing-reviews", validFor: "PT1H" },
-      opts,
-    )) as { id: string };
-    await sql`UPDATE memories SET valid_from = now() - interval '2 hours', valid_until = now() - interval '1 hour' WHERE id = ${recorded.id}`;
+    const recorded = await askAndRecord({ choice: "post in #billing-reviews", validFor: "PT1H" });
+    await sql`UPDATE memories SET valid_from = now() - interval '2 hours', valid_until = now() - interval '1 hour' WHERE id = ${recorded.id!}`;
 
-    const result = (await tools.consult_decisions.execute!(
-      { situation, question },
-      opts,
-    )) as Consulted;
-    expect(result.verdict).toBe("ask");
+    expect(await consult(newTurn())).toMatchObject({ verdict: "ask", reason: "no-precedent" });
   });
 
   it("only weighs answers about the action being asked about", async () => {
-    await tools.record_decision.execute!(
-      { situation, question, choice: "approve", action: "archive_workspace" },
-      opts,
-    );
+    await askAndRecord({ choice: "approve", action: "request_review" });
 
-    const result = (await tools.consult_decisions.execute!(
-      { situation, question, action: "start_work_on_issue" },
+    expect(await consult(newTurn(), "pick_reviewer")).toMatchObject({
+      verdict: "ask",
+      reason: "no-precedent",
+    });
+    expect(await consult(newTurn())).toMatchObject({ verdict: "ask", reason: "no-precedent" });
+  });
+
+  it("always asks about a tool that needs the user's go-ahead", async () => {
+    expect(await consult(newTurn(), "start_work_on_issue")).toMatchObject({
+      verdict: "ask",
+      reason: "needs-confirmation",
+    });
+  });
+
+  it("refuses to record an answer in the turn that asked the question", async () => {
+    const turn = newTurn();
+    const asked = await consult(turn);
+
+    const result = (await turn.record_decision.execute!(
+      { questionId: asked.questionId, situation, question, choice: "approve" },
       opts,
-    )) as Consulted;
-    expect(result.verdict).toBe("ask");
+    )) as Recorded;
+    expect(result.error).toContain("later turn");
+    expect(await store.count({ kinds: ["decision"] })).toBe(0);
+  });
+
+  it("refuses an unknown question and records each question once", async () => {
+    const asked = await consult(newTurn());
+    const record = (questionId: string) =>
+      newTurn().record_decision.execute!(
+        { questionId, situation, question, choice: "approve" },
+        opts,
+      ) as Promise<Recorded>;
+
+    expect((await record("made-up")).error).toContain("no open question");
+    expect((await record(asked.questionId)).id).toBeString();
+    expect((await record(asked.questionId)).error).toContain("no open question");
+  });
+
+  it("refuses a bad window and stores nothing", async () => {
+    const asked = await consult(newTurn());
+
+    const result = (await newTurn().record_decision.execute!(
+      {
+        questionId: asked.questionId,
+        situation,
+        question,
+        choice: "approve",
+        validFor: "PT1H",
+        validUntil: "2030-01-01T00:00:00Z",
+      },
+      opts,
+    )) as Recorded;
+    expect(result.error).toBe("give validFor or validUntil, not both");
+    expect(await store.count({ kinds: ["decision"] })).toBe(0);
+  });
+
+  it("won't correct or confirm a decision, which changes only by being answered again", async () => {
+    const recorded = await askAndRecord({ choice: "approve" });
+    const tools = newTurn();
+
+    const corrected = (await tools.correct_memory.execute!(
+      { id: recorded.id!, content: "decline" },
+      opts,
+    )) as Recorded;
+    const confirmed = (await tools.confirm_memory.execute!({ id: recorded.id! }, opts)) as Recorded;
+    expect(corrected.error).toContain("record_decision");
+    expect(confirmed.error).toContain("record_decision");
   });
 });

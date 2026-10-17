@@ -165,7 +165,9 @@ A session that Yarvis launched in a workspace gets two more tools. See
 
 Confirming or correcting a memory is in-app only for now, so a coding session
 can see that a memory has expired but can't re-validate it. It can tell you, or
-`remember` what it found.
+`remember` what it found. Checking and recording how you answered a question
+before is in-app only too, so a coding session neither consults past answers
+nor adds to them.
 
 Not exposed, on purpose:
 

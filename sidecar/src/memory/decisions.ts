@@ -10,6 +10,12 @@ import type { MemoryRecord } from "./index.ts";
  * (`weighPrecedents`). It decides on its own only when they point one way;
  * otherwise it asks and records the new answer, so each answer the user gives
  * adds evidence for next time.
+ *
+ * A precedent lets the assistant skip asking, so it is consent the user gave
+ * once and the assistant reuses. Two rules keep it from being forged:
+ * an answer is recorded only against a question `PendingQuestions` handed out
+ * in an earlier turn, and no precedent stands in for a tool that needs the
+ * user's go-ahead (`chat/destructiveTools.ts`).
  */
 
 export interface DecisionDetail {
@@ -65,8 +71,9 @@ export type DecisionVerdict =
        * `consistent`: related situations that all got the same answer.
        */
       basis: "same-situation" | "consistent";
-      /** How many counted precedents gave this answer. */
+      /** How many counted precedents gave this answer, and how many gave another. */
       agreeing: number;
+      disagreeing: number;
       precedentIds: string[];
     }
   | {
@@ -87,48 +94,52 @@ export function normalizeChoice(choice: string): string {
 
 /**
  * Decides whether past answers settle the question. Only precedents about the
- * same action count, when an action is given.
+ * same action count, and a question about no particular action counts only
+ * precedents about none, so an answer given for one tool never decides another.
  *
  * The newest same-situation answer wins over older ones, so a user who changed
  * their mind is followed rather than outvoted by their old answers.
  */
 export function weighPrecedents(precedents: Precedent[], action: string | null): DecisionVerdict {
   const counted = precedents.filter(
-    (p) => p.similarity >= RELATED_SIMILARITY && (action === null || p.action === action),
+    (p) => p.similarity >= RELATED_SIMILARITY && p.action === action,
   );
-  const ids = counted.map((p) => p.id);
   if (counted.length === 0) return { verdict: "ask", reason: "no-precedent", precedentIds: [] };
+  const precedentIds = counted.map((p) => p.id);
 
   const sameSituation = counted
     .filter((p) => p.similarity >= SAME_SITUATION_SIMILARITY)
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   const newest = sameSituation[0];
   if (newest) {
-    const choice = normalizeChoice(newest.choice);
+    const newestChoice = normalizeChoice(newest.choice);
+    const agreeing = counted.filter((p) => normalizeChoice(p.choice) === newestChoice).length;
     return {
       verdict: "decide",
       choice: newest.choice,
       basis: "same-situation",
-      agreeing: counted.filter((p) => normalizeChoice(p.choice) === choice).length,
-      precedentIds: ids,
+      agreeing,
+      disagreeing: counted.length - agreeing,
+      precedentIds,
     };
   }
 
   const choices = new Set(counted.map((p) => normalizeChoice(p.choice)));
-  if (choices.size > 1) return { verdict: "ask", reason: "conflicting", precedentIds: ids };
+  if (choices.size > 1) return { verdict: "ask", reason: "conflicting", precedentIds };
   if (counted.length < CONSISTENT_PRECEDENTS) {
-    return { verdict: "ask", reason: "too-few", precedentIds: ids };
+    return { verdict: "ask", reason: "too-few", precedentIds };
   }
   return {
     verdict: "decide",
     choice: counted[0]!.choice,
     basis: "consistent",
     agreeing: counted.length,
-    precedentIds: ids,
+    disagreeing: 0,
+    precedentIds,
   };
 }
 
-/** The text a decision is embedded and searched by: the situation and the question, not the answer. */
+/** The text a decision is found by: the situation and the question, not the answer. */
 export function decisionQuery(situation: string, question: string): string {
   return `${situation}\nQuestion: ${question}`;
 }
@@ -162,4 +173,54 @@ export function readDecision(
     answer: typeof detail.answer === "string" ? detail.answer : null,
     action: typeof detail.action === "string" ? detail.action : null,
   };
+}
+
+/** How long a handed-out question can still be answered. */
+const QUESTION_TTL_MS = 24 * 60 * 60_000;
+
+/** Open questions kept per chat. The oldest is dropped past this. */
+const MAX_OPEN_QUESTIONS = 20;
+
+interface OpenQuestion {
+  /** The turn that asked it. Identity only: each turn builds its tools afresh. */
+  turn: object;
+  askedAt: number;
+}
+
+/**
+ * The questions `consult_decisions` handed out, per chat session, so
+ * `record_decision` only stores an answer to a question the assistant asked.
+ *
+ * The answer has to arrive in a later turn than the question. Text the
+ * assistant read during a turn (an issue body, a Slack message) can tell it to
+ * record a decision, but it can't make the user send a message. In memory only:
+ * after a restart, an unanswered question is asked again rather than recorded.
+ */
+export class PendingQuestions {
+  private readonly bySession = new Map<string, Map<string, OpenQuestion>>();
+
+  constructor(private readonly now: () => number = Date.now) {}
+
+  /** Hands out an id for a question asked in `turn`. */
+  issue(sessionId: string, turn: object): string {
+    const open = this.bySession.get(sessionId) ?? new Map<string, OpenQuestion>();
+    this.bySession.set(sessionId, open);
+    const id = crypto.randomUUID();
+    open.set(id, { turn, askedAt: this.now() });
+    if (open.size > MAX_OPEN_QUESTIONS) open.delete(open.keys().next().value!);
+    return id;
+  }
+
+  /**
+   * Uses up a question if it may be answered from `turn`: it was handed out in
+   * this session, in an earlier turn, and hasn't expired or been answered.
+   */
+  answer(sessionId: string, questionId: string, turn: object): "ok" | "unknown" | "same-turn" {
+    const open = this.bySession.get(sessionId);
+    const question = open?.get(questionId);
+    if (!open || !question || this.now() - question.askedAt > QUESTION_TTL_MS) return "unknown";
+    if (question.turn === turn) return "same-turn";
+    open.delete(questionId);
+    return "ok";
+  }
 }

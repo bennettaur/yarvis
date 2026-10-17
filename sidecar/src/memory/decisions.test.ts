@@ -1,9 +1,17 @@
 import { describe, expect, it } from "bun:test";
-import { type Precedent, readDecision, weighPrecedents } from "./decisions.ts";
+import {
+  PendingQuestions,
+  type Precedent,
+  RELATED_SIMILARITY,
+  readDecision,
+  SAME_SITUATION_SIMILARITY,
+  weighPrecedents,
+} from "./decisions.ts";
 
-const SAME = 0.95;
-const RELATED = 0.8;
-const UNRELATED = 0.5;
+// Kept relative to the thresholds, so retuning them doesn't quietly change what these mean.
+const SAME = SAME_SITUATION_SIMILARITY;
+const RELATED = RELATED_SIMILARITY;
+const UNRELATED = RELATED_SIMILARITY - 0.1;
 
 function precedent(
   id: string,
@@ -42,7 +50,30 @@ describe("weighPrecedents", () => {
       ],
       null,
     );
-    expect(verdict).toMatchObject({ verdict: "decide", choice: "decline", agreeing: 1 });
+    expect(verdict).toMatchObject({
+      verdict: "decide",
+      choice: "decline",
+      agreeing: 1,
+      disagreeing: 2,
+    });
+  });
+
+  it("lets an answer in the same situation settle what related answers disagree on", () => {
+    const verdict = weighPrecedents(
+      [
+        precedent("same", "approve", SAME),
+        precedent("a", "decline", RELATED),
+        precedent("b", "approve", RELATED),
+      ],
+      null,
+    );
+    expect(verdict).toMatchObject({
+      verdict: "decide",
+      choice: "approve",
+      basis: "same-situation",
+      agreeing: 2,
+      disagreeing: 1,
+    });
   });
 
   it("asks when related answers conflict", () => {
@@ -83,9 +114,30 @@ describe("weighPrecedents", () => {
     );
     expect(verdict).toEqual({ verdict: "ask", reason: "too-few", precedentIds: ["b"] });
   });
+
+  it("doesn't let an answer about a tool decide a question about no tool", () => {
+    const verdict = weighPrecedents([precedent("a", "approve", SAME, 1, "request_review")], null);
+    expect(verdict).toMatchObject({ verdict: "ask", reason: "no-precedent" });
+  });
 });
 
 describe("readDecision", () => {
+  it("reads the detail, with a missing answer and action as null", () => {
+    const metadata = { decision: { situation: "s", question: "q", choice: "approve", answer: 3 } };
+    expect(readDecision({ kind: "decision", metadata })).toEqual({
+      situation: "s",
+      question: "q",
+      choice: "approve",
+      answer: null,
+      action: null,
+    });
+  });
+
+  it("returns null when the choice isn't a string", () => {
+    const metadata = { decision: { situation: "s", question: "q", choice: 1 } };
+    expect(readDecision({ kind: "decision", metadata })).toBeNull();
+  });
+
   it("returns null for a decision stored without structured detail", () => {
     expect(readDecision({ kind: "decision", metadata: null })).toBeNull();
   });
@@ -93,5 +145,27 @@ describe("readDecision", () => {
   it("ignores the detail on a memory of another kind", () => {
     const metadata = { decision: { situation: "s", question: "q", choice: "c" } };
     expect(readDecision({ kind: "fact", metadata })).toBeNull();
+  });
+});
+
+describe("PendingQuestions", () => {
+  it("accepts an answer only from a later turn, and only once", () => {
+    const questions = new PendingQuestions();
+    const asking = {};
+    const id = questions.issue("chat-1", asking);
+
+    expect(questions.answer("chat-1", id, asking)).toBe("same-turn");
+    expect(questions.answer("chat-2", id, {})).toBe("unknown");
+    expect(questions.answer("chat-1", id, {})).toBe("ok");
+    expect(questions.answer("chat-1", id, {})).toBe("unknown");
+  });
+
+  it("forgets a question after a day", () => {
+    let now = 0;
+    const questions = new PendingQuestions(() => now);
+    const id = questions.issue("chat-1", {});
+
+    now = 24 * 60 * 60_000 + 1;
+    expect(questions.answer("chat-1", id, {})).toBe("unknown");
   });
 });

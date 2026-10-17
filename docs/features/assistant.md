@@ -178,9 +178,9 @@ contradiction. The old version stays for the record but drops out of search.
 
 ### Decisions it learns from you
 
-When the assistant has to ask you how to proceed, such as whether to start
-work on a ticket or where to ask for a review, it first checks how you
-answered the same question before:
+When the assistant has to ask you to choose, such as which channel to ask for
+a review in or which approach to take, it first checks how you answered the
+same question before:
 
 - **You answered it in the same situation before.** It goes with your most
   recent answer instead of asking, and tells you it did, so you can overrule
@@ -191,14 +191,21 @@ answered the same question before:
   that disagree.
 
 Each answer you give is saved as a `decision` memory, with the situation, the
-question and your answer, so the next time has more to go on. When you
-overrule a choice it made, that is saved too, and your newest answer wins from
-then on. An answer that only holds for a while ("don't tag Sam this week")
-gets a window like any other memory, and stops counting once it expires. To
-make it forget an answer, find it under Memory → Memories and delete it.
+question and your answer, so it has more to go on next time. Only a reply you
+sent after it asked is saved, never something it read in a ticket or a page.
+When you overrule a choice it made, that is saved too. In the same situation
+your newest answer wins from then on. In related situations a change of mind
+means your answers now disagree, so it asks again. An answer that only holds
+for a while ("don't tag Sam this week") gets a window like any other memory,
+and stops counting once it expires. To make it forget an answer, find it under
+Memory → Memories and delete it. Changing your mind is done by answering
+again: it won't edit a saved answer.
 
 It only does this for choices, not for facts only you know, like a date or a
-name. A tool that asks for your approval still asks every time.
+name. A past answer never stands in for your go-ahead on an action that needs
+it, like starting work on a ticket or archiving a workspace: it asks about
+those every time. On a spoken turn, saving an answer shows the approval prompt
+first, so a misheard "yes" isn't kept.
 
 ### When a memory holds
 
@@ -345,7 +352,8 @@ Always available:
 
 - **Tasks.** Create, list, update, complete, delete, roll over and find
   finished tasks.
-- **Memory.** Remember, recall, correct, confirm, list, forget and take notes.
+- **Memory.** Remember, recall, correct, confirm, list, forget, take notes,
+  and check or record how you answered a question before.
 - **Projects.** Create, read and update projects, and track, list and untrack
   tickets with priorities.
 - **Todos.** The assistant's own todo list.

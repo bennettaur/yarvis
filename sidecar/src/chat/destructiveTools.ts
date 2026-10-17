@@ -63,6 +63,9 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "navigate_browser_tab",
   // Deletes a memory outright, where correcting one keeps the trail.
   "forget_memory",
+  // Stores an answer that later turns act on without asking, typed ones
+  // included, so a misheard "yes" would outlive the turn it was heard in.
+  "record_decision",
   // Runs a whole specialist with its own tools; a misheard task becomes a
   // multi-step run nobody reviewed.
   "delegate",
