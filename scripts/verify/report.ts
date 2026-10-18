@@ -192,7 +192,7 @@ export function renderReport(review: Review, facts: Facts): { body: string; data
     REPORT_MARKER,
     `## ${VERDICT_TITLE[verdict]}`,
     "",
-    `**Risk:** ${facts.tier.tier}${facts.tier.reasons.length ? ` (${facts.tier.reasons.map((r) => r.replace(/^\w+: /, "")).join("; ")})` : ""} · **Head:** \`${facts.head.slice(0, 7)}\``,
+    `**Risk:** ${facts.tier.tier}${facts.tier.reasons.length ? ` (${facts.tier.reasons.join("; ")})` : ""} · **Head:** \`${facts.head.slice(0, 7)}\``,
     "",
     `**Goal:** ${review.goal}`,
     "",
