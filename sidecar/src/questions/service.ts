@@ -24,6 +24,12 @@ import { describeError } from "../llm/errors.ts";
  */
 
 export interface AskInput {
+  /**
+   * A coding agent asks over MCP from a terminal session; the in-app agent asks
+   * from a chat. It decides how the question is labelled and where "Go to
+   * session" lands.
+   */
+  from: "coding-agent" | "yarvis";
   sessionKey: string | null;
   workspaceId: string | null;
   context: AgentQuestionContext;
@@ -73,16 +79,17 @@ export async function askQuestions(db: Db, input: AskInput): Promise<AgentQuesti
     })
     .returning();
 
+  const fromYarvis = input.from === "yarvis";
   const item = await createAttention(db, {
-    // `claude-hook` is what the hook route ingests; a question arrives over
-    // MCP instead, which is what `system` is set aside for.
-    source: "system",
+    // `claude-hook` is what the hook route ingests; a coding agent's question
+    // arrives over MCP instead, which is what `system` is set aside for.
+    source: fromYarvis ? "chat-agent" : "system",
     sessionKey: input.sessionKey,
     workspaceId,
     kind: "question",
-    title: ws?.name ?? "Claude session",
+    title: fromYarvis ? "Yarvis" : (ws?.name ?? "Claude session"),
     body: preview(input.questions),
-    navTarget: questionNavTarget(input.sessionKey, workspaceId),
+    navTarget: fromYarvis ? { type: "chat" } : questionNavTarget(input.sessionKey, workspaceId),
     // A session's question items coalesce into one, so the dialog lists that
     // session's pending questions; a sessionless item is found by this id.
     payload: { questionId: row!.id },

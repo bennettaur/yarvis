@@ -161,7 +161,9 @@ Not exposed, on purpose:
 
 A question rings the attention bell. Its row opens a dialog over whatever page
 you are on, so you can answer without switching to the session. See
-[Workspaces](workspaces.md#the-attention-bell).
+[Workspaces](workspaces.md#the-attention-bell). The in-app assistant has the
+same two tools, and its questions show as coming from **Yarvis** (see
+[The assistant](assistant.md#tools)).
 
 One call waits up to four minutes. The sidecar closes a connection that sends
 nothing for longer than that, so past it the tool returns `pending` with a

@@ -12,6 +12,7 @@ import type { MemoryService } from "../memory/index.ts";
 import { buildMemoryTools } from "../memory/tools.ts";
 import { buildPrReviewTools } from "../pr/reviewTools.ts";
 import { buildProjectTools } from "../projects/tools.ts";
+import { buildQuestionTools } from "../questions/tools.ts";
 import { buildTodoTools } from "../todos/tools.ts";
 import { buildWorkspaceTools } from "../workspaces/tools.ts";
 import { type AttentionState, buildAttentionTool, newAttentionState } from "./attentionTools.ts";
@@ -53,6 +54,7 @@ export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Recor
     tasks: buildTaskTools(db, sessionId),
     memory: buildMemoryTools(memory, sessionId),
     attention: buildAttentionTool(attention),
+    questions: buildQuestionTools(db, sessionId),
     projects: buildProjectTools(db),
     todos: buildTodoTools(db),
     events: buildEventTools(db),

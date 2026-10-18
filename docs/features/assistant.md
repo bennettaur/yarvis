@@ -327,6 +327,12 @@ Always available:
   suggestion, and summarize the week.
 - **Delegation.** List specialists and delegate to one.
 - **Attention.** Raise a notification when it needs you.
+- **Questions.** Ask you something and wait for the answer (`ask_user`,
+  `wait_for_answer`). The question rings the attention bell as **Yarvis**, and
+  you answer in a dialog from wherever you are in the app. It is meant for when
+  you may not be watching the chat; when you're talking to it, it asks in its
+  reply. Scheduled jobs don't get these unless their specialist names them. See
+  [MCP](mcp.md#asking-you-questions).
 
 Loaded on demand:
 
