@@ -308,6 +308,7 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
     liveTools,
     instructions,
     extraTools = {},
+    confirmBuiltins,
   } = params;
   const budget: ChatConfig = { ...DEFAULT_CHAT_CONFIG, ...params.budget };
 
@@ -362,8 +363,8 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
   // the in-app chat opens the session in a tab the user is already looking at,
   // and they can enable Remote Control from inside it if they later step away.
   // A heads-down pass runs with nobody at the machine either.
-  const startedRemotely =
-    userMetadata?.source === "telegram" || userMetadata?.source === "heads-down";
+  const unattended = userMetadata?.source === "heads-down";
+  const startedRemotely = userMetadata?.source === "telegram" || unattended;
 
   // A spoken turn was never proof-read — speech recognition mishears, and a
   // hands-free mic can pick up a sentence that was never addressed to the
@@ -382,6 +383,7 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
         memory,
         attention,
         remoteControl: startedRemotely,
+        unattended,
       }),
       ...extraTools,
     },
@@ -389,15 +391,19 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
     // The outward-facing tools ask on every turn; the wider destructive set asks
     // only when the turn was spoken and therefore never proof-read.
     confirmBuiltins:
-      params.confirmBuiltins ??
+      confirmBuiltins ??
       (spoken
         ? new Set([...ALWAYS_CONFIRM_BUILTIN_TOOLS, ...DESTRUCTIVE_BUILTIN_TOOLS])
         : ALWAYS_CONFIRM_BUILTIN_TOOLS),
     // Standing consent for an MCP tool was given about typed turns. A spoken one
     // was never read back, so it asks again for everything.
-    honourStandingConsent: !spoken,
+    // Nor was it given for a pass nobody is watching, which has a list of its own.
+    honourStandingConsent: !spoken && !unattended,
+    // Chat's auto mode judges a call against what the user typed. A pass's
+    // message is written by the app, so a pass is reviewed by its own policy
+    // (headsDown/policy.ts) instead.
     reviewer:
-      approval && !spoken
+      approval && !spoken && !unattended
         ? await createToolCallReviewer(config, recentUserRequest(history, message))
         : undefined,
     liveTools,

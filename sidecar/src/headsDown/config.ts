@@ -31,6 +31,12 @@ export interface HeadsDownConfig {
   workingHours: WorkingHours | null;
   /** How long without a reply before the user counts as away, in minutes. */
   userAwayAfterMinutes: number;
+  /**
+   * MCP tools a pass may call without asking, by registry id
+   * (`mcp:<server>:<tool>`). Auto-approval set in the Tool Manager was given
+   * for chats the user is watching, so it doesn't carry over.
+   */
+  unattendedMcpTools: string[];
   /** The model passes run on. Null uses the default chat model. */
   provider: string | null;
   model: string | null;
@@ -42,6 +48,7 @@ export const DEFAULT_HEADS_DOWN_CONFIG: HeadsDownConfig = {
   idleSleepMinutes: 60,
   workingHours: { days: [1, 2, 3, 4, 5], start: "09:00", end: "17:00" },
   userAwayAfterMinutes: 120,
+  unattendedMcpTools: [],
   provider: null,
   model: null,
 };
@@ -87,6 +94,8 @@ export interface SleepInput {
   /** What the pass asked for, in minutes, if anything. */
   requestedMinutes: number | null;
   withinWorkingHours: boolean;
+  /** Open streams that are awake now. */
+  openStreams: number;
   /** No open stream can be pushed right now: each waits on the user or someone else. */
   allWaiting: boolean;
   userAway: boolean;
@@ -103,7 +112,8 @@ export function chooseSleep(
 ): { minutes: number; reason: string } {
   const quiet: string[] = [];
   if (!input.withinWorkingHours) quiet.push("outside working hours");
-  if (input.allWaiting) quiet.push("every stream is waiting");
+  if (input.openStreams === 0) quiet.push("nothing to push");
+  else if (input.allWaiting) quiet.push("every stream is waiting");
   if (input.userAway) quiet.push("no reply from you lately");
 
   const floor =

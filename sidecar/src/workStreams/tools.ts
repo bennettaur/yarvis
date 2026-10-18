@@ -138,7 +138,14 @@ function presentLink(link: WorkStreamLink, nonce: string) {
   };
 }
 
-export function buildWorkStreamTools(db: Db) {
+/**
+ * `unattended` marks the tools a heads-down pass uses: links it makes are
+ * recorded as its own, so they don't count as the user's go-ahead.
+ */
+export function buildWorkStreamTools(
+  db: Db,
+  { unattended = false }: { unattended?: boolean } = {},
+) {
   return {
     list_work_streams: tool({
       description:
@@ -231,7 +238,12 @@ export function buildWorkStreamTools(db: Db) {
       }),
       execute: async ({ streamId, ref, title, state }) => {
         if (!(await streamExists(db, streamId))) return { error: "no work stream with that id" };
-        const link = await linkToStream(db, streamId, { ref, title, state });
+        const link = await linkToStream(db, streamId, {
+          ref,
+          title,
+          state,
+          createdBy: unattended ? "heads-down" : "chat",
+        });
         return { id: link.id, kind: link.kind };
       },
     }),

@@ -69,6 +69,8 @@ export interface LinkToStreamInput {
   ref: WorkStreamLinkRef;
   title?: string | null;
   state?: string | null;
+  /** Who is making the link. Defaults to a chat turn. */
+  createdBy?: WorkStreamLink["createdBy"];
 }
 
 /**
@@ -247,6 +249,7 @@ export async function linkToStream(
         title: input.title ?? null,
         state: input.state ?? null,
         observedAt: hasObservedState ? now : null,
+        createdBy: input.createdBy ?? "chat",
       })
       .onConflictDoUpdate({
         target: [workStreamLinks.streamId, workStreamLinks.refKey],
@@ -254,6 +257,9 @@ export async function linkToStream(
           ref: input.ref,
           title: sql`coalesce(excluded.title, ${workStreamLinks.title})`,
           state: sql`coalesce(excluded.state, ${workStreamLinks.state})`,
+          // A link the user's chat made stays theirs when a pass touches it
+          // again, and becomes theirs when they link what a pass had linked.
+          createdBy: sql`case when excluded.created_by = 'chat' then 'chat'::work_stream_link_source else ${workStreamLinks.createdBy} end`,
           ...(hasObservedState ? { observedAt: now } : {}),
           updatedAt: now,
         },

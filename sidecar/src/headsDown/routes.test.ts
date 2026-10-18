@@ -96,6 +96,7 @@ describe("/api/heads-down", () => {
       idleSleepMinutes: 60,
       workingHours: { days: [1, 2, 3, 4, 5], start: "09:00", end: "17:00" },
       userAwayAfterMinutes: 120,
+      unattendedMcpTools: [],
       provider: null,
       model: null,
     };

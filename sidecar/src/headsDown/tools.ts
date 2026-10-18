@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Db } from "../db/client.ts";
 import { publish } from "./hub.ts";
 import { getActiveRun, startRun, stopRun } from "./service.ts";
-import { wakeHeadsDown } from "./wake.ts";
+import { abortHeadsDownPass, wakeHeadsDown } from "./wake.ts";
 
 /**
  * The chat's handle on heads-down mode: start it once the user agrees, stop
@@ -38,6 +38,7 @@ export function buildHeadsDownTools(db: Db) {
       inputSchema: z.object({}),
       execute: async () => {
         const run = await stopRun(db);
+        abortHeadsDownPass();
         publish({ type: "changed" });
         return run ? { stopped: true } : { stopped: false, message: "heads-down mode wasn't on" };
       },

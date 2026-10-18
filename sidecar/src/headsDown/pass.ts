@@ -29,6 +29,7 @@ import {
   startPass,
   unseenMessages,
 } from "./service.ts";
+import { setPassAbort } from "./wake.ts";
 
 /**
  * The built-in families a pass works with, mounted for it so it doesn't spend
@@ -75,16 +76,17 @@ export async function runPass(
   run: HeadsDownRun,
   options: { model?: LanguageModel } = {},
 ): Promise<PassResult> {
-  const hd = await getHeadsDownConfig();
+  const headsDownConfig = await getHeadsDownConfig();
   const now = new Date();
   const [messages, last, openQuestions, lastActivity] = await Promise.all([
     unseenMessages(db),
     lastFinishedPass(db, run.id),
-    listQuestions(db, ["open"]),
+    // A question from an earlier run is stale; a long list would crowd out the work.
+    listQuestions(db, { since: run.startedAt, limit: 20 }),
     lastUserActivityAt(db, run),
   ]);
   const answers = await answeredSince(db, last?.startedAt ?? run.startedAt);
-  const withinWorkingHours = isWithinWorkingHours(now, hd.workingHours);
+  const withinWorkingHours = isWithinWorkingHours(now, headsDownConfig.workingHours);
   const minutesSinceUserReplied = Math.round((now.getTime() - lastActivity.getTime()) / 60_000);
 
   const session = await createSession(db, `Heads down · ${now.toISOString()}`, { hidden: true });
@@ -96,10 +98,12 @@ export async function runPass(
   let error: string | null = null;
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), PASS_TIMEOUT_MS);
+  setPassAbort(() => abort.abort());
+  let promptSent = false;
   try {
     const { model, budget } = options.model
       ? { model: options.model, budget: undefined }
-      : await passModel(config, hd);
+      : await passModel(config, headsDownConfig);
     mountTools(session.id, passToolIds());
     for await (const event of runAgentTurn({
       config,
@@ -118,49 +122,57 @@ export async function runPass(
       }),
       userMetadata: { source: "heads-down" },
       signal: abort.signal,
-      approval: passApprovalHooks(db, changed),
+      approval: passApprovalHooks(db, run, changed),
       confirmBuiltins: PASS_CONFIRMED_TOOLS,
       instructions: PASS_INSTRUCTIONS,
       extraTools: buildPassTools(db, outcome, changed),
       budget,
     })) {
+      promptSent = true;
       publish({ type: "pass-event", passId: pass.id, event });
       if (event.type === "error") error = event.message;
     }
-    // Seen once a pass has had them in its prompt, even one that failed
-    // part-way: re-sending the same instruction every pass would loop on it.
-    await markMessagesSeen(
-      db,
-      messages.map((m) => m.id),
-    );
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
     console.error("[heads-down] pass failed:", error);
   } finally {
     clearTimeout(timer);
+    setPassAbort(null);
     unmountAll(session.id);
+    // Seen once a pass has had them in its prompt, even one that failed
+    // part-way: re-sending the same instruction every pass would loop on it.
+    if (promptSent) {
+      await markMessagesSeen(
+        db,
+        messages.map((m) => m.id),
+      ).catch((e) => console.error("[heads-down] marking messages seen failed:", e));
+    }
   }
 
   // Once finish_pass has run, the pass is done: a turn that then ends with no
   // closing text, or fails on a later step, hasn't lost anything.
   if (outcome.finished) error = null;
+  else if (abort.signal.aborted) error ??= "stopped before it finished";
+  else error ??= "the pass ended without calling finish_pass";
   const awake = await listStreams(db, { awakeAt: new Date() });
   const sleep = chooseSleep(
     {
       // A failed pass sleeps as if idle, so a broken provider isn't retried every few minutes.
-      requestedMinutes: error ? hd.idleSleepMinutes : outcome.sleepMinutes,
+      requestedMinutes: error ? headsDownConfig.idleSleepMinutes : outcome.sleepMinutes,
       withinWorkingHours,
+      // A stream that is active but snoozed (wakeAt ahead) can't be pushed now either.
+      openStreams: awake.length,
       allWaiting: awake.every((s) => s.status !== "active"),
-      userAway: minutesSinceUserReplied >= hd.userAwayAfterMinutes,
+      userAway: minutesSinceUserReplied >= headsDownConfig.userAwayAfterMinutes,
     },
-    hd,
+    headsDownConfig,
   );
   const sleepReason = outcome.reason ? `${outcome.reason} (${sleep.reason})` : sleep.reason;
   await finishPass(db, pass.id, {
     notes: outcome.notes,
     sleepMinutes: sleep.minutes,
     sleepReason,
-    error: error ?? (outcome.finished ? null : "the pass ended without calling finish_pass"),
+    error,
   });
   publish({
     type: "pass-finished",

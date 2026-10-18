@@ -81,6 +81,7 @@ beforeEach(async () => {
     idleSleepMinutes: 60,
     workingHours: null,
     userAwayAfterMinutes: 120,
+    unattendedMcpTools: [],
     provider: null,
     model: null,
   });

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, type SQL } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import {
   type HeadsDownMessage,
@@ -36,8 +36,16 @@ export async function startRun(db: Db, focus: string | null): Promise<HeadsDownR
       .returning();
     return row!;
   }
-  const [row] = await db.insert(headsDownRuns).values({ focus }).returning();
-  return row!;
+  try {
+    const [row] = await db.insert(headsDownRuns).values({ focus }).returning();
+    return row!;
+  } catch (e) {
+    // Two starts at once: the one-active-run index turned the second away, so
+    // return the run the first one made.
+    const raced = await getActiveRun(db);
+    if (raced) return raced;
+    throw e;
+  }
 }
 
 export async function stopRun(db: Db): Promise<HeadsDownRun | null> {
@@ -62,12 +70,14 @@ export async function listMessages(db: Db, limit = 50): Promise<HeadsDownMessage
     .limit(limit);
 }
 
-export async function unseenMessages(db: Db): Promise<HeadsDownMessage[]> {
+/** The oldest messages a pass hasn't read, so a backlog reaches it in order rather than all at once. */
+export async function unseenMessages(db: Db, limit = 20): Promise<HeadsDownMessage[]> {
   return db
     .select()
     .from(headsDownMessages)
     .where(isNull(headsDownMessages.seenAt))
-    .orderBy(asc(headsDownMessages.createdAt));
+    .orderBy(asc(headsDownMessages.createdAt))
+    .limit(limit);
 }
 
 export async function markMessagesSeen(db: Db, ids: string[]): Promise<void> {
@@ -148,15 +158,26 @@ export async function getQuestion(db: Db, id: string): Promise<HeadsDownQuestion
   return row ?? null;
 }
 
+export interface ListQuestionsOptions {
+  statuses?: readonly HeadsDownQuestion["status"][];
+  /** Only questions asked at or after this, e.g. in the current run. */
+  since?: Date;
+  limit?: number;
+}
+
+/** Newest first. Defaults to the open questions. */
 export async function listQuestions(
   db: Db,
-  statuses: readonly HeadsDownQuestion["status"][] = ["open"],
+  { statuses = ["open"], since, limit = 100 }: ListQuestionsOptions = {},
 ): Promise<HeadsDownQuestion[]> {
+  const conditions: SQL[] = [inArray(headsDownQuestions.status, [...statuses])];
+  if (since) conditions.push(gte(headsDownQuestions.createdAt, since));
   return db
     .select()
     .from(headsDownQuestions)
-    .where(inArray(headsDownQuestions.status, [...statuses]))
-    .orderBy(desc(headsDownQuestions.createdAt));
+    .where(and(...conditions))
+    .orderBy(desc(headsDownQuestions.createdAt))
+    .limit(limit);
 }
 
 /** Answered after `since`, oldest first: what the next pass has to act on. */
@@ -240,10 +261,15 @@ export async function dismissQuestion(db: Db, id: string): Promise<boolean> {
 }
 
 /**
- * Spends the user's approval for this exact call, if they gave one that
- * hasn't been used. Returns whether the call may run.
+ * Spends the user's approval for this exact call, if they gave one since
+ * `since` that hasn't been used. Returns whether the call may run.
  */
-export async function spendApproval(db: Db, action: string, args: unknown): Promise<boolean> {
+export async function spendApproval(
+  db: Db,
+  action: string,
+  args: unknown,
+  since: Date,
+): Promise<boolean> {
   const [grant] = await db
     .select({ id: headsDownQuestions.id })
     .from(headsDownQuestions)
@@ -255,6 +281,7 @@ export async function spendApproval(db: Db, action: string, args: unknown): Prom
         eq(headsDownQuestions.action, action),
         eq(headsDownQuestions.argsHash, hashArgs(args)),
         isNull(headsDownQuestions.usedAt),
+        gte(headsDownQuestions.answeredAt, since),
       ),
     )
     .limit(1);
@@ -265,6 +292,30 @@ export async function spendApproval(db: Db, action: string, args: unknown): Prom
     .where(and(eq(headsDownQuestions.id, grant.id), isNull(headsDownQuestions.usedAt)))
     .returning({ id: headsDownQuestions.id });
   return spent.length > 0;
+}
+
+/** Whether the user denied this exact call since `since`, so asking again would be noise. */
+export async function deniedApprovalExists(
+  db: Db,
+  action: string,
+  args: unknown,
+  since: Date,
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: headsDownQuestions.id })
+    .from(headsDownQuestions)
+    .where(
+      and(
+        eq(headsDownQuestions.kind, "approval"),
+        eq(headsDownQuestions.status, "answered"),
+        eq(headsDownQuestions.choice, "deny"),
+        eq(headsDownQuestions.action, action),
+        eq(headsDownQuestions.argsHash, hashArgs(args)),
+        gte(headsDownQuestions.createdAt, since),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
 }
 
 export async function startPass(
@@ -318,17 +369,19 @@ export async function lastFinishedPass(db: Db, runId: string): Promise<HeadsDown
 
 /** When the user last did something here: started the run, sent a message, or answered. */
 export async function lastUserActivityAt(db: Db, run: HeadsDownRun): Promise<Date> {
-  const [message] = await db
-    .select({ at: headsDownMessages.createdAt })
-    .from(headsDownMessages)
-    .orderBy(desc(headsDownMessages.createdAt))
-    .limit(1);
-  const [answer] = await db
-    .select({ at: headsDownQuestions.answeredAt })
-    .from(headsDownQuestions)
-    .where(eq(headsDownQuestions.status, "answered"))
-    .orderBy(desc(headsDownQuestions.answeredAt))
-    .limit(1);
+  const [[message], [answer]] = await Promise.all([
+    db
+      .select({ at: headsDownMessages.createdAt })
+      .from(headsDownMessages)
+      .orderBy(desc(headsDownMessages.createdAt))
+      .limit(1),
+    db
+      .select({ at: headsDownQuestions.answeredAt })
+      .from(headsDownQuestions)
+      .where(eq(headsDownQuestions.status, "answered"))
+      .orderBy(desc(headsDownQuestions.answeredAt))
+      .limit(1),
+  ]);
   const times = [run.startedAt, message?.at, answer?.at].filter((t): t is Date => t != null);
   return new Date(Math.max(...times.map((t) => t.getTime())));
 }

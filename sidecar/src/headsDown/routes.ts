@@ -14,13 +14,14 @@ import {
   dismissQuestion,
   getActiveRun,
   getPass,
+  lastFinishedPass,
   listMessages,
   listPasses,
   listQuestions,
   startRun,
   stopRun,
 } from "./service.ts";
-import { wakeHeadsDown } from "./wake.ts";
+import { abortHeadsDownPass, wakeHeadsDown } from "./wake.ts";
 
 /**
  * Routes for the Heads down page, mounted under /api/heads-down: turn the
@@ -64,10 +65,14 @@ const configSchema = z
       .int()
       .min(1)
       .max(7 * 24 * 60),
+    unattendedMcpTools: z.array(z.string().regex(/^mcp:/, "an MCP tool id")).max(200),
     provider: z.string().min(1).nullable(),
     model: z.string().min(1).nullable(),
   })
-  .refine((c) => c.minSleepMinutes <= c.maxSleepMinutes, "min sleep must not exceed max sleep");
+  .refine((c) => c.minSleepMinutes <= c.maxSleepMinutes, "min sleep must not exceed max sleep")
+  .refine((c) => c.idleSleepMinutes <= c.maxSleepMinutes, "idle sleep must not exceed max sleep");
+
+const startSchema = z.object({ focus: z.string().trim().max(2000).optional() });
 
 const answerSchema = z
   .object({
@@ -88,23 +93,20 @@ export function createHeadsDownRoutes(config: Config): Hono {
   const changed = () => publish({ type: "changed" });
 
   router.get("/", async (c) => {
-    const [run, passes, questions] = await Promise.all([
-      getActiveRun(db()),
-      listPasses(db(), 1),
-      listQuestions(db(), ["open"]),
-    ]);
-    const last = passes[0] ?? null;
+    const [run, questions] = await Promise.all([getActiveRun(db()), listQuestions(db())]);
+    // This run's last pass: a pass from an earlier run says nothing about when this one looks next.
+    const last = run ? await lastFinishedPass(db(), run.id) : null;
     const nextPassAt =
-      run && last?.finishedAt && last.sleepMinutes !== null
+      last?.finishedAt && last.sleepMinutes !== null
         ? new Date(last.finishedAt.getTime() + last.sleepMinutes * 60_000).toISOString()
         : null;
-    return c.json({ run, lastPass: last, nextPassAt, openQuestions: questions.length });
+    return c.json({ run, lastPass: last, nextPassAt, openQuestionCount: questions.length });
   });
 
   router.post("/start", async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as { focus?: unknown };
-    const focus = typeof body.focus === "string" ? body.focus.trim().slice(0, 2000) : "";
-    const run = await startRun(db(), focus || null);
+    const parsed = startSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const run = await startRun(db(), parsed.data.focus || null);
     changed();
     wakeHeadsDown();
     return c.json(run);
@@ -112,6 +114,7 @@ export function createHeadsDownRoutes(config: Config): Hono {
 
   router.post("/stop", async (c) => {
     const run = await stopRun(db());
+    abortHeadsDownPass();
     changed();
     return c.json({ stopped: run !== null });
   });
@@ -153,7 +156,7 @@ export function createHeadsDownRoutes(config: Config): Hono {
     const status = c.req.query("status");
     const statuses =
       status === "all" ? (["open", "answered", "dismissed"] as const) : (["open"] as const);
-    return c.json(await listQuestions(db(), statuses));
+    return c.json(await listQuestions(db(), { statuses, limit: 100 }));
   });
 
   router.post("/questions/:id/answer", async (c) => {

@@ -1415,6 +1415,13 @@ export const workStreamLinkKind = pgEnum("work_stream_link_kind", [
 ]);
 
 /**
+ * Who made a link: a chat turn the user typed or spoke in, or a heads-down
+ * pass. Heads-down mode only steers work the user put in its hands, so a link
+ * a pass made itself doesn't count as the user's go-ahead.
+ */
+export const workStreamLinkSource = pgEnum("work_stream_link_source", ["chat", "heads-down"]);
+
+/**
  * The thing a link points at, by kind. A message is identified by
  * `messageRef`: its id or permalink when the tool that read it gave one, or
  * the author and time as shown when it didn't (the Chrome extension gives
@@ -1465,6 +1472,7 @@ export const workStreamLinks = pgTable(
     state: text("state"),
     /** When `state` was last recorded. */
     observedAt: timestamp("observed_at", { withTimezone: true }),
+    createdBy: workStreamLinkSource("created_by").notNull().default("chat"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

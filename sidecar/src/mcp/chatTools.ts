@@ -46,14 +46,15 @@ export function modelToolKey(id: string): string {
 export interface ApprovalHooks {
   /**
    * Emits an approval request to the client (e.g. over SSE). `reason` is the
-   * model's own account of why it is making the call.
+   * model's own account of why it is making the call. A surface that decides
+   * on the spot can return what the model is told if it says no.
    */
   onRequest: (info: {
     toolCallId: string;
     id: string;
     args: unknown;
     reason: string | null;
-  }) => Promise<void>;
+  }) => Promise<void | { deniedMessage?: string }>;
   /** Aborted when the client disconnects, so pending approvals don't hang. */
   signal?: AbortSignal;
   /**
@@ -109,13 +110,19 @@ export function wrapToolWithApproval(
       // stopped turn neither runs the call nor raises a prompt nobody can answer.
       if (hooks.signal?.aborted) return STOPPED;
       if (autoApproved) return run(args, opts);
-      await hooks.onRequest({ toolCallId: opts.toolCallId, id, args, reason });
+      const requested = await hooks.onRequest({ toolCallId: opts.toolCallId, id, args, reason });
       const approved = await waitForApproval(opts.toolCallId, {
         signal: hooks.signal,
         timeoutMs: APPROVAL_TIMEOUT_MS,
       });
       if (!approved) {
-        return { denied: true, message: hooks.deniedMessage ?? "The user denied this tool call." };
+        return {
+          denied: true,
+          message:
+            (requested ? requested.deniedMessage : undefined) ??
+            hooks.deniedMessage ??
+            "The user denied this tool call.",
+        };
       }
       return run(args, opts);
     },

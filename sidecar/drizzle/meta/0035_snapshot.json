@@ -1,5 +1,5 @@
 {
-  "id": "fa3b3e72-1622-41c2-a8d2-cb735e6955b3",
+  "id": "97233adc-fb92-4f0f-9d1f-b171b13e597a",
   "prevId": "baec47e4-9b93-48af-8aaf-2ebe9ed28e6d",
   "version": "7",
   "dialect": "postgresql",
@@ -3632,6 +3632,14 @@
           "primaryKey": false,
           "notNull": false
         },
+        "created_by": {
+          "name": "created_by",
+          "type": "work_stream_link_source",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'chat'"
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -4628,6 +4636,14 @@
         "pr",
         "message",
         "review-request"
+      ]
+    },
+    "public.work_stream_link_source": {
+      "name": "work_stream_link_source",
+      "schema": "public",
+      "values": [
+        "chat",
+        "heads-down"
       ]
     },
     "public.work_stream_status": {

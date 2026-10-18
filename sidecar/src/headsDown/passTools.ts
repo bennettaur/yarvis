@@ -1,7 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { Db } from "../db/client.ts";
-import { updateStream } from "../workStreams/service.ts";
+import { streamExists, updateStream } from "../workStreams/service.ts";
 import { askQuestion } from "./service.ts";
 
 /**
@@ -37,6 +37,9 @@ export function buildPassTools(db: Db, outcome: PassOutcome, onAsked: () => void
         action: z.string().max(100).optional().describe("The tool the question is about, if any"),
       }),
       execute: async ({ question, situation, streamId, options, action }) => {
+        if (streamId && !(await streamExists(db, streamId))) {
+          return { error: "no work stream with that id" };
+        }
         const asked = await askQuestion(db, {
           kind: "question",
           question,

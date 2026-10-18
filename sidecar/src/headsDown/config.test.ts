@@ -28,7 +28,7 @@ describe("isWithinWorkingHours", () => {
 });
 
 describe("chooseSleep", () => {
-  const busy = { withinWorkingHours: true, allWaiting: false, userAway: false };
+  const busy = { withinWorkingHours: true, openStreams: 2, allWaiting: false, userAway: false };
 
   it("takes what the pass asked for, within the configured bounds", () => {
     expect(chooseSleep({ ...busy, requestedMinutes: 10 }, DEFAULT_HEADS_DOWN_CONFIG).minutes).toBe(
@@ -44,7 +44,13 @@ describe("chooseSleep", () => {
 
   it("sleeps at least the idle time when there is little to do, and says why", () => {
     const sleep = chooseSleep(
-      { requestedMinutes: 5, withinWorkingHours: false, allWaiting: true, userAway: false },
+      {
+        requestedMinutes: 5,
+        withinWorkingHours: false,
+        openStreams: 2,
+        allWaiting: true,
+        userAway: false,
+      },
       DEFAULT_HEADS_DOWN_CONFIG,
     );
     expect(sleep.minutes).toBe(60);
@@ -56,5 +62,13 @@ describe("chooseSleep", () => {
       minutes: 5,
       reason: "work to push",
     });
+  });
+
+  it("says there is nothing to push when no stream is open", () => {
+    const sleep = chooseSleep(
+      { ...busy, openStreams: 0, allWaiting: true, requestedMinutes: null },
+      DEFAULT_HEADS_DOWN_CONFIG,
+    );
+    expect(sleep).toEqual({ minutes: 60, reason: "nothing to push" });
   });
 });
