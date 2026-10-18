@@ -1,13 +1,14 @@
 import { and, asc, desc, eq, inArray, isNull, lte, or, type SQL, sql } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import {
-  type AgentTodoNote,
   type WorkStream,
   type WorkStreamLink,
   type WorkStreamLinkRef,
+  type WorkStreamNote,
   workStreamLinks,
   workStreams,
 } from "../db/schema.ts";
+import { emitEvent } from "../events/service.ts";
 
 /**
  * Work streams: the threads of work heads-down mode pushes forward, each with
@@ -16,13 +17,17 @@ import {
  * Like `agent_todos`, this is the assistant's working state, so it isn't
  * exposed over the MCP endpoint. Unlike a todo, a stream is about work that
  * lives elsewhere, and its links say where.
+ *
+ * Only opening and closing a stream go to the activity log. A heads-down pass
+ * updates its streams every few minutes, and logging each update would bury
+ * what the user actually did.
  */
 
 /** Statuses that mean a stream is still live, for the default listing. */
 export const OPEN_STREAM_STATUSES = ["active", "waiting-on-user", "waiting-on-others"] as const;
 
 /** Statuses that close a stream, so `closedAt` is set once and not re-stamped. */
-const CLOSED_STATUSES: readonly WorkStream["status"][] = ["done", "dropped"];
+const CLOSED_STREAM_STATUSES: readonly WorkStream["status"][] = ["done", "dropped"];
 
 export interface WorkStreamWithLinks extends WorkStream {
   links: WorkStreamLink[];
@@ -60,7 +65,7 @@ export interface ListStreamsOptions {
   awakeAt?: Date;
 }
 
-export interface LinkInput {
+export interface LinkToStreamInput {
   ref: WorkStreamLinkRef;
   title?: string | null;
   state?: string | null;
@@ -71,20 +76,32 @@ export interface LinkInput {
  * thing seen twice, so the second write updates the first link.
  */
 export function refKeyOf(ref: WorkStreamLinkRef): string {
+  // JSON, not a joined string: a channel or permalink can contain any separator.
   switch (ref.kind) {
     case "ticket":
-      return `ticket:${ref.provider}:${ref.key}`;
+      // JIRA keys are case-insensitive; GitHub and Azure ones have no letters to differ by.
+      return JSON.stringify([ref.kind, ref.provider, ref.key.trim().toUpperCase()]);
     case "workspace":
-      return `workspace:${ref.workspaceId}`;
+      return JSON.stringify([ref.kind, ref.workspaceId]);
     case "pr":
-      return `pr:${ref.url}`;
+      return JSON.stringify([ref.kind, canonicalPrUrl(ref.url)]);
     case "message":
     case "review-request":
-      return `${ref.kind}:${ref.channel}:${ref.conversation}:${ref.messageRef}`;
+      return JSON.stringify([ref.kind, ref.channel, ref.conversation, ref.messageRef]);
   }
 }
 
-function appendNote(existing: AgentTodoNote[], note: string, at: Date): AgentTodoNote[] {
+/**
+ * A PR's URL without what varies between links to the same PR: a trailing
+ * slash, a sub-page (`/files`), a query or an anchor. GitHub PRs end at
+ * `/pull/N` and Azure ones at `/pullrequest/N`.
+ */
+export function canonicalPrUrl(url: string): string {
+  const match = /^(https?:\/\/[^?#]*?\/(?:pull|pullrequest)\/\d+)/i.exec(url.trim());
+  return (match?.[1] ?? url.trim()).toLowerCase();
+}
+
+function appendNote(existing: WorkStreamNote[], note: string, at: Date): WorkStreamNote[] {
   return [...existing, { at: at.toISOString(), text: note }];
 }
 
@@ -103,13 +120,21 @@ export async function createStream(db: Db, input: CreateStreamInput): Promise<Wo
       waitingOn: input.waitingOn ?? null,
       wakeAt: input.wakeAt ?? null,
       notes: input.note ? appendNote([], input.note, now) : [],
-      closedAt: CLOSED_STATUSES.includes(status) ? now : null,
+      closedAt: CLOSED_STREAM_STATUSES.includes(status) ? now : null,
     })
     .returning();
+  await emitEvent(db, {
+    type: "work_stream.created",
+    source: "work_streams",
+    payload: { streamId: row!.id, title: row!.title, priority: row!.priority },
+  });
   return row!;
 }
 
-async function linksFor(db: Db, streamIds: string[]): Promise<Map<string, WorkStreamLink[]>> {
+async function loadLinksByStream(
+  db: Db,
+  streamIds: string[],
+): Promise<Map<string, WorkStreamLink[]>> {
   const byStream = new Map<string, WorkStreamLink[]>();
   if (streamIds.length === 0) return byStream;
   const rows = await db
@@ -128,10 +153,14 @@ async function linksFor(db: Db, streamIds: string[]): Promise<Map<string, WorkSt
 export async function getStream(db: Db, id: string): Promise<WorkStreamWithLinks | null> {
   const [row] = await db.select().from(workStreams).where(eq(workStreams.id, id));
   if (!row) return null;
-  return { ...row, links: (await linksFor(db, [row.id])).get(row.id) ?? [] };
+  const links = await loadLinksByStream(db, [row.id]);
+  return { ...row, links: links.get(row.id) ?? [] };
 }
 
-/** Live streams first by priority, then the ones touched longest ago, which are most likely to need a look. */
+/**
+ * Open streams by default, most urgent first, then the ones touched longest
+ * ago, which are most likely to need a look.
+ */
 export async function listStreams(
   db: Db,
   options: ListStreamsOptions = {},
@@ -149,7 +178,7 @@ export async function listStreams(
     .from(workStreams)
     .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(asc(workStreams.priority), asc(workStreams.updatedAt));
-  const links = await linksFor(
+  const links = await loadLinksByStream(
     db,
     rows.map((r) => r.id),
   );
@@ -164,9 +193,9 @@ export async function updateStream(
   const [existing] = await db.select().from(workStreams).where(eq(workStreams.id, id));
   if (!existing) return null;
   const now = new Date();
-  const closing = patch.status !== undefined && CLOSED_STATUSES.includes(patch.status);
+  const closing = patch.status !== undefined && CLOSED_STREAM_STATUSES.includes(patch.status);
   const reopening =
-    patch.status !== undefined && !closing && CLOSED_STATUSES.includes(existing.status);
+    patch.status !== undefined && !closing && CLOSED_STREAM_STATUSES.includes(existing.status);
 
   const [row] = await db
     .update(workStreams)
@@ -186,6 +215,13 @@ export async function updateStream(
     })
     .where(eq(workStreams.id, id))
     .returning();
+  if (row && closing && !existing.closedAt) {
+    await emitEvent(db, {
+      type: "work_stream.closed",
+      source: "work_streams",
+      payload: { streamId: row.id, title: row.title, status: row.status },
+    });
+  }
   return row ?? null;
 }
 
@@ -196,38 +232,49 @@ export async function updateStream(
 export async function linkToStream(
   db: Db,
   streamId: string,
-  input: LinkInput,
+  input: LinkToStreamInput,
 ): Promise<WorkStreamLink> {
   const now = new Date();
-  const observed = input.state !== undefined && input.state !== null;
-  const [row] = await db
-    .insert(workStreamLinks)
-    .values({
-      streamId,
-      kind: input.ref.kind,
-      refKey: refKeyOf(input.ref),
-      ref: input.ref,
-      title: input.title ?? null,
-      state: input.state ?? null,
-      observedAt: observed ? now : null,
-    })
-    .onConflictDoUpdate({
-      target: [workStreamLinks.streamId, workStreamLinks.refKey],
-      set: {
+  const hasObservedState = input.state !== undefined && input.state !== null;
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .insert(workStreamLinks)
+      .values({
+        streamId,
+        kind: input.ref.kind,
+        refKey: refKeyOf(input.ref),
         ref: input.ref,
-        title: sql`coalesce(excluded.title, ${workStreamLinks.title})`,
-        state: sql`coalesce(excluded.state, ${workStreamLinks.state})`,
-        observedAt: observed ? now : sql`${workStreamLinks.observedAt}`,
-        updatedAt: now,
-      },
-    })
-    .returning();
-  // Linking something to a stream is activity on it, for the oldest-first ordering.
-  await db.update(workStreams).set({ updatedAt: now }).where(eq(workStreams.id, streamId));
-  return row!;
+        title: input.title ?? null,
+        state: input.state ?? null,
+        observedAt: hasObservedState ? now : null,
+      })
+      .onConflictDoUpdate({
+        target: [workStreamLinks.streamId, workStreamLinks.refKey],
+        set: {
+          ref: input.ref,
+          title: sql`coalesce(excluded.title, ${workStreamLinks.title})`,
+          state: sql`coalesce(excluded.state, ${workStreamLinks.state})`,
+          ...(hasObservedState ? { observedAt: now } : {}),
+          updatedAt: now,
+        },
+      })
+      .returning();
+    // Linking something to a stream is activity on it, for the oldest-first ordering.
+    await tx.update(workStreams).set({ updatedAt: now }).where(eq(workStreams.id, streamId));
+    return row!;
+  });
 }
 
-export async function unlink(db: Db, linkId: string): Promise<boolean> {
+/** Whether a stream exists, without loading its links. */
+export async function streamExists(db: Db, id: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: workStreams.id })
+    .from(workStreams)
+    .where(eq(workStreams.id, id));
+  return row !== undefined;
+}
+
+export async function unlinkFromStream(db: Db, linkId: string): Promise<boolean> {
   const deleted = await db
     .delete(workStreamLinks)
     .where(eq(workStreamLinks.id, linkId))
@@ -236,12 +283,12 @@ export async function unlink(db: Db, linkId: string): Promise<boolean> {
 }
 
 /** The streams something is linked to, newest activity first: "which stream is this PR part of?" */
-export async function streamsLinkedTo(db: Db, ref: WorkStreamLinkRef): Promise<WorkStream[]> {
-  return db
+export async function findStreamsLinkedTo(db: Db, ref: WorkStreamLinkRef): Promise<WorkStream[]> {
+  const rows = await db
     .select({ stream: workStreams })
     .from(workStreamLinks)
     .innerJoin(workStreams, eq(workStreams.id, workStreamLinks.streamId))
     .where(eq(workStreamLinks.refKey, refKeyOf(ref)))
-    .orderBy(desc(workStreams.updatedAt))
-    .then((rows) => rows.map((r) => r.stream));
+    .orderBy(desc(workStreams.updatedAt));
+  return rows.map((r) => r.stream);
 }

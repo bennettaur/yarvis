@@ -358,9 +358,6 @@ Always available:
 - **Projects.** Create, read and update projects, and track, list and untrack
   tickets with priorities.
 - **Todos.** The assistant's own todo list.
-- **Work streams.** Track a thread of work, link its tickets, workspaces, PRs,
-  messages and review requests, mark what it's waiting on, and find the stream
-  something belongs to. These are on demand, like workspaces.
 - **Activity.** Search the event log and count activity by type.
 - **Planning.** Find dangling work, suggest what's next, dismiss or restore a
   suggestion, and summarize the week.
@@ -373,6 +370,9 @@ Loaded on demand:
   sessions (including a scratch session with no repo), add a repo to a
   workspace, check status, sync with base, send instructions, archive.
 - **JIRA.** Search, read, create, and start work on a ticket.
+- **Work streams.** Track a thread of work, link its tickets, workspaces, PRs,
+  messages and review requests, mark what it's waiting on, and find the stream
+  something belongs to.
 - **PR review.** List your guided reviews and search the notes you took while
   reviewing.
 - **Calendar.** List events and create one.

@@ -1,15 +1,16 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { Db } from "../db/client.ts";
-import type { WorkStreamLink } from "../db/schema.ts";
+import type { WorkStreamLink, WorkStreamLinkRef } from "../db/schema.ts";
 import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
 import {
   createStream,
+  findStreamsLinkedTo,
   getStream,
   linkToStream,
   listStreams,
-  streamsLinkedTo,
-  unlink,
+  streamExists,
+  unlinkFromStream,
   updateStream,
   type WorkStreamWithLinks,
 } from "./service.ts";
@@ -25,39 +26,48 @@ const priority = z.enum(["urgent", "high", "medium", "low"]);
 const status = z.enum(["active", "waiting-on-user", "waiting-on-others", "done", "dropped"]);
 const instant = z.string().datetime({ offset: true });
 
-/** One line of text naming a channel, conversation or message. */
-const name = z.string().min(1).max(300);
+/** A short piece of text: a ticket key, channel, conversation, message ref or handle. */
+const shortText = z.string().min(1).max(300);
+
+/**
+ * Only web links: a ref's URL is shown to the user, and another scheme
+ * (`javascript:`, `file:`) in a link would run or open something on click.
+ */
+const webUrl = z
+  .string()
+  .url()
+  .refine((u) => /^https?:\/\//i.test(u), "must be an http(s) URL");
 
 const linkRef = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("ticket"),
     provider: z.enum(["github", "jira", "azure-boards"]),
-    key: name.describe("owner/repo#123, a JIRA key, or an Azure Boards work item id"),
-    url: z.string().url().optional(),
+    key: shortText.describe("owner/repo#123, a JIRA key, or an Azure Boards work item id"),
+    url: webUrl.optional(),
   }),
   z.object({ kind: z.literal("workspace"), workspaceId: uuid }),
   z.object({
     kind: z.literal("pr"),
     provider: z.enum(["github", "azure"]),
-    url: z.string().url(),
+    url: webUrl,
   }),
   z.object({
     kind: z.literal("message"),
-    channel: name.describe("Where it was sent: slack, teams, email"),
-    conversation: name.describe("The channel, DM or thread it is in"),
-    messageRef: name.describe(
+    channel: shortText.describe("Where it was sent: slack, teams, email"),
+    conversation: shortText.describe("The channel, DM or thread it is in"),
+    messageRef: shortText.describe(
       "The message's id or permalink if the tool gave one, otherwise its author and time as shown",
     ),
-    author: name.optional(),
+    author: shortText.optional(),
   }),
   z.object({
     kind: z.literal("review-request"),
-    channel: name,
-    conversation: name,
-    messageRef: name.describe("The request message's id or permalink, or its time as shown"),
+    channel: shortText,
+    conversation: shortText,
+    messageRef: shortText.describe("The request message's id or permalink, or its time as shown"),
     sentAt: instant.describe("When the request was posted"),
-    prUrl: z.string().url().optional(),
-    tagged: z.array(name).max(20).optional().describe("Who it tagged, by handle"),
+    prUrl: webUrl.optional(),
+    tagged: z.array(shortText).max(20).optional().describe("Who it tagged, by handle"),
   }),
 ]);
 
@@ -66,8 +76,8 @@ const linkRef = z.discriminatedUnion("kind", [
  * from tickets and PRs, and the notes can quote messages, so all of it is data
  * to weigh against what the tools report now, not instructions.
  */
-function present(stream: WorkStreamWithLinks, nonce: string) {
-  const text = (value: string | null) => (value ? fence(value, nonce) : null);
+function presentStream(stream: WorkStreamWithLinks, nonce: string) {
+  const text = (value: string | null) => fenceOrNull(value, nonce);
   return {
     id: stream.id,
     title: fence(stream.title, nonce),
@@ -83,12 +93,47 @@ function present(stream: WorkStreamWithLinks, nonce: string) {
   };
 }
 
+function fenceOrNull(value: string | null, nonce: string): string | null {
+  return value ? fence(value, nonce) : null;
+}
+
+/**
+ * A ref with its text fields fenced. They were copied from what a tool read
+ * (a Slack conversation name, a message author), so they are third-party text
+ * too. The ids and kinds the model needs to act on stay as they are.
+ */
+function presentRef(ref: WorkStreamLinkRef, nonce: string) {
+  switch (ref.kind) {
+    case "ticket":
+      return { ...ref, key: fence(ref.key, nonce) };
+    case "workspace":
+    case "pr":
+      return ref;
+    case "message":
+      return {
+        ...ref,
+        channel: fence(ref.channel, nonce),
+        conversation: fence(ref.conversation, nonce),
+        messageRef: fence(ref.messageRef, nonce),
+        author: ref.author ? fence(ref.author, nonce) : undefined,
+      };
+    case "review-request":
+      return {
+        ...ref,
+        channel: fence(ref.channel, nonce),
+        conversation: fence(ref.conversation, nonce),
+        messageRef: fence(ref.messageRef, nonce),
+        tagged: ref.tagged?.map((handle) => fence(handle, nonce)),
+      };
+  }
+}
+
 function presentLink(link: WorkStreamLink, nonce: string) {
   return {
     id: link.id,
-    ref: link.ref,
-    title: link.title ? fence(link.title, nonce) : null,
-    state: link.state ? fence(link.state, nonce) : null,
+    ref: presentRef(link.ref, nonce),
+    title: fenceOrNull(link.title, nonce),
+    state: fenceOrNull(link.state, nonce),
     observedAt: link.observedAt?.toISOString() ?? null,
   };
 }
@@ -112,7 +157,7 @@ export function buildWorkStreamTools(db: Db) {
         const nonce = newNonce();
         return {
           warning: untrustedWarning(nonce),
-          streams: streams.map((s) => present(s, nonce)),
+          streams: streams.map((s) => presentStream(s, nonce)),
         };
       },
     }),
@@ -127,7 +172,7 @@ export function buildWorkStreamTools(db: Db) {
         return {
           warning: untrustedWarning(nonce),
           stream: {
-            ...present(stream, nonce),
+            ...presentStream(stream, nonce),
             notes: stream.notes.map((n) => ({ at: n.at, text: fence(n.text, nonce) })),
           },
         };
@@ -159,17 +204,16 @@ export function buildWorkStreamTools(db: Db) {
         status: status.optional(),
         priority: priority.optional(),
         title: z.string().min(1).max(300).optional(),
-        summary: z.string().max(2000).optional(),
+        summary: z.string().max(2000).nullable().optional(),
+        projectId: uuid.nullable().optional(),
         nextAction: z.string().max(1000).nullable().optional(),
         waitingOn: z.string().max(500).nullable().optional(),
         wakeAt: instant.nullable().optional(),
         note: z.string().max(2000).optional(),
       }),
       execute: async ({ id, wakeAt, ...patch }) => {
-        const stream = await updateStream(db, id, {
-          ...patch,
-          ...(wakeAt !== undefined ? { wakeAt: wakeAt ? new Date(wakeAt) : null } : {}),
-        });
+        const wakeAtDate = wakeAt === undefined ? undefined : wakeAt ? new Date(wakeAt) : null;
+        const stream = await updateStream(db, id, { ...patch, wakeAt: wakeAtDate });
         return stream
           ? { id: stream.id, status: stream.status, priority: stream.priority }
           : { error: "no work stream with that id" };
@@ -186,7 +230,7 @@ export function buildWorkStreamTools(db: Db) {
         state: z.string().max(300).optional(),
       }),
       execute: async ({ streamId, ref, title, state }) => {
-        if (!(await getStream(db, streamId))) return { error: "no work stream with that id" };
+        if (!(await streamExists(db, streamId))) return { error: "no work stream with that id" };
         const link = await linkToStream(db, streamId, { ref, title, state });
         return { id: link.id, kind: link.kind };
       },
@@ -196,7 +240,9 @@ export function buildWorkStreamTools(db: Db) {
       description: "Remove a link that turned out not to belong to the stream.",
       inputSchema: z.object({ linkId: uuid }),
       execute: async ({ linkId }) =>
-        (await unlink(db, linkId)) ? { linkId, removed: true } : { error: "no link with that id" },
+        (await unlinkFromStream(db, linkId))
+          ? { linkId, removed: true }
+          : { error: "no link with that id" },
     }),
 
     find_work_streams_for: tool({
@@ -204,7 +250,7 @@ export function buildWorkStreamTools(db: Db) {
         "Which work streams a ticket, workspace, PR or message is already linked to. Use it before creating a stream, and when something needs attention, to find the stream it belongs to.",
       inputSchema: z.object({ ref: linkRef }),
       execute: async ({ ref }) => {
-        const streams = await streamsLinkedTo(db, ref);
+        const streams = await findStreamsLinkedTo(db, ref);
         const nonce = newNonce();
         return {
           warning: untrustedWarning(nonce),

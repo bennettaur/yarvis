@@ -30,7 +30,7 @@ const auth = { Authorization: "Bearer test-token" };
 const jsonAuth = { ...auth, "Content-Type": "application/json" };
 
 beforeEach(async () => {
-  await sql`TRUNCATE work_streams, work_stream_links RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE work_streams, work_stream_links, events RESTART IDENTITY CASCADE`;
 });
 
 afterAll(async () => {
@@ -53,6 +53,29 @@ describe("/api/work-streams", () => {
     });
     expect(res.status).toBe(200);
     expect(await (await app.request("/api/work-streams", { headers: auth })).json()).toEqual([]);
+  });
+
+  it("reads one stream, and lists closed ones when asked", async () => {
+    const stream = await createStream(db, { title: "old work", status: "done" });
+
+    const one = await app.request(`/api/work-streams/${stream.id}`, { headers: auth });
+    expect(((await one.json()) as { links: unknown[] }).links).toEqual([]);
+    const closed = (await (
+      await app.request("/api/work-streams?status=done", { headers: auth })
+    ).json()) as { id: string }[];
+    expect(closed.map((s) => s.id)).toEqual([stream.id]);
+  });
+
+  it("answers 404 for a stream that doesn't exist, and 400 for a bad patch", async () => {
+    const missing = "00000000-0000-4000-8000-000000000000";
+    expect((await app.request(`/api/work-streams/${missing}`, { headers: auth })).status).toBe(404);
+    const stream = await createStream(db, { title: "ship billing" });
+    const res = await app.request(`/api/work-streams/${stream.id}`, {
+      method: "PATCH",
+      headers: jsonAuth,
+      body: JSON.stringify({ status: "paused" }),
+    });
+    expect(res.status).toBe(400);
   });
 
   it("rejects an unknown status filter and a malformed id", async () => {

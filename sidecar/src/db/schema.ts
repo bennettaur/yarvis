@@ -1386,13 +1386,16 @@ export const workStreams = pgTable(
     /** Not worth revisiting before this, e.g. bumping a review request the next morning. */
     wakeAt: timestamp("wake_at", { withTimezone: true }),
     /** Append-only, so a stream carries why it is where it is across passes. */
-    notes: jsonb("notes").$type<AgentTodoNote[]>().notNull().default([]),
+    notes: jsonb("notes").$type<WorkStreamNote[]>().notNull().default([]),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     closedAt: timestamp("closed_at", { withTimezone: true }),
   },
   (t) => [index("work_streams_status_idx").on(t.status, t.priority)],
 );
+
+/** A note on a work stream: the same shape as a todo's progress note. */
+export type WorkStreamNote = AgentTodoNote;
 
 /** What a work stream link points at. */
 export const workStreamLinkKind = pgEnum("work_stream_link_kind", [
@@ -1452,6 +1455,7 @@ export const workStreamLinks = pgTable(
     title: text("title"),
     /** What was last seen of it ("CI failing", "approved", "replied"), in the assistant's words. */
     state: text("state"),
+    /** When `state` was last recorded. */
     observedAt: timestamp("observed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

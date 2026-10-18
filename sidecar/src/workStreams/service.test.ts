@@ -4,12 +4,12 @@ import postgres from "postgres";
 import * as schema from "../db/schema.ts";
 import {
   createStream,
+  findStreamsLinkedTo,
   getStream,
   linkToStream,
   listStreams,
   refKeyOf,
-  streamsLinkedTo,
-  unlink,
+  unlinkFromStream,
   updateStream,
 } from "./service.ts";
 import { buildWorkStreamTools } from "./tools.ts";
@@ -24,7 +24,7 @@ const opts = { toolCallId: "test", messages: [] } as never;
 const pr = { kind: "pr", provider: "github", url: "https://github.com/acme/api/pull/12" } as const;
 
 beforeEach(async () => {
-  await sql`TRUNCATE work_streams, work_stream_links RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE work_streams, work_stream_links, events RESTART IDENTITY CASCADE`;
 });
 
 afterAll(async () => {
@@ -72,9 +72,36 @@ describe("work streams", () => {
     await linkToStream(db, stream.id, { ref: pr, title: "Add invoices", state: "CI failing" });
     await linkToStream(db, stream.id, { ref: pr, state: "approved" });
 
+    const { links } = (await getStream(db, stream.id))!;
+    expect(links).toHaveLength(1);
+    expect(links[0]).toMatchObject({ title: "Add invoices", state: "approved", kind: "pr" });
+  });
+
+  it("keeps the recorded state when a later link leaves it out", async () => {
+    const stream = await createStream(db, { title: "ship billing" });
+    const first = await linkToStream(db, stream.id, { ref: pr, state: "CI failing" });
+    await linkToStream(db, stream.id, { ref: pr, title: "Add invoices" });
+
     const [link] = (await getStream(db, stream.id))!.links;
-    expect((await getStream(db, stream.id))!.links).toHaveLength(1);
-    expect(link).toMatchObject({ title: "Add invoices", state: "approved", kind: "pr" });
+    expect(link).toMatchObject({ state: "CI failing", title: "Add invoices" });
+    expect(link?.observedAt).toEqual(first.observedAt);
+  });
+
+  it("treats different links to the same PR, and JIRA keys in any case, as one", () => {
+    expect(refKeyOf(pr)).toBe(refKeyOf({ ...pr, url: `${pr.url}/files?w=1#diff` }));
+    expect(refKeyOf({ kind: "ticket", provider: "jira", key: "abc-12" })).toBe(
+      refKeyOf({ kind: "ticket", provider: "jira", key: "ABC-12" }),
+    );
+  });
+
+  it("logs a stream being opened and closed, but not each update", async () => {
+    const stream = await createStream(db, { title: "ship billing" });
+    await updateStream(db, stream.id, { note: "pushed a fix" });
+    await updateStream(db, stream.id, { status: "done" });
+    await updateStream(db, stream.id, { status: "dropped" });
+
+    const types = await sql`SELECT type FROM events`;
+    expect(types.map((r) => r.type).sort()).toEqual(["work_stream.closed", "work_stream.created"]);
   });
 
   it("keys a bump as a new review request, since it is a new message", () => {
@@ -90,15 +117,26 @@ describe("work streams", () => {
     expect(refKeyOf(request)).not.toBe(refKeyOf(bump));
   });
 
-  it("finds the streams something is linked to, and drops links with their stream", async () => {
+  it("keeps refs apart even when their text contains separators", () => {
+    const a = { kind: "message", channel: "a:b", conversation: "c", messageRef: "m" } as const;
+    const b = { kind: "message", channel: "a", conversation: "b:c", messageRef: "m" } as const;
+
+    expect(refKeyOf(a)).not.toBe(refKeyOf(b));
+  });
+
+  it("finds the streams something is linked to, until it is unlinked", async () => {
     const stream = await createStream(db, { title: "ship billing" });
     const link = await linkToStream(db, stream.id, { ref: pr });
 
-    expect((await streamsLinkedTo(db, pr)).map((s) => s.id)).toEqual([stream.id]);
-    expect(await unlink(db, link.id)).toBe(true);
-    expect(await streamsLinkedTo(db, pr)).toEqual([]);
+    expect((await findStreamsLinkedTo(db, pr)).map((s) => s.id)).toEqual([stream.id]);
+    expect(await unlinkFromStream(db, link.id)).toBe(true);
+    expect(await findStreamsLinkedTo(db, pr)).toEqual([]);
+  });
 
+  it("drops a stream's links with it", async () => {
+    const stream = await createStream(db, { title: "ship billing" });
     await linkToStream(db, stream.id, { ref: pr });
+
     await sql`DELETE FROM work_streams WHERE id = ${stream.id}`;
     expect(await sql`SELECT 1 FROM work_stream_links`).toHaveLength(0);
   });
@@ -125,6 +163,69 @@ describe("work stream tools", () => {
     );
     expect(listed?.nextAction).toContain("send the PR link");
     expect(listed?.links[0]?.title).toStartWith("<recalled-content-");
+  });
+
+  it("fences the text in a link's ref, which was copied from what a tool read", async () => {
+    const stream = await createStream(db, { title: "Answer Alex" });
+    await linkToStream(db, stream.id, {
+      ref: {
+        kind: "message",
+        channel: "slack",
+        conversation: "#billing",
+        messageRef: "Alex at 12:40",
+        author: "Alex",
+      },
+    });
+
+    const result = (await tools.get_work_stream.execute!({ id: stream.id }, opts)) as {
+      stream: { links: { ref: { kind: string; conversation: string; author: string } }[] };
+    };
+    const [link] = result.stream.links;
+    expect(link?.ref.kind).toBe("message");
+    expect(link?.ref.conversation).toStartWith("<recalled-content-");
+    expect(link?.ref.author).toStartWith("<recalled-content-");
+  });
+
+  it("refuses a link whose URL isn't a web link", async () => {
+    const stream = await createStream(db, { title: "ship billing" });
+    const parsed = tools.link_to_work_stream.inputSchema as unknown as {
+      safeParse: (v: unknown) => { success: boolean };
+    };
+    expect(
+      parsed.safeParse({
+        streamId: stream.id,
+        ref: { kind: "pr", provider: "github", url: "javascript:alert(1)" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("fences a stream's notes, which can quote messages", async () => {
+    const stream = await createStream(db, { title: "Answer Alex", note: "Alex said: ship it" });
+
+    const result = (await tools.get_work_stream.execute!({ id: stream.id }, opts)) as {
+      stream: { notes: { text: string }[] };
+    };
+    expect(result.stream.notes[0]?.text).toStartWith("<recalled-content-");
+  });
+
+  it("sets, keeps and clears a stream's wake time", async () => {
+    const stream = await createStream(db, { title: "bump review" });
+    const update = (input: { wakeAt?: string | null; note?: string }) =>
+      tools.update_work_stream.execute!({ id: stream.id, ...input }, opts);
+
+    await update({ wakeAt: "2026-10-18T13:00:00Z" });
+    await update({ note: "still waiting" });
+    expect((await getStream(db, stream.id))?.wakeAt).toEqual(new Date("2026-10-18T13:00:00Z"));
+    await update({ wakeAt: null });
+    expect((await getStream(db, stream.id))?.wakeAt).toBeNull();
+  });
+
+  it("reports an unknown link when unlinking", async () => {
+    const result = await tools.unlink_from_work_stream.execute!(
+      { linkId: "00000000-0000-4000-8000-000000000000" },
+      opts,
+    );
+    expect(result).toEqual({ error: "no link with that id" });
   });
 
   it("refuses to link to a stream that doesn't exist", async () => {
