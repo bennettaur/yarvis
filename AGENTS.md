@@ -351,6 +351,14 @@ back to ad-hoc.
   runs. The approval bar shows it and the reviewer weighs it, both as the
   model's own claim about its call: it explains intent, it never counts as the
   user asking.
+
+  Heads-down mode has its own version (`headsDown/autoApprove.ts`), switched on
+  separately, because nobody is watching a pass: it reviews an MCP call only
+  when the user's own decision memories already approve that tool in a like
+  situation, judges it against the user's words for the run rather than the
+  pass's app-written prompt, and records its approvals on the page without
+  ever making them decision memories, so it can't build consent from its own
+  answers.
 - A list a tab shows is read through `lib/resourceCache`, not fetched into local
   state on mount. `App` renders one panel at a time (the Chat tab aside, kept
   mounted so a turn outlives the switch), so a tab switch unmounts a page

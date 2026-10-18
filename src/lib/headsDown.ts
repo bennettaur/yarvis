@@ -45,6 +45,8 @@ export interface HeadsDownQuestion {
   status: "open" | "answered" | "dismissed";
   choice: string | null;
   answer: string | null;
+  /** Null on questions not yet answered. */
+  answeredBy: "user" | "decision-model" | null;
   createdAt: string;
   answeredAt: string | null;
 }
@@ -185,6 +187,10 @@ export const setToolAllowed = (id: string, allowed: boolean) =>
     "PUT",
     { allowed },
   );
+
+/** Calls the decision model approved on the user's behalf, newest first. */
+export const listAutoApprovals = () =>
+  request<HeadsDownQuestion[]>("/api/heads-down/auto-approvals");
 
 export const listPasses = () => request<HeadsDownPass[]>("/api/heads-down/passes");
 

@@ -52,7 +52,11 @@ describe("GET/PATCH /api/decision-model", () => {
 
   it("answers off with no model before anything is saved", async () => {
     const res = await app().request("/api/decision-model", { headers: auth });
-    expect(await res.json()).toEqual({ model: null, autoApproveTools: false });
+    expect(await res.json()).toEqual({
+      model: null,
+      autoApproveTools: false,
+      autoApproveHeadsDown: false,
+    });
   });
 
   it("clears the model without turning auto mode off", async () => {
@@ -60,7 +64,11 @@ describe("GET/PATCH /api/decision-model", () => {
       JSON.stringify({ model: { provider: "custom:a", model: "jev" }, autoApproveTools: true }),
     );
     const res = await patch(JSON.stringify({ model: null }));
-    expect(await res.json()).toEqual({ model: null, autoApproveTools: true });
+    expect(await res.json()).toEqual({
+      model: null,
+      autoApproveTools: true,
+      autoApproveHeadsDown: false,
+    });
   });
 
   it("rejects a malformed body", async () => {

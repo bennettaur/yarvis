@@ -19,11 +19,18 @@ export interface DecisionModelConfig {
   model: ModelSelection | null;
   /** Let the decision model approve an MCP tool call before the user is asked. */
   autoApproveTools: boolean;
+  /**
+   * Let it approve an MCP tool call a heads-down pass would otherwise queue for
+   * the user, when the user has approved that tool in related situations
+   * before. Separate from `autoApproveTools`: nobody is watching a pass.
+   */
+  autoApproveHeadsDown: boolean;
 }
 
 export const DEFAULT_DECISION_MODEL_CONFIG: DecisionModelConfig = {
   model: null,
   autoApproveTools: false,
+  autoApproveHeadsDown: false,
 };
 
 const SETTINGS_KEY = "decisionModel";

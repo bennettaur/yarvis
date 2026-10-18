@@ -1558,6 +1558,13 @@ export const headsDownMessages = pgTable(
  */
 export const headsDownQuestionKind = pgEnum("heads_down_question_kind", ["question", "approval"]);
 
+/**
+ * Who answered: the user, or the decision model approving a call it was
+ * allowed to settle. Only the user's answers become decision memories, so
+ * the model's approvals never count as precedent for its next one.
+ */
+export const headsDownAnswerer = pgEnum("heads_down_answerer", ["user", "decision-model"]);
+
 export const headsDownQuestionStatus = pgEnum("heads_down_question_status", [
   "open",
   "answered",
@@ -1589,6 +1596,7 @@ export const headsDownQuestions = pgTable(
     status: headsDownQuestionStatus("status").notNull().default("open"),
     choice: text("choice"),
     answer: text("answer"),
+    answeredBy: headsDownAnswerer("answered_by"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     answeredAt: timestamp("answered_at", { withTimezone: true }),
     usedAt: timestamp("used_at", { withTimezone: true }),

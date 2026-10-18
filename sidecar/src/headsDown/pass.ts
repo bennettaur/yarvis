@@ -8,6 +8,8 @@ import type { Db } from "../db/client.ts";
 import type { HeadsDownRun } from "../db/schema.ts";
 import { defaultProviderModel, resolveModel } from "../llm/providers.ts";
 import { mountTools, unmountAll } from "../mcp/mountedTools.ts";
+import { chooseEmbedder } from "../memory/embedder.ts";
+import { PgVectorMemoryStore } from "../memory/index.ts";
 import { listStreams } from "../workStreams/service.ts";
 import {
   chooseSleep,
@@ -40,6 +42,18 @@ import { setPassAbort } from "./wake.ts";
  * search for and mount itself.
  */
 const PASS_FAMILIES = ["workStreams", "workspaces", "jira", "prReview", "browser"];
+
+/**
+ * What the user asked for in this run, in their own words, for the decision
+ * model to judge a call against: the focus and their messages, newest last.
+ */
+export function userRequestFor(
+  run: HeadsDownRun,
+  messages: { body: string; createdAt: Date }[],
+): string {
+  const sorted = [...messages].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  return [run.focus, ...sorted.map((m) => m.body)].filter(Boolean).join("\n\n");
+}
 
 /** The sleep reason recorded for a pass the user stopped; the page shows it as stopped. */
 export const STOPPED_BY_USER = "stopped by you";
@@ -147,7 +161,12 @@ export async function runPass(
       }),
       userMetadata: { source: "heads-down" },
       signal: abort.signal,
-      approval: passApprovalHooks(db, run, changed),
+      approval: passApprovalHooks(db, run, changed, {
+        config,
+        memory: new PgVectorMemoryStore(db, await chooseEmbedder(config, db)),
+        userRequest: userRequestFor(run, [...earlier, ...messages]),
+        signal: abort.signal,
+      }),
       confirmBuiltins: PASS_CONFIRMED_TOOLS,
       instructions: PASS_INSTRUCTIONS,
       extraTools: buildPassTools(db, outcome, changed),

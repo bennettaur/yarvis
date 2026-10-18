@@ -77,6 +77,21 @@ and the rest carry on. Your answer reaches the next pass.
   lasts. For an MCP tool you can also press **Always allow this tool in
   heads-down mode**.
 
+With **Auto mode for heads-down mode** turned on (Settings → Tools & MCP →
+Decision model), some approvals settle themselves. When it wants to call an MCP
+tool you haven't allowed, it goes ahead without asking if both of these hold:
+
+- You approved that tool in the same situation before, or in at least three
+  similar ones with no denial. Your answers here are saved as decisions, so the
+  more often you approve the same kind of call, the less it needs to ask.
+- The decision model, judging the call against your focus and messages for
+  this run, says it fits and isn't risky or destructive.
+
+Calls approved this way are listed under **Approved on its own**, with the
+decision model's reason and the exact arguments. They never count as your
+approval next time, so it can't talk itself into more. Built-in actions, like
+archiving a workspace, always ask you.
+
 **Dismiss** puts a question or approval away without answering it. It isn't
 recorded as a decision or a denial, so a later pass may ask again.
 

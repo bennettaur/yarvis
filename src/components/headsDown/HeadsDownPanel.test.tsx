@@ -139,6 +139,19 @@ mock.module("../../lib/api", () => ({
     if (path === "/api/heads-down/passes") return json([PASS]);
     if (path === "/api/heads-down/messages") return json([]);
     if (path === "/api/heads-down/config") return json(CONFIG);
+    if (path === "/api/heads-down/auto-approvals") {
+      return json([
+        {
+          ...APPROVAL,
+          id: "q3",
+          status: "answered",
+          choice: "approve",
+          answer: "Posts the review request the user asked for",
+          answeredBy: "decision-model",
+          answeredAt: "2026-10-19T10:05:00.000Z",
+        },
+      ]);
+    }
     if (path === "/api/heads-down/allowed-tools") {
       return json([{ id: "mcp:slack:read_channel", name: "read_channel" }]);
     }
@@ -194,6 +207,8 @@ describe("HeadsDownPanel", () => {
     expect(text).toContain("Waiting on you");
     expect(text).toContain("pr: Add invoices · CI passing");
     expect(text).toContain("Asked where to request review.");
+    expect(text).toContain("Approved on its own");
+    expect(text).toContain("Posts the review request the user asked for");
   });
 
   it("sends the option the user picked", async () => {

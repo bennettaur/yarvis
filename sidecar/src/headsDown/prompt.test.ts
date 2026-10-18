@@ -24,6 +24,7 @@ function question(overrides: Partial<HeadsDownQuestion>): HeadsDownQuestion {
     status: "answered",
     choice: "#billing-reviews",
     answer: null,
+    answeredBy: "user",
     createdAt: new Date(),
     answeredAt: new Date(),
     usedAt: null,

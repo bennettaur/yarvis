@@ -253,6 +253,13 @@
       "when": 1792555654820,
       "tag": "0035_noisy_quicksilver",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1792555666214,
+      "tag": "0036_long_purple_man",
+      "breakpoints": true
     }
   ]
 }
