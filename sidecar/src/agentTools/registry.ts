@@ -39,6 +39,8 @@ const FAMILY_POLICY: Record<string, ToolPolicy> = {
   delegation: "always",
   workspaces: "search",
   jira: "search",
+  githubIssues: "search",
+  azureBoards: "search",
   prReview: "search",
   calendar: "search",
   browser: "search",

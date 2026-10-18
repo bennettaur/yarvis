@@ -678,6 +678,50 @@ describe("repo routes", () => {
     expect(res.status).toBe(400);
   });
 
+  it("saves, keeps and clears a repo's tracker", async () => {
+    const repo = await addRepo();
+    const tracker = { provider: "azure-boards", project: "Web", areaPath: "Web\\Payments" };
+    const set = await app.request(`/api/repos/${repo.id}`, {
+      method: "PATCH",
+      headers: jsonAuth,
+      body: JSON.stringify({ tracker }),
+    });
+    expect(set.status).toBe(200);
+    expect(((await set.json()) as { tracker: unknown }).tracker).toEqual(tracker);
+
+    // An edit that doesn't mention the tracker leaves it alone.
+    const renamed = await app.request(`/api/repos/${repo.id}`, {
+      method: "PATCH",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "renamed" }),
+    });
+    expect(((await renamed.json()) as { tracker: unknown }).tracker).toEqual(tracker);
+
+    const cleared = await app.request(`/api/repos/${repo.id}`, {
+      method: "PATCH",
+      headers: jsonAuth,
+      body: JSON.stringify({ tracker: null }),
+    });
+    expect(((await cleared.json()) as { tracker: unknown }).tracker).toBeNull();
+  });
+
+  it("rejects a tracker missing its project or with an unsafe project name", async () => {
+    const repo = await addRepo();
+    for (const tracker of [
+      { provider: "jira" },
+      { provider: "jira", projectKey: "not a key" },
+      { provider: "azure-boards", project: "../other" },
+      { provider: "trello" },
+    ]) {
+      const res = await app.request(`/api/repos/${repo.id}`, {
+        method: "PATCH",
+        headers: jsonAuth,
+        body: JSON.stringify({ tracker }),
+      });
+      expect(res.status).toBe(400);
+    }
+  });
+
   it("refuses to delete a repo still used by a workspace", async () => {
     const repo = await addRepo();
     await app.request("/api/workspaces", {

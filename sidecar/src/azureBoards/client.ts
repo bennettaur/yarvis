@@ -13,6 +13,7 @@ import type { IssueComment, IssueLabel, IssueSummary } from "../issues/types.ts"
 import { htmlToMarkdown, textToHtml } from "./html.ts";
 import type {
   BoardsBodyField,
+  BoardsRelation,
   BoardsState,
   BoardsStateCategory,
   BoardsViewer,
@@ -103,6 +104,24 @@ const OPEN_ITEMS = `[System.State] NOT IN (${DONE_STATE_NAMES.map(wiqlString).jo
 interface RawWorkItem {
   id: number;
   fields?: Record<string, any>;
+  /** Present only when the item was read with `$expand=relations`. */
+  relations?: { rel?: string; url?: string; attributes?: { name?: string } }[];
+}
+
+/**
+ * The work items an item links to, in the order Azure lists them. Links to
+ * commits, PRs and wiki pages come back in the same list; only the ones whose
+ * url is another work item are kept. The name is Azure's display name for the
+ * link type ("Parent", "Predecessor"), falling back to the raw reference name.
+ */
+function workItemLinks(item: RawWorkItem): { id: number; relation: string }[] {
+  const links: { id: number; relation: string }[] = [];
+  for (const r of item.relations ?? []) {
+    const match = r.url?.match(/\/_apis\/wit\/workItems\/(\d+)$/i);
+    if (!match) continue;
+    links.push({ id: Number(match[1]), relation: r.attributes?.name || r.rel || "Related" });
+  }
+  return links;
 }
 
 type JsonPatchOp = { op: "add"; path: string; value: unknown } | { op: "remove"; path: string };
@@ -362,13 +381,19 @@ export class AzureBoardsClient {
     );
   }
 
-  /** Full detail for one work item: fields, comments, and its type's states. */
+  /**
+   * Full detail for one work item: fields, comments, its type's states, and the
+   * work items it links to (parent, children, what blocks it).
+   */
   async workItemDetail(id: number): Promise<BoardsWorkItemDetail> {
-    const item = await this.request<RawWorkItem>("GET", `${this.orgUrl}/_apis/wit/workitems/${id}`);
+    const item = await this.request<RawWorkItem>(
+      "GET",
+      `${this.orgUrl}/_apis/wit/workitems/${id}?$expand=relations`,
+    );
     const f = item.fields ?? {};
     const project: string = f["System.TeamProject"] ?? "";
     const type: string = f["System.WorkItemType"] ?? "";
-    const [comments, states] = await Promise.all([
+    const [comments, states, relations] = await Promise.all([
       this.getComments(project, id),
       // Without the states the detail still loads; the state can't be changed.
       this.typeStates(project, type).catch((e) => {
@@ -377,6 +402,7 @@ export class AzureBoardsClient {
         );
         return [] as BoardsState[];
       }),
+      this.loadRelations(item),
     ]);
     const state: string = f["System.State"] ?? "";
     const category = categoryIn(states, state);
@@ -398,7 +424,38 @@ export class AzureBoardsClient {
       issueType: type,
       priority: priority === undefined || priority === null ? null : String(priority),
       states,
+      relations,
     };
+  }
+
+  /**
+   * The item's work item links, with each linked item's title, state and type
+   * so a reader can see what blocks what without opening each one. A failed
+   * lookup still returns the links, just without those details.
+   */
+  private async loadRelations(item: RawWorkItem): Promise<BoardsRelation[]> {
+    const links = workItemLinks(item);
+    if (links.length === 0) return [];
+    let linked = new Map<string, IssueSummary>();
+    try {
+      const rows = await this.workItems(links.map((l) => l.id));
+      linked = new Map(rows.map((r) => [r.externalId, r]));
+    } catch (e) {
+      console.warn(
+        `[azure-boards] could not load linked work items: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    return links.map(({ id, relation }) => {
+      const row = linked.get(String(id));
+      return {
+        id,
+        relation,
+        title: row?.title ?? "",
+        state: row?.statusName ?? "",
+        type: row?.issueType ?? "",
+        url: row?.url ?? "",
+      };
+    });
   }
 
   /** The item's current state and the states its type allows, without the
@@ -439,6 +496,38 @@ export class AzureBoardsClient {
   }
 
   // --- Mutations ---
+
+  /**
+   * Creates a work item of `type` in `project` and returns it as a list row.
+   * The text goes in Repro Steps for a Bug, where the built-in processes' Bug
+   * form shows it, and in Description otherwise. Without `areaPath` the item
+   * lands in the project's root area.
+   */
+  async createWorkItem(
+    project: string,
+    type: string,
+    input: { title: string; description?: string; areaPath?: string; tags?: string[] },
+  ): Promise<IssueSummary> {
+    const ops: JsonPatchOp[] = [{ op: "add", path: "/fields/System.Title", value: input.title }];
+    if (input.description) {
+      const field = /^bug$/i.test(type) ? BODY_FIELDS.reproSteps : BODY_FIELDS.description;
+      ops.push({ op: "add", path: `/fields/${field}`, value: textToHtml(input.description) });
+    }
+    if (input.areaPath) {
+      ops.push({ op: "add", path: "/fields/System.AreaPath", value: input.areaPath });
+    }
+    if (input.tags?.length) {
+      ops.push({ op: "add", path: "/fields/System.Tags", value: input.tags.join("; ") });
+    }
+    // Azure names the type in the path, after a literal `$`.
+    const created = await this.request<RawWorkItem>(
+      "POST",
+      `${this.projectBase(project)}/_apis/wit/workitems/$${encodeURIComponent(type)}`,
+      { body: ops, contentType: "application/json-patch+json" },
+    );
+    const categoryOf = await this.loadCategoryResolver([created]);
+    return this.toSummary(created, categoryOf(created));
+  }
 
   private async patch(id: number, ops: JsonPatchOp[]): Promise<void> {
     if (ops.length === 0) return;

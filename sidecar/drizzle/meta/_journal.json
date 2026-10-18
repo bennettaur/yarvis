@@ -239,6 +239,13 @@
       "when": 1792161879709,
       "tag": "0033_chemical_lethal_legion",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1792556270352,
+      "tag": "0034_opposite_colossus",
+      "breakpoints": true
     }
   ]
 }

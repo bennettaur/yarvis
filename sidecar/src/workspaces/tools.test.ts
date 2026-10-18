@@ -212,6 +212,24 @@ describe("workspace tools", () => {
     expect(result[0]!.name).toBe("widget");
   });
 
+  it("list_repos says which tracker each repo's tickets go to", async () => {
+    await createRepo(db, config, {
+      cloneUrl: "https://github.com/acme/widget.git",
+      tracker: { provider: "jira", projectKey: "WID" },
+    });
+    await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
+
+    const result = (await tools.list_repos.execute!({}, opts)) as Array<{
+      name: string;
+      tracker: unknown;
+    }>;
+
+    const byName = Object.fromEntries(result.map((r) => [r.name, r.tracker]));
+    expect(byName.widget).toEqual({ provider: "jira", projectKey: "WID" });
+    expect(byName.gadget).toBeNull();
+  });
+
   it("create_workspace_session provisions and starts a session at the workspace root", async () => {
     const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
     let startedCwd = "";

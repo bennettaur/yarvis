@@ -115,3 +115,115 @@ describe("jira tools: prompt-injection sanitization", () => {
     expect(result.linkedIssues[0]!.summary).toBe("Blocker sum");
   });
 });
+
+describe("jira tools: ticket changes", () => {
+  const transitions = [
+    {
+      id: "11",
+      name: "Start progress",
+      toStatusName: "In Progress",
+      toStatusCategory: "in_progress",
+    },
+    { id: "31", name: "Finish", toStatusName: "Done", toStatusCategory: "done" },
+  ];
+
+  /** A JIRA client that records the writes the tools make. Events go to a db
+   *  stub; their recording failing is logged and swallowed by design. */
+  function fakeJira(
+    users: { accountId: string; displayName: string; email: string | null }[] = [],
+  ) {
+    const calls: { method: string; args: unknown[] }[] = [];
+    const record =
+      (method: string) =>
+      async (...args: unknown[]) => {
+        calls.push({ method, args });
+      };
+    const client = {
+      transitions: async () => transitions,
+      transitionIssue: record("transitionIssue"),
+      assign: record("assign"),
+      updateFields: record("updateFields"),
+      addComment: record("addComment"),
+      myself: async () => ({ login: "Me", accountId: "acc-me" }),
+      searchAssignableUsers: async () => users,
+      issueSummaryByKey: async () => summary(),
+    } as unknown as JiraClient;
+    return { client, calls };
+  }
+
+  it("transitions by target status or by transition name", async () => {
+    const { client, calls } = fakeJira();
+    const tools = buildJiraTools(db, config, { jiraClient: client });
+
+    await tools.jira_transition_issue.execute!({ key: "PROJ-1", status: "done" }, opts);
+    await tools.jira_transition_issue.execute!({ key: "PROJ-1", status: "Start progress" }, opts);
+
+    expect(calls).toEqual([
+      { method: "transitionIssue", args: ["PROJ-1", "31"] },
+      { method: "transitionIssue", args: ["PROJ-1", "11"] },
+    ]);
+  });
+
+  it("lists the available transitions when none leads to the asked-for status", async () => {
+    const { client, calls } = fakeJira();
+    const tools = buildJiraTools(db, config, { jiraClient: client });
+
+    const result = (await tools.jira_transition_issue.execute!(
+      { key: "PROJ-1", status: "In Review" },
+      opts,
+    )) as { error: string; available: { toStatus: string }[] };
+
+    expect(result.error).toMatch(/In Review/);
+    expect(result.available.map((t) => t.toStatus)).toEqual(["In Progress", "Done"]);
+    expect(calls).toEqual([]);
+  });
+
+  it("assigns to the user, to nobody, or to the one matching user", async () => {
+    const { client, calls } = fakeJira([{ accountId: "acc-ann", displayName: "Ann", email: null }]);
+    const tools = buildJiraTools(db, config, { jiraClient: client });
+
+    await tools.jira_assign_issue.execute!({ key: "PROJ-1", assignee: "me" }, opts);
+    await tools.jira_assign_issue.execute!({ key: "PROJ-1", assignee: "nobody" }, opts);
+    await tools.jira_assign_issue.execute!({ key: "PROJ-1", assignee: "Ann" }, opts);
+
+    expect(calls).toEqual([
+      { method: "assign", args: ["PROJ-1", "acc-me"] },
+      { method: "assign", args: ["PROJ-1", null] },
+      { method: "assign", args: ["PROJ-1", "acc-ann"] },
+    ]);
+  });
+
+  it("returns the matches rather than guessing when a name matches several people", async () => {
+    const { client, calls } = fakeJira([
+      { accountId: "a1", displayName: "Ann Lee", email: null },
+      { accountId: "a2", displayName: "Ann Park", email: null },
+    ]);
+    const tools = buildJiraTools(db, config, { jiraClient: client });
+
+    const result = (await tools.jira_assign_issue.execute!(
+      { key: "PROJ-1", assignee: "Ann" },
+      opts,
+    )) as { error: string; matches: { name: string }[] };
+
+    expect(result.error).toMatch(/more than one/);
+    expect(result.matches.map((m) => m.name)).toEqual(["Ann Lee", "Ann Park"]);
+    expect(calls).toEqual([]);
+  });
+
+  it("edits only the given fields, and comments", async () => {
+    const { client, calls } = fakeJira();
+    const tools = buildJiraTools(db, config, { jiraClient: client });
+
+    await tools.jira_update_issue.execute!({ key: "PROJ-1", labels: ["a", "b"] }, opts);
+    const commented = await tools.jira_comment_on_issue.execute!(
+      { key: "PROJ-1", body: "PR is up" },
+      opts,
+    );
+
+    expect(commented).toEqual({ commented: true, key: "PROJ-1" });
+    expect(calls).toEqual([
+      { method: "updateFields", args: ["PROJ-1", { labels: ["a", "b"] }] },
+      { method: "addComment", args: ["PROJ-1", "PR is up"] },
+    ]);
+  });
+});
