@@ -107,11 +107,12 @@ describe("jira tools: prompt-injection sanitization", () => {
       comments: Array<{ body: string }>;
       linkedIssues: Array<{ summary: string }>;
     };
-    expect(result.description).toBe("Body text");
+    // Sanitized, then fenced as untrusted text.
+    expect(result.description).toMatch(/^<ticket-text-\w+>\nBody text\n<\/ticket-text-\w+>$/);
     expect(result.reporter).toBe("Rep Order");
     expect(result.assignee).toBe("As Signee");
     expect(result.labels).toEqual(["urgent"]);
-    expect(result.comments[0]!.body).toBe("hi there");
+    expect(result.comments[0]!.body).toMatch(/^<ticket-text-\w+>\nhi there\n<\/ticket-text-\w+>$/);
     expect(result.linkedIssues[0]!.summary).toBe("Blocker sum");
   });
 });
@@ -203,11 +204,51 @@ describe("jira tools: ticket changes", () => {
     const result = (await tools.jira_assign_issue.execute!(
       { key: "PROJ-1", assignee: "Ann" },
       opts,
-    )) as { error: string; matches: { name: string }[] };
+    )) as { error: string; matches: string[] };
 
     expect(result.error).toMatch(/more than one/);
-    expect(result.matches.map((m) => m.name)).toEqual(["Ann Lee", "Ann Park"]);
+    expect(result.matches).toEqual(["Ann Lee", "Ann Park"]);
     expect(calls).toEqual([]);
+  });
+
+  it("picks the exact name when the search also finds longer ones", async () => {
+    const { client, calls } = fakeJira([
+      { accountId: "a1", displayName: "Alex Kim", email: null },
+      { accountId: "a2", displayName: "Alex Kimball", email: null },
+    ]);
+    const tools = buildJiraTools(db, config, { jiraClient: client });
+
+    await tools.jira_assign_issue.execute!({ key: "PROJ-1", assignee: "alex kim" }, opts);
+
+    expect(calls).toEqual([{ method: "assign", args: ["PROJ-1", "a1"] }]);
+  });
+
+  it("says so when no assignable user matches", async () => {
+    const { client, calls } = fakeJira([]);
+    const tools = buildJiraTools(db, config, { jiraClient: client });
+
+    const result = (await tools.jira_assign_issue.execute!(
+      { key: "PROJ-1", assignee: "Zed" },
+      opts,
+    )) as { error: string; matches: string[] };
+
+    expect(result).toEqual({ error: 'no assignable user matches "Zed"', matches: [] });
+    expect(calls).toEqual([]);
+  });
+
+  it("returns JIRA's error to the model instead of throwing", async () => {
+    const { client } = fakeJira();
+    (client as unknown as { transitionIssue: () => Promise<void> }).transitionIssue = async () => {
+      throw new Error("jira POST /issue/PROJ-1/transitions -> 400");
+    };
+    const tools = buildJiraTools(db, config, { jiraClient: client });
+
+    const result = await tools.jira_transition_issue.execute!(
+      { key: "PROJ-1", status: "Done" },
+      opts,
+    );
+
+    expect(result).toEqual({ error: "jira POST /issue/PROJ-1/transitions -> 400" });
   });
 
   it("edits only the given fields, and comments", async () => {

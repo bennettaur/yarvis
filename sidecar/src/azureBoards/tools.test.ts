@@ -81,7 +81,6 @@ function fakeBoards() {
       return row({ externalId: "9", title: "New item" });
     },
     updateFields: record("updateFields"),
-    setState: record("setState"),
     assign: record("assign"),
     addComment: record("addComment"),
   } as unknown as AzureBoardsClient;
@@ -153,14 +152,61 @@ describe("azure boards tools", () => {
       opts,
     );
 
+    // One patch, so a state the workflow rejects saves nothing. The state is
+    // matched without regard to case, then sent as the type spells it.
     expect(calls).toEqual([
       {
         method: "updateFields",
-        args: [7, { title: undefined, tags: undefined, reproSteps: "New steps" }],
+        args: [7, { title: undefined, tags: undefined, state: "Closed", reproSteps: "New steps" }],
       },
-      // Matched without regard to case, then sent as the type spells it.
-      { method: "setState", args: [7, "Closed"] },
     ]);
+  });
+
+  it("returns Azure's error to the model and logs nothing when a write fails", async () => {
+    const { client } = fakeBoards();
+    (client as unknown as { updateFields: () => Promise<void> }).updateFields = async () => {
+      throw new Error("azure boards PATCH /_apis/wit/workitems/7 -> 400: rule failed");
+    };
+    const tools = buildAzureBoardsTools(db, config, { boardsClient: client });
+
+    const result = await tools.azure_boards_update_work_item.execute!(
+      { id: 7, state: "Closed" },
+      opts,
+    );
+
+    expect(result).toEqual({
+      error: "azure boards PATCH /_apis/wit/workitems/7 -> 400: rule failed",
+    });
+    expect(await listEvents(db, { type: "azure_boards.item.updated" })).toEqual([]);
+  });
+
+  it("searches with WIQL or by title, and needs exactly one of them", async () => {
+    const asked: string[] = [];
+    const client = {
+      queryWiql: async (q: string) => {
+        asked.push(`wiql:${q}`);
+        return [row({ title: "Fix​ login" })];
+      },
+      searchTitle: async (t: string) => {
+        asked.push(`text:${t}`);
+        return [];
+      },
+    } as unknown as AzureBoardsClient;
+    const tools = buildAzureBoardsTools(db, config, { boardsClient: client });
+
+    const rows = (await tools.azure_boards_search.execute!(
+      { wiql: "SELECT [System.Id] FROM WorkItems" },
+      opts,
+    )) as { title: string }[];
+    await tools.azure_boards_search.execute!({ text: "login" }, opts);
+
+    expect(asked).toEqual(["wiql:SELECT [System.Id] FROM WorkItems", "text:login"]);
+    expect(rows[0]!.title).toBe("Fix login");
+    const schema = tools.azure_boards_search.inputSchema as unknown as {
+      safeParse(v: unknown): { success: boolean };
+    };
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(schema.safeParse({ wiql: "SELECT 1", text: "x" }).success).toBe(false);
   });
 
   it("refuses a state the type doesn't allow, before changing anything", async () => {

@@ -328,6 +328,51 @@ describe("AzureBoardsClient.workItems", () => {
 });
 
 describe("AzureBoardsClient mutations", () => {
+  it("puts a non-bug's text in Description and leaves out fields not given", async () => {
+    const org = nextOrg();
+    const recorder: RecordedRequest[] = [];
+    const client = new AzureBoardsClient(
+      "pat",
+      org,
+      fakeFetch(
+        org,
+        {
+          "POST /Web/_apis/wit/workitems/$User%20Story": {
+            id: 13,
+            fields: fields({ "System.WorkItemType": "User Story" }),
+          },
+          "/Web%20App/_apis/wit/workitemtypes/User%20Story/states": bugStates,
+        },
+        recorder,
+      ),
+    );
+
+    await client.createWorkItem("Web", "User Story", { title: "Story", description: "Why" });
+
+    expect(recorder[0]?.body).toEqual([
+      { op: "add", path: "/fields/System.Title", value: "Story" },
+      { op: "add", path: "/fields/System.Description", value: "<div>Why</div>" },
+    ]);
+  });
+
+  it("sends a state change in the same patch as the fields", async () => {
+    const org = nextOrg();
+    const recorder: RecordedRequest[] = [];
+    const client = new AzureBoardsClient(
+      "pat",
+      org,
+      fakeFetch(org, { "PATCH /_apis/wit/workitems/7": { id: 7 } }, recorder),
+    );
+
+    await client.updateFields(7, { title: "Renamed", state: "Closed" });
+
+    expect(recorder).toHaveLength(1);
+    expect(recorder[0]?.body).toEqual([
+      { op: "add", path: "/fields/System.State", value: "Closed" },
+      { op: "add", path: "/fields/System.Title", value: "Renamed" },
+    ]);
+  });
+
   it("creates a work item with a JSON patch, putting a bug's text in Repro Steps", async () => {
     const org = nextOrg();
     const recorder: RecordedRequest[] = [];

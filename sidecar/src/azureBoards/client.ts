@@ -540,12 +540,23 @@ export class AzureBoardsClient {
   /**
    * Updates editable fields. Only the provided keys are sent. `description` and
    * `reproSteps` are plain text converted to HTML; `tags` replaces the full set.
+   * A `state` goes in the same patch, so a rejected state change saves nothing
+   * rather than leaving the other fields half applied.
    */
   async updateFields(
     id: number,
-    input: { title?: string; description?: string; reproSteps?: string; tags?: string[] },
+    input: {
+      title?: string;
+      description?: string;
+      reproSteps?: string;
+      tags?: string[];
+      state?: string;
+    },
   ): Promise<void> {
     const ops: JsonPatchOp[] = [];
+    if (input.state !== undefined) {
+      ops.push({ op: "add", path: "/fields/System.State", value: input.state });
+    }
     if (input.title !== undefined) {
       ops.push({ op: "add", path: "/fields/System.Title", value: input.title });
     }

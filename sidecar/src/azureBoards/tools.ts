@@ -4,8 +4,7 @@ import { isAllowedAzureOrgUrl } from "../azure/client.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { emitEvent } from "../events/service.ts";
-import { sanitizeIssueText } from "../issues/service.ts";
-import { ticketTextFence } from "../issues/tools.ts";
+import { sanitizeIssueText, ticketTextFence } from "../issues/service.ts";
 import type { IssueSummary } from "../issues/types.ts";
 import { AzureBoardsClient } from "./client.ts";
 import { areaPath, projectName, tagList, workItemId } from "./validation.ts";
@@ -32,7 +31,7 @@ const idArg = workItemId.describe("The work item id, e.g. 1234");
 
 /** A list row for the model. Titles, names and tags are sanitized; state, type
  *  and project are Azure-controlled names. */
-function rowResult(i: IssueSummary) {
+function workItemResult(i: IssueSummary) {
   return {
     id: Number(i.externalId),
     title: sanitizeIssueText(i.title),
@@ -76,7 +75,7 @@ export function buildAzureBoardsTools(db: Db, config: Config, deps: AzureBoardsT
         if (!boards) return NOT_CONFIGURED;
         try {
           const rows = wiql ? await boards.queryWiql(wiql) : await boards.searchTitle(text ?? "");
-          return rows.map(rowResult);
+          return rows.map(workItemResult);
         } catch (e) {
           return { error: errorMessage(e) };
         }
@@ -93,7 +92,7 @@ export function buildAzureBoardsTools(db: Db, config: Config, deps: AzureBoardsT
           const d = await boards.workItemDetail(id);
           const { warning, fenceText } = ticketTextFence();
           return {
-            ...rowResult(d),
+            ...workItemResult(d),
             priority: d.priority,
             allowedStates: d.states.map((s) => s.name),
             relations: d.relations.map((r) => ({
@@ -141,7 +140,7 @@ export function buildAzureBoardsTools(db: Db, config: Config, deps: AzureBoardsT
             source: "chat",
             payload: { id: Number(created.externalId), project, type },
           });
-          return rowResult(created);
+          return workItemResult(created);
         } catch (e) {
           return { error: errorMessage(e) };
         }
@@ -169,29 +168,30 @@ export function buildAzureBoardsTools(db: Db, config: Config, deps: AzureBoardsT
       execute: async ({ id, title, description, tags, state }) => {
         if (!boards) return NOT_CONFIGURED;
         try {
-          let target: string | undefined;
+          let targetState: string | undefined;
           if (state !== undefined) {
             const info = await boards.stateInfo(id);
-            target = info.states.find((s) => s.name.toLowerCase() === state.toLowerCase())?.name;
-            if (!target) {
+            targetState = info.states.find(
+              (s) => s.name.toLowerCase() === state.toLowerCase(),
+            )?.name;
+            if (!targetState) {
               return {
                 error: `"${state}" is not a state this work item's type allows`,
                 allowedStates: info.states.map((s) => s.name),
               };
             }
           }
-          if (title !== undefined || description !== undefined || tags !== undefined) {
-            // The main text lives in Description or Repro Steps depending on
-            // the item, and an edit has to go back to whichever it came from.
-            const bodyField =
-              description === undefined ? null : (await boards.workItemDetail(id)).bodyField;
-            await boards.updateFields(id, {
-              title,
-              tags,
-              ...(bodyField ? { [bodyField]: description } : {}),
-            });
-          }
-          if (target) await boards.setState(id, target);
+          // The main text lives in Description or Repro Steps depending on the
+          // item, and an edit has to go back to whichever it came from. Only a
+          // full detail read says which, so it is paid for only when needed.
+          const bodyField =
+            description === undefined ? null : (await boards.workItemDetail(id)).bodyField;
+          await boards.updateFields(id, {
+            title,
+            tags,
+            state: targetState,
+            ...(bodyField ? { [bodyField]: description } : {}),
+          });
           void emitEvent(db, {
             type: "azure_boards.item.updated",
             source: "chat",
@@ -200,10 +200,10 @@ export function buildAzureBoardsTools(db: Db, config: Config, deps: AzureBoardsT
               fields: Object.entries({ title, description, tags })
                 .filter(([, v]) => v !== undefined)
                 .map(([k]) => k),
-              ...(target ? { state: target } : {}),
+              ...(targetState ? { state: targetState } : {}),
             },
           });
-          return await reread(boards, id);
+          return await rereadWorkItem(boards, id);
         } catch (e) {
           return { error: errorMessage(e) };
         }
@@ -229,7 +229,7 @@ export function buildAzureBoardsTools(db: Db, config: Config, deps: AzureBoardsT
             source: "chat",
             payload: { id, assigned: assignTo },
           });
-          return await reread(boards, id);
+          return await rereadWorkItem(boards, id);
         } catch (e) {
           return { error: errorMessage(e) };
         }
@@ -266,7 +266,7 @@ export function buildAzureBoardsTools(db: Db, config: Config, deps: AzureBoardsT
  * than what was asked for. The batch read skips a deleted item instead of
  * failing, hence the empty case.
  */
-async function reread(boards: AzureBoardsClient, id: number) {
+async function rereadWorkItem(boards: AzureBoardsClient, id: number) {
   const [row] = await boards.workItems([id]);
-  return row ? rowResult(row) : { error: `work item ${id} was not found after the change` };
+  return row ? workItemResult(row) : { error: `work item ${id} was not found after the change` };
 }

@@ -162,6 +162,27 @@ describe("github issue tools", () => {
     });
   });
 
+  it("won't write to GitHub for a repo hosted elsewhere or tracked elsewhere", async () => {
+    // Its owner/repo parse to "Project"/"repo", which on GitHub is someone else's.
+    const azure = await createRepo(db, config, {
+      cloneUrl: "git@ssh.dev.azure.com:v3/org/Project/repo",
+    });
+    const jiraTracked = await createRepo(db, config, {
+      cloneUrl: "https://github.com/acme/gadget.git",
+      tracker: { provider: "jira", projectKey: "GAD" },
+    });
+    const { client, calls } = fakeGitHub();
+    const tools = buildIssueTools(db, config, { githubClient: client });
+
+    for (const repoId of [azure.id, jiraTracked.id]) {
+      const result = (await tools.create_repo_issue.execute!({ repoId, title: "Bug" }, opts)) as {
+        error?: string;
+      };
+      expect(result.error).toBeTruthy();
+    }
+    expect(calls).toEqual([]);
+  });
+
   it("refuses a repo that isn't registered, and errors without a GitHub token", async () => {
     const { client, calls } = fakeGitHub();
     const tools = buildIssueTools(db, config, { githubClient: client });
