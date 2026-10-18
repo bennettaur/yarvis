@@ -139,14 +139,19 @@ function percent(ratio: number): string {
   return `${Math.round(ratio * 100)}%`;
 }
 
+function files(count: number): string {
+  return count === 1 ? "1 file" : `${count} files`;
+}
+
 function coverageNote(coverage: Facts["coverage"]): string {
   const parts: string[] = [];
   if (coverage.ratio !== null) {
     parts.push(`${percent(coverage.ratio)} of ${coverage.changedLines} changed lines`);
   }
-  if (coverage.notLoaded.length > 0) parts.push(`${coverage.notLoaded.length} files no test loads`);
+  if (coverage.notLoaded.length > 0)
+    parts.push(`${files(coverage.notLoaded.length)} no test loads`);
   if (coverage.unmeasured.length > 0)
-    parts.push(`${coverage.unmeasured.length} files not measured`);
+    parts.push(`${files(coverage.unmeasured.length)} not measured`);
   return parts.join(", ") || "no executable lines changed";
 }
 
