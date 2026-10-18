@@ -139,10 +139,13 @@ async function azureBranchPr(
   if (!pr) return NO_PR;
   const awaitingReview = pr.state === "open" && !pr.draft;
   // Policy evaluations are a separate read a PAT may lack the scope for. As
-  // with GitHub's review verdict, a refusal drops the checks rather than the
+  // with GitHub's review verdict, any failure drops the checks rather than the
   // refresh: a 403 here would otherwise be read as a rate limit and end the
-  // cycle for every repo after this one.
-  const ciChecks = await az.prCiChecks(project, pr.projectId, pr.number).catch(() => null);
+  // cycle for every repo after this one. Without a project id they can't be
+  // addressed at all, which is "unknown", not "no checks".
+  const ciChecks = pr.projectId
+    ? await az.prCiChecks(project, pr.projectId, pr.number).catch(() => null)
+    : null;
   const checks = ciChecks ? summarizeCheckItems(ciChecks) : null;
   return {
     prNumber: pr.number,

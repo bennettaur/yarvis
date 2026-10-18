@@ -45,15 +45,6 @@ const POLICY_API_VERSION = "7.1-preview.1";
 // The "Build" policy type (a pipeline must pass), by its fixed id rather than
 // its display name, which is localized.
 const BUILD_POLICY_TYPE_ID = "0609b952-1397-4640-95ec-e00a01b2c241";
-
-/**
- * Whether a policy reports CI: a build policy, or a status policy, which waits
- * on an external service posting the status its settings name.
- */
-function isCiPolicy(evaluation: AzurePolicyEvaluation): boolean {
-  const config = evaluation.configuration;
-  return config?.type?.id === BUILD_POLICY_TYPE_ID || Boolean(config?.settings?.statusName);
-}
 // Code search is a separate service on its own host, still preview-only.
 const SEARCH_API_VERSION = "7.1-preview.1";
 
@@ -187,6 +178,15 @@ export function summarizeReviewDecision(reviewers: AzureReviewer[]): ReviewDecis
   if (states.includes("changes_requested")) return "changes_requested";
   if (states.includes("approved")) return "approved";
   return "review_required";
+}
+
+/**
+ * Whether a policy reports CI: a build policy, or a status policy, which waits
+ * on an external service posting the status its settings name.
+ */
+function isCiPolicy(evaluation: AzurePolicyEvaluation): boolean {
+  const config = evaluation.configuration;
+  return config?.type?.id === BUILD_POLICY_TYPE_ID || Boolean(config?.settings?.statusName);
 }
 
 /** Maps an Azure policy evaluation status onto the shared CheckItem shape. */

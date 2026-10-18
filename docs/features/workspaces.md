@@ -452,9 +452,10 @@ counts as viewed once it has stayed on screen for a few seconds. See
 
 The assistant can also tell you:
 
-- **Where a PR's review and CI stand.** Who is asked to review, people and
-  teams, and where each stands. Also each check with its result and link. It
-  asks GitHub or Azure DevOps when you ask, rather than reading the last poll.
+- **Where a PR's review and CI stand.** Who has been asked to review (people
+  or teams) and what each has said, plus each check with its result and a
+  link. It asks GitHub or Azure DevOps each time, rather than reading the last
+  poll.
 - **Whether a session is waiting on you.** It reads the same items as
   [the attention bell](#the-attention-bell): a permission prompt, a session idle
   at its prompt, or one that finished. An item stays until you view the

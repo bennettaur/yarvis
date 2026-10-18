@@ -432,6 +432,25 @@ describe("pollOnce", () => {
     expect(row?.lastError).toBeNull();
   });
 
+  it("leaves an Azure PR's checks unknown when its project id is missing", async () => {
+    const wrId = await seedReadyRepo("z", "https://dev.azure.com/acme/Shop/_git/web");
+    let askedForPolicies = false;
+    const az = azureClientWith((url) => {
+      if (url.includes("/repositories/web/pullrequests")) {
+        return { value: [{ pullRequestId: 58, status: "active", repository: { name: "web" } }] };
+      }
+      if (url.includes("/policy/evaluations")) askedForPolicies = true;
+      return {};
+    });
+
+    await pollOnce(db, { azure: az });
+
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(askedForPolicies).toBe(false);
+    expect(row?.checkRollup).toBe("none");
+    expect(row?.checks).toBeNull();
+  });
+
   it("leaves an approved Azure draft's verdict unknown, as GitHub's path does", async () => {
     const wrId = await seedReadyRepo("z", "https://dev.azure.com/acme/Shop/_git/web");
     const az = azureClientWith((url) =>

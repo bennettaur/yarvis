@@ -177,7 +177,7 @@ export function summarizeCommitStatuses(statuses: any[]): ChecksSummary {
   return { total: statuses.length, success, failure, pending };
 }
 
-function addChecks(a: ChecksSummary, b: ChecksSummary): ChecksSummary {
+function sumCheckSummaries(a: ChecksSummary, b: ChecksSummary): ChecksSummary {
   return {
     total: a.total + b.total,
     success: a.success + b.success,
@@ -840,9 +840,10 @@ export class GitHubClient {
     // CI reports through one of two APIs: check runs (Actions and most apps) or
     // the older commit statuses (many external CI services). Reading only the
     // first made a repo on the second look like it had no checks at all. The
-    // statuses are the extra read, so a token refused them (a fine-grained one
-    // without "Commit statuses") keeps the check runs rather than failing the
-    // whole status — the poller would otherwise read the 403 as a rate limit.
+    // statuses are the extra read, so failing to get them (most often a
+    // fine-grained token without "Commit statuses") keeps the check runs rather
+    // than failing the whole status — the poller would otherwise read a 403 as
+    // a rate limit.
     const [checks, combined] = await Promise.all([
       this.api<{ check_runs?: any[] }>(`${commit}/check-runs`),
       this.api<{ statuses?: any[] }>(`${commit}/status?per_page=100`).catch(() => null),
@@ -852,7 +853,7 @@ export class GitHubClient {
       merged: Boolean(pr.merged),
       mergeable: pr.mergeable ?? null,
       mergeableState: pr.mergeable_state ?? "unknown",
-      checks: addChecks(
+      checks: sumCheckSummaries(
         summarizeChecks(checks.check_runs ?? []),
         summarizeCommitStatuses(combined?.statuses ?? []),
       ),

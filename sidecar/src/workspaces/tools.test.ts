@@ -1125,20 +1125,26 @@ describe("workspace tools", () => {
         number: 42,
         draft: false,
         reviewers: [
-          { login: "ada", state: "approved", isRequested: false, isTeam: false },
+          // A zero-width space a display name could hide text behind.
+          { login: "ada​", state: "approved", isRequested: false, isTeam: false },
           { login: "acme/web", state: "pending", isRequested: true, isTeam: true },
         ],
         checks: [
-          // A zero-width space a CI job name could hide text behind.
           { name: "unit​", status: "COMPLETED", conclusion: "FAILURE", url: "https://ci/1" },
+          // A link that isn't a web address is dropped rather than relayed.
+          { name: "lint", status: "COMPLETED", conclusion: "SUCCESS", url: "javascript:alert(1)" },
         ],
       });
       const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner, prSource });
 
       const result = (await tools.get_workspace_pr_detail.execute!({ workspaceId }, opts)) as {
+        warning: string;
         repos: Array<{ pr: Record<string, unknown> | null }>;
       };
 
+      const nonce = result.warning.match(/<pr-detail-(\w+)>/)?.[1];
+      expect(nonce).toBeTruthy();
+      const fenced = (name: string) => `<pr-detail-${nonce}>\n${name}\n</pr-detail-${nonce}>`;
       expect(refs).toEqual([{ provider: "github", owner: "acme", repo: "widget", number: 42 }]);
       expect(result.repos[0]!.pr).toEqual({
         number: 42,
@@ -1147,12 +1153,101 @@ describe("workspace tools", () => {
         isDraft: false,
         reviewDecision: "review_required",
         reviewers: [
-          { name: "ada", isTeam: false, state: "approved", requested: false },
-          { name: "acme/web", isTeam: true, state: "pending", requested: true },
+          { name: fenced("ada"), isTeam: false, state: "approved", isRequested: false },
+          { name: fenced("acme/web"), isTeam: true, state: "pending", isRequested: true },
         ],
-        checks: [{ name: "unit", status: "COMPLETED", conclusion: "FAILURE", url: "https://ci/1" }],
+        checks: [
+          {
+            name: fenced("unit"),
+            status: "COMPLETED",
+            conclusion: "FAILURE",
+            url: "https://ci/1",
+          },
+          { name: fenced("lint"), status: "COMPLETED", conclusion: "SUCCESS", url: null },
+        ],
         checksIncomplete: false,
       });
+    });
+
+    it("keeps one repo's provider failure from sinking the others", async () => {
+      const { workspaceId } = await activeWorkspace("Two repo WS", [
+        "https://github.com/acme/widget.git",
+        "https://github.com/acme/gadget.git",
+      ]);
+      const wrs = await db
+        .select()
+        .from(schema.workspaceRepos)
+        .where(eq(schema.workspaceRepos.workspaceId, workspaceId));
+      for (const wr of wrs) {
+        await db.insert(schema.workspaceRepoPr).values({
+          workspaceRepoId: wr.id,
+          prNumber: 42,
+          checkRollup: "none",
+          lastPolledAt: new Date(),
+        });
+      }
+      const tools = buildWorkspaceTools(db, config, {
+        gitRunner: okRunner,
+        prSource: (ref) =>
+          ({
+            ref,
+            detail: async () => {
+              if (ref.provider === "github" && ref.repo === "widget") {
+                throw new Error("github graphql -> 502");
+              }
+              return { number: 42, draft: false, reviewers: [], checks: [] } as unknown as PrDetail;
+            },
+          }) as PrCodeSource,
+      });
+
+      const result = (await tools.get_workspace_pr_detail.execute!({ workspaceId }, opts)) as {
+        repos: Array<{ repo: string; pr: unknown; error?: string }>;
+      };
+
+      const byRepo = new Map(result.repos.map((r) => [r.repo, r]));
+      expect(byRepo.get("widget")?.pr).toBeNull();
+      expect(byRepo.get("widget")?.error).toBe("github graphql -> 502");
+      expect(byRepo.get("gadget")?.pr).not.toBeNull();
+    });
+
+    it("refuses an Azure repo from an org other than the configured one", async () => {
+      const workspaceId = await workspaceWithPr("https://dev.azure.com/acme/Shop/_git/web");
+      // No prSource override: this is the real credential and org check.
+      const azureConfig = {
+        ...config,
+        secrets: { azureDevopsToken: "pat", azureDevopsOrgUrl: "https://dev.azure.com/other" },
+      } as Config;
+      const tools = buildWorkspaceTools(db, azureConfig, { gitRunner: okRunner });
+
+      const result = (await tools.get_workspace_pr_detail.execute!({ workspaceId }, opts)) as {
+        repos: Array<{ pr: unknown; error?: string }>;
+      };
+
+      expect(result.repos[0]!.pr).toBeNull();
+      expect(result.repos[0]!.error).toBe("pull request belongs to a different azure organization");
+    });
+
+    it("notes a repo polled with no PR yet", async () => {
+      const { workspaceId } = await activeWorkspace("No PR yet WS");
+      const [wr] = await db
+        .select()
+        .from(schema.workspaceRepos)
+        .where(eq(schema.workspaceRepos.workspaceId, workspaceId));
+      await db.insert(schema.workspaceRepoPr).values({
+        workspaceRepoId: wr!.id,
+        prNumber: null,
+        checkRollup: "none",
+        lastPolledAt: new Date(),
+      });
+      const { prSource, refs } = sourceReturning({});
+      const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner, prSource });
+
+      const result = (await tools.get_workspace_pr_detail.execute!({ workspaceId }, opts)) as {
+        repos: Array<{ note?: string }>;
+      };
+
+      expect(refs).toEqual([]);
+      expect(result.repos[0]!.note).toBe("no PR opened yet");
     });
 
     it("addresses an Azure PR by the org, project and repo in its clone URL", async () => {
@@ -1238,7 +1333,7 @@ describe("workspace tools", () => {
         workspaces: Array<{
           workspaceId: string;
           name: string;
-          items: Array<{ kind: string; title: string; body: string | null }>;
+          items: Array<{ kind: string; meaning: string; title: string; body: string | null }>;
         }>;
       };
 
@@ -1247,6 +1342,7 @@ describe("workspace tools", () => {
       expect(ws!.workspaceId).toBe(workspaceId);
       expect(ws!.name).toBe("Waiting WS");
       expect(ws!.items.map((i) => i.kind)).toEqual(["permission"]);
+      expect(ws!.items[0]!.meaning).toContain("approve a tool call");
       const nonce = result.warning.match(/<attention-item-(\w+)>/)?.[1];
       expect(nonce).toBeTruthy();
       expect(ws!.items[0]!.body).toBe(
