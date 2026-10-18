@@ -28,6 +28,12 @@ describe("parseAddedLines", () => {
     expect([...(added.get("src/a.ts") ?? [])]).toEqual([4, 5, 6, 23]);
   });
 
+  it("doesn't mistake an added line starting with '++' for a file header", () => {
+    const diff =
+      "diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n@@ -1,0 +2,2 @@\n+++ counter;\n+done();\n";
+    expect([...(parseAddedLines(diff).get("x.ts") ?? [])]).toEqual([2, 3]);
+  });
+
   it("skips deleted files", () => {
     expect(parseAddedLines(DIFF).has("src/gone.ts")).toBe(false);
   });
@@ -42,6 +48,11 @@ describe("parseLcov", () => {
   it("makes absolute paths relative to the repo root", () => {
     const hits = parseLcov("SF:/repo/src-tauri/src/a.rs\nDA:5,1\n", "", "/repo");
     expect(hits.has("src-tauri/src/a.rs")).toBe(true);
+  });
+
+  it("drops sources outside the repo", () => {
+    const hits = parseLcov("SF:/home/me/.cargo/registry/x.rs\nDA:5,1\n", "", "/repo");
+    expect(hits.size).toBe(0);
   });
 });
 

@@ -48,3 +48,6 @@ __pycache__/
 *.sln
 *.sw?
 .worktrees
+
+# TypeScript incremental build state
+*.tsbuildinfo

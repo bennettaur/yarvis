@@ -14,16 +14,21 @@ on:
 permissions:
   contents: read
 
-# One run per PR at a time, so an /approve and a report can't race each other.
+# One run per PR and comment kind at a time. GitHub keeps only the newest
+# pending run in a group, so sharing one would let a report drop an /approve.
 concurrency:
-  group: verify-${{ github.event.issue.number }}
+  group: verify-${{ github.event.issue.number }}-${{ startsWith(github.event.comment.body, '/approve') && 'approve' || 'report' }}
   cancel-in-progress: false
 
 jobs:
   gate:
     name: Verification gate
+    # The marker is REPORT_MARKER in scripts/verify/report.ts. Comments from
+    # anyone without write access never start a run, so they can't queue runs
+    # to delay or displace a real one. The gate still checks the trusted list.
     if: >-
       github.event.issue.pull_request &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) &&
       (startsWith(github.event.comment.body, '/approve') ||
        contains(github.event.comment.body, '<!-- yarvis-verify -->'))
     runs-on: ubuntu-latest

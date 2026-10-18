@@ -4,10 +4,14 @@
  * coverage, and whether the PR's tests fail without its change. The `/verify-pr`
  * skill runs this, then adds its review on top.
  *
- *   bun run verify:collect --base origin/main --out "$TMPDIR/verify/123"
+ *   bun run verify:collect --base origin/main --out "$TMPDIR/verify/123" [--static]
  *
  * Run it from a clean checkout of the PR's head. The sidecar suite needs the
  * test database (TEST_DATABASE_URL), the same as `bun run sidecar:test`.
+ *
+ * `--static` reads the diff and runs nothing from the PR, for a PR whose code
+ * isn't trusted to run on this machine. Coverage and the baseline are then
+ * reported as unmeasured, and CI's test run is the evidence instead.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -40,6 +44,24 @@ function git(root: string, args: string[]): string {
   return run("git", args, { cwd: root }).stdout.trim();
 }
 
+/**
+ * `git diff` with the output shape the parsers expect, whatever the user's git
+ * config says about prefixes, external diff tools or quoting non-ASCII paths.
+ */
+function gitDiff(root: string, args: string[]): string {
+  return git(root, [
+    "-c",
+    "core.quotePath=false",
+    "diff",
+    "--no-ext-diff",
+    "--no-color",
+    "--no-renames",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+    ...args,
+  ]);
+}
+
 /** Reads `git diff --numstat`. Binary files report "-" and count as zero lines. */
 export function parseNumstat(numstat: string): ChangedFile[] {
   return numstat
@@ -64,8 +86,8 @@ function collectCoverage(root: string, out: string, paths: string[]) {
   const touchesSidecar = paths.some((p) => p.startsWith("sidecar/"));
   const touchesRust = paths.some((p) => p.startsWith("src-tauri/") && p.endsWith(".rs"));
 
-  const bunCoverage = (suite: string, args: string[]) => {
-    const dir = join(out, `coverage-${suite || "root"}`);
+  const bunCoverage = (suite: string, name: string, args: string[]) => {
+    const dir = join(out, `coverage-${name}`);
     // Failing tests are CI's to report; coverage of the passing ones is still useful.
     run(
       "bun",
@@ -73,13 +95,16 @@ function collectCoverage(root: string, out: string, paths: string[]) {
       { cwd: suite ? join(root, suite) : root, allowFailure: true },
     );
     const lcov = join(dir, "lcov.info");
-    if (existsSync(lcov)) hits.push(parseLcov(readFileSync(lcov, "utf8"), suite, root));
-    suites.push(suite || "frontend");
+    if (!existsSync(lcov)) return;
+    hits.push(parseLcov(readFileSync(lcov, "utf8"), suite, root));
+    suites.push(name);
   };
 
-  if (touchesRoot) bunCoverage("", ["./src", "./scripts", "./demo"]);
-  if (touchesSidecar) bunCoverage("sidecar", []);
-  if (touchesRoot || touchesSidecar) measured.push(".ts", ".tsx");
+  if (touchesRoot) bunCoverage("", "frontend", ["./src", "./scripts", "./demo"]);
+  if (touchesSidecar) bunCoverage("sidecar", "sidecar", []);
+  // Only once a suite actually wrote coverage: a run that crashed would
+  // otherwise report every changed file as one no test loads.
+  if (suites.length > 0) measured.push(".ts", ".tsx");
 
   const hasLlvmCov = run("cargo", ["llvm-cov", "--version"], { allowFailure: true }).status === 0;
   if (touchesRust && hasLlvmCov) {
@@ -103,6 +128,7 @@ if (import.meta.main) {
     options: {
       base: { type: "string", default: "origin/main" },
       out: { type: "string" },
+      static: { type: "boolean", default: false },
     },
   });
   if (!values.out) throw new Error("--out <dir> is required");
@@ -116,27 +142,31 @@ if (import.meta.main) {
     );
   }
   const head = git(root, ["rev-parse", "HEAD"]);
-  const base = git(root, ["merge-base", values.base ?? "origin/main", "HEAD"]);
+  const base = git(root, ["merge-base", values.base as string, "HEAD"]);
 
-  const files = parseNumstat(git(root, ["diff", "--numstat", "--no-renames", base, head]));
-  const paths = files.map((file) => file.path);
-  const present = git(root, ["diff", "--name-only", "--no-renames", "--diff-filter=AM", base, head])
+  const files = parseNumstat(gitDiff(root, ["--numstat", base, head]));
+  const addedOrModified = gitDiff(root, ["--name-only", "--diff-filter=AM", base, head])
     .split("\n")
     .filter(Boolean);
+  const added = parseAddedLines(gitDiff(root, ["-U0", base, head]));
 
-  const { hits, measured, suites } = collectCoverage(root, out, paths);
-  const added = parseAddedLines(
-    git(root, ["diff", "-U0", "--no-color", "--no-renames", base, head]),
-  );
-
+  const measuredRun = values.static
+    ? null
+    : collectCoverage(
+        root,
+        out,
+        files.map((file) => file.path),
+      );
   const facts: Facts = {
     base,
     head,
     files,
     tier: classify(files),
-    coverage: diffCoverage(added, hits, measured),
-    baseline: runBaseline(root, base, present),
-    suites,
+    coverage: diffCoverage(added, measuredRun?.hits ?? new Map(), measuredRun?.measured ?? []),
+    baseline: measuredRun
+      ? runBaseline(root, base, addedOrModified)
+      : { detecting: 0, notDetecting: [], failingOnHead: [] },
+    suites: measuredRun?.suites ?? [],
   };
   const path = join(out, "facts.json");
   writeFileSync(path, `${JSON.stringify(facts, null, 2)}\n`);

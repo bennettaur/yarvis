@@ -69,6 +69,9 @@ bun run sidecar:test               # sidecar tests — needs a Postgres+pgvector
                                     #   test DB; set TEST_DATABASE_URL (and
                                     #   DATABASE_URL for migrations)
 bun run --cwd sidecar db:migrate   # apply sidecar DB migrations
+bun run verify:collect             # facts for a PR's verification report;
+                                    #   the /verify-pr skill runs it and
+                                    #   verify:report, which posts the report
 
 bun run typecheck                  # frontend tsc --noEmit
 bun run sidecar:typecheck          # sidecar tsc --noEmit
@@ -93,7 +96,12 @@ sets that default itself, so a job that needs to write back to GitHub has to
 say so in its own `permissions:` block, where review can see it — and its
 actions are pinned to commit SHAs, with the ref they were resolved from in a
 trailing comment. `nightly.yml`
-and `codeql.yml` follow neither convention yet. A pre-commit
+and `codeql.yml` follow neither convention yet. `verify.yml` is the one
+workflow that writes: it runs on PR comments, as the default branch's copy,
+checks out no PR code, and acts through the yarvis GitHub App to set the
+verification status, approve and turn on auto-merge. Keep it that way, since
+it holds write access on a public repo; see `docs/development.md` ("Verifying a
+PR for merge"). A pre-commit
 hook (lefthook, installed via the `prepare` script) mirrors the biome and Rust
 checks on staged files — `cargo clippy` blocks the commit if it fails since it
 has no safe autofix.

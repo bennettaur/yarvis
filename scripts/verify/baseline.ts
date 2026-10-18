@@ -16,6 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { run } from "./exec.ts";
+import { isTestFile } from "./tier.ts";
 
 export type Outcome = "pass" | "fail" | "skip";
 
@@ -32,12 +33,16 @@ export interface BaselineResult {
   notDetecting: string[];
   /** Tests that fail on the PR itself. */
   failingOnHead: string[];
-  /** Changed test files this check can't run, such as Rust's inline tests. */
-  unmeasured: string[];
 }
 
-/** The directories that run their own `bun test` suite, each with its own bunfig. */
+/**
+ * The directories that run their own `bun test` suite, each with its own
+ * bunfig. `""` is the repo root and must stay last: it catches every path.
+ */
 const SUITES = ["sidecar", ""];
+
+/** Helpers and fixtures the tests import, which run in their PR versions too. */
+const TEST_SUPPORT = /(^|\/)(test|tests|fixtures|__fixtures__)\//;
 
 function decodeXml(text: string): string {
   return text
@@ -77,30 +82,27 @@ export function parseJunit(xml: string, prefix: string): TestCase[] {
   return cases;
 }
 
-const key = (test: TestCase) => `${test.file} > ${test.name}`;
+const testKey = (test: TestCase) => `${test.file} > ${test.name}`;
 
-export function compareRuns(
-  head: TestCase[],
-  base: TestCase[],
-): Omit<BaselineResult, "unmeasured"> {
-  const baseByKey = new Map(base.map((test) => [key(test), test.outcome]));
-  const result = { detecting: 0, notDetecting: [] as string[], failingOnHead: [] as string[] };
+export function compareRuns(head: TestCase[], base: TestCase[]): BaselineResult {
+  const baseByKey = new Map(base.map((test) => [testKey(test), test.outcome]));
+  const result: BaselineResult = { detecting: 0, notDetecting: [], failingOnHead: [] };
   for (const test of head) {
     if (test.outcome === "skip") continue;
     if (test.outcome === "fail") {
-      result.failingOnHead.push(key(test));
+      result.failingOnHead.push(testKey(test));
       continue;
     }
     // A test missing on the base usually means its file failed to load there,
     // because it imports something the PR adds. That counts as detecting.
-    if (baseByKey.get(key(test)) === "pass") result.notDetecting.push(key(test));
+    if (baseByKey.get(testKey(test)) === "pass") result.notDetecting.push(testKey(test));
     else result.detecting++;
   }
   return result;
 }
 
 function suiteFor(path: string): string {
-  return SUITES.find((suite) => suite === "" || path.startsWith(`${suite}/`)) ?? "";
+  return SUITES.find((suite) => suite === "" || path.startsWith(`${suite}/`)) as string;
 }
 
 function runSuite(root: string, suite: string, files: string[], outFile: string): TestCase[] {
@@ -120,22 +122,21 @@ function runSuite(root: string, suite: string, files: string[], outFile: string)
  * @param changedFiles repo-relative paths of files the PR added or modified.
  */
 export function runBaseline(root: string, base: string, changedFiles: string[]): BaselineResult {
-  const testFiles = changedFiles.filter((path) => /\.test\.tsx?$/.test(path));
-  const unmeasured = changedFiles.filter((path) => path.endsWith(".rs"));
-  const result: BaselineResult = { detecting: 0, notDetecting: [], failingOnHead: [], unmeasured };
+  const testFiles = changedFiles.filter(isTestFile);
+  const result: BaselineResult = { detecting: 0, notDetecting: [], failingOnHead: [] };
   if (testFiles.length === 0) return result;
 
   const scratch = mkdtempSync(join(tmpdir(), "verify-baseline-"));
   const baseTree = join(scratch, "base");
-  run("git", ["worktree", "add", "--detach", baseTree, base], { cwd: root });
   try {
+    run("git", ["worktree", "add", "--detach", baseTree, base], { cwd: root });
     // Reuse the PR checkout's installed packages rather than installing again.
     for (const dir of ["node_modules", "sidecar/node_modules"]) {
       if (existsSync(join(root, dir)) && !existsSync(join(baseTree, dir))) {
         symlinkSync(join(root, dir), join(baseTree, dir));
       }
     }
-    for (const file of testFiles) {
+    for (const file of changedFiles.filter((path) => isTestFile(path) || TEST_SUPPORT.test(path))) {
       mkdirSync(dirname(join(baseTree, file)), { recursive: true });
       cpSync(join(root, file), join(baseTree, file));
     }

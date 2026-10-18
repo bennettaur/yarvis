@@ -9,6 +9,8 @@ export type Tier = "low" | "standard" | "high";
 
 export interface ChangedFile {
   path: string;
+  /** The old path of a renamed file, which is classified too. */
+  previousPath?: string;
   additions: number;
   deletions: number;
 }
@@ -28,8 +30,14 @@ const HIGH_RISK_PATHS: PathRule[] = [
   // The verifier must not be able to approve a change to itself.
   { pattern: /^\.github\//, reason: "CI or repo config" },
   { pattern: /^scripts\/verify\//, reason: "the verification layer itself" },
-  { pattern: /^\.claude\/skills\/verify-pr\//, reason: "the verification layer itself" },
+  // Instructions and hooks the verifying agent itself loads.
+  { pattern: /^(\.claude\/|CLAUDE\.md$|AGENTS\.md$)/, reason: "agent instructions or hooks" },
   { pattern: /^lefthook\.yml$/, reason: "git hooks" },
+  {
+    pattern:
+      /^((sidecar\/)?(bunfig\.toml|tsconfig[^/]*\.json)|mise\.toml|vite\.config\.ts|biome\.json|\.npmrc)$/,
+    reason: "build or test config, which runs code",
+  },
   {
     pattern:
       /^src-tauri\/src\/(keychain|secret_store|onepassword|embeddings_secrets|control|pty)\.rs$/,
@@ -71,8 +79,9 @@ const STANDARD_RISK_PATHS: PathRule[] = [
 const STANDARD_SIZE_LINES = 300;
 const HIGH_SIZE_LINES = 800;
 
+/** Only `*.test.ts(x)`: a `test/` directory also holds preloads and helpers, which are code. */
 export function isTestFile(path: string): boolean {
-  return /\.test\.tsx?$/.test(path) || /(^|\/)tests?\//.test(path);
+  return /\.test\.tsx?$/.test(path);
 }
 
 function isCode(path: string): boolean {
@@ -93,14 +102,18 @@ export function classify(files: ChangedFile[]): TierResult {
     byTier[tier].set(reason, paths);
   };
 
-  for (const file of files) {
-    const high = HIGH_RISK_PATHS.find((rule) => rule.pattern.test(file.path));
+  const paths = files.flatMap((file) =>
+    file.previousPath ? [file.path, file.previousPath] : [file.path],
+  );
+  for (const path of paths) {
+    // Checked before the test-file exemption: the verifier's own tests are part of the verifier.
+    const high = HIGH_RISK_PATHS.find((rule) => rule.pattern.test(path));
     if (high) {
-      note("high", high.reason, file.path);
+      note("high", high.reason, path);
       continue;
     }
-    const standard = STANDARD_RISK_PATHS.find((rule) => rule.pattern.test(file.path));
-    if (standard && !isTestFile(file.path)) note("standard", standard.reason, file.path);
+    const standard = STANDARD_RISK_PATHS.find((rule) => rule.pattern.test(path));
+    if (standard && !isTestFile(path)) note("standard", standard.reason, path);
   }
 
   const codeLines = files

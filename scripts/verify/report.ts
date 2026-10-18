@@ -8,27 +8,31 @@
  *   bun run verify:report --pr 123 --review review.json --facts facts.json [--dry-run]
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import type { Facts } from "./collect.ts";
 import { ghApi, ghApiPages, run } from "./exec.ts";
-import type { Tier } from "./tier.ts";
 
 /** Marks a comment as a verification report. The gate looks for it. */
 export const REPORT_MARKER = "<!-- yarvis-verify -->";
-const DATA_PATTERN = /<!-- yarvis-verify-data ([A-Za-z0-9+/=]+) -->/;
+/**
+ * The data block, which `renderReport` always writes last. Anchored to the end
+ * so a block smuggled into the text above it is never the one read.
+ */
+const DATA_PATTERN = /<!-- yarvis-verify-data ([A-Za-z0-9+/=]+) -->\s*$/;
 
 /** Changed-line coverage at or above this passes; below the floor fails. */
-export const COVERAGE_PASS = 0.8;
-export const COVERAGE_FLOOR = 0.5;
+const COVERAGE_PASS = 0.8;
+const COVERAGE_FLOOR = 0.5;
 
 const Status = z.enum(["pass", "concern", "fail", "n/a"]);
 type Status = z.infer<typeof Status>;
 
 const Verdict = z.enum(["auto", "agent", "human"]);
-export type Verdict = z.infer<typeof Verdict>;
+type Verdict = z.infer<typeof Verdict>;
+const VERDICT_STRICTNESS: Verdict[] = ["auto", "agent", "human"];
 
 const Dimension = z.object({ status: Status, note: z.string().max(140) });
 
@@ -57,8 +61,19 @@ export const Review = z.object({
       }),
     )
     .max(10),
+  // Every screenshot is uploaded to a public PR, so the path is held to an
+  // image file; `post` also checks it sits in the output directory.
   screenshots: z
-    .array(z.object({ path: z.string(), caption: z.string().max(120) }))
+    .array(
+      z.object({
+        path: z
+          .string()
+          .refine((path) => isAbsolute(path) && /^[^\s#()]+\.(png|jpe?g|gif|webp)$/i.test(path), {
+            message: "must be an absolute path to an image, with no spaces, # or parentheses",
+          }),
+        caption: z.string().max(120),
+      }),
+    )
     .max(10)
     .default([]),
   /** The review agents that ran, and the model behind them, so reports stay comparable. */
@@ -68,24 +83,41 @@ export const Review = z.object({
 export type Review = z.infer<typeof Review>;
 
 /** What the gate reads back out of a posted report. */
-export interface ReportData {
-  version: 1;
-  headSha: string;
-  verdict: Verdict;
-  tier: Tier;
-  blockers: number;
-  majors: number;
+const ReportData = z.object({
+  version: z.literal(1),
+  headSha: z.string(),
+  verdict: Verdict,
+  blockers: z.number().int().nonnegative(),
+  majors: z.number().int().nonnegative(),
   /** Dimensions, including coverage, whose status is `fail` or `concern`. */
-  failing: string[];
-  coverage: number | null;
-}
+  flagged: z.array(z.string()),
+});
+export type ReportData = z.infer<typeof ReportData>;
+
+const isFlagged = (status: Status) => status === "fail" || status === "concern";
 
 export function coverageStatus(coverage: Facts["coverage"]): Status {
-  if (coverage.ratio === null && coverage.notLoaded.length === 0) return "n/a";
   if (coverage.notLoaded.length > 0) return coverage.ratio === null ? "fail" : "concern";
-  const ratio = coverage.ratio ?? 0;
-  if (ratio >= COVERAGE_PASS) return "pass";
-  return ratio >= COVERAGE_FLOOR ? "concern" : "fail";
+  if (coverage.ratio === null) return "n/a";
+  if (coverage.ratio >= COVERAGE_PASS) return "pass";
+  return coverage.ratio >= COVERAGE_FLOOR ? "concern" : "fail";
+}
+
+/**
+ * Makes model- or PR-written text safe to put in one line of the report: no
+ * HTML comments (which could hide a second data block), no table breaks, no
+ * @-mentions that ping people.
+ */
+export function inline(text: string): string {
+  let out = text.replace(/\r?\n/g, " ");
+  // Repeat, since removing one `<!--` can join the pieces of another.
+  while (/<!--|-->/.test(out)) out = out.replace(/<!--|-->/g, "");
+  return out.replace(/\|/g, "\\|").replace(/@(?=\w)/g, "@\u200b");
+}
+
+/** Like `inline`, for text inside a code span. */
+function code(text: string): string {
+  return `\`${inline(text).replace(/`/g, "'")}\``;
 }
 
 /**
@@ -95,25 +127,26 @@ export function coverageStatus(coverage: Facts["coverage"]): Status {
 export function finalVerdict(review: Review, facts: Facts): { verdict: Verdict; why: string[] } {
   const why: string[] = [];
   let verdict = review.verdict;
-  const cap = (to: Verdict, reason: string) => {
-    const order: Verdict[] = ["auto", "agent", "human"];
-    if (order.indexOf(to) > order.indexOf(verdict)) {
+  const requireAtLeast = (to: Verdict, reason: string) => {
+    if (VERDICT_STRICTNESS.indexOf(to) > VERDICT_STRICTNESS.indexOf(verdict)) {
       verdict = to;
       why.push(reason);
     }
   };
 
-  if (facts.tier.tier === "high") cap("human", "high-risk change");
-  if (facts.tier.tier === "standard") cap("agent", "standard-risk change");
-  if (review.findings.some((f) => f.severity === "blocker")) cap("human", "blocking finding");
-  if (review.findings.some((f) => f.severity === "major")) cap("agent", "major finding");
-  if (facts.baseline.failingOnHead.length > 0) cap("human", "tests fail on the PR");
+  if (facts.tier.tier === "high") requireAtLeast("human", "high-risk change");
+  if (facts.tier.tier === "standard") requireAtLeast("agent", "standard-risk change");
+  if (review.findings.some((f) => f.severity === "blocker")) {
+    requireAtLeast("human", "blocking finding");
+  }
+  if (review.findings.some((f) => f.severity === "major")) requireAtLeast("agent", "major finding");
+  if (facts.baseline.failingOnHead.length > 0) requireAtLeast("human", "tests fail on the PR");
   const statuses = [
     ...Object.values(review.dimensions).map((d) => d.status),
     coverageStatus(facts.coverage),
   ];
-  if (statuses.includes("fail")) cap("human", "a check failed");
-  if (statuses.includes("concern")) cap("agent", "a check has concerns");
+  if (statuses.includes("fail")) requireAtLeast("human", "a check failed");
+  if (statuses.includes("concern")) requireAtLeast("agent", "a check has concerns");
   return { verdict, why };
 }
 
@@ -123,7 +156,11 @@ const VERDICT_TITLE: Record<Verdict, string> = {
   agent: "🤖 Needs an agent or human review",
   human: "👀 Needs a human review",
 };
-const SEVERITY_ICON = { blocker: "🛑", major: "🟠", minor: "🔹" };
+const SEVERITY_ICON: Record<Review["findings"][number]["severity"], string> = {
+  blocker: "🛑",
+  major: "🟠",
+  minor: "🔹",
+};
 
 const DIMENSION_LABELS: [keyof Review["dimensions"], string][] = [
   ["goal", "Achieves the goal"],
@@ -139,7 +176,7 @@ function percent(ratio: number): string {
   return `${Math.round(ratio * 100)}%`;
 }
 
-function files(count: number): string {
+function fileCount(count: number): string {
   return count === 1 ? "1 file" : `${count} files`;
 }
 
@@ -149,9 +186,9 @@ function coverageNote(coverage: Facts["coverage"]): string {
     parts.push(`${percent(coverage.ratio)} of ${coverage.changedLines} changed lines`);
   }
   if (coverage.notLoaded.length > 0)
-    parts.push(`${files(coverage.notLoaded.length)} no test loads`);
+    parts.push(`${fileCount(coverage.notLoaded.length)} no test loads`);
   if (coverage.unmeasured.length > 0)
-    parts.push(`${files(coverage.unmeasured.length)} not measured`);
+    parts.push(`${fileCount(coverage.unmeasured.length)} not measured`);
   return parts.join(", ") || "no executable lines changed";
 }
 
@@ -164,44 +201,46 @@ function baselineNote(baseline: Facts["baseline"]): string {
   return parts.join(", ");
 }
 
-function list(items: string[], limit = 15): string {
-  const shown = items.slice(0, limit).map((item) => `- \`${item}\``);
+function bulletList(items: string[], limit = 15): string {
+  const shown = items.slice(0, limit).map((item) => `- ${code(item)}`);
   if (items.length > limit) shown.push(`- …and ${items.length - limit} more`);
   return shown.join("\n");
 }
 
 export function renderReport(review: Review, facts: Facts): { body: string; data: ReportData } {
   const { verdict, why } = finalVerdict(review, facts);
-  const covStatus = coverageStatus(facts.coverage);
-  const headline = review.findings.filter((f) => f.severity !== "minor");
-  const minor = review.findings.filter((f) => f.severity === "minor");
+  const coverage = coverageStatus(facts.coverage);
+  const headlineFindings = review.findings.filter((f) => f.severity !== "minor");
+  const minorFindings = review.findings.filter((f) => f.severity === "minor");
+  const where = (location?: string) => (location ? ` ${code(location)}` : "");
 
-  const rows = DIMENSION_LABELS.map(([key, label]) => {
+  // Coverage sits right after the tests row, since the two are read together.
+  const rows = DIMENSION_LABELS.flatMap(([key, label]) => {
     const dim = review.dimensions[key];
     const extra = key === "tests" ? baselineNote(facts.baseline) : "";
-    const note = [dim.note, extra].filter(Boolean).join(". ");
-    return `| ${STATUS_ICON[dim.status]} | ${label} | ${note} |`;
+    const note = inline([dim.note, extra].filter(Boolean).join(". "));
+    const row = `| ${STATUS_ICON[dim.status]} | ${label} | ${note} |`;
+    if (key !== "tests") return [row];
+    return [row, `| ${STATUS_ICON[coverage]} | Diff coverage | ${coverageNote(facts.coverage)} |`];
   });
-  rows.splice(
-    2,
-    0,
-    `| ${STATUS_ICON[covStatus]} | Diff coverage | ${coverageNote(facts.coverage)} |`,
-  );
 
   const verdictLine =
-    why.length > 0 && verdict !== review.verdict
-      ? `${review.verdictReason} Capped by: ${why.join(", ")}.`
-      : review.verdictReason;
+    verdict !== review.verdict
+      ? `${inline(review.verdictReason)} Raised by: ${why.join(", ")}.`
+      : inline(review.verdictReason);
+  const riskReasons = facts.tier.reasons.length
+    ? ` (${inline(facts.tier.reasons.join("; "))})`
+    : "";
 
   const lines = [
     REPORT_MARKER,
     `## ${VERDICT_TITLE[verdict]}`,
     "",
-    `**Risk:** ${facts.tier.tier}${facts.tier.reasons.length ? ` (${facts.tier.reasons.join("; ")})` : ""} · **Head:** \`${facts.head.slice(0, 7)}\``,
+    `**Risk:** ${facts.tier.tier}${riskReasons} · **Head:** \`${facts.head.slice(0, 7)}\``,
     "",
-    `**Goal:** ${review.goal}`,
+    `**Goal:** ${inline(review.goal)}`,
     "",
-    review.summary,
+    inline(review.summary),
     "",
     `**Verdict:** ${verdictLine}`,
     "",
@@ -210,25 +249,28 @@ export function renderReport(review: Review, facts: Facts): { body: string; data
     ...rows,
   ];
 
-  if (headline.length > 0) {
+  if (headlineFindings.length > 0) {
     lines.push("", "### Findings", "");
-    for (const f of headline) {
-      const where = f.location ? ` \`${f.location}\`` : "";
-      lines.push(`- ${SEVERITY_ICON[f.severity]} **${f.title}**${where}: ${f.detail}`);
+    for (const f of headlineFindings) {
+      lines.push(
+        `- ${SEVERITY_ICON[f.severity]} **${inline(f.title)}**${where(f.location)}: ${inline(f.detail)}`,
+      );
     }
   }
 
   if (review.screenshots.length > 0) {
     lines.push("", "### Screenshots", "");
-    for (const shot of review.screenshots) lines.push(`![${shot.caption}](${shot.path})`, "");
+    for (const shot of review.screenshots) {
+      lines.push(`![${inline(shot.caption).replace(/[[\]]/g, "")}](${shot.path})`, "");
+    }
   }
 
   const details: string[] = [];
-  if (minor.length > 0) {
+  if (minorFindings.length > 0) {
     details.push(
       "**Minor findings**",
       "",
-      ...minor.map((f) => `- ${f.title}${f.location ? ` \`${f.location}\`` : ""}: ${f.detail}`),
+      ...minorFindings.map((f) => `- ${inline(f.title)}${where(f.location)}: ${inline(f.detail)}`),
       "",
     );
   }
@@ -236,23 +278,23 @@ export function renderReport(review: Review, facts: Facts): { body: string; data
     details.push(
       "**Changed lines no test runs**",
       "",
-      list(facts.coverage.uncovered.map((u) => `${u.path}:${u.lines}`)),
+      bulletList(facts.coverage.uncovered.map((u) => `${u.path}:${u.lines}`)),
       "",
     );
   }
   if (facts.coverage.notLoaded.length > 0) {
-    details.push("**Changed files no test loads**", "", list(facts.coverage.notLoaded), "");
+    details.push("**Changed files no test loads**", "", bulletList(facts.coverage.notLoaded), "");
   }
   if (facts.baseline.notDetecting.length > 0) {
     details.push(
       "**Tests that pass without the change**",
       "",
-      list(facts.baseline.notDetecting),
+      bulletList(facts.baseline.notDetecting),
       "",
     );
   }
   if (facts.baseline.failingOnHead.length > 0) {
-    details.push("**Tests failing on the PR**", "", list(facts.baseline.failingOnHead), "");
+    details.push("**Tests failing on the PR**", "", bulletList(facts.baseline.failingOnHead), "");
   }
   if (details.length > 0) {
     lines.push("", "<details><summary>Details</summary>", "", ...details, "</details>");
@@ -262,21 +304,20 @@ export function renderReport(review: Review, facts: Facts): { body: string; data
     version: 1,
     headSha: facts.head,
     verdict,
-    tier: facts.tier.tier,
     blockers: review.findings.filter((f) => f.severity === "blocker").length,
     majors: review.findings.filter((f) => f.severity === "major").length,
-    failing: [
-      ...DIMENSION_LABELS.filter(([key]) =>
-        ["fail", "concern"].includes(review.dimensions[key].status),
-      ).map(([key]) => key),
-      ...(["fail", "concern"].includes(covStatus) ? ["coverage"] : []),
+    flagged: [
+      ...DIMENSION_LABELS.filter(([key]) => isFlagged(review.dimensions[key].status)).map(
+        ([key]) => key,
+      ),
+      ...(isFlagged(coverage) ? ["coverage"] : []),
     ],
-    coverage: facts.coverage.ratio,
   };
 
+  const suites = facts.suites.join(", ") || "none";
   lines.push(
     "",
-    `<sub>${review.model} · ${review.reviewers.join(", ")} · suites: ${facts.suites.join(", ") || "none"}</sub>`,
+    `<sub>${inline(review.model)} · ${inline(review.reviewers.join(", "))} · suites: ${suites}</sub>`,
     // Base64 so nothing in the data can close the HTML comment early.
     `<!-- yarvis-verify-data ${Buffer.from(JSON.stringify(data)).toString("base64")} -->`,
   );
@@ -288,8 +329,10 @@ export function parseReportData(body: string): ReportData | null {
   const match = body.match(DATA_PATTERN);
   if (!match) return null;
   try {
-    const data = JSON.parse(Buffer.from(match[1], "base64").toString("utf8"));
-    return data?.version === 1 ? (data as ReportData) : null;
+    const parsed = ReportData.safeParse(
+      JSON.parse(Buffer.from(match[1], "base64").toString("utf8")),
+    );
+    return parsed.success ? parsed.data : null;
   } catch {
     return null;
   }
@@ -317,7 +360,14 @@ if (import.meta.main) {
   const facts = JSON.parse(readFileSync(values.facts, "utf8")) as Facts;
   const { body, data } = renderReport(review, facts);
 
-  const bodyFile = join(dirname(values.facts), "report.md");
+  const outDir = realpathSync(dirname(values.facts));
+  for (const shot of review.screenshots) {
+    const inside = relative(outDir, realpathSync(shot.path));
+    if (inside.startsWith("..") || isAbsolute(inside)) {
+      throw new Error(`screenshot ${shot.path} is outside ${outDir}; copy it there first`);
+    }
+  }
+  const bodyFile = join(outDir, "report.md");
   writeFileSync(bodyFile, body);
   if (values["dry-run"]) {
     console.log(body);
@@ -332,9 +382,9 @@ if (import.meta.main) {
   }
 
   const me = ghApi<{ login: string }>("user").login;
-  const previous = ghApiPages<Comment>(`repos/{owner}/{repo}/issues/${values.pr}/comments`).filter(
-    (c) => c.user.login === me && c.body.includes(REPORT_MARKER),
-  );
+  const previous = ghApiPages<Comment>(
+    `repos/{owner}/{repo}/issues/${values.pr}/comments?per_page=100`,
+  ).filter((c) => c.user.login === me && c.body.includes(REPORT_MARKER));
 
   // `gh pr comment --attach` uploads each screenshot and rewrites the matching
   // `![caption](path)` in the body to point at the upload.
@@ -344,5 +394,5 @@ if (import.meta.main) {
   for (const old of previous) {
     ghApi(`repos/{owner}/{repo}/issues/comments/${old.id}`, ["-X", "DELETE"]);
   }
-  console.log(`Posted: ${data.verdict} (${data.tier} risk)`);
+  console.log(`Posted: ${data.verdict} (${facts.tier.tier} risk)`);
 }
