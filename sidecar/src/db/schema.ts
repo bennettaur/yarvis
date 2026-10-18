@@ -1081,7 +1081,8 @@ export type AttentionNavTarget =
   // shape — the organization comes from configuration on both sides.
   | { type: "azure-pr"; org: string; project: string; repo: string; prId: number }
   | { type: "issue"; provider: string; sourceKey: string; externalId: string }
-  | { type: "task"; taskId: string };
+  | { type: "task"; taskId: string }
+  | { type: "heads-down" };
 
 /**
  * The attention stream: things that want the user's attention, most urgently a

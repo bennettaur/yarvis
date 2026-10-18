@@ -7,7 +7,7 @@ import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
-import { askQuestion } from "./service.ts";
+import { askUser } from "./attention.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -45,7 +45,7 @@ let settingsDir: string;
 const originalSettingsPath = process.env.YARVIS_SETTINGS_PATH;
 
 beforeEach(async () => {
-  await sql`TRUNCATE heads_down_runs, heads_down_messages, heads_down_questions, memories, events RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE heads_down_runs, heads_down_messages, heads_down_questions, attention_items, memories, events RESTART IDENTITY CASCADE`;
   settingsDir = mkdtempSync(join(tmpdir(), "heads-down-routes-"));
   process.env.YARVIS_SETTINGS_PATH = join(settingsDir, "settings.json");
 });
@@ -73,8 +73,8 @@ describe("/api/heads-down", () => {
     ]);
   });
 
-  it("answers a question once", async () => {
-    const question = await askQuestion(db, {
+  it("answers a question once, and clears it from the attention bell", async () => {
+    const question = await askUser(db, {
       kind: "question",
       question: "Where should I ask for review?",
       options: ["#billing-reviews"],
@@ -87,6 +87,10 @@ describe("/api/heads-down", () => {
       (await post(`/questions/${question.id}/answer`, { choice: "#billing-reviews" })).status,
     ).toBe(409);
     expect(await get("/questions")).toEqual([]);
+    const items = await sql`SELECT status, nav_target FROM attention_items`;
+    expect([...items]).toEqual([
+      expect.objectContaining({ status: "resolved", nav_target: { type: "heads-down" } }),
+    ]);
   });
 
   it("saves working hours, and refuses a min sleep above the max", async () => {
