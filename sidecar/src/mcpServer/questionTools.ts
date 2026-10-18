@@ -4,7 +4,8 @@ import {
   ANSWER_WAIT_MS,
   askDescription,
   askInputShape,
-  mayRead,
+  mayWaitOn,
+  NO_SUCH_QUESTION,
   replyPayload,
   WAIT_DESCRIPTION,
   waitInputShape,
@@ -77,8 +78,8 @@ export function registerQuestionTools(server: McpServer, deps: QuestionToolDeps)
     async ({ questionId }) => {
       try {
         const asked = await deps.getQuestion(questionId);
-        if (!asked || !mayRead(asked, deps.origin.sessionKey)) {
-          return toolMessage("No question with that id.");
+        if (!asked || !mayWaitOn(asked, deps.origin.sessionKey)) {
+          return toolMessage(NO_SUCH_QUESTION);
         }
         const row = await deps.waitForReply(questionId, ANSWER_WAIT_MS);
         return jsonResult(replyPayload(row ?? asked));

@@ -79,17 +79,12 @@ function builtinDescriptors(): ToolDescriptor[] {
  * file to read one from (a scheduled job that names no specialist): starting
  * from the always-on families gives it the surface a turn already has, rather
  * than every built-in there is. Delegation is left out — no unattended run may
- * delegate — and so are the question tools; the caller still filters for what
- * needs an explicit grant.
+ * delegate — and the caller still filters for what needs an explicit grant.
  */
 export function alwaysOnBuiltinToolNames(): string[] {
   const names: string[] = [];
   for (const [family, tools] of Object.entries(builtinToolMetadataByFamily())) {
-    // A scheduled job holds its lease while it runs, so it shouldn't sit
-    // waiting on the user unless a specialist names the question tools itself.
-    if (FAMILY_POLICY[family] !== "always" || family === "delegation" || family === "questions") {
-      continue;
-    }
+    if (FAMILY_POLICY[family] !== "always" || family === "delegation") continue;
     names.push(...Object.keys(tools));
   }
   return names;

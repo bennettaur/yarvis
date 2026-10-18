@@ -89,6 +89,8 @@ export async function askQuestions(db: Db, input: AskInput): Promise<AgentQuesti
     kind: "question",
     title: fromYarvis ? "Yarvis" : (ws?.name ?? "Claude session"),
     body: preview(input.questions),
+    // The chat target names no session: it opens the chat tab on whatever thread
+    // it has, which may not be the one that asked.
     navTarget: fromYarvis ? { type: "chat" } : questionNavTarget(input.sessionKey, workspaceId),
     // A session's question items coalesce into one, so the dialog lists that
     // session's pending questions; a sessionless item is found by this id.

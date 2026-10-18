@@ -122,8 +122,9 @@ describe("ask_user over MCP", () => {
     const call = callTool("ask_user", ASK);
     const id = await pendingQuestionId();
 
-    const [item] = await sql`SELECT kind, status, title, workspace_id FROM attention_items`;
+    const [item] = await sql`SELECT source, kind, status, title, workspace_id FROM attention_items`;
     expect(item).toMatchObject({
+      source: "system",
       kind: "question",
       status: "pending",
       title: "Fix the API",

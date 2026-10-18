@@ -38,6 +38,8 @@ export interface BuiltinToolDeps {
   attention: AttentionState;
   /** Whether sessions this turn starts should be remotely controllable. */
   remoteControl: boolean;
+  /** Whether the user is at the app to answer a question in the bell; false on Telegram. */
+  atTheApp: boolean;
 }
 
 /**
@@ -49,12 +51,12 @@ export interface BuiltinToolDeps {
  * silently make a tool unreachable or always-on.
  */
 export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Record<string, Tool>> {
-  const { db, config, sessionId, memory, attention, remoteControl } = deps;
+  const { db, config, sessionId, memory, attention, remoteControl, atTheApp } = deps;
   return {
     tasks: buildTaskTools(db, sessionId),
     memory: buildMemoryTools(memory, sessionId),
     attention: buildAttentionTool(attention),
-    questions: buildQuestionTools(db, sessionId),
+    questions: buildQuestionTools(db, sessionId, { atTheApp }),
     projects: buildProjectTools(db),
     todos: buildTodoTools(db),
     events: buildEventTools(db),
@@ -99,5 +101,6 @@ function inertDeps(): BuiltinToolDeps {
     // A metadata read starts no sessions, so remote control is irrelevant here —
     // it only shapes wording in two tool descriptions.
     remoteControl: false,
+    atTheApp: true,
   };
 }

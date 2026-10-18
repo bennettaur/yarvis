@@ -219,4 +219,8 @@ describe("questionOrigin", () => {
       origin({ "X-Yarvis-Session-Key": "x".repeat(257), "X-Yarvis-Workspace-Id": "not-a-uuid" }),
     ).toEqual(absent);
   });
+
+  it("refuses a chat session key, which only the in-app assistant may use", () => {
+    expect(origin({ "X-Yarvis-Session-Key": "chat:some-chat" }).sessionKey).toBeNull();
+  });
 });

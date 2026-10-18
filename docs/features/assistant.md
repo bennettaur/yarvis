@@ -331,7 +331,8 @@ Always available:
   `wait_for_answer`). The question rings the attention bell as **Yarvis**, and
   you answer in a dialog from wherever you are in the app. It is meant for when
   you may not be watching the chat; when you're talking to it, it asks in its
-  reply. Scheduled jobs don't get these unless their specialist names them. See
+  reply. A turn sent from Telegram can't use them, since you aren't at the app
+  to see the bell, and specialists and scheduled jobs never get them. See
   [MCP](mcp.md#asking-you-questions).
 
 Loaded on demand:

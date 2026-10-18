@@ -243,7 +243,7 @@ export default function QuestionDialog({
           )}
           {error && <ErrorNotice error={error} onDismiss={() => setError(null)} />}
           {current && (
-            <p className="text-[11px] text-zinc-500">
+            <p className="rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
               The agent wrote these questions, and your answers go back to it. Don't type passwords,
               tokens or other secrets.
             </p>

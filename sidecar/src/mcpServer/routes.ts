@@ -59,8 +59,12 @@ const MAX_SESSION_KEY = 256;
 export function questionOrigin(headers: Headers): QuestionOrigin {
   const sessionKey = headers.get(SESSION_KEY_HEADER)?.trim() ?? "";
   const workspaceId = headers.get(WORKSPACE_ID_HEADER)?.trim() ?? "";
+  // `chat:` keys belong to the in-app assistant's questions, which show as
+  // "Yarvis"; a coding agent claiming one could post under that name.
+  const valid =
+    sessionKey && sessionKey.length <= MAX_SESSION_KEY && !sessionKey.startsWith("chat:");
   return {
-    sessionKey: sessionKey && sessionKey.length <= MAX_SESSION_KEY ? sessionKey : null,
+    sessionKey: valid ? sessionKey : null,
     workspaceId: UUID_SHAPE.test(workspaceId) ? workspaceId : null,
   };
 }

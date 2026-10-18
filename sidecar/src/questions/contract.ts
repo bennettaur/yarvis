@@ -9,10 +9,10 @@ import type { AgentQuestionRow } from "../db/schema.ts";
  */
 
 /**
- * How long one call waits for a reply. Both callers stream over a connection
- * the server's `idleTimeout` (255s in `server.ts`) closes after that long with
- * nothing sent, so a wait that runs out returns `pending` and the agent calls
- * `wait_for_answer` to keep waiting.
+ * How long one call waits for a reply. An MCP call and a chat turn both hold an
+ * HTTP connection open while waiting, and the server's `idleTimeout` (255s in
+ * `server.ts`) closes one that sends nothing for that long. A wait that runs
+ * out returns `pending` and the agent calls `wait_for_answer` to keep waiting.
  */
 export const ANSWER_WAIT_MS = 240_000;
 
@@ -48,7 +48,9 @@ export const askInputShape = {
     .string()
     .min(1)
     .max(500)
-    .describe("What you are working on, in one sentence, so the user can answer without context"),
+    .describe(
+      "What you are working on, in one sentence, so the user can answer without opening this conversation",
+    ),
   reason: z
     .string()
     .max(1000)
@@ -64,13 +66,19 @@ export const waitInputShape = {
     .describe("The questionId ask_user returned"),
 };
 
+/** Also the answer for another session's question, so its existence isn't confirmed. */
+export const NO_SUCH_QUESTION = "No question with that id.";
+
 export const WAIT_DESCRIPTION =
   "Keep waiting for the user's answer to an earlier ask_user call that returned status 'pending'. Blocks for up to four minutes, then returns the answers, a decline, or 'pending' again.";
 
-/** The one wording a tool may have to itself: where the user sees the question. */
-export function askDescription(whereUserIs: string): string {
-  return `Ask the user one or more questions and wait for their answers. ${whereUserIs} Never ask for passwords, tokens, keys or other secrets. Blocks for up to four minutes; if the user hasn't answered by then it returns status 'pending' and a questionId to pass to wait_for_answer.`;
+/** Builds the `ask_user` description; each caller says where the user sees the question and when to ask. */
+export function askDescription(callerGuidance: string): string {
+  return `Ask the user one or more questions and wait for their answers. ${callerGuidance} Never ask for passwords, tokens, keys or other secrets. Blocks for up to four minutes; if the user hasn't answered by then it returns status 'pending' and a questionId to pass to wait_for_answer.`;
 }
+
+const PENDING_MESSAGE =
+  "The user hasn't answered yet. Call wait_for_answer with this questionId to keep waiting, or carry on with work that doesn't depend on the answer and check back later.";
 
 /**
  * What the agent gets back: the answers, a decline, or a pointer to keep
@@ -78,7 +86,7 @@ export function askDescription(whereUserIs: string): string {
  * memories: only the user can write them (the answer route sits behind the main
  * bearer), and they are the user's own direction to the agent.
  */
-export function replyPayload(row: AgentQuestionRow) {
+export function replyPayload(row: AgentQuestionRow, pendingMessage = PENDING_MESSAGE) {
   switch (row.status) {
     case "answered":
       return {
@@ -102,13 +110,15 @@ export function replyPayload(row: AgentQuestionRow) {
       return {
         status: "pending" as const,
         questionId: row.id,
-        message:
-          "The user hasn't answered yet. Call wait_for_answer with this questionId to keep waiting, or carry on with work that doesn't depend on the answer and check back later.",
+        message: pendingMessage,
       };
   }
 }
 
-/** Whether `sessionKey` may read the answers to `row`: its own, or a sessionless one. */
-export function mayRead(row: AgentQuestionRow, sessionKey: string | null): boolean {
+/**
+ * Whether `sessionKey` may wait on `row`'s answers: its own question, or a
+ * sessionless one, since a client Yarvis didn't launch has no session to match.
+ */
+export function mayWaitOn(row: AgentQuestionRow, sessionKey: string | null): boolean {
   return !row.sessionKey || row.sessionKey === sessionKey;
 }
