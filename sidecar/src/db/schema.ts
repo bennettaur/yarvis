@@ -1350,6 +1350,120 @@ export const agentTodos = pgTable(
 );
 
 /**
+ * Where a work stream stands. `waiting-on-user` and `waiting-on-others` are
+ * what let the heads-down loop skip a stream it can't move and keep pushing the
+ * rest; `done`/`dropped` are terminal.
+ */
+export const workStreamStatus = pgEnum("work_stream_status", [
+  "active",
+  "waiting-on-user",
+  "waiting-on-others",
+  "done",
+  "dropped",
+]);
+
+/**
+ * One thread of work the assistant is pushing forward: a ticket to get merged,
+ * a Slack message that needs an answer, a review to chase. The unit heads-down
+ * mode tracks, so each pass can pick up where the last left off without
+ * re-deriving it. The work itself stays where it lives (the tracker, the PR,
+ * the workspace); a stream holds what the assistant needs to keep it moving:
+ * what to do next, what it is waiting on, and its own notes.
+ */
+export const workStreams = pgTable(
+  "work_streams",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    title: text("title").notNull(),
+    summary: text("summary"),
+    status: workStreamStatus("status").notNull().default("active"),
+    priority: projectItemPriority("priority").notNull().default("medium"),
+    projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
+    /** The next step the assistant means to take. */
+    nextAction: text("next_action"),
+    /** Who or what the stream is waiting on, when it is waiting. */
+    waitingOn: text("waiting_on"),
+    /** Not worth revisiting before this, e.g. bumping a review request the next morning. */
+    wakeAt: timestamp("wake_at", { withTimezone: true }),
+    /** Append-only, so a stream carries why it is where it is across passes. */
+    notes: jsonb("notes").$type<AgentTodoNote[]>().notNull().default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+  },
+  (t) => [index("work_streams_status_idx").on(t.status, t.priority)],
+);
+
+/** What a work stream link points at. */
+export const workStreamLinkKind = pgEnum("work_stream_link_kind", [
+  "ticket",
+  "workspace",
+  "pr",
+  "message",
+  "review-request",
+]);
+
+/**
+ * The thing a link points at, by kind. A message is identified by
+ * `messageRef`: its id or permalink when the tool that read it gave one, or
+ * the author and time as shown when it didn't (the Chrome extension gives
+ * neither).
+ */
+export type WorkStreamLinkRef =
+  | { kind: "ticket"; provider: "github" | "jira" | "azure-boards"; key: string; url?: string }
+  | { kind: "workspace"; workspaceId: string }
+  | { kind: "pr"; provider: "github" | "azure"; url: string }
+  | {
+      kind: "message";
+      channel: string;
+      conversation: string;
+      messageRef: string;
+      author?: string;
+    }
+  | {
+      kind: "review-request";
+      channel: string;
+      conversation: string;
+      messageRef: string;
+      /** When the request was posted, so the loop can tell when it is due a bump. */
+      sentAt: string;
+      prUrl?: string;
+      /** Who it tagged, by the handle the channel uses. */
+      tagged?: string[];
+    };
+
+/**
+ * Something a work stream involves: its ticket, the workspace implementing it,
+ * the PR, the message that started it or asks for review. `refKey` is the
+ * link's identity within a stream, so linking the same PR twice updates the
+ * existing link instead of adding a second.
+ */
+export const workStreamLinks = pgTable(
+  "work_stream_links",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    streamId: uuid("stream_id")
+      .notNull()
+      .references(() => workStreams.id, { onDelete: "cascade" }),
+    kind: workStreamLinkKind("kind").notNull(),
+    refKey: text("ref_key").notNull(),
+    ref: jsonb("ref").$type<WorkStreamLinkRef>().notNull(),
+    /** A human-readable name: the ticket or PR title, the channel. Third-party text. */
+    title: text("title"),
+    /** What was last seen of it ("CI failing", "approved", "replied"), in the assistant's words. */
+    state: text("state"),
+    observedAt: timestamp("observed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("work_stream_links_ref_unique_idx").on(t.streamId, t.refKey),
+    // Finding which stream a PR or workspace belongs to, from the other side.
+    index("work_stream_links_ref_key_idx").on(t.refKey),
+  ],
+);
+
+/**
  * Bookkeeping for the background job scheduler: one row per job name, holding
  * its last run and a lease. The lease is what makes a job safe when several app
  * instances share one database — a tick claims it with a conditional update, so
@@ -1433,6 +1547,8 @@ export type ProjectItem = typeof projectItems.$inferSelect;
 export type NewProjectItem = typeof projectItems.$inferInsert;
 export type AgentTodo = typeof agentTodos.$inferSelect;
 export type NewAgentTodo = typeof agentTodos.$inferInsert;
+export type WorkStream = typeof workStreams.$inferSelect;
+export type WorkStreamLink = typeof workStreamLinks.$inferSelect;
 export type JobRun = typeof jobRuns.$inferSelect;
 export type NewJobRun = typeof jobRuns.$inferInsert;
 export type CcSessionDigest = typeof ccSessionDigests.$inferSelect;

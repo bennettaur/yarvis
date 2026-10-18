@@ -149,6 +149,7 @@ named. It works well for status updates and brag docs.
 | --- | --- | --- |
 | **Tasks** | What *you* intend to do, scoped to today or this week | Tasks tab |
 | **Agent todos** | What the *assistant* has promised to do, with a progress log | Memory → Agent todos |
+| **Work streams** | Threads of work the assistant is pushing forward, such as a ticket to ship or a message to answer, each with its tickets, workspaces, PRs and messages, what it's waiting on, and the assistant's notes | Ask the assistant what it's working on |
 | **Projects** | A status, a focus for the week, and tracked tickets with priorities (urgent, high, medium, low) | Memory → Projects |
 | **Memories** | Durable facts, typed by kind | Memory → Memories |
 | **Activity log** | A record of what you did in the app | Memory → Activity |
@@ -357,6 +358,9 @@ Always available:
 - **Projects.** Create, read and update projects, and track, list and untrack
   tickets with priorities.
 - **Todos.** The assistant's own todo list.
+- **Work streams.** Track a thread of work, link its tickets, workspaces, PRs,
+  messages and review requests, mark what it's waiting on, and find the stream
+  something belongs to. These are on demand, like workspaces.
 - **Activity.** Search the event log and count activity by type.
 - **Planning.** Find dangling work, suggest what's next, dismiss or restore a
   suggestion, and summarize the week.

@@ -37,6 +37,7 @@ import { createTelegramRoutes } from "./telegram/routes.ts";
 import { createTodoRoutes } from "./todos/routes.ts";
 import { createVoiceRoutes } from "./voice/routes.ts";
 import { createWipRoutes } from "./wip/routes.ts";
+import { createWorkStreamRoutes } from "./workStreams/routes.ts";
 import { createAgentSessionIngestRoutes } from "./workspaces/agentSessionIngest.ts";
 import { createRepoRoutes, createWorkspaceRoutes } from "./workspaces/routes.ts";
 
@@ -160,6 +161,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/events", createEventRoutes(config));
   app.route("/api/projects", createProjectRoutes(config));
   app.route("/api/todos", createTodoRoutes(config));
+  app.route("/api/work-streams", createWorkStreamRoutes(config));
   app.route("/api/specialists", createSpecialistRoutes(config));
   app.route("/api/jobs", createJobRoutes(config));
   app.route("/api/logs", createLogRoutes());
