@@ -22,6 +22,8 @@
     "sidecar:dev": "bun run --cwd sidecar dev",
     "sidecar:compile": "bun run scripts/compile-sidecar.ts",
     "sidecar:test": "bun run --cwd sidecar test",
+    "verify:collect": "bun run scripts/verify/collect.ts",
+    "verify:report": "bun run scripts/verify/report.ts",
     "sidecar:typecheck": "bun run --cwd sidecar typecheck",
     "typecheck": "tsc --noEmit",
     "lint": "biome lint .",

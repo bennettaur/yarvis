@@ -105,6 +105,41 @@ CI (`.github/workflows/ci.yml`) runs the frontend and sidecar tests (against a
 `pgvector/pgvector:pg16` container), both typechecks, Biome, `bun audit --prod`,
 `cargo fmt --check`, `cargo clippy`, `cargo test` and `cargo audit`.
 
+## Verifying a PR for merge
+
+The `/verify-pr` Claude Code skill checks a PR is ready to merge and posts a
+short verification report on it. The report covers the goal, diff coverage,
+whether the new tests fail without the change, reliability, security,
+complexity, maintainability and UI. It runs locally, since it needs the test
+database and the demo harness. `scripts/verify/` holds the parts that measure
+and post.
+
+The `Verify` workflow (`.github/workflows/verify.yml`) reacts to two kinds of
+PR comment, and acts as the yarvis GitHub App:
+
+- **A report** from a user in `VERIFY_TRUSTED_USERS`. The workflow sets a
+  `Verification report` commit status on the head commit. If the PR is a
+  maintainer's, not a draft, low risk, and the report has no concerns, it
+  approves the PR and turns on squash auto-merge.
+- **`/approve`** from a trusted user. The bot approves the current head and
+  turns on auto-merge, marking a draft ready first. This is how a maintainer
+  merges their own PR, since GitHub won't let them approve it.
+
+Risk tiers come from `scripts/verify/tier.ts`. CI, the verifier itself, secrets,
+app permissions, migrations, dependencies, and anything over 800 changed lines
+of code always need a human.
+
+The workflow needs these repository settings:
+
+- `YARVIS_BOT_CLIENT_ID` (variable) and `YARVIS_BOT_PRIVATE_KEY` (secret): the
+  yarvis GitHub App's client ID and private key. The app needs read and write
+  access to contents, pull requests, issues and commit statuses.
+- `VERIFY_TRUSTED_USERS` (variable): comma-separated logins whose reports and
+  `/approve` count. Defaults to `bennettaur`.
+- `VERIFY_MODE` (variable): `shadow` (the default) sets the status but never
+  auto-approves. `enforce` lets a passing report approve. `/approve` works in
+  both.
+
 ## Running more than one instance
 
 A branch under development can run beside the copy you use every day. Give the
