@@ -450,6 +450,28 @@ describe("removeWorktree", () => {
     expect(existsSync(clone)).toBe(true);
   });
 
+  it("keeps git's own error when it can't check whether the worktree is registered", async () => {
+    const { runner } = fakeRunner((args) =>
+      args[1] === "remove"
+        ? { exitCode: 1, stderr: "remove went wrong" }
+        : { exitCode: 1, stderr: "prune went wrong" },
+    );
+    await expect(
+      removeWorktree(runner, "/repo", "/ws/service-a", { force: true, workspaceRoot: "/ws" }),
+    ).rejects.toThrow("remove went wrong");
+  });
+
+  // A prune skips a locked worktree, so git still holds it after its folder is
+  // gone; that must surface git's error, not read as already removed.
+  it("doesn't count a locked worktree with its folder gone as removed", async () => {
+    const { clone, workspaceRoot, worktreePath } = cloneWithWorktree();
+    spawnSync("git", ["worktree", "lock", worktreePath], { cwd: clone });
+    rmSync(worktreePath, { recursive: true, force: true });
+    await expect(
+      removeWorktree(defaultGitRunner, clone, worktreePath, { force: true, workspaceRoot }),
+    ).rejects.toThrow("locked");
+  });
+
   it("gives the removal longer than the default two-minute timeout", async () => {
     const { clone, workspaceRoot, worktreePath } = cloneWithWorktree();
     const timeouts: (number | undefined)[] = [];

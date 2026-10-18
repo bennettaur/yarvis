@@ -11,8 +11,9 @@
  * (merge, push) likewise run in a worktree, never in the primary clone.
  */
 
-import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { run } from "./exec.ts";
 
 export interface GitRunResult {
@@ -492,17 +493,24 @@ export async function removeWorktree(
   try {
     await git(runner, args, primaryClonePath, REMOVAL_TIMEOUT_MS);
   } catch (e) {
-    if (await registeredWorktree(runner, primaryClonePath, worktreePath)) throw e;
-    removeLeftover(worktreePath, opts);
+    // If git can't even say whether it's registered, its first answer is the
+    // one worth showing.
+    const registered = await registeredWorktree(runner, primaryClonePath, worktreePath).catch(
+      () => {
+        throw e;
+      },
+    );
+    if (registered) throw e;
+    await removeLeftover(worktreePath, opts);
     return;
   }
   await git(runner, ["worktree", "prune"], primaryClonePath);
 }
 
-function removeLeftover(
+async function removeLeftover(
   worktreePath: string,
   opts: { force: boolean; workspaceRoot: string },
-): void {
+): Promise<void> {
   if (!existsSync(worktreePath)) return;
   const resolved = resolve(worktreePath);
   if (canonicalPath(dirname(resolved)) !== canonicalPath(opts.workspaceRoot)) {
@@ -515,13 +523,17 @@ function removeLeftover(
       `${worktreePath} is no longer a git worktree but something is still there — force remove to delete it`,
     );
   }
-  rmSync(resolved, { recursive: true, force: true });
+  // Async: the leftover is often a `node_modules` tree, and a sync delete would
+  // stall every other request the sidecar is serving.
+  await rm(resolved, { recursive: true, force: true });
 }
 
 /**
  * The worktree registered at `worktreePath`, if any. Prunes first, so a folder
  * deleted out of band no longer counts. Compares canonical paths, since git
  * reports the path with symlinks resolved (`/private/var` for `/var` on macOS).
+ * The parent is resolved separately because the folder itself may be gone while
+ * git still holds it, as a locked worktree does through a prune.
  */
 async function registeredWorktree(
   runner: GitRunner,
@@ -529,7 +541,9 @@ async function registeredWorktree(
   worktreePath: string,
 ): Promise<WorktreeEntry | undefined> {
   await git(runner, ["worktree", "prune"], primaryClonePath);
-  const target = canonicalPath(worktreePath);
+  const target = existsSync(worktreePath)
+    ? canonicalPath(worktreePath)
+    : join(canonicalPath(dirname(worktreePath)), basename(worktreePath));
   return (await listWorktrees(runner, primaryClonePath)).find(
     (entry) => canonicalPath(entry.path) === target,
   );
