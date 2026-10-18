@@ -39,6 +39,7 @@
     "@codemirror/view": "^6.43.9",
     "@json-render/core": "^0.21.0",
     "@json-render/react": "^0.21.0",
+    "@lezer/highlight": "^1.2.3",
     "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-notification": "^2.7.0",
     "@tauri-apps/plugin-opener": "^2.7.2",
