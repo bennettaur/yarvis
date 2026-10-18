@@ -30,7 +30,7 @@ const memory = new PgVectorMemoryStore(db, new HashEmbedder());
 const workspaceId = "11111111-1111-4111-8111-111111111111";
 
 beforeEach(async () => {
-  await sql`TRUNCATE heads_down_runs, heads_down_messages, heads_down_questions, work_streams, workspaces, memories, events RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE heads_down_runs, heads_down_messages, heads_down_questions, work_streams, workspaces, issue_links, agent_tools, attention_items, memories, events RESTART IDENTITY CASCADE`;
 });
 
 afterAll(async () => {
@@ -168,11 +168,11 @@ describe("what a pass may do", () => {
     expect(await decideCall(db, run, "jira_start_work_on_issue", args)).toBe("run");
   });
 
-  it("starts a session on the user's task, but asks about a brief it wrote", async () => {
+  it("asks before starting any new session, whatever task or brief it names", async () => {
     const run = await startRun(db, null);
     const base = { name: "billing", repoIds: [] };
     expect(await decideCall(db, run, "create_workspace_session", { ...base, taskId: "t1" })).toBe(
-      "run",
+      "ask",
     );
     expect(
       await decideCall(db, run, "create_workspace_session", {
@@ -207,18 +207,37 @@ describe("what a pass may do", () => {
     ).toBe("ask");
   });
 
-  it("steers a workspace a pass started in this run and linked", async () => {
+  it("steers a workspace start-work opened for a ticket the user put on a stream", async () => {
     const run = await startRun(db, null);
-    await seedWorkspace(new Date(Date.now() + 1000));
+    await seedWorkspace(new Date());
+    await sql`INSERT INTO issue_links (provider, source_key, external_id, workspace_id)
+              VALUES ('jira', 'BILL', 'BILL-12', ${workspaceId})`;
+    const args = { workspaceId, instruction: "fix CI" };
+    // The ticket is on a stream only because a pass put it there: not the user's go-ahead.
     const stream = await createStream(db, { title: "ship billing" });
-    await linkToStream(db, stream.id, {
-      ref: { kind: "workspace", workspaceId },
-      createdBy: "heads-down",
-    });
+    await linkToStream(db, stream.id, { ref: ticket, createdBy: "heads-down" });
+    expect(await decideCall(db, run, "send_workspace_instruction", args)).toBe("ask");
 
-    expect(
-      await decideCall(db, run, "send_workspace_instruction", { workspaceId, instruction: "push" }),
-    ).toBe("run");
+    await linkToStream(db, stream.id, { ref: ticket });
+    expect(await decideCall(db, run, "send_workspace_instruction", args)).toBe("run");
+  });
+
+  it("refuses everything once heads-down mode is stopped, even mid-pass", async () => {
+    const run = await startRun(db, null);
+    await stopRun(db);
+    expect(await decideCall(db, run, "jira_create_issue", { summary: "x" })).toBe("stopped");
+  });
+
+  it("runs an MCP tool unattended only with the user's consent for heads-down mode", async () => {
+    const run = await startRun(db, null);
+    const tool = "mcp:slack:post_message";
+    await sql`INSERT INTO agent_tools (id, source, name, content_hash, approval)
+              VALUES (${tool}, 'mcp', 'post_message', 'h', 'auto')`;
+    // Auto-approval in the Tool manager was for chats the user watches.
+    expect(await decideCall(db, run, tool, { text: "hi" })).toBe("ask");
+
+    await sql`UPDATE agent_tools SET unattended = true WHERE id = ${tool}`;
+    expect(await decideCall(db, run, tool, { text: "hi" })).toBe("run");
   });
 
   it("asks about anything else, refuses what a pass has no business calling, and remembers a denial", async () => {

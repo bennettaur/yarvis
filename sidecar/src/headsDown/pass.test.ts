@@ -9,7 +9,7 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { createStream, getStream } from "../workStreams/service.ts";
 import { saveHeadsDownConfig } from "./config.ts";
-import { runPass } from "./pass.ts";
+import { runPass, STOPPED_BY_USER } from "./pass.ts";
 import { addMessage, listPasses, startRun, unseenMessages } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -81,7 +81,6 @@ beforeEach(async () => {
     idleSleepMinutes: 60,
     workingHours: null,
     userAwayAfterMinutes: 120,
-    unattendedMcpTools: [],
     provider: null,
     model: null,
   });
@@ -146,5 +145,16 @@ describe("a heads-down pass", () => {
     const [pass] = await listPasses(db);
     expect(pass?.error).toBeString();
     expect(result.sleepMinutes).toBe(60);
+  });
+
+  it("records a pass for a run already stopped as stopped by the user, not failed", async () => {
+    const run = await startRun(db, null);
+    await sql`UPDATE heads_down_runs SET status = 'stopped', stopped_at = now()`;
+
+    const result = await runPass(config, db, run, { model: streamingModel([finish("stop")]) });
+
+    const [pass] = await listPasses(db);
+    expect(pass?.error).toBeNull();
+    expect(result.sleepReason).toBe(STOPPED_BY_USER);
   });
 });

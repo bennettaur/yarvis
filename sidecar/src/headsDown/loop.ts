@@ -2,7 +2,7 @@ import { subscribe as subscribeAttention } from "../attention/hub.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { getDb } from "../db/client.ts";
-import type { HeadsDownRun } from "../db/schema.ts";
+import type { AttentionItemRow, HeadsDownRun } from "../db/schema.ts";
 import { claimJob, finishJob } from "../jobs/store.ts";
 import { DEFAULT_HEADS_DOWN_CONFIG, getHeadsDownConfig } from "./config.ts";
 import { PASS_TIMEOUT_MS, type PassResult, runPass } from "./pass.ts";
@@ -35,7 +35,7 @@ export interface LoopDeps {
   setTimer: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
 }
 
-async function minSleepMs(): Promise<number> {
+async function readMinSleepMs(): Promise<number> {
   try {
     return (await getHeadsDownConfig()).minSleepMinutes * 60_000;
   } catch {
@@ -116,25 +116,28 @@ export function startHeadsDownLoop(config: Config): () => void {
   const loop = createHeadsDownLoop({
     db,
     runPass: (run) => runPass(config, db, run),
-    minSleepMs,
+    minSleepMs: readMinSleepMs,
     setTimer: (fn, ms) => setTimeout(fn, ms),
   });
   setWakeHandler(loop.wake);
 
   // A workspace session raising attention (waiting on permission, finished)
-  // is worth a look, but no more often than the shortest sleep.
+  // is worth a look, but no more often than the shortest sleep. Only a
+  // workspace's own items count: heads-down mode's questions go to the bell
+  // too, and a pass asking one mustn't wake the loop it is part of.
   let lastAttentionWake = 0;
-  const onAttention = async () => {
+  const onAttention = async (item: AttentionItemRow) => {
+    if (!item.workspaceId || item.status !== "pending") return;
     try {
       const now = Date.now();
-      if (now - lastAttentionWake < (await minSleepMs())) return;
+      if (now - lastAttentionWake < (await readMinSleepMs())) return;
       lastAttentionWake = now;
       if (await getActiveRun(db)) loop.wake();
     } catch (e) {
       console.error("[heads-down] attention wake failed:", e);
     }
   };
-  const unsubscribe = subscribeAttention(() => void onAttention());
+  const unsubscribe = subscribeAttention((item) => void onAttention(item));
 
   loop.wake();
   return () => {

@@ -971,6 +971,12 @@ export const agentTools = pgTable("agent_tools", {
   inputSchema: jsonb("input_schema"),
   policy: toolPolicy("policy").notNull().default("search"),
   approval: toolApproval("approval").notNull().default("ask"),
+  /**
+   * The user's consent for heads-down mode to call this tool with nobody
+   * watching. Separate from `approval`, which was given for chats the user
+   * reads, and reset with it when the tool's description or schema changes.
+   */
+  unattended: boolean("unattended").notNull().default(false),
   contentHash: text("content_hash").notNull(),
   embedding: vector("embedding", { dimensions: EMBED_DIM }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

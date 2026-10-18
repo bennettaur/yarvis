@@ -47,6 +47,7 @@ CREATE TABLE "heads_down_runs" (
 	"stopped_at" timestamp with time zone
 );
 --> statement-breakpoint
+ALTER TABLE "agent_tools" ADD COLUMN "unattended" boolean DEFAULT false NOT NULL;--> statement-breakpoint
 ALTER TABLE "chat_sessions" ADD COLUMN "hidden" boolean DEFAULT false NOT NULL;--> statement-breakpoint
 ALTER TABLE "work_stream_links" ADD COLUMN "created_by" "work_stream_link_source" DEFAULT 'chat' NOT NULL;--> statement-breakpoint
 ALTER TABLE "heads_down_passes" ADD CONSTRAINT "heads_down_passes_run_id_heads_down_runs_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."heads_down_runs"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint

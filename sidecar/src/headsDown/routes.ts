@@ -18,6 +18,8 @@ import {
   listMessages,
   listPasses,
   listQuestions,
+  listUnattendedTools,
+  setToolUnattended,
   startRun,
   stopRun,
 } from "./service.ts";
@@ -65,7 +67,6 @@ const configSchema = z
       .int()
       .min(1)
       .max(7 * 24 * 60),
-    unattendedMcpTools: z.array(z.string().regex(/^mcp:/, "an MCP tool id")).max(200),
     provider: z.string().min(1).nullable(),
     model: z.string().min(1).nullable(),
   })
@@ -125,6 +126,20 @@ export function createHeadsDownRoutes(config: Config): Hono {
     const parsed = configSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     return c.json(await saveHeadsDownConfig(parsed.data));
+  });
+
+  // MCP tools heads-down mode may call without asking. Kept with the tool's
+  // other consent in Postgres, and reset with it when the tool changes.
+  router.get("/allowed-tools", async (c) => c.json(await listUnattendedTools(db())));
+
+  router.put("/allowed-tools/:id", async (c) => {
+    const parsed = z
+      .object({ allowed: z.boolean() })
+      .safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const ok = await setToolUnattended(db(), c.req.param("id"), parsed.data.allowed);
+    if (!ok) return c.json({ error: "no MCP tool with that id" }, 404);
+    return c.json({ id: c.req.param("id"), allowed: parsed.data.allowed });
   });
 
   router.get("/passes", async (c) => c.json(await listPasses(db(), 50)));

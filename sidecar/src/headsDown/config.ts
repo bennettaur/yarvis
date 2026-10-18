@@ -31,12 +31,6 @@ export interface HeadsDownConfig {
   workingHours: WorkingHours | null;
   /** How long without a reply before the user counts as away, in minutes. */
   userAwayAfterMinutes: number;
-  /**
-   * MCP tools a pass may call without asking, by registry id
-   * (`mcp:<server>:<tool>`). Auto-approval set in the Tool Manager was given
-   * for chats the user is watching, so it doesn't carry over.
-   */
-  unattendedMcpTools: string[];
   /** The model passes run on. Null uses the default chat model. */
   provider: string | null;
   model: string | null;
@@ -48,7 +42,6 @@ export const DEFAULT_HEADS_DOWN_CONFIG: HeadsDownConfig = {
   idleSleepMinutes: 60,
   workingHours: { days: [1, 2, 3, 4, 5], start: "09:00", end: "17:00" },
   userAwayAfterMinutes: 120,
-  unattendedMcpTools: [],
   provider: null,
   model: null,
 };

@@ -39,6 +39,7 @@ const base = {
   messages: [],
   earlierMessages: [],
   answers: [],
+  approvedCalls: [],
   openQuestions: [],
   lastNotes: null,
 };
@@ -58,7 +59,7 @@ describe("buildPassPrompt", () => {
   it("shows an approved call's exact arguments so the next pass can make it", () => {
     const prompt = buildPassPrompt({
       ...base,
-      answers: [
+      approvedCalls: [
         question({
           kind: "approval",
           action: "archive_workspace",
@@ -67,7 +68,7 @@ describe("buildPassPrompt", () => {
         }),
       ],
     });
-    expect(prompt).toContain("Approval for archive_workspace");
+    expect(prompt).toContain("- archive_workspace");
     expect(prompt).toContain('{"workspaceId":"w1"}');
   });
 

@@ -23,12 +23,14 @@ import {
   answeredSince,
   earlierMessages,
   finishPass,
+  getActiveRun,
   lastFinishedPass,
   lastUserActivityAt,
   listQuestions,
   markMessagesSeen,
   startPass,
   unseenMessages,
+  unspentApprovals,
 } from "./service.ts";
 import { setPassAbort } from "./wake.ts";
 
@@ -38,6 +40,9 @@ import { setPassAbort } from "./wake.ts";
  * search for and mount itself.
  */
 const PASS_FAMILIES = ["workStreams", "workspaces", "jira", "prReview", "browser"];
+
+/** The sleep reason recorded for a pass the user stopped; the page shows it as stopped. */
+export const STOPPED_BY_USER = "stopped by you";
 
 /** How long a pass may run before it is stopped. */
 export const PASS_TIMEOUT_MS = 20 * 60_000;
@@ -87,7 +92,14 @@ export async function runPass(
     listQuestions(db, { since: run.startedAt, limit: 20 }),
     lastUserActivityAt(db, run),
   ]);
-  const answers = await answeredSince(db, last?.startedAt ?? run.startedAt);
+  const [answers, approvedCalls] = await Promise.all([
+    answeredSince(db, last?.startedAt ?? run.startedAt),
+    // The same window decideCall spends grants in: this run, and the last day.
+    unspentApprovals(
+      db,
+      new Date(Math.max(run.startedAt.getTime(), Date.now() - 24 * 60 * 60_000)),
+    ),
+  ]);
   const withinWorkingHours = isWithinWorkingHours(now, headsDownConfig.workingHours);
   const minutesSinceUserReplied = Math.round((now.getTime() - lastActivity.getTime()) / 60_000);
 
@@ -99,10 +111,19 @@ export async function runPass(
   const changed = () => publish({ type: "changed" });
   let error: string | null = null;
   const abort = new AbortController();
+  let stoppedByUser = false;
   const timer = setTimeout(() => abort.abort(), PASS_TIMEOUT_MS);
-  setPassAbort(() => abort.abort());
+  setPassAbort(() => {
+    stoppedByUser = true;
+    abort.abort();
+  });
   let promptSent = false;
   try {
+    // Stopped while the pass was getting ready: its abort wasn't registered yet.
+    if ((await getActiveRun(db))?.id !== run.id) {
+      stoppedByUser = true;
+      throw new Error("stopped before it started");
+    }
     const { model, budget } = options.model
       ? { model: options.model, budget: undefined }
       : await passModel(config, headsDownConfig);
@@ -120,6 +141,7 @@ export async function runPass(
         messages,
         earlierMessages: earlier,
         answers,
+        approvedCalls,
         openQuestions,
         lastNotes: last?.notes ?? null,
       }),
@@ -154,8 +176,10 @@ export async function runPass(
 
   // Once finish_pass has run, the pass is done: a turn that then ends with no
   // closing text, or fails on a later step, hasn't lost anything.
-  if (outcome.finished) error = null;
-  else if (abort.signal.aborted) error ??= "stopped before it finished";
+  // A stop the user asked for is their doing, not a failure.
+  if (outcome.finished || stoppedByUser) error = null;
+  else if (abort.signal.aborted)
+    error ??= `ran out of time after ${PASS_TIMEOUT_MS / 60_000} minutes`;
   else error ??= "the pass ended without calling finish_pass";
   const awake = await listStreams(db, { awakeAt: new Date() });
   const sleep = chooseSleep(
@@ -170,7 +194,11 @@ export async function runPass(
     },
     headsDownConfig,
   );
-  const sleepReason = outcome.reason ? `${outcome.reason} (${sleep.reason})` : sleep.reason;
+  const sleepReason = stoppedByUser
+    ? STOPPED_BY_USER
+    : outcome.reason
+      ? `${outcome.reason} (${sleep.reason})`
+      : sleep.reason;
   await finishPass(db, pass.id, {
     notes: outcome.notes,
     sleepMinutes: sleep.minutes,

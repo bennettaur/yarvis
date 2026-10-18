@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, type SQL } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import {
+  agentTools,
   type HeadsDownMessage,
   type HeadsDownPass,
   type HeadsDownQuestion,
@@ -329,11 +330,58 @@ export async function deniedApprovalExists(
         eq(headsDownQuestions.choice, "deny"),
         eq(headsDownQuestions.action, action),
         eq(headsDownQuestions.argsHash, hashArgs(args)),
-        gte(headsDownQuestions.createdAt, since),
+        gte(headsDownQuestions.answeredAt, since),
       ),
     )
     .limit(1);
   return rows.length > 0;
+}
+
+/**
+ * Approvals answered since `since` and not yet spent: every pass is reminded
+ * of them, not only the one right after the answer.
+ */
+export async function unspentApprovals(db: Db, since: Date): Promise<HeadsDownQuestion[]> {
+  return db
+    .select()
+    .from(headsDownQuestions)
+    .where(
+      and(
+        eq(headsDownQuestions.kind, "approval"),
+        eq(headsDownQuestions.status, "answered"),
+        eq(headsDownQuestions.choice, "approve"),
+        isNull(headsDownQuestions.usedAt),
+        gte(headsDownQuestions.answeredAt, since),
+      ),
+    )
+    .orderBy(asc(headsDownQuestions.answeredAt))
+    .limit(20);
+}
+
+/** MCP tools the user allowed heads-down mode to call without asking. */
+export async function listUnattendedTools(db: Db): Promise<{ id: string; name: string }[]> {
+  return db
+    .select({ id: agentTools.id, name: agentTools.name })
+    .from(agentTools)
+    .where(and(eq(agentTools.unattended, true), eq(agentTools.source, "mcp")))
+    .orderBy(asc(agentTools.name));
+}
+
+export async function setToolUnattended(db: Db, id: string, unattended: boolean): Promise<boolean> {
+  const rows = await db
+    .update(agentTools)
+    .set({ unattended, updatedAt: new Date() })
+    .where(and(eq(agentTools.id, id), eq(agentTools.source, "mcp")))
+    .returning({ id: agentTools.id });
+  return rows.length > 0;
+}
+
+export async function isToolUnattended(db: Db, id: string): Promise<boolean> {
+  const [row] = await db
+    .select({ unattended: agentTools.unattended })
+    .from(agentTools)
+    .where(eq(agentTools.id, id));
+  return row?.unattended ?? false;
 }
 
 export async function startPass(

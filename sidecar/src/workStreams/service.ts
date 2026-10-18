@@ -254,7 +254,8 @@ export async function linkToStream(
       .onConflictDoUpdate({
         target: [workStreamLinks.streamId, workStreamLinks.refKey],
         set: {
-          ref: input.ref,
+          // A pass can't rewrite what the user linked, only add to its state.
+          ref: sql`case when excluded.created_by = 'chat' or ${workStreamLinks.createdBy} = 'heads-down' then excluded.ref else ${workStreamLinks.ref} end`,
           title: sql`coalesce(excluded.title, ${workStreamLinks.title})`,
           state: sql`coalesce(excluded.state, ${workStreamLinks.state})`,
           // A link the user's chat made stays theirs when a pass touches it

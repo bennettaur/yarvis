@@ -219,6 +219,14 @@ export function buildWorkStreamTools(
         note: z.string().max(2000).optional(),
       }),
       execute: async ({ id, wakeAt, ...patch }) => {
+        // Whether a stream is open decides what heads-down mode may act on, so
+        // only the user brings back one that was closed.
+        if (unattended && patch.status && !["done", "dropped"].includes(patch.status)) {
+          const current = await getStream(db, id);
+          if (current && ["done", "dropped"].includes(current.status)) {
+            return { error: "a closed stream can only be reopened by the user" };
+          }
+        }
         const wakeAtDate = wakeAt === undefined ? undefined : wakeAt ? new Date(wakeAt) : null;
         const stream = await updateStream(db, id, { ...patch, wakeAt: wakeAtDate });
         return stream

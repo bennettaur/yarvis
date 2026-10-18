@@ -1,5 +1,5 @@
 {
-  "id": "97233adc-fb92-4f0f-9d1f-b171b13e597a",
+  "id": "1abf1711-99b7-4c19-beef-3f41d4e11dfa",
   "prevId": "baec47e4-9b93-48af-8aaf-2ebe9ed28e6d",
   "version": "7",
   "dialect": "postgresql",
@@ -184,6 +184,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'ask'"
+        },
+        "unattended": {
+          "name": "unattended",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "content_hash": {
           "name": "content_hash",
