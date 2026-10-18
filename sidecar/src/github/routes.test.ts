@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 
@@ -152,5 +152,51 @@ describe("github not-configured handling", () => {
       body: JSON.stringify({ event: "APPROVE" }),
     });
     expect(res.status).toBe(400);
+  });
+});
+
+/**
+ * `/viewer` touches no database, so a stubbed global fetch (which the GitHub
+ * client picks up) is enough to check how each refusal reaches the UI.
+ */
+describe("github refusals", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  async function viewerAnswering(github: () => Response | Promise<Response>) {
+    globalThis.fetch = (async () => github()) as unknown as typeof fetch;
+    const res = await configured.request("/api/github/viewer", { headers: auth });
+    return { status: res.status, body: (await res.json()) as { error: string; reason: string } };
+  }
+
+  it("401s with a sign-in hint when GitHub rejects the token", async () => {
+    const { status, body } = await viewerAnswering(
+      () => new Response(JSON.stringify({ message: "Bad credentials" }), { status: 401 }),
+    );
+    expect(status).toBe(401);
+    expect(body.reason).toBe("unauthorized");
+    expect(body.error).toContain("Sign in to GitHub again");
+  });
+
+  it("429s with the reset time when the rate limit is hit", async () => {
+    const { status, body } = await viewerAnswering(
+      () =>
+        new Response("{}", {
+          status: 403,
+          headers: { "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1900000000" },
+        }),
+    );
+    expect(status).toBe(429);
+    expect(body.reason).toBe("rate_limited");
+  });
+
+  it("502s when GitHub can't be reached", async () => {
+    const { status, body } = await viewerAnswering(() => {
+      throw new TypeError("fetch failed");
+    });
+    expect(status).toBe(502);
+    expect(body.reason).toBe("upstream_error");
   });
 });

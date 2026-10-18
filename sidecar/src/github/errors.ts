@@ -41,6 +41,9 @@ export async function githubErrorFrom(res: Response, request: string): Promise<G
   return new GitHubError(res.status, reason, explanation, request);
 }
 
+/** A proxy error or outage page can be a whole HTML document, so plain text is cut short. */
+const MAX_PLAIN_MESSAGE_LENGTH = 200;
+
 async function readGitHubMessage(res: Response): Promise<string | null> {
   try {
     const text = await res.text();
@@ -48,11 +51,39 @@ async function readGitHubMessage(res: Response): Promise<string | null> {
       const body = JSON.parse(text) as { message?: unknown };
       return typeof body.message === "string" ? body.message : null;
     } catch {
-      return text.trim() || null;
+      if (/html/i.test(res.headers.get("content-type") ?? "")) return null;
+      return text.trim().slice(0, MAX_PLAIN_MESSAGE_LENGTH) || null;
     }
   } catch {
     return null;
   }
+}
+
+/** Used when GitHub signals a rate limit but gives no time to wait. */
+const DEFAULT_RATE_LIMIT_WAIT_MS = 60_000;
+
+/**
+ * How long GitHub asked us to wait, or null when the response isn't a rate
+ * limit. A primary limit has no requests left; a secondary limit sends
+ * Retry-After, or says so only in the message.
+ * https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#exceeding-the-rate-limit
+ */
+export function rateLimitWaitMs(
+  status: number,
+  headers: Headers,
+  message: string | null,
+): number | null {
+  if (status !== 403 && status !== 429) return null;
+  const retryAfter = Number(headers.get("retry-after"));
+  if (Number.isFinite(retryAfter) && retryAfter > 0) return retryAfter * 1000;
+  if (headers.get("x-ratelimit-remaining") === "0") {
+    const reset = Number(headers.get("x-ratelimit-reset"));
+    return Number.isFinite(reset) && reset > 0
+      ? Math.max(reset * 1000 - Date.now(), 0)
+      : DEFAULT_RATE_LIMIT_WAIT_MS;
+  }
+  if (status === 429 || /rate limit/i.test(message ?? "")) return DEFAULT_RATE_LIMIT_WAIT_MS;
+  return null;
 }
 
 function classify(
@@ -67,8 +98,9 @@ function classify(
     };
   }
 
-  if (isRateLimited(status, headers, message)) {
-    return { reason: "rate_limited", explanation: rateLimitExplanation(headers) };
+  const waitMs = rateLimitWaitMs(status, headers, message);
+  if (waitMs !== null) {
+    return { reason: "rate_limited", explanation: rateLimitExplanation(headers, waitMs) };
   }
 
   if (status === 403) {
@@ -126,32 +158,16 @@ function classify(
   };
 }
 
-function isRateLimited(status: number, headers: Headers, message: string | null): boolean {
-  if (status === 429) return true;
-  if (status !== 403) return false;
-  // Primary limit: no requests left. Secondary limit: a Retry-After, or only
-  // the message says so.
-  return (
-    headers.get("x-ratelimit-remaining") === "0" ||
-    headers.has("retry-after") ||
-    /rate limit/i.test(message ?? "")
-  );
-}
-
-function rateLimitExplanation(headers: Headers): string {
-  const retryAfter = Number(headers.get("retry-after"));
-  if (Number.isFinite(retryAfter) && retryAfter > 0) {
-    return `GitHub's rate limit was hit. Try again in ${Math.ceil(retryAfter)} seconds.`;
-  }
+function rateLimitExplanation(headers: Headers, waitMs: number): string {
   const reset = Number(headers.get("x-ratelimit-reset"));
-  if (Number.isFinite(reset) && reset > 0) {
+  if (!headers.has("retry-after") && Number.isFinite(reset) && reset > 0) {
     const at = new Date(reset * 1000).toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
     });
     return `GitHub's rate limit was hit. It resets at ${at}.`;
   }
-  return "GitHub's rate limit was hit. Try again in a few minutes.";
+  return `GitHub's rate limit was hit. Try again in ${Math.ceil(waitMs / 1000)} seconds.`;
 }
 
 function hasAnyScope(granted: string, accepted: string): boolean {
@@ -182,4 +198,9 @@ export function githubErrorResponse(c: Context, e: unknown): Response {
     return c.json({ error: e.explanation, reason: e.reason }, STATUS_BY_REASON[e.reason]);
   }
   return c.json({ error: String(e), reason: "upstream_error" }, 502);
+}
+
+/** The answer every GitHub route gives when no token is saved. */
+export function missingTokenResponse(c: Context): Response {
+  return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
 }

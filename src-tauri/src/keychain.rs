@@ -117,8 +117,8 @@ pub fn secret_from_root(root: &Value, key: &str) -> Option<String> {
 }
 
 /// Stores the GitHub token the sidecar received from a device-flow sign-in.
-/// Called over the control channel, so it can write this one key and the token
-/// is checked rather than trusted.
+/// Reached over the control channel, so it writes only `github_token` and
+/// checks the token instead of trusting the sidecar.
 pub fn store_github_token(token: &str) -> Result<(), String> {
     validate_github_token(token)?;
     set_secret("github_token".to_string(), token.to_string())
@@ -126,12 +126,10 @@ pub fn store_github_token(token: &str) -> Result<(), String> {
 
 /// GitHub tokens are at most 255 printable ASCII characters.
 fn validate_github_token(token: &str) -> Result<(), String> {
-    let ok = !token.is_empty() && token.len() <= 255 && token.chars().all(|c| c.is_ascii_graphic());
-    if ok {
-        Ok(())
-    } else {
-        Err("invalid github token".to_string())
+    if token.is_empty() || token.len() > 255 || !token.chars().all(|c| c.is_ascii_graphic()) {
+        return Err("invalid github token".to_string());
     }
+    Ok(())
 }
 
 #[tauri::command(async)]

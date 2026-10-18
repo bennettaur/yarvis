@@ -5,7 +5,7 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { emitEvent } from "../events/service.ts";
 import { createGitHubClient } from "../github/client.ts";
-import { githubErrorResponse } from "../github/errors.ts";
+import { githubErrorResponse, missingTokenResponse } from "../github/errors.ts";
 import { noTraversal } from "../pr/codeTools.ts";
 import { createWorkspace, startKickOff } from "../workspaces/service.ts";
 import {
@@ -176,7 +176,7 @@ export function createIssueRoutes(config: Config): Hono {
   // Open issues assigned to the authenticated user, across configured repos.
   router.get("/:provider/assigned", async (c) => {
     const gh = github();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     try {
       const repos = await listIssueRepos(db());
       if (repos.length === 0) return c.json([]);
@@ -193,7 +193,7 @@ export function createIssueRoutes(config: Config): Hono {
   // All open issues across configured repos.
   router.get("/:provider/all", async (c) => {
     const gh = github();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     try {
       const repos = await listIssueRepos(db());
       if (repos.length === 0) return c.json([]);
@@ -209,7 +209,7 @@ export function createIssueRoutes(config: Config): Hono {
   // Free-text search (GitHub search syntax), for saved filters.
   router.get("/:provider/search", async (c) => {
     const gh = github();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     const q = c.req.query("q");
     if (!q) return c.json({ error: "missing q" }, 400);
     try {
@@ -234,7 +234,7 @@ export function createIssueRoutes(config: Config): Hono {
   // Rich detail (body + comments) for the issue detail view.
   router.get("/:provider/detail/:owner/:repo/:number", async (c) => {
     const gh = github();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     const params = parseIssueParams(
       c.req.param("owner"),
       c.req.param("repo"),
@@ -258,7 +258,7 @@ export function createIssueRoutes(config: Config): Hono {
    */
   router.post("/:provider/create/:owner/:repo", async (c) => {
     const gh = github();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     const target = ownerRepoParams.safeParse({
       owner: c.req.param("owner"),
       repo: c.req.param("repo"),
@@ -296,7 +296,7 @@ export function createIssueRoutes(config: Config): Hono {
    */
   router.patch("/:provider/detail/:owner/:repo/:number", async (c) => {
     const gh = github();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     const params = parseIssueParams(
       c.req.param("owner"),
       c.req.param("repo"),
@@ -326,7 +326,7 @@ export function createIssueRoutes(config: Config): Hono {
    */
   router.post("/:provider/detail/:owner/:repo/:number/comments", async (c) => {
     const gh = github();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     const params = parseIssueParams(
       c.req.param("owner"),
       c.req.param("repo"),
@@ -354,7 +354,7 @@ export function createIssueRoutes(config: Config): Hono {
    */
   router.get("/:provider/repo-meta/:owner/:repo", async (c) => {
     const gh = github();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     const target = ownerRepoParams.safeParse({
       owner: c.req.param("owner"),
       repo: c.req.param("repo"),

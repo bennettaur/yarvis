@@ -54,14 +54,19 @@ AWS Bedrock uses the standard AWS credential chain (`~/.aws`, `AWS_PROFILE`,
 
 ### Token scopes
 
-- **GitHub.** The simplest option is **Sign in with GitHub** above the GitHub
-  token field. Yarvis shows a short code and opens github.com/login/device.
-  Enter the code and approve the app, and the token is saved for you. It acts
-  as you, with the `repo` and `read:org` scopes, and doesn't expire. An
-  organization that restricts OAuth app access has to approve Yarvis before it
-  can see that org's repos. A build pointed at a different OAuth App reads its
-  client ID from `YARVIS_GITHUB_CLIENT_ID`. That app needs **Enable Device
-  Flow** ticked, and no client secret.
+- **GitHub.** When the build has an OAuth App, the simplest option is **Sign
+  in with GitHub** above the GitHub token field. Yarvis shows a short code and
+  opens github.com/login/device. Enter the code and approve the app, and the
+  token is saved for you. It acts as you, with the `repo` and `read:org`
+  scopes. `repo` is GitHub's only scope for private repos, so it allows reading
+  and writing all of them. The token doesn't expire, though GitHub revokes one
+  left unused for a year. An organization that restricts OAuth app access has
+  to approve Yarvis before it can see that org's repos.
+
+  Without an OAuth App the button is hidden. `YARVIS_GITHUB_CLIENT_ID` names
+  one, but a release build opened from Finder doesn't pass shell variables on,
+  so it only helps a dev build or an app started from a shell. The app needs
+  **Enable Device Flow** ticked, and no client secret.
 
   To paste a token instead: a classic PAT needs `repo` and `read:org`. A fine-grained PAT needs
   **Contents: Read** (the review reads file bodies to show context) plus pull
@@ -247,6 +252,7 @@ copy of the app, or for debugging.
 | `YARVIS_OP_BIN` | Path to the 1Password `op` binary |
 | `YARVIS_INSTANCE` | Names this process as a secondary instance. Use `bun run dev:instance` instead of setting this by hand. |
 | `YARVIS_BACKGROUND_WORKERS` | `1` or `0`: whether this instance runs the pollers, jobs and Telegram bot |
+| `YARVIS_GITHUB_CLIENT_ID` | The OAuth App that **Sign in with GitHub** uses, in place of the built-in one. The app needs **Enable Device Flow** ticked. |
 | `YARVIS_GLOBAL_SHORTCUTS` | `1` or `0`: whether this instance owns the global hotkeys |
 | `YARVIS_DEV_PORT` | Pin the Vite dev-server port. Default 1420. |
 | `YARVIS_DEBUG_MCP` | `1` logs raw MCP server replies |

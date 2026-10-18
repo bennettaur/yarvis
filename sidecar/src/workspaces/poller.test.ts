@@ -437,6 +437,34 @@ describe("pollOnce", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.lastError).toContain("429");
   });
+
+  it("backs off the whole cycle on a 403 GitHub says is a rate limit", async () => {
+    await seedReadyRepo("a");
+    await seedReadyRepo("b");
+    const gh = clientWith((path) =>
+      path.includes("head=") ? { __status: 403, message: "API rate limit exceeded" } : {},
+    );
+
+    await pollOnce(db, { github: gh });
+
+    expect(await db.select().from(workspaceRepoPr)).toHaveLength(1);
+  });
+
+  it("keeps polling the other repos when one 403s for access, not a rate limit", async () => {
+    await seedReadyRepo("a");
+    await seedReadyRepo("b");
+    const gh = clientWith((path) =>
+      path.includes("head=")
+        ? { __status: 403, message: "Resource protected by organization SAML enforcement" }
+        : {},
+    );
+
+    await pollOnce(db, { github: gh });
+
+    const rows = await db.select().from(workspaceRepoPr);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.lastError).toContain("SAML");
+  });
 });
 
 describe("reconcileOrphans", () => {

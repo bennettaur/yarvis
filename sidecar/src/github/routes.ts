@@ -7,7 +7,7 @@ import { retireGuide } from "../pr/guides.ts";
 import { refKey } from "../pr/types.ts";
 import { createGitHubClient } from "./client.ts";
 import { getGithubPrConfig, saveGithubPrConfig } from "./config.ts";
-import { githubErrorResponse } from "./errors.ts";
+import { githubErrorResponse, missingTokenResponse } from "./errors.ts";
 import { getReviewingList } from "./reviewing.ts";
 import {
   addStar,
@@ -135,7 +135,7 @@ export function createGithubRoutes(config: Config): Hono {
 
   router.get("/viewer", async (c) => {
     const gh = client();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     try {
       return c.json(await gh.viewer());
     } catch (e) {
@@ -145,7 +145,7 @@ export function createGithubRoutes(config: Config): Hono {
 
   router.get("/search", async (c) => {
     const gh = client();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     const q = c.req.query("q");
     if (!q) return c.json({ error: "missing q" }, 400);
     try {
@@ -158,7 +158,7 @@ export function createGithubRoutes(config: Config): Hono {
   // PRs the user is part-way through reviewing, split into outstanding and done.
   router.get("/reviewing", async (c) => {
     const gh = client();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     try {
       const [{ login }, prConfig] = await Promise.all([gh.viewer(), getGithubPrConfig()]);
       return c.json(await getReviewingList(db(), gh, login, prConfig.reviewingLookbackDays));
@@ -181,7 +181,7 @@ export function createGithubRoutes(config: Config): Hono {
 
   router.get("/pr/:owner/:repo/:number", async (c) => {
     const gh = client();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
     if ("error" in params) return c.json({ error: params.error }, 400);
     try {
@@ -195,7 +195,7 @@ export function createGithubRoutes(config: Config): Hono {
   // can be opened without first appearing in a search result.
   router.get("/pr/:owner/:repo/:number/summary", async (c) => {
     const gh = client();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
     if ("error" in params) return c.json({ error: params.error }, 400);
     try {
@@ -208,7 +208,7 @@ export function createGithubRoutes(config: Config): Hono {
   // Rich detail for the in-app review view: description, checks, review threads.
   router.get("/pr/:owner/:repo/:number/detail", async (c) => {
     const gh = client();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
     if ("error" in params) return c.json({ error: params.error }, 400);
     try {
@@ -228,7 +228,7 @@ export function createGithubRoutes(config: Config): Hono {
   // Changed files with unified-diff patches for the in-app review view.
   router.get("/pr/:owner/:repo/:number/files", async (c) => {
     const gh = client();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
     if ("error" in params) return c.json({ error: params.error }, 400);
     try {
@@ -243,7 +243,7 @@ export function createGithubRoutes(config: Config): Hono {
   // lookup itself doesn't need) to keep one path shape across both providers.
   router.get("/pr/:owner/:repo/:number/content", async (c) => {
     const gh = client();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
     if ("error" in params) return c.json({ error: params.error }, 400);
     const query = contentQuery.safeParse({ path: c.req.query("path"), ref: c.req.query("ref") });
@@ -264,7 +264,7 @@ export function createGithubRoutes(config: Config): Hono {
   // Mark a draft PR as ready for review.
   router.post("/pr/:owner/:repo/:number/ready", async (c) => {
     const gh = client();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
     if ("error" in params) return c.json({ error: params.error }, 400);
     try {
@@ -283,7 +283,7 @@ export function createGithubRoutes(config: Config): Hono {
   // Submit a PR review (APPROVE / REQUEST_CHANGES / COMMENT).
   router.post("/pr/:owner/:repo/:number/reviews", async (c) => {
     const gh = client();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
     if ("error" in params) return c.json({ error: params.error }, 400);
     const parsed = reviewSchema.safeParse(await c.req.json().catch(() => null));
@@ -322,7 +322,7 @@ export function createGithubRoutes(config: Config): Hono {
   // Merge the PR now with the given strategy (defaults to a merge commit).
   router.post("/pr/:owner/:repo/:number/merge", async (c) => {
     const gh = client();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
     if ("error" in params) return c.json({ error: params.error }, 400);
     const parsed = mergeSchema.safeParse((await c.req.json().catch(() => null)) ?? {});
@@ -352,7 +352,7 @@ export function createGithubRoutes(config: Config): Hono {
   // Arm auto-merge so GitHub merges once branch protections pass.
   router.post("/pr/:owner/:repo/:number/auto-merge", async (c) => {
     const gh = client();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
     if ("error" in params) return c.json({ error: params.error }, 400);
     const parsed = mergeSchema.safeParse((await c.req.json().catch(() => null)) ?? {});
@@ -373,7 +373,7 @@ export function createGithubRoutes(config: Config): Hono {
   // Cancel a pending auto-merge.
   router.delete("/pr/:owner/:repo/:number/auto-merge", async (c) => {
     const gh = client();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
     if ("error" in params) return c.json({ error: params.error }, 400);
     try {
@@ -387,7 +387,7 @@ export function createGithubRoutes(config: Config): Hono {
   // List paths the viewer has marked "viewed" on this PR.
   router.get("/pr/:owner/:repo/:number/viewed", async (c) => {
     const gh = client();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
     if ("error" in params) return c.json({ error: params.error }, 400);
     try {
@@ -400,7 +400,7 @@ export function createGithubRoutes(config: Config): Hono {
   // Mark / unmark a single file as viewed on this PR.
   router.post("/pr/:owner/:repo/:number/viewed", async (c) => {
     const gh = client();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
     if ("error" in params) return c.json({ error: params.error }, 400);
     const parsed = viewedSchema.safeParse(await c.req.json().catch(() => null));
@@ -422,7 +422,7 @@ export function createGithubRoutes(config: Config): Hono {
   // Post a single-line review comment to the PR.
   router.post("/pr/:owner/:repo/:number/comments", async (c) => {
     const gh = client();
-    if (!gh) return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
+    if (!gh) return missingTokenResponse(c);
     const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
     if ("error" in params) return c.json({ error: params.error }, 400);
     const parsed = commentSchema.safeParse(await c.req.json().catch(() => null));

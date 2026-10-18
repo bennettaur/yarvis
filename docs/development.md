@@ -261,7 +261,8 @@ src-tauri/      Rust core (Tauri v2)
   src/alarms.rs         full-screen alarm scheduler
   src/clipboard.rs      clipboard read/write and in-memory clip history
 sidecar/        Bun + TS service (Hono)
-  src/core/        client for the Rust core's control socket
+  src/core/        client for the Rust core's control socket (sessions, saving
+                   OAuth credentials and a signed-in GitHub token)
   src/db/          Drizzle schema, client, migrations (applied on startup)
   src/chat/        streaming multi-provider chat and tools (agent.ts: the shared turn)
   src/llm/         provider resolution and the model catalog (catalog.ts)
@@ -280,7 +281,8 @@ sidecar/        Bun + TS service (Hono)
   src/jobs/        scheduler and jobs: consolidation, nightly rollup, transcript
                    digest, and your own scheduled jobs
   src/digest/      dangling work, next-work ranking, weekly summary, dismissals
-  src/github/      GitHub PR dashboard and review
+  src/github/      GitHub PR dashboard and review, sign-in (device flow), error
+                   explanations and rate-limit backoff
   src/azure/       Azure DevOps PR dashboard and review
   src/pr/          provider-neutral PR review: guides, insights, code tools,
                    workspace-on-a-PR, stacks

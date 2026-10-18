@@ -1,7 +1,6 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, setSystemTime } from "bun:test";
 import { GitHubClient } from "./client.ts";
 import { GitHubError, githubErrorFrom } from "./errors.ts";
-import { resetRateLimits } from "./rateLimit.ts";
 
 function respond(status: number, headers: Record<string, string> = {}, message?: string) {
   return new Response(message === undefined ? "" : JSON.stringify({ message }), {
@@ -73,6 +72,25 @@ describe("githubErrorFrom", () => {
     expect(e.explanation).toContain("30 seconds");
   });
 
+  it("reads a secondary limit that only the message names", async () => {
+    const e = await githubErrorFrom(
+      respond(403, {}, "You have exceeded a secondary rate limit."),
+      "/user",
+    );
+    expect(e.reason).toBe("rate_limited");
+  });
+
+  it("drops an HTML error page rather than showing it", async () => {
+    const e = await githubErrorFrom(
+      new Response("<html><body>Bad gateway</body></html>", {
+        status: 502,
+        headers: { "Content-Type": "text/html" },
+      }),
+      "/user",
+    );
+    expect(e.explanation).toBe("GitHub returned an error.");
+  });
+
   it("explains that a 404 can be a private repo the token can't see", async () => {
     const e = await githubErrorFrom(respond(404, {}, "Not Found"), "/repos/o/r/issues");
     expect(e.reason).toBe("not_found");
@@ -81,7 +99,55 @@ describe("githubErrorFrom", () => {
 });
 
 describe("GitHubClient rate limiting", () => {
-  afterEach(() => resetRateLimits());
+  afterEach(() => {
+    setSystemTime();
+  });
+
+  /** A GitHub that answers each call with the next status in `statuses`, 200 after that. */
+  function scripted(
+    statuses: { status: number; headers?: Record<string, string>; message?: string }[],
+  ) {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      const next = statuses[calls++];
+      return next
+        ? respond(next.status, next.headers, next.message)
+        : new Response(JSON.stringify({ login: "me" }), { status: 200 });
+    }) as unknown as typeof fetch;
+    return { fetchImpl, calls: () => calls };
+  }
+
+  it("calls GitHub again once the wait has passed", async () => {
+    setSystemTime(new Date("2026-10-18T12:00:00Z"));
+    const github = scripted([{ status: 429, headers: { "Retry-After": "30" } }]);
+    const gh = new GitHubClient("recovering-token", github.fetchImpl);
+    await expect(gh.viewer()).rejects.toBeInstanceOf(GitHubError);
+    setSystemTime(new Date("2026-10-18T12:00:31Z"));
+    expect(await gh.viewer()).toEqual({ login: "me" });
+    expect(github.calls()).toBe(2);
+  });
+
+  it("doesn't hold back after a 403 that isn't a rate limit", async () => {
+    const github = scripted([{ status: 403, headers: { "X-GitHub-SSO": "required; url=x" } }]);
+    const gh = new GitHubClient("sso-token", github.fetchImpl);
+    await expect(gh.viewer()).rejects.toBeInstanceOf(GitHubError);
+    expect(await gh.viewer()).toEqual({ login: "me" });
+  });
+
+  it("backs off a secondary limit that only the message names", async () => {
+    const github = scripted([{ status: 403, message: "You have exceeded a secondary rate limit" }]);
+    const gh = new GitHubClient("secondary-token", github.fetchImpl);
+    await expect(gh.viewer()).rejects.toBeInstanceOf(GitHubError);
+    await expect(gh.viewer()).rejects.toBeInstanceOf(GitHubError);
+    expect(github.calls()).toBe(1);
+  });
+
+  it("limits each token on its own", async () => {
+    const limited = scripted([{ status: 429 }]);
+    await expect(new GitHubClient("token-a", limited.fetchImpl).viewer()).rejects.toThrow();
+    const other = scripted([]);
+    expect(await new GitHubClient("token-b", other.fetchImpl).viewer()).toEqual({ login: "me" });
+  });
 
   it("stops calling GitHub until the time it gave", async () => {
     let calls = 0;

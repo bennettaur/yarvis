@@ -1,23 +1,24 @@
-import { GitHubError } from "./errors.ts";
+import { createHash } from "node:crypto";
+import { GitHubError, rateLimitWaitMs } from "./errors.ts";
 
 type FetchFn = typeof fetch;
 
 /**
  * When each token may next call each of GitHub's rate-limit buckets. Module
  * level because a client is built per request, and the limit belongs to the
- * token, not to one client.
+ * token, not to one client. Keyed by a hash so the token itself isn't kept.
  */
 const blockedUntil = new Map<string, number>();
 
-/** Used when GitHub signals a limit but gives no time to wait. */
-const DEFAULT_BACKOFF_MS = 60_000;
-
 /** GitHub limits search, GraphQL and the rest of REST separately. */
-function bucketOf(url: string): string {
-  const path = new URL(url).pathname;
-  if (path.endsWith("/graphql")) return "graphql";
-  if (path.startsWith("/search/")) return "search";
+function bucketOf(url: URL): string {
+  if (url.pathname.endsWith("/graphql")) return "graphql";
+  if (url.pathname.includes("/search/")) return "search";
   return "core";
+}
+
+function tokenKey(token: string): string {
+  return createHash("sha256").update(token).digest("hex").slice(0, 16);
 }
 
 /**
@@ -26,42 +27,35 @@ function bucketOf(url: string): string {
  * poll and page load spending more requests on refusals.
  */
 export function rateLimitedFetch(fetchImpl: FetchFn, token: string): FetchFn {
+  const tokenId = tokenKey(token);
+  // Cast because Bun's `typeof fetch` also carries `preconnect`, which callers
+  // of this wrapper never use.
   return (async (input: string | URL | Request, init?: RequestInit) => {
-    const url = input instanceof Request ? input.url : String(input);
-    const key = `${token}\u0000${bucketOf(url)}`;
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const key = `${tokenId}:${bucketOf(url)}`;
     const until = blockedUntil.get(key);
     if (until !== undefined) {
-      if (Date.now() < until) throw backingOff(until);
+      if (Date.now() < until) throw rateLimitBackoffError(until, url.pathname);
       blockedUntil.delete(key);
     }
 
     const res = await fetchImpl(input, init);
-    const wait = rateLimitWaitMs(res);
+    // A secondary limit can be named only in the body, so a 403 reads a copy
+    // of it; the caller still gets the untouched response.
+    const message = res.status === 403 ? await res.clone().text() : null;
+    const wait = rateLimitWaitMs(res.status, res.headers, message);
     if (wait !== null) blockedUntil.set(key, Date.now() + wait);
     return res;
   }) as FetchFn;
 }
 
-/** How long GitHub asked us to wait, or null when the response isn't a rate limit. */
-function rateLimitWaitMs(res: Response): number | null {
-  if (res.status !== 403 && res.status !== 429) return null;
-  const retryAfter = Number(res.headers.get("retry-after"));
-  if (Number.isFinite(retryAfter) && retryAfter > 0) return retryAfter * 1000;
-  if (res.headers.get("x-ratelimit-remaining") === "0") {
-    const reset = Number(res.headers.get("x-ratelimit-reset"));
-    if (Number.isFinite(reset) && reset > 0) return Math.max(reset * 1000 - Date.now(), 0);
-    return DEFAULT_BACKOFF_MS;
-  }
-  return res.status === 429 ? DEFAULT_BACKOFF_MS : null;
-}
-
-function backingOff(until: number): GitHubError {
+function rateLimitBackoffError(until: number, path: string): GitHubError {
   const seconds = Math.ceil((until - Date.now()) / 1000);
   return new GitHubError(
     429,
     "rate_limited",
     `GitHub's rate limit was hit. Waiting ${seconds} more seconds before calling it again.`,
-    "(skipped)",
+    path,
   );
 }
 

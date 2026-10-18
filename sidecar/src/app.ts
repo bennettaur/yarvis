@@ -155,7 +155,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/mcp-endpoint", createMcpEndpointInfoRoutes(config));
   app.route("/api/cc", createCcRoutes());
   app.route("/api/github", createGithubRoutes(config));
-  app.route("/api/github-auth", createGithubAuthRoutes());
+  app.route("/api/github-auth", createGithubAuthRoutes(config));
   app.route("/api/issues", createIssueRoutes(config));
   app.route("/api/jira", createJiraRoutes(config));
   app.route("/api/azure", createAzureRoutes(config));

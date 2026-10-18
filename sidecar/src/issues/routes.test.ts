@@ -291,6 +291,7 @@ describe("issue routes: updating an issue", () => {
       new Response("oops", { status: 500 })) as unknown as typeof fetch;
     const res = await patchIssue({ state: "closed" });
     expect(res.status).toBe(502);
+    expect(((await res.json()) as { reason: string }).reason).toBe("upstream_error");
   });
 
   it("forwards an empty label set, so clearing every label reaches GitHub", async () => {

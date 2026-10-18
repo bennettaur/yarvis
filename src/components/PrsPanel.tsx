@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { SidecarError } from "../lib/api";
+import type { SidecarError } from "../lib/api";
 import { useOmniChatContext } from "../lib/omniChatContext";
 import { addStar, removeStar } from "../lib/pr/api";
 import {
@@ -42,7 +42,7 @@ import RefreshingIndicator from "./RefreshingIndicator";
 const GH_MY = "is:open is:pr author:@me";
 
 /** `true` when the GitHub token works, `false` when none is saved, otherwise why GitHub refused it. */
-type GithubProbeResult = boolean | string;
+type GithubProbeResult = true | false | string;
 
 /**
  * Whether GitHub's credentials work. A refusal is a definite answer, worth
@@ -56,24 +56,27 @@ async function probeGithub(): Promise<GithubProbeResult> {
     await ghViewer();
     return true;
   } catch (e) {
-    if (!(e instanceof SidecarError) || e.status < 400 || e.status >= 500 || e.status === 429) {
+    const refusal = githubRefusal(e);
+    if (!refusal || refusal.reason === "rate_limited" || refusal.reason === "upstream_error") {
       throw e;
     }
-    // 400 is the sidecar saying no token is saved.
-    if (e.status === 400) return false;
-    return sidecarErrorText(e);
+    return refusal.reason === "missing_token" ? false : refusal.error;
   }
 }
 
-/** The sidecar's own explanation, without the request path `SidecarError` prefixes. */
-function sidecarErrorText(e: SidecarError): string {
+/** The sidecar's `{ error, reason }` for a GitHub route it answered with a 4xx. */
+function githubRefusal(e: unknown): { error: string; reason: string } | null {
+  const { status, detail } = (e ?? {}) as Partial<SidecarError>;
+  if (typeof status !== "number" || status < 400 || status >= 500) return null;
   try {
-    const body = JSON.parse(e.detail ?? "") as { error?: unknown };
-    if (typeof body.error === "string") return body.error;
+    const body = JSON.parse(detail ?? "") as { error?: unknown; reason?: unknown };
+    if (typeof body.error === "string" && typeof body.reason === "string") {
+      return { error: body.error, reason: body.reason };
+    }
   } catch {
-    // Not JSON; fall back to the full message.
+    // Not the sidecar's JSON; treat it as unexplained.
   }
-  return e.message;
+  return null;
 }
 
 /** `true` when Azure's credentials work, otherwise the sidecar's reason they don't. */
@@ -198,8 +201,8 @@ export default function PrsPanel({
    * paint.
    *
    * A probe that finds no working credentials resolves to `false` or the
-   * rejection reason rather than rejecting: "this provider isn't configured" is an answer worth caching, and
-   * errors are not cached. A user with only GitHub set up would otherwise
+   * rejection reason rather than rejecting: "this provider isn't configured" is
+   * an answer worth caching, and errors are not cached. A user with only GitHub set up would otherwise
    * re-probe Azure on every remount and hold `probeComplete` — and with it the
    * lists — behind that round trip.
    */

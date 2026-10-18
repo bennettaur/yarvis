@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
   applyStartWorkSideEffects,
-  mergeIssues,
   mergeRepoIssues,
   type StartWorkSideEffectClient,
 } from "./service.ts";
@@ -26,34 +25,22 @@ function issue(externalId: string, createdAt: string): IssueSummary {
   };
 }
 
-describe("mergeIssues", () => {
-  it("merges fulfilled results newest-first and drops rejected repos", () => {
-    const results: PromiseSettledResult<IssueSummary[]>[] = [
-      { status: "fulfilled", value: [issue("1", "2026-01-01"), issue("3", "2026-01-03")] },
-      { status: "rejected", reason: new Error("repo B is a 404") },
-      { status: "fulfilled", value: [issue("2", "2026-01-02")] },
-    ];
-    const merged = mergeIssues(results);
-    expect(merged.map((i) => i.externalId)).toEqual(["3", "2", "1"]);
-  });
-
-  it("returns empty when every repo failed", () => {
-    expect(mergeIssues([{ status: "rejected", reason: new Error("x") }])).toEqual([]);
-  });
-});
-
 describe("mergeRepoIssues", () => {
   const repos = [
     { owner: "o", repo: "a" },
     { owner: "o", repo: "b" },
   ];
 
-  it("keeps the repos that answered when only some failed", () => {
-    const merged = mergeRepoIssues(repos, [
-      { status: "fulfilled", value: [issue("1", "2026-01-01")] },
-      { status: "rejected", reason: new Error("github /repos/o/b/issues -> 403") },
-    ]);
-    expect(merged.map((i) => i.externalId)).toEqual(["1"]);
+  it("merges the repos that answered newest-first, leaving out one that failed", () => {
+    const merged = mergeRepoIssues(
+      [...repos, { owner: "o", repo: "c" }],
+      [
+        { status: "fulfilled", value: [issue("1", "2026-01-01"), issue("3", "2026-01-03")] },
+        { status: "rejected", reason: new Error("github /repos/o/b/issues -> 403") },
+        { status: "fulfilled", value: [issue("2", "2026-01-02")] },
+      ],
+    );
+    expect(merged.map((i) => i.externalId)).toEqual(["3", "2", "1"]);
   });
 
   it("throws the failure when every repo failed, rather than showing no issues", () => {

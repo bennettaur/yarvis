@@ -43,11 +43,8 @@ export function findRepoBySourceKey(db: Db, sourceKey: string): Promise<Repo | u
     .then((rows) => rows[0]);
 }
 
-/**
- * Merges per-repo issue lists newest-first, dropping repos whose fetch rejected
- * so a single failing repo doesn't blank the whole dashboard.
- */
-export function mergeIssues(results: PromiseSettledResult<IssueSummary[]>[]): IssueSummary[] {
+/** Merges per-repo issue lists newest-first, leaving out repos whose fetch rejected. */
+function mergeIssues(results: PromiseSettledResult<IssueSummary[]>[]): IssueSummary[] {
   const issues = results
     .filter((r): r is PromiseFulfilledResult<IssueSummary[]> => r.status === "fulfilled")
     .flatMap((r) => r.value);
@@ -63,13 +60,15 @@ export function mergeRepoIssues(
   repos: { owner: string; repo: string }[],
   results: PromiseSettledResult<IssueSummary[]>[],
 ): IssueSummary[] {
-  const failures = results.flatMap((r, i) =>
-    r.status === "rejected" ? [{ repo: repos[i], reason: r.reason as unknown }] : [],
-  );
-  for (const { repo, reason } of failures) {
-    console.warn(`[issues] skipped ${repo?.owner}/${repo?.repo}:`, String(reason));
-  }
-  if (failures.length > 0 && failures.length === results.length) throw failures[0]?.reason;
+  const failures: unknown[] = [];
+  results.forEach((result, i) => {
+    if (result.status === "fulfilled") return;
+    const repo = repos[i];
+    console.warn(`[issues] skipped ${repo?.owner}/${repo?.repo}:`, String(result.reason));
+    failures.push(result.reason);
+  });
+  // Only a failure when nothing loaded: one inaccessible repo mustn't blank the rest.
+  if (failures.length > 0 && failures.length === results.length) throw failures[0];
   return mergeIssues(results);
 }
 
