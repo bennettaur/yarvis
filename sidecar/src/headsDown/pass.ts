@@ -21,6 +21,7 @@ import { PASS_CONFIRMED_TOOLS, passApprovalHooks } from "./policy.ts";
 import { buildPassPrompt, PASS_INSTRUCTIONS } from "./prompt.ts";
 import {
   answeredSince,
+  earlierMessages,
   finishPass,
   lastFinishedPass,
   lastUserActivityAt,
@@ -78,8 +79,9 @@ export async function runPass(
 ): Promise<PassResult> {
   const headsDownConfig = await getHeadsDownConfig();
   const now = new Date();
-  const [messages, last, openQuestions, lastActivity] = await Promise.all([
+  const [messages, earlier, last, openQuestions, lastActivity] = await Promise.all([
     unseenMessages(db),
+    earlierMessages(db, run.startedAt),
     lastFinishedPass(db, run.id),
     // A question from an earlier run is stale; a long list would crowd out the work.
     listQuestions(db, { since: run.startedAt, limit: 20 }),
@@ -116,6 +118,7 @@ export async function runPass(
         withinWorkingHours,
         minutesSinceUserReplied,
         messages,
+        earlierMessages: earlier,
         answers,
         openQuestions,
         lastNotes: last?.notes ?? null,

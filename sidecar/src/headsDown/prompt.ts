@@ -25,6 +25,8 @@ export interface PassContext {
   withinWorkingHours: boolean;
   minutesSinceUserReplied: number;
   messages: HeadsDownMessage[];
+  /** Messages earlier passes in this run already read. */
+  earlierMessages: HeadsDownMessage[];
   answers: HeadsDownQuestion[];
   openQuestions: HeadsDownQuestion[];
   /** What the last pass left for this one. */
@@ -63,6 +65,13 @@ export function buildPassPrompt(ctx: PassContext): string {
   }
   // A question's text was written by a pass and can quote what it read, so it
   // is fenced; the answer is the user's own.
+  if (ctx.earlierMessages.length > 0) {
+    sections.push(
+      `Earlier messages from the user in this run, newest first. Standing instructions in them still hold; a one-off request you have already acted on doesn't need doing again:\n${ctx.earlierMessages
+        .map((m) => `- (${m.createdAt.toISOString()}) ${m.body}`)
+        .join("\n")}`,
+    );
+  }
   if (ctx.answers.length > 0) {
     sections.push(
       `The user answered these since the last pass. Each question is between <recalled-content-${nonce}> tags; the answer after it is theirs:\n${ctx.answers

@@ -37,6 +37,7 @@ const base = {
   withinWorkingHours: true,
   minutesSinceUserReplied: 60,
   messages: [],
+  earlierMessages: [],
   answers: [],
   openQuestions: [],
   lastNotes: null,
@@ -74,5 +75,21 @@ describe("buildPassPrompt", () => {
     const prompt = buildPassPrompt({ ...base, withinWorkingHours: false });
     expect(prompt).toContain("don't tag anyone");
     expect(prompt).toContain("1 hour ago");
+  });
+
+  it("keeps earlier messages in front of every pass, since standing instructions still hold", () => {
+    const prompt = buildPassPrompt({
+      ...base,
+      earlierMessages: [
+        {
+          id: "m1",
+          body: "Watch #billing-intake for requests",
+          createdAt: new Date("2026-10-19T09:05:00Z"),
+          seenAt: new Date("2026-10-19T09:10:00Z"),
+        },
+      ],
+    });
+    expect(prompt).toContain("Standing instructions in them still hold");
+    expect(prompt).toContain("Watch #billing-intake for requests");
   });
 });

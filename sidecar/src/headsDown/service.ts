@@ -80,6 +80,24 @@ export async function unseenMessages(db: Db, limit = 20): Promise<HeadsDownMessa
     .limit(limit);
 }
 
+/**
+ * Messages a pass has already read in this run, newest first. Standing
+ * instructions ("watch #billing-intake") have to reach every pass, not only
+ * the first one after they were sent.
+ */
+export async function earlierMessages(
+  db: Db,
+  since: Date,
+  limit = 20,
+): Promise<HeadsDownMessage[]> {
+  return db
+    .select()
+    .from(headsDownMessages)
+    .where(and(isNotNull(headsDownMessages.seenAt), gte(headsDownMessages.createdAt, since)))
+    .orderBy(desc(headsDownMessages.createdAt))
+    .limit(limit);
+}
+
 export async function markMessagesSeen(db: Db, ids: string[]): Promise<void> {
   if (ids.length === 0) return;
   await db
