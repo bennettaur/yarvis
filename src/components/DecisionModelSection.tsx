@@ -155,10 +155,11 @@ export default function DecisionModelSection() {
             Auto mode for heads-down mode
             <span className="block text-xs text-zinc-600">
               When heads-down mode wants to call an MCP tool you haven't allowed, it can go ahead
-              without asking if you approved that tool in the same situation before, or in several
-              similar ones with no denial, and the decision model says the call fits what you asked
-              for and isn't risky or destructive. Built-in actions always ask. Calls approved this
-              way are listed on the Heads down page and never count as your approval next time.
+              without asking if you approved this exact call before, or your last three answers for
+              that tool on the Heads down page were approvals, and the decision model says the call
+              fits what you asked for and isn't risky or destructive. Built-in actions always ask.
+              Calls approved this way are listed on the Heads down page and never count as your
+              approval next time.
             </span>
           </span>
         </label>

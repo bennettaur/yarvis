@@ -203,7 +203,7 @@ export async function decideCall(
  * Approval hooks for a pass: each call is decided at once, and one that needs
  * the user becomes a question for them instead of a prompt to wait on, unless
  * the decision model may settle it (`autoApprove.ts`). `review` is absent when
- * the pass has nothing to judge calls against.
+ * the user said nothing this run to judge a call against.
  */
 export function passApprovalHooks(
   db: Db,
@@ -224,12 +224,22 @@ export function passApprovalHooks(
         if (decision !== "ask") return undefined;
         const question = approvalQuestion(id);
         const situation = approvalSituation(id, args);
+        // A failed review is a no, never a reason to drop the question.
         const reason = review
-          ? await autoApproveReason(review, { tool: id, args, description, messages })
+          ? await autoApproveReason(review, { tool: id, args, description, messages }).catch(
+              (e) => {
+                console.error(
+                  "[heads-down] auto approval failed:",
+                  e instanceof Error ? e.message : e,
+                );
+                return null;
+              },
+            )
           : null;
+        let autoApproved = false;
         if (reason !== null) {
           await recordAutoApproval(db, { action: id, args, question, situation, reason });
-          approved = true;
+          autoApproved = true;
         } else {
           await askUser(db, {
             kind: "approval",
@@ -241,6 +251,8 @@ export function passApprovalHooks(
           });
         }
         onChanged();
+        // Set last, so a failure above can't settle the call as approved.
+        approved = autoApproved;
         return undefined;
       } catch (e) {
         console.error("[heads-down] deciding a call failed:", e instanceof Error ? e.message : e);

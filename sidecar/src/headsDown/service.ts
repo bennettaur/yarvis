@@ -32,6 +32,9 @@ import type { MemoryService } from "../memory/index.ts";
  * the user told it, and what it asked them.
  */
 
+/** Answered by the user, as opposed to approved by the decision model. */
+const answeredByUser = sql`${headsDownQuestions.answeredBy} is distinct from 'decision-model'`;
+
 export async function getActiveRun(db: Db): Promise<HeadsDownRun | null> {
   const [row] = await db.select().from(headsDownRuns).where(eq(headsDownRuns.status, "active"));
   return row ?? null;
@@ -201,7 +204,8 @@ export async function listQuestions(
   db: Db,
   { statuses = ["open"], since, limit = 100 }: ListQuestionsOptions = {},
 ): Promise<HeadsDownQuestion[]> {
-  const conditions: SQL[] = [inArray(headsDownQuestions.status, [...statuses])];
+  // The decision model's approvals are listed by listAutoApprovals, never as the user's answers.
+  const conditions: SQL[] = [inArray(headsDownQuestions.status, [...statuses]), answeredByUser];
   if (since) conditions.push(gte(headsDownQuestions.createdAt, since));
   return db
     .select()
@@ -210,10 +214,6 @@ export async function listQuestions(
     .orderBy(desc(headsDownQuestions.createdAt))
     .limit(limit);
 }
-
-/** Answered after `since`, oldest first: what the next pass has to act on. */
-/** Answered by the user, as opposed to approved by the decision model. */
-const answeredByUser = sql`${headsDownQuestions.answeredBy} is distinct from 'decision-model'`;
 
 /** Answered by the user after `since`, oldest first: what the next pass has to act on. */
 export async function answeredSince(db: Db, since: Date): Promise<HeadsDownQuestion[]> {

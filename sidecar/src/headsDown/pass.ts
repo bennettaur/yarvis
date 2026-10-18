@@ -3,13 +3,12 @@ import { runAgentTurn } from "../chat/agent.ts";
 import { builtinToolMetadataByFamily } from "../chat/builtinTools.ts";
 import { getChatBudget } from "../chat/config.ts";
 import { createSession } from "../chat/service.ts";
+import { MAX_REQUEST_CHARS } from "../chat/toolReview.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import type { HeadsDownRun } from "../db/schema.ts";
 import { defaultProviderModel, resolveModel } from "../llm/providers.ts";
 import { mountTools, unmountAll } from "../mcp/mountedTools.ts";
-import { chooseEmbedder } from "../memory/embedder.ts";
-import { PgVectorMemoryStore } from "../memory/index.ts";
 import { listStreams } from "../workStreams/service.ts";
 import {
   chooseSleep,
@@ -51,8 +50,19 @@ export function userRequestFor(
   run: HeadsDownRun,
   messages: { body: string; createdAt: Date }[],
 ): string {
-  const sorted = [...messages].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-  return [run.focus, ...sorted.map((m) => m.body)].filter(Boolean).join("\n\n");
+  // The reviewer reads only so much, and keeps the start. The focus goes
+  // first, then as many messages as fit, newest kept: the latest instruction
+  // ("stop posting in #billing") is the one that must not be cut.
+  const focus = run.focus ? run.focus.slice(0, MAX_REQUEST_CHARS / 2) : null;
+  let budget = MAX_REQUEST_CHARS - (focus?.length ?? 0);
+  const kept: string[] = [];
+  const newestFirst = [...messages].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  for (const message of newestFirst) {
+    if (message.body.length + 2 > budget) break;
+    kept.unshift(message.body);
+    budget -= message.body.length + 2;
+  }
+  return [focus, ...kept].filter(Boolean).join("\n\n");
 }
 
 /** The sleep reason recorded for a pass the user stopped; the page shows it as stopped. */
@@ -138,6 +148,7 @@ export async function runPass(
       stoppedByUser = true;
       throw new Error("stopped before it started");
     }
+    const userRequest = userRequestFor(run, [...earlier, ...messages]);
     const { model, budget } = options.model
       ? { model: options.model, budget: undefined }
       : await passModel(config, headsDownConfig);
@@ -161,12 +172,20 @@ export async function runPass(
       }),
       userMetadata: { source: "heads-down" },
       signal: abort.signal,
-      approval: passApprovalHooks(db, run, changed, {
-        config,
-        memory: new PgVectorMemoryStore(db, await chooseEmbedder(config, db)),
-        userRequest: userRequestFor(run, [...earlier, ...messages]),
-        signal: abort.signal,
-      }),
+      approval: passApprovalHooks(
+        db,
+        run,
+        changed,
+        // With nothing the user said this run, no call can be shown to fit it.
+        userRequest
+          ? {
+              config,
+              db,
+              userRequest,
+              signal: abort.signal,
+            }
+          : undefined,
+      ),
       confirmBuiltins: PASS_CONFIRMED_TOOLS,
       instructions: PASS_INSTRUCTIONS,
       extraTools: buildPassTools(db, outcome, changed),

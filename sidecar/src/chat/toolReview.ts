@@ -46,7 +46,7 @@ export function approvesCall(verdict: ToolReviewVerdict): boolean {
 
 // Sized for a small local model's context window. The transcript keeps the
 // newest whole messages, since those are what the call answers.
-const MAX_REQUEST_CHARS = 4_000;
+export const MAX_REQUEST_CHARS = 4_000;
 const MAX_TRANSCRIPT_CHARS = 8_000;
 const MAX_PART_CHARS = 1_500;
 const MAX_DESCRIPTION_CHARS = 1_000;
@@ -251,6 +251,7 @@ export async function reviewToolCall(
         `(aligns=${verdict.alignsWithRequest} dangerous=${verdict.dangerous} ` +
         `destructive=${verdict.destructive}) ${logReason(verdict.reason)}`,
     );
+    // Bounded for the page as well as the log: the reason is shown with the approval.
     return { approved, reason: logReason(verdict.reason) };
   } catch (e) {
     console.warn(

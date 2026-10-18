@@ -122,8 +122,10 @@ describe("DecisionModelSection", () => {
     unmount = mounted.unmount;
     await settle();
 
-    const [, headsDown] = mounted.host.querySelectorAll("input[type=checkbox]");
-    (headsDown as HTMLInputElement).click();
+    const headsDown = [...mounted.host.querySelectorAll("label")]
+      .find((label) => label.textContent?.includes("Auto mode for heads-down mode"))
+      ?.querySelector("input[type=checkbox]") as HTMLInputElement;
+    headsDown.click();
     await settle();
 
     const saved = calls.find((c) => c.method === "PATCH");

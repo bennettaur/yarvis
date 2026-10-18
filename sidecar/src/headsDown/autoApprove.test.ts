@@ -15,6 +15,7 @@ import {
   type ReviewDeps,
   userApprovedBefore,
 } from "./autoApprove.ts";
+import { userRequestFor } from "./pass.ts";
 import { passApprovalHooks } from "./policy.ts";
 import {
   answeredSince,
@@ -33,8 +34,12 @@ const config = { secrets: {} } as unknown as Config;
 
 const TOOL = "mcp:slack:post_message";
 const args = { channel: "#billing-reviews", text: "Could someone review acme/api#12?" };
-/** A call like `args`, for another PR: approving it isn't a grant for `args` itself. */
-const similarArgs = { channel: "#billing-reviews", text: "Could someone review acme/api#11?" };
+const forPr = (n: number) => ({ channel: "#billing-reviews", text: `Please review PR ${n}` });
+
+/** Three approvals of other calls to the tool: a run of yeses, but no grant for `args` itself. */
+async function userApprovesOthers() {
+  for (const n of [1, 2, 3]) await userAnswers("approve", forPr(n));
+}
 
 /** The user answering an approval for `tool` with `args` on the page. */
 async function userAnswers(choice: "approve" | "deny", callArgs: unknown = args, tool = TOOL) {
@@ -61,7 +66,12 @@ function deps(approves: boolean, calls: string[] = []): ReviewDeps {
 }
 
 function context(reviewDeps: ReviewDeps): PassReviewContext {
-  return { config, memory, userRequest: "Ship the billing PR", deps: reviewDeps };
+  return {
+    config,
+    db,
+    userRequest: "Ship the billing PR",
+    deps: reviewDeps,
+  };
 }
 
 beforeEach(async () => {
@@ -75,18 +85,60 @@ afterAll(async () => {
 describe("userApprovedBefore", () => {
   it("counts the user's approval of the same call", async () => {
     await userAnswers("approve");
-    expect(await userApprovedBefore(memory, TOOL, args)).toBe(true);
-  });
-
-  it("doesn't count an approval of a different tool", async () => {
-    await userAnswers("approve", args, "mcp:slack:delete_message");
-    expect(await userApprovedBefore(memory, TOOL, args)).toBe(false);
+    expect(await userApprovedBefore(db, TOOL, args)).toBe(true);
   });
 
   it("follows the user's latest answer to the same call", async () => {
     await userAnswers("approve");
     await userAnswers("deny");
-    expect(await userApprovedBefore(memory, TOOL, args)).toBe(false);
+    expect(await userApprovedBefore(db, TOOL, args)).toBe(false);
+  });
+
+  it("counts several approvals in a row of other calls to the tool, and not too few", async () => {
+    await userAnswers("approve", forPr(1));
+    await userAnswers("approve", forPr(2));
+    expect(await userApprovedBefore(db, TOOL, args)).toBe(false);
+    await userAnswers("approve", forPr(3));
+    expect(await userApprovedBefore(db, TOOL, args)).toBe(true);
+  });
+
+  it("doesn't count a run of approvals broken by a denial", async () => {
+    await userAnswers("approve", forPr(1));
+    await userAnswers("deny", forPr(2));
+    await userAnswers("approve", forPr(3));
+    expect(await userApprovedBefore(db, TOOL, args)).toBe(false);
+  });
+
+  it("doesn't count approvals of a different tool", async () => {
+    for (const n of [1, 2, 3]) await userAnswers("approve", forPr(n), "mcp:slack:delete_message");
+    expect(await userApprovedBefore(db, TOOL, args)).toBe(false);
+  });
+
+  it("doesn't count a question a pass asked about the tool, only approvals", async () => {
+    for (const n of [1, 2, 3]) {
+      const asked = await askQuestion(db, {
+        kind: "question",
+        question: `Approve posting ${n}?`,
+        action: TOOL,
+        options: ["approve", "deny"],
+      });
+      await answerQuestion(db, memory, asked.id, { choice: "approve" });
+    }
+    expect(await userApprovedBefore(db, TOOL, args)).toBe(false);
+  });
+
+  it("doesn't count a decision recorded in chat", async () => {
+    const decision = {
+      situation: approvalSituation(TOOL, args),
+      question: approvalQuestion(TOOL),
+      choice: "approve",
+      answer: null,
+      action: TOOL,
+    };
+    for (const n of [1, 2, 3]) {
+      await memory.add(`chat decision ${n}`, { kind: "decision", metadata: { decision } });
+    }
+    expect(await userApprovedBefore(db, TOOL, args)).toBe(false);
   });
 });
 
@@ -117,6 +169,14 @@ describe("autoApproveReason", () => {
     expect(reason).toBeNull();
   });
 
+  it("asks the user when the decision model isn't usable, without asking it", async () => {
+    await userAnswers("approve");
+    const calls: string[] = [];
+    const ctx = context({ ...deps(true, calls), resolveModel: async () => null });
+    expect(await autoApproveReason(ctx, { tool: TOOL, args })).toBeNull();
+    expect(calls).toEqual([]);
+  });
+
   it("does nothing while auto mode for heads-down is off", async () => {
     await userAnswers("approve");
     const off: ReviewDeps = { ...deps(true), settings: async () => DEFAULT_DECISION_MODEL_CONFIG };
@@ -127,7 +187,7 @@ describe("autoApproveReason", () => {
 describe("a pass's approval hooks with auto mode", () => {
   it("runs the call, lists it as approved on its own, and doesn't make it a precedent", async () => {
     const run = await startRun(db, "Ship the billing PR");
-    await userAnswers("approve", similarArgs);
+    await userApprovesOthers();
     const precedentsBefore = await memory.count({ kinds: ["decision"] });
     const hooks = passApprovalHooks(db, run, () => {}, context(deps(true)));
 
@@ -144,17 +204,67 @@ describe("a pass's approval hooks with auto mode", () => {
     expect(await memory.count({ kinds: ["decision"] })).toBe(precedentsBefore);
   });
 
+  it("files an open approval question when the decision model says no", async () => {
+    const run = await startRun(db, "Ship the billing PR");
+    await userApprovesOthers();
+    let changed = 0;
+    const hooks = passApprovalHooks(db, run, () => changed++, context(deps(false)));
+
+    await hooks.onRequest({ toolCallId: "auto-3", id: TOOL, args });
+
+    expect(await waitForApproval("auto-3", { timeoutMs: 1000 })).toBe(false);
+    expect(changed).toBe(1);
+    expect(await listAutoApprovals(db)).toEqual([]);
+    const open = await sql`SELECT action FROM heads_down_questions WHERE status = 'open'`;
+    expect(open.map((r) => r.action)).toEqual([TOOL]);
+  });
+
   it("keeps the decision model's approvals out of the user's answers and activity", async () => {
     const run = await startRun(db, null);
     await sql`UPDATE heads_down_runs SET started_at = now() - interval '1 hour'`;
-    await userAnswers("approve", similarArgs);
-    const userAnswerAt = (await answeredSince(db, new Date(0)))[0]!.answeredAt!;
+    await userApprovesOthers();
+    const userAnswerAt = (await answeredSince(db, new Date(0))).at(-1)!.answeredAt!;
     const hooks = passApprovalHooks(db, run, () => {}, context(deps(true)));
     await hooks.onRequest({ toolCallId: "auto-2", id: TOOL, args });
     await waitForApproval("auto-2", { timeoutMs: 1000 });
 
-    expect((await answeredSince(db, new Date(0))).map((q) => q.answeredBy)).toEqual(["user"]);
+    expect((await answeredSince(db, new Date(0))).map((q) => q.answeredBy)).toEqual([
+      "user",
+      "user",
+      "user",
+    ]);
     const activity = await lastUserActivityAt(db, { ...run, startedAt: new Date(0) });
     expect(activity.getTime()).toBe(userAnswerAt.getTime());
+  });
+});
+
+describe("userRequestFor", () => {
+  const run = {
+    id: "r",
+    focus: "Ship billing",
+    status: "active",
+    startedAt: new Date(0),
+    stoppedAt: null,
+  } as const;
+  const message = (body: string, minute: number) => ({
+    body,
+    createdAt: new Date(minute * 60_000),
+  });
+
+  it("gives the focus, then the user's messages oldest first", () => {
+    expect(userRequestFor(run, [message("second", 2), message("first", 1)])).toBe(
+      "Ship billing\n\nfirst\n\nsecond",
+    );
+  });
+
+  it("drops the oldest messages first when they don't all fit", () => {
+    const long = "x".repeat(3990);
+    const request = userRequestFor(run, [message(long, 1), message("stop posting in #billing", 2)]);
+    expect(request).toContain("stop posting in #billing");
+    expect(request).not.toContain(long);
+  });
+
+  it("works with no focus", () => {
+    expect(userRequestFor({ ...run, focus: null }, [message("only this", 1)])).toBe("only this");
   });
 });
