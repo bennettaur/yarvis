@@ -201,6 +201,44 @@ describe("github client", () => {
     expect(st.checks).toMatchObject({ total: 1, success: 1 });
   });
 
+  it("counts legacy commit statuses alongside check runs", async () => {
+    const gh = new GitHubClient(
+      "t",
+      fakeFetch({
+        "/repos/o/r/pulls/1": { state: "open", head: { sha: "abc" } },
+        "/repos/o/r/commits/abc/check-runs": {
+          check_runs: [{ status: "completed", conclusion: "success" }],
+        },
+        "/repos/o/r/commits/abc/status": {
+          state: "failure",
+          statuses: [
+            { context: "ci/jenkins", state: "failure" },
+            { context: "ci/lint", state: "error" },
+            { context: "ci/deploy", state: "pending" },
+            { context: "ci/unit", state: "success" },
+          ],
+        },
+      }),
+    );
+    const st = await gh.prStatus("o", "r", 1);
+    expect(st.checks).toEqual({ total: 5, success: 2, failure: 2, pending: 1 });
+  });
+
+  it("keeps the check runs when commit statuses can't be read", async () => {
+    // fakeFetch answers 404 for the unrouted status endpoint.
+    const gh = new GitHubClient(
+      "t",
+      fakeFetch({
+        "/repos/o/r/pulls/1": { state: "open", head: { sha: "abc" } },
+        "/repos/o/r/commits/abc/check-runs": {
+          check_runs: [{ status: "in_progress", conclusion: null }],
+        },
+      }),
+    );
+    const st = await gh.prStatus("o", "r", 1);
+    expect(st.checks).toEqual({ total: 1, success: 0, failure: 0, pending: 1 });
+  });
+
   it("normalizes CheckRun and StatusContext into a flat check list", () => {
     const detail = toPrDetail({
       number: 5,
@@ -438,10 +476,10 @@ describe("github client", () => {
     });
 
     expect(detail.reviewers).toEqual([
-      { login: "bob", state: "approved", isRequested: false },
-      { login: "carol", state: "changes_requested", isRequested: false },
-      { login: "alice", state: "pending", isRequested: true },
-      { login: "org/frontend", state: "pending", isRequested: true },
+      { login: "bob", state: "approved", isRequested: false, isTeam: false },
+      { login: "carol", state: "changes_requested", isRequested: false, isTeam: false },
+      { login: "alice", state: "pending", isRequested: true, isTeam: false },
+      { login: "org/frontend", state: "pending", isRequested: true, isTeam: true },
     ]);
   });
 

@@ -146,6 +146,12 @@ export interface Reviewer {
   state: ReviewerState;
   /** True when the reviewer's review is still outstanding (a fresh request). */
   isRequested: boolean;
+  /**
+   * True when the reviewer is a team or group rather than a person. A request to
+   * a team is answered by whichever member picks it up, so chasing it means
+   * asking the team, not the name on the request.
+   */
+  isTeam: boolean;
 }
 
 /** A normalized CI check (CheckRun, commit status, or policy evaluation). */

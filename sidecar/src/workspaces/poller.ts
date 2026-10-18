@@ -19,7 +19,12 @@ import {
   workspaceRepos,
   workspaces,
 } from "../db/schema.ts";
-import { type ChecksSummary, createGitHubClient, type GitHubClient } from "../github/client.ts";
+import {
+  type ChecksSummary,
+  createGitHubClient,
+  type GitHubClient,
+  summarizeCheckItems,
+} from "../github/client.ts";
 import { parseRepoRemote } from "./service.ts";
 
 type CheckRollup = WorkspaceRepoPr["checkRollup"];
@@ -123,9 +128,7 @@ async function githubBranchPr(
   };
 }
 
-/** The PR on one Azure DevOps branch. Azure check rollups aren't fetched here
- *  (policy evaluations need a per-PR call), so it carries the PR identity and
- *  state with an empty check summary. */
+/** The PR on one Azure DevOps branch and where its CI policies stand. */
 async function azureBranchPr(
   az: AzureDevOpsClient,
   project: string,
@@ -135,14 +138,20 @@ async function azureBranchPr(
   const pr = await az.findPrByBranch(project, repo, branch);
   if (!pr) return NO_PR;
   const awaitingReview = pr.state === "open" && !pr.draft;
+  // Policy evaluations are a separate read a PAT may lack the scope for. As
+  // with GitHub's review verdict, a refusal drops the checks rather than the
+  // refresh: a 403 here would otherwise be read as a rate limit and end the
+  // cycle for every repo after this one.
+  const ciChecks = await az.prCiChecks(project, pr.projectId, pr.number).catch(() => null);
+  const checks = ciChecks ? summarizeCheckItems(ciChecks) : null;
   return {
     prNumber: pr.number,
     prUrl: pr.url,
     prState: pr.state,
     isDraft: pr.draft,
     mergeable: pr.mergeable,
-    checkRollup: "none",
-    checks: null,
+    checkRollup: checks ? deriveRollup(checks) : "none",
+    checks,
     reviewDecision: awaitingReview ? pr.reviewDecision : null,
   };
 }

@@ -125,7 +125,14 @@ The assistant can act on your workspaces in bulk:
   Yarvis can only confirm the text was delivered, not that the work got done,
   and it says so.
 - **"What's the state of the billing-api workspace?"** It reports the PR,
-  checks and mergeability from the last poll (refreshed every minute).
+  checks, mergeability and review verdict from the last poll (refreshed every
+  minute).
+- **"Who's reviewing the billing-api PR, and which check failed?"** It asks
+  GitHub or Azure DevOps for the PR's reviewers (people and teams) and where
+  each stands, and for each check with its result and link.
+- **"Which of my sessions are waiting on me?"** It lists each workspace's
+  pending attention items: a permission prompt, a session idle at its prompt,
+  or one that finished its turn.
 - **"What was I doing in my workspaces?"** For each active workspace, or the
   one you name, it reports when you last had it open in Yarvis and when its
   Claude Code session last did anything. It also gives a short recap of what
@@ -239,7 +246,9 @@ can read the end of that workspace's latest Claude Code transcript.
 - your tasks, projects, todos and memories,
 - the activity log, as events happen,
 - when you last had each workspace open,
-- workspace PR state, checks and mergeability (polled every minute),
+- workspace PR state, checks, mergeability and review verdict (polled every
+  minute),
+- which workspace sessions are waiting on you, from the attention bell,
 - live GitHub searches: your PRs and review requests,
 - anything a Claude Code session saved to Yarvis memory.
 

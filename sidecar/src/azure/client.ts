@@ -42,6 +42,18 @@ const API_VERSION = "7.1";
 // policy/evaluations is exposed only under a preview version and 400s on the GA
 // version, so that one call overrides the default.
 const POLICY_API_VERSION = "7.1-preview.1";
+// The "Build" policy type (a pipeline must pass), by its fixed id rather than
+// its display name, which is localized.
+const BUILD_POLICY_TYPE_ID = "0609b952-1397-4640-95ec-e00a01b2c241";
+
+/**
+ * Whether a policy reports CI: a build policy, or a status policy, which waits
+ * on an external service posting the status its settings name.
+ */
+function isCiPolicy(evaluation: AzurePolicyEvaluation): boolean {
+  const config = evaluation.configuration;
+  return config?.type?.id === BUILD_POLICY_TYPE_ID || Boolean(config?.settings?.statusName);
+}
 // Code search is a separate service on its own host, still preview-only.
 const SEARCH_API_VERSION = "7.1-preview.1";
 
@@ -161,6 +173,7 @@ export function mapReviewer(reviewer: AzureReviewer): Reviewer {
     login: reviewer.displayName ?? "",
     state: mapReviewerVote(vote),
     isRequested: vote === 0,
+    isTeam: Boolean(reviewer.isContainer),
   };
 }
 
@@ -212,6 +225,8 @@ export interface AzureBranchPr {
   mergeable: MergeableEnum;
   /** Collective verdict from the reviewers' votes carried on the PR payload. */
   reviewDecision: ReviewDecision;
+  /** The project's id, which policy evaluations are addressed by; "" when absent. */
+  projectId: string;
 }
 
 /**
@@ -375,6 +390,7 @@ export class AzureDevOpsClient {
       state: pr.status === "completed" ? "merged" : pr.status === "abandoned" ? "closed" : "open",
       mergeable: mapMergeStatus(pr.mergeStatus).enum,
       reviewDecision: summarizeReviewDecision(pr.reviewers ?? []),
+      projectId: pr.repository?.project?.id ?? "",
     };
   }
 
@@ -473,7 +489,11 @@ export class AzureDevOpsClient {
     };
   }
 
-  private async checks(project: string, projectId: string, prId: number): Promise<CheckItem[]> {
+  private async policyEvaluations(
+    project: string,
+    projectId: string,
+    prId: number,
+  ): Promise<AzurePolicyEvaluation[]> {
     if (!projectId) return [];
     const artifactId = `vstfs:///CodeReview/CodeReviewId/${projectId}/${prId}`;
     const data = await this.get<AzureList<AzurePolicyEvaluation>>(
@@ -482,7 +502,26 @@ export class AzureDevOpsClient {
       )}`,
       { apiVersion: POLICY_API_VERSION },
     );
-    return (data.value ?? []).map(mapPolicyEvaluation).filter((c): c is CheckItem => c !== null);
+    return data.value ?? [];
+  }
+
+  private async checks(project: string, projectId: string, prId: number): Promise<CheckItem[]> {
+    const evaluations = await this.policyEvaluations(project, projectId, prId);
+    return evaluations.map(mapPolicyEvaluation).filter((c): c is CheckItem => c !== null);
+  }
+
+  /**
+   * The PR's CI: its build and status policies only. The review view lists
+   * every policy, but a summary of "are the checks passing" must not count the
+   * reviewer policies — a minimum-reviewers policy reads as rejected until
+   * someone approves, which would show every PR awaiting review as failing CI.
+   */
+  async prCiChecks(project: string, projectId: string, prId: number): Promise<CheckItem[]> {
+    const evaluations = await this.policyEvaluations(project, projectId, prId);
+    return evaluations
+      .filter(isCiPolicy)
+      .map(mapPolicyEvaluation)
+      .filter((c): c is CheckItem => c !== null);
   }
 
   private async threads(ref: AzureRef): Promise<ReviewThread[]> {

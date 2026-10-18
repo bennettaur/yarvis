@@ -233,8 +233,12 @@ still blocks the merge: a branch-protection rule (required reviewers,
 CODEOWNERS, required checks), a base the branch must be updated against, or a
 merge state the provider hasn't worked out.
 
-Azure DevOps doesn't report check state or a merge verdict here. Its badges
-reflect the review only and never reach `★`.
+On GitHub, checks count both check runs (GitHub Actions and most apps) and
+commit statuses (which many outside CI services post). On Azure DevOps, checks
+come from the PR's build and status policies. Other policies, such as a minimum
+number of reviewers, are not counted as checks. If the token can't read the
+policies, the badge shows no checks. Azure DevOps doesn't report a merge
+verdict here, so its badges never reach `★`.
 
 Badges come from a background PR poll that runs every minute, so they can lag
 a change by up to a minute.
@@ -445,6 +449,17 @@ A small model writes the recap, so check the details. It only finds sessions
 started at the workspace's root, which is where Yarvis starts them. A workspace
 counts as viewed once it has stayed on screen for a few seconds. See
 [The assistant](assistant.md#what-it-can-see).
+
+The assistant can also tell you:
+
+- **Where a PR's review and CI stand.** Who is asked to review, people and
+  teams, and where each stands. Also each check with its result and link. It
+  asks GitHub or Azure DevOps when you ask, rather than reading the last poll.
+- **Whether a session is waiting on you.** It reads the same items as
+  [the attention bell](#the-attention-bell): a permission prompt, a session idle
+  at its prompt, or one that finished. An item stays until you view the
+  workspace or the session finishes its next turn. Answering in the session
+  itself doesn't clear it, so an old permission item may already be answered.
 
 ## Archiving
 

@@ -161,6 +161,32 @@ export function summarizeChecks(runs: any[]): ChecksSummary {
 }
 
 /**
+ * Buckets the legacy commit statuses from `GET /commits/:ref/status`. That
+ * endpoint already keeps only the latest status per context, so each entry is
+ * one check. `error` is a status's way of failing, like `failure`.
+ */
+export function summarizeCommitStatuses(statuses: any[]): ChecksSummary {
+  let success = 0;
+  let failure = 0;
+  let pending = 0;
+  for (const s of statuses) {
+    if (s.state === "success") success++;
+    else if (s.state === "pending") pending++;
+    else failure++;
+  }
+  return { total: statuses.length, success, failure, pending };
+}
+
+function addChecks(a: ChecksSummary, b: ChecksSummary): ChecksSummary {
+  return {
+    total: a.total + b.total,
+    success: a.success + b.success,
+    failure: a.failure + b.failure,
+    pending: a.pending + b.pending,
+  };
+}
+
+/**
  * Only a reviewer who could merge the PR themselves gets a say. GitHub lets
  * anyone who can see a repo approve one, and an approval is what turns the
  * workspace list green, so a drive-by from outside the project must not.
@@ -265,7 +291,12 @@ function toReviewers(pr: any): Reviewer[] {
   for (const node of reviewNodes) {
     const login = node?.author?.login;
     if (!login) continue;
-    byLogin.set(login, { login, state: mapReviewState(node.state), isRequested: false });
+    byLogin.set(login, {
+      login,
+      state: mapReviewState(node.state),
+      isRequested: false,
+      isTeam: false,
+    });
   }
   const requestNodes = pr.reviewRequests?.nodes ?? [];
   // Runs after `latestReviews` so a re-request overwrites the historical review
@@ -276,7 +307,12 @@ function toReviewers(pr: any): Reviewer[] {
     // GraphQL union: User/Mannequin/Bot carry `login`, Team carries `combinedSlug`.
     const login = reviewer?.login ?? reviewer?.combinedSlug;
     if (!login) continue;
-    byLogin.set(login, { login, state: "pending", isRequested: true });
+    byLogin.set(login, {
+      login,
+      state: "pending",
+      isRequested: true,
+      isTeam: reviewer?.__typename === "Team",
+    });
   }
   return Array.from(byLogin.values());
 }
@@ -800,15 +836,26 @@ export class GitHubClient {
 
   async prStatus(owner: string, repo: string, number: number): Promise<PrStatus> {
     const pr = await this.api<any>(`/repos/${owner}/${repo}/pulls/${number}`);
-    const checks = await this.api<{ check_runs?: any[] }>(
-      `/repos/${owner}/${repo}/commits/${pr.head.sha}/check-runs`,
-    );
+    const commit = `/repos/${owner}/${repo}/commits/${pr.head.sha}`;
+    // CI reports through one of two APIs: check runs (Actions and most apps) or
+    // the older commit statuses (many external CI services). Reading only the
+    // first made a repo on the second look like it had no checks at all. The
+    // statuses are the extra read, so a token refused them (a fine-grained one
+    // without "Commit statuses") keeps the check runs rather than failing the
+    // whole status — the poller would otherwise read the 403 as a rate limit.
+    const [checks, combined] = await Promise.all([
+      this.api<{ check_runs?: any[] }>(`${commit}/check-runs`),
+      this.api<{ statuses?: any[] }>(`${commit}/status?per_page=100`).catch(() => null),
+    ]);
     return {
       state: pr.state ?? "open",
       merged: Boolean(pr.merged),
       mergeable: pr.mergeable ?? null,
       mergeableState: pr.mergeable_state ?? "unknown",
-      checks: summarizeChecks(checks.check_runs ?? []),
+      checks: addChecks(
+        summarizeChecks(checks.check_runs ?? []),
+        summarizeCommitStatuses(combined?.statuses ?? []),
+      ),
     };
   }
 
