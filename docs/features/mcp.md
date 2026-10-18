@@ -99,13 +99,32 @@ Whether it needs approval:
 
 A denied call is not retried or worked around.
 
+**Auto mode** lets a decision model answer some of those prompts for you. Pick a
+model under **Settings → Tools & MCP → Decision model** and tick **Auto mode for
+tool approvals**. Only models tagged `decision` in the model catalogue are
+offered. A local model served by Ollama is a good fit: add a custom provider
+with the **Ollama** protocol and the server's root URL (for example
+`http://localhost:11434`, without `/v1` — Yarvis adds the path itself), then tag
+its model `decision`. Only an Ollama on this machine works; one elsewhere on
+your network is refused like any other private address.
+
+Before any tool set to **Ask** raises the approval bar, the decision model reads
+your message, the recent conversation (tool results included) and the call, and
+answers three questions: does it match what
+you asked for, is it risky, and is it destructive. The call runs without a
+prompt only when it matches and is neither. Any other answer, an error, or no
+answer within 20 seconds raises the approval bar as usual, and so do arguments
+too long for it to read in full. Each verdict is logged under `[auto-approve]`
+in **Settings → Diagnostics**. Everything it reads is sent to the decision
+model's provider, so a local model keeps your conversation on this machine.
+
 Your consent is for the tool as it was described. If a resync finds a tool's
 description or schema changed, its approval resets to **Ask**.
 
 Two cases where MCP tools behave differently:
 
-- **Spoken turns.** A turn that came from the microphone ignores Auto and asks
-  for every MCP tool, because a transcript was never proofread. See
+- **Spoken turns.** A turn that came from the microphone ignores Auto and auto
+  mode, and asks for every MCP tool, because a transcript was never proofread. See
   [Voice](voice.md).
 - **Delegated runs.** Specialists and scheduled Yarvis jobs get no MCP tools at
   all. They have no way to hold an approval prompt open. See
