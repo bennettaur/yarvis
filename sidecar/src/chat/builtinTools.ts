@@ -6,6 +6,7 @@ import type { Db } from "../db/client.ts";
 import { buildDigestTools } from "../digest/tools.ts";
 import { buildEventTools } from "../events/tools.ts";
 import { buildCalendarTools } from "../google/tools.ts";
+import { buildHeadsDownTools } from "../headsDown/tools.ts";
 import { buildHelpTools } from "../help/tools.ts";
 import { buildJiraTools } from "../jira/tools.ts";
 import type { MemoryService } from "../memory/index.ts";
@@ -57,6 +58,7 @@ export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Recor
     projects: buildProjectTools(db),
     todos: buildTodoTools(db),
     workStreams: buildWorkStreamTools(db),
+    headsDown: buildHeadsDownTools(db),
     events: buildEventTools(db),
     digest: buildDigestTools(db, config),
     delegation: buildDelegationTools(db, config),

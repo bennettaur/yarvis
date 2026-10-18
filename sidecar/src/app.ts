@@ -15,6 +15,7 @@ import { pingDb } from "./db/client.ts";
 import { createEventRoutes } from "./events/routes.ts";
 import { createGithubRoutes } from "./github/routes.ts";
 import { createCalendarRoutes, createGoogleCallbackRoutes } from "./google/routes.ts";
+import { createHeadsDownRoutes } from "./headsDown/routes.ts";
 import { createIssueRoutes } from "./issues/routes.ts";
 import { createJiraRoutes } from "./jira/routes.ts";
 import { createJobRoutes } from "./jobs/routes.ts";
@@ -162,6 +163,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/projects", createProjectRoutes(config));
   app.route("/api/todos", createTodoRoutes(config));
   app.route("/api/work-streams", createWorkStreamRoutes(config));
+  app.route("/api/heads-down", createHeadsDownRoutes(config));
   app.route("/api/specialists", createSpecialistRoutes(config));
   app.route("/api/jobs", createJobRoutes(config));
   app.route("/api/logs", createLogRoutes());

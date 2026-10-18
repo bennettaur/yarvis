@@ -56,6 +56,12 @@ export interface ApprovalHooks {
   }) => Promise<void>;
   /** Aborted when the client disconnects, so pending approvals don't hang. */
   signal?: AbortSignal;
+  /**
+   * What the model is told when a call isn't approved. A surface where the
+   * user answers later says so, so the model moves on rather than taking it
+   * as a no.
+   */
+  deniedMessage?: string;
 }
 
 const STOPPED = { denied: true, message: "The user stopped this turn." };
@@ -109,7 +115,7 @@ export function wrapToolWithApproval(
         timeoutMs: APPROVAL_TIMEOUT_MS,
       });
       if (!approved) {
-        return { denied: true, message: "The user denied this tool call." };
+        return { denied: true, message: hooks.deniedMessage ?? "The user denied this tool call." };
       }
       return run(args, opts);
     },
