@@ -4,6 +4,7 @@
  * whether the new code is tested.
  */
 
+import { isAbsolute, join, relative } from "node:path";
 import { isTestFile } from "./tier.ts";
 
 /** Line numbers each file gained, keyed by repo-relative path. */
@@ -31,8 +32,17 @@ const SOURCE_EXTENSIONS = [".ts", ".tsx", ".rs"];
 export function parseAddedLines(diff: string): AddedLines {
   const added: AddedLines = new Map();
   let current: Set<number> | null = null;
+  let previous = "";
   for (const line of diff.split("\n")) {
-    if (line.startsWith("+++ ")) {
+    const afterOldHeader = previous.startsWith("--- ");
+    previous = line;
+    if (line.startsWith("diff --git ")) {
+      current = null;
+      continue;
+    }
+    // Only right after the `---` header: an added line whose text starts
+    // with "++ " also begins with "+++ ".
+    if (afterOldHeader && line.startsWith("+++ ")) {
       const path = line.slice(4);
       // A deleted file's new side is /dev/null and gains nothing.
       current = path === "/dev/null" ? null : new Set();
@@ -60,11 +70,12 @@ export function parseLcov(text: string, prefix: string, repoRoot: string): LineH
   for (const line of text.split("\n")) {
     if (line.startsWith("SF:")) {
       const raw = line.slice(3).trim();
-      const path = raw.startsWith("/")
-        ? raw.slice(repoRoot.replace(/\/$/, "").length + 1)
-        : prefix
-          ? `${prefix.replace(/\/$/, "")}/${raw}`
-          : raw;
+      const path = isAbsolute(raw) ? relative(repoRoot, raw) : join(prefix, raw);
+      // Sources outside the repo, such as cargo's registry, can't be changed by a PR.
+      if (path.startsWith("..")) {
+        current = null;
+        continue;
+      }
       current = hits.get(path) ?? new Map();
       hits.set(path, current);
     } else if (line.startsWith("DA:") && current) {
@@ -87,12 +98,13 @@ export function mergeLineHits(...sets: LineHits[]): LineHits {
   return merged;
 }
 
-/** Collapses sorted line numbers into ranges: [3, 4, 5, 9] becomes "3-5, 9". */
+/** Collapses line numbers into ranges: [9, 3, 4, 5] becomes "3-5, 9". */
 export function formatRanges(lines: number[]): string {
   const sorted = [...lines].sort((a, b) => a - b);
   const ranges: string[] = [];
   let start = sorted[0];
   let prev = start;
+  // The trailing NaN never extends a range, so it flushes the last one.
   for (const n of [...sorted.slice(1), Number.NaN]) {
     if (n === prev + 1) {
       prev = n;

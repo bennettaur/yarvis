@@ -114,22 +114,43 @@ complexity, maintainability and UI. It runs locally, since it needs the test
 database and the demo harness. `scripts/verify/` holds the parts that measure
 and post.
 
-The `Verify` workflow (`.github/workflows/verify.yml`) reacts to two kinds of
-PR comment, and acts as the yarvis GitHub App:
+Only run it on another contributor's PR the way the skill says to. Their
+tests and scripts would run with your `gh` login, so the skill measures their
+PR without running any of its code.
 
-- **A report** from a user in `VERIFY_TRUSTED_USERS`. The workflow sets a
-  `Verification report` commit status on the head commit. If the PR is a
-  maintainer's, not a draft, low risk, and the report has no concerns, it
-  approves the PR and turns on squash auto-merge.
+The `Verify` workflow (`.github/workflows/verify.yml`) reacts to two kinds of
+PR comment from users with write access, and acts as the yarvis GitHub App:
+
+- **A report** from a user in `VERIFY_TRUSTED_USERS`, for the PR's current head.
+  The workflow sets a `Verification report` commit status on that commit. The
+  status is always a success: it records that a current report exists, and its
+  description carries the verdict. If the PR is a maintainer's, not a draft,
+  low risk, and the report has no concerns, the bot also approves it and turns
+  on squash auto-merge. A push makes the report stale, so run `/verify-pr`
+  again.
 - **`/approve`** from a trusted user. The bot approves the current head and
   turns on auto-merge, marking a draft ready first. This is how a maintainer
-  merges their own PR, since GitHub won't let them approve it.
+  merges their own PR, since GitHub won't let them approve it. On an outside
+  contributor's PR, write `/approve <sha>` with the commit you reviewed, so a
+  push made after you read the diff isn't approved with it. Anything else after
+  `/approve` is ignored.
 
-Risk tiers come from `scripts/verify/tier.ts`. CI, the verifier itself, secrets,
-app permissions, migrations, dependencies, and anything over 800 changed lines
-of code always need a human.
+Only low-risk PRs can merge on a report alone. `scripts/verify/tier.ts` decides
+the tier, from both sides of any rename:
 
-The workflow needs these repository settings:
+- **High:** CI and repo config, the verifier itself, agent instructions and
+  hooks (`CLAUDE.md`, `AGENTS.md`, `.claude/`), git hooks, build and test
+  config, secrets and shell access, app permissions, sidecar request handling,
+  agent tool approvals, the MCP server, settings, migrations, dependencies,
+  what the Chrome extension may do, or more than 800 changed lines of code.
+- **Standard:** any other change to the Rust core, the sidecar, the extension
+  or dev scripts, or more than 300 changed lines of code.
+
+Tests, docs and lockfiles don't count toward the line limits.
+
+The workflow and the gate always run as they are on the default branch, so a
+change to either takes effect once it merges. They need these repository
+settings:
 
 - `YARVIS_BOT_CLIENT_ID` (variable) and `YARVIS_BOT_PRIVATE_KEY` (secret): the
   yarvis GitHub App's client ID and private key. The app needs read and write
@@ -138,7 +159,8 @@ The workflow needs these repository settings:
   `/approve` count. Defaults to `bennettaur`.
 - `VERIFY_MODE` (variable): `shadow` (the default) sets the status but never
   auto-approves. `enforce` lets a passing report approve. `/approve` works in
-  both.
+  both. Before switching to `enforce`, make `Verification report` a required
+  status check in the `Protect Main` ruleset.
 
 ## Running more than one instance
 

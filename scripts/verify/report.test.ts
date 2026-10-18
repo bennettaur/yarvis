@@ -1,10 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import type { Facts } from "./collect.ts";
 import {
+  coverageStatus,
   finalVerdict,
+  inline,
   parseReportData,
   REPORT_MARKER,
-  type Review,
+  Review,
   renderReport,
 } from "./report.ts";
 
@@ -47,7 +49,7 @@ function makeFacts(overrides: Partial<Facts> = {}): Facts {
       notLoaded: [],
       unmeasured: [],
     },
-    baseline: { detecting: 3, notDetecting: [], failingOnHead: [], unmeasured: [] },
+    baseline: { detecting: 3, notDetecting: [], failingOnHead: [] },
     suites: ["frontend"],
     ...overrides,
   };
@@ -69,19 +71,37 @@ describe("finalVerdict", () => {
     ).toBe("agent");
   });
 
-  it("caps on findings, failed checks and low coverage", () => {
-    const major = makeReview({
-      findings: [{ severity: "major", title: "Leaks a listener", detail: "…" }],
-    });
-    expect(finalVerdict(major, makeFacts()).verdict).toBe("agent");
+  it("needs an agent for a major finding and a human for a blocker", () => {
+    const finding = (severity: "major" | "blocker") =>
+      makeReview({ findings: [{ severity, title: "Leaks a listener", detail: "…" }] });
+    expect(finalVerdict(finding("major"), makeFacts()).verdict).toBe("agent");
+    expect(finalVerdict(finding("blocker"), makeFacts()).verdict).toBe("human");
+  });
 
-    const failing = makeReview({
-      dimensions: { ...makeReview().dimensions, security: { status: "fail", note: "XSS" } },
-    });
-    expect(finalVerdict(failing, makeFacts()).verdict).toBe("human");
+  it("needs an agent for a concern and a human for a failed check", () => {
+    const withSecurity = (status: "concern" | "fail") =>
+      makeReview({ dimensions: { ...makeReview().dimensions, security: { status, note: "XSS" } } });
+    expect(finalVerdict(withSecurity("concern"), makeFacts()).verdict).toBe("agent");
+    expect(finalVerdict(withSecurity("fail"), makeFacts()).verdict).toBe("human");
+  });
 
-    const lowCoverage = makeFacts({ coverage: { ...makeFacts().coverage, ratio: 0.6 } });
-    expect(finalVerdict(makeReview(), lowCoverage).verdict).toBe("agent");
+  it("follows diff coverage", () => {
+    const at = (ratio: number) => makeFacts({ coverage: { ...makeFacts().coverage, ratio } });
+    expect(finalVerdict(makeReview(), at(0.6)).verdict).toBe("agent");
+    expect(finalVerdict(makeReview(), at(0.2)).verdict).toBe("human");
+  });
+
+  it("needs a human when tests fail on the PR", () => {
+    const facts = makeFacts({
+      baseline: { detecting: 0, notDetecting: [], failingOnHead: ["a.test.ts > x"] },
+    });
+    expect(finalVerdict(makeReview(), facts).verdict).toBe("human");
+  });
+
+  it("only ever tightens when several limits apply", () => {
+    const review = makeReview({ findings: [{ severity: "blocker", title: "x", detail: "…" }] });
+    const facts = makeFacts({ tier: { tier: "standard", reasons: [] } });
+    expect(finalVerdict(review, facts).verdict).toBe("human");
   });
 
   it("can be made stricter by the reviewer", () => {
@@ -101,7 +121,7 @@ describe("renderReport", () => {
       dimensions: { ...makeReview().dimensions, tests: { status: "concern", note: "thin" } },
     });
     const facts = makeFacts({ coverage: { ...makeFacts().coverage, ratio: 0.2 } });
-    expect(renderReport(review, facts).data.failing).toEqual(["tests", "coverage"]);
+    expect(renderReport(review, facts).data.flagged).toEqual(["tests", "coverage"]);
   });
 
   it("keeps minor findings out of the headline section", () => {
@@ -117,6 +137,49 @@ describe("renderReport", () => {
     expect(headline).toContain("Races on unmount");
     expect(headline).not.toContain("Rename a variable");
     expect(details).toContain("Rename a variable");
+  });
+});
+
+describe("coverageStatus", () => {
+  const coverage = (ratio: number | null, notLoaded: string[] = []) => ({
+    ...makeFacts().coverage,
+    ratio,
+    notLoaded,
+  });
+
+  it("passes at 80% and fails below 50%", () => {
+    expect(coverageStatus(coverage(0.8))).toBe("pass");
+    expect(coverageStatus(coverage(0.5))).toBe("concern");
+    expect(coverageStatus(coverage(0.49))).toBe("fail");
+  });
+
+  it("flags changed files no test loads, which the ratio can't see", () => {
+    expect(coverageStatus(coverage(1, ["src/new.ts"]))).toBe("concern");
+    expect(coverageStatus(coverage(null, ["src/new.ts"]))).toBe("fail");
+  });
+
+  it("has nothing to say when no executable line changed", () => {
+    expect(coverageStatus(coverage(null))).toBe("n/a");
+  });
+});
+
+describe("inline", () => {
+  it("removes HTML comments, even ones rebuilt by removing another", () => {
+    expect(inline("a <!<!---- yarvis-verify-data x -->--> b")).not.toMatch(/<!--|-->/);
+  });
+
+  it("keeps text from breaking the table or pinging people", () => {
+    expect(inline("a | b\nc @someone")).toBe("a \\| b c @​someone");
+  });
+});
+
+describe("Review", () => {
+  it("only accepts screenshots that are absolute image paths", () => {
+    const withShot = (path: string) =>
+      Review.safeParse({ ...makeReview(), screenshots: [{ path, caption: "x" }] }).success;
+    expect(withShot("/tmp/verify/7/after.png")).toBe(true);
+    expect(withShot("/Users/me/.ssh/id_ed25519")).toBe(false);
+    expect(withShot("after.png")).toBe(false);
   });
 });
 

@@ -21,6 +21,18 @@ describe("classify", () => {
       "sidecar/src/agentTools/store.ts",
       "bun.lock",
       "sidecar/package.json",
+      "Cargo.toml",
+      ".claude/skills/verify-pr/SKILL.md",
+      ".claude/settings.json",
+      "CLAUDE.md",
+      "AGENTS.md",
+      "lefthook.yml",
+      "bunfig.toml",
+      "sidecar/bunfig.toml",
+      "vite.config.ts",
+      "sidecar/src/app.ts",
+      "extension/page.js",
+      "src-tauri/tauri.release.conf.json",
     ]) {
       expect(classify([file(path)]).tier).toBe("high");
     }
@@ -36,6 +48,24 @@ describe("classify", () => {
     expect(classify([file("src/App.tsx", 301)]).tier).toBe("standard");
     expect(classify([file("src/App.tsx", 500, 301)]).tier).toBe("high");
     expect(classify([file("src/App.tsx", 10), file("src/App.test.tsx", 2000)]).tier).toBe("low");
+  });
+
+  it("keeps the verifier's own tests high risk", () => {
+    expect(classify([file("scripts/verify/gate.test.ts")]).tier).toBe("high");
+  });
+
+  it("treats test preloads and helpers as code, not tests", () => {
+    expect(classify([file("sidecar/src/test/setup.ts")]).tier).toBe("standard");
+  });
+
+  it("classifies the old path of a renamed file", () => {
+    const moved = {
+      path: "src/lib/store.ts",
+      previousPath: "sidecar/src/agentTools/store.ts",
+      additions: 0,
+      deletions: 0,
+    };
+    expect(classify([moved]).tier).toBe("high");
   });
 
   it("groups many files under one reason", () => {
