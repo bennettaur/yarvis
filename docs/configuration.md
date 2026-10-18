@@ -54,13 +54,28 @@ AWS Bedrock uses the standard AWS credential chain (`~/.aws`, `AWS_PROFILE`,
 
 ### Token scopes
 
-- **GitHub.** A classic PAT needs `repo` and `read:org`. A fine-grained PAT needs
+- **GitHub.** The simplest option is **Sign in with GitHub** above the GitHub
+  token field. Yarvis shows a short code and opens github.com/login/device.
+  Enter the code and approve the app, and the token is saved for you. It acts
+  as you, with the `repo` and `read:org` scopes, and doesn't expire. An
+  organization that restricts OAuth app access has to approve Yarvis before it
+  can see that org's repos. A build pointed at a different OAuth App reads its
+  client ID from `YARVIS_GITHUB_CLIENT_ID`. That app needs **Enable Device
+  Flow** ticked, and no client secret.
+
+  To paste a token instead: a classic PAT needs `repo` and `read:org`. A fine-grained PAT needs
   **Contents: Read** (the review reads file bodies to show context) plus pull
   request and issue access. Merging a stack needs write access to the repo.
   Add **Commit statuses: Read** to see legacy status checks. GitHub doesn't
   offer fine-grained tokens a Checks permission, so CI check runs can't be
   read with one: the PR still opens, and its **Checks** section says the
-  token can't read them.
+  token can't read them. A token used with an organization that enforces SAML
+  SSO also has to be authorized for that org on GitHub.
+
+  When GitHub refuses a request, the app says why: an expired or revoked
+  token, an org that needs SSO authorization, a missing scope or permission,
+  a private repo the token can't see, or a rate limit and when it resets.
+  After a rate limit, Yarvis stops calling GitHub until the time GitHub gave.
 - **Azure DevOps.** A PAT with **Code (read & write)** and **Pull Request
   Threads (read & write)**. Code (read) is enough to browse and comment, but
   voting and publishing a draft write to the PR itself.

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   applyStartWorkSideEffects,
   mergeIssues,
+  mergeRepoIssues,
   type StartWorkSideEffectClient,
 } from "./service.ts";
 import type { IssueSummary } from "./types.ts";
@@ -38,6 +39,31 @@ describe("mergeIssues", () => {
 
   it("returns empty when every repo failed", () => {
     expect(mergeIssues([{ status: "rejected", reason: new Error("x") }])).toEqual([]);
+  });
+});
+
+describe("mergeRepoIssues", () => {
+  const repos = [
+    { owner: "o", repo: "a" },
+    { owner: "o", repo: "b" },
+  ];
+
+  it("keeps the repos that answered when only some failed", () => {
+    const merged = mergeRepoIssues(repos, [
+      { status: "fulfilled", value: [issue("1", "2026-01-01")] },
+      { status: "rejected", reason: new Error("github /repos/o/b/issues -> 403") },
+    ]);
+    expect(merged.map((i) => i.externalId)).toEqual(["1"]);
+  });
+
+  it("throws the failure when every repo failed, rather than showing no issues", () => {
+    const sso = new Error("github /repos/o/a/issues -> 403: requires SAML SSO");
+    expect(() =>
+      mergeRepoIssues(repos, [
+        { status: "rejected", reason: sso },
+        { status: "rejected", reason: new Error("x") },
+      ]),
+    ).toThrow(sso);
   });
 });
 

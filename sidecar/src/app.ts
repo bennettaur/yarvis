@@ -13,6 +13,7 @@ import type { Config } from "./config.ts";
 import { createCustomProviderRoutes } from "./customProviders/routes.ts";
 import { pingDb } from "./db/client.ts";
 import { createEventRoutes } from "./events/routes.ts";
+import { createGithubAuthRoutes } from "./github/authRoutes.ts";
 import { createGithubRoutes } from "./github/routes.ts";
 import { createCalendarRoutes, createGoogleCallbackRoutes } from "./google/routes.ts";
 import { createHeadsDownRoutes } from "./headsDown/routes.ts";
@@ -154,6 +155,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/mcp-endpoint", createMcpEndpointInfoRoutes(config));
   app.route("/api/cc", createCcRoutes());
   app.route("/api/github", createGithubRoutes(config));
+  app.route("/api/github-auth", createGithubAuthRoutes());
   app.route("/api/issues", createIssueRoutes(config));
   app.route("/api/jira", createJiraRoutes(config));
   app.route("/api/azure", createAzureRoutes(config));

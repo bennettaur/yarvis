@@ -116,6 +116,24 @@ pub fn secret_from_root(root: &Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Stores the GitHub token the sidecar received from a device-flow sign-in.
+/// Called over the control channel, so it can write this one key and the token
+/// is checked rather than trusted.
+pub fn store_github_token(token: &str) -> Result<(), String> {
+    validate_github_token(token)?;
+    set_secret("github_token".to_string(), token.to_string())
+}
+
+/// GitHub tokens are at most 255 printable ASCII characters.
+fn validate_github_token(token: &str) -> Result<(), String> {
+    let ok = !token.is_empty() && token.len() <= 255 && token.chars().all(|c| c.is_ascii_graphic());
+    if ok {
+        Ok(())
+    } else {
+        Err("invalid github token".to_string())
+    }
+}
+
 #[tauri::command(async)]
 pub fn set_secret(key: String, value: String) -> Result<(), String> {
     if !is_known(&key) {
@@ -165,9 +183,18 @@ pub fn list_secret_status() -> Result<Vec<SecretStatus>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_root, read_root_from, write_root_to};
+    use super::{parse_root, read_root_from, validate_github_token, write_root_to};
     use crate::secret_store::{MemoryStore, Store};
     use serde_json::json;
+
+    #[test]
+    fn a_github_token_must_be_one_printable_word() {
+        assert!(validate_github_token("gho_abc123").is_ok());
+        assert!(validate_github_token("").is_err());
+        assert!(validate_github_token("gho_abc\n123").is_err());
+        assert!(validate_github_token("gho abc").is_err());
+        assert!(validate_github_token(&"a".repeat(256)).is_err());
+    }
 
     #[test]
     fn an_absent_or_unparseable_blob_reads_as_an_empty_object() {

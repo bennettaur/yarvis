@@ -209,7 +209,7 @@ Each integration is independent. Set up the ones you need, in any order.
 
 | Feature | What to do | Guide |
 | --- | --- | --- |
-| GitHub PRs and issues | Save a **GitHub token** in Settings → Credentials. See [token scopes](configuration.md#token-scopes). | [PR review](features/pr-review.md) |
+| GitHub PRs and issues | Click **Sign in with GitHub** in Settings → Credentials, or save a **GitHub token**. See [token scopes](configuration.md#token-scopes). | [PR review](features/pr-review.md) |
 | Workspaces | Install Claude Code, then add repos under **Settings → Repositories**. | [Workspaces](features/workspaces.md) |
 | Azure DevOps PRs and Azure Boards | Save an **Azure DevOps token** and set the organization URL under Settings → Credentials. Azure Boards also needs the **Work Items (read & write)** scope. | [PR review](features/pr-review.md), [Issues and tasks](features/issues-and-tasks.md) |
 | JIRA | Save a **JIRA API token** and set the base URL and account email. | [Issues and tasks](features/issues-and-tasks.md) |

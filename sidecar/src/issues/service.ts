@@ -54,6 +54,25 @@ export function mergeIssues(results: PromiseSettledResult<IssueSummary[]>[]): Is
   return issues.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
+/**
+ * Merges per-repo issue lists, logging each repo that failed. When every repo
+ * failed, the first failure is thrown instead: an empty list would read as "no
+ * issues" when the token can't see any of them.
+ */
+export function mergeRepoIssues(
+  repos: { owner: string; repo: string }[],
+  results: PromiseSettledResult<IssueSummary[]>[],
+): IssueSummary[] {
+  const failures = results.flatMap((r, i) =>
+    r.status === "rejected" ? [{ repo: repos[i], reason: r.reason as unknown }] : [],
+  );
+  for (const { repo, reason } of failures) {
+    console.warn(`[issues] skipped ${repo?.owner}/${repo?.repo}:`, String(reason));
+  }
+  if (failures.length > 0 && failures.length === results.length) throw failures[0]?.reason;
+  return mergeIssues(results);
+}
+
 export interface IssuePromptInput {
   displayId: string;
   title: string;
