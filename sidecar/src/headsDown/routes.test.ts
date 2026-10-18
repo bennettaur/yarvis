@@ -61,8 +61,13 @@ describe("/api/heads-down", () => {
     expect((await post("/start", { focus: "ship billing" })).status).toBe(200);
     expect(await get("")).toMatchObject({ run: { focus: "ship billing", status: "active" } });
 
+    await askUser(db, { kind: "question", question: "Which repo?" });
     await post("/stop");
     expect(await get("")).toMatchObject({ run: null });
+    // Nothing is left in the bell asking for an answer no pass will read.
+    expect(await get("/questions")).toEqual([]);
+    const items = await sql`SELECT status FROM attention_items`;
+    expect(items.map((r) => r.status)).toEqual(["resolved"]);
   });
 
   it("takes a message for the next pass, and refuses an empty one", async () => {

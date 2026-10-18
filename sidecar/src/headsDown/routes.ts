@@ -6,7 +6,7 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
-import { settleQuestionAttention } from "./attention.ts";
+import { dismissOpenQuestions, settleQuestionAttention } from "./attention.ts";
 import { getHeadsDownConfig, saveHeadsDownConfig } from "./config.ts";
 import { type HeadsDownStreamEvent, publish, subscribe } from "./hub.ts";
 import {
@@ -117,6 +117,7 @@ export function createHeadsDownRoutes(config: Config): Hono {
   router.post("/stop", async (c) => {
     const run = await stopRun(db());
     abortHeadsDownPass();
+    await dismissOpenQuestions(db());
     changed();
     return c.json({ stopped: run !== null });
   });

@@ -4,20 +4,24 @@ import Markdown from "../Markdown";
 import TurnActivity from "../TurnActivity";
 import type { LivePass } from "./useLivePass";
 
+/** The sleep reason the sidecar records for a pass the user stopped (`headsDown/pass.ts`). */
+const STOPPED_BY_USER = "stopped by you";
+
 function describeSleep(pass: HeadsDownPass): string | null {
+  if (pass.sleepReason === STOPPED_BY_USER) return "Stopped by you";
   if (pass.sleepMinutes === null) return null;
   return `then slept ${pass.sleepMinutes} min${pass.sleepReason ? ` (${pass.sleepReason})` : ""}`;
 }
 
 /** One finished pass: a summary line, and its transcript one click away. */
 function PassRow({ pass }: { pass: HeadsDownPass }) {
-  const [open, setOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<PassMessage[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const toggle = async () => {
-    const next = !open;
-    setOpen(next);
+    const next = !isOpen;
+    setIsOpen(next);
     if (next && messages === null) {
       try {
         setMessages((await getPass(pass.id)).messages);
@@ -35,7 +39,7 @@ function PassRow({ pass }: { pass: HeadsDownPass }) {
       <button
         type="button"
         onClick={() => void toggle()}
-        aria-expanded={open}
+        aria-expanded={isOpen}
         className="flex w-full items-start justify-between gap-3 px-3 py-2 text-left"
       >
         <div className="min-w-0">
@@ -48,7 +52,7 @@ function PassRow({ pass }: { pass: HeadsDownPass }) {
         </div>
         <span className="shrink-0 text-xs text-zinc-500">{describeSleep(pass)}</span>
       </button>
-      {open && (
+      {isOpen && (
         <div className="border-t border-zinc-800 px-3 py-2">
           {error && <p className="text-xs text-red-400">{error}</p>}
           {messages === null && !error && <p className="text-xs text-zinc-500">Loading…</p>}
@@ -71,9 +75,12 @@ function PassRow({ pass }: { pass: HeadsDownPass }) {
 export default function PassList({
   passes,
   live,
+  loading,
 }: {
   passes: HeadsDownPass[];
   live: LivePass | null;
+  /** Nothing to show yet, so the empty state would be wrong. */
+  loading: boolean;
 }) {
   const finished = passes.filter((p) => p.finishedAt !== null);
   return (
@@ -86,7 +93,7 @@ export default function PassList({
         </div>
       )}
       {finished.length === 0 && !live ? (
-        <p className="text-sm text-zinc-500">No passes yet.</p>
+        <p className="text-sm text-zinc-500">{loading ? "Loading…" : "No passes yet."}</p>
       ) : (
         <ul className="space-y-2">
           {finished.map((pass) => (

@@ -19,7 +19,7 @@ export default function QuestionCard({
    */
   onAllowTool?: (toolId: string) => Promise<void>;
 }) {
-  const [text, setText] = useState("");
+  const [answerText, setAnswerText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -38,6 +38,7 @@ export default function QuestionCard({
 
   const dismiss = async () => {
     setBusy(true);
+    setError(null);
     try {
       await dismissQuestion(question.id);
       onAnswered();
@@ -48,8 +49,8 @@ export default function QuestionCard({
     }
   };
 
-  const approval = question.kind === "approval";
-  const mcpTool = approval && question.action?.startsWith("mcp:") ? question.action : null;
+  const isApproval = question.kind === "approval";
+  const mcpTool = isApproval && question.action?.startsWith("mcp:") ? question.action : null;
 
   const allowTool = async () => {
     if (!mcpTool || !onAllowTool) return;
@@ -69,20 +70,20 @@ export default function QuestionCard({
   return (
     <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
       <div className="mb-1 text-xs font-medium uppercase tracking-wide text-amber-300">
-        {approval ? "Approval" : "Question"}
+        {isApproval ? "Approval" : "Question"}
       </div>
       <p className="whitespace-pre-wrap text-sm text-zinc-100">{question.question}</p>
-      {question.situation && !approval && (
+      {question.situation && !isApproval && (
         <p className="mt-1 whitespace-pre-wrap text-xs text-zinc-400">{question.situation}</p>
       )}
-      {approval && question.toolArgs !== null && (
+      {isApproval && question.toolArgs !== null && (
         <pre className="mt-2 max-h-48 overflow-auto rounded-md bg-zinc-950 p-2 text-xs text-zinc-300">
           {JSON.stringify(question.toolArgs, null, 2)}
         </pre>
       )}
 
       <div className="mt-3 flex flex-wrap gap-2">
-        {approval ? (
+        {isApproval ? (
           <>
             <button
               type="button"
@@ -126,24 +127,24 @@ export default function QuestionCard({
         )}
       </div>
 
-      {!approval && (
+      {!isApproval && (
         <form
           className="mt-2 flex gap-2"
           onSubmit={(e) => {
             e.preventDefault();
-            if (text.trim()) void send({ answer: text.trim() });
+            if (answerText.trim()) void send({ answer: answerText.trim() });
           }}
         >
           <input
-            value={text}
-            onChange={(e) => setText(e.target.value)}
+            value={answerText}
+            onChange={(e) => setAnswerText(e.target.value)}
             placeholder="Or answer in your own words"
             aria-label="Answer"
             className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm"
           />
           <button
             type="submit"
-            disabled={busy || !text.trim()}
+            disabled={busy || !answerText.trim()}
             className="rounded-md bg-indigo-600 px-3 py-1 text-sm font-medium hover:bg-indigo-500 disabled:opacity-50"
           >
             Answer

@@ -2,7 +2,7 @@ import { publish as publishAttention } from "../attention/hub.ts";
 import { clearAttentionScope, createAttention } from "../attention/service.ts";
 import type { Db } from "../db/client.ts";
 import type { HeadsDownQuestion } from "../db/schema.ts";
-import { askQuestion, type QuestionInput } from "./service.ts";
+import { askQuestion, dismissQuestion, listQuestions, type QuestionInput } from "./service.ts";
 
 /**
  * A heads-down question also shows in the attention bell, since the user may
@@ -35,4 +35,15 @@ export async function askUser(db: Db, input: QuestionInput): Promise<HeadsDownQu
 export async function settleQuestionAttention(db: Db, questionId: string): Promise<void> {
   const rows = await clearAttentionScope(db, { sessionKey: sessionKeyFor(questionId) }, "resolved");
   for (const row of rows) publishAttention(row);
+}
+
+/**
+ * Dismisses every open question when heads-down mode stops. Their answers
+ * would reach no pass, and an approval only holds within its run, so leaving
+ * them in the bell would ask the user for nothing.
+ */
+export async function dismissOpenQuestions(db: Db): Promise<void> {
+  for (const question of await listQuestions(db, { limit: 500 })) {
+    if (await dismissQuestion(db, question.id)) await settleQuestionAttention(db, question.id);
+  }
 }

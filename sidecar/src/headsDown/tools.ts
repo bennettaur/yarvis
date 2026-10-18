@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { Db } from "../db/client.ts";
+import { dismissOpenQuestions } from "./attention.ts";
 import { publish } from "./hub.ts";
 import { getActiveRun, startRun, stopRun } from "./service.ts";
 import { abortHeadsDownPass, wakeHeadsDown } from "./wake.ts";
@@ -39,6 +40,7 @@ export function buildHeadsDownTools(db: Db) {
       execute: async () => {
         const run = await stopRun(db);
         abortHeadsDownPass();
+        await dismissOpenQuestions(db);
         publish({ type: "changed" });
         return run ? { stopped: true } : { stopped: false, message: "heads-down mode wasn't on" };
       },

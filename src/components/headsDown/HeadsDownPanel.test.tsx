@@ -86,6 +86,23 @@ const CONFIG = {
 /** Writes the page made, in order, with their bodies. */
 const writes: { method: string; path: string; body: unknown }[] = [];
 
+/** What the live stream sends when the page connects; empty means no stream. */
+let streamFrames: unknown[] = [];
+
+/** An SSE response that sends the frames, then stays open until the page aborts it. */
+function eventStream(frames: unknown[], signal?: AbortSignal | null): Response {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const encoder = new TextEncoder();
+      for (const frame of frames) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(frame)}\n\n`));
+      }
+      signal?.addEventListener("abort", () => controller.close(), { once: true });
+    },
+  });
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
+
 // Only the transport is stubbed; see ScheduledJobsPanel.test.tsx for why the
 // rest of the module is kept.
 const actualApi = await import("../../lib/api");
@@ -118,6 +135,9 @@ mock.module("../../lib/api", () => ({
     if (path === "/api/heads-down/passes") return json([PASS]);
     if (path === "/api/heads-down/messages") return json([]);
     if (path === "/api/heads-down/config") return json(CONFIG);
+    if (path === "/api/heads-down/stream" && streamFrames.length > 0) {
+      return eventStream(streamFrames, init?.signal);
+    }
     // The live stream, and anything a later file asks for: fail rather than
     // hand a caller the wrong shape. The page reconnects later, which the test
     // ends before.
@@ -129,10 +149,23 @@ const HeadsDownPanel = (await import("./HeadsDownPanel")).default;
 const { applyPassEvent } = await import("./useLivePass");
 const { linkLabel } = await import("./StreamList");
 
+/** Mounted pages, unmounted after each test even when it fails part-way. */
+const mounted: (() => void)[] = [];
+
+async function mount() {
+  const view = await mountForInteraction(createElement(HeadsDownPanel));
+  mounted.push(view.unmount);
+  return view.host;
+}
+
 afterEach(() => {
+  for (const unmount of mounted.splice(0)) unmount();
   clearResourceCache();
   writes.length = 0;
+  streamFrames = [];
 });
+
+const settle = (ms = 100) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function buttonNamed(host: HTMLElement, label: string): HTMLButtonElement {
   const button = [...host.querySelectorAll("button")].find((b) => b.textContent === label);
@@ -154,10 +187,9 @@ describe("HeadsDownPanel", () => {
   });
 
   it("sends the option the user picked", async () => {
-    const { host, unmount } = await mountForInteraction(createElement(HeadsDownPanel));
+    const host = await mount();
     buttonNamed(host, "#billing-reviews").click();
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    unmount();
+    await settle(50);
 
     expect(writes).toContainEqual({
       method: "POST",
@@ -167,11 +199,10 @@ describe("HeadsDownPanel", () => {
   });
 
   it("can allow an MCP tool for heads-down mode from its approval, and approves the call", async () => {
-    const { host, unmount } = await mountForInteraction(createElement(HeadsDownPanel));
+    const host = await mount();
     expect(host.textContent).toContain('"channel": "#billing-reviews"');
     buttonNamed(host, "Always allow this tool in heads-down mode").click();
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    unmount();
+    await settle();
 
     expect(writes.map((w) => `${w.method} ${w.path}`)).toEqual([
       "PUT /api/heads-down/config",
@@ -179,6 +210,49 @@ describe("HeadsDownPanel", () => {
     ]);
     expect(writes[0]?.body).toMatchObject({ unattendedMcpTools: ["mcp:slack:post_message"] });
     expect(writes[1]?.body).toEqual({ choice: "approve" });
+  });
+});
+
+describe("HeadsDownPanel live", () => {
+  it("shows the pass in flight as it works", async () => {
+    streamFrames = [
+      { type: "pass-started", passId: "p2" },
+      {
+        type: "pass-event",
+        passId: "p2",
+        event: { type: "tool_call", id: "c1", name: "list_work_streams" },
+      },
+    ];
+    const host = await mount();
+
+    expect(host.textContent).toContain("Working now");
+    expect(host.textContent).toContain("list_work_streams");
+  });
+});
+
+describe("HeadsDownSettings", () => {
+  it("takes several MCP tools, one per line, and saves them as a list", async () => {
+    const host = await mount();
+    buttonNamed(host, "Show settings").click();
+    await settle(50);
+
+    const textarea = host.querySelector("textarea[placeholder^='mcp:']") as HTMLTextAreaElement;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    setValue?.call(textarea, "mcp:slack:read_channel\n");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle(20);
+    // The new, still empty line is kept while typing.
+    expect(textarea.value).toBe("mcp:slack:read_channel\n");
+
+    setValue?.call(textarea, "mcp:slack:read_channel\nmcp:slack:post_message\n");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle(20);
+    buttonNamed(host, "Save").click();
+    await settle();
+
+    expect(writes.at(-1)?.body).toMatchObject({
+      unattendedMcpTools: ["mcp:slack:read_channel", "mcp:slack:post_message"],
+    });
   });
 });
 

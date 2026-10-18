@@ -63,6 +63,9 @@ export function useLivePass(onChanged: () => void): LivePass | null {
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const connect = async () => {
+      // A pass that finished while the stream was down sent its pass-finished
+      // to nobody, so what was live is re-read from the lists instead.
+      setLive(null);
       try {
         onChangedRef.current();
         for await (const event of streamHeadsDown(controller.signal)) {

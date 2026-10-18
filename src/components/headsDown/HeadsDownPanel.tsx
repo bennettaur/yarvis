@@ -17,14 +17,15 @@ import {
   stopHeadsDown,
   type WorkStream,
 } from "../../lib/headsDown";
-import { useCachedResource } from "../../lib/resourceCache";
+import { combineResources, useCachedResource } from "../../lib/resourceCache";
+import RefreshingIndicator from "../RefreshingIndicator";
 import HeadsDownSettings from "./HeadsDownSettings";
 import PassList from "./PassList";
 import QuestionCard from "./QuestionCard";
 import StreamList from "./StreamList";
 import { useLivePass } from "./useLivePass";
 
-const KEYS = {
+const CACHE_KEYS = {
   state: "heads-down:state",
   questions: "heads-down:questions",
   streams: "heads-down:streams",
@@ -47,14 +48,24 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-/** Start and stop heads-down mode, and see when it looks next. */
-function RunHeader({ state, onChanged }: { state: HeadsDownState | null; onChanged: () => void }) {
+/** Start and stop heads-down mode, and see when it runs next. */
+function RunHeader({
+  state,
+  working,
+  onChanged,
+}: {
+  /** Null while the first load is in flight. */
+  state: HeadsDownState | null;
+  /** A pass is running now. */
+  working: boolean;
+  onChanged: () => void;
+}) {
   const [focus, setFocus] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const run = state?.run ?? null;
 
-  const act = async (action: () => Promise<unknown>) => {
+  const runAction = async (action: () => Promise<unknown>) => {
     setBusy(true);
     setError(null);
     try {
@@ -68,6 +79,14 @@ function RunHeader({ state, onChanged }: { state: HeadsDownState | null; onChang
     }
   };
 
+  if (!state) {
+    return (
+      <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4 text-sm text-zinc-500">
+        Loading…
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
       {run ? (
@@ -79,15 +98,17 @@ function RunHeader({ state, onChanged }: { state: HeadsDownState | null; onChang
             </div>
             {run.focus && <p className="mt-1 text-sm text-zinc-300">{run.focus}</p>}
             <p className="mt-1 text-xs text-zinc-500">
-              {state?.nextPassAt
-                ? `Next look ${new Date(state.nextPassAt).toLocaleTimeString()}`
-                : "Starting its first pass"}
+              {working
+                ? "Working now"
+                : state.nextPassAt
+                  ? `Next pass at ${new Date(state.nextPassAt).toLocaleTimeString()}`
+                  : "Starting its first pass"}
             </p>
           </div>
           <button
             type="button"
             disabled={busy}
-            onClick={() => void act(stopHeadsDown)}
+            onClick={() => void runAction(stopHeadsDown)}
             className="shrink-0 rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
           >
             Stop
@@ -98,7 +119,7 @@ function RunHeader({ state, onChanged }: { state: HeadsDownState | null; onChang
           className="space-y-2"
           onSubmit={(e) => {
             e.preventDefault();
-            void act(() => startHeadsDown(focus.trim()));
+            void runAction(() => startHeadsDown(focus.trim()));
           }}
         >
           <p className="text-sm text-zinc-300">
@@ -192,46 +213,63 @@ function MessageBox({ messages, onSent }: { messages: HeadsDownMessage[]; onSent
  * chatting with the assistant elsewhere while this runs.
  */
 export default function HeadsDownPanel() {
-  const state = useCachedResource<HeadsDownState>(KEYS.state, getHeadsDownState);
-  const questions = useCachedResource<HeadsDownQuestion[]>(KEYS.questions, listOpenQuestions);
-  const streams = useCachedResource<WorkStream[]>(KEYS.streams, listWorkStreams);
-  const passes = useCachedResource<HeadsDownPass[]>(KEYS.passes, listPasses);
-  const messages = useCachedResource<HeadsDownMessage[]>(KEYS.messages, listHeadsDownMessages);
-  const config = useCachedResource<HeadsDownConfig>(KEYS.config, getHeadsDownConfig);
+  const state = useCachedResource<HeadsDownState>(CACHE_KEYS.state, getHeadsDownState);
+  const questions = useCachedResource<HeadsDownQuestion[]>(CACHE_KEYS.questions, listOpenQuestions);
+  const streams = useCachedResource<WorkStream[]>(CACHE_KEYS.streams, listWorkStreams);
+  const passes = useCachedResource<HeadsDownPass[]>(CACHE_KEYS.passes, listPasses);
+  const messages = useCachedResource<HeadsDownMessage[]>(
+    CACHE_KEYS.messages,
+    listHeadsDownMessages,
+  );
+  const config = useCachedResource<HeadsDownConfig>(CACHE_KEYS.config, getHeadsDownConfig);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
+  const refreshState = state.refresh;
+  const refreshQuestions = questions.refresh;
+  const refreshStreams = streams.refresh;
+  const refreshPasses = passes.refresh;
+  const refreshMessages = messages.refresh;
+  const refreshConfig = config.refresh;
   const refreshAll = useCallback(() => {
-    void state.refresh();
-    void questions.refresh();
-    void streams.refresh();
-    void passes.refresh();
-    void messages.refresh();
-  }, [state, questions, streams, passes, messages]);
+    void refreshState();
+    void refreshQuestions();
+    void refreshStreams();
+    void refreshPasses();
+    void refreshMessages();
+  }, [refreshState, refreshQuestions, refreshStreams, refreshPasses, refreshMessages]);
   const live = useLivePass(refreshAll);
+  const combined = combineResources([state, questions, streams, passes, messages]);
 
-  const open = questions.data ?? NO_QUESTIONS;
+  const openQuestions = questions.data ?? NO_QUESTIONS;
 
+  // Read fresh rather than from the cache, so an edit saved a moment ago isn't overwritten.
   const allowTool = useCallback(
     async (toolId: string) => {
-      const current = config.data ?? (await getHeadsDownConfig());
+      const current = await getHeadsDownConfig();
       if (current.unattendedMcpTools.includes(toolId)) return;
       await saveHeadsDownConfig({
         ...current,
         unattendedMcpTools: [...current.unattendedMcpTools, toolId],
       });
-      await config.refresh();
+      await refreshConfig();
     },
-    [config],
+    [refreshConfig],
   );
 
   return (
     <div className="mx-auto grid max-w-6xl gap-6 lg:grid-cols-[1fr_20rem]">
       <div className="min-w-0 space-y-6">
-        <RunHeader state={state.data} onChanged={refreshAll} />
+        <RunHeader state={state.data} working={live !== null} onChanged={refreshAll} />
+        {(combined.error || combined.refreshing) && (
+          <div className="flex items-center gap-3">
+            {combined.error && <p className="text-xs text-red-400">{combined.error}</p>}
+            <RefreshingIndicator active={combined.refreshing} />
+          </div>
+        )}
 
-        {open.length > 0 && (
-          <Section title={`Needs you (${open.length})`}>
-            {open.map((q) => (
+        {openQuestions.length > 0 && (
+          <Section title={`Needs you (${openQuestions.length})`}>
+            {openQuestions.map((q) => (
               <QuestionCard
                 key={q.id}
                 question={q}
@@ -243,11 +281,15 @@ export default function HeadsDownPanel() {
         )}
 
         <Section title="Work streams">
-          <StreamList streams={streams.data ?? NO_STREAMS} onChanged={refreshAll} />
+          <StreamList
+            streams={streams.data ?? NO_STREAMS}
+            loading={streams.loading}
+            onChanged={refreshAll}
+          />
         </Section>
 
         <Section title="What it has been doing">
-          <PassList passes={passes.data ?? NO_PASSES} live={live} />
+          <PassList passes={passes.data ?? NO_PASSES} live={live} loading={passes.loading} />
         </Section>
       </div>
 
@@ -266,7 +308,7 @@ export default function HeadsDownPanel() {
             {settingsOpen ? "Hide" : "Show"} settings
           </button>
           {settingsOpen && config.data && (
-            <HeadsDownSettings config={config.data} onSaved={() => void config.refresh()} />
+            <HeadsDownSettings config={config.data} onSaved={() => void refreshConfig()} />
           )}
         </Section>
       </aside>
