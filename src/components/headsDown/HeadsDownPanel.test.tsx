@@ -88,18 +88,13 @@ const writes: { method: string; path: string; body: unknown }[] = [];
 /** What the live stream sends when the page connects; empty means no stream. */
 let streamFrames: unknown[] = [];
 
-/** An SSE response that sends the frames, then stays open until the page aborts it. */
-function eventStream(frames: unknown[], signal?: AbortSignal | null): Response {
-  const body = new ReadableStream<Uint8Array>({
-    start(controller) {
-      const encoder = new TextEncoder();
-      for (const frame of frames) {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(frame)}\n\n`));
-      }
-      signal?.addEventListener("abort", () => controller.close(), { once: true });
-    },
+/** Yields the frames, then holds the stream open until the page aborts it. */
+async function* frameStream(signal?: AbortSignal | null): AsyncGenerator<string> {
+  for (const frame of streamFrames) yield JSON.stringify(frame);
+  await new Promise<void>((resolve) => {
+    if (!signal || signal.aborted) return resolve();
+    signal.addEventListener("abort", () => resolve(), { once: true });
   });
-  return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }
 
 // Only the transport is stubbed; see ScheduledJobsPanel.test.tsx for why the
@@ -108,6 +103,15 @@ const actualApi = await import("../../lib/api");
 mock.module("../../lib/api", () => ({
   ...actualApi,
   sidecarInfo: async () => ({ port: 0, token: "test-token" }),
+  // Stubbed directly: another file's mock of this module may be the one the
+  // real streamSSE ends up calling, depending on test order.
+  streamSSE: (path: string, init?: RequestInit) => {
+    if (path === "/api/heads-down/stream" && streamFrames.length > 0) {
+      return frameStream(init?.signal);
+    }
+    // No live updates: the stream ends at once, like the other files' stubs.
+    return (async function* () {})();
+  },
   sidecarFetch: async (path: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
     const json = (body: unknown, status = 200) =>
@@ -138,9 +142,6 @@ mock.module("../../lib/api", () => ({
     if (path === "/api/heads-down/allowed-tools") {
       return json([{ id: "mcp:slack:read_channel", name: "read_channel" }]);
     }
-    if (path === "/api/heads-down/stream" && streamFrames.length > 0) {
-      return eventStream(streamFrames, init?.signal);
-    }
     // The live stream, and anything a later file asks for: fail rather than
     // hand a caller the wrong shape. The page reconnects later, which the test
     // ends before.
@@ -169,6 +170,12 @@ afterEach(() => {
 });
 
 const settle = (ms = 100) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Waits for the page to show `text`, since the stream arrives on its own schedule. */
+async function waitForText(host: HTMLElement, text: string, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!host.textContent?.includes(text) && Date.now() < deadline) await settle(20);
+}
 
 function buttonNamed(host: HTMLElement, label: string): HTMLButtonElement {
   const button = [...host.querySelectorAll("button")].find((b) => b.textContent === label);
@@ -229,6 +236,7 @@ describe("HeadsDownPanel live", () => {
       },
     ];
     const host = await mount();
+    await waitForText(host, "list_work_streams");
 
     expect(host.textContent).toContain("Working now");
     expect(host.textContent).toContain("list_work_streams");
