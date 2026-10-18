@@ -59,7 +59,7 @@ describe("finalVerdict", () => {
   });
 
   it("never lets the reviewer's verdict be looser than the risk tier", () => {
-    const facts = makeFacts({ tier: { tier: "high", reasons: ["high: dependencies (bun.lock)"] } });
+    const facts = makeFacts({ tier: { tier: "high", reasons: ["dependencies (bun.lock)"] } });
     expect(finalVerdict(makeReview(), facts)).toEqual({
       verdict: "human",
       why: ["high-risk change"],

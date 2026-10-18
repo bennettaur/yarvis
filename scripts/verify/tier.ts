@@ -66,56 +66,55 @@ const STANDARD_RISK_PATHS: PathRule[] = [
 
 /**
  * Past these sizes a reviewer, human or agent, starts missing things. Counted
- * on code only: lockfiles and tests inflate the number without adding risk.
+ * on code only: lockfiles, tests and docs inflate the number without adding risk.
  */
 const STANDARD_SIZE_LINES = 300;
 const HIGH_SIZE_LINES = 800;
-
-const TIER_ORDER: Tier[] = ["low", "standard", "high"];
-
-export function stricterTier(a: Tier, b: Tier): Tier {
-  return TIER_ORDER.indexOf(a) >= TIER_ORDER.indexOf(b) ? a : b;
-}
 
 export function isTestFile(path: string): boolean {
   return /\.test\.tsx?$/.test(path) || /(^|\/)tests?\//.test(path);
 }
 
-function isLockfile(path: string): boolean {
-  return /(^|\/)(bun\.lock|Cargo\.lock|uv\.lock)$/.test(path);
+function isCode(path: string): boolean {
+  return !isTestFile(path) && !/(^|\/)(bun\.lock|Cargo\.lock|uv\.lock)$|\.md$/.test(path);
 }
 
 export function classify(files: ChangedFile[]): TierResult {
-  let tier: Tier = "low";
-  const reasons = new Set<string>();
-
-  const bump = (to: Tier, reason: string) => {
-    tier = stricterTier(tier, to);
-    reasons.add(`${to}: ${reason}`);
+  // The files behind each reason, per tier, so the report can name one file or
+  // count many instead of listing every one.
+  const byTier: Record<Tier, Map<string, string[]>> = {
+    low: new Map(),
+    standard: new Map(),
+    high: new Map(),
+  };
+  const note = (tier: Tier, reason: string, path?: string) => {
+    const paths = byTier[tier].get(reason) ?? [];
+    if (path) paths.push(path);
+    byTier[tier].set(reason, paths);
   };
 
   for (const file of files) {
     const high = HIGH_RISK_PATHS.find((rule) => rule.pattern.test(file.path));
     if (high) {
-      bump("high", `${high.reason} (${file.path})`);
+      note("high", high.reason, file.path);
       continue;
     }
     const standard = STANDARD_RISK_PATHS.find((rule) => rule.pattern.test(file.path));
-    if (standard && !isTestFile(file.path)) {
-      bump("standard", standard.reason);
-    }
+    if (standard && !isTestFile(file.path)) note("standard", standard.reason, file.path);
   }
 
   const codeLines = files
-    .filter((file) => !isTestFile(file.path) && !isLockfile(file.path))
+    .filter((file) => isCode(file.path))
     .reduce((sum, file) => sum + file.additions + file.deletions, 0);
-  if (codeLines > HIGH_SIZE_LINES) {
-    bump("high", `${codeLines} changed lines of code`);
-  } else if (codeLines > STANDARD_SIZE_LINES) {
-    bump("standard", `${codeLines} changed lines of code`);
-  }
+  if (codeLines > HIGH_SIZE_LINES) note("high", `${codeLines} changed lines of code`);
+  else if (codeLines > STANDARD_SIZE_LINES) note("standard", `${codeLines} changed lines of code`);
 
-  // Keep only the reasons for the tier that won, so the report says why it is
-  // high, not every standard-tier file that also changed.
-  return { tier, reasons: [...reasons].filter((reason) => reason.startsWith(`${tier}:`)) };
+  const tier: Tier = byTier.high.size > 0 ? "high" : byTier.standard.size > 0 ? "standard" : "low";
+  // Only the winning tier's reasons: the report says why it is high, not every
+  // standard-tier file that also changed.
+  const reasons = [...byTier[tier]].map(([reason, paths]) => {
+    if (paths.length === 0) return reason;
+    return paths.length === 1 ? `${reason} (${paths[0]})` : `${reason} (${paths.length} files)`;
+  });
+  return { tier, reasons };
 }

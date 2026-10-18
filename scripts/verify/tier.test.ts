@@ -38,9 +38,14 @@ describe("classify", () => {
     expect(classify([file("src/App.tsx", 10), file("src/App.test.tsx", 2000)]).tier).toBe("low");
   });
 
+  it("groups many files under one reason", () => {
+    const result = classify([file("scripts/verify/a.ts"), file("scripts/verify/b.ts")]);
+    expect(result.reasons).toEqual(["the verification layer itself (2 files)"]);
+  });
+
   it("gives only the reasons for the tier that won", () => {
     const result = classify([file("sidecar/src/memory/recall.ts"), file("bun.lock")]);
     expect(result.tier).toBe("high");
-    expect(result.reasons).toEqual(["high: dependencies (bun.lock)"]);
+    expect(result.reasons).toEqual(["dependencies (bun.lock)"]);
   });
 });
