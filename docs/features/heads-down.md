@@ -108,10 +108,13 @@ Under **Pace and working hours** on the page:
   a message. Pick **Any time is fine to tag people** to drop the limit. These
   are kept per machine, so a work laptop can keep office hours and another can
   tag people at any time.
-- The MCP tools it may use without asking.
+- The MCP tools it may use without asking. You add one from its approval
+  card and can remove it here. A tool whose description or schema changes has
+  to be allowed again, like auto-approval in the Tool manager.
 
-These are stored in `~/.yarvis/settings.json` under `headsDown`. See
-[Configuration](../configuration.md).
+The pace and working hours are stored in `~/.yarvis/settings.json` under
+`headsDown` (see [Configuration](../configuration.md)). Which MCP tools it may
+use is kept in the database with the tool's other consent, not in that file.
 
 ## Good to know
 

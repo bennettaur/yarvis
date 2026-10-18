@@ -68,8 +68,6 @@ export interface HeadsDownConfig {
   idleSleepMinutes: number;
   workingHours: WorkingHours | null;
   userAwayAfterMinutes: number;
-  /** MCP tools a pass may call without asking, by registry id (`mcp:<server>:<tool>`). */
-  unattendedMcpTools: string[];
   provider: string | null;
   model: string | null;
 }
@@ -171,6 +169,22 @@ export const getHeadsDownConfig = () => request<HeadsDownConfig>("/api/heads-dow
 
 export const saveHeadsDownConfig = (config: HeadsDownConfig) =>
   request<HeadsDownConfig>("/api/heads-down/config", "PUT", config);
+
+/** An MCP tool heads-down mode may call without asking. */
+export interface AllowedTool {
+  /** Registry id, `mcp:<server>:<tool>`. */
+  id: string;
+  name: string;
+}
+
+export const listAllowedTools = () => request<AllowedTool[]>("/api/heads-down/allowed-tools");
+
+export const setToolAllowed = (id: string, allowed: boolean) =>
+  request<{ id: string; allowed: boolean }>(
+    `/api/heads-down/allowed-tools/${encodeURIComponent(id)}`,
+    "PUT",
+    { allowed },
+  );
 
 export const listPasses = () => request<HeadsDownPass[]>("/api/heads-down/passes");
 

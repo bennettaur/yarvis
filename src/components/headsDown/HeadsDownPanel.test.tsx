@@ -78,7 +78,6 @@ const CONFIG = {
   idleSleepMinutes: 60,
   workingHours: { days: [1, 2, 3, 4, 5], start: "09:00", end: "17:00" },
   userAwayAfterMinutes: 120,
-  unattendedMcpTools: [] as string[],
   provider: null,
   model: null,
 };
@@ -120,6 +119,7 @@ mock.module("../../lib/api", () => ({
       const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
       writes.push({ method, path, body });
       if (path === "/api/heads-down/config") return json(body);
+      if (path.startsWith("/api/heads-down/allowed-tools/")) return json({ ok: true });
       return json({ ...QUESTION, status: "answered" });
     }
     if (path === "/api/heads-down") {
@@ -135,6 +135,9 @@ mock.module("../../lib/api", () => ({
     if (path === "/api/heads-down/passes") return json([PASS]);
     if (path === "/api/heads-down/messages") return json([]);
     if (path === "/api/heads-down/config") return json(CONFIG);
+    if (path === "/api/heads-down/allowed-tools") {
+      return json([{ id: "mcp:slack:read_channel", name: "read_channel" }]);
+    }
     if (path === "/api/heads-down/stream" && streamFrames.length > 0) {
       return eventStream(streamFrames, init?.signal);
     }
@@ -204,12 +207,14 @@ describe("HeadsDownPanel", () => {
     buttonNamed(host, "Always allow this tool in heads-down mode").click();
     await settle();
 
-    expect(writes.map((w) => `${w.method} ${w.path}`)).toEqual([
-      "PUT /api/heads-down/config",
-      "POST /api/heads-down/questions/q2/answer",
+    expect(writes).toEqual([
+      {
+        method: "PUT",
+        path: "/api/heads-down/allowed-tools/mcp%3Aslack%3Apost_message",
+        body: { allowed: true },
+      },
+      { method: "POST", path: "/api/heads-down/questions/q2/answer", body: { choice: "approve" } },
     ]);
-    expect(writes[0]?.body).toMatchObject({ unattendedMcpTools: ["mcp:slack:post_message"] });
-    expect(writes[1]?.body).toEqual({ choice: "approve" });
   });
 });
 
@@ -231,27 +236,18 @@ describe("HeadsDownPanel live", () => {
 });
 
 describe("HeadsDownSettings", () => {
-  it("takes several MCP tools, one per line, and saves them as a list", async () => {
+  it("lists the MCP tools it may use without asking, and removes one", async () => {
     const host = await mount();
     buttonNamed(host, "Show settings").click();
     await settle(50);
+    expect(host.textContent).toContain("read_channel");
 
-    const textarea = host.querySelector("textarea[placeholder^='mcp:']") as HTMLTextAreaElement;
-    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-    setValue?.call(textarea, "mcp:slack:read_channel\n");
-    textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    await settle(20);
-    // The new, still empty line is kept while typing.
-    expect(textarea.value).toBe("mcp:slack:read_channel\n");
-
-    setValue?.call(textarea, "mcp:slack:read_channel\nmcp:slack:post_message\n");
-    textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    await settle(20);
-    buttonNamed(host, "Save").click();
+    buttonNamed(host, "Remove").click();
     await settle();
-
-    expect(writes.at(-1)?.body).toMatchObject({
-      unattendedMcpTools: ["mcp:slack:read_channel", "mcp:slack:post_message"],
+    expect(writes).toContainEqual({
+      method: "PUT",
+      path: "/api/heads-down/allowed-tools/mcp%3Aslack%3Aread_channel",
+      body: { allowed: false },
     });
   });
 });

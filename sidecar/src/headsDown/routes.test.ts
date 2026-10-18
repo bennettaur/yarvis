@@ -123,6 +123,26 @@ describe("/api/heads-down", () => {
     ).toBe(400);
   });
 
+  it("allows an MCP tool for heads-down mode, and refuses a tool that isn't one", async () => {
+    await sql`TRUNCATE agent_tools`;
+    await sql`INSERT INTO agent_tools (id, source, name, content_hash)
+              VALUES ('mcp:slack:post_message', 'mcp', 'post_message', 'h'),
+                     ('builtin:archive_workspace', 'builtin', 'archive_workspace', 'h')`;
+    const put = (id: string, allowed: boolean) =>
+      app.request(`/api/heads-down/allowed-tools/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        headers: jsonAuth,
+        body: JSON.stringify({ allowed }),
+      });
+
+    expect((await put("mcp:slack:post_message", true)).status).toBe(200);
+    expect(await get("/allowed-tools")).toEqual([
+      { id: "mcp:slack:post_message", name: "post_message" },
+    ]);
+    // A built-in's go-ahead comes from the pass policy, never from this list.
+    expect((await put("builtin:archive_workspace", true)).status).toBe(404);
+  });
+
   it("answers 404 for a pass that doesn't exist", async () => {
     const res = await app.request("/api/heads-down/passes/00000000-0000-4000-8000-000000000000", {
       headers: auth,

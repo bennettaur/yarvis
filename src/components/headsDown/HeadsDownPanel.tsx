@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import {
+  type AllowedTool,
   getHeadsDownConfig,
   getHeadsDownState,
   type HeadsDownConfig,
@@ -7,12 +8,13 @@ import {
   type HeadsDownPass,
   type HeadsDownQuestion,
   type HeadsDownState,
+  listAllowedTools,
   listHeadsDownMessages,
   listOpenQuestions,
   listPasses,
   listWorkStreams,
-  saveHeadsDownConfig,
   sendHeadsDownMessage,
+  setToolAllowed,
   startHeadsDown,
   stopHeadsDown,
   type WorkStream,
@@ -32,12 +34,14 @@ const CACHE_KEYS = {
   passes: "heads-down:passes",
   messages: "heads-down:messages",
   config: "heads-down:config",
+  allowedTools: "heads-down:allowed-tools",
 };
 
 const NO_QUESTIONS: HeadsDownQuestion[] = [];
 const NO_STREAMS: WorkStream[] = [];
 const NO_PASSES: HeadsDownPass[] = [];
 const NO_MESSAGES: HeadsDownMessage[] = [];
+const NO_TOOLS: AllowedTool[] = [];
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -222,6 +226,7 @@ export default function HeadsDownPanel() {
     listHeadsDownMessages,
   );
   const config = useCachedResource<HeadsDownConfig>(CACHE_KEYS.config, getHeadsDownConfig);
+  const allowedTools = useCachedResource<AllowedTool[]>(CACHE_KEYS.allowedTools, listAllowedTools);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const refreshState = state.refresh;
@@ -242,18 +247,13 @@ export default function HeadsDownPanel() {
 
   const openQuestions = questions.data ?? NO_QUESTIONS;
 
-  // Read fresh rather than from the cache, so an edit saved a moment ago isn't overwritten.
+  const refreshAllowedTools = allowedTools.refresh;
   const allowTool = useCallback(
     async (toolId: string) => {
-      const current = await getHeadsDownConfig();
-      if (current.unattendedMcpTools.includes(toolId)) return;
-      await saveHeadsDownConfig({
-        ...current,
-        unattendedMcpTools: [...current.unattendedMcpTools, toolId],
-      });
-      await refreshConfig();
+      await setToolAllowed(toolId, true);
+      await refreshAllowedTools();
     },
-    [refreshConfig],
+    [refreshAllowedTools],
   );
 
   return (
@@ -308,7 +308,14 @@ export default function HeadsDownPanel() {
             {settingsOpen ? "Hide" : "Show"} settings
           </button>
           {settingsOpen && config.data && (
-            <HeadsDownSettings config={config.data} onSaved={() => void refreshConfig()} />
+            <HeadsDownSettings
+              config={config.data}
+              allowedTools={allowedTools.data ?? NO_TOOLS}
+              onSaved={() => {
+                void refreshConfig();
+                void refreshAllowedTools();
+              }}
+            />
           )}
         </Section>
       </aside>

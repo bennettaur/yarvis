@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
-import { type HeadsDownConfig, saveHeadsDownConfig, type WorkingHours } from "../../lib/headsDown";
+import {
+  type AllowedTool,
+  type HeadsDownConfig,
+  saveHeadsDownConfig,
+  setToolAllowed,
+  type WorkingHours,
+} from "../../lib/headsDown";
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const DEFAULT_HOURS: WorkingHours = { days: [1, 2, 3, 4, 5], start: "09:00", end: "17:00" };
@@ -31,28 +37,21 @@ function NumberField({
   );
 }
 
-/** One tool id per line, blank lines dropped. */
-function parseToolIds(text: string): string[] {
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-}
-
 /**
  * How often heads-down mode looks at the work, and when the user works. The
  * working hours are also when it may tag people, and they are kept per machine.
  */
 export default function HeadsDownSettings({
   config,
+  allowedTools,
   onSaved,
 }: {
   config: HeadsDownConfig;
+  /** MCP tools it may call without asking; added from an approval, removed here. */
+  allowedTools: AllowedTool[];
   onSaved: () => void;
 }) {
   const [draft, setDraft] = useState(config);
-  // Kept as typed and parsed on save, so a new empty line can be started.
-  const [toolsText, setToolsText] = useState(config.unattendedMcpTools.join("\n"));
   // The hours to go back to when "any time" is unticked.
   const [lastHours, setLastHours] = useState<WorkingHours>(config.workingHours ?? DEFAULT_HOURS);
   const [saving, setSaving] = useState(false);
@@ -60,7 +59,6 @@ export default function HeadsDownSettings({
 
   useEffect(() => {
     setDraft(config);
-    setToolsText(config.unattendedMcpTools.join("\n"));
     if (config.workingHours) setLastHours(config.workingHours);
   }, [config]);
 
@@ -81,11 +79,21 @@ export default function HeadsDownSettings({
     setHours({ ...hours, days });
   };
 
+  const removeTool = async (id: string) => {
+    setError(null);
+    try {
+      await setToolAllowed(id, false);
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const save = async () => {
     setSaving(true);
     setError(null);
     try {
-      await saveHeadsDownConfig({ ...draft, unattendedMcpTools: parseToolIds(toolsText) });
+      await saveHeadsDownConfig(draft);
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -171,20 +179,37 @@ export default function HeadsDownSettings({
         )}
       </div>
 
-      <label className="block space-y-1 border-t border-zinc-800 pt-3 text-sm text-zinc-300">
+      <div className="space-y-1 border-t border-zinc-800 pt-3 text-sm text-zinc-300">
         MCP tools it may use without asking
-        <textarea
-          rows={3}
-          value={toolsText}
-          onChange={(e) => setToolsText(e.target.value)}
-          placeholder="mcp:<server>:<tool>, one per line"
-          className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-xs"
-        />
-        <span className="block text-xs text-zinc-500">
+        {allowedTools.length === 0 ? (
+          <p className="text-xs text-zinc-500">
+            None. Allow one from its approval under Needs you.
+          </p>
+        ) : (
+          <ul className="space-y-1">
+            {allowedTools.map((tool) => (
+              <li key={tool.id} className="flex items-center justify-between gap-2 text-xs">
+                <span className="truncate font-mono text-zinc-300" title={tool.id}>
+                  {tool.name}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void removeTool(tool.id)}
+                  aria-label={`Stop allowing ${tool.name}`}
+                  className="text-zinc-500 hover:text-zinc-200"
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="text-xs text-zinc-500">
           Auto-approval from the Tool manager is for chats you're watching, so it doesn't apply
-          here. Every other MCP tool waits for your approval.
-        </span>
-      </label>
+          here, and a tool that changes has to be allowed again. Every other MCP tool waits for your
+          approval.
+        </p>
+      </div>
 
       <div className="flex items-center gap-3">
         <button
