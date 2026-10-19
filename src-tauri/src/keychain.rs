@@ -40,12 +40,16 @@
 //! copy of the blob, and the one that lands second drops the other's change.
 //! Writers come from the webview, the sidecar's control channel and startup
 //! migrations, and from every running app instance, since instances share the
-//! item. So every write goes through [`update_root`] or [`update_root_in`],
-//! which hold [`lock_for_write`] from the read to the write.
+//! item. So every write holds [`lock_for_write`] from the read to the write,
+//! usually through [`update_root`] or [`update_root_in`].
 
-use std::fs::{File, OpenOptions};
+use std::fs::{File, OpenOptions, TryLockError as FileTryLockError};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard, TryLockError};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -128,34 +132,81 @@ pub struct WriteGuard {
     _local: MutexGuard<'static, ()>,
 }
 
+/// How long a writer waits for the lock. The slowest holder is a switch between
+/// stores, which makes several 1Password calls of up to a minute each; past
+/// that, the holder is stuck (an unanswered system prompt) and waiting longer
+/// only hangs this window too.
+const LOCK_WAIT: Duration = Duration::from_secs(180);
+const LOCK_POLL: Duration = Duration::from_millis(50);
+
+const LOCK_BUSY: &str =
+    "another Yarvis window is still saving secrets; try again once it has finished";
+
 /// Waits for, and takes, the lock every write of the secrets blob holds. It
 /// covers both stores, so a write and a switch between stores can't interleave
 /// either. A writer that panicked left nothing half-written in the store, so a
 /// poisoned mutex is still safe to take.
 pub fn lock_for_write() -> Result<WriteGuard, String> {
-    let local = WRITE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    let file = settings::secrets_lock_path()
-        .map(|path| lock_file(&path))
-        .transpose()?;
+    let deadline = Instant::now() + LOCK_WAIT;
+    let local = loop {
+        match WRITE_LOCK.try_lock() {
+            Ok(guard) => break guard,
+            Err(TryLockError::Poisoned(poisoned)) => break poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => wait_until(deadline)?,
+        }
+    };
+    let file = match settings::secrets_lock_path() {
+        Some(path) => Some(lock_file(&path, deadline)?),
+        None => {
+            warn_unlocked_across_instances();
+            None
+        }
+    };
     Ok(WriteGuard {
         _file: file,
         _local: local,
     })
 }
 
-/// Blocks until this process holds an exclusive lock on `path`, which other
-/// instances take too. The OS releases it when the file closes, so an instance
-/// that crashes mid-write doesn't leave the lock held.
-fn lock_file(path: &Path) -> Result<File, String> {
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
+/// Waits for an exclusive lock on `path`, which other instances take too. The
+/// OS releases it when the file closes, so an instance that crashes mid-write
+/// doesn't leave the lock held.
+fn lock_file(path: &Path, deadline: Instant) -> Result<File, String> {
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let file = options
         .open(path)
         .map_err(|e| format!("could not open {}: {e}", path.display()))?;
-    file.lock()
-        .map_err(|e| format!("could not lock {}: {e}", path.display()))?;
-    Ok(file)
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(FileTryLockError::WouldBlock) => wait_until(deadline)?,
+            Err(FileTryLockError::Error(e)) => {
+                return Err(format!("could not lock {}: {e}", path.display()))
+            }
+        }
+    }
+}
+
+fn wait_until(deadline: Instant) -> Result<(), String> {
+    if Instant::now() >= deadline {
+        return Err(LOCK_BUSY.to_string());
+    }
+    std::thread::sleep(LOCK_POLL);
+    Ok(())
+}
+
+/// Settings failed to load, so there is no `~/.yarvis` for the lock file and
+/// writes are ordered only within this process. Said once, not per write.
+fn warn_unlocked_across_instances() {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !cfg!(test) && !WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "[secrets] settings path unknown; secret writes aren't locked against other instances"
+        );
+    }
 }
 
 /// Reads the blob from `store`, lets `edit` change it, and writes it back,
@@ -194,24 +245,31 @@ fn update_root_locked(
 }
 
 /// [`update_root`] for a module that keeps its credentials in one subtree of
-/// the blob under `key`. `edit` sees that subtree, empty when there is none.
+/// the blob under `key`. `edit` always sees an object: a missing subtree, or
+/// one that isn't an object, reads as `{}`.
 pub fn update_subtree(
     key: &str,
     edit: impl FnOnce(&mut Value) -> Result<bool, String>,
 ) -> Result<(), String> {
-    update_root(|root| {
-        let obj = root.as_object_mut().expect("checked by update_root");
-        let mut subtree = obj
-            .get(key)
-            .filter(|v| v.is_object())
-            .cloned()
-            .unwrap_or_else(|| Value::Object(Map::new()));
-        if !edit(&mut subtree)? {
-            return Ok(false);
-        }
-        obj.insert(key.to_string(), subtree);
-        Ok(true)
-    })
+    update_root(|root| edit_subtree(root, key, edit))
+}
+
+fn edit_subtree(
+    root: &mut Value,
+    key: &str,
+    edit: impl FnOnce(&mut Value) -> Result<bool, String>,
+) -> Result<bool, String> {
+    let obj = root.as_object_mut().expect("checked by update_root");
+    let mut subtree = obj
+        .get(key)
+        .filter(|v| v.is_object())
+        .cloned()
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    if !edit(&mut subtree)? {
+        return Ok(false);
+    }
+    obj.insert(key.to_string(), subtree);
+    Ok(true)
 }
 
 /// Extracts a non-empty top-level secret from an already-read blob.
@@ -269,9 +327,10 @@ pub fn list_secret_status() -> Result<Vec<SecretStatus>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{lock_file, parse_root, read_root_from, update_root_in};
+    use super::{edit_subtree, lock_file, parse_root, read_root_from, update_root_in, LOCK_BUSY};
     use crate::secret_store::{MemoryStore, Store};
     use serde_json::json;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn an_absent_or_unparseable_blob_reads_as_an_empty_object() {
@@ -378,16 +437,56 @@ mod tests {
         assert!(fake.writes().is_empty());
     }
 
-    /// Another instance holding the lock file keeps this one out until it closes.
+    /// Another instance holding the lock file keeps this one out until it
+    /// closes, and a writer gives up rather than waiting forever.
     #[test]
     fn the_lock_file_shuts_out_a_second_holder_until_released() {
         let path =
             std::env::temp_dir().join(format!("yarvis-secrets-lock-test-{}", std::process::id()));
-        let held = lock_file(&path).unwrap();
-        let other = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-        assert!(other.try_lock().is_err());
+        let soon = || Instant::now() + Duration::from_millis(100);
+        let held = lock_file(&path, soon()).unwrap();
+        assert_eq!(lock_file(&path, soon()).unwrap_err(), LOCK_BUSY);
         drop(held);
-        assert!(other.try_lock().is_ok());
+        assert!(lock_file(&path, soon()).is_ok());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_subtree_edit_keeps_sibling_keys() {
+        let store = Store::Memory(MemoryStore::holding(
+            r#"{"github_token":"t","mcpServers":{"a":{}}}"#,
+        ));
+        update_root_in(&store, |root| {
+            edit_subtree(root, "mcpServers", |servers| {
+                servers
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("b".into(), json!({}));
+                Ok(true)
+            })
+        })
+        .unwrap();
+        assert_eq!(
+            read_root_from(&store).unwrap(),
+            json!({ "github_token": "t", "mcpServers": { "a": {}, "b": {} } })
+        );
+    }
+
+    #[test]
+    fn a_subtree_that_is_not_an_object_reads_as_empty() {
+        let mut root = json!({ "mcpServers": "garbage" });
+        edit_subtree(&mut root, "mcpServers", |servers| {
+            assert_eq!(servers, &json!({}));
+            Ok(true)
+        })
+        .unwrap();
+        assert_eq!(root, json!({ "mcpServers": {} }));
+    }
+
+    #[test]
+    fn a_subtree_edit_that_changes_nothing_leaves_the_root_alone() {
+        let mut root = json!({ "github_token": "t" });
+        assert!(!edit_subtree(&mut root, "mcpServers", |_| Ok(false)).unwrap());
+        assert_eq!(root, json!({ "github_token": "t" }));
     }
 }

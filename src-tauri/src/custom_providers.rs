@@ -185,14 +185,15 @@ pub fn delete_custom_provider_secret(provider_id: String, slot: String) -> Resul
         let Some(provider) = root.get_mut(&provider_id).and_then(|v| v.as_object_mut()) else {
             return Ok(false);
         };
-        if slot == "apiKey" {
-            provider.remove("apiKey");
+        let removed = if slot == "apiKey" {
+            provider.remove("apiKey").is_some()
         } else {
             let name = slot.strip_prefix("header:").expect("validated above");
-            if let Some(headers) = provider.get_mut("headers").and_then(|v| v.as_object_mut()) {
-                headers.remove(name);
-            }
-        }
+            provider
+                .get_mut("headers")
+                .and_then(|v| v.as_object_mut())
+                .is_some_and(|headers| headers.remove(name).is_some())
+        };
         // Drop the provider entirely if it has no remaining secrets.
         let provider_empty = provider
             .get("apiKey")
@@ -204,10 +205,8 @@ pub fn delete_custom_provider_secret(provider_id: String, slot: String) -> Resul
                 .and_then(|v| v.as_object())
                 .map(|h| h.is_empty())
                 .unwrap_or(true);
-        if provider_empty {
-            root.remove(&provider_id);
-        }
-        Ok(true)
+        let pruned = provider_empty && root.remove(&provider_id).is_some();
+        Ok(removed || pruned)
     })
 }
 

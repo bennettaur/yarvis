@@ -52,17 +52,25 @@ const LEGACY_MIGRATED_KEY: &str = "embeddingsProviderLegacyMigrated";
 /// the next launch retries from scratch; deleting first would risk losing the
 /// only copy of the secret to a write that never lands.
 pub fn migrate_legacy_item() {
+    let already_migrated =
+        |root: &Value| root.get(LEGACY_MIGRATED_KEY).and_then(Value::as_bool) == Some(true);
+    // Checked once without the lock: every launch after the first finds the
+    // flag set, and startup shouldn't wait on another window's secret write.
+    if keychain::read_root_from(&Store::Keychain).is_ok_and(|root| already_migrated(&root)) {
+        return;
+    }
     let mut legacy_entry = None;
     let migrated = keychain::update_root_in(&Store::Keychain, |root| {
-        if root.get(LEGACY_MIGRATED_KEY).and_then(Value::as_bool) == Some(true) {
+        if already_migrated(root) {
             return Ok(false);
         }
         let Some(entry) = Entry::new(LEGACY_SERVICE, LEGACY_ACCOUNT).ok() else {
             return Ok(false);
         };
         let obj = root.as_object_mut().expect("checked by update_root_in");
-        // No legacy item (already migrated in a prior version, or never used)
-        // still sets the flag, so this lookup isn't repeated on every launch.
+        // With no legacy item (already migrated in a prior version, or never
+        // used), the flag is still set below so this lookup isn't repeated on
+        // every launch.
         if let Ok(raw) = entry.get_password() {
             if let Ok(blob) = serde_json::from_str::<Value>(&raw) {
                 let has_content = blob.as_object().map(|o| !o.is_empty()).unwrap_or(false);
@@ -173,15 +181,15 @@ pub fn delete_embeddings_secret(slot: String) -> Result<(), String> {
     validate_slot(&slot)?;
     update_blob(|blob| {
         let obj = blob.as_object_mut().expect("subtree is an object");
-        if slot == "apiKey" {
-            obj.remove("apiKey");
+        let removed = if slot == "apiKey" {
+            obj.remove("apiKey").is_some()
         } else {
             let name = slot.strip_prefix("header:").expect("validated above");
-            if let Some(headers) = obj.get_mut("headers").and_then(|v| v.as_object_mut()) {
-                headers.remove(name);
-            }
-        }
-        Ok(true)
+            obj.get_mut("headers")
+                .and_then(|v| v.as_object_mut())
+                .is_some_and(|headers| headers.remove(name).is_some())
+        };
+        Ok(removed)
     })
 }
 

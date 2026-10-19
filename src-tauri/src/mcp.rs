@@ -264,13 +264,12 @@ pub fn delete_mcp_secret(server_id: String, slot: String) -> Result<(), String> 
         } else {
             ("env", slot.strip_prefix("env:").expect("validated above"))
         };
-        if let Some(bucket) = server.get_mut(field).and_then(|v| v.as_object_mut()) {
-            bucket.remove(name);
-        }
-        if entry_is_empty(server) {
-            root.remove(&server_id);
-        }
-        Ok(true)
+        let removed = server
+            .get_mut(field)
+            .and_then(|v| v.as_object_mut())
+            .is_some_and(|bucket| bucket.remove(name).is_some());
+        let pruned = entry_is_empty(server) && root.remove(&server_id).is_some();
+        Ok(removed || pruned)
     })
 }
 

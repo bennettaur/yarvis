@@ -185,7 +185,14 @@ mod unix_impl {
             if trimmed.is_empty() {
                 continue;
             }
-            let resp = dispatch(&app, trimmed);
+            // On a blocking thread: a request can wait on the secrets write
+            // lock or a store prompt, which must not stall the async runtime.
+            let request = trimmed.to_string();
+            let dispatch_app = app.clone();
+            let resp =
+                tauri::async_runtime::spawn_blocking(move || dispatch(&dispatch_app, &request))
+                    .await
+                    .map_err(|e| e.to_string())?;
             let mut out = serde_json::to_string(&resp).map_err(|e| e.to_string())?;
             out.push('\n');
             write_half
