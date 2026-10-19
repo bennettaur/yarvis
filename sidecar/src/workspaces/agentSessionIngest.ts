@@ -81,13 +81,7 @@ export function createAgentSessionIngestRoutes(config: Config): Hono {
     const key = sessionKeySchema.safeParse(c.req.header(SESSION_KEY_HEADER));
     if (!key.success) return c.json({ error: `missing or malformed ${SESSION_KEY_HEADER}` }, 400);
     const sessionKey = key.data;
-    if (
-      !sessionTokenMatches(
-        config.attentionToken,
-        sessionKey,
-        c.req.header(SESSION_TOKEN_HEADER) ?? "",
-      )
-    ) {
+    if (!sessionTokenMatches(config.token, sessionKey, c.req.header(SESSION_TOKEN_HEADER) ?? "")) {
       return c.json({ error: "session token does not match the session key" }, 403);
     }
     const input = hookInputSchema.safeParse(await c.req.json().catch(() => null));

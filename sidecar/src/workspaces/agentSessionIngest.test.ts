@@ -43,7 +43,7 @@ const PANE = `ws:${WORKSPACE}/t1/p1`;
 
 /** The token the core puts in a PTY's environment (`session_token` in pty.rs). */
 const tokenFor = (sessionKey: string) =>
-  createHmac("sha256", ATTENTION_TOKEN).update(sessionKey).digest("hex");
+  createHmac("sha256", config.token).update(`session:${sessionKey}`).digest("hex");
 
 async function seedWorkspace(id: string, name: string) {
   await sql`INSERT INTO workspaces (id, name, slug, status, root_path)
@@ -160,6 +160,15 @@ describe("POST /ingest/agent-session", () => {
     await hook(end("same-id"), { sessionKey: PANE });
 
     expect((await live()).map((s) => s.sessionKey)).toEqual([AGENT_TAB]);
+  });
+
+  it("refuses a session token signed with the shared ingest token", async () => {
+    // Every terminal holds the ingest token, so it must not be able to sign.
+    const forged = createHmac("sha256", ATTENTION_TOKEN)
+      .update(`session:${AGENT_TAB}`)
+      .digest("hex");
+    expect((await hook(start("s1"), { sessionToken: forged })).status).toBe(403);
+    expect((await hook(start("s1"), { sessionToken: "not-hex" })).status).toBe(403);
   });
 
   it("refuses a session token minted for another terminal", async () => {

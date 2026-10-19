@@ -46,17 +46,15 @@ export interface LiveAgentSession {
 
 /**
  * True when `token` is the one the core put in the environment of the PTY named
- * `sessionKey`: an HMAC of the key under the attention token, which every
- * session holds but none can use to sign for another (`session_token` in
- * `src-tauri/src/pty.rs`). This is what stops a process in one terminal from
- * registering under another terminal's key.
+ * `sessionKey`: an HMAC of the key under the sidecar's full-access bearer,
+ * which no session holds (`session_token` in `src-tauri/src/pty.rs`). This is
+ * what stops a process in one terminal from registering under another
+ * terminal's key.
  */
-export function sessionTokenMatches(
-  attentionToken: string,
-  sessionKey: string,
-  token: string,
-): boolean {
-  const expected = createHmac("sha256", attentionToken).update(sessionKey).digest();
+export function sessionTokenMatches(bearer: string, sessionKey: string, token: string): boolean {
+  const expected = createHmac("sha256", bearer).update(`session:${sessionKey}`).digest();
+  // Non-hex input decodes short rather than throwing, so the length check
+  // rejects it.
   const given = Buffer.from(token, "hex");
   return given.length === expected.length && timingSafeEqual(given, expected);
 }

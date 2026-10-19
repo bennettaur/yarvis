@@ -287,8 +287,9 @@ fn is_attention_addressable(id: &str) -> bool {
 /// The session token proves which PTY a request came from. The attention token
 /// is the same in every session, so on its own it can't stop one session from
 /// speaking for another; the agent-session registry needs that, because a
-/// registered pid decides who `send_session_instruction` will type at. See
-/// `session_token`.
+/// registered pid decides who `send_session_instruction` will type at. It is
+/// signed with `signing_key`, the sidecar's full-access bearer, which no session
+/// holds, so no session can mint another's. See `session_token`.
 ///
 /// The MCP token lets a Claude Code session reach the Yarvis memory tools via
 /// the `.mcp.json` written at the workspace root, which references it rather
@@ -305,6 +306,7 @@ fn session_env(
     id: &str,
     port: u16,
     attention_token: &str,
+    signing_key: &str,
     mcp_token: Option<&str>,
 ) -> Vec<(String, String)> {
     if !is_attention_addressable(id) {
@@ -319,7 +321,7 @@ fn session_env(
         ("YARVIS_SESSION_KEY".to_string(), id.to_string()),
         (
             "YARVIS_SESSION_TOKEN".to_string(),
-            session_token(attention_token, id),
+            session_token(signing_key, id),
         ),
     ];
     if let Some(token) = mcp_token {
@@ -331,13 +333,18 @@ fn session_env(
     env
 }
 
-/// HMAC-SHA256 of a PTY's session key under the attention token, hex-encoded.
-/// The sidecar holds the attention token too, so it recomputes this from the
-/// session key a request names instead of keeping a list of issued tokens.
-fn session_token(attention_token: &str, session_key: &str) -> String {
-    let mut mac = Hmac::<Sha256>::new_from_slice(attention_token.as_bytes())
-        .expect("HMAC accepts a key of any length");
-    mac.update(session_key.as_bytes());
+/// A PTY's session token: an HMAC of its session key under the sidecar's
+/// bearer. The sidecar holds the bearer too, so it recomputes this from the
+/// session key a request names instead of keeping a list of issued tokens. The
+/// `session:` prefix keeps these from being valid for any other use of that key.
+fn session_token(signing_key: &str, session_key: &str) -> String {
+    hmac_sha256_hex(signing_key, &format!("session:{session_key}"))
+}
+
+fn hmac_sha256_hex(key: &str, message: &str) -> String {
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(key.as_bytes()).expect("HMAC accepts a key of any length");
+    mac.update(message.as_bytes());
     mac.finalize()
         .into_bytes()
         .iter()
@@ -362,14 +369,20 @@ fn spawn_session(app: &AppHandle, id: &str, spec: &SpawnSpec) -> Result<PtySessi
     }
     // Every session carries the sidecar port + the two scoped tokens, so whatever
     // runs in it can post to the ingest endpoint (keyed by this exact PTY id) and
-    // call the MCP endpoint, without ever seeing the full-access bearer.
+    // call the MCP endpoint, without ever seeing the full-access bearer. The
+    // bearer only signs the session token.
     if let (Some(info), Some(attn)) = (
         app.try_state::<crate::sidecar::SidecarInfo>(),
         app.try_state::<crate::sidecar::AttentionIngestToken>(),
     ) {
         let mcp = app.try_state::<crate::sidecar::McpToken>();
-        for (key, value) in session_env(id, info.port, &attn.0, mcp.as_ref().map(|m| m.0.as_str()))
-        {
+        for (key, value) in session_env(
+            id,
+            info.port,
+            &attn.0,
+            &info.token,
+            mcp.as_ref().map(|m| m.0.as_str()),
+        ) {
             cmd.env(key, value);
         }
     }
@@ -1100,11 +1113,11 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_launch_command, attention_workspace_id, is_unsafe_name_char, lock_scrollback,
-        prepare_instruction, remote_control_command, resolve_agent_command, resolve_max_sessions,
-        session_env, session_token, snapshot, Scrollback, DEFAULT_AGENT_COMMAND,
-        DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK,
-        MAX_SESSION_NAME_CHARS,
+        agent_launch_command, attention_workspace_id, hmac_sha256_hex, is_unsafe_name_char,
+        lock_scrollback, prepare_instruction, remote_control_command, resolve_agent_command,
+        resolve_max_sessions, session_env, session_token, snapshot, Scrollback,
+        DEFAULT_AGENT_COMMAND, DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS,
+        MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
     };
     use std::sync::Mutex;
 
@@ -1410,7 +1423,7 @@ mod tests {
 
     #[test]
     fn session_env_populates_workspace_claude_sessions() {
-        let env = session_env("ws-claude:abc-123", 8765, "tok", Some("mcp-tok"));
+        let env = session_env("ws-claude:abc-123", 8765, "tok", "bearer", Some("mcp-tok"));
         assert_eq!(
             env,
             vec![
@@ -1422,7 +1435,7 @@ mod tests {
                 ),
                 (
                     "YARVIS_SESSION_TOKEN".to_string(),
-                    session_token("tok", "ws-claude:abc-123")
+                    session_token("bearer", "ws-claude:abc-123")
                 ),
                 ("YARVIS_MCP_TOKEN".to_string(), "mcp-tok".to_string()),
                 ("YARVIS_WORKSPACE_ID".to_string(), "abc-123".to_string()),
@@ -1432,7 +1445,7 @@ mod tests {
 
     #[test]
     fn session_env_keys_a_workspace_terminal_pane_by_its_pty_id() {
-        let env = session_env("ws:abc-123/t1/p1", 8765, "tok", Some("mcp-tok"));
+        let env = session_env("ws:abc-123/t1/p1", 8765, "tok", "bearer", Some("mcp-tok"));
         assert_eq!(
             env,
             vec![
@@ -1444,7 +1457,7 @@ mod tests {
                 ),
                 (
                     "YARVIS_SESSION_TOKEN".to_string(),
-                    session_token("tok", "ws:abc-123/t1/p1")
+                    session_token("bearer", "ws:abc-123/t1/p1")
                 ),
                 ("YARVIS_MCP_TOKEN".to_string(), "mcp-tok".to_string()),
                 ("YARVIS_WORKSPACE_ID".to_string(), "abc-123".to_string()),
@@ -1456,16 +1469,22 @@ mod tests {
     fn session_env_is_empty_for_sessions_the_ui_cannot_navigate_to() {
         // An Omni-hosted terminal or a repo run script has nowhere to be shown,
         // so it must receive neither the ingest token nor the MCP token.
-        assert!(session_env("omni:s1/t1/p1", 8765, "tok", Some("mcp-tok")).is_empty());
-        assert!(session_env("ws-run:repo-1", 8765, "tok", Some("mcp-tok")).is_empty());
+        assert!(session_env("omni:s1/t1/p1", 8765, "tok", "bearer", Some("mcp-tok")).is_empty());
+        assert!(session_env("ws-run:repo-1", 8765, "tok", "bearer", Some("mcp-tok")).is_empty());
         // A surface key with no tab/pane names no session the UI can focus.
-        assert!(session_env("ws:w1", 8765, "tok", Some("mcp-tok")).is_empty());
-        assert!(session_env("tab:terminal", 8765, "tok", Some("mcp-tok")).is_empty());
+        assert!(session_env("ws:w1", 8765, "tok", "bearer", Some("mcp-tok")).is_empty());
+        assert!(session_env("tab:terminal", 8765, "tok", "bearer", Some("mcp-tok")).is_empty());
     }
 
     #[test]
     fn session_env_omits_the_workspace_for_a_standalone_terminal() {
-        let env = session_env("tab:terminal/abc/def", 8765, "tok", Some("mcp-tok"));
+        let env = session_env(
+            "tab:terminal/abc/def",
+            8765,
+            "tok",
+            "bearer",
+            Some("mcp-tok"),
+        );
         assert_eq!(
             env,
             vec![
@@ -1477,7 +1496,7 @@ mod tests {
                 ),
                 (
                     "YARVIS_SESSION_TOKEN".to_string(),
-                    session_token("tok", "tab:terminal/abc/def")
+                    session_token("bearer", "tab:terminal/abc/def")
                 ),
                 ("YARVIS_MCP_TOKEN".to_string(), "mcp-tok".to_string()),
             ]
@@ -1488,26 +1507,34 @@ mod tests {
     fn session_env_still_carries_attention_when_no_mcp_token_exists() {
         // The two tokens are managed together today, but a session that can raise
         // an attention item must not lose that because the MCP side is absent.
-        let env = session_env("tab:terminal/abc/def", 8765, "tok", None);
+        let env = session_env("tab:terminal/abc/def", 8765, "tok", "bearer", None);
         assert!(env.iter().any(|(key, _)| key == "YARVIS_ATTENTION_TOKEN"));
         assert!(!env.iter().any(|(key, _)| key == "YARVIS_MCP_TOKEN"));
     }
 
     #[test]
-    fn session_token_is_the_hmac_the_sidecar_recomputes() {
+    fn hmac_sha256_hex_matches_the_standard() {
         // RFC 4231 test case 2. The sidecar verifies with node:crypto's
         // HMAC-SHA256, so both ends have to agree with the standard.
         assert_eq!(
-            session_token("Jefe", "what do ya want for nothing?"),
+            hmac_sha256_hex("Jefe", "what do ya want for nothing?"),
             "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+    }
+
+    #[test]
+    fn session_token_signs_the_prefixed_session_key() {
+        assert_eq!(
+            session_token("bearer", "ws-claude:a"),
+            hmac_sha256_hex("bearer", "session:ws-claude:a")
         );
     }
 
     #[test]
     fn session_token_differs_per_session() {
         assert_ne!(
-            session_token("tok", "ws-claude:a"),
-            session_token("tok", "ws-claude:b")
+            session_token("bearer", "ws-claude:a"),
+            session_token("bearer", "ws-claude:b")
         );
     }
 
