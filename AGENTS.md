@@ -183,7 +183,7 @@ back to ad-hoc.
   store or set the agent's launch command only from
   `src/lib/privilegedCommands.ts`, and ones that type into or launch a shell
   only from `src/lib/pty.ts`. Every `invoke` names its command as a string
-  literal. `scripts/verify/nativeBridge.test.ts` enforces both, and it is what
+  literal. `scripts/verify/nativeBridge.ts` holds the rules and its test enforces them, and it is what
   lets the rest of `src/` count as low risk when a PR is verified. A new
   command of that kind goes in one of those two files and in the test's list.
 - Several instances of the app can run at once (`bun run dev:instance`), sharing

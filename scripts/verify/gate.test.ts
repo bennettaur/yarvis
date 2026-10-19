@@ -76,6 +76,10 @@ describe("decideReport", () => {
     expect(decide({ mode: "shadow" })?.approve).toBe(false);
   });
 
+  it("ignores a report from someone who took a trusted user's old login", () => {
+    expect(decide({ comment: reportComment({ login: "bennettaur", id: 12345 }) })).toBeNull();
+  });
+
   it("ignores a report posted by someone who isn't trusted", () => {
     expect(decide({ comment: reportComment(SOMEONE) })).toBeNull();
   });
@@ -158,6 +162,12 @@ describe("autoMergeBlockers", () => {
     expect(autoMergeBlockers(makeContext({ prAuthor: SOMEONE }))).toContain(
       "PR author is not a maintainer",
     );
+  });
+
+  it("goes by the author's ID, not their login", () => {
+    expect(
+      autoMergeBlockers(makeContext({ prAuthor: { login: "bennettaur", id: 12345 } })),
+    ).toContain("PR author is not a maintainer");
   });
 
   it("refuses drafts", () => {
