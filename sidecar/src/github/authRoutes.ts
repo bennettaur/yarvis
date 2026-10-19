@@ -14,13 +14,14 @@ export function createGithubAuthRoutes(
 ): Hono {
   const router = new Hono();
 
-  // Lets Settings hide the button in a build with no OAuth App client ID.
+  // Lets Settings hide the button where sign-in is off: no OAuth App client
+  // ID, or the GitHub API overridden.
   router.get("/", (c) => c.json({ configured: deviceFlow !== null }));
 
   router.post("/device", async (c) => {
     if (!deviceFlow) {
       return c.json(
-        { error: "GitHub sign-in isn't set up in this build", reason: "not_configured" },
+        { error: "GitHub sign-in isn't available here", reason: "not_configured" },
         503,
       );
     }

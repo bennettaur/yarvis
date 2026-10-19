@@ -218,7 +218,7 @@ describe("GitHub sign-in routes", () => {
     expect(await (await routes.request("/")).json()).toEqual({ configured: false });
   });
 
-  it("says sign-in is off, and refuses to start, when no client ID is set", async () => {
+  it("says sign-in is off, and refuses to start, when it's unavailable", async () => {
     const routes = app(null);
     expect(await (await routes.request("/")).json()).toEqual({ configured: false });
     const res = await routes.request("/device", { method: "POST" });
@@ -259,7 +259,7 @@ describe("githubClientId", () => {
     expect(githubClientId({ YARVIS_GITHUB_CLIENT_ID: " other-app " })).toBe("other-app");
   });
 
-  it("falls back to the built-in app when the variable is blank", () => {
+  it("falls back to the shipped OAuth App when the variable is blank", () => {
     expect(githubClientId({ YARVIS_GITHUB_CLIENT_ID: "  " })).toBe("Ov23li5eiMR2dElA7v2T");
   });
 });
