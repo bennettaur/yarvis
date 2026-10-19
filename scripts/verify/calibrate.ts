@@ -14,7 +14,7 @@
  */
 
 import { parseArgs } from "node:util";
-import { ghApi, ghApiPages, run } from "./exec.ts";
+import { run } from "./exec.ts";
 import {
   APPROVE_COMMAND_PREFIX,
   AUTO_APPROVAL_PREFIX,
@@ -141,6 +141,38 @@ export function summarize(outcomes: Outcome[], days: number): string {
   return lines.join("\n");
 }
 
+/** The newest 100 comments are plenty: a PR's report is re-posted, not appended to. */
+const MERGED_PRS_QUERY = `query($q: String!, $endCursor: String) {
+  search(query: $q, type: ISSUE, first: 50, after: $endCursor) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      ... on PullRequest {
+        number
+        title
+        body
+        headRefOid
+        comments(last: 100) { nodes { body author { ... on User { databaseId } } } }
+        reviews(first: 100) { nodes { state body } }
+      }
+    }
+  }
+}`;
+
+interface SearchPage {
+  data: {
+    search: {
+      nodes: {
+        number: number;
+        title: string;
+        body: string;
+        headRefOid: string;
+        comments: { nodes: { body: string; author: { databaseId?: number } | null }[] };
+        reviews: { nodes: Review[] };
+      }[];
+    };
+  };
+}
+
 if (import.meta.main) {
   const { values } = parseArgs({ options: { days: { type: "string", default: "60" } } });
   const days = Number(values.days);
@@ -148,36 +180,54 @@ if (import.meta.main) {
     throw new Error("--days must be a positive whole number");
 
   const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
-  const repo = ghApi<{ full_name: string }>("repos/{owner}/{repo}").full_name;
+  const repo = run("gh", [
+    "repo",
+    "view",
+    "--json",
+    "nameWithOwner",
+    "--jq",
+    ".nameWithOwner",
+  ]).stdout.trim();
+  // The workflow's default trusted list, for running this locally without the variable.
   const trusted = parseTrusted(process.env.VERIFY_TRUSTED_USER_IDS ?? "2670128");
 
-  const listed = JSON.parse(
+  // One query per 50 PRs, with their comments and reviews, rather than two
+  // REST calls per PR: a long window would otherwise eat the rate limit.
+  const pages = JSON.parse(
     run("gh", [
-      "pr",
-      "list",
-      "--state",
-      "merged",
-      "--search",
-      `merged:>=${since}`,
-      "--limit",
-      "1000",
-      "--json",
-      "number,title,body,headRefOid",
+      "api",
+      "graphql",
+      "--paginate",
+      "--slurp",
+      "-f",
+      `query=${MERGED_PRS_QUERY}`,
+      "-f",
+      `q=repo:${repo} is:pr is:merged merged:>=${since}`,
     ]).stdout,
-  ) as { number: number; title: string; body: string; headRefOid: string }[];
-  const prs: MergedPr[] = listed.map((pr) => ({ ...pr, headSha: pr.headRefOid }));
+  ) as SearchPage[];
+  const nodes = pages.flatMap((page) => page.data.search.nodes);
+  const prs: MergedPr[] = nodes.map((node) => ({
+    number: node.number,
+    title: node.title,
+    body: node.body,
+    headSha: node.headRefOid,
+  }));
 
   const escapes = findEscapes(prs, repo);
-  const outcomes: Outcome[] = prs.map((pr) => ({
-    pr,
+  const outcomes: Outcome[] = nodes.map((node, index) => ({
+    pr: prs[index],
     report: latestReport(
-      ghApiPages<Comment>(`repos/{owner}/{repo}/issues/${pr.number}/comments?per_page=100`),
+      node.comments.nodes.map((c) => ({
+        id: 0,
+        body: c.body,
+        html_url: "",
+        // Bots and apps have no user ID here, so they never count as trusted.
+        user: { login: "", id: c.author?.databaseId ?? -1 },
+      })),
       trusted,
     ),
-    path: mergePath(
-      ghApiPages<Review>(`repos/{owner}/{repo}/pulls/${pr.number}/reviews?per_page=100`),
-    ),
-    escapedVia: escapes.get(pr.number) ?? [],
+    path: mergePath(node.reviews.nodes),
+    escapedVia: escapes.get(node.number) ?? [],
   }));
   console.log(summarize(outcomes, days));
 }
