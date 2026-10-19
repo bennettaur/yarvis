@@ -4,18 +4,15 @@ import { restartSidecar } from "../lib/keychain";
 import {
   type EmbedderHealth,
   type EmbeddingsConfig,
+  type EmbeddingsSecretSlot,
+  type EmbeddingsSecretStatus,
+  getEmbeddingsSecretStatus,
   memDeleteEmbeddingsConfig,
   memEmbeddingsConfig,
   memReembed,
   memSetEmbeddingsConfig,
 } from "../lib/memory";
-import {
-  deleteEmbeddingsSecret,
-  type EmbeddingsSecretSlot,
-  type EmbeddingsSecretStatus,
-  getEmbeddingsSecretStatus,
-  setEmbeddingsSecret,
-} from "../lib/privilegedCommands";
+import { deleteEmbeddingsSecret, setEmbeddingsSecret } from "../lib/privilegedCommands";
 import { StatusDot } from "./Dashboard";
 
 /**

@@ -96,3 +96,7 @@ export interface SecretStatus {
 export function restartSidecar(): Promise<void> {
   return invoke("restart_sidecar");
 }
+
+export function listSecretStatus(): Promise<SecretStatus[]> {
+  return invoke<SecretStatus[]>("list_secret_status");
+}

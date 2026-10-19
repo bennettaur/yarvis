@@ -107,6 +107,10 @@ export function coverageStatus(coverage: Facts["coverage"]): Status {
  * Makes model- or PR-written text safe to put in one line of the report. `<`
  * and `>` become entities, so no HTML comment can open and hide a second data
  * block. Pipes would break the table, and @-mentions would ping people.
+ *
+ * Order matters: backslashes are escaped before pipes, so a `\` in the text
+ * can't cancel the pipe's escape, and `&` before `<`, so text that is already
+ * `&lt;` can't decode into a real `<`.
  */
 export function inline(text: string): string {
   return text
@@ -119,7 +123,11 @@ export function inline(text: string): string {
     .replace(/@(?=\w)/g, "@\u200b");
 }
 
-/** Text in a code span. HTML isn't parsed there, so only backticks and newlines need handling. */
+/**
+ * Text in a code span, for list items. HTML isn't parsed there, so only
+ * backticks and newlines need handling. Not for table cells, where a pipe
+ * would still end the cell.
+ */
 function code(text: string): string {
   return `\`${text.replace(/\r?\n/g, " ").replace(/`/g, "'")}\``;
 }
