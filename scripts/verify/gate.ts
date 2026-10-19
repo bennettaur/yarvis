@@ -312,6 +312,9 @@ if (import.meta.main) {
   if (!event.issue.pull_request) process.exit(0);
 
   const trusted = parseTrusted(process.env.VERIFY_TRUSTED_USER_IDS);
+  if (trusted.length === 0) {
+    console.warn("[verify] VERIFY_TRUSTED_USER_IDS has no numeric IDs, so nobody is trusted");
+  }
   const mode: Mode = process.env.VERIFY_MODE === "enforce" ? "enforce" : "shadow";
   const pr = fetchPr(event.issue.number);
   if (pr.state !== "open") process.exit(0);

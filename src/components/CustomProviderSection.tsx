@@ -11,6 +11,11 @@ import {
   updateCustomProvider,
 } from "../lib/customProviders";
 import { restartSidecar } from "../lib/keychain";
+import {
+  deleteAllCustomProviderSecrets,
+  deleteCustomProviderSecret,
+  setCustomProviderSecret,
+} from "../lib/privilegedCommands";
 import { MaskedInput } from "./MaskedInput";
 
 /**
@@ -30,12 +35,7 @@ async function restartAndWait(): Promise<void> {
   await waitForSidecarReady({ minUptimeMsBefore: priorUptimeMs });
 }
 
-import {
-  deleteAllCustomProviderSecrets,
-  deleteCustomProviderSecret,
-  listCustomProviderSecretStatus,
-  setCustomProviderSecret,
-} from "../lib/privilegedCommands";
+import { listCustomProviderSecretStatus } from "../lib/customProviders";
 import { StatusDot } from "./Dashboard";
 
 interface Draft {

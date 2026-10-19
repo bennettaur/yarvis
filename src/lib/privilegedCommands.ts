@@ -1,16 +1,17 @@
 /**
- * Every frontend call to a Tauri command that writes a secret or decides what
- * command an agent session launches. Keeping them in this one file is what
- * lets the rest of the frontend count as low risk when verifying a pull
- * request: `scripts/verify/nativeBridge.test.ts` fails if any other file calls
- * one of these commands, and `scripts/verify/tier.ts` makes a change here high
- * risk.
+ * Every frontend call to a Tauri command that writes a secret, switches the
+ * secret store or sets the agent's launch command. Shell access is the other
+ * privileged kind and lives in `pty.ts`. Keeping them here is what lets the
+ * rest of the frontend count as low risk when a pull request is verified:
+ * `scripts/verify/nativeBridge.test.ts` fails if any other file calls one of
+ * these commands, and `scripts/verify/tier.ts` makes a change here high risk.
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import type { CustomProviderSecretSlot, CustomProviderSecretStatus } from "./customProviders";
-import type { SecretKey, SecretStatus } from "./keychain";
-import type { McpSecretSlot, McpSecretStatus } from "./mcp";
+import type { CustomProviderSecretSlot } from "./customProviders";
+import type { SecretKey } from "./keychain";
+import type { McpSecretSlot } from "./mcp";
+import type { EmbeddingsSecretSlot } from "./memory";
 import type { BackendSwitch, SecretBackend, Settings } from "./settings";
 
 /* ---------- App secrets ---------- */
@@ -23,15 +24,7 @@ export function deleteSecret(key: SecretKey): Promise<void> {
   return invoke("delete_secret", { key });
 }
 
-export function listSecretStatus(): Promise<SecretStatus[]> {
-  return invoke<SecretStatus[]>("list_secret_status");
-}
-
 /* ---------- MCP server secrets ---------- */
-
-export function listMcpSecretStatus(): Promise<McpSecretStatus[]> {
-  return invoke<McpSecretStatus[]>("list_mcp_secret_status");
-}
 
 export function setMcpSecret(serverId: string, slot: McpSecretSlot, value: string): Promise<void> {
   return invoke("set_mcp_secret", { serverId, slot, value });
@@ -46,10 +39,6 @@ export function deleteAllMcpSecrets(serverId: string): Promise<void> {
 }
 
 /* ---------- Custom provider secrets ---------- */
-
-export function listCustomProviderSecretStatus(): Promise<CustomProviderSecretStatus[]> {
-  return invoke<CustomProviderSecretStatus[]>("list_custom_provider_secret_status");
-}
 
 export function setCustomProviderSecret(
   providerId: string,
@@ -72,18 +61,6 @@ export function deleteAllCustomProviderSecrets(providerId: string): Promise<void
 
 /* ---------- Embeddings secrets ---------- */
 
-export type EmbeddingsSecretSlot = "apiKey" | `header:${string}`;
-
-export interface EmbeddingsSecretStatus {
-  apiKeyPresent: boolean;
-  /** Header name → whether a value is stored. */
-  headers: Record<string, boolean>;
-}
-
-export function getEmbeddingsSecretStatus(): Promise<EmbeddingsSecretStatus> {
-  return invoke<EmbeddingsSecretStatus>("get_embeddings_secret_status");
-}
-
 export function setEmbeddingsSecret(slot: EmbeddingsSecretSlot, value: string): Promise<void> {
   return invoke("set_embeddings_secret", { slot, value });
 }
@@ -102,14 +79,19 @@ export function deleteEmbeddingsSecret(slot: EmbeddingsSecretSlot): Promise<void
  *
  * `vault` and `item` are required for `"onepassword"` and ignored otherwise.
  */
-export const setSecretBackend = (
+export function setSecretBackend(
   backend: SecretBackend,
   vault: string | null,
   item: string | null,
-) => invoke<BackendSwitch>("set_secret_backend", { backend, vault, item });
+): Promise<BackendSwitch> {
+  return invoke<BackendSwitch>("set_secret_backend", { backend, vault, item });
+}
 
-/** Sets the agent's tab title and launch command, clearing either back to its
+/**
+ * Sets the agent's tab title and launch command, clearing either back to its
  * default with `null` or a blank string. Takes effect on the next agent session
- * started — no restart. Rejects a value spanning more than one line. */
-export const setAgent = (name: string | null, command: string | null) =>
-  invoke<Settings>("set_agent", { name, command });
+ * started — no restart. Rejects a value spanning more than one line.
+ */
+export function setAgent(name: string | null, command: string | null): Promise<Settings> {
+  return invoke<Settings>("set_agent", { name, command });
+}

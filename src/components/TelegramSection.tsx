@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { getHealth, waitForSidecarReady } from "../lib/api";
-import { restartSidecar, type SecretKey, type SecretStatus } from "../lib/keychain";
+import {
+  listSecretStatus,
+  restartSidecar,
+  type SecretKey,
+  type SecretStatus,
+} from "../lib/keychain";
 import { formatSecretForDisplay, generateOtpSecret, otpauthUri } from "../lib/otp";
-import { deleteSecret, listSecretStatus, setSecret } from "../lib/privilegedCommands";
+import { deleteSecret, setSecret } from "../lib/privilegedCommands";
 import { getSettings, type Settings, setTelegramOtpWindowMinutes } from "../lib/settings";
 import { StatusDot } from "./Dashboard";
 import { MaskedInput } from "./MaskedInput";

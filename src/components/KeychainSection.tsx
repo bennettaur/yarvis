@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { SECRETS, type SecretKey, type SecretStatus } from "../lib/keychain";
-import { deleteSecret, listSecretStatus, setSecret } from "../lib/privilegedCommands";
+import { listSecretStatus, SECRETS, type SecretKey, type SecretStatus } from "../lib/keychain";
+import { deleteSecret, setSecret } from "../lib/privilegedCommands";
 import { clearResourceCache } from "../lib/resourceCache";
 import { restartAndWait } from "../lib/restart";
 import { StatusDot } from "./Dashboard";

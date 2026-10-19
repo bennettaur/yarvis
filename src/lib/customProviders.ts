@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { ensureOk, sidecarFetch } from "./api";
 
 /**
@@ -80,4 +81,10 @@ export async function deleteCustomProvider(id: string): Promise<void> {
     method: "DELETE",
   });
   await ensureOk(res, "delete custom provider");
+}
+
+/* ---------- Secret status (writes are in privilegedCommands.ts) ---------- */
+
+export function listCustomProviderSecretStatus(): Promise<CustomProviderSecretStatus[]> {
+  return invoke<CustomProviderSecretStatus[]>("list_custom_provider_secret_status");
 }

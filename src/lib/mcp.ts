@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { ensureOk, sidecarFetch } from "./api";
 
 /**
@@ -220,4 +221,10 @@ export async function getMcpEndpoint(): Promise<McpEndpoint> {
   const res = await sidecarFetch("/api/mcp-endpoint/connection");
   await ensureOk(res, "mcp endpoint");
   return res.json();
+}
+
+/* ---------- Secret status (writes are in privilegedCommands.ts) ---------- */
+
+export function listMcpSecretStatus(): Promise<McpSecretStatus[]> {
+  return invoke<McpSecretStatus[]>("list_mcp_secret_status");
 }

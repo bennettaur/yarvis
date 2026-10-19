@@ -5,6 +5,7 @@ import {
   deleteMcpServer,
   disconnectMcpOAuth,
   getMcpServerStatus,
+  listMcpSecretStatus,
   listMcpServers,
   type McpOAuthStatus,
   type McpSecretSlot,
@@ -17,12 +18,7 @@ import {
   type ServerStatus,
   updateMcpServer,
 } from "../lib/mcp";
-import {
-  deleteAllMcpSecrets,
-  deleteMcpSecret,
-  listMcpSecretStatus,
-  setMcpSecret,
-} from "../lib/privilegedCommands";
+import { deleteAllMcpSecrets, deleteMcpSecret, setMcpSecret } from "../lib/privilegedCommands";
 import { restartAndWait } from "../lib/restart";
 import { openExternal } from "../lib/url";
 import { StatusDot } from "./Dashboard";
