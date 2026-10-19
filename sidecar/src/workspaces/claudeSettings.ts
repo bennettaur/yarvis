@@ -1,22 +1,25 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { SESSION_KEY_HEADER, SESSION_TOKEN_HEADER } from "./agentSessions.ts";
 
 /**
  * Generates the `.claude/settings.json` hook config that makes a Yarvis-launched
- * Claude Code session signal the app when it needs the user. Split out from the
+ * Claude Code session register itself with its workspace and signal the app when
+ * it needs the user. Split out from the
  * workspace service so the hook↔ingest contract and the merge semantics are unit
  * testable without touching the filesystem.
  */
 
-/** Mark our hook commands so re-provision can replace them without duplicating. */
+/** Marks our hook commands so re-provision can replace them without duplicating. */
 const INGEST_MARKERS = ["/ingest/attention", "/ingest/agent-session"];
 
 export type AttentionHookKind = "permission" | "idle" | "completed";
 
 /**
- * Characters allowed in the values baked into the hook command. Both land in a
- * shell string — the workspace id inside single quotes, the fallback key inside
- * the *default word* of a `${VAR:-word}` expansion, which the shell still scans
- * for command substitution even within double quotes. Callers pass ids the app
+ * Characters allowed in the values baked into the hook commands. Every value
+ * lands in a shell string — the workspace id inside single quotes or, in the
+ * session hook, a double-quoted URL; the fallback key inside the *default word*
+ * of a `${VAR:-word}` expansion, which the shell still scans for command
+ * substitution even within double quotes. Callers pass ids the app
  * generated, so this is an assertion of that invariant rather than a filter.
  */
 const SHELL_SAFE = /^[A-Za-z0-9:_./-]+$/;
@@ -68,16 +71,19 @@ export function attentionHookCommand(
  * The shell command the SessionStart and SessionEnd hooks run to register the
  * session with its workspace (see `agentSessions.ts`). Claude Code's hook input
  * goes to the sidecar unchanged as the body, since it already carries the
- * session id and the start source or end reason. Two values ride alongside:
+ * session id and the start source or end reason. Three values ride alongside:
  *
  * - `$PPID`, the Claude process itself: Claude runs the command through a
  *   shell, so the shell's parent is Claude.
  * - `YARVIS_SESSION_KEY`, the PTY the session runs in. Without it the session
- *   isn't in a Yarvis PTY (a headless `claude -p`, or a terminal outside the
- *   app), there is no prompt to deliver to, and nothing is registered.
+ *   isn't in a Yarvis PTY (a terminal outside the app, or a headless run with
+ *   no Yarvis environment), there is no prompt to deliver to, and nothing is
+ *   registered. The hook's stdin is still drained so Claude never blocks
+ *   writing it.
+ * - `YARVIS_SESSION_TOKEN`, which proves the request comes from that PTY.
  *
- * Throws on a workspace id that isn't `SHELL_SAFE`, for the reason
- * `attentionHookCommand` gives.
+ * Throws on a workspace id that isn't `SHELL_SAFE`: it lands inside a
+ * double-quoted URL, where a `$` or backtick would be run by the shell.
  */
 export function agentSessionHookCommand(workspaceId: string): string {
   if (!SHELL_SAFE.test(workspaceId)) {
@@ -86,10 +92,11 @@ export function agentSessionHookCommand(workspaceId: string): string {
     );
   }
   return (
-    `if [ -n "\${YARVIS_SESSION_KEY}" ]; then ` +
+    `if [ -n "\${YARVIS_SESSION_KEY}" ] && [ -n "\${YARVIS_SESSION_TOKEN}" ]; then ` +
     `curl -sf -m 5 -X POST "http://127.0.0.1:\${YARVIS_SIDECAR_PORT}/ingest/agent-session?workspaceId=${workspaceId}&pid=\${PPID}" ` +
     `-H "Authorization: Bearer \${YARVIS_ATTENTION_TOKEN}" ` +
-    `-H "X-Yarvis-Session-Key: \${YARVIS_SESSION_KEY}" ` +
+    `-H "${SESSION_KEY_HEADER}: \${YARVIS_SESSION_KEY}" ` +
+    `-H "${SESSION_TOKEN_HEADER}: \${YARVIS_SESSION_TOKEN}" ` +
     `-H "Content-Type: application/json" ` +
     `--data-binary @- >/dev/null 2>&1; ` +
     `else cat >/dev/null 2>&1; fi; true`
@@ -184,10 +191,10 @@ export function buildClaudeSettings(
 
 /**
  * (Re)writes `.claude/settings.json` at the workspace root so a Claude Code
- * session launched there registers itself with Yarvis and signals when it needs
- * the user (blocked on a permission, idle waiting for input, or finished). Both launch flows start
- * Claude with cwd = the workspace root, so a project settings file here covers
- * them. Best-effort: a corrupt existing file is overwritten and any failure is
+ * session launched there registers itself with Yarvis and signals when it
+ * needs the user (blocked on a permission, idle waiting for input, or
+ * finished). Both launch flows start Claude with cwd = the workspace root, so
+ * a project settings file here covers them. Best-effort: a corrupt existing file is overwritten and any failure is
  * logged, never fatal to provisioning.
  */
 export function writeClaudeSettings(rootPath: string, workspaceId: string): void {

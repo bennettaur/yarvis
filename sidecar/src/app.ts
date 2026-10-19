@@ -102,7 +102,8 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   // raise an attention flag without holding the full-access bearer.
   app.route("/ingest", createAttentionIngestRoutes(config));
   // Same token and shape: the session hooks register the Claude process with
-  // its workspace.
+  // its workspace. The attention router's `/ingest/*` middleware also runs for
+  // it; this router checks the token itself rather than relying on that.
   app.route("/ingest/agent-session", createAgentSessionIngestRoutes(config));
 
   // The browser bridge is the same shape: the extension's native host holds only

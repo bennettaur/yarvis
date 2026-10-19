@@ -398,7 +398,9 @@ Safety rules:
   each Claude Code session registers itself with the workspace when it starts.
   A session started before its workspace had the registration hooks isn't
   known that way. Yarvis then goes by the agent's executable name, which fails
-  for Claude Code's native installer, so restart that session once.
+  for Claude Code's native installer. Yarvis adds the hooks when it next starts
+  a session in the workspace, or when a send is refused for this reason, so
+  restarting the session once after that fixes it.
 - **An instruction can't start with `!`, `/`, `#` or `@`.** The agent reads
   those as commands, not requests.
 - **A send confirms delivery only, never that the work was done.** Yarvis

@@ -96,7 +96,7 @@ mod unix_impl {
         /// model, so `pty::send_session_instruction` sanitizes and bounds it.
         instruction: String,
         /// Agent processes registered for the session by its SessionStart hook.
-        /// Absent from a sidecar that keeps no registry.
+        /// Defaults to empty, which leaves only the executable-name check.
         #[serde(default, rename = "agentPids")]
         agent_pids: Vec<u32>,
     }

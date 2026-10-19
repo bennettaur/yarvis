@@ -90,11 +90,19 @@ export interface SendSessionInstructionInput {
   instruction: string;
   /**
    * Pids of the Claude processes registered for the session's PTY. The core
-   * accepts any of them leading the foreground as the agent, on top of its own
-   * executable-name check.
+   * treats the session as Claude's when one of them leads the PTY's foreground
+   * process group, in addition to its own executable-name check.
    */
-  agentPids?: number[];
+  agentPids: number[];
 }
+
+/**
+ * The start of the core's refusal when neither a registered pid nor the
+ * agent's executable name identifies what holds the prompt. Must match the
+ * message in `send_session_instruction` in `src-tauri/src/pty.rs`.
+ */
+export const AGENT_NOT_RECOGNISED_ERROR =
+  "the configured agent is not what is reading that session's prompt";
 
 /** Injectable sender so the workspace tool is testable without the core. */
 export type ClaudeSessionMessenger = (input: SendSessionInstructionInput) => Promise<void>;

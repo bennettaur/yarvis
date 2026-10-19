@@ -670,9 +670,12 @@ export const workspaceAgentSessions = pgTable(
     claudeSessionId: text("claude_session_id").notNull(),
     pid: integer("pid").notNull(),
     // Claude's SessionStart `source` (startup, resume, clear, compact) the last
-    // time this session started, and SessionEnd's `reason` once it has ended.
+    // time this session started, and SessionEnd's `reason` once it has ended, or
+    // `process-gone` when the sidecar found the pid dead without a SessionEnd.
     source: text("source"),
     endReason: text("end_reason"),
+    // Kept across resumes; orders sessions so the earliest is primary.
+    // `startedAt` is the latest (re)start.
     firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
     startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
     endedAt: timestamp("ended_at", { withTimezone: true }),

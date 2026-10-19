@@ -19,7 +19,9 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use hmac::{Hmac, Mac};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use sha2::Sha256;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::settings::{non_blank, SettingsState};
@@ -282,6 +284,12 @@ fn is_attention_addressable(id: &str) -> bool {
 /// the workspace as a whole; `YARVIS_WORKSPACE_ID` is set only when the id
 /// encodes one.
 ///
+/// The session token proves which PTY a request came from. The attention token
+/// is the same in every session, so on its own it can't stop one session from
+/// speaking for another; the agent-session registry needs that, because a
+/// registered pid decides who `send_session_instruction` will type at. See
+/// `session_token`.
+///
 /// The MCP token lets a Claude Code session reach the Yarvis memory tools via
 /// the `.mcp.json` written at the workspace root, which references it rather
 /// than carrying it. It is absent when the core has no token to give, so the
@@ -309,6 +317,10 @@ fn session_env(
             attention_token.to_string(),
         ),
         ("YARVIS_SESSION_KEY".to_string(), id.to_string()),
+        (
+            "YARVIS_SESSION_TOKEN".to_string(),
+            session_token(attention_token, id),
+        ),
     ];
     if let Some(token) = mcp_token {
         env.push(("YARVIS_MCP_TOKEN".to_string(), token.to_string()));
@@ -317,6 +329,20 @@ fn session_env(
         env.push(("YARVIS_WORKSPACE_ID".to_string(), workspace_id.to_string()));
     }
     env
+}
+
+/// HMAC-SHA256 of a PTY's session key under the attention token, hex-encoded.
+/// The sidecar holds the attention token too, so it recomputes this from the
+/// session key a request names instead of keeping a list of issued tokens.
+fn session_token(attention_token: &str, session_key: &str) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(attention_token.as_bytes())
+        .expect("HMAC accepts a key of any length");
+    mac.update(session_key.as_bytes());
+    mac.finalize()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Spawns a shell in a new PTY and starts the reader thread that streams its
@@ -639,8 +665,8 @@ fn prepare_instruction(text: &str) -> Result<String, String> {
 /// Types `instruction` at the prompt of the agent session for `workspace_id` and
 /// submits it, exactly as if the user had typed it there.
 ///
-/// Refused unless the configured agent itself holds the PTY's foreground (see
-/// `foreground_is_agent`). The session is a real terminal: its agent can be
+/// Refused unless the agent holds the PTY's foreground: a registered Claude
+/// process, or the configured agent command (see `foreground_is_agent`). The session is a real terminal: its agent can be
 /// interrupted, leaving the bare shell — where the text would run as a command
 /// line — or replaced by whatever the user ran next, and text plus a carriage
 /// return typed into `vim` or a REPL is no better. The check needs the
@@ -649,7 +675,7 @@ fn prepare_instruction(text: &str) -> Result<String, String> {
 ///
 /// `agent_pids` are the agent processes the sidecar has on record for this
 /// session (see `foreground_is_agent`). They only widen what is recognised as
-/// the agent: a pid that has exited or sits outside the foreground matches
+/// the agent: a pid that has exited or doesn't lead the foreground matches
 /// nothing.
 ///
 /// What it still cannot establish is *what the agent is showing*. An agent
@@ -724,9 +750,11 @@ fn foreground_pid(session: &PtySession) -> Option<u32> {
 /// launched with. Two ways to know that:
 ///
 /// - `agent_pids`, the Claude Code processes that registered themselves for
-///   this session through the workspace's SessionStart hook. A match is exact:
-///   the foreground process group is the one that agent leads, however the
-///   agent was installed or updated since.
+///   this session through the workspace's SessionStart hook. A match means
+///   that agent leads the PTY's foreground process group, whatever its
+///   executable is called on disk. Only the leader counts: a registered
+///   `claude -p` run as a child of a script in the foreground is in the
+///   script's group, and the script is what reads the terminal.
 /// - Otherwise, the foreground executable's file name against the launch
 ///   command's first word. This covers an agent that registers nothing (a
 ///   non-Claude agent, or a session started before the hook was installed).
@@ -750,10 +778,7 @@ fn foreground_is_agent(app: &AppHandle, session: &PtySession, agent_pids: &[u32]
         );
         return false;
     };
-    if agent_pids
-        .iter()
-        .any(|&agent| process_group(agent) == Some(pid))
-    {
+    if agent_pids.contains(&pid) {
         return true;
     }
     let Some(exe) = process_executable(pid) else {
@@ -762,6 +787,7 @@ fn foreground_is_agent(app: &AppHandle, session: &PtySession, agent_pids: &[u32]
     };
     let command = agent_command(app);
     let Some(argv0) = command.split_whitespace().next() else {
+        eprintln!("[pty] refused instruction: no agent command is configured");
         return false;
     };
     let expected = Path::new(argv0).file_name().unwrap_or(argv0.as_ref());
@@ -770,30 +796,11 @@ fn foreground_is_agent(app: &AppHandle, session: &PtySession, agent_pids: &[u32]
         // The command itself isn't logged: it is user-written and can carry an
         // inline `VAR=secret` assignment.
         eprintln!(
-            "[pty] refused instruction: foreground executable {exe} is not the configured agent, and none of the {} registered agent pid(s) leads the foreground",
+            "[pty] refused instruction: foreground executable {exe} is not the configured agent, and none of the {} registered agent pid(s) leads the foreground process group",
             agent_pids.len()
         );
     }
     matched
-}
-
-/// The process group `pid` belongs to, or None when it has exited or the
-/// platform can't say. Compared against the PTY's foreground group, which is
-/// the group leader's pid, so an agent started through a wrapper script still
-/// matches.
-fn process_group(pid: u32) -> Option<u32> {
-    #[cfg(unix)]
-    {
-        let pid = libc::pid_t::try_from(pid).ok()?;
-        // SAFETY: `getpgid` only reads the pid by value.
-        let group = unsafe { libc::getpgid(pid) };
-        u32::try_from(group).ok().filter(|&g| g > 0)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        None
-    }
 }
 
 /// Absolute path to a running process's executable, or None when it can't be
@@ -1094,8 +1101,8 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 mod tests {
     use super::{
         agent_launch_command, attention_workspace_id, is_unsafe_name_char, lock_scrollback,
-        prepare_instruction, process_group, remote_control_command, resolve_agent_command,
-        resolve_max_sessions, session_env, snapshot, Scrollback, DEFAULT_AGENT_COMMAND,
+        prepare_instruction, remote_control_command, resolve_agent_command, resolve_max_sessions,
+        session_env, session_token, snapshot, Scrollback, DEFAULT_AGENT_COMMAND,
         DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK,
         MAX_SESSION_NAME_CHARS,
     };
@@ -1208,20 +1215,6 @@ mod tests {
             resolve_agent_command(None, Some("  codex --yolo  ".to_string())),
             "codex --yolo"
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn process_group_reports_the_group_a_live_process_is_in() {
-        // SAFETY: `getpgrp` takes no arguments and only reads process state.
-        let own_group = unsafe { libc::getpgrp() } as u32;
-        assert_eq!(process_group(std::process::id()), Some(own_group));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn process_group_is_none_for_a_pid_that_cannot_exist() {
-        assert_eq!(process_group(u32::MAX), None);
     }
 
     #[cfg(unix)]
@@ -1427,6 +1420,10 @@ mod tests {
                     "YARVIS_SESSION_KEY".to_string(),
                     "ws-claude:abc-123".to_string()
                 ),
+                (
+                    "YARVIS_SESSION_TOKEN".to_string(),
+                    session_token("tok", "ws-claude:abc-123")
+                ),
                 ("YARVIS_MCP_TOKEN".to_string(), "mcp-tok".to_string()),
                 ("YARVIS_WORKSPACE_ID".to_string(), "abc-123".to_string()),
             ]
@@ -1444,6 +1441,10 @@ mod tests {
                 (
                     "YARVIS_SESSION_KEY".to_string(),
                     "ws:abc-123/t1/p1".to_string()
+                ),
+                (
+                    "YARVIS_SESSION_TOKEN".to_string(),
+                    session_token("tok", "ws:abc-123/t1/p1")
                 ),
                 ("YARVIS_MCP_TOKEN".to_string(), "mcp-tok".to_string()),
                 ("YARVIS_WORKSPACE_ID".to_string(), "abc-123".to_string()),
@@ -1474,6 +1475,10 @@ mod tests {
                     "YARVIS_SESSION_KEY".to_string(),
                     "tab:terminal/abc/def".to_string()
                 ),
+                (
+                    "YARVIS_SESSION_TOKEN".to_string(),
+                    session_token("tok", "tab:terminal/abc/def")
+                ),
                 ("YARVIS_MCP_TOKEN".to_string(), "mcp-tok".to_string()),
             ]
         );
@@ -1486,6 +1491,24 @@ mod tests {
         let env = session_env("tab:terminal/abc/def", 8765, "tok", None);
         assert!(env.iter().any(|(key, _)| key == "YARVIS_ATTENTION_TOKEN"));
         assert!(!env.iter().any(|(key, _)| key == "YARVIS_MCP_TOKEN"));
+    }
+
+    #[test]
+    fn session_token_is_the_hmac_the_sidecar_recomputes() {
+        // RFC 4231 test case 2. The sidecar verifies with node:crypto's
+        // HMAC-SHA256, so both ends have to agree with the standard.
+        assert_eq!(
+            session_token("Jefe", "what do ya want for nothing?"),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+    }
+
+    #[test]
+    fn session_token_differs_per_session() {
+        assert_ne!(
+            session_token("tok", "ws-claude:a"),
+            session_token("tok", "ws-claude:b")
+        );
     }
 
     #[test]

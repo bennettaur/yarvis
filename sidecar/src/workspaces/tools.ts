@@ -15,9 +15,10 @@ import {
 import type { IssueDetail, IssueSummary } from "../issues/types.ts";
 import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
 import { type ActivityRecapper, recapActivity, recapWorkspaceSession } from "./activity.ts";
-import { listLiveAgentSessions } from "./agentSessions.ts";
+import { reapAndListAgentSessions } from "./agentSessions.ts";
 import { kickOffResult, resolveWorkspaceBrief, WORKSPACE_BRIEF_FILE } from "./brief.ts";
 import {
+  AGENT_NOT_RECOGNISED_ERROR,
   type ClaudeSessionMessenger,
   type ClaudeSessionStarter,
   sendSessionInstruction as defaultSendSessionInstruction,
@@ -204,6 +205,9 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
    */
   const launchClaude = async (detail: WorkspaceDetail) => {
     const cwd = detail.rootPath;
+    // A workspace provisioned before the session-registration hooks existed
+    // gets them here, so the session about to start registers.
+    writeClaudeSettings(detail.rootPath, detail.id);
     try {
       const session = await startClaude({
         workspaceId: detail.id,
@@ -498,18 +502,21 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
 
     list_workspaces: tool({
       description:
-        "List existing workspaces (id, name, status, repos, lastViewedAt, agentSessions) so you can act on one — e.g. start a Claude session in it with start_workspace_session. lastViewedAt is when the user last had it open in Yarvis, to within about 15 minutes; null means never. agentSessions are the registered agents running in it, earliest first: primary marks the earliest, and sessionKey ws-claude:<id> is the agent tab send_workspace_instruction types into. An agent launched before the workspace had the registration hooks runs unlisted.",
+        "List existing workspaces (id, name, status, repos, lastViewedAt, agentSessions) so you can act on one — e.g. start a Claude session in it with start_workspace_session. lastViewedAt is when the user last had it open in Yarvis, to within about 15 minutes; null means never. agentSessions are the registered agents running in an active workspace, earliest first (primary is the earliest). sessionKey ws-claude:<workspace id> is the agent tab send_workspace_instruction types into; ws:<workspace id>/... is a terminal pane. An agent launched before the workspace had the registration hooks isn't listed, so an empty list doesn't mean nothing is running.",
       inputSchema: z.object({}),
       execute: async () => {
         const [rows, views] = await Promise.all([listWorkspaces(db), lastWorkspaceViews(db)]);
-        const sessions = await Promise.all(rows.map((w) => listLiveAgentSessions(db, w.id)));
-        return rows.map((w, i) => ({
+        const sessions = await reapAndListAgentSessions(
+          db,
+          rows.filter((w) => w.status === "active").map((w) => w.id),
+        );
+        return rows.map((w) => ({
           id: w.id,
           name: w.name,
           status: w.status,
           repos: w.repoNames,
           lastViewedAt: views.get(w.id)?.toISOString() ?? null,
-          agentSessions: sessions[i].map((s) => ({
+          agentSessions: (sessions.get(w.id) ?? []).map((s) => ({
             sessionKey: s.sessionKey,
             claudeSessionId: s.claudeSessionId,
             primary: s.primary,
@@ -696,14 +703,15 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           };
         }
         const sessionKey = `ws-claude:${workspaceId}`;
-        const registered = (await listLiveAgentSessions(db, workspaceId)).filter(
+        const sessions = await reapAndListAgentSessions(db, [workspaceId]);
+        const agentTabSessions = (sessions.get(workspaceId) ?? []).filter(
           (s) => s.sessionKey === sessionKey,
         );
         try {
           await sendInstruction({
             workspaceId,
             instruction,
-            agentPids: registered.map((s) => s.pid),
+            agentPids: agentTabSessions.map((s) => s.pid),
           });
           // Logged with its length rather than its text: the instruction is
           // model-composed from data an outside party can influence, and the
@@ -724,20 +732,22 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
             message: `Typed into the agent session in workspace "${detail.name}". Watch it in the Workspaces tab.`,
           };
         } catch (e) {
-          // A session that never registered was most likely started before its
-          // workspace had the registration hooks; rewriting the settings means
-          // the next session started there will register.
-          if (registered.length === 0) writeClaudeSettings(detail.rootPath, workspaceId);
+          const message = errorMessage(e);
+          const unrecognised =
+            agentTabSessions.length === 0 && message.includes(AGENT_NOT_RECOGNISED_ERROR);
+          // An agent tab with no registered session most likely predates its
+          // workspace's registration hooks. Writing them now means the next
+          // session started there registers, including one the UI launches.
+          if (unrecognised) writeClaudeSettings(detail.rootPath, workspaceId);
           return {
-            error: errorMessage(e),
+            error: message,
             workspaceId,
             name: detail.name,
             delivered: false,
-            registeredAgentSessions: registered.length,
-            note:
-              registered.length === 0
-                ? "The instruction was not delivered. No Claude Code session has registered itself in that workspace's agent tab, so Yarvis could only go by the agent's executable name. If a session is running there, restarting it lets Yarvis recognise it. If none is running, start one with start_workspace_session."
-                : "The instruction was not delivered. If no agent session is running, start one with start_workspace_session.",
+            registeredAgentSessionCount: agentTabSessions.length,
+            note: unrecognised
+              ? "The instruction was not delivered. No Claude Code session has registered itself in that workspace's agent tab, so Yarvis could only go by the agent's executable name. If one is running there, ask the user to restart it: Yarvis has now added the registration hooks, so the restarted session will be recognised. If none is running, start one with start_workspace_session."
+              : "The instruction was not delivered. If no agent session is running, start one with start_workspace_session.",
           };
         }
       },

@@ -151,12 +151,12 @@ export async function killClaudeSession(workspaceId: string): Promise<void> {
 export async function sendClaudeInstruction(input: {
   workspaceId: string;
   instruction: string;
-  agentPids?: number[];
+  agentPids: number[];
 }): Promise<void> {
   await rpc("claude.send", {
     workspaceId: input.workspaceId,
     instruction: input.instruction,
-    agentPids: input.agentPids ?? [],
+    agentPids: input.agentPids,
   });
 }
 

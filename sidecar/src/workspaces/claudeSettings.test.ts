@@ -113,6 +113,7 @@ async function runRegistrationHook(
         PATH: process.env.PATH ?? "",
         YARVIS_SIDECAR_PORT: String(server.port),
         YARVIS_ATTENTION_TOKEN: "tok",
+        YARVIS_SESSION_TOKEN: "session-tok",
         ...env,
       },
       stdin: new Blob([JSON.stringify(hookInput)]),
@@ -145,6 +146,7 @@ describe("agentSessionHookCommand", () => {
     expect(req!.url.searchParams.get("pid")).toBe(String(shellParent));
     expect(req!.headers.get("authorization")).toBe("Bearer tok");
     expect(req!.headers.get("x-yarvis-session-key")).toBe(`ws-claude:${WORKSPACE_ID}`);
+    expect(req!.headers.get("x-yarvis-session-token")).toBe("session-tok");
     expect(req!.body).toEqual(hookInput);
   });
 

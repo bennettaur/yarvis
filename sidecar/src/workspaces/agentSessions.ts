@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { workspaceAgentSessions } from "../db/schema.ts";
@@ -9,6 +10,15 @@ import { workspaceAgentSessions } from "../db/schema.ts";
  * process is the agent in a given PTY, which is what lets
  * `send_workspace_instruction` prove Claude is the one reading the prompt.
  */
+
+/** Header carrying the PTY id, from the session's `YARVIS_SESSION_KEY`. */
+export const SESSION_KEY_HEADER = "X-Yarvis-Session-Key";
+
+/** Header carrying the PTY's `YARVIS_SESSION_TOKEN`; see `sessionTokenMatches`. */
+export const SESSION_TOKEN_HEADER = "X-Yarvis-Session-Token";
+
+/** End reason recorded for a session whose process exited without a SessionEnd. */
+export const PROCESS_GONE_END_REASON = "process-gone";
 
 export interface AgentSessionStart {
   workspaceId: string;
@@ -29,19 +39,34 @@ export interface LiveAgentSession {
   claudeSessionId: string;
   pid: number;
   source: string | null;
-  firstSeenAt: Date;
   startedAt: Date;
   /** The earliest-registered session still running in the workspace. */
   primary: boolean;
 }
 
-/** End reason recorded for a session whose process exited without a SessionEnd. */
-export const PROCESS_GONE = "process-gone";
+/**
+ * True when `token` is the one the core put in the environment of the PTY named
+ * `sessionKey`: an HMAC of the key under the attention token, which every
+ * session holds but none can use to sign for another (`session_token` in
+ * `src-tauri/src/pty.rs`). This is what stops a process in one terminal from
+ * registering under another terminal's key.
+ */
+export function sessionTokenMatches(
+  attentionToken: string,
+  sessionKey: string,
+  token: string,
+): boolean {
+  const expected = createHmac("sha256", attentionToken).update(sessionKey).digest();
+  const given = Buffer.from(token, "hex");
+  return given.length === expected.length && timingSafeEqual(given, expected);
+}
 
 /**
- * True when `key` names a PTY that belongs to `workspaceId`. The ingest token is
- * shared by every session, so this is what stops one workspace's session from
- * registering under another's agent tab.
+ * True when `key` names a PTY that belongs to `workspaceId`. The hooks bake in
+ * the workspace id of the settings file they came from, while the key comes
+ * from the terminal, so the two disagree when a Claude started in one
+ * workspace's terminal runs from another's root. That registration is refused
+ * rather than filed under the wrong workspace.
  */
 export function sessionKeyBelongsTo(key: string, workspaceId: string): boolean {
   return key === `ws-claude:${workspaceId}` || key.startsWith(`ws:${workspaceId}/`);
@@ -82,8 +107,9 @@ export async function recordAgentSessionEnd(db: Db, end: AgentSessionEnd): Promi
 }
 
 /**
- * True when a process with this pid exists. EPERM still means it exists; it
- * just belongs to someone else, which a recycled pid can.
+ * True when a process with this pid exists. EPERM still means a process
+ * exists, just one owned by another user (a recycled pid can be), so it counts
+ * as alive.
  */
 export function pidIsAlive(pid: number): boolean {
   try {
@@ -95,48 +121,49 @@ export function pidIsAlive(pid: number): boolean {
 }
 
 /**
- * The sessions running in a workspace, earliest-registered first. A row whose
- * process has gone is closed here rather than returned, because a killed or
- * crashed Claude never fires SessionEnd.
+ * The sessions running in each of `workspaceIds`, earliest-registered first.
+ * Also writes: a row whose process has gone is closed here rather than
+ * returned, because a killed or crashed Claude never fires SessionEnd. Every
+ * id asked about gets an entry, empty when nothing is running there.
  */
-export async function listLiveAgentSessions(
+export async function reapAndListAgentSessions(
   db: Db,
-  workspaceId: string,
+  workspaceIds: string[],
   isAlive: (pid: number) => boolean = pidIsAlive,
-): Promise<LiveAgentSession[]> {
+): Promise<Map<string, LiveAgentSession[]>> {
+  const byWorkspace = new Map<string, LiveAgentSession[]>(workspaceIds.map((id) => [id, []]));
+  if (workspaceIds.length === 0) return byWorkspace;
+
   const rows = await db
     .select()
     .from(workspaceAgentSessions)
     .where(
       and(
-        eq(workspaceAgentSessions.workspaceId, workspaceId),
+        inArray(workspaceAgentSessions.workspaceId, workspaceIds),
         isNull(workspaceAgentSessions.endedAt),
       ),
     )
     .orderBy(asc(workspaceAgentSessions.firstSeenAt));
 
-  const gone = rows.filter((r) => !isAlive(r.pid));
-  if (gone.length > 0) {
+  const goneIds = new Set(rows.filter((r) => !isAlive(r.pid)).map((r) => r.id));
+  if (goneIds.size > 0) {
     await db
       .update(workspaceAgentSessions)
-      .set({ endedAt: sql`now()`, endReason: PROCESS_GONE })
-      .where(
-        inArray(
-          workspaceAgentSessions.id,
-          gone.map((r) => r.id),
-        ),
-      );
+      .set({ endedAt: sql`now()`, endReason: PROCESS_GONE_END_REASON })
+      .where(inArray(workspaceAgentSessions.id, [...goneIds]));
   }
 
-  return rows
-    .filter((r) => !gone.includes(r))
-    .map((r, i) => ({
+  for (const r of rows) {
+    if (goneIds.has(r.id)) continue;
+    const sessions = byWorkspace.get(r.workspaceId);
+    sessions?.push({
       sessionKey: r.sessionKey,
       claudeSessionId: r.claudeSessionId,
       pid: r.pid,
       source: r.source,
-      firstSeenAt: r.firstSeenAt,
       startedAt: r.startedAt,
-      primary: i === 0,
-    }));
+      primary: sessions.length === 0,
+    });
+  }
+  return byWorkspace;
 }

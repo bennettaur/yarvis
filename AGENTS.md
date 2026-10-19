@@ -287,10 +287,12 @@ back to ad-hoc.
   three. Which process is the agent comes from the pids Claude Code's
   SessionStart hook registered (`workspaces/agentSessions.ts`), with the
   executable's file name as the fallback for an agent that registers nothing.
-  A registered pid counts only while its process group holds the PTY's
-  foreground, so a stale pid, or one registered from another terminal, matches
-  nothing. Anything running in the agent's own PTY holds the ingest token and
-  could register itself, but it already has that terminal.
+  A registered pid counts only while it leads the PTY's foreground process
+  group, so a stale one matches nothing. Every PTY holds the same ingest token,
+  so registration also needs the PTY's own `YARVIS_SESSION_TOKEN`, an HMAC of
+  its session key that the sidecar recomputes: a process can register only
+  under the terminal it runs in, and anything in the agent's own terminal
+  already has it.
 - A workspace root's `.claude` directory is jointly owned. Provisioning copies
   each repo's skills and agents up into it (`workspaces/claudeAssets.ts`) because
   Claude Code discovers them only under the directory it starts in and the
