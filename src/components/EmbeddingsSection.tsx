@@ -2,18 +2,20 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { getHealth, waitForSidecarReady } from "../lib/api";
 import { restartSidecar } from "../lib/keychain";
 import {
-  deleteEmbeddingsSecret,
   type EmbedderHealth,
   type EmbeddingsConfig,
-  type EmbeddingsSecretSlot,
-  type EmbeddingsSecretStatus,
-  getEmbeddingsSecretStatus,
   memDeleteEmbeddingsConfig,
   memEmbeddingsConfig,
   memReembed,
   memSetEmbeddingsConfig,
-  setEmbeddingsSecret,
 } from "../lib/memory";
+import {
+  deleteEmbeddingsSecret,
+  type EmbeddingsSecretSlot,
+  type EmbeddingsSecretStatus,
+  getEmbeddingsSecretStatus,
+  setEmbeddingsSecret,
+} from "../lib/privilegedCommands";
 import { StatusDot } from "./Dashboard";
 
 /**

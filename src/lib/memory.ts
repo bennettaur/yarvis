@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { sidecarFetch } from "./api";
 import type { ProviderId } from "./chat";
 
@@ -223,25 +222,3 @@ export const memDeleteEmbeddingsConfig = () =>
   send<{ deleted: boolean }>("/api/memory/embeddings/config", "DELETE");
 
 export const memReembed = () => send<{ reembedded: number }>("/api/memory/reembed", "POST");
-
-/* ---------- Embeddings secrets (Tauri commands, Keychain-backed) ---------- */
-
-export type EmbeddingsSecretSlot = "apiKey" | `header:${string}`;
-
-export interface EmbeddingsSecretStatus {
-  apiKeyPresent: boolean;
-  /** Header name → whether a value is stored. */
-  headers: Record<string, boolean>;
-}
-
-export function getEmbeddingsSecretStatus(): Promise<EmbeddingsSecretStatus> {
-  return invoke<EmbeddingsSecretStatus>("get_embeddings_secret_status");
-}
-
-export function setEmbeddingsSecret(slot: EmbeddingsSecretSlot, value: string): Promise<void> {
-  return invoke("set_embeddings_secret", { slot, value });
-}
-
-export function deleteEmbeddingsSecret(slot: EmbeddingsSecretSlot): Promise<void> {
-  return invoke("delete_embeddings_secret", { slot });
-}

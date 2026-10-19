@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { ensureOk, sidecarFetch } from "./api";
 
 /**
@@ -81,29 +80,4 @@ export async function deleteCustomProvider(id: string): Promise<void> {
     method: "DELETE",
   });
   await ensureOk(res, "delete custom provider");
-}
-
-/* ---------- Secrets (Tauri commands, Keychain-backed) ---------- */
-
-export function listCustomProviderSecretStatus(): Promise<CustomProviderSecretStatus[]> {
-  return invoke<CustomProviderSecretStatus[]>("list_custom_provider_secret_status");
-}
-
-export function setCustomProviderSecret(
-  providerId: string,
-  slot: CustomProviderSecretSlot,
-  value: string,
-): Promise<void> {
-  return invoke("set_custom_provider_secret", { providerId, slot, value });
-}
-
-export function deleteCustomProviderSecret(
-  providerId: string,
-  slot: CustomProviderSecretSlot,
-): Promise<void> {
-  return invoke("delete_custom_provider_secret", { providerId, slot });
-}
-
-export function deleteAllCustomProviderSecrets(providerId: string): Promise<void> {
-  return invoke("delete_custom_provider_all_secrets", { providerId });
 }

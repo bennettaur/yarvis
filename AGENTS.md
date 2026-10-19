@@ -179,6 +179,13 @@ back to ad-hoc.
   sidecar's HTTP API exactly as before. Everything else the sidecar owns —
   actual data (chat history, memories, workspaces, PR/issue caches) — lives in
   Postgres.
+- The frontend calls Tauri commands that write a secret, switch the secret
+  store or set the agent's launch command only from
+  `src/lib/privilegedCommands.ts`, and ones that type into or launch a shell
+  only from `src/lib/pty.ts`. Every `invoke` names its command as a string
+  literal. `scripts/verify/nativeBridge.test.ts` enforces both, and it is what
+  lets the rest of `src/` count as low risk when a PR is verified. A new
+  command of that kind goes in one of those two files and in the test's list.
 - Several instances of the app can run at once (`bun run dev:instance`), sharing
   one Keychain item, the same `~/.yarvis/settings.json`, and, unless told
   otherwise, one database. Anything singular to the machine or to that shared

@@ -164,8 +164,14 @@ describe("coverageStatus", () => {
 });
 
 describe("inline", () => {
-  it("removes HTML comments, even ones rebuilt by removing another", () => {
-    expect(inline("a <!<!---- yarvis-verify-data x -->--> b")).not.toMatch(/<!--|-->/);
+  it("leaves no HTML tag or comment able to open", () => {
+    expect(inline("a <!-- yarvis-verify-data x --> <b>b</b> & c")).toBe(
+      "a &lt;!-- yarvis-verify-data x --&gt; &lt;b&gt;b&lt;/b&gt; &amp; c",
+    );
+  });
+
+  it("escapes backslashes, so one can't cancel the pipe escape", () => {
+    expect(inline("a\\|b")).toBe("a\\\\\\|b");
   });
 
   it("keeps text from breaking the table or pinging people", () => {
