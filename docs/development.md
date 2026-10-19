@@ -168,6 +168,14 @@ settings:
   both. Before switching to `enforce`, make `Verification report` a required
   status check in the `Protect Main` ruleset.
 
+### Checking the thresholds
+
+`bun run verify:calibrate --days 60` lists each verdict, and each way PRs were
+approved, against how many of those merges were later reverted or caused a
+regression. Reverts are found from GitHub's `Reverts owner/repo#N` line. For a
+fix that doesn't revert, add a line `Regression-from: #N` to the fix PR's
+description, so it counts too.
+
 ## Running more than one instance
 
 A branch under development can run beside the copy you use every day. Give the
