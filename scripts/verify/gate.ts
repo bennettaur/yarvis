@@ -29,6 +29,13 @@ import { type ChangedFile, classify, type Tier } from "./tier.ts";
 /** The commit status the gate sets. Make it required in the ruleset once out of shadow mode. */
 const STATUS_CONTEXT = "Verification report";
 
+/**
+ * How each kind of bot approval begins. `calibrate.ts` reads them back to tell
+ * how a merged PR was approved.
+ */
+export const AUTO_APPROVAL_PREFIX = "Auto-approved:";
+export const APPROVE_COMMAND_PREFIX = "Approved by @";
+
 /** The pull request files API stops listing files here. */
 const MAX_LISTED_FILES = 3000;
 
@@ -276,7 +283,7 @@ function handleApprove(
   if (pr.draft) run("gh", ["pr", "ready", String(pr.number)]);
   approveAndMerge(
     pr,
-    `Approved by @${commenter.login} with /approve at ${pr.head.sha.slice(0, 7)}.`,
+    `${APPROVE_COMMAND_PREFIX}${commenter.login} with /approve at ${pr.head.sha.slice(0, 7)}.`,
   );
   react(event.comment.id, "rocket");
 }
@@ -299,7 +306,7 @@ function handleReport(event: CommentEvent, pr: PullRequest, trusted: number[], m
   if (decision.approve) {
     approveAndMerge(
       pr,
-      `Auto-approved: the verification report for ${pr.head.sha.slice(0, 7)} passed.`,
+      `${AUTO_APPROVAL_PREFIX} the verification report for ${pr.head.sha.slice(0, 7)} passed.`,
     );
   }
   setStatus(pr.head.sha, decision.status, event.comment.html_url);
