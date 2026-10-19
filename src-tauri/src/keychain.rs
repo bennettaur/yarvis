@@ -35,11 +35,23 @@
 //! empty — which is what a locked 1Password or a dismissed Touch ID prompt
 //! looks like — would erase every other secret in it on the next save. Hence
 //! [`read_root`] is fallible and every caller refuses to write on an error.
+//!
+//! For the same reason, two writes must not overlap: each would save its own
+//! copy of the blob, and the one that lands second drops the other's change.
+//! Writers come from the webview, the sidecar's control channel and startup
+//! migrations, and from every running app instance, since instances share the
+//! item. So every write goes through [`update_root`] or [`update_root_in`],
+//! which hold [`lock_for_write`] from the read to the write.
+
+use std::fs::{File, OpenOptions};
+use std::path::Path;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::secret_store::{self, Store};
+use crate::settings;
 
 /// The complete set of top-level secrets the app manages. Writes to any other
 /// key are rejected so the frontend cannot store arbitrary data in the secret
@@ -95,17 +107,111 @@ pub fn read_root() -> Result<Value, String> {
     read_root_from(&secret_store::active())
 }
 
-/// Persists the secrets blob to `store`, replacing that item's contents.
-pub fn write_root_to(store: &Store, root: &Value) -> Result<(), String> {
+/// Persists the secrets blob to `store`, replacing that item's contents. Takes
+/// the write guard so only a caller holding the lock can write.
+pub fn write_root_to(_guard: &WriteGuard, store: &Store, root: &Value) -> Result<(), String> {
     let serialized = serde_json::to_string(root).map_err(|e| e.to_string())?;
     store
         .write(&serialized)
         .map_err(|e| format!("could not save secrets to {}: {e}", store.label()))
 }
 
-/// Persists the secrets blob to the configured store.
-pub fn write_root(root: &Value) -> Result<(), String> {
-    write_root_to(&secret_store::active(), root)
+/// Serializes writers inside this process. The file lock alone would too, but it
+/// needs `~/.yarvis`, which is unknown until settings load and absent in tests.
+static WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Proof that this caller holds the secrets write lock; dropping it releases
+/// the lock.
+pub struct WriteGuard {
+    // Fields drop in order: the file lock is released before the mutex.
+    _file: Option<File>,
+    _local: MutexGuard<'static, ()>,
+}
+
+/// Waits for, and takes, the lock every write of the secrets blob holds. It
+/// covers both stores, so a write and a switch between stores can't interleave
+/// either. A writer that panicked left nothing half-written in the store, so a
+/// poisoned mutex is still safe to take.
+pub fn lock_for_write() -> Result<WriteGuard, String> {
+    let local = WRITE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    let file = settings::secrets_lock_path()
+        .map(|path| lock_file(&path))
+        .transpose()?;
+    Ok(WriteGuard {
+        _file: file,
+        _local: local,
+    })
+}
+
+/// Blocks until this process holds an exclusive lock on `path`, which other
+/// instances take too. The OS releases it when the file closes, so an instance
+/// that crashes mid-write doesn't leave the lock held.
+fn lock_file(path: &Path) -> Result<File, String> {
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("could not open {}: {e}", path.display()))?;
+    file.lock()
+        .map_err(|e| format!("could not lock {}: {e}", path.display()))?;
+    Ok(file)
+}
+
+/// Reads the blob from `store`, lets `edit` change it, and writes it back,
+/// holding [`lock_for_write`] throughout. `edit` returns whether it changed
+/// anything; when it didn't, nothing is written, which spares a 1Password user
+/// a prompt for a no-op.
+pub fn update_root_in(
+    store: &Store,
+    edit: impl FnOnce(&mut Value) -> Result<bool, String>,
+) -> Result<(), String> {
+    let guard = lock_for_write()?;
+    update_root_locked(&guard, store, edit)
+}
+
+/// [`update_root_in`] for the configured store. The store is looked up after
+/// the lock is taken, so a switch to another store that finished while this
+/// write waited is honored.
+pub fn update_root(edit: impl FnOnce(&mut Value) -> Result<bool, String>) -> Result<(), String> {
+    let guard = lock_for_write()?;
+    update_root_locked(&guard, &secret_store::active(), edit)
+}
+
+fn update_root_locked(
+    guard: &WriteGuard,
+    store: &Store,
+    edit: impl FnOnce(&mut Value) -> Result<bool, String>,
+) -> Result<(), String> {
+    let mut root = read_root_from(store)?;
+    if !root.is_object() {
+        return Err("secrets store is not a JSON object".to_string());
+    }
+    if edit(&mut root)? {
+        write_root_to(guard, store, &root)?;
+    }
+    Ok(())
+}
+
+/// [`update_root`] for a module that keeps its credentials in one subtree of
+/// the blob under `key`. `edit` sees that subtree, empty when there is none.
+pub fn update_subtree(
+    key: &str,
+    edit: impl FnOnce(&mut Value) -> Result<bool, String>,
+) -> Result<(), String> {
+    update_root(|root| {
+        let obj = root.as_object_mut().expect("checked by update_root");
+        let mut subtree = obj
+            .get(key)
+            .filter(|v| v.is_object())
+            .cloned()
+            .unwrap_or_else(|| Value::Object(Map::new()));
+        if !edit(&mut subtree)? {
+            return Ok(false);
+        }
+        obj.insert(key.to_string(), subtree);
+        Ok(true)
+    })
 }
 
 /// Extracts a non-empty top-level secret from an already-read blob.
@@ -121,12 +227,11 @@ pub fn set_secret(key: String, value: String) -> Result<(), String> {
     if !is_known(&key) {
         return Err(format!("unknown secret key: {key}"));
     }
-    let mut root = read_root()?;
-    let obj = root
-        .as_object_mut()
-        .ok_or_else(|| "secrets store is not a JSON object".to_string())?;
-    obj.insert(key, Value::String(value));
-    write_root(&root)
+    update_root(|root| {
+        let obj = root.as_object_mut().expect("checked by update_root");
+        obj.insert(key, Value::String(value));
+        Ok(true)
+    })
 }
 
 #[tauri::command(async)]
@@ -142,11 +247,10 @@ pub fn delete_secret(key: String) -> Result<(), String> {
     if !is_known(&key) {
         return Err(format!("unknown secret key: {key}"));
     }
-    let mut root = read_root()?;
-    if let Some(obj) = root.as_object_mut() {
-        obj.remove(&key);
-    }
-    write_root(&root)
+    update_root(|root| {
+        let obj = root.as_object_mut().expect("checked by update_root");
+        Ok(obj.remove(&key).is_some())
+    })
 }
 
 #[tauri::command(async)]
@@ -165,7 +269,7 @@ pub fn list_secret_status() -> Result<Vec<SecretStatus>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_root, read_root_from, write_root_to};
+    use super::{lock_file, parse_root, read_root_from, update_root_in};
     use crate::secret_store::{MemoryStore, Store};
     use serde_json::json;
 
@@ -218,15 +322,72 @@ mod tests {
         let fake = MemoryStore::holding(r#"{"mcpServers":{"a":{}},"github_token":"old"}"#);
         let store = Store::Memory(fake.clone());
 
-        let mut root = read_root_from(&store).unwrap();
-        root.as_object_mut()
-            .unwrap()
-            .insert("github_token".to_string(), json!("new"));
-        write_root_to(&store, &root).unwrap();
+        update_root_in(&store, |root| {
+            root.as_object_mut()
+                .unwrap()
+                .insert("github_token".to_string(), json!("new"));
+            Ok(true)
+        })
+        .unwrap();
 
         assert_eq!(
             read_root_from(&store).unwrap(),
             json!({ "mcpServers": { "a": {} }, "github_token": "new" })
         );
+    }
+
+    /// The race the write lock exists for: writers that each read the blob,
+    /// add their own key and write it back must not drop each other's keys.
+    #[test]
+    fn concurrent_writers_keep_every_change() {
+        let fake = MemoryStore::empty();
+        let store = Store::Memory(fake.clone());
+        std::thread::scope(|scope| {
+            for i in 0..16 {
+                let store = &store;
+                scope.spawn(move || {
+                    update_root_in(store, |root| {
+                        // Widens the window between this writer's read and its write.
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                        root.as_object_mut()
+                            .unwrap()
+                            .insert(format!("key{i}"), json!(i));
+                        Ok(true)
+                    })
+                    .unwrap();
+                });
+            }
+        });
+        let root = read_root_from(&store).unwrap();
+        assert_eq!(root.as_object().unwrap().len(), 16);
+    }
+
+    #[test]
+    fn an_edit_that_changes_nothing_writes_nothing() {
+        let fake = MemoryStore::holding(r#"{"github_token":"t"}"#);
+        let store = Store::Memory(fake.clone());
+        update_root_in(&store, |_| Ok(false)).unwrap();
+        assert!(fake.writes().is_empty());
+    }
+
+    #[test]
+    fn a_failed_read_writes_nothing() {
+        let fake = MemoryStore::unreadable();
+        let store = Store::Memory(fake.clone());
+        assert!(update_root_in(&store, |_| Ok(true)).is_err());
+        assert!(fake.writes().is_empty());
+    }
+
+    /// Another instance holding the lock file keeps this one out until it closes.
+    #[test]
+    fn the_lock_file_shuts_out_a_second_holder_until_released() {
+        let path =
+            std::env::temp_dir().join(format!("yarvis-secrets-lock-test-{}", std::process::id()));
+        let held = lock_file(&path).unwrap();
+        let other = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        assert!(other.try_lock().is_err());
+        drop(held);
+        assert!(other.try_lock().is_ok());
+        let _ = std::fs::remove_file(&path);
     }
 }

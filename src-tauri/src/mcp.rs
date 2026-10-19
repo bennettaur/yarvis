@@ -39,13 +39,8 @@ fn servers_from_root(root: &Value) -> Value {
         .unwrap_or_else(|| Value::Object(Map::new()))
 }
 
-fn write_blob(value: &Value) -> Result<(), String> {
-    let mut root = keychain::read_root()?;
-    let obj = root
-        .as_object_mut()
-        .ok_or_else(|| "secrets store is not a JSON object".to_string())?;
-    obj.insert(MCP_SERVERS_KEY.to_string(), value.clone());
-    keychain::write_root(&root)
+fn update_blob(edit: impl FnOnce(&mut Value) -> Result<bool, String>) -> Result<(), String> {
+    keychain::update_subtree(MCP_SERVERS_KEY, edit)
 }
 
 fn server_entry<'a>(blob: &'a mut Value, id: &str) -> &'a mut Map<String, Value> {
@@ -186,27 +181,25 @@ pub fn list_mcp_secret_status() -> Result<Vec<McpSecretStatus>, String> {
 #[tauri::command(async)]
 pub fn set_mcp_secret(server_id: String, slot: String, value: String) -> Result<(), String> {
     validate_slot(&slot)?;
-    let mut blob = read_blob()?;
-    if !blob.is_object() {
-        blob = Value::Object(Map::new());
-    }
-    let server = server_entry(&mut blob, &server_id);
-    let (field, name) = if let Some(name) = slot.strip_prefix("header:") {
-        ("headers", name)
-    } else {
-        ("env", slot.strip_prefix("env:").expect("validated above"))
-    };
-    let bucket = server
-        .entry(field)
-        .or_insert_with(|| Value::Object(Map::new()));
-    if !bucket.is_object() {
-        *bucket = Value::Object(Map::new());
-    }
-    bucket
-        .as_object_mut()
-        .expect("just ensured")
-        .insert(name.to_string(), Value::String(value));
-    write_blob(&blob)
+    update_blob(|blob| {
+        let server = server_entry(blob, &server_id);
+        let (field, name) = if let Some(name) = slot.strip_prefix("header:") {
+            ("headers", name)
+        } else {
+            ("env", slot.strip_prefix("env:").expect("validated above"))
+        };
+        let bucket = server
+            .entry(field)
+            .or_insert_with(|| Value::Object(Map::new()));
+        if !bucket.is_object() {
+            *bucket = Value::Object(Map::new());
+        }
+        bucket
+            .as_object_mut()
+            .expect("just ensured")
+            .insert(name.to_string(), Value::String(value));
+        Ok(true)
+    })
 }
 
 fn entry_is_empty(entry: &Map<String, Value>) -> bool {
@@ -238,69 +231,57 @@ fn validate_server_id(id: &str) -> Result<(), String> {
 /// is validated here rather than trusted from the caller.
 pub fn store_oauth(server_id: &str, oauth: Option<Value>) -> Result<(), String> {
     validate_server_id(server_id)?;
-    let mut blob = read_blob()?;
-    if !blob.is_object() {
-        blob = Value::Object(Map::new());
+    if oauth.as_ref().is_some_and(|value| !value.is_object()) {
+        return Err("oauth must be a JSON object".to_string());
     }
-    match oauth {
-        Some(value) => {
-            if !value.is_object() {
-                return Err("oauth must be a JSON object".to_string());
-            }
-            server_entry(&mut blob, server_id).insert("oauth".to_string(), value);
+    update_blob(|blob| {
+        if let Some(value) = oauth {
+            server_entry(blob, server_id).insert("oauth".to_string(), value);
+            return Ok(true);
         }
-        None => {
-            let Some(root) = blob.as_object_mut() else {
-                return Ok(());
-            };
-            let Some(server) = root.get_mut(server_id).and_then(|v| v.as_object_mut()) else {
-                return Ok(());
-            };
-            server.remove("oauth");
-            if entry_is_empty(server) {
-                root.remove(server_id);
-            }
+        let root = blob.as_object_mut().expect("subtree is an object");
+        let Some(server) = root.get_mut(server_id).and_then(|v| v.as_object_mut()) else {
+            return Ok(false);
+        };
+        server.remove("oauth");
+        if entry_is_empty(server) {
+            root.remove(server_id);
         }
-    }
-    write_blob(&blob)
+        Ok(true)
+    })
 }
 
 #[tauri::command(async)]
 pub fn delete_mcp_secret(server_id: String, slot: String) -> Result<(), String> {
     validate_slot(&slot)?;
-    let mut blob = read_blob()?;
-    let Some(root) = blob.as_object_mut() else {
-        return Ok(());
-    };
-    let Some(server) = root.get_mut(&server_id).and_then(|v| v.as_object_mut()) else {
-        return Ok(());
-    };
-    let (field, name) = if let Some(name) = slot.strip_prefix("header:") {
-        ("headers", name)
-    } else {
-        ("env", slot.strip_prefix("env:").expect("validated above"))
-    };
-    if let Some(bucket) = server.get_mut(field).and_then(|v| v.as_object_mut()) {
-        bucket.remove(name);
-    }
-    if entry_is_empty(server) {
-        root.remove(&server_id);
-    }
-    write_blob(&blob)
+    update_blob(|blob| {
+        let root = blob.as_object_mut().expect("subtree is an object");
+        let Some(server) = root.get_mut(&server_id).and_then(|v| v.as_object_mut()) else {
+            return Ok(false);
+        };
+        let (field, name) = if let Some(name) = slot.strip_prefix("header:") {
+            ("headers", name)
+        } else {
+            ("env", slot.strip_prefix("env:").expect("validated above"))
+        };
+        if let Some(bucket) = server.get_mut(field).and_then(|v| v.as_object_mut()) {
+            bucket.remove(name);
+        }
+        if entry_is_empty(server) {
+            root.remove(&server_id);
+        }
+        Ok(true)
+    })
 }
 
 /// Deletes every secret slot belonging to the given server id. Called from the
 /// frontend when an MCP server is removed so no orphan credentials linger.
 #[tauri::command(async)]
 pub fn delete_mcp_all_secrets(server_id: String) -> Result<(), String> {
-    let mut blob = read_blob()?;
-    let Some(root) = blob.as_object_mut() else {
-        return Ok(());
-    };
-    if root.remove(&server_id).is_some() {
-        write_blob(&blob)?;
-    }
-    Ok(())
+    update_blob(|blob| {
+        let root = blob.as_object_mut().expect("subtree is an object");
+        Ok(root.remove(&server_id).is_some())
+    })
 }
 
 /// Returns the raw JSON blob to inject as `YARVIS_MCP_SECRETS`, or `None` when
