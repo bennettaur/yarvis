@@ -47,6 +47,8 @@ export function createGithubAuthRoutes(
 }
 
 function defaultDeviceFlow(config: Pick<Config, "endpoints">): GitHubDeviceFlow | null {
+  // A github.com token would be sent to whatever stands in for the API.
+  if (config.endpoints?.githubApi || config.endpoints?.githubGraphql) return null;
   const clientId = githubClientId();
   if (!clientId) return null;
   return new GitHubDeviceFlow({

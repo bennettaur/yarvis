@@ -210,6 +210,14 @@ describe("GitHub sign-in routes", () => {
     return new Hono().route("/", createGithubAuthRoutes({}, deviceFlow));
   }
 
+  it("turns sign-in off when the GitHub API is overridden", async () => {
+    const routes = new Hono().route(
+      "/",
+      createGithubAuthRoutes({ endpoints: { githubApi: "http://127.0.0.1:9/api" } }),
+    );
+    expect(await (await routes.request("/")).json()).toEqual({ configured: false });
+  });
+
   it("says sign-in is off, and refuses to start, when no client ID is set", async () => {
     const routes = app(null);
     expect(await (await routes.request("/")).json()).toEqual({ configured: false });
@@ -252,6 +260,6 @@ describe("githubClientId", () => {
   });
 
   it("falls back to the built-in app when the variable is blank", () => {
-    expect(githubClientId({ YARVIS_GITHUB_CLIENT_ID: "  " })).toBe(githubClientId({}));
+    expect(githubClientId({ YARVIS_GITHUB_CLIENT_ID: "  " })).toBe("Ov23li5eiMR2dElA7v2T");
   });
 });

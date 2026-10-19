@@ -54,8 +54,8 @@ AWS Bedrock uses the standard AWS credential chain (`~/.aws`, `AWS_PROFILE`,
 
 ### Token scopes
 
-- **GitHub.** When the build has an OAuth App, the simplest option is **Sign
-  in with GitHub** above the GitHub token field. Yarvis shows a short code and
+- **GitHub.** The simplest option is **Sign in with GitHub** above the GitHub
+  token field. Yarvis shows a short code and
   opens github.com/login/device. Enter the code and approve the app, and the
   token is saved for you. It acts as you, with the `repo` and `read:org`
   scopes. `repo` is GitHub's only scope for private repos, so it allows reading
@@ -63,9 +63,9 @@ AWS Bedrock uses the standard AWS credential chain (`~/.aws`, `AWS_PROFILE`,
   left unused for a year. An organization that restricts OAuth app access has
   to approve Yarvis before it can see that org's repos.
 
-  Without an OAuth App the button is hidden. `YARVIS_GITHUB_CLIENT_ID` names
-  one, but a release build opened from Finder doesn't pass shell variables on,
-  so it only helps a dev build or an app started from a shell. The app needs
+  To sign in through a different OAuth App, set `YARVIS_GITHUB_CLIENT_ID`. A
+  release build opened from Finder doesn't pass shell variables on, so this
+  only works for a dev build or an app started from a shell. The app needs
   **Enable Device Flow** ticked, and no client secret.
 
   To paste a token instead: a classic PAT needs `repo` and `read:org`. A fine-grained PAT needs

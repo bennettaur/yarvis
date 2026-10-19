@@ -10,16 +10,16 @@
 
 /**
  * The Yarvis OAuth App's client ID. A client ID is public by design, and the
- * device flow never uses a secret. Empty turns sign-in off unless
- * `YARVIS_GITHUB_CLIENT_ID` names an app.
+ * device flow never uses a secret. `YARVIS_GITHUB_CLIENT_ID` points a build at
+ * a different app.
  */
-const DEFAULT_CLIENT_ID = "";
+const DEFAULT_CLIENT_ID = "Ov23li5eiMR2dElA7v2T";
 
 /** Issues and PRs in private repos need `repo`; org membership needs `read:org`. */
 const SCOPES = "repo read:org";
 
-// Always github.com: the demo's endpoint overrides stand in for the REST and
-// GraphQL APIs, and sign-in only runs when a real OAuth App client ID is set.
+// Always github.com. The demo's endpoint overrides stand in for the REST and
+// GraphQL APIs only, so `createGithubAuthRoutes` turns sign-in off under them.
 const DEVICE_CODE_URL = "https://github.com/login/device/code";
 const ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token";
 const DEFAULT_VERIFICATION_URI = "https://github.com/login/device";
