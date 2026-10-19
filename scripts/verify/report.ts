@@ -104,20 +104,24 @@ export function coverageStatus(coverage: Facts["coverage"]): Status {
 }
 
 /**
- * Makes model- or PR-written text safe to put in one line of the report: no
- * HTML comments (which could hide a second data block), no table breaks, no
- * @-mentions that ping people.
+ * Makes model- or PR-written text safe to put in one line of the report. `<`
+ * and `>` become entities, so no HTML comment can open and hide a second data
+ * block. Pipes would break the table, and @-mentions would ping people.
  */
 export function inline(text: string): string {
-  let out = text.replace(/\r?\n/g, " ");
-  // Repeat, since removing one `<!--` can join the pieces of another.
-  while (/<!--|-->/.test(out)) out = out.replace(/<!--|-->/g, "");
-  return out.replace(/\|/g, "\\|").replace(/@(?=\w)/g, "@\u200b");
+  return text
+    .replace(/\r?\n/g, " ")
+    .replace(/\\/g, "\\\\")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\|/g, "\\|")
+    .replace(/@(?=\w)/g, "@\u200b");
 }
 
-/** Like `inline`, for text inside a code span. */
+/** Text in a code span. HTML isn't parsed there, so only backticks and newlines need handling. */
 function code(text: string): string {
-  return `\`${inline(text).replace(/`/g, "'")}\``;
+  return `\`${text.replace(/\r?\n/g, " ").replace(/`/g, "'")}\``;
 }
 
 /**
@@ -341,7 +345,7 @@ export function parseReportData(body: string): ReportData | null {
 interface Comment {
   id: number;
   body: string;
-  user: { login: string };
+  user: { id: number };
 }
 
 if (import.meta.main) {
@@ -381,10 +385,10 @@ if (import.meta.main) {
     );
   }
 
-  const me = ghApi<{ login: string }>("user").login;
+  const me = ghApi<{ id: number }>("user").id;
   const previous = ghApiPages<Comment>(
     `repos/{owner}/{repo}/issues/${values.pr}/comments?per_page=100`,
-  ).filter((c) => c.user.login === me && c.body.includes(REPORT_MARKER));
+  ).filter((c) => c.user.id === me && c.body.includes(REPORT_MARKER));
 
   // `gh pr comment --attach` uploads each screenshot and rewrites the matching
   // `![caption](path)` in the body to point at the upload.

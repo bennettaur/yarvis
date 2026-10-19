@@ -79,3 +79,11 @@ describe("classify", () => {
     expect(result.reasons).toEqual(["dependencies (bun.lock)"]);
   });
 });
+
+describe("frontend privileged commands", () => {
+  it("makes the files that may call secret or shell commands high risk, and nothing else", () => {
+    expect(classify([file("src/lib/privilegedCommands.ts")]).tier).toBe("high");
+    expect(classify([file("src/lib/pty.ts")]).tier).toBe("high");
+    expect(classify([file("src/lib/settings.ts"), file("src/App.tsx")]).tier).toBe("low");
+  });
+});

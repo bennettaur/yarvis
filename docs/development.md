@@ -121,7 +121,7 @@ PR without running any of its code.
 The `Verify` workflow (`.github/workflows/verify.yml`) reacts to two kinds of
 PR comment from users with write access, and acts as the yarvis GitHub App:
 
-- **A report** from a user in `VERIFY_TRUSTED_USERS`, for the PR's current head.
+- **A report** from a user in `VERIFY_TRUSTED_USER_IDS`, for the PR's current head.
   The workflow sets a `Verification report` commit status on that commit. The
   status is always a success: it records that a current report exists, and its
   description carries the verdict. If the PR is a maintainer's, not a draft,
@@ -142,11 +142,15 @@ the tier, from both sides of any rename:
   hooks (`CLAUDE.md`, `AGENTS.md`, `.claude/`), git hooks, build and test
   config, secrets and shell access, app permissions, sidecar request handling,
   agent tool approvals, the MCP server, settings, migrations, dependencies,
-  what the Chrome extension may do, or more than 800 changed lines of code.
+  what the Chrome extension may do, the two frontend files allowed to call
+  secret or shell commands (`src/lib/privilegedCommands.ts` and
+  `src/lib/pty.ts`), or more than 800 changed lines of code.
 - **Standard:** any other change to the Rust core, the sidecar, the extension
   or dev scripts, or more than 300 changed lines of code.
 
-Tests, docs and lockfiles don't count toward the line limits.
+Tests, docs and lockfiles don't count toward the line limits. The rest of the
+frontend is low risk because `scripts/verify/nativeBridge.test.ts`, which runs
+in CI, fails when any other file calls one of those commands.
 
 The workflow and the gate always run as they are on the default branch, so a
 change to either takes effect once it merges. They need these repository
@@ -155,8 +159,10 @@ settings:
 - `YARVIS_BOT_CLIENT_ID` (variable) and `YARVIS_BOT_PRIVATE_KEY` (secret): the
   yarvis GitHub App's client ID and private key. The app needs read and write
   access to contents, pull requests, issues and commit statuses.
-- `VERIFY_TRUSTED_USERS` (variable): comma-separated logins whose reports and
-  `/approve` count. Defaults to `bennettaur`.
+- `VERIFY_TRUSTED_USER_IDS` (variable): comma-separated numeric GitHub user
+  IDs whose reports and `/approve` count (`gh api users/<login> --jq .id`).
+  IDs, not logins, because a login freed by a rename can be taken by someone
+  else. Defaults to `2670128` (bennettaur).
 - `VERIFY_MODE` (variable): `shadow` (the default) sets the status but never
   auto-approves. `enforce` lets a passing report approve. `/approve` works in
   both. Before switching to `enforce`, make `Verification report` a required

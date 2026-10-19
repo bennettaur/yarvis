@@ -16,8 +16,9 @@
  * risk tier itself from the PR's files.
  *
  * Env: GH_TOKEN (the yarvis bot's installation token), GH_REPO,
- * GITHUB_EVENT_PATH, VERIFY_MODE (`shadow` or `enforce`), VERIFY_TRUSTED_USERS
- * (comma-separated logins).
+ * GITHUB_EVENT_PATH, VERIFY_MODE (`shadow` or `enforce`), VERIFY_TRUSTED_USER_IDS
+ * (comma-separated numeric GitHub user IDs). IDs rather than logins, since a
+ * login freed by a rename can be registered by someone else.
  */
 
 import { readFileSync } from "node:fs";
@@ -39,7 +40,7 @@ export interface PullRequest {
   state: string;
   draft: boolean;
   changed_files: number;
-  user: { login: string };
+  user: GitHubUser;
   head: { sha: string };
 }
 
@@ -47,14 +48,19 @@ export interface Comment {
   id: number;
   body: string;
   html_url: string;
-  user: { login: string };
+  user: GitHubUser;
+}
+
+export interface GitHubUser {
+  login: string;
+  id: number;
 }
 
 export interface AutoMergeContext {
   report: ReportData;
-  prAuthor: string;
+  prAuthor: GitHubUser;
   draft: boolean;
-  trusted: string[];
+  trusted: number[];
   /** The tier the gate computed from the PR's files, not the report's. */
   tier: Tier;
 }
@@ -62,7 +68,7 @@ export interface AutoMergeContext {
 /** Every reason the PR can't merge on its report alone. Empty means it can. */
 export function autoMergeBlockers(ctx: AutoMergeContext): string[] {
   const reasons: string[] = [];
-  if (!ctx.trusted.includes(ctx.prAuthor)) reasons.push("PR author is not a maintainer");
+  if (!ctx.trusted.includes(ctx.prAuthor.id)) reasons.push("PR author is not a maintainer");
   if (ctx.draft) reasons.push("PR is a draft");
   if (ctx.tier !== "low") reasons.push(`${ctx.tier}-risk change`);
   if (ctx.report.verdict !== "auto") reasons.push(`verdict is ${ctx.report.verdict}`);
@@ -97,11 +103,11 @@ export function decideReport(input: {
   comments: Comment[];
   pr: PullRequest;
   files: ChangedFile[];
-  trusted: string[];
+  trusted: number[];
   mode: Mode;
 }): ReportDecision | null {
   const { comment, pr, trusted } = input;
-  const isTrusted = (c: Comment) => trusted.includes(c.user.login.toLowerCase());
+  const isTrusted = (c: Comment) => trusted.includes(c.user.id);
   if (!isTrusted(comment)) return null;
 
   // Act only on the newest trusted report, in case an older one's run is late.
@@ -113,7 +119,7 @@ export function decideReport(input: {
 
   const blockers = autoMergeBlockers({
     report,
-    prAuthor: pr.user.login.toLowerCase(),
+    prAuthor: pr.user,
     draft: pr.draft,
     trusted,
     tier: gateTier(pr, input.files),
@@ -143,13 +149,13 @@ export function parseApprove(body: string): { sha?: string } | null {
  * the maintainer reading the diff and this job running.
  */
 export function approveRefusal(input: {
-  commenter: string;
+  commenter: GitHubUser;
   sha?: string;
   pr: PullRequest;
-  trusted: string[];
+  trusted: number[];
 }): string | null {
-  if (!input.trusted.includes(input.commenter.toLowerCase())) return "commenter is not trusted";
-  const authorTrusted = input.trusted.includes(input.pr.user.login.toLowerCase());
+  if (!input.trusted.includes(input.commenter.id)) return "commenter is not trusted";
+  const authorTrusted = input.trusted.includes(input.pr.user.id);
   if (!input.sha && !authorTrusted) {
     return "an outside contributor's PR needs `/approve <sha>` naming the commit you reviewed";
   }
@@ -159,11 +165,13 @@ export function approveRefusal(input: {
   return null;
 }
 
-export function parseTrusted(value: string | undefined): string[] {
+/** Reads the trusted user IDs, skipping anything that isn't a whole number. */
+export function parseTrusted(value: string | undefined): number[] {
   return (value ?? "")
     .split(",")
-    .map((login) => login.trim().toLowerCase())
-    .filter(Boolean);
+    .map((id) => id.trim())
+    .filter((id) => /^\d+$/.test(id))
+    .map(Number);
 }
 
 interface CommentEvent {
@@ -255,22 +263,25 @@ function handleApprove(
   event: CommentEvent,
   pr: PullRequest,
   sha: string | undefined,
-  trusted: string[],
+  trusted: number[],
 ) {
-  const commenter = event.comment.user.login;
+  const commenter = event.comment.user;
   const refusal = approveRefusal({ commenter, sha, pr, trusted });
   if (refusal) {
-    console.log(`[verify] /approve from ${commenter} refused: ${refusal}`);
+    console.log(`[verify] /approve from ${commenter.login} refused: ${refusal}`);
     react(event.comment.id, "-1");
-    if (trusted.includes(commenter.toLowerCase())) reply(pr.number, `Not approved: ${refusal}.`);
+    if (trusted.includes(commenter.id)) reply(pr.number, `Not approved: ${refusal}.`);
     return;
   }
   if (pr.draft) run("gh", ["pr", "ready", String(pr.number)]);
-  approveAndMerge(pr, `Approved by @${commenter} with /approve at ${pr.head.sha.slice(0, 7)}.`);
+  approveAndMerge(
+    pr,
+    `Approved by @${commenter.login} with /approve at ${pr.head.sha.slice(0, 7)}.`,
+  );
   react(event.comment.id, "rocket");
 }
 
-function handleReport(event: CommentEvent, pr: PullRequest, trusted: string[], mode: Mode) {
+function handleReport(event: CommentEvent, pr: PullRequest, trusted: number[], mode: Mode) {
   const comments = ghApiPages<Comment>(
     `repos/{owner}/{repo}/issues/${pr.number}/comments?per_page=100`,
   );
@@ -300,7 +311,7 @@ if (import.meta.main) {
   ) as CommentEvent;
   if (!event.issue.pull_request) process.exit(0);
 
-  const trusted = parseTrusted(process.env.VERIFY_TRUSTED_USERS);
+  const trusted = parseTrusted(process.env.VERIFY_TRUSTED_USER_IDS);
   const mode: Mode = process.env.VERIFY_MODE === "enforce" ? "enforce" : "shadow";
   const pr = fetchPr(event.issue.number);
   if (pr.state !== "open") process.exit(0);

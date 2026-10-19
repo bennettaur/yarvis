@@ -25,8 +25,19 @@ interface PathRule {
   reason: string;
 }
 
+/**
+ * The only frontend files that may call Tauri commands that write secrets or
+ * reach a shell. `nativeBridge.test.ts` holds the rest of `src/` to that, which
+ * is what lets the frontend otherwise count as low risk.
+ */
+export const PRIVILEGED_FRONTEND_FILES = ["src/lib/privilegedCommands.ts", "src/lib/pty.ts"];
+
 /** Paths where a mistake leaks secrets, widens what the agent may do, or loses data. */
 const HIGH_RISK_PATHS: PathRule[] = [
+  {
+    pattern: new RegExp(`^(${PRIVILEGED_FRONTEND_FILES.join("|").replace(/\./g, "\\.")})$`),
+    reason: "frontend calls to secret or shell commands",
+  },
   // The verifier must not be able to approve a change to itself.
   { pattern: /^\.github\//, reason: "CI or repo config" },
   { pattern: /^scripts\/verify\//, reason: "the verification layer itself" },

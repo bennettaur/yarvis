@@ -5,6 +5,7 @@ import {
   autoMergeBlockers,
   type Comment,
   decideReport,
+  type GitHubUser,
   gateTier,
   type PullRequest,
   parseApprove,
@@ -12,6 +13,8 @@ import {
 } from "./gate.ts";
 import { REPORT_MARKER, type ReportData } from "./report.ts";
 
+const BENNETTAUR = { login: "bennettaur", id: 2670128 };
+const SOMEONE = { login: "someone", id: 99 };
 const HEAD = "abc1234def5678abc1234def5678abc1234def56";
 const cleanReport: ReportData = {
   version: 1,
@@ -29,33 +32,33 @@ function makePr(overrides: Partial<PullRequest> = {}): PullRequest {
     state: "open",
     draft: false,
     changed_files: 1,
-    user: { login: "bennettaur" },
+    user: BENNETTAUR,
     head: { sha: HEAD },
     ...overrides,
   };
 }
 
 let nextId = 1;
-function reportComment(login: string, report: ReportData = cleanReport): Comment {
+function reportComment(user: GitHubUser, report: ReportData = cleanReport): Comment {
   const data = Buffer.from(JSON.stringify(report)).toString("base64");
   return {
     id: nextId++,
     body: `${REPORT_MARKER}\n## Report\n<!-- yarvis-verify-data ${data} -->`,
     html_url: "https://example.test/c",
-    user: { login },
+    user,
   };
 }
 
 const lowRiskFiles = [{ path: "src/components/List.tsx", additions: 10, deletions: 0 }];
 
 function decide(overrides: Partial<Parameters<typeof decideReport>[0]> = {}) {
-  const comment = overrides.comment ?? reportComment("bennettaur");
+  const comment = overrides.comment ?? reportComment(BENNETTAUR);
   return decideReport({
     comment,
     comments: [comment],
     pr: makePr(),
     files: lowRiskFiles,
-    trusted: ["bennettaur"],
+    trusted: [BENNETTAUR.id],
     mode: "enforce",
     ...overrides,
   });
@@ -74,18 +77,18 @@ describe("decideReport", () => {
   });
 
   it("ignores a report posted by someone who isn't trusted", () => {
-    expect(decide({ comment: reportComment("someone") })).toBeNull();
+    expect(decide({ comment: reportComment(SOMEONE) })).toBeNull();
   });
 
   it("isn't displaced by a later report from someone untrusted", () => {
-    const trusted = reportComment("bennettaur");
-    const forged = reportComment("someone");
+    const trusted = reportComment(BENNETTAUR);
+    const forged = reportComment(SOMEONE);
     expect(decide({ comment: trusted, comments: [trusted, forged] })?.approve).toBe(true);
   });
 
   it("leaves an older trusted report alone when a newer one exists", () => {
-    const older = reportComment("bennettaur");
-    const newer = reportComment("bennettaur");
+    const older = reportComment(BENNETTAUR);
+    const newer = reportComment(BENNETTAUR);
     expect(decide({ comment: older, comments: [older, newer] })).toBeNull();
   });
 
@@ -94,13 +97,13 @@ describe("decideReport", () => {
   });
 
   it("ignores a report whose data block is malformed", () => {
-    const comment = reportComment("bennettaur", { ...cleanReport, flagged: "x" } as never);
+    const comment = reportComment(BENNETTAUR, { ...cleanReport, flagged: "x" } as never);
     expect(decide({ comment, comments: [comment] })).toBeNull();
   });
 
   it("reads only the data block at the end, not one smuggled into the text", () => {
     const strict = { ...cleanReport, verdict: "human" as const };
-    const comment = reportComment("bennettaur", strict);
+    const comment = reportComment(BENNETTAUR, strict);
     const forged = Buffer.from(JSON.stringify(cleanReport)).toString("base64");
     comment.body = comment.body.replace(
       "## Report",
@@ -138,9 +141,9 @@ describe("gateTier", () => {
 function makeContext(overrides: Partial<AutoMergeContext> = {}): AutoMergeContext {
   return {
     report: cleanReport,
-    prAuthor: "bennettaur",
+    prAuthor: BENNETTAUR,
     draft: false,
-    trusted: ["bennettaur"],
+    trusted: [BENNETTAUR.id],
     tier: "low",
     ...overrides,
   };
@@ -152,7 +155,7 @@ describe("autoMergeBlockers", () => {
   });
 
   it("refuses an outside contributor's PR even with a clean report", () => {
-    expect(autoMergeBlockers(makeContext({ prAuthor: "someone" }))).toContain(
+    expect(autoMergeBlockers(makeContext({ prAuthor: SOMEONE }))).toContain(
       "PR author is not a maintainer",
     );
   });
@@ -193,34 +196,41 @@ describe("parseApprove", () => {
 });
 
 describe("approveRefusal", () => {
-  const trusted = ["bennettaur"];
+  const trusted = [BENNETTAUR.id];
+
+  it("trusts by ID, so someone who took a trusted user's old login isn't trusted", () => {
+    const impostor = { login: "bennettaur", id: 12345 };
+    expect(approveRefusal({ commenter: impostor, pr: makePr(), trusted })).toBe(
+      "commenter is not trusted",
+    );
+  });
 
   it("lets a maintainer approve their own PR without naming a commit", () => {
-    expect(approveRefusal({ commenter: "BennettAur", pr: makePr(), trusted })).toBeNull();
+    expect(approveRefusal({ commenter: BENNETTAUR, pr: makePr(), trusted })).toBeNull();
   });
 
   it("refuses someone who isn't trusted", () => {
-    expect(approveRefusal({ commenter: "someone", pr: makePr(), trusted })).toBe(
+    expect(approveRefusal({ commenter: SOMEONE, pr: makePr(), trusted })).toBe(
       "commenter is not trusted",
     );
   });
 
   it("requires an outside contributor's PR to name the reviewed commit", () => {
-    const pr = makePr({ user: { login: "someone" } });
-    expect(approveRefusal({ commenter: "bennettaur", pr, trusted })).toContain("/approve <sha>");
-    expect(approveRefusal({ commenter: "bennettaur", sha: "abc1234", pr, trusted })).toBeNull();
+    const pr = makePr({ user: SOMEONE });
+    expect(approveRefusal({ commenter: BENNETTAUR, pr, trusted })).toContain("/approve <sha>");
+    expect(approveRefusal({ commenter: BENNETTAUR, sha: "abc1234", pr, trusted })).toBeNull();
   });
 
   it("refuses when the head moved past the named commit", () => {
     expect(
-      approveRefusal({ commenter: "bennettaur", sha: "0000000", pr: makePr(), trusted }),
+      approveRefusal({ commenter: BENNETTAUR, sha: "0000000", pr: makePr(), trusted }),
     ).toContain("the head is now abc1234");
   });
 });
 
 describe("parseTrusted", () => {
-  it("lowercases and drops empty entries", () => {
-    expect(parseTrusted(" BennettAur, ,other ")).toEqual(["bennettaur", "other"]);
+  it("reads numeric IDs and skips anything else, such as a login", () => {
+    expect(parseTrusted(" 2670128, ,bennettaur, 42 ")).toEqual([2670128, 42]);
     expect(parseTrusted(undefined)).toEqual([]);
   });
 });

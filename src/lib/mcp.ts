@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { ensureOk, sidecarFetch } from "./api";
 
 /**
@@ -221,22 +220,4 @@ export async function getMcpEndpoint(): Promise<McpEndpoint> {
   const res = await sidecarFetch("/api/mcp-endpoint/connection");
   await ensureOk(res, "mcp endpoint");
   return res.json();
-}
-
-/* ---------- Secrets (Tauri commands, Keychain-backed) ---------- */
-
-export function listMcpSecretStatus(): Promise<McpSecretStatus[]> {
-  return invoke<McpSecretStatus[]>("list_mcp_secret_status");
-}
-
-export function setMcpSecret(serverId: string, slot: McpSecretSlot, value: string): Promise<void> {
-  return invoke("set_mcp_secret", { serverId, slot, value });
-}
-
-export function deleteMcpSecret(serverId: string, slot: McpSecretSlot): Promise<void> {
-  return invoke("delete_mcp_secret", { serverId, slot });
-}
-
-export function deleteAllMcpSecrets(serverId: string): Promise<void> {
-  return invoke("delete_mcp_all_secrets", { serverId });
 }

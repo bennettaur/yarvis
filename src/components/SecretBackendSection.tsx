@@ -1,13 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
+import { setSecretBackend } from "../lib/privilegedCommands";
 import { clearResourceCache } from "../lib/resourceCache";
 import { restartAndWait } from "../lib/restart";
-import {
-  type Copied,
-  getSettings,
-  type SecretBackend,
-  type Settings,
-  setSecretBackend,
-} from "../lib/settings";
+import { type Copied, getSettings, type SecretBackend, type Settings } from "../lib/settings";
 
 const CHOICES: { value: SecretBackend; label: string }[] = [
   { value: "keychain", label: "macOS Keychain" },
