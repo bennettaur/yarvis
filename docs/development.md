@@ -158,7 +158,7 @@ settings:
 
 - `YARVIS_BOT_CLIENT_ID` (variable) and `YARVIS_BOT_PRIVATE_KEY` (secret): the
   yarvis GitHub App's client ID and private key. The app needs read and write
-  access to contents, pull requests, issues and commit statuses.
+  access to actions, contents, pull requests, issues and commit statuses.
 - `VERIFY_TRUSTED_USER_IDS` (variable): comma-separated numeric GitHub user
   IDs whose reports and `/approve` count (`gh api users/<login> --jq .id`).
   IDs, not logins, because a login freed by a rename can be taken by someone
@@ -167,6 +167,16 @@ settings:
   auto-approves. `enforce` lets a passing report approve. `/approve` works in
   both. Before switching to `enforce`, make `Verification report` a required
   status check in the `Protect Main` ruleset.
+
+### When an auto-merge breaks main
+
+The `Verify revert` workflow (`.github/workflows/verify-revert.yml`) runs when
+CI fails on a push to `main`. If the gate auto-approved the PR behind that
+commit, CI was passing on the commit before it, and no revert exists yet, it
+re-runs the failed jobs once. If they fail again, it opens a revert PR through
+GitHub's own revert and comments on the original. A maintainer merges the
+revert, or closes it and fixes forward. PRs a person approved, `/approve`
+included, are left alone.
 
 ### Checking the thresholds
 
