@@ -291,10 +291,11 @@ back to ad-hoc.
   group, so a stale one matches nothing. Every PTY holds the same ingest token,
   so registration also needs the PTY's own `YARVIS_SESSION_TOKEN`, an HMAC of
   its session key under the sidecar's full-access bearer, which no PTY holds.
-  The sidecar recomputes it, so a process can register only under the
-  terminal it runs in, and anything in the agent's own terminal already has
-  it. Signing with the ingest token instead would let any terminal mint any
-  other's.
+  The sidecar recomputes it, so a process can't mint a token for a terminal it
+  isn't running in, and anything in the agent's own terminal already has that
+  terminal. Signing with the ingest token instead would let any terminal mint
+  any other's. This is not a boundary against a determined process running as
+  the same user, which can read another process's environment.
 - A workspace root's `.claude` directory is jointly owned. Provisioning copies
   each repo's skills and agents up into it (`workspaces/claudeAssets.ts`) because
   Claude Code discovers them only under the directory it starts in and the

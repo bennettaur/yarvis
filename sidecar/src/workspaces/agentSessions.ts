@@ -52,11 +52,11 @@ export interface LiveAgentSession {
  * terminal's key.
  */
 export function sessionTokenMatches(bearer: string, sessionKey: string, token: string): boolean {
+  // Buffer.from(hex) skips what it can't parse instead of throwing, so the
+  // shape is checked first.
+  if (!/^[0-9a-f]{64}$/.test(token)) return false;
   const expected = createHmac("sha256", bearer).update(`session:${sessionKey}`).digest();
-  // Non-hex input decodes short rather than throwing, so the length check
-  // rejects it.
-  const given = Buffer.from(token, "hex");
-  return given.length === expected.length && timingSafeEqual(given, expected);
+  return timingSafeEqual(Buffer.from(token, "hex"), expected);
 }
 
 /**

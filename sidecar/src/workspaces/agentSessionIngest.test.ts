@@ -169,6 +169,10 @@ describe("POST /ingest/agent-session", () => {
       .digest("hex");
     expect((await hook(start("s1"), { sessionToken: forged })).status).toBe(403);
     expect((await hook(start("s1"), { sessionToken: "not-hex" })).status).toBe(403);
+    // Trailing junk would still decode to the right 32 bytes.
+    expect((await hook(start("s1"), { sessionToken: `${tokenFor(AGENT_TAB)}zz` })).status).toBe(
+      403,
+    );
   });
 
   it("refuses a session token minted for another terminal", async () => {
