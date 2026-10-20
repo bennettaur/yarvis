@@ -34,6 +34,11 @@ so `Ctrl+D` to exit and similar work as usual.
 ### Keys
 
 - **Shift+Enter** inserts a newline in Claude Code instead of submitting.
+- **Cmd+=** and **Cmd+-** make the text larger or smaller, and **Cmd+0**
+  resets it. The size is shared by every terminal, including each
+  workspace's Claude Code session, and is saved as `terminalFontSize` in
+  `~/.yarvis/settings.json`. These use Cmd only, because Ctrl+- is undo in
+  Claude Code.
 - App shortcuts like Cmd+1–9 and Cmd+/ still work while a terminal has focus.
   See [Keyboard shortcuts](keyboard-shortcuts.md).
 
@@ -85,7 +90,7 @@ variables:
 | `YARVIS_WORKSPACE_ID` | The workspace it belongs to (workspace terminals only) |
 | `YARVIS_ATTENTION_TOKEN` | Lets hooks in this terminal raise attention items and register a Claude Code session, and nothing else |
 | `YARVIS_SESSION_TOKEN` | Signs this terminal's session registrations, so one terminal can't mint a registration for another |
-| `YARVIS_SIDECAR_PORT`, `YARVIS_MCP_TOKEN` | Let a Claude Code session here reach Yarvis's MCP endpoint and its memory tools |
+| `YARVIS_SIDECAR_PORT`, `YARVIS_MCP_TOKEN` | Let a Claude Code session here reach Yarvis's MCP endpoint, its memory tools and, in a workspace, its review comment tools |
 
 What this gives you:
 

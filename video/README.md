@@ -55,6 +55,17 @@ then `bun run demo` and `bun run demo:site` at the repo root, put it in
 The MP4s are not in git. Render them on a Mac, then run `bun run publish:videos`
 to replace the files on the `showcase-video` release, which the page links to.
 
+The repo README plays `docs/images/showcase-reel.gif`, 0:21 to 0:42 of the
+reel. GitHub strips `<video>` tags from a README, so it has to be a GIF, and a
+short one: a GIF of the whole reel comes out around 25 MB. Remake it when that
+part of the reel changes, from this directory after `bun run render:reel`:
+
+```bash
+ffmpeg -ss 21 -t 21 -i out/yarvis-reel.mp4 -loop 0 \
+  -vf "fps=10,scale=800:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle" \
+  ../docs/images/showcase-reel.gif
+```
+
 ## Layout
 
 - `src/videos.tsx`: the scene list. Each scene says how long it runs and

@@ -20,8 +20,13 @@ import { readSection, withSection } from "../settings/store.ts";
  * `stt` covers any model that turns audio into text, whether that is a
  * dedicated ASR checkpoint or a multimodal chat model handed an audio part;
  * from a caller's side they are the same capability.
+ *
+ * `decision` marks a model that can answer a yes/no judgement as structured
+ * output, such as whether a tool call is safe to run without asking. A small
+ * local model is often the right pick, since the call sits in the user's
+ * latency path on every tool call it reviews.
  */
-export const MODEL_CAPABILITIES = ["chat", "stt", "tts", "vision", "embed"] as const;
+export const MODEL_CAPABILITIES = ["chat", "stt", "tts", "vision", "embed", "decision"] as const;
 
 export type ModelCapability = (typeof MODEL_CAPABILITIES)[number];
 

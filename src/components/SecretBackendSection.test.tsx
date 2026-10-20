@@ -38,6 +38,8 @@ function defaultSettings(): Settings {
     secretBackend: null,
     onePasswordVault: null,
     onePasswordItem: null,
+    colorTheme: null,
+    terminalFontSize: null,
   };
 }
 

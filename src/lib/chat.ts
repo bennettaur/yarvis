@@ -7,7 +7,7 @@ import { ensureOk, sidecarFetch, streamSSE } from "./api";
 export type ProviderId = string;
 
 /** What a model can be asked to do; mirrors the sidecar's `ModelCapability`. */
-export type ModelCapability = "chat" | "stt" | "tts" | "vision" | "embed";
+export type ModelCapability = "chat" | "stt" | "tts" | "vision" | "embed" | "decision";
 
 export interface ModelInfo {
   id: string;

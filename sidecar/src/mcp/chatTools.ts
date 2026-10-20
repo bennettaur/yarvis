@@ -3,6 +3,7 @@ import { type Tool, type ToolExecutionOptions, tool } from "ai";
 import { z } from "zod";
 import { builtinToolIds, syncBuiltins } from "../agentTools/registry.ts";
 import { listRegistryTools, type RegistryTool, searchRegistry } from "../agentTools/store.ts";
+import type { ToolCallReviewer } from "../chat/toolReview.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { describeError, redactSecrets } from "../llm/errors.ts";
@@ -48,6 +49,8 @@ export interface ApprovalHooks {
   signal?: AbortSignal;
 }
 
+const STOPPED = { denied: true, message: "The user stopped this turn." };
+
 /**
  * Wraps a tool so that calling it first requires explicit user approval. On
  * denial or timeout it returns a structured result the model can read and move
@@ -56,17 +59,36 @@ export interface ApprovalHooks {
  * Every MCP tool goes through this because it is third-party code. A built-in
  * goes through it only when the *turn* is one the user didn't proof-read — see
  * `chat/destructiveTools.ts`.
+ *
+ * A `reviewer` (auto mode) is asked first and can only approve: anything short
+ * of its yes still asks the user.
  */
 export function wrapToolWithApproval(
   id: string,
   t: Tool | McpClientTool,
   hooks: ApprovalHooks,
+  reviewer?: ToolCallReviewer,
 ): Tool {
   const original = (t as McpClientTool).execute;
   if (!original) return t as unknown as Tool;
+  const run = (args: unknown, opts: ToolExecutionOptions<unknown>) =>
+    (original as (a: unknown, o: ToolExecutionOptions<unknown>) => unknown)(args, opts);
   const wrapped = {
     ...t,
     async execute(args: unknown, opts: ToolExecutionOptions<unknown>) {
+      const autoApproved = reviewer
+        ? await reviewer({
+            id,
+            description: typeof t.description === "string" ? t.description : undefined,
+            args,
+            messages: opts.messages,
+            signal: hooks.signal,
+          })
+        : false;
+      // A review takes long enough for the user to stop the turn meanwhile. A
+      // stopped turn neither runs the call nor raises a prompt nobody can answer.
+      if (hooks.signal?.aborted) return STOPPED;
+      if (autoApproved) return run(args, opts);
       await hooks.onRequest({ toolCallId: opts.toolCallId, id, args });
       const approved = await waitForApproval(opts.toolCallId, {
         signal: hooks.signal,
@@ -75,7 +97,7 @@ export function wrapToolWithApproval(
       if (!approved) {
         return { denied: true, message: "The user denied this tool call." };
       }
-      return (original as (a: unknown, o: ToolExecutionOptions<unknown>) => unknown)(args, opts);
+      return run(args, opts);
     },
   };
   return wrapped as unknown as Tool;
@@ -234,6 +256,14 @@ export async function assembleAgentToolset(opts: {
    * turn is neither.
    */
   honourStandingConsent?: boolean;
+  /**
+   * Auto mode's decision model, asked before the user for an MCP tool call.
+   * Ignored when `honourStandingConsent` is false, for the same reason stored
+   * consent is: a turn nobody proof-read can't tell the reviewer what the user
+   * asked for. Built-ins never get it — the ones that ask are the ones whose
+   * answer has to come from the user.
+   */
+  reviewer?: ToolCallReviewer;
   /** The connected MCP tools to assemble; defaults to whatever is live. */
   liveTools?: Record<string, McpClientTool>;
 }): Promise<AgentToolset> {
@@ -246,6 +276,7 @@ export async function assembleAgentToolset(opts: {
     confirmBuiltins,
     honourStandingConsent = true,
   } = opts;
+  const reviewer = honourStandingConsent ? opts.reviewer : undefined;
   const registry = await readRegistryWithBuiltins(config, db);
   const policyById = new Map(registry.map((r) => [r.id, r.policy]));
   const approvalById = new Map(registry.map((r) => [r.id, r.approval]));
@@ -288,7 +319,7 @@ export async function assembleAgentToolset(opts: {
       tools[key] =
         honourStandingConsent && approvalById.get(id) === "auto"
           ? (t as unknown as Tool)
-          : wrapToolWithApproval(id, t, approval);
+          : wrapToolWithApproval(id, t, approval, reviewer);
     }
     // Neither side of a collision is offered: keeping either would let one
     // server's tool answer to the name the model has for another's.

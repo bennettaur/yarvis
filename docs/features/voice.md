@@ -48,6 +48,7 @@ spoken turn, the assistant asks before anything irreversible:
 - deleting a task or forgetting a memory,
 - archiving a workspace,
 - starting work on an issue, or launching a session,
+- adding a repo to a workspace,
 - filing a JIRA ticket,
 - syncing branches,
 - sending an instruction to a running session,
@@ -72,7 +73,7 @@ These are stored in `voiceConfig` in `~/.yarvis/settings.json`, so every
 surface shares one setup.
 
 Which models appear in each picker comes from the model catalog. Each model is
-tagged with what it can do (`chat`, `stt`, `tts`, `vision`, `embed`). Edit the
+tagged with what it can do (`chat`, `stt`, `tts`, `vision`, `embed`, `decision`). Edit the
 tags under **Settings → LLM Providers → Models**. The first edit copies the
 built-in list into your settings, and **Reset to built-in list** undoes it.
 Model names are free text, in the form `namespace/name` with an optional

@@ -196,6 +196,8 @@ pub fn run() {
             settings::set_jira_email,
             settings::set_google_client_id,
             settings::set_telegram_otp_window_minutes,
+            settings::set_color_theme,
+            settings::set_terminal_font_size,
             settings::set_secret_backend,
         ])
         .run(tauri::generate_context!())

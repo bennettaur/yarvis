@@ -157,6 +157,8 @@ has written your providers and MCP servers into it.
 | `jiraEmail` | unset | The Atlassian account the JIRA token belongs to |
 | `googleClientId` | unset | The Google OAuth client id. The secret half goes in the Keychain. |
 | `telegramOtpWindowMinutes` | `120` | How long `/unlock` keeps the Telegram bot open |
+| `colorTheme` | `"default"` | `"default"` or `"palenight"`. An unknown name falls back to the default. |
+| `terminalFontSize` | `16` | Text size in every terminal (10–32). Cmd+= and Cmd+- change it. |
 
 `null` and a missing key both mean "use the default".
 
@@ -164,11 +166,12 @@ has written your providers and MCP servers into it.
 
 | Key | Holds | Set from |
 | --- | --- | --- |
-| `customProviders` | Your OpenAI- or Anthropic-compatible endpoints, keyed by id | Settings → LLM Providers |
+| `customProviders` | Your OpenAI-, Anthropic- or Ollama-compatible endpoints, keyed by id | Settings → LLM Providers |
 | `providerModels` | Your edited model list per provider. Replaces the built-in list for that provider once saved. | Settings → LLM Providers → Models |
 | `mcpServers` | MCP servers Yarvis connects to, keyed by id | Settings → Tools & MCP |
 | `chatConfig` | `maxSteps` (100, up to 500), `maxOutputTokens` (none, up to 200000), `compactAtTokens` (200000, from 10000 to 2000000). A model's own compaction threshold in its catalog entry wins over `compactAtTokens`. | Settings → Assistant → Turn budget |
 | `complexityModels` | The provider and model behind the `low`, `medium` and `max` tiers specialists can ask for | Settings → Assistant |
+| `decisionModel` | `model`, the provider and model tagged `decision` that answers yes/no judgements, and `autoApproveTools`, which lets it approve MCP tool calls before you are asked | Settings → Tools & MCP |
 | `githubPrConfig` | `reviewQuery` for the Needs review tab, `reviewingLookbackDays` for Reviewing | Settings → PR review |
 | `prModels` | The provider and model behind guided reviews (`guide`) and line questions (`ask`). Unset uses the default chat model. | Settings → PR review |
 | `wipConfig` | Which sources feed the **In progress** list in the attention panel (the bell in the top bar), and a GitHub issue label filter | Settings → Work in progress |
@@ -263,7 +266,7 @@ The tabs in **Settings**, in order:
 2. **LLM Providers.** Each provider's model list and capability tags, and your
    custom providers.
 3. **Tools & MCP.** MCP servers Yarvis connects to, Yarvis's own MCP endpoint,
-   and the Tool manager.
+   the Tool manager, and the decision model behind auto mode.
 4. **Repositories.** The repos workspaces can use, the workspace agent
    command, and the terminal cap.
 5. **PR review.** The Needs review search, the Reviewing lookback, and the
@@ -275,4 +278,7 @@ The tabs in **Settings**, in order:
    attention panel.
 10. **Assistant.** Turn budget, complexity tiers, specialists, and background
     jobs.
-11. **Diagnostics.** The sidecar log.
+11. **Appearance.** The color theme: **Default** or **Palenight**. It applies
+    straight away, to terminals and code too, and is saved as `colorTheme` in
+    `settings.json`.
+12. **Diagnostics.** The sidecar log.
