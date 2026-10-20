@@ -9,6 +9,7 @@ import type { Db } from "../db/client.ts";
 import { describeError, redactSecrets } from "../llm/errors.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { APPROVAL_TIMEOUT_MS, waitForApproval } from "./approvals.ts";
+import { splitCallReason, withCallReason } from "./callReason.ts";
 import { getMcpManager, type McpClientTool } from "./connectionManager.ts";
 import { activeMounted, mountTools, unmountAll, unmountTools } from "./mountedTools.ts";
 
@@ -43,8 +44,16 @@ export function modelToolKey(id: string): string {
 }
 
 export interface ApprovalHooks {
-  /** Emits an approval request to the client (e.g. over SSE). */
-  onRequest: (info: { toolCallId: string; id: string; args: unknown }) => Promise<void>;
+  /**
+   * Emits an approval request to the client (e.g. over SSE). `reason` is the
+   * model's own account of why it is making the call.
+   */
+  onRequest: (info: {
+    toolCallId: string;
+    id: string;
+    args: unknown;
+    reason: string | null;
+  }) => Promise<void>;
   /** Aborted when the client disconnects, so pending approvals don't hang. */
   signal?: AbortSignal;
 }
@@ -74,13 +83,15 @@ export function wrapToolWithApproval(
   const run = (args: unknown, opts: ToolExecutionOptions<unknown>) =>
     (original as (a: unknown, o: ToolExecutionOptions<unknown>) => unknown)(args, opts);
   const wrapped = {
-    ...t,
-    async execute(args: unknown, opts: ToolExecutionOptions<unknown>) {
+    ...withCallReason(t as Tool),
+    async execute(input: unknown, opts: ToolExecutionOptions<unknown>) {
+      const { reason, args } = splitCallReason(input);
       const autoApproved = reviewer
         ? await reviewer({
             id,
             description: typeof t.description === "string" ? t.description : undefined,
             args,
+            reason,
             messages: opts.messages,
             signal: hooks.signal,
           })
@@ -89,7 +100,7 @@ export function wrapToolWithApproval(
       // stopped turn neither runs the call nor raises a prompt nobody can answer.
       if (hooks.signal?.aborted) return STOPPED;
       if (autoApproved) return run(args, opts);
-      await hooks.onRequest({ toolCallId: opts.toolCallId, id, args });
+      await hooks.onRequest({ toolCallId: opts.toolCallId, id, args, reason });
       const approved = await waitForApproval(opts.toolCallId, {
         signal: hooks.signal,
         timeoutMs: APPROVAL_TIMEOUT_MS,

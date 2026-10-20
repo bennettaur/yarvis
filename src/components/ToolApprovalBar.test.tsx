@@ -14,6 +14,7 @@ function approval(overrides: Partial<PendingApproval> = {}): PendingApproval {
   return {
     id: "call-1",
     toolId: "mcp:server-uuid:search_pages",
+    reason: null,
     name: "search_pages",
     server: "Notion",
     args: { query: "roadmap" },
@@ -31,6 +32,16 @@ function click(host: HTMLElement, label: string) {
 describe("ToolApprovalBar", () => {
   it("renders nothing with no pending calls", async () => {
     expect(await renderToHtml(<ToolApprovalBar approvals={[]} onRespond={() => {}} />)).toBe("");
+  });
+
+  it("shows why the assistant says it is making the call", async () => {
+    const html = await renderToHtml(
+      <ToolApprovalBar
+        approvals={[approval({ reason: "You asked me to find the roadmap page" })]}
+        onRespond={() => {}}
+      />,
+    );
+    expect(textOf(html)).toContain("The assistant says: You asked me to find the roadmap page");
   });
 
   it("shows the front of the queue and how many are behind it", async () => {

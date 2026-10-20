@@ -109,8 +109,9 @@ its model `decision`. Only an Ollama on this machine works; one elsewhere on
 your network is refused like any other private address.
 
 Before any tool set to **Ask** raises the approval bar, the decision model reads
-your message, the recent conversation (tool results included) and the call, and
-answers three questions: does it match what
+your message this turn and your last few before it, the recent conversation
+(tool results and the assistant's reasoning included), the call, and the
+assistant's stated reason for it, and answers three questions: does it match what
 you asked for, is it risky, and is it destructive. The call runs without a
 prompt only when it matches and is neither. Any other answer, an error, or no
 answer within 20 seconds raises the approval bar as usual, and so do arguments

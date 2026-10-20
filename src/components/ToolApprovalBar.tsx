@@ -127,6 +127,12 @@ export default function ToolApprovalBar({
           </button>
         </div>
       </div>
+      {current.reason && (
+        <p className="mt-1 text-xs text-zinc-300">
+          <span className="text-zinc-500">The assistant says: </span>
+          {current.reason}
+        </p>
+      )}
       {showArgs && (
         <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-zinc-950/70 p-2 text-xs text-zinc-400">
           {JSON.stringify(current.args, null, 2)}

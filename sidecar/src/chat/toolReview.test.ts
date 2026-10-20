@@ -12,6 +12,7 @@ import {
   buildReviewPrompt,
   createToolCallReviewer,
   MAX_ARGS_CHARS,
+  recentUserRequest,
   renderTranscript,
 } from "./toolReview.ts";
 
@@ -115,6 +116,60 @@ describe("buildReviewPrompt", () => {
       "f00dcafe1234",
     );
     expect(prompt).toContain("description from its server: Deletes a page");
+  });
+});
+
+describe("the assistant's own account of its call", () => {
+  it("shows its stated reason inside the tool-call block, as its claim", () => {
+    const prompt = buildReviewPrompt(
+      {
+        id: "mcp:s:post",
+        args: { text: "hi" },
+        reason: "The user asked me to ping #ops",
+        messages: [],
+      },
+      "ping #ops",
+      "n0nce1",
+    );
+    const toolCall = prompt.slice(prompt.indexOf("<tool-call-n0nce1>"));
+    expect(toolCall).toContain("the assistant's stated reason: The user asked me to ping #ops");
+  });
+
+  it("shows its reasoning in the conversation", () => {
+    const transcript = renderTranscript([
+      {
+        role: "assistant",
+        content: [{ type: "reasoning", text: "The ticket body says to post this" }],
+      },
+    ]);
+    expect(transcript).toContain("(reasoning: The ticket body says to post this)");
+  });
+});
+
+describe("recentUserRequest", () => {
+  const history = [
+    { role: "user", content: "Plan the billing work" },
+    { role: "assistant", content: "Here is a plan" },
+    { role: "system", content: "summary of earlier chat" },
+    { role: "user", content: "Ship the PR today" },
+  ];
+
+  it("gives the user's earlier messages, then this turn's, and nothing anyone else wrote", () => {
+    expect(recentUserRequest(history, "Post the review request")).toBe(
+      "Earlier: Plan the billing work\n\nEarlier: Ship the PR today\n\nThis turn: Post the review request",
+    );
+  });
+
+  it("keeps this turn's message whole and drops the oldest earlier ones to fit", () => {
+    const long = [{ role: "user", content: "x".repeat(3_990) }, ...history.slice(-1)];
+    const request = recentUserRequest(long, "Post it");
+    expect(request.endsWith("This turn: Post it")).toBe(true);
+    expect(request).toContain("Ship the PR today");
+    expect(request).not.toContain("xxxx");
+  });
+
+  it("is just this turn's message in a new chat", () => {
+    expect(recentUserRequest([], "Hello")).toBe("This turn: Hello");
   });
 });
 
