@@ -16,26 +16,19 @@
 import { parseArgs } from "node:util";
 import { run } from "./exec.ts";
 import {
-  APPROVE_COMMAND_PREFIX,
-  AUTO_APPROVAL_PREFIX,
-  type Comment,
+  type ApprovalReview,
+  MAINTAINER_ASSOCIATIONS,
+  type MergePath,
+  mergePath,
   parseTrusted,
 } from "./gate.ts";
 import { parseReportData, REPORT_MARKER, type ReportData } from "./report.ts";
-
-/** How a merged PR got its approval. */
-export type MergePath = "auto" | "/approve" | "human" | "none";
 
 export interface MergedPr {
   number: number;
   title: string;
   body: string;
   headSha: string;
-}
-
-export interface Review {
-  state: string;
-  body: string;
 }
 
 export interface Outcome {
@@ -47,40 +40,42 @@ export interface Outcome {
   escapedVia: number[];
 }
 
-export function mergePath(reviews: Review[]): MergePath {
-  const approvals = reviews.filter((review) => review.state === "APPROVED");
-  if (approvals.some((review) => review.body.startsWith(AUTO_APPROVAL_PREFIX))) return "auto";
-  if (approvals.some((review) => review.body.startsWith(APPROVE_COMMAND_PREFIX))) return "/approve";
-  return approvals.length > 0 ? "human" : "none";
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 }
 
 /** Maps each escaped PR number to the PRs that reverted or fixed it. */
 export function findEscapes(prs: MergedPr[], repo: string): Map<number, number[]> {
   const escapes = new Map<number, number[]>();
-  const revert = new RegExp(
-    `^Reverts ${repo.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}#(\\d+)`,
-    "gm",
-  );
+  const revert = new RegExp(`^Reverts ${escapeRegExp(repo)}#(\\d+)`, "gm");
   const regression = /^Regression-from:\s*#(\d+)\s*$/gim;
   for (const pr of prs) {
     for (const match of [...pr.body.matchAll(revert), ...pr.body.matchAll(regression)]) {
       const escaped = Number(match[1]);
-      escapes.set(escaped, [...(escapes.get(escaped) ?? []), pr.number]);
+      const via = escapes.get(escaped) ?? [];
+      // A fix PR can both revert and name the regression; count it once.
+      if (!via.includes(pr.number)) escapes.set(escaped, [...via, pr.number]);
     }
   }
   return escapes;
 }
 
+export interface ReportComment {
+  body: string;
+  /** The author's numeric user ID, or `null` for a bot or app, which never count as trusted. */
+  authorId: number | null;
+}
+
 /** The newest report from a trusted user, with its data block parsed. */
-export function latestReport(comments: Comment[], trusted: number[]): ReportData | null {
+export function latestReport(comments: ReportComment[], trusted: number[]): ReportData | null {
   const reports = comments.filter(
-    (c) => c.body.includes(REPORT_MARKER) && trusted.includes(c.user.id),
+    (c) => c.body.includes(REPORT_MARKER) && c.authorId !== null && trusted.includes(c.authorId),
   );
   const latest = reports[reports.length - 1];
   return latest ? parseReportData(latest.body) : null;
 }
 
-interface Row {
+interface Tally {
   merged: number;
   escaped: number;
 }
@@ -89,23 +84,26 @@ function percent(part: number, whole: number): string {
   return whole === 0 ? "–" : `${Math.round((part / whole) * 100)}%`;
 }
 
-function table(title: string, rows: Map<string, Row>): string[] {
+function table(title: string, tallies: Map<string, Tally>): string[] {
   const lines = [`### ${title}`, "", "| | Merged | Escaped | Escape rate |", "|---|---|---|---|"];
-  for (const [key, row] of [...rows].sort(([a], [b]) => a.localeCompare(b))) {
-    lines.push(`| ${key} | ${row.merged} | ${row.escaped} | ${percent(row.escaped, row.merged)} |`);
+  for (const [key, t] of [...tallies].sort(([a], [b]) => a.localeCompare(b))) {
+    lines.push(`| ${key} | ${t.merged} | ${t.escaped} | ${percent(t.escaped, t.merged)} |`);
   }
   return [...lines, ""];
 }
 
-function tally(outcomes: Outcome[], keyOf: (outcome: Outcome) => string): Map<string, Row> {
-  const rows = new Map<string, Row>();
+function tally<T extends Outcome>(
+  outcomes: T[],
+  keyOf: (outcome: T) => string,
+): Map<string, Tally> {
+  const tallies = new Map<string, Tally>();
   for (const outcome of outcomes) {
-    const row = rows.get(keyOf(outcome)) ?? { merged: 0, escaped: 0 };
-    row.merged++;
-    if (outcome.escapedVia.length > 0) row.escaped++;
-    rows.set(keyOf(outcome), row);
+    const t = tallies.get(keyOf(outcome)) ?? { merged: 0, escaped: 0 };
+    t.merged++;
+    if (outcome.escapedVia.length > 0) t.escaped++;
+    tallies.set(keyOf(outcome), t);
   }
-  return rows;
+  return tallies;
 }
 
 /** A report counts only if it was for the commit that merged. */
@@ -115,22 +113,30 @@ function verdictOf(outcome: Outcome): string {
   return outcome.report.verdict;
 }
 
+/**
+ * The tables, leaving out the reverts and fixes themselves: they are the
+ * outcome being measured, and counting them as merges would dilute the rows
+ * they land in.
+ */
 export function summarize(outcomes: Outcome[], days: number): string {
+  const fixers = new Set(outcomes.flatMap((o) => o.escapedVia));
+  const measured = outcomes.filter((o) => !fixers.has(o.pr.number));
+
   const lines = [`## Verification calibration, last ${days} days`, ""];
-  lines.push(...table("By verdict", tally(outcomes, verdictOf)));
+  lines.push(...table("By verdict", tally(measured, verdictOf)));
   lines.push(
     ...table(
       "By how it was approved",
-      tally(outcomes, (o) => o.path),
+      tally(measured, (o) => o.path),
     ),
   );
-  const models = tally(
-    outcomes.filter((o) => o.report?.model),
-    (o) => o.report?.model ?? "",
+  const withModel = measured.flatMap((o) =>
+    o.report?.model ? [{ ...o, model: o.report.model }] : [],
   );
+  const models = tally(withModel, (o) => o.model);
   if (models.size > 1) lines.push(...table("By reviewing model", models));
 
-  const escaped = outcomes.filter((o) => o.escapedVia.length > 0);
+  const escaped = measured.filter((o) => o.escapedVia.length > 0);
   if (escaped.length > 0) {
     lines.push("### Escapes", "");
     for (const o of escaped) {
@@ -141,7 +147,6 @@ export function summarize(outcomes: Outcome[], days: number): string {
   return lines.join("\n");
 }
 
-/** The newest 100 comments are plenty: a PR's report is re-posted, not appended to. */
 const MERGED_PRS_QUERY = `query($q: String!, $endCursor: String) {
   search(query: $q, type: ISSUE, first: 50, after: $endCursor) {
     pageInfo { hasNextPage endCursor }
@@ -151,25 +156,49 @@ const MERGED_PRS_QUERY = `query($q: String!, $endCursor: String) {
         title
         body
         headRefOid
+        # Each verify run posts a fresh report comment, so the latest report
+        # is among the last 100 comments.
         comments(last: 100) { nodes { body author { ... on User { databaseId } } } }
-        reviews(first: 100) { nodes { state body } }
+        reviews(last: 100) { nodes { state body authorAssociation author { __typename } } }
       }
     }
   }
 }`;
 
-interface SearchPage {
-  data: {
-    search: {
-      nodes: {
-        number: number;
-        title: string;
-        body: string;
-        headRefOid: string;
-        comments: { nodes: { body: string; author: { databaseId?: number } | null }[] };
-        reviews: { nodes: Review[] };
-      }[];
-    };
+interface SearchNode {
+  number: number;
+  title: string;
+  body: string;
+  headRefOid: string;
+  comments: { nodes: { body: string; author: { databaseId?: number } | null }[] };
+  reviews: {
+    nodes: {
+      state: string;
+      body: string;
+      authorAssociation: string;
+      author: { __typename: string } | null;
+    }[];
+  };
+}
+
+export function outcomeFor(node: SearchNode, trusted: number[], escapedVia: number[]): Outcome {
+  return {
+    pr: { number: node.number, title: node.title, body: node.body, headSha: node.headRefOid },
+    report: latestReport(
+      node.comments.nodes.map((c) => ({ body: c.body, authorId: c.author?.databaseId ?? null })),
+      trusted,
+    ),
+    path: mergePath(
+      node.reviews.nodes.map(
+        (r): ApprovalReview => ({
+          state: r.state,
+          body: r.body,
+          byBot: r.author?.__typename === "Bot",
+          byMaintainer: MAINTAINER_ASSOCIATIONS.includes(r.authorAssociation),
+        }),
+      ),
+    ),
+    escapedVia,
   };
 }
 
@@ -204,30 +233,13 @@ if (import.meta.main) {
       "-f",
       `q=repo:${repo} is:pr is:merged merged:>=${since}`,
     ]).stdout,
-  ) as SearchPage[];
+  ) as { data: { search: { nodes: SearchNode[] } } }[];
   const nodes = pages.flatMap((page) => page.data.search.nodes);
-  const prs: MergedPr[] = nodes.map((node) => ({
-    number: node.number,
-    title: node.title,
-    body: node.body,
-    headSha: node.headRefOid,
-  }));
 
-  const escapes = findEscapes(prs, repo);
-  const outcomes: Outcome[] = nodes.map((node, index) => ({
-    pr: prs[index],
-    report: latestReport(
-      node.comments.nodes.map((c) => ({
-        id: 0,
-        body: c.body,
-        html_url: "",
-        // Bots and apps have no user ID here, so they never count as trusted.
-        user: { login: "", id: c.author?.databaseId ?? -1 },
-      })),
-      trusted,
-    ),
-    path: mergePath(node.reviews.nodes),
-    escapedVia: escapes.get(node.number) ?? [],
-  }));
+  const escapes = findEscapes(
+    nodes.map((node) => ({ ...node, headSha: node.headRefOid })),
+    repo,
+  );
+  const outcomes = nodes.map((node) => outcomeFor(node, trusted, escapes.get(node.number) ?? []));
   console.log(summarize(outcomes, days));
 }

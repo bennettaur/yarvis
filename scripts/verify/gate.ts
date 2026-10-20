@@ -30,11 +30,42 @@ import { type ChangedFile, classify, type Tier } from "./tier.ts";
 const STATUS_CONTEXT = "Verification report";
 
 /**
- * How each kind of bot approval begins. `calibrate.ts` reads them back to tell
+ * How each kind of bot approval begins. `mergePath` reads them back to tell
  * how a merged PR was approved.
  */
 export const AUTO_APPROVAL_PREFIX = "Auto-approved:";
 export const APPROVE_COMMAND_PREFIX = "Approved by @";
+
+/** How a merged PR got its approval. */
+export type MergePath = "auto" | "/approve" | "human" | "none";
+
+export interface ApprovalReview {
+  state: string;
+  body: string;
+  /**
+   * Written by a GitHub App. Only apps the repo owner installed can review,
+   * so this is what stops anyone else from passing off a review as the bot's.
+   */
+  byBot: boolean;
+  /** Written by someone with write access. Anyone can approve a public PR. */
+  byMaintainer: boolean;
+}
+
+/** Associations GitHub gives users with write access to the repo. */
+export const MAINTAINER_ASSOCIATIONS = ["OWNER", "MEMBER", "COLLABORATOR"];
+
+/**
+ * How a merged PR was approved. A maintainer's own approval wins over the
+ * bot's, since that person took the PR on whatever the bot said.
+ */
+export function mergePath(reviews: ApprovalReview[]): MergePath {
+  const approvals = reviews.filter((review) => review.state === "APPROVED");
+  if (approvals.some((review) => !review.byBot && review.byMaintainer)) return "human";
+  const bot = approvals.filter((review) => review.byBot);
+  if (bot.some((review) => review.body.startsWith(APPROVE_COMMAND_PREFIX))) return "/approve";
+  if (bot.some((review) => review.body.startsWith(AUTO_APPROVAL_PREFIX))) return "auto";
+  return "none";
+}
 
 /** The pull request files API stops listing files here. */
 const MAX_LISTED_FILES = 3000;
