@@ -19,14 +19,14 @@ async function schemaOf(t: Tool) {
 
 describe("withCallReason", () => {
   it("asks the model for a reason alongside the tool's own arguments", async () => {
-    const { json } = await schemaOf(withCallReason(archive));
+    const { json } = await schemaOf(withCallReason(archive).tool);
     expect(json.required).toContain(CALL_REASON_FIELD);
     expect(json.required).toContain("workspaceId");
     expect(Object.keys(json.properties ?? {})).toContain(CALL_REASON_FIELD);
   });
 
   it("validates with the tool's own schema, defaults included, and keeps the reason", async () => {
-    const { validate } = await schemaOf(withCallReason(archive));
+    const { validate } = await schemaOf(withCallReason(archive).tool);
     const result = await validate({ workspaceId: "w1", [CALL_REASON_FIELD]: "The user asked" });
     expect(result).toEqual({
       success: true,
@@ -35,7 +35,7 @@ describe("withCallReason", () => {
   });
 
   it("refuses a call with no reason, or a reason too long to read at a glance", async () => {
-    const { validate } = await schemaOf(withCallReason(archive));
+    const { validate } = await schemaOf(withCallReason(archive).tool);
     expect((await validate({ workspaceId: "w1" })).success).toBe(false);
     expect(
       (await validate({ workspaceId: "w1", [CALL_REASON_FIELD]: "x".repeat(301) })).success,
@@ -43,7 +43,7 @@ describe("withCallReason", () => {
   });
 
   it("still refuses arguments the tool itself would refuse", async () => {
-    const { validate } = await schemaOf(withCallReason(archive));
+    const { validate } = await schemaOf(withCallReason(archive).tool);
     expect((await validate({ [CALL_REASON_FIELD]: "because" })).success).toBe(false);
   });
 
@@ -57,9 +57,49 @@ describe("withCallReason", () => {
       }),
       execute: async () => ({}),
     } as unknown as Tool;
-    const { json, validate } = await schemaOf(withCallReason(mcpTool));
+    const { json, validate } = await schemaOf(withCallReason(mcpTool).tool);
     expect(json.required).toEqual(["channel", CALL_REASON_FIELD]);
     expect((await validate({ channel: "#x", [CALL_REASON_FIELD]: "asked to" })).success).toBe(true);
+  });
+});
+
+describe("a tool that can't take a reason", () => {
+  it("keeps its own callReason argument, and isn't asked for one", async () => {
+    const own = tool({
+      description: "Log why",
+      inputSchema: z.object({ callReason: z.string() }),
+      execute: async () => ({}),
+    });
+    const reasoned = withCallReason(own);
+    const { json, validate } = await schemaOf(reasoned.tool);
+    expect(await reasoned.takesReason()).toBe(false);
+    expect(json.required).toEqual(["callReason"]);
+    expect(await validate({ callReason: "its own value" })).toEqual({
+      success: true,
+      value: { callReason: "its own value" },
+    });
+  });
+
+  it("is left as it was when its schema isn't a plain object", async () => {
+    const union = {
+      description: "Either",
+      inputSchema: jsonSchema({ anyOf: [{ type: "object" }, { type: "string" }] }),
+      execute: async () => ({}),
+    } as unknown as Tool;
+    const reasoned = withCallReason(union);
+    expect(await reasoned.takesReason()).toBe(false);
+    expect((await schemaOf(reasoned.tool)).json).toEqual({
+      anyOf: [{ type: "object" }, { type: "string" }],
+    });
+  });
+});
+
+describe("the reason itself", () => {
+  it("must have something to read, not just invisible characters", async () => {
+    const { validate } = await schemaOf(withCallReason(archive).tool);
+    expect((await validate({ workspaceId: "w1", callReason: "\u200b\u200b " })).success).toBe(
+      false,
+    );
   });
 });
 

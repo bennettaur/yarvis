@@ -70,8 +70,10 @@ export default function ToolApprovalBar({
   }, [current, onRespond, visible, armed]);
 
   // Each decision brings the next call forward; its arguments are its own to open.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: collapse per call
-  useEffect(() => setShowArgs(false), [current?.id]);
+  // A call that comes with a reason opens them: a convincing story shouldn't
+  // be what the user approves on, without seeing what the call does.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset per call
+  useEffect(() => setShowArgs(Boolean(current?.reason)), [current?.id]);
 
   if (!current) return null;
   const canRemember = onAlwaysAllow && current.toolId?.startsWith("mcp:");

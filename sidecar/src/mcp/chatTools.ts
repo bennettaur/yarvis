@@ -82,10 +82,13 @@ export function wrapToolWithApproval(
   if (!original) return t as unknown as Tool;
   const run = (args: unknown, opts: ToolExecutionOptions<unknown>) =>
     (original as (a: unknown, o: ToolExecutionOptions<unknown>) => unknown)(args, opts);
+  const reasoned = withCallReason(t as Tool);
   const wrapped = {
-    ...withCallReason(t as Tool),
+    ...reasoned.tool,
     async execute(input: unknown, opts: ToolExecutionOptions<unknown>) {
-      const { reason, args } = splitCallReason(input);
+      const { reason, args } = (await reasoned.takesReason())
+        ? splitCallReason(input)
+        : { reason: null, args: input };
       const autoApproved = reviewer
         ? await reviewer({
             id,

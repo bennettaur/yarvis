@@ -31,27 +31,54 @@ export function splitCallReason(args: unknown): { reason: string | null; args: u
   return { reason: typeof reason === "string" ? reason : null, args: rest };
 }
 
-/**
- * The tool with a required `callReason` added to its input. Validation is
- * still the tool's own, run on the input without the reason, so a tool's
- * defaults and transforms apply as before.
- */
-export function withCallReason(t: Tool): Tool {
-  const base = asSchema(t.inputSchema);
-  const extend = (schema: JSONSchema7): JSONSchema7 => {
-    const properties = schema.properties ?? {};
-    if (schema.type !== "object" || CALL_REASON_FIELD in properties) return schema;
-    return {
-      ...schema,
-      properties: { ...properties, [CALL_REASON_FIELD]: CALL_REASON_PROPERTY },
-      required: [...(schema.required ?? []), CALL_REASON_FIELD],
-    };
+/** A tool's input schema with `callReason` added, or null when it can't take one. */
+function extendSchema(schema: JSONSchema7): JSONSchema7 | null {
+  const properties = schema.properties ?? {};
+  // Only a plain object schema is extended. A union or reference at the root,
+  // or a tool with its own `callReason`, is left exactly as it was.
+  if (schema.type !== "object" || CALL_REASON_FIELD in properties) return null;
+  return {
+    ...schema,
+    properties: { ...properties, [CALL_REASON_FIELD]: CALL_REASON_PROPERTY },
+    required: [...(schema.required ?? []), CALL_REASON_FIELD],
   };
-  const extended = jsonSchema(async () => extend(await base.jsonSchema), {
+}
+
+/** Text with something to read once spaces and invisible characters are gone. */
+function hasText(text: string): boolean {
+  return text.replace(/[\s\u200b-\u200f\u2060\ufeff]/g, "").length > 0;
+}
+
+export interface ReasonedTool {
+  tool: Tool;
+  /**
+   * Whether the tool takes a `callReason`. Settled with its schema, which can
+   * load lazily; when it doesn't, its input is its own and nothing is taken off.
+   */
+  takesReason: () => Promise<boolean>;
+}
+
+/**
+ * The tool with a required `callReason` added to its input, when its schema
+ * can take one. Validation is still the tool's own, run on the input without
+ * the reason, so a tool's defaults and transforms apply as before.
+ */
+export function withCallReason(t: Tool): ReasonedTool {
+  const base = asSchema(t.inputSchema);
+  let extended: Promise<JSONSchema7 | null> | undefined;
+  const resolve = () => {
+    extended ??= Promise.resolve(base.jsonSchema).then(extendSchema);
+    return extended;
+  };
+  const takesReason = async () => (await resolve()) !== null;
+  const schema = jsonSchema(async () => (await resolve()) ?? (await base.jsonSchema), {
     validate: async (value) => {
+      if (!(await takesReason())) {
+        return base.validate ? base.validate(value) : { success: true, value };
+      }
       const { reason, args } = splitCallReason(value);
       // Required: a call with no reason fails here, and the model tries again with one.
-      if (!reason?.trim() || reason.length > MAX_CALL_REASON_CHARS) {
+      if (!reason || !hasText(reason) || reason.length > MAX_CALL_REASON_CHARS) {
         return {
           success: false,
           error: new Error(
@@ -63,11 +90,8 @@ export function withCallReason(t: Tool): Tool {
       const result = await base.validate(args);
       if (!result.success) return result;
       const validated = result.value as Record<string, unknown>;
-      return {
-        success: true,
-        value: { ...validated, [CALL_REASON_FIELD]: reason },
-      };
+      return { success: true, value: { ...validated, [CALL_REASON_FIELD]: reason } };
     },
   });
-  return { ...t, inputSchema: extended } as Tool;
+  return { tool: { ...t, inputSchema: schema } as Tool, takesReason };
 }

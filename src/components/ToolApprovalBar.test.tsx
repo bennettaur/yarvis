@@ -42,6 +42,8 @@ describe("ToolApprovalBar", () => {
       />,
     );
     expect(textOf(html)).toContain("The assistant says: You asked me to find the roadmap page");
+    // With a reason, the arguments are shown too, so the story isn't all the user sees.
+    expect(textOf(html)).toContain("roadmap");
   });
 
   it("shows the front of the queue and how many are behind it", async () => {
