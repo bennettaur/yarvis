@@ -175,9 +175,10 @@ if (import.meta.main) {
       : { detecting: 0, notDetecting: [], failingOnHead: [] },
     suites: measuredRun?.suites ?? [],
   };
-  if (values.mutation && measuredRun) {
+  // Mutants are judged by whether tests fail, which means nothing while some already do.
+  if (values.mutation && measuredRun && facts.baseline.failingOnHead.length === 0) {
     const changedTests = addedOrModified.filter(isTestFile);
-    const results = ["", "sidecar"]
+    const results = (["frontend", "sidecar"] as const)
       .map((suite) =>
         runMutation({ root, suite, out, added, hits: measuredRun.hits, changedTests }),
       )
