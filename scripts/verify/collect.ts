@@ -9,6 +9,9 @@
  * Run it from a clean checkout of the PR's head. The sidecar suite needs the
  * test database (TEST_DATABASE_URL), the same as `bun run sidecar:test`.
  *
+ * `--mutation` also runs Stryker on the changed lines (see `mutation.ts`). It
+ * is slow, so it's opt-in.
+ *
  * `--static` reads the diff and runs nothing from the PR, for a PR whose code
  * isn't trusted to run on this machine. Coverage and the baseline are then
  * reported as unmeasured, and CI's test run is the evidence instead.
@@ -27,7 +30,8 @@ import {
   parseLcov,
 } from "./diffCoverage.ts";
 import { run } from "./exec.ts";
-import { type ChangedFile, classify, type TierResult } from "./tier.ts";
+import { type MutationResult, mergeMutation, runMutation } from "./mutation.ts";
+import { type ChangedFile, classify, isTestFile, type TierResult } from "./tier.ts";
 
 export interface Facts {
   base: string;
@@ -38,6 +42,8 @@ export interface Facts {
   baseline: BaselineResult;
   /** Which suites ran, so the report can say what wasn't measured. */
   suites: string[];
+  /** Mutation testing on the changed lines, when `--mutation` was passed and anything ran. */
+  mutation?: MutationResult;
 }
 
 function git(root: string, args: string[]): string {
@@ -129,6 +135,7 @@ if (import.meta.main) {
       base: { type: "string", default: "origin/main" },
       out: { type: "string" },
       static: { type: "boolean", default: false },
+      mutation: { type: "boolean", default: false },
     },
   });
   if (!values.out) throw new Error("--out <dir> is required");
@@ -168,6 +175,15 @@ if (import.meta.main) {
       : { detecting: 0, notDetecting: [], failingOnHead: [] },
     suites: measuredRun?.suites ?? [],
   };
+  if (values.mutation && measuredRun) {
+    const changedTests = addedOrModified.filter(isTestFile);
+    const results = ["", "sidecar"]
+      .map((suite) =>
+        runMutation({ root, suite, out, added, hits: measuredRun.hits, changedTests }),
+      )
+      .filter((result) => result !== null);
+    if (results.length > 0) facts.mutation = mergeMutation(results);
+  }
   const path = join(out, "facts.json");
   writeFileSync(path, `${JSON.stringify(facts, null, 2)}\n`);
   console.log(path);
