@@ -68,6 +68,9 @@ bun run sidecar:test               # sidecar tests — needs a Postgres+pgvector
                                     #   test DB; set TEST_DATABASE_URL (and
                                     #   DATABASE_URL for migrations)
 bun run --cwd sidecar db:migrate   # apply sidecar DB migrations
+bun run verify:collect             # facts for a PR's verification report;
+                                    #   the /verify-pr skill runs it and
+                                    #   verify:report, which posts the report
 
 bun run typecheck                  # frontend tsc --noEmit
 bun run sidecar:typecheck          # sidecar tsc --noEmit
@@ -92,7 +95,12 @@ sets that default itself, so a job that needs to write back to GitHub has to
 say so in its own `permissions:` block, where review can see it — and its
 actions are pinned to commit SHAs, with the ref they were resolved from in a
 trailing comment. `nightly.yml`
-and `codeql.yml` follow neither convention yet. A pre-commit
+and `codeql.yml` follow neither convention yet. `verify.yml` is the one
+workflow that writes: it runs on PR comments, as the default branch's copy,
+checks out no PR code, and acts through the yarvis GitHub App to set the
+verification status, approve and turn on auto-merge. Keep it that way, since
+it holds write access on a public repo; see `docs/development.md` ("Verifying a
+PR for merge"). A pre-commit
 hook (lefthook, installed via the `prepare` script) mirrors the biome and Rust
 checks on staged files — `cargo clippy` blocks the commit if it fails since it
 has no safe autofix.
@@ -171,6 +179,13 @@ back to ad-hoc.
   sidecar's HTTP API exactly as before. Everything else the sidecar owns —
   actual data (chat history, memories, workspaces, PR/issue caches) — lives in
   Postgres.
+- The frontend calls Tauri commands that write a secret, switch the secret
+  store or set the agent's launch command only from
+  `src/lib/privilegedCommands.ts`, and ones that type into or launch a shell
+  only from `src/lib/pty.ts`. Every `invoke` names its command as a string
+  literal. `scripts/verify/nativeBridge.ts` holds the rules and its test enforces them, and it is what
+  lets the rest of `src/` count as low risk when a PR is verified. A new
+  command of that kind goes in one of those two files and in the test's list.
 - Several instances of the app can run at once (`bun run dev:instance`), sharing
   one Keychain item, the same `~/.yarvis/settings.json`, and, unless told
   otherwise, one database. Anything singular to the machine or to that shared

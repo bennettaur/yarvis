@@ -23,6 +23,8 @@
     "sidecar:compile": "bun run scripts/compile-sidecar.ts",
     "sidecar:test": "bun run --cwd sidecar test",
     "sidecar:typecheck": "bun run --cwd sidecar typecheck",
+    "verify:collect": "bun run scripts/verify/collect.ts",
+    "verify:report": "bun run scripts/verify/report.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome lint .",
     "format": "biome format .",
