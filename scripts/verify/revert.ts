@@ -13,14 +13,16 @@
  * starts `Reverts owner/repo#N`. That line is what `calibrate.ts` counts. A
  * maintainer still merges the revert.
  *
- * Env: GH_TOKEN (the yarvis bot's installation token), GH_REPO, HEAD_SHA (the
- * commit CI failed on), RUN_ID and RUN_ATTEMPT (the failed CI run), RUN_URL.
+ * Env: GH_TOKEN (the yarvis bot's installation token), GH_REPO, BOT_SLUG (the
+ * yarvis app's slug), HEAD_SHA (the commit CI failed on), RUN_ID and
+ * RUN_ATTEMPT (the failed CI run), RUN_URL.
  */
 
-import { type MergePath, mergePath, type Review } from "./calibrate.ts";
 import { ghApi, ghApiPages, run } from "./exec.ts";
+import { MAINTAINER_ASSOCIATIONS, type MergePath, mergePath } from "./gate.ts";
 
-export interface MergedPr {
+/** A PR as the `commits/{sha}/pulls` endpoint lists it. */
+export interface CommitPullRequest {
   number: number;
   node_id: string;
   title: string;
@@ -29,41 +31,52 @@ export interface MergedPr {
 }
 
 export type RevertDecision =
-  | { action: "revert" }
+  | { action: "revert"; pr: CommitPullRequest }
   | { action: "rerun" }
   | { action: "skip"; reason: string };
 
-/**
- * @param attempt the failed run's attempt number; 1 is the first run.
- * @param parentPassed whether CI passed on the commit before this one, or
- *   `null` when there is no finished run for it.
- * @param alreadyReverted whether an open or merged PR already reverts it.
- */
-export function decideRevert(input: {
-  pr: MergedPr | null;
+export interface RevertInput {
+  pr: CommitPullRequest | null;
   path: MergePath;
+  /** The failed run's attempt number; 1 is the first run. */
   attempt: number;
+  /** CI's result on the commit before this one, or `null` with no finished, uncancelled run. */
   parentPassed: boolean | null;
+  /** Whether the bot already opened a revert, or anyone's revert was merged. */
   alreadyReverted: boolean;
-}): RevertDecision {
-  if (!input.pr) return { action: "skip", reason: "no merged PR made this commit" };
+}
+
+export function decideRevert(input: RevertInput): RevertDecision {
+  const { pr } = input;
+  if (!pr) return { action: "skip", reason: "no merged PR made this commit" };
   if (input.path !== "auto") {
-    return { action: "skip", reason: `PR #${input.pr.number} was approved by a person` };
+    return { action: "skip", reason: `PR #${pr.number} wasn't auto-merged` };
   }
   if (input.alreadyReverted) return { action: "skip", reason: "a revert already exists" };
-  if (input.parentPassed !== true) {
-    return { action: "skip", reason: "CI wasn't passing on the parent commit either" };
+  if (input.parentPassed === null) {
+    return { action: "skip", reason: "no finished CI run on the parent commit to compare with" };
   }
-  if (input.attempt < 2) return { action: "rerun" };
-  return { action: "revert" };
+  if (!input.parentPassed) {
+    return { action: "skip", reason: "CI was already failing on the parent commit" };
+  }
+  if (input.attempt === 1) return { action: "rerun" };
+  // A later attempt is someone re-running it by hand, likely while fixing forward.
+  if (input.attempt > 2)
+    return { action: "skip", reason: `attempt ${input.attempt} was started by hand` };
+  return { action: "revert", pr };
 }
 
 /** The PR whose squash merge made `sha`, if there is one. */
-export function mergedPrFor(prs: MergedPr[], sha: string): MergedPr | null {
+export function mergedPrFor(prs: CommitPullRequest[], sha: string): CommitPullRequest | null {
   return prs.find((pr) => pr.merged_at && pr.merge_commit_sha === sha) ?? null;
 }
 
-export function revertBody(repo: string, pr: MergedPr, sha: string, runUrl: string): string {
+export function revertBody(
+  repo: string,
+  pr: CommitPullRequest,
+  sha: string,
+  runUrl: string,
+): string {
   return [
     // First, and in GitHub's own wording, so calibrate.ts counts it.
     `Reverts ${repo}#${pr.number}`,
@@ -74,28 +87,33 @@ export function revertBody(repo: string, pr: MergedPr, sha: string, runUrl: stri
   ].join("\n");
 }
 
-interface WorkflowRun {
+export interface WorkflowRun {
   name: string;
   conclusion: string | null;
   status: string;
 }
 
-/** Whether CI passed on `sha`, or `null` if it has no finished CI run. */
-function ciPassed(sha: string): boolean | null {
-  const { workflow_runs: runs } = ghApi<{ workflow_runs: WorkflowRun[] }>(
-    `repos/{owner}/{repo}/actions/runs?head_sha=${sha}&event=push&per_page=50`,
+/**
+ * Whether CI passed on a commit, from its runs. A cancelled run says nothing,
+ * and GitHub cancels a queued run when a newer push lands, so those are left
+ * out rather than read as failures.
+ */
+export function ciPassed(runs: WorkflowRun[]): boolean | null {
+  const decided = runs.filter(
+    (r) =>
+      r.name === "CI" &&
+      r.status === "completed" &&
+      r.conclusion !== "cancelled" &&
+      r.conclusion !== "skipped",
   );
-  const ci = runs.filter((r) => r.name === "CI" && r.status === "completed");
-  if (ci.length === 0) return null;
-  return ci.some((r) => r.conclusion === "success");
+  if (decided.length === 0) return null;
+  return decided.some((r) => r.conclusion === "success");
 }
 
-function alreadyReverted(repo: string, number: number): boolean {
-  const query = `repo:${repo} is:pr "Reverts ${repo}#${number}" in:body`;
-  const { total_count } = ghApi<{ total_count: number }>(
-    `search/issues?q=${encodeURIComponent(query)}`,
-  );
-  return total_count > 0;
+/** Search queries for a revert that counts: one the bot opened, or one that merged. */
+export function revertQueries(repo: string, prNumber: number, botSlug: string): string[] {
+  const line = `repo:${repo} is:pr "Reverts ${repo}#${prNumber}" in:body`;
+  return [`${line} author:app/${botSlug}`, `${line} is:merged`];
 }
 
 const REVERT_MUTATION = `mutation($id: ID!, $title: String!, $body: String!) {
@@ -104,30 +122,64 @@ const REVERT_MUTATION = `mutation($id: ID!, $title: String!, $body: String!) {
   }
 }`;
 
+interface RestReview {
+  state: string;
+  body: string;
+  author_association: string;
+  user: { type: string } | null;
+}
+
 if (import.meta.main) {
   const sha = process.env.HEAD_SHA ?? "";
   const runId = process.env.RUN_ID ?? "";
-  const attempt = Number(process.env.RUN_ATTEMPT ?? "1");
+  const attemptText = process.env.RUN_ATTEMPT ?? "";
+  const botSlug = process.env.BOT_SLUG ?? "";
   const runUrl = process.env.RUN_URL ?? "";
-  if (!/^[0-9a-f]{40}$/.test(sha) || !/^\d+$/.test(runId)) {
-    throw new Error("HEAD_SHA and RUN_ID must be set");
+  if (
+    !/^[0-9a-f]{40}$/.test(sha) ||
+    !/^\d+$/.test(runId) ||
+    !/^[1-9]\d*$/.test(attemptText) ||
+    !/^[a-z0-9-]+$/.test(botSlug)
+  ) {
+    throw new Error("HEAD_SHA, RUN_ID, RUN_ATTEMPT and BOT_SLUG must be set");
   }
 
   const repo = ghApi<{ full_name: string }>("repos/{owner}/{repo}").full_name;
-  const pr = mergedPrFor(ghApi<MergedPr[]>(`repos/{owner}/{repo}/commits/${sha}/pulls`), sha);
-  const parent = ghApi<{ parents: { sha: string }[] }>(`repos/{owner}/{repo}/commits/${sha}`)
+  const pr = mergedPrFor(
+    ghApi<CommitPullRequest[]>(`repos/{owner}/{repo}/commits/${sha}/pulls`),
+    sha,
+  );
+  const parentSha = ghApi<{ parents: { sha: string }[] }>(`repos/{owner}/{repo}/commits/${sha}`)
     .parents[0]?.sha;
 
+  const reviews = pr
+    ? ghApiPages<RestReview>(`repos/{owner}/{repo}/pulls/${pr.number}/reviews?per_page=100`)
+    : [];
   const decision = decideRevert({
     pr,
-    path: pr
-      ? mergePath(
-          ghApiPages<Review>(`repos/{owner}/{repo}/pulls/${pr.number}/reviews?per_page=100`),
+    path: mergePath(
+      reviews.map((r) => ({
+        state: r.state,
+        body: r.body,
+        byBot: r.user?.type === "Bot",
+        byMaintainer: MAINTAINER_ASSOCIATIONS.includes(r.author_association),
+      })),
+    ),
+    attempt: Number(attemptText),
+    parentPassed: parentSha
+      ? ciPassed(
+          ghApi<{ workflow_runs: WorkflowRun[] }>(
+            `repos/{owner}/{repo}/actions/runs?head_sha=${parentSha}&event=push&per_page=50`,
+          ).workflow_runs,
         )
-      : "none",
-    attempt,
-    parentPassed: parent ? ciPassed(parent) : null,
-    alreadyReverted: pr ? alreadyReverted(repo, pr.number) : false,
+      : null,
+    alreadyReverted: pr
+      ? revertQueries(repo, pr.number, botSlug).some(
+          (query) =>
+            ghApi<{ total_count: number }>(`search/issues?q=${encodeURIComponent(query)}`)
+              .total_count > 0,
+        )
+      : false,
   });
 
   if (decision.action === "skip") {
@@ -135,7 +187,8 @@ if (import.meta.main) {
   } else if (decision.action === "rerun") {
     console.log("[verify] first failure after an auto-merge; re-running the failed jobs");
     run("gh", ["run", "rerun", runId, "--failed"]);
-  } else if (pr) {
+  } else {
+    const reverted = decision.pr;
     const result = JSON.parse(
       run("gh", [
         "api",
@@ -143,15 +196,15 @@ if (import.meta.main) {
         "-f",
         `query=${REVERT_MUTATION}`,
         "-f",
-        `id=${pr.node_id}`,
+        `id=${reverted.node_id}`,
         "-f",
-        `title=Revert "${pr.title}"`,
+        `title=Revert "${reverted.title}"`,
         "-f",
-        `body=${revertBody(repo, pr, sha, runUrl)}`,
+        `body=${revertBody(repo, reverted, sha, runUrl)}`,
       ]).stdout,
     );
     const revert = result.data.revertPullRequest.revertPullRequest;
-    ghApi(`repos/{owner}/{repo}/issues/${pr.number}/comments`, ["-X", "POST"], {
+    ghApi(`repos/{owner}/{repo}/issues/${reverted.number}/comments`, ["-X", "POST"], {
       body: `CI failed on \`main\` after this was auto-merged, twice. Opened #${revert.number} to revert it: ${runUrl}`,
     });
     console.log(`[verify] opened ${revert.url}`);
