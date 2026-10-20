@@ -109,10 +109,11 @@ CI (`.github/workflows/ci.yml`) runs the frontend and sidecar tests (against a
 
 The `/verify-pr` Claude Code skill checks a PR is ready to merge and posts a
 short verification report on it. The report covers the goal, diff coverage,
-whether the new tests fail without the change, reliability, security,
-complexity, maintainability and UI. It runs locally, since it needs the test
-database and the demo harness. `scripts/verify/` holds the parts that measure
-and post.
+whether the new tests fail without the change, how many small breaking edits to
+the changed lines the tests catch (mutation testing with Stryker, for
+TypeScript), reliability, security, complexity, maintainability and UI. It runs
+locally, since it needs the test database and the demo harness.
+`scripts/verify/` holds the parts that measure and post.
 
 Only run it on another contributor's PR the way the skill says to. Their
 tests and scripts would run with your `gh` login, so the skill measures their

@@ -75,6 +75,14 @@ coverage, and the baseline run: the PR's new and changed tests run against the
 base branch's code. A test that passes there doesn't check the change. Read the
 file; you'll use all of it.
 
+Add `--mutation` when the PR changes TypeScript logic, as opposed to markup,
+copy or config. Stryker then makes small breaking edits to the changed lines
+that tests run, and `facts.json` gets the share no test caught. It adds a
+minute or two. A surviving mutant on a line that matters (a comparison, a
+branch, a returned value) is evidence for the tests note; one in a log
+message's wording isn't. Mutation testing covers TypeScript only, and is
+skipped when tests already fail on the PR.
+
 Rust coverage needs `cargo llvm-cov`. Without it, Rust files show as
 unmeasured, which is fine; say so in the tests note rather than installing it.
 

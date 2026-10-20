@@ -27,6 +27,23 @@ const DATA_PATTERN = /<!-- yarvis-verify-data ([A-Za-z0-9+/=]+) -->\s*$/;
 const COVERAGE_PASS = 0.8;
 const COVERAGE_FLOOR = 0.5;
 
+/**
+ * Below this share of mutants caught, the tests run the changed lines without
+ * really checking them. Lower than the coverage bar because some mutants
+ * (a log message's wording) aren't worth a test.
+ */
+const MUTATION_FLOOR = 0.6;
+
+/** Fewer mutants than this are too few to judge the tests by. */
+const MUTATION_MIN_MUTANTS = 10;
+
+function hasWeakMutationScore(facts: Facts): boolean {
+  const mutation = facts.mutation;
+  if (!mutation || mutation.score === null) return false;
+  const total = mutation.killed + mutation.survived.length;
+  return total >= MUTATION_MIN_MUTANTS && mutation.score < MUTATION_FLOOR;
+}
+
 const Status = z.enum(["pass", "concern", "fail", "n/a"]);
 type Status = z.infer<typeof Status>;
 
@@ -155,6 +172,9 @@ export function finalVerdict(review: Review, facts: Facts): { verdict: Verdict; 
   }
   if (review.findings.some((f) => f.severity === "major")) requireAtLeast("agent", "major finding");
   if (facts.baseline.failingOnHead.length > 0) requireAtLeast("human", "tests fail on the PR");
+  if (hasWeakMutationScore(facts)) {
+    requireAtLeast("agent", "tests miss many mutations on changed lines");
+  }
   const statuses = [
     ...Object.values(review.dimensions).map((d) => d.status),
     coverageStatus(facts.coverage),
@@ -215,6 +235,14 @@ function baselineNote(baseline: Facts["baseline"]): string {
   return parts.join(", ");
 }
 
+function mutationNote(mutation: Facts["mutation"]): string {
+  if (!mutation || mutation.score === null) return "";
+  const total = mutation.killed + mutation.survived.length;
+  const skipped =
+    mutation.skippedRanges > 0 ? ` (${mutation.skippedRanges} ranges not mutated)` : "";
+  return `${percent(mutation.score)} of ${total} mutants on changed lines caught${skipped}`;
+}
+
 function bulletList(items: string[], limit = 15): string {
   const shown = items.slice(0, limit).map((item) => `- ${code(item)}`);
   if (items.length > limit) shown.push(`- …and ${items.length - limit} more`);
@@ -231,7 +259,10 @@ export function renderReport(review: Review, facts: Facts): { body: string; data
   // Coverage sits right after the tests row, since the two are read together.
   const rows = DIMENSION_LABELS.flatMap(([key, label]) => {
     const dim = review.dimensions[key];
-    const extra = key === "tests" ? baselineNote(facts.baseline) : "";
+    const extra =
+      key === "tests"
+        ? [baselineNote(facts.baseline), mutationNote(facts.mutation)].filter(Boolean).join(". ")
+        : "";
     const note = inline([dim.note, extra].filter(Boolean).join(". "));
     const row = `| ${STATUS_ICON[dim.status]} | ${label} | ${note} |`;
     if (key !== "tests") return [row];
@@ -310,6 +341,16 @@ export function renderReport(review: Review, facts: Facts): { body: string; data
   if (facts.baseline.failingOnHead.length > 0) {
     details.push("**Tests failing on the PR**", "", bulletList(facts.baseline.failingOnHead), "");
   }
+  if (facts.mutation && facts.mutation.survived.length > 0) {
+    details.push(
+      "**Mutations no test caught**",
+      "",
+      bulletList(
+        [...facts.mutation.survived].sort((a, b) => a.localeCompare(b, "en", { numeric: true })),
+      ),
+      "",
+    );
+  }
   if (details.length > 0) {
     lines.push("", "<details><summary>Details</summary>", "", ...details, "</details>");
   }
@@ -325,6 +366,7 @@ export function renderReport(review: Review, facts: Facts): { body: string; data
         ([key]) => key,
       ),
       ...(isFlagged(coverage) ? ["coverage"] : []),
+      ...(hasWeakMutationScore(facts) ? ["mutation"] : []),
     ],
     model: review.model,
   };
