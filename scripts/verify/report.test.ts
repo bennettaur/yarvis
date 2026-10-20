@@ -91,6 +91,13 @@ describe("finalVerdict", () => {
     expect(finalVerdict(makeReview(), at(0.2)).verdict).toBe("human");
   });
 
+  it("needs an agent when the tests miss most mutations on the changed lines", () => {
+    const withScore = (score: number) =>
+      makeFacts({ mutation: { score, killed: 0, survived: [] } });
+    expect(finalVerdict(makeReview(), withScore(0.5)).verdict).toBe("agent");
+    expect(finalVerdict(makeReview(), withScore(0.6)).verdict).toBe("auto");
+  });
+
   it("needs a human when tests fail on the PR", () => {
     const facts = makeFacts({
       baseline: { detecting: 0, notDetecting: [], failingOnHead: ["a.test.ts > x"] },
@@ -122,6 +129,16 @@ describe("renderReport", () => {
     });
     const facts = makeFacts({ coverage: { ...makeFacts().coverage, ratio: 0.2 } });
     expect(renderReport(review, facts).data.flagged).toEqual(["tests", "coverage"]);
+  });
+
+  it("shows the mutation score with the tests and lists surviving mutants in details", () => {
+    const facts = makeFacts({
+      mutation: { score: 0.5, killed: 1, survived: ["src/a.ts:10 BlockStatement"] },
+    });
+    const { body, data } = renderReport(makeReview(), facts);
+    expect(body).toContain("50% of 2 mutants on changed lines caught");
+    expect(body.split("<details>")[1]).toContain("src/a.ts:10 BlockStatement");
+    expect(data.flagged).toContain("mutation");
   });
 
   it("keeps minor findings out of the headline section", () => {
