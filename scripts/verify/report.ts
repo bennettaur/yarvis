@@ -34,8 +34,14 @@ const COVERAGE_FLOOR = 0.5;
  */
 const MUTATION_FLOOR = 0.6;
 
-function mutationWeak(facts: Facts): boolean {
-  return facts.mutation?.score != null && facts.mutation.score < MUTATION_FLOOR;
+/** Fewer mutants than this are too few to judge the tests by. */
+const MUTATION_MIN_MUTANTS = 10;
+
+function hasWeakMutationScore(facts: Facts): boolean {
+  const mutation = facts.mutation;
+  if (!mutation || mutation.score === null) return false;
+  const total = mutation.killed + mutation.survived.length;
+  return total >= MUTATION_MIN_MUTANTS && mutation.score < MUTATION_FLOOR;
 }
 
 const Status = z.enum(["pass", "concern", "fail", "n/a"]);
@@ -166,7 +172,9 @@ export function finalVerdict(review: Review, facts: Facts): { verdict: Verdict; 
   }
   if (review.findings.some((f) => f.severity === "major")) requireAtLeast("agent", "major finding");
   if (facts.baseline.failingOnHead.length > 0) requireAtLeast("human", "tests fail on the PR");
-  if (mutationWeak(facts)) requireAtLeast("agent", "tests miss most mutations");
+  if (hasWeakMutationScore(facts)) {
+    requireAtLeast("agent", "tests miss many mutations on changed lines");
+  }
   const statuses = [
     ...Object.values(review.dimensions).map((d) => d.status),
     coverageStatus(facts.coverage),
@@ -230,7 +238,9 @@ function baselineNote(baseline: Facts["baseline"]): string {
 function mutationNote(mutation: Facts["mutation"]): string {
   if (!mutation || mutation.score === null) return "";
   const total = mutation.killed + mutation.survived.length;
-  return `${percent(mutation.score)} of ${total} mutants on changed lines caught`;
+  const skipped =
+    mutation.skippedRanges > 0 ? ` (${mutation.skippedRanges} ranges not mutated)` : "";
+  return `${percent(mutation.score)} of ${total} mutants on changed lines caught${skipped}`;
 }
 
 function bulletList(items: string[], limit = 15): string {
@@ -356,7 +366,7 @@ export function renderReport(review: Review, facts: Facts): { body: string; data
         ([key]) => key,
       ),
       ...(isFlagged(coverage) ? ["coverage"] : []),
-      ...(mutationWeak(facts) ? ["mutation"] : []),
+      ...(hasWeakMutationScore(facts) ? ["mutation"] : []),
     ],
     model: review.model,
   };
