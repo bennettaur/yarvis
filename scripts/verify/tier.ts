@@ -33,9 +33,10 @@ interface PathRule {
  */
 export const PRIVILEGED_FRONTEND_FILES = ["src/lib/privilegedCommands.ts", "src/lib/pty.ts"];
 
-/** The list holds plain paths, so `.` is the only character to escape. */
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 const PRIVILEGED_FRONTEND_PATTERN = new RegExp(
-  `^(${PRIVILEGED_FRONTEND_FILES.map((path) => path.replace(/\./g, "\\.")).join("|")})$`,
+  `^(${PRIVILEGED_FRONTEND_FILES.map(escapeRegExp).join("|")})$`,
 );
 
 /** Paths where a mistake leaks secrets, widens what the agent may do, or loses data. */
