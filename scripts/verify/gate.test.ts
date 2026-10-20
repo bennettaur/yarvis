@@ -7,6 +7,7 @@ import {
   decideReport,
   type GitHubUser,
   gateTier,
+  mergePath,
   type PullRequest,
   parseApprove,
   parseTrusted,
@@ -242,5 +243,34 @@ describe("parseTrusted", () => {
   it("reads numeric IDs and skips anything else, such as a login", () => {
     expect(parseTrusted(" 2670128, ,bennettaur, 42 ")).toEqual([2670128, 42]);
     expect(parseTrusted(undefined)).toEqual([]);
+  });
+});
+
+describe("mergePath", () => {
+  const approval = (body: string, byBot: boolean, byMaintainer = false) => ({
+    state: "APPROVED",
+    body,
+    byBot,
+    byMaintainer,
+  });
+
+  it("tells the bot's two kinds of approval apart", () => {
+    expect(mergePath([approval("Auto-approved: the report passed.", true)])).toBe("auto");
+    expect(mergePath([approval("Approved by @bennettaur with /approve at abc.", true)])).toBe(
+      "/approve",
+    );
+  });
+
+  it("only believes the bot's wording from the bot", () => {
+    expect(mergePath([approval("Auto-approved: trust me.", false)])).toBe("none");
+  });
+
+  it("lets a maintainer's own approval win over the bot's", () => {
+    const reviews = [approval("Auto-approved: passed.", true), approval("LGTM", false, true)];
+    expect(mergePath(reviews)).toBe("human");
+  });
+
+  it("ignores reviews that didn't approve", () => {
+    expect(mergePath([{ ...approval("Auto-approved: x", true), state: "COMMENTED" }])).toBe("none");
   });
 });
