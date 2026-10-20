@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { findEscapes, latestReport, mergePath, type Outcome, summarize } from "./calibrate.ts";
+import { findEscapes, latestReport, type Outcome, outcomeFor, summarize } from "./calibrate.ts";
 import { REPORT_MARKER, type ReportData } from "./report.ts";
 
 const pr = (number: number, body = "", headSha = "head") => ({
@@ -7,21 +7,6 @@ const pr = (number: number, body = "", headSha = "head") => ({
   title: `PR ${number}`,
   body,
   headSha,
-});
-
-describe("mergePath", () => {
-  it("tells the bot's two kinds of approval from a person's", () => {
-    const approved = (body: string) => [{ state: "APPROVED", body }];
-    expect(mergePath(approved("Auto-approved: the verification report for abc passed."))).toBe(
-      "auto",
-    );
-    expect(mergePath(approved("Approved by @bennettaur with /approve at abc."))).toBe("/approve");
-    expect(mergePath(approved("LGTM"))).toBe("human");
-  });
-
-  it("ignores reviews that didn't approve", () => {
-    expect(mergePath([{ state: "COMMENTED", body: "Auto-approved: no" }])).toBe("none");
-  });
 });
 
 describe("findEscapes", () => {
@@ -45,6 +30,14 @@ describe("findEscapes", () => {
     );
     expect(escapes.size).toBe(0);
   });
+
+  it("counts a fix PR once when it both reverts and names the regression", () => {
+    const escapes = findEscapes(
+      [pr(10, "Reverts bennettaur/yarvis#3\n\nRegression-from: #3")],
+      "bennettaur/yarvis",
+    );
+    expect(escapes.get(3)).toEqual([10]);
+  });
 });
 
 const data = (verdict: ReportData["verdict"], headSha = "head"): ReportData => ({
@@ -57,14 +50,13 @@ const data = (verdict: ReportData["verdict"], headSha = "head"): ReportData => (
   model: "claude-opus-5-5",
 });
 
-function reportComment(id: number, report: ReportData) {
+function reportBody(report: ReportData) {
   const block = Buffer.from(JSON.stringify(report)).toString("base64");
-  return {
-    id,
-    body: `${REPORT_MARKER}\n<!-- yarvis-verify-data ${block} -->`,
-    html_url: "",
-    user: { login: "x", id },
-  };
+  return `${REPORT_MARKER}\n<!-- yarvis-verify-data ${block} -->`;
+}
+
+function reportComment(authorId: number | null, report: ReportData) {
+  return { body: reportBody(report), authorId };
 }
 
 describe("latestReport", () => {
@@ -75,6 +67,42 @@ describe("latestReport", () => {
       reportComment(2, data("agent")),
     ];
     expect(latestReport(comments, [1])?.verdict).toBe("auto");
+  });
+
+  it("never trusts a bot or app, which has no user ID", () => {
+    expect(latestReport([reportComment(null, data("auto"))], [1])).toBeNull();
+  });
+});
+
+describe("outcomeFor", () => {
+  const review = (body: string, botAuthor: boolean, authorAssociation = "NONE") => ({
+    state: "APPROVED",
+    body,
+    authorAssociation,
+    author: { __typename: botAuthor ? "Bot" : "User" },
+  });
+  const node = (reviews: ReturnType<typeof review>[]) => ({
+    number: 1,
+    title: "PR 1",
+    body: "",
+    headRefOid: "head",
+    comments: { nodes: [{ body: reportBody(data("auto")), author: { databaseId: 7 } }] },
+    reviews: { nodes: reviews },
+  });
+
+  it("reads the trusted report and the bot's approval", () => {
+    const outcome = outcomeFor(node([review("Auto-approved: passed.", true)]), [7], []);
+    expect(outcome.report?.verdict).toBe("auto");
+    expect(outcome.path).toBe("auto");
+  });
+
+  it("doesn't take a person's review as the bot's, whatever it says", () => {
+    expect(outcomeFor(node([review("Auto-approved: passed.", false)]), [7], []).path).toBe("none");
+  });
+
+  it("counts a maintainer's approval, but not an outsider's", () => {
+    expect(outcomeFor(node([review("LGTM", false, "OWNER")]), [7], []).path).toBe("human");
+    expect(outcomeFor(node([review("LGTM", false, "NONE")]), [7], []).path).toBe("none");
   });
 });
 
@@ -99,6 +127,23 @@ describe("summarize", () => {
     expect(text).toContain("| auto | 2 | 1 | 50% |");
     expect(text).toContain("| agent | 1 | 0 | 0% |");
     expect(text).toContain("- #2 PR 2: auto, auto, fixed by #9");
+  });
+
+  it("leaves the reverts and fixes themselves out of the tallies", () => {
+    const text = summarize(
+      [outcome({ escapedVia: [9] }), outcome({ pr: pr(9), report: null, path: "human" })],
+      30,
+    );
+    expect(text).toContain("| auto | 1 | 1 | 100% |");
+    expect(text).not.toContain("no report");
+  });
+
+  it("splits by reviewing model only when more than one reviewed", () => {
+    const other = { ...data("auto"), model: "claude-sonnet-5-5" };
+    expect(summarize([outcome({})], 30)).not.toContain("By reviewing model");
+    expect(summarize([outcome({}), outcome({ pr: pr(2), report: other })], 30)).toContain(
+      "| claude-sonnet-5-5 | 1 | 0 | 0% |",
+    );
   });
 
   it("doesn't credit a verdict given for an older commit", () => {
