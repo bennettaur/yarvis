@@ -11,6 +11,12 @@ Prefer to be walked through it? Install
 commands once you approve them, and tells you what to enter in the app. See
 [Set up with Claude Code](#set-up-with-claude-code).
 
+In a hurry? With the Xcode Command Line Tools and mise installed and the repo
+cloned, `mise run yarvis-init` installs Bun, Rust and Postgres 17 with
+pgvector, creates the database, and runs `bun install`. That covers steps 1 to
+3, except adding Postgres to your `PATH`. Then pick up at step 4, using
+`mise exec -- bun run tauri dev` if mise isn't activated in your shell.
+
 ## What you are setting up
 
 Yarvis is a Tauri desktop app made of three processes:

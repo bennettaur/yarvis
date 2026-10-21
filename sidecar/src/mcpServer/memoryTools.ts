@@ -2,7 +2,6 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { MEMORY_KINDS } from "../db/schema.ts";
 import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
-import { describeError } from "../llm/errors.ts";
 import type { MemoryRecord, MemoryService } from "../memory/index.ts";
 import {
   isoInstant,
@@ -10,6 +9,7 @@ import {
   validityFields,
   validityWindowShape,
 } from "../memory/validity.ts";
+import { callerError, jsonResult, toolError, UUID } from "./results.ts";
 
 /**
  * The memory tools Yarvis serves over MCP, so Claude Code (or any other MCP
@@ -31,37 +31,8 @@ const MAX_CONTENT_CHARS = 4000;
 /** A search query is a phrase; anything longer embeds badly and costs the same. */
 const MAX_QUERY_CHARS = 500;
 
-/**
- * A memory id lands in a `uuid` column, so a non-uuid would surface as a
- * database error rather than a schema rejection. Matched by shape rather than
- * with zod's `.uuid()`, which additionally enforces RFC version/variant bits
- * that Postgres itself does not — the same check `attention/routes.ts` applies.
- */
-const UUID = z
-  .string()
-  .regex(/^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/, "must be a uuid");
-
 /** Marks memories written through this endpoint rather than by the user directly. */
 const MCP_SOURCE = "mcp";
-
-/** Every tool answers with a single JSON text block. */
-function jsonResult(value: unknown) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] };
-}
-
-/** A tool failure the caller can act on, with the detail kept in the logs. */
-function toolError(label: string, error: unknown) {
-  // The SDK returns a thrown error's `message` verbatim, and the messages
-  // reaching here are database and provider errors — a failed drizzle query
-  // carries the SQL and its bound parameters. The token holding this endpoint is
-  // meant to be *less* privileged than the bearer, so the detail stays in the
-  // sidecar log and the caller gets the failure without the internals.
-  console.error(`[mcp] ${label} failed:`, describeError(error));
-  return {
-    isError: true,
-    content: [{ type: "text" as const, text: `${label} failed — see the Yarvis sidecar log.` }],
-  };
-}
 
 /** Where a memory came from, so a reading agent can weigh what it wrote itself. */
 function memorySource(record: MemoryRecord): string | undefined {
@@ -131,7 +102,7 @@ export function registerMemoryTools(server: McpServer, memory: () => Promise<Mem
     async ({ content, ...windowRequest }) => {
       const requested = resolveValidityWindow(windowRequest, new Date());
       if (!requested.ok) {
-        return { isError: true, content: [{ type: "text" as const, text: requested.error }] };
+        return callerError(requested.error);
       }
       try {
         const record = await (await memory()).add(content, {

@@ -17,7 +17,10 @@ const LINK = "text-indigo-400 hover:underline";
 
 /** The showcase page: both cuts of the video in Remotion's player, with a toggle between them. */
 function App() {
-  const [walkthrough, setWalkthrough] = useState(false);
+  // `?cut=walkthrough` opens on the walkthrough, so the README can link to either cut.
+  const [walkthrough, setWalkthrough] = useState(
+    () => new URLSearchParams(window.location.search).get("cut") === "walkthrough",
+  );
   return (
     <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-5 px-6 py-10 text-zinc-100">
       <header className="flex flex-wrap items-end gap-4">

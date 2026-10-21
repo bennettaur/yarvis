@@ -18,6 +18,10 @@
     "medium": null,
     "max": null
   },
+  "decisionModel": {
+    "model": null,
+    "autoApproveTools": false
+  },
   "githubPrConfig": {
     "reviewQuery": "is:open is:pr review-requested:@me",
     "reviewingLookbackDays": 30

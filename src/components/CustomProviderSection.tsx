@@ -286,6 +286,7 @@ function DraftEditor({
             <option value="openai">OpenAI Responses</option>
             <option value="openai-chat">OpenAI /chat/completions</option>
             <option value="anthropic">Anthropic Messages</option>
+            <option value="ollama">Ollama (server URL, e.g. http://localhost:11434)</option>
           </select>
         </Labeled>
         <Labeled label="Base URL" full>

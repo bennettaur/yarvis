@@ -7,7 +7,7 @@ import { ensureOk, sidecarFetch, streamSSE } from "./api";
 export type ProviderId = string;
 
 /** What a model can be asked to do; mirrors the sidecar's `ModelCapability`. */
-export type ModelCapability = "chat" | "stt" | "tts" | "vision" | "embed";
+export type ModelCapability = "chat" | "stt" | "tts" | "vision" | "embed" | "decision";
 
 export interface ModelInfo {
   id: string;
@@ -123,8 +123,11 @@ export interface ChatEvent {
   /** `done`: why the model stopped, and how many steps the turn took. */
   finishReason?: string;
   steps?: number;
-  /** Present on `attention` events: why the agent needs the user. */
-  reason?: string;
+  /**
+   * `attention`: why the agent needs the user. `tool_approval_request`: why the
+   * assistant says it is making the call, null when it gave no reason.
+   */
+  reason?: string | null;
   /** `tool_approval_request`: the tool call id to approve or deny. */
   id?: string;
   /** `tool_approval_request`: the tool's registry id, for a standing "always allow". */
@@ -148,6 +151,8 @@ export interface PendingApproval {
   name: string;
   server: string;
   args: unknown;
+  /** Why the assistant says it is making the call: its own account, not the user's request. */
+  reason: string | null;
 }
 
 /**
