@@ -66,11 +66,13 @@ export interface BuiltinToolDeps {
  */
 export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Record<string, Tool>> {
   const { db, config, sessionId, memory, attention, remoteControl, atTheApp, unattended } = deps;
+  // Only a chat turn can schedule a task; the others get a context that is never used.
   const scheduledTask = deps.scheduledTask ?? {
     provider: null,
     model: null,
     attempt: 0,
-    origin: unattended ? "heads-down" : "chat",
+    scheduledTaskId: null,
+    origin: "chat",
   };
   return {
     tasks: buildTaskTools(db, sessionId),

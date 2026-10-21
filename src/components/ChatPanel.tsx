@@ -84,9 +84,11 @@ export default function ChatPanel({
 
   useEffect(() => {
     if (!requestedSessionId) return;
-    void loadSession(requestedSessionId);
+    // Re-reading the open chat mid-reply would cancel the reply; it is already
+    // on screen, so leave it be.
+    if (requestedSessionId !== sessionId || !busy) void loadSession(requestedSessionId);
     onRequestConsumed?.();
-  }, [requestedSessionId, loadSession, onRequestConsumed]);
+  }, [requestedSessionId, sessionId, busy, loadSession, onRequestConsumed]);
 
   // The Omni Chat overlay covers this panel and carries an approval bar of its
   // own, so ours must stop answering the keyboard while it is up.

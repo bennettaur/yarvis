@@ -507,8 +507,9 @@ back to ad-hoc.
     model-composed text that is kept and displayed.
 - A scheduled task (`sidecar/src/scheduledTasks/`) is a prompt the chat agent
   schedules for itself, run later by the `scheduled-tasks` job as a turn in the
-  chat it came from, which then rings the attention bell. It is how "check on
-  my PRs in an hour" or "tell me when CI goes green" works without a shell.
+  chat it came from, ringing the attention bell when the run has something to
+  report. It is how "check on my PRs in an hour" or "tell me when CI goes
+  green" works without a shell.
   The prompt is model-composed, often just after reading a CI log or a PR
   comment, so three things hold it down. The turn gets only
   `SCHEDULED_TASK_TOOLS` (`chat/destructiveTools.ts`), a read-only allowlist,
@@ -520,8 +521,11 @@ back to ad-hoc.
   by an attempt counter that comes from the row, never from the model. Unlike
   the memory jobs, a row is marked fired *before* its turn runs: a sidecar that
   dies mid-turn loses one run rather than replaying it into the chat on every
-  restart. A heads-down pass runs in a hidden chat, so a task it schedules
-  carries `origin: "heads-down"` and its bell item opens the Heads down page.
+  restart. A run that only schedules its next one (`parentId` points back at
+  it) stays quiet. The bell item's title is always ours, naming the task; the
+  model's words go in the body, so injected text can't pose as an app alert.
+  A heads-down pass runs in a hidden chat, so a task it schedules carries
+  `origin: "heads-down"` and its bell item opens the Heads down page.
 - Delegation is files, not rows. A specialist (`sidecar/src/agents/`) is a
   markdown file: frontmatter for its tools, model (or complexity tier — see
   `sidecar/src/llm/complexity.ts`) and step budget, body as its system prompt.

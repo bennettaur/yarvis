@@ -92,7 +92,9 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
  * reading a CI log or a PR comment, and nobody is watching it run. Dropping the
  * tools above is not enough there: a memory or task written on that turn is read
  * back on later turns as though the user had agreed to it. So the turn gets what
- * it needs to look, report and look again, and nothing that writes.
+ * it needs to look, report and look again, and nothing that writes. The
+ * browser tools are left out too: they read the user's signed-in tabs, and what
+ * a task reads can end up in a notification.
  */
 export const SCHEDULED_TASK_TOOLS: ReadonlySet<string> = new Set([
   "schedule_task",
@@ -126,6 +128,4 @@ export const SCHEDULED_TASK_TOOLS: ReadonlySet<string> = new Set([
   "list_pr_reviews",
   "search_pr_insights",
   "list_calendar_events",
-  "list_browser_tabs",
-  "read_browser_page",
 ]);

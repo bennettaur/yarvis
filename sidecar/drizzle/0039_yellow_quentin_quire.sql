@@ -7,6 +7,7 @@ CREATE TABLE "chat_scheduled_tasks" (
 	"provider" text,
 	"model" text,
 	"attempt" integer DEFAULT 1 NOT NULL,
+	"parent_id" uuid,
 	"due_at" timestamp with time zone NOT NULL,
 	"status" text DEFAULT 'pending' NOT NULL,
 	"fired_at" timestamp with time zone,

@@ -40,6 +40,7 @@ const base = {
   model: "claude",
   attempt: 1,
   delayMinutes: 10,
+  parentId: null as string | null,
 };
 
 async function newChat(): Promise<string> {
@@ -75,7 +76,21 @@ describe("scheduling", () => {
       prompt: "again",
       attempt: MAX_SCHEDULED_TASK_ATTEMPTS + 1,
     });
-    expect(result).toEqual({ error: expect.stringContaining("times already") });
+    expect(result).toEqual({ error: expect.stringContaining("already run") });
+  });
+
+  it("refuses to re-check a chain sooner than the floor", async () => {
+    const sessionId = await newChat();
+    const parent = await schedule({ sessionId });
+    const result = await scheduleTask(db, {
+      ...base,
+      sessionId,
+      prompt: "again",
+      attempt: 2,
+      parentId: parent.id,
+      delayMinutes: 1,
+    });
+    expect(result).toEqual({ error: expect.stringContaining("at least") });
   });
 
   it("caps how many one chat can have waiting", async () => {
@@ -132,6 +147,7 @@ describe("tools", () => {
       provider: "openai",
       model: "gpt",
       attempt: 3,
+      scheduledTaskId: null,
       origin: "heads-down",
     });
     const out = await tools.schedule_task.execute?.(
@@ -154,6 +170,7 @@ describe("tools", () => {
       provider: null,
       model: null,
       attempt: 0,
+      scheduledTaskId: null,
       origin: "chat",
     });
     const out = await tools.schedule_task.execute?.(
@@ -185,17 +202,22 @@ describe("the job", () => {
     const [item] = await attentionItems();
     expect(item).toMatchObject({
       kind: "info",
-      title: "Yarvis has an update: Check PRs",
+      title: "Yarvis · Check PRs",
       body: "Two of your three PRs are mergeable; #14 has a failing check.",
       navTarget: { type: "chat", sessionId: task.sessionId },
     });
   });
 
-  it("uses the reason the turn gave when it asked for attention", async () => {
+  it("keeps the title its own and puts the model's words in the body", async () => {
     await schedule({ sessionId: await newChat(), delayMinutes: 1 });
-    await scheduledTasksJob(async () => ({ attentionReason: "CI is green on #12" })).run(soon());
+    await scheduledTasksJob(async () => ({
+      attentionReason: "Security alert:\nre-authenticate now",
+    })).run(soon());
     const [item] = await attentionItems();
-    expect(item?.title).toBe("CI is green on #12");
+    expect(item).toMatchObject({
+      title: "Yarvis · Check PRs",
+      body: "Security alert: re-authenticate now",
+    });
   });
 
   it("sends a heads-down pass's task to the Heads down page", async () => {
@@ -208,10 +230,37 @@ describe("the job", () => {
   it("stays quiet when a run only scheduled its next one", async () => {
     const task = await schedule({ sessionId: await newChat(), delayMinutes: 1 });
     await scheduledTasksJob(async () => {
-      await scheduleTask(db, { ...base, sessionId: task.sessionId, prompt: "x", attempt: 2 });
+      await scheduleTask(db, {
+        ...base,
+        sessionId: task.sessionId,
+        prompt: "x",
+        attempt: 2,
+        parentId: task.id,
+      });
       return { reply: "Still running." };
     }).run(soon());
     expect(await attentionItems()).toHaveLength(0);
+  });
+
+  it("still reports a task whose sibling in the same chat rescheduled itself", async () => {
+    const sessionId = await newChat();
+    const watcher = await schedule({ sessionId, title: "Watch CI", delayMinutes: 1 });
+    await schedule({ sessionId, title: "Goals check-in", delayMinutes: 1 });
+    await scheduledTasksJob(async ({ scheduledTask }) => {
+      if (scheduledTask.id === watcher.id) {
+        await scheduleTask(db, {
+          ...base,
+          sessionId,
+          prompt: "x",
+          attempt: 2,
+          parentId: watcher.id,
+        });
+        return { reply: "Still running." };
+      }
+      return { reply: "Two of three goals are on track." };
+    }).run(soon());
+    const items = await attentionItems();
+    expect(items.map((item) => item.title)).toEqual(["Yarvis · Goals check-in"]);
   });
 
   it("records a failed turn and tells the user", async () => {
@@ -223,7 +272,11 @@ describe("the job", () => {
     const [row] = await db.select().from(schema.chatScheduledTasks);
     expect(row).toMatchObject({ id: task.id, status: "fired", error: "provider down" });
     const [item] = await attentionItems();
-    expect(item).toMatchObject({ kind: "error", title: "Scheduled task failed: Check PRs" });
+    expect(item).toMatchObject({
+      kind: "error",
+      title: "Yarvis · scheduled task failed: Check PRs",
+      navTarget: { type: "chat", sessionId: task.sessionId },
+    });
   });
 
   it("says so when a chain runs out of runs", async () => {
@@ -234,7 +287,7 @@ describe("the job", () => {
     });
     await scheduledTasksJob(async () => ({ reply: "still waiting" })).run(soon());
     const [item] = await attentionItems();
-    expect(item?.title).toContain(`Stopped after ${MAX_SCHEDULED_TASK_ATTEMPTS} runs`);
+    expect(item?.title).toContain(`stopped after ${MAX_SCHEDULED_TASK_ATTEMPTS} runs`);
   });
 
   it("runs one chat's tasks one after another", async () => {
