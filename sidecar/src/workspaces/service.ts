@@ -74,6 +74,7 @@ import {
 } from "./git.ts";
 import { writeMcpConfig } from "./mcpConfig.ts";
 import { deleteWorkspaceReviewComments } from "./reviewComments.ts";
+import type { RepoTracker } from "./tracker.ts";
 import { resolveWorktree, worktreeDiffBase } from "./worktrees.ts";
 
 const SETUP_LOG_CAP = 16 * 1024;
@@ -89,6 +90,7 @@ export interface CreateRepoInput {
   setupScript?: string | null;
   runScript?: string | null;
   pullIssues?: boolean;
+  tracker?: RepoTracker | null;
 }
 
 export interface UpdateRepoInput {
@@ -97,6 +99,7 @@ export interface UpdateRepoInput {
   setupScript?: string | null;
   runScript?: string | null;
   pullIssues?: boolean;
+  tracker?: RepoTracker | null;
 }
 
 /** Extracts {owner, repo} from an ssh or https git remote, or null. */
@@ -311,6 +314,7 @@ export async function createRepo(db: Db, config: Config, input: CreateRepoInput)
       setupScript: input.setupScript ?? null,
       runScript: input.runScript ?? null,
       pullIssues: input.pullIssues ?? false,
+      tracker: input.tracker ?? null,
     })
     .returning();
   return row!;
@@ -361,6 +365,7 @@ export async function updateRepo(db: Db, id: string, patch: UpdateRepoInput): Pr
   if (patch.setupScript !== undefined) values.setupScript = patch.setupScript;
   if (patch.runScript !== undefined) values.runScript = patch.runScript;
   if (patch.pullIssues !== undefined) values.pullIssues = patch.pullIssues;
+  if (patch.tracker !== undefined) values.tracker = patch.tracker;
   if (patch.cloneUrl !== undefined) {
     assertSafeCloneUrl(patch.cloneUrl);
     const parsed = parseGitUrl(patch.cloneUrl);
@@ -2048,6 +2053,7 @@ async function removeWorktreesAndFinish(
       await withRepoLock(wr.repoId, () =>
         removeWorktree(runner, wr.repo.primaryClonePath, wr.worktreePath, {
           force: input.force ?? false,
+          workspaceRoot: detail.rootPath,
         }),
       );
       await db

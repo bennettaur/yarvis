@@ -63,6 +63,80 @@ describe("mapReviewer", () => {
   });
 });
 
+describe("mapReviewer teams", () => {
+  it("marks a group reviewer as a team", () => {
+    expect(mapReviewer({ displayName: "[Shop]\\Web Team", isContainer: true }).isTeam).toBe(true);
+    expect(mapReviewer({ displayName: "Alex" }).isTeam).toBe(false);
+  });
+});
+
+describe("prCiChecks", () => {
+  it("keeps the build and status policies and drops the reviewer ones", async () => {
+    let policyUrl = "";
+    const az = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([
+        {
+          match: (u) => {
+            policyUrl = u;
+            return u.includes("/policy/evaluations");
+          },
+          body: {
+            value: [
+              {
+                status: "rejected",
+                configuration: {
+                  type: { id: "0609b952-1397-4640-95ec-e00a01b2c241", displayName: "Build" },
+                },
+              },
+              {
+                status: "running",
+                configuration: {
+                  type: { id: "status-type", displayName: "Status" },
+                  settings: { statusName: "sonar" },
+                },
+              },
+              // Rejected until someone approves; that is review, not CI.
+              {
+                status: "rejected",
+                configuration: {
+                  type: { id: "reviewers-type", displayName: "Minimum number of reviewers" },
+                },
+              },
+            ],
+          },
+        },
+      ]),
+    );
+    const checks = await az.prCiChecks("Shop", "proj-1", 7);
+    expect(policyUrl).toContain(encodeURIComponent("vstfs:///CodeReview/CodeReviewId/proj-1/7"));
+    expect(checks).toEqual([
+      { name: "Build", status: "COMPLETED", conclusion: "FAILURE", url: null },
+      { name: "Status", status: "IN_PROGRESS", conclusion: null, url: null },
+    ]);
+  });
+
+  it("asks nothing without a project id", async () => {
+    let asked = false;
+    const az = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([
+        {
+          match: () => {
+            asked = true;
+            return true;
+          },
+          body: { value: [] },
+        },
+      ]),
+    );
+    expect(await az.prCiChecks("Shop", "", 7)).toEqual([]);
+    expect(asked).toBe(false);
+  });
+});
+
 describe("summarizeReviewDecision", () => {
   it("lets one blocking vote outrank any number of approvals", () => {
     expect(
@@ -229,6 +303,7 @@ describe("azure client", () => {
       state: "open",
       mergeable: "MERGEABLE",
       reviewDecision: "review_required",
+      projectId: "",
     });
   });
 

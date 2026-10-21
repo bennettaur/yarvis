@@ -4,7 +4,6 @@ import {
   createGitHubClient,
   encodeRepoPath,
   GitHubClient,
-  type PrSummary,
   summarizeCheckItems,
   summarizeChecks,
   summarizeReviewDecision,
@@ -199,6 +198,44 @@ describe("github client", () => {
     expect(st.mergeable).toBe(true);
     expect(st.mergeableState).toBe("clean");
     expect(st.checks).toMatchObject({ total: 1, success: 1 });
+  });
+
+  it("counts legacy commit statuses alongside check runs", async () => {
+    const gh = new GitHubClient(
+      "t",
+      fakeFetch({
+        "/repos/o/r/pulls/1": { state: "open", head: { sha: "abc" } },
+        "/repos/o/r/commits/abc/check-runs": {
+          check_runs: [{ status: "completed", conclusion: "success" }],
+        },
+        "/repos/o/r/commits/abc/status": {
+          state: "failure",
+          statuses: [
+            { context: "ci/jenkins", state: "failure" },
+            { context: "ci/lint", state: "error" },
+            { context: "ci/deploy", state: "pending" },
+            { context: "ci/unit", state: "success" },
+          ],
+        },
+      }),
+    );
+    const st = await gh.prStatus("o", "r", 1);
+    expect(st.checks).toEqual({ total: 5, success: 2, failure: 2, pending: 1 });
+  });
+
+  it("keeps the check runs when commit statuses can't be read", async () => {
+    // fakeFetch answers 404 for the unrouted status endpoint.
+    const gh = new GitHubClient(
+      "t",
+      fakeFetch({
+        "/repos/o/r/pulls/1": { state: "open", head: { sha: "abc" } },
+        "/repos/o/r/commits/abc/check-runs": {
+          check_runs: [{ status: "in_progress", conclusion: null }],
+        },
+      }),
+    );
+    const st = await gh.prStatus("o", "r", 1);
+    expect(st.checks).toEqual({ total: 1, success: 0, failure: 0, pending: 1 });
   });
 
   it("normalizes CheckRun and StatusContext into a flat check list", () => {
@@ -438,10 +475,10 @@ describe("github client", () => {
     });
 
     expect(detail.reviewers).toEqual([
-      { login: "bob", state: "approved", isRequested: false },
-      { login: "carol", state: "changes_requested", isRequested: false },
-      { login: "alice", state: "pending", isRequested: true },
-      { login: "org/frontend", state: "pending", isRequested: true },
+      { login: "bob", state: "approved", isRequested: false, isTeam: false },
+      { login: "carol", state: "changes_requested", isRequested: false, isTeam: false },
+      { login: "alice", state: "pending", isRequested: true, isTeam: false },
+      { login: "org/frontend", state: "pending", isRequested: true, isTeam: true },
     ]);
   });
 
@@ -1131,9 +1168,9 @@ describe("github endpoints", () => {
       api: "http://127.0.0.1:4010",
       graphql: "http://127.0.0.1:4010/graphql",
     });
+    await gh.searchIssues("is:open");
     await gh.viewer();
-    await gh.lookupBranches([{ owner: "o", repo: "r", number: 1 } as PrSummary]);
-    expect(urls[0]).toBe("http://127.0.0.1:4010/user");
+    expect(urls[0]).toStartWith("http://127.0.0.1:4010/search/issues");
     expect(urls[1]).toBe("http://127.0.0.1:4010/graphql");
   });
 
@@ -1154,7 +1191,7 @@ describe("github endpoints", () => {
     } finally {
       globalThis.fetch = original;
     }
-    expect(urls[0]).toBe("http://127.0.0.1:4010/user");
+    expect(urls[0]).toBe("http://127.0.0.1:4011/q");
   });
 
   it("uses github.com when the config doesn't override it", async () => {
@@ -1166,6 +1203,6 @@ describe("github endpoints", () => {
     } finally {
       globalThis.fetch = original;
     }
-    expect(urls[0]).toBe("https://api.github.com/user");
+    expect(urls[0]).toBe("https://api.github.com/graphql");
   });
 });

@@ -77,7 +77,7 @@ async function addRepo(name: string): Promise<string> {
   return ((await res.json()) as { id: string }).id;
 }
 
-/** A provisioned workspace, plus the ids of its worktree rows in order. */
+/** A provisioned workspace, plus the ids of its worktree rows in the order the repos are named. */
 async function workspaceWithRepos(
   name: string,
   repoNames: string[],
@@ -87,7 +87,10 @@ async function workspaceWithRepos(
   const ws = await createWorkspace(db, config, { name, repoIds });
   await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
   const detail = await getWorkspace(db, ws.id);
-  return { id: ws.id, repoIds: (detail?.repos ?? []).map((r) => r.id) };
+  // Looked up by name: the rows are inserted together, so they share a
+  // created_at and come back from getWorkspace in no fixed order.
+  const idOf = new Map((detail?.repos ?? []).map((r) => [r.repo.name, r.id]));
+  return { id: ws.id, repoIds: repoNames.map((repoName) => idOf.get(repoName) ?? "") };
 }
 
 /** The common case: one repo, and its worktree row id to file comments against. */
@@ -381,10 +384,18 @@ describe("review comment routes", () => {
       body: "Still needed — this archive did not finish.",
     });
 
-    const dirtyGit: GitRunner = async (args, opts) =>
-      args[0] === "worktree" && args[1] === "remove" && !args.includes("--force")
-        ? { stdout: "", stderr: "worktree contains modified files", exitCode: 1 }
-        : fakeGit(args, opts);
+    // The refused worktree stays listed, since git still has it registered.
+    let refused = "";
+    const dirtyGit: GitRunner = async (args, opts) => {
+      if (args[0] === "worktree" && args[1] === "remove" && !args.includes("--force")) {
+        refused = args[2] ?? "";
+        return { stdout: "", stderr: "worktree contains modified files", exitCode: 1 };
+      }
+      if (args[0] === "worktree" && args[1] === "list") {
+        return { stdout: `worktree ${refused}\0\0`, stderr: "", exitCode: 0 };
+      }
+      return fakeGit(args, opts);
+    };
 
     const result = await archiveWorkspace(db, ws.id, {}, dirtyGit);
     expect(result.status).toBe("archiving");

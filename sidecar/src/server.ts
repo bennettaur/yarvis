@@ -5,6 +5,7 @@ import { removeDiscoveryOnExit, writeDiscovery } from "./browser/discovery.ts";
 import { loadConfig, loadInstanceConfig } from "./config.ts";
 import { getDb } from "./db/client.ts";
 import { runMigrations } from "./db/migrate.ts";
+import { startHeadsDownLoop } from "./headsDown/loop.ts";
 import { allJobsWithAgentJobs } from "./jobs/registry.ts";
 import { startJobScheduler } from "./jobs/scheduler.ts";
 import { installLogCapture } from "./lib/log.ts";
@@ -48,6 +49,8 @@ const _server = Bun.serve({
   // for the provider's first token, after which each streamed chunk resets the
   // idle timer. Without this the socket is closed mid-generation and the client
   // sees a timeout with no output. 255s is Bun's maximum.
+  // `ANSWER_WAIT_MS` in `questions/contract.ts` stays under this, since an
+  // `ask_user` call sends nothing while it waits.
   idleTimeout: 255,
 });
 if (config.tokenGenerated) {
@@ -127,6 +130,9 @@ if (config.databaseUrl) {
       // Background PR/checks poller. No-op without a GitHub token; reconciles
       // interrupted runs on its first tick.
       startWorkspacePoller(config);
+      // The heads-down loop runs passes only while the user has it turned on;
+      // otherwise it just checks once a minute whether they have.
+      startHeadsDownLoop(config);
       // A workspace still holding a "Start work" prompt is one whose session was
       // never launched, which only a restart mid-kick-off can leave behind — the
       // sequence otherwise runs to completion here regardless of the UI. Pick

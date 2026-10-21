@@ -13,8 +13,10 @@ import type { Config } from "./config.ts";
 import { createCustomProviderRoutes } from "./customProviders/routes.ts";
 import { pingDb } from "./db/client.ts";
 import { createEventRoutes } from "./events/routes.ts";
+import { createGithubAuthRoutes } from "./github/authRoutes.ts";
 import { createGithubRoutes } from "./github/routes.ts";
 import { createCalendarRoutes, createGoogleCallbackRoutes } from "./google/routes.ts";
+import { createHeadsDownRoutes } from "./headsDown/routes.ts";
 import { createIssueRoutes } from "./issues/routes.ts";
 import { createJiraRoutes } from "./jira/routes.ts";
 import { createJobRoutes } from "./jobs/routes.ts";
@@ -31,12 +33,15 @@ import { createOmniRoutes } from "./omni/routes.ts";
 import { createPrModelRoutes } from "./pr/modelRoutes.ts";
 import { createPrRoutes } from "./pr/routes.ts";
 import { createProjectRoutes } from "./projects/routes.ts";
+import { createQuestionRoutes } from "./questions/routes.ts";
 import { createReadiness, type Readiness } from "./readiness.ts";
 import { createTaskRoutes } from "./tasks/routes.ts";
 import { createTelegramRoutes } from "./telegram/routes.ts";
 import { createTodoRoutes } from "./todos/routes.ts";
 import { createVoiceRoutes } from "./voice/routes.ts";
 import { createWipRoutes } from "./wip/routes.ts";
+import { createWorkStreamRoutes } from "./workStreams/routes.ts";
+import { createAgentSessionIngestRoutes } from "./workspaces/agentSessionIngest.ts";
 import { createRepoRoutes, createWorkspaceRoutes } from "./workspaces/routes.ts";
 
 const SERVICE_NAME = "yarvis-sidecar";
@@ -101,6 +106,10 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   // own scoped token (checked inside the router), so a Claude session shell can
   // raise an attention flag without holding the full-access bearer.
   app.route("/ingest", createAttentionIngestRoutes(config));
+  // Same token and shape: the session hooks register the Claude process with
+  // its workspace. The attention router's `/ingest/*` middleware also runs for
+  // it; this router checks the token itself rather than relying on that.
+  app.route("/ingest/agent-session", createAgentSessionIngestRoutes(config));
 
   // The browser bridge is the same shape: the extension's native host holds only
   // this scoped token, checked inside the router, never the full-access bearer.
@@ -147,6 +156,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/mcp-endpoint", createMcpEndpointInfoRoutes(config));
   app.route("/api/cc", createCcRoutes());
   app.route("/api/github", createGithubRoutes(config));
+  app.route("/api/github-auth", createGithubAuthRoutes(config));
   app.route("/api/issues", createIssueRoutes(config));
   app.route("/api/jira", createJiraRoutes(config));
   app.route("/api/azure", createAzureRoutes(config));
@@ -155,10 +165,13 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/events", createEventRoutes(config));
   app.route("/api/projects", createProjectRoutes(config));
   app.route("/api/todos", createTodoRoutes(config));
+  app.route("/api/work-streams", createWorkStreamRoutes(config));
+  app.route("/api/heads-down", createHeadsDownRoutes(config));
   app.route("/api/specialists", createSpecialistRoutes(config));
   app.route("/api/jobs", createJobRoutes(config));
   app.route("/api/logs", createLogRoutes());
   app.route("/api/attention", createAttentionRoutes(config));
+  app.route("/api/questions", createQuestionRoutes(config));
   app.route("/api/wip", createWipRoutes(config));
   app.route("/api/calendar", createCalendarRoutes(config));
   app.route("/api/omni", createOmniRoutes(config));

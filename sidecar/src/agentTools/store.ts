@@ -45,7 +45,8 @@ export interface SyncScope {
 }
 
 /** A registry row as surfaced to the Tool Manager (embedding omitted). */
-export type RegistryTool = Omit<AgentToolRow, "embedding">;
+/** A registry row as the Tool manager reads it; heads-down consent is read on its own. */
+export type RegistryTool = Omit<AgentToolRow, "embedding" | "unattended">;
 
 /** A search hit: enough to identify and describe a tool to the agent. */
 export interface ToolSearchHit {
@@ -118,7 +119,7 @@ export async function syncToolSet(
         // description and a new schema — and has to be approved again.
         return db
           .update(agentTools)
-          .set({ ...fields, approval: "ask", updatedAt: new Date() })
+          .set({ ...fields, approval: "ask", unattended: false, updatedAt: new Date() })
           .where(eq(agentTools.id, d.id));
       }
       inserted += 1;

@@ -26,6 +26,10 @@ function yarvisServerEntry(workspaceId: string): Record<string, unknown> {
       // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
       Authorization: "Bearer ${YARVIS_MCP_TOKEN}",
       [WORKSPACE_HEADER]: workspaceId,
+      // Tells `ask_user` which terminal a question comes from. The empty default
+      // keeps a shell that isn't one of Yarvis's PTYs from failing to expand.
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
+      "X-Yarvis-Session-Key": "${YARVIS_SESSION_KEY:-}",
     },
   };
 }

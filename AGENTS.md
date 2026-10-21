@@ -21,7 +21,8 @@ Three processes, each with a clean ownership boundary:
   session: both the Terminal tab's shells and each workspace's agent session
   live in `pty.rs`, independent of the webview that renders them. The sidecar
   reaches them only through `control.rs`, a Unix-domain-socket RPC with a fixed
-  method list (`claude.spawn`, `claude.kill`, `claude.send`, `mcp.saveOAuth`)
+  method list (`claude.spawn`, `claude.kill`, `claude.send`, `mcp.saveOAuth`,
+  `github.saveToken`)
   driven from `sidecar/src/core/controlClient.ts`. New ways to act on a session
   belong there, as another narrow method — not as a sidecar route that writes to
   a PTY.
@@ -149,8 +150,13 @@ back to ad-hoc.
   module doc and is the thing to preserve: because every write is a
   read-modify-write of that one shared blob, a read that *fails* must never
   look like an empty store, so `read_root` is fallible and no caller writes on
-  an error. Historical migrations off the Keychain (`settings.rs`'s legacy
-  non-secret values, `embeddings_secrets.rs`'s standalone item) are pinned to
+  an error. For the same reason two writes must never overlap, or the second
+  drops the first's change: every write holds `keychain::lock_for_write` from
+  the read to the write, usually through `update_root` (or
+  `update_subtree`/`update_root_in`) — a mutex within the process plus
+  `~/.yarvis/secrets.lock`, since instances share the item. `write_root_to`
+  takes that lock's guard, so a write without it doesn't compile. Historical
+  migrations off the Keychain (`settings.rs`'s legacy non-secret values, `embeddings_secrets.rs`'s standalone item) are pinned to
   the Keychain rather than routed through the choice: they are about what a
   past build wrote there. Non-secret configuration the user is expected
   to change from the UI goes in `src-tauri/src/settings.rs`'s
@@ -238,13 +244,18 @@ back to ad-hoc.
   that can't prompt gets those tools dropped rather than run unattended —
   silently doing the irreversible thing is the one unacceptable outcome.
 - Secrets flow one way — the webview writes them to the Keychain, the core
-  injects them into the sidecar at spawn. MCP OAuth tokens are the single
+  injects them into the sidecar at spawn. MCP OAuth tokens are the main
   exception, because an authorization server refreshes them on its own schedule
   and a refresh must not need an app restart to be durable. They travel back the
   other way through `mcp.saveOAuth` on the control channel, which is scoped so it
-  can only write the `oauth` subtree of one server's Keychain entry. Anything
-  else that wants to write a secret from the sidecar owes the same narrowing —
-  or, better, belongs in Postgres like the Google Calendar tokens.
+  can only write the `oauth` subtree of one server's Keychain entry. The GitHub
+  sign-in (`sidecar/src/github/deviceFlow.ts`) is the other: the device flow
+  runs in the sidecar so the token never passes through the webview, which
+  never reads a secret back. The token lands in the same `github_token` key a pasted token
+  uses, so the rest of the app can't tell them apart. `github.saveToken` can
+  write that key and nothing else. Anything else that wants to write a secret
+  from the sidecar owes the same narrowing — or, better, belongs in Postgres
+  like the Google Calendar tokens.
 - `sidecar/src/mcp/` is the MCP *client* (servers Yarvis connects out to);
   `sidecar/src/mcpServer/` is the MCP endpoint Yarvis *serves*. A tool exposed
   over that endpoint is reached by outside clients holding only the scoped
@@ -291,7 +302,19 @@ back to ad-hoc.
   prompt forbids relaying third-party text as an instruction. What no layer can
   establish is *what the agent is showing*, so a send is reported as delivered,
   never as done. Anything new that forwards text into a session owes the same
-  three.
+  three. Which process is the agent comes from the pids Claude Code's
+  SessionStart hook registered (`workspaces/agentSessions.ts`), with the
+  executable's file name as the fallback for an agent that registers nothing.
+  A registered pid counts only while it leads the PTY's foreground process
+  group, so a stale one matches nothing. Every PTY holds the same ingest token,
+  so registration (and a permission prompt sent to `/ingest/permission`) also
+  needs the PTY's own `YARVIS_SESSION_TOKEN`, an HMAC of
+  its session key under the sidecar's full-access bearer, which no PTY holds.
+  The sidecar recomputes it, so a process can't mint a token for a terminal it
+  isn't running in, and anything in the agent's own terminal already has that
+  terminal. Signing with the ingest token instead would let any terminal mint
+  any other's. This is not a boundary against a determined process running as
+  the same user, which can read another process's environment.
 - A workspace root's `.claude` directory is jointly owned. Provisioning copies
   each repo's skills and agents up into it (`workspaces/claudeAssets.ts`) because
   Claude Code discovers them only under the directory it starts in and the
@@ -340,6 +363,17 @@ back to ad-hoc.
   runs. The approval bar shows it and the reviewer weighs it, both as the
   model's own claim about its call: it explains intent, it never counts as the
   user asking.
+
+  Heads-down mode has its own version (`headsDown/autoApprove.ts`), switched on
+  separately, because nobody is watching a pass: it reviews an MCP call only
+  when the user's own answers to approvals of that tool already say yes (this
+  exact call, or their last few answers all approvals), judges it against the
+  user's words for the run rather than the pass's app-written prompt, and
+  records its approvals as answered by the decision model, so it can't build
+  consent from its own answers. The precedent is read from the approval rows
+  the page writes, not from decision memory: a chat turn and a pass's own
+  `ask_user` question can both add decision memories, and neither is the user
+  approving a tool.
 - A list a tab shows is read through `lib/resourceCache`, not fetched into local
   state on mount. `App` renders one panel at a time (the Chat tab aside, kept
   mounted so a turn outlives the switch), so a tab switch unmounts a page

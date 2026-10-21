@@ -26,14 +26,17 @@ function clientWith(handlers: (path: string) => unknown): GitHubClient {
 }
 
 /** Builds an AzureDevOpsClient whose fetch returns canned payloads keyed by URL,
- *  mirroring `clientWith`. Defaults to org `acme` on dev.azure.com. */
+ *  mirroring `clientWith`, `__status` included. Defaults to org `acme` on
+ *  dev.azure.com. */
 function azureClientWith(
   handlers: (url: string) => unknown,
   orgUrl = "https://dev.azure.com/acme",
 ): AzureDevOpsClient {
   const fetchImpl = (async (input: string | URL | Request) => {
     const u = typeof input === "string" ? input : input.toString();
-    return new Response(JSON.stringify(handlers(u)), { status: 200 });
+    const body = handlers(u) as { __status?: number };
+    const status = body && typeof body === "object" && body.__status ? body.__status : 200;
+    return new Response(JSON.stringify(body), { status });
   }) as typeof fetch;
   return new AzureDevOpsClient("test-token", orgUrl, fetchImpl);
 }
@@ -133,6 +136,25 @@ describe("pollOnce", () => {
     expect(row?.checkRollup).toBe("failure");
     expect(row?.checks).toEqual({ total: 2, success: 1, failure: 1, pending: 0 });
     expect(row?.lastError).toBeNull();
+  });
+
+  it("counts CI reported only through commit statuses", async () => {
+    const wrId = await seedReadyRepo();
+    const gh = clientWith((path) => {
+      if (path.includes("head=")) return [pullItem(7, "open")];
+      if (path.includes("/reviews")) return REVIEWS();
+      if (path.includes("/pulls/7")) return { state: "open", merged: false, head: { sha: "abc" } };
+      if (path.includes("/check-runs")) return CHECKS([]);
+      if (path.includes("/commits/abc/status")) {
+        return { statuses: [{ context: "ci/jenkins", state: "failure" }] };
+      }
+      return {};
+    });
+
+    await pollOnce(db, { github: gh });
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row?.checkRollup).toBe("failure");
+    expect(row?.checks).toEqual({ total: 1, success: 0, failure: 1, pending: 0 });
   });
 
   it("derives a pending rollup when checks are still running", async () => {
@@ -351,6 +373,84 @@ describe("pollOnce", () => {
     expect(row?.lastError).toBeNull();
   });
 
+  /** An active Azure PR on project `proj-1`, as the branch lookup returns it. */
+  const AZURE_PR = {
+    value: [
+      {
+        pullRequestId: 57,
+        status: "active",
+        mergeStatus: "succeeded",
+        repository: { name: "web", project: { name: "Shop", id: "proj-1" } },
+      },
+    ],
+  };
+
+  it("rolls an Azure PR's checks up from its CI policies", async () => {
+    const wrId = await seedReadyRepo("z", "https://dev.azure.com/acme/Shop/_git/web");
+    const az = azureClientWith((url) => {
+      if (url.includes("/repositories/web/pullrequests")) return AZURE_PR;
+      if (url.includes("/policy/evaluations")) {
+        return {
+          value: [
+            {
+              status: "approved",
+              configuration: { type: { id: "0609b952-1397-4640-95ec-e00a01b2c241" } },
+            },
+            {
+              status: "rejected",
+              configuration: { type: { id: "x" }, settings: { statusName: "sonar" } },
+            },
+            // Not CI: a reviewer policy must not turn the rollup red.
+            { status: "rejected", configuration: { type: { id: "reviewers" } } },
+          ],
+        };
+      }
+      return {};
+    });
+
+    await pollOnce(db, { azure: az });
+
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row?.checkRollup).toBe("failure");
+    expect(row?.checks).toEqual({ total: 2, success: 1, failure: 1, pending: 0 });
+  });
+
+  it("keeps refreshing an Azure PR whose policies the token can't read", async () => {
+    const wrId = await seedReadyRepo("z", "https://dev.azure.com/acme/Shop/_git/web");
+    const az = azureClientWith((url) => {
+      if (url.includes("/repositories/web/pullrequests")) return AZURE_PR;
+      if (url.includes("/policy/evaluations")) return { __status: 403 };
+      return {};
+    });
+
+    await pollOnce(db, { azure: az });
+
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row?.prNumber).toBe(57);
+    expect(row?.checkRollup).toBe("none");
+    expect(row?.checks).toBeNull();
+    expect(row?.lastError).toBeNull();
+  });
+
+  it("leaves an Azure PR's checks unknown when its project id is missing", async () => {
+    const wrId = await seedReadyRepo("z", "https://dev.azure.com/acme/Shop/_git/web");
+    let askedForPolicies = false;
+    const az = azureClientWith((url) => {
+      if (url.includes("/repositories/web/pullrequests")) {
+        return { value: [{ pullRequestId: 58, status: "active", repository: { name: "web" } }] };
+      }
+      if (url.includes("/policy/evaluations")) askedForPolicies = true;
+      return {};
+    });
+
+    await pollOnce(db, { azure: az });
+
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(askedForPolicies).toBe(false);
+    expect(row?.checkRollup).toBe("none");
+    expect(row?.checks).toBeNull();
+  });
+
   it("leaves an approved Azure draft's verdict unknown, as GitHub's path does", async () => {
     const wrId = await seedReadyRepo("z", "https://dev.azure.com/acme/Shop/_git/web");
     const az = azureClientWith((url) =>
@@ -437,6 +537,34 @@ describe("pollOnce", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.lastError).toContain("429");
   });
+
+  it("backs off the whole cycle on a 403 GitHub says is a rate limit", async () => {
+    await seedReadyRepo("a");
+    await seedReadyRepo("b");
+    const gh = clientWith((path) =>
+      path.includes("head=") ? { __status: 403, message: "API rate limit exceeded" } : {},
+    );
+
+    await pollOnce(db, { github: gh });
+
+    expect(await db.select().from(workspaceRepoPr)).toHaveLength(1);
+  });
+
+  it("keeps polling the other repos when one 403s for access, not a rate limit", async () => {
+    await seedReadyRepo("a");
+    await seedReadyRepo("b");
+    const gh = clientWith((path) =>
+      path.includes("head=")
+        ? { __status: 403, message: "Resource protected by organization SAML enforcement" }
+        : {},
+    );
+
+    await pollOnce(db, { github: gh });
+
+    const rows = await db.select().from(workspaceRepoPr);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.lastError).toContain("SAML");
+  });
 });
 
 describe("reconcileOrphans", () => {
@@ -463,6 +591,47 @@ describe("reconcileOrphans", () => {
     const [b] = await db.select().from(workspaces).where(eq(workspaces.id, fresh!.id));
     expect(a?.status).toBe("error");
     expect(b?.status).toBe("creating"); // within the age margin, untouched
+  });
+
+  it("keeps an interrupted archive in the archive flow, and leaves a failed one alone", async () => {
+    const old = new Date(Date.now() - 5 * 60_000);
+    const [interrupted] = await db
+      .insert(workspaces)
+      .values({ name: "a", slug: "a", rootPath: "/tmp/a", status: "archiving", updatedAt: old })
+      .returning();
+    const [failed] = await db
+      .insert(workspaces)
+      .values({
+        name: "b",
+        slug: "b",
+        rootPath: "/tmp/b",
+        status: "archiving",
+        error: "one or more worktrees could not be removed",
+        updatedAt: old,
+      })
+      .returning();
+
+    await reconcileOrphans(db);
+
+    const [a] = await db.select().from(workspaces).where(eq(workspaces.id, interrupted!.id));
+    const [b] = await db.select().from(workspaces).where(eq(workspaces.id, failed!.id));
+    expect(a?.status).toBe("archiving");
+    expect(a?.error).toContain("archive again");
+    expect(b?.status).toBe("archiving");
+    expect(b?.error).toBe("one or more worktrees could not be removed");
+  });
+
+  it("leaves an archive that may still be running alone", async () => {
+    const [running] = await db
+      .insert(workspaces)
+      .values({ name: "c", slug: "c", rootPath: "/tmp/c", status: "archiving" })
+      .returning();
+
+    await reconcileOrphans(db);
+
+    const [c] = await db.select().from(workspaces).where(eq(workspaces.id, running!.id));
+    expect(c?.status).toBe("archiving");
+    expect(c?.error).toBeNull();
   });
 });
 

@@ -32,13 +32,23 @@ const FAMILY_POLICY: Record<string, ToolPolicy> = {
   tasks: "always",
   memory: "always",
   attention: "always",
+  // Always on, since `wait_for_answer` has to be reachable the moment
+  // `ask_user` comes back pending.
+  questions: "always",
   projects: "always",
   todos: "always",
   events: "always",
   digest: "always",
   delegation: "always",
+  // Heads-down mode's working state. A chat reaches for it while planning; the
+  // heads-down loop picks its own tools.
+  workStreams: "search",
+  // Small, and the chat needs it in hand to offer heads-down mode when planning ends.
+  headsDown: "always",
   workspaces: "search",
   jira: "search",
+  githubIssues: "search",
+  azureBoards: "search",
   prReview: "search",
   calendar: "search",
   browser: "search",

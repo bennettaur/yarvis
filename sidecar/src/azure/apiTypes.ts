@@ -72,6 +72,8 @@ export interface AzurePolicyEvaluation {
   status?: string;
   configuration?: {
     type?: { displayName?: string; id?: string };
+    /** Policy-specific; a status policy names the status it waits on. */
+    settings?: { statusName?: string };
   };
 }
 
@@ -116,6 +118,8 @@ export interface AzureReviewer {
   isRequired?: boolean;
   hasDeclined?: boolean;
   isFlagged?: boolean;
+  /** True for a group or team rather than a person. */
+  isContainer?: boolean;
 }
 
 export interface AzureChangeEntry {

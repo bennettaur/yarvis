@@ -160,6 +160,13 @@ fn migrate_keychain_settings(state: &SettingsState) {
     if state.snapshot().keychain_settings_migrated == Some(true) {
         return;
     }
+    let secrets_lock = match keychain::lock_for_write() {
+        Ok(lock) => lock,
+        Err(e) => {
+            eprintln!("[settings] skipping Keychain migration: {e}");
+            return;
+        }
+    };
     // Pinned to the Keychain rather than the configured store: this is about
     // values a *past* build wrote to the Keychain, so routing it through the
     // front door would have a fresh install set to 1Password create an item
@@ -194,7 +201,7 @@ fn migrate_keychain_settings(state: &SettingsState) {
             obj.remove(*key);
         }
     }
-    if let Err(e) = keychain::write_root_to(&Store::Keychain, &new_root) {
+    if let Err(e) = keychain::write_root_to(&secrets_lock, &Store::Keychain, &new_root) {
         eprintln!(
             "[settings] migrated settings saved, but failed to clear them from the Keychain: {e}"
         );
@@ -409,6 +416,9 @@ impl SettingsState {
         let vault = non_blank(vault);
         let item = non_blank(item);
         let target = secret_store::store_from(Some(backend), vault.as_deref(), item.as_deref())?;
+        // Held until the new selection is saved: a write that landed in the
+        // old store after the copy would be left behind there.
+        let secrets_lock = keychain::lock_for_write()?;
         // The store this instance is leaving, derived from this state's own
         // file rather than `secret_store::active()`'s global, so the method
         // cannot disagree with the path it will write the selection back to.
@@ -428,7 +438,7 @@ impl SettingsState {
             if let Store::OnePassword(item_ref) = &target {
                 onepassword::probe(item_ref)?;
             }
-            copy_secrets(&current, &target)?
+            copy_secrets(&secrets_lock, &current, &target)?
         };
         {
             let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
@@ -476,7 +486,11 @@ fn has_secrets(root: &Value) -> bool {
 /// `read_root_from` reads anything unparseable as an empty object, so a
 /// 1Password note the user wrote by hand — an item they can see and edit,
 /// unlike the Keychain's — would otherwise look empty and be overwritten.
-fn copy_secrets(from: &Store, to: &Store) -> Result<Copied, String> {
+fn copy_secrets(
+    secrets_lock: &keychain::WriteGuard,
+    from: &Store,
+    to: &Store,
+) -> Result<Copied, String> {
     let occupied = to
         .read()
         .map_err(|e| format!("could not read secrets from {}: {e}", to.label()))?
@@ -488,7 +502,7 @@ fn copy_secrets(from: &Store, to: &Store) -> Result<Copied, String> {
     if !has_secrets(&source) {
         return Ok(Copied::NothingToCopy);
     }
-    keychain::write_root_to(to, &source)?;
+    keychain::write_root_to(secrets_lock, to, &source)?;
     Ok(Copied::Secrets)
 }
 
@@ -551,6 +565,16 @@ pub fn from_disk() -> Settings {
         .get()
         .map(|path| SettingsState::read_from_disk(path))
         .unwrap_or_default()
+}
+
+/// Where the secrets write lock lives: beside `settings.json`, which every
+/// instance shares. `None` until [`init`] has run.
+pub fn secrets_lock_path() -> Option<PathBuf> {
+    SETTINGS_PATH.get().map(|path| secrets_lock_beside(path))
+}
+
+fn secrets_lock_beside(settings_path: &std::path::Path) -> PathBuf {
+    settings_path.with_file_name("secrets.lock")
 }
 
 /// Loads persisted settings into managed state and runs the Keychain
@@ -750,10 +774,23 @@ pub struct BackendSwitch {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_legacy_migration, copy_secrets, Copied, Settings, SettingsState, SettingsView,
+        apply_legacy_migration, copy_secrets, secrets_lock_beside, Copied, Settings, SettingsState,
+        SettingsView,
     };
+    use crate::keychain;
     use crate::secret_store::{MemoryStore, Store};
     use serde_json::json;
+
+    /// Every instance shares `settings.json`, so its directory is where they
+    /// can all find the same lock.
+    #[test]
+    fn the_secrets_lock_sits_beside_the_settings_file() {
+        let path = std::path::Path::new("/home/me/.yarvis/settings.json");
+        assert_eq!(
+            secrets_lock_beside(path),
+            std::path::Path::new("/home/me/.yarvis/secrets.lock")
+        );
+    }
 
     /// A settings store over a unique path under the temp dir, so tests touch a
     /// real file (matching how the store is used) without a dev-dependency on a
@@ -1127,7 +1164,12 @@ mod tests {
         let source = MemoryStore::holding(r#"{"github_token":"t"}"#);
         let target = MemoryStore::empty();
 
-        let copied = copy_secrets(&Store::Memory(source), &Store::Memory(target.clone())).unwrap();
+        let copied = copy_secrets(
+            &keychain::lock_for_write().unwrap(),
+            &Store::Memory(source),
+            &Store::Memory(target.clone()),
+        )
+        .unwrap();
 
         assert_eq!(copied, Copied::Secrets);
         assert_eq!(
@@ -1141,6 +1183,7 @@ mod tests {
         let target = MemoryStore::empty();
 
         let copied = copy_secrets(
+            &keychain::lock_for_write().unwrap(),
             &Store::Memory(MemoryStore::empty()),
             &Store::Memory(target.clone()),
         )
@@ -1155,6 +1198,7 @@ mod tests {
         let target = MemoryStore::holding(r#"{"github_token":"theirs"}"#);
 
         let copied = copy_secrets(
+            &keychain::lock_for_write().unwrap(),
             &Store::Memory(MemoryStore::holding(r#"{"github_token":"ours"}"#)),
             &Store::Memory(target.clone()),
         )
@@ -1172,6 +1216,7 @@ mod tests {
         let target = MemoryStore::holding("my recovery codes");
 
         let copied = copy_secrets(
+            &keychain::lock_for_write().unwrap(),
             &Store::Memory(MemoryStore::holding(r#"{"github_token":"ours"}"#)),
             &Store::Memory(target.clone()),
         )
@@ -1188,6 +1233,7 @@ mod tests {
         let source = MemoryStore::holding(r#"{"github_token":"t"}"#);
 
         let err = copy_secrets(
+            &keychain::lock_for_write().unwrap(),
             &Store::Memory(source),
             &Store::Memory(MemoryStore::unreadable()),
         )
@@ -1201,6 +1247,7 @@ mod tests {
         let source = MemoryStore::holding(r#"{"github_token":"t"}"#);
 
         assert!(copy_secrets(
+            &keychain::lock_for_write().unwrap(),
             &Store::Memory(source),
             &Store::Memory(MemoryStore::unwritable()),
         )

@@ -34,6 +34,22 @@ export interface BoardsViewer {
 /** Bugs keep their main text in Repro Steps; every other type uses Description. */
 export type BoardsBodyField = "description" | "reproSteps";
 
+/**
+ * A link from this work item to another. `relation` is Azure's own name for
+ * the link from this item's side: "Parent", "Child", "Predecessor" (must finish
+ * before this one, so it blocks it), "Successor" (blocked by this one),
+ * "Related", or a custom link type's name. The other item's title, state and
+ * type are empty when it could not be loaded.
+ */
+export interface BoardsRelation {
+  id: number;
+  relation: string;
+  title: string;
+  state: string;
+  type: string;
+  url: string;
+}
+
 /** Rich work item detail for the detail view. */
 export interface BoardsWorkItemDetail extends IssueDetail {
   assignee: string | null;
@@ -45,4 +61,6 @@ export interface BoardsWorkItemDetail extends IssueDetail {
   bodyField: BoardsBodyField;
   /** Every state the item's type allows, in the order its workflow lists them. */
   states: BoardsState[];
+  /** Links to other work items; links to commits, PRs and URLs are left out. */
+  relations: BoardsRelation[];
 }
