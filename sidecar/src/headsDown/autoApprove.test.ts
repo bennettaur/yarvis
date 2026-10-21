@@ -191,7 +191,7 @@ describe("a pass's approval hooks with auto mode", () => {
     const precedentsBefore = await memory.count({ kinds: ["decision"] });
     const hooks = passApprovalHooks(db, run, () => {}, context(deps(true)));
 
-    await hooks.onRequest({ toolCallId: "auto-1", id: TOOL, args });
+    await hooks.onRequest({ toolCallId: "auto-1", id: TOOL, args, reason: null });
 
     expect(await waitForApproval("auto-1", { timeoutMs: 1000 })).toBe(true);
     const [approval] = await listAutoApprovals(db);
@@ -210,7 +210,7 @@ describe("a pass's approval hooks with auto mode", () => {
     let changed = 0;
     const hooks = passApprovalHooks(db, run, () => changed++, context(deps(false)));
 
-    await hooks.onRequest({ toolCallId: "auto-3", id: TOOL, args });
+    await hooks.onRequest({ toolCallId: "auto-3", id: TOOL, args, reason: null });
 
     expect(await waitForApproval("auto-3", { timeoutMs: 1000 })).toBe(false);
     expect(changed).toBe(1);
@@ -225,7 +225,7 @@ describe("a pass's approval hooks with auto mode", () => {
     await userApprovesOthers();
     const userAnswerAt = (await answeredSince(db, new Date(0))).at(-1)!.answeredAt!;
     const hooks = passApprovalHooks(db, run, () => {}, context(deps(true)));
-    await hooks.onRequest({ toolCallId: "auto-2", id: TOOL, args });
+    await hooks.onRequest({ toolCallId: "auto-2", id: TOOL, args, reason: null });
     await waitForApproval("auto-2", { timeoutMs: 1000 });
 
     expect((await answeredSince(db, new Date(0))).map((q) => q.answeredBy)).toEqual([
