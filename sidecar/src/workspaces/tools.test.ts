@@ -16,8 +16,13 @@ import type { PrCodeSource } from "../pr/source.ts";
 import type { PrDetail, PrRef } from "../pr/types.ts";
 import { createTask, getTask } from "../tasks/service.ts";
 import { clearRecapCache } from "./activity.ts";
+import { recordAgentSessionEnd, recordAgentSessionStart } from "./agentSessions.ts";
 import { WORKSPACE_BRIEF_FILE } from "./brief.ts";
-import type { ClaudeSessionStarter, StartClaudeSessionInput } from "./claudeSession.ts";
+import type {
+  ClaudeSessionStarter,
+  SendSessionInstructionInput,
+  StartClaudeSessionInput,
+} from "./claudeSession.ts";
 import type { GitRunner } from "./git.ts";
 import {
   AGENT_KICKOFF_INSTRUCTION,
@@ -594,6 +599,27 @@ describe("workspace tools", () => {
     expect(startedCwds[1]).toContain("existing-ws");
   });
 
+  it("start_workspace_session gives a workspace that lacks them the registration hooks", async () => {
+    const created = await activeWorkspace("Older WS");
+    const detail = await getWorkspace(db, created.workspaceId);
+    const settingsFile = join(detail!.rootPath, ".claude/settings.json");
+    // As a workspace provisioned before the hooks existed would have it.
+    mkdirSync(join(detail!.rootPath, ".claude"), { recursive: true });
+    writeFileSync(settingsFile, JSON.stringify({ hooks: {} }));
+    let settingsAtLaunch: { hooks: Record<string, unknown[]> } | null = null;
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => {
+        settingsAtLaunch = JSON.parse(readFileSync(settingsFile, "utf8"));
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+
+    await tools.start_workspace_session.execute!({ workspaceId: created.workspaceId }, opts);
+
+    expect(settingsAtLaunch!.hooks.SessionStart).toHaveLength(1);
+  });
+
   it("start_workspace_session errors on an unknown workspace", async () => {
     const tools = buildWorkspaceTools(db, config, {
       gitRunner: okRunner,
@@ -621,6 +647,49 @@ describe("workspace tools", () => {
 
     const rows = (await tools.list_workspaces.execute!({}, opts)) as Array<{ name: string }>;
     expect(rows.some((w) => w.name === "WS One")).toBe(true);
+  });
+
+  it("list_workspaces reports the registered agent sessions, earliest as primary", async () => {
+    const busy = await activeWorkspace("Busy");
+    const idle = await activeWorkspace("Idle", ["https://github.com/acme/gadget.git"]);
+    const register = (sessionKey: string, claudeSessionId: string) =>
+      recordAgentSessionStart(db, {
+        workspaceId: busy.workspaceId,
+        sessionKey,
+        claudeSessionId,
+        // This process stands in for Claude, so the pid is alive.
+        pid: process.pid,
+        source: "startup",
+      });
+    await register(`ws-claude:${busy.workspaceId}`, "agent-tab");
+    await register(`ws:${busy.workspaceId}/t1/p1`, "pane");
+    await register(`ws:${busy.workspaceId}/t2/p1`, "ended");
+    await recordAgentSessionEnd(db, {
+      sessionKey: `ws:${busy.workspaceId}/t2/p1`,
+      claudeSessionId: "ended",
+      reason: "exit",
+    });
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
+
+    const rows = (await tools.list_workspaces.execute!({}, opts)) as Array<{
+      id: string;
+      agentSessions: Array<{
+        sessionKey: string;
+        claudeSessionId: string;
+        primary: boolean;
+        startedAt: string;
+      }>;
+    }>;
+
+    const busyRow = rows.find((w) => w.id === busy.workspaceId)!;
+    expect(busyRow.agentSessions.map((s) => [s.claudeSessionId, s.sessionKey, s.primary])).toEqual([
+      ["agent-tab", `ws-claude:${busy.workspaceId}`, true],
+      ["pane", `ws:${busy.workspaceId}/t1/p1`, false],
+    ]);
+    expect(new Date(busyRow.agentSessions[0]!.startedAt).toISOString()).toBe(
+      busyRow.agentSessions[0]!.startedAt,
+    );
+    expect(rows.find((w) => w.id === idle.workspaceId)!.agentSessions).toEqual([]);
   });
 
   describe("workspace activity", () => {
@@ -1376,12 +1445,18 @@ describe("workspace tools", () => {
   it("archive_workspace refuses uncommitted work, then succeeds with force", async () => {
     const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
     // A worktree that refuses removal unless --force is passed — the real git
-    // behavior when the worktree has uncommitted changes.
+    // behavior when the worktree has uncommitted changes. git still has it
+    // registered afterwards, so it stays listed.
+    let refusedPath = "";
     const refuseUnlessForced: GitRunner = async (args) => {
       if (args[0] === "symbolic-ref") return { stdout: "origin/main\n", stderr: "", exitCode: 0 };
       if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 };
       if (args[0] === "worktree" && args[1] === "remove" && !args.includes("--force")) {
+        refusedPath = args[2] ?? "";
         return { stdout: "", stderr: "contains modified files", exitCode: 1 };
+      }
+      if (args[0] === "worktree" && args[1] === "list") {
+        return { stdout: `worktree ${refusedPath}\0\0`, stderr: "", exitCode: 0 };
       }
       return { stdout: "", stderr: "", exitCode: 0 };
     };
@@ -1657,7 +1732,7 @@ describe("workspace tools", () => {
 
   it("send_workspace_instruction hands the instruction to the workspace's session", async () => {
     const created = await activeWorkspace("Talk to me");
-    const sent: Array<{ workspaceId: string; instruction: string }> = [];
+    const sent: SendSessionInstructionInput[] = [];
     const tools = buildWorkspaceTools(db, config, {
       gitRunner: okRunner,
       sendSessionInstruction: async (input) => {
@@ -1684,8 +1759,44 @@ describe("workspace tools", () => {
       {
         workspaceId: created.workspaceId,
         instruction: "resolve the merge conflicts and commit",
+        agentPids: [],
       },
     ]);
+  });
+
+  it("send_workspace_instruction passes the agent pids registered for the agent tab", async () => {
+    const created = await activeWorkspace("Registered");
+    const sessionKey = `ws-claude:${created.workspaceId}`;
+    // This process stands in for a running Claude, so its pid is alive.
+    await recordAgentSessionStart(db, {
+      workspaceId: created.workspaceId,
+      sessionKey,
+      claudeSessionId: "agent-tab",
+      pid: process.pid,
+      source: "startup",
+    });
+    // One started by hand in a terminal pane is not who reads the agent tab.
+    await recordAgentSessionStart(db, {
+      workspaceId: created.workspaceId,
+      sessionKey: `ws:${created.workspaceId}/t1/p1`,
+      claudeSessionId: "pane",
+      pid: process.ppid,
+      source: "startup",
+    });
+    const sent: SendSessionInstructionInput[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      sendSessionInstruction: async (input) => {
+        sent.push(input);
+      },
+    });
+
+    await tools.send_workspace_instruction.execute!(
+      { workspaceId: created.workspaceId, instruction: "commit" },
+      opts,
+    );
+
+    expect(sent.map((s) => s.agentPids)).toEqual([[process.pid]]);
   });
 
   it("send_workspace_instruction reports a session that isn't running", async () => {
@@ -1705,6 +1816,75 @@ describe("workspace tools", () => {
     expect(result.error).toContain("no agent session is running");
     expect(result.note).toContain("start_workspace_session");
     expect(result.delivered).toBe(false);
+  });
+
+  it("send_workspace_instruction says when no session has registered itself", async () => {
+    const created = await activeWorkspace("Unregistered");
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      sendSessionInstruction: async () => {
+        throw new Error("the configured agent is not what is reading that session's prompt");
+      },
+    });
+
+    const result = (await tools.send_workspace_instruction.execute!(
+      { workspaceId: created.workspaceId, instruction: "commit" },
+      opts,
+    )) as { registeredAgentSessionCount?: number; note?: string };
+
+    expect(result.registeredAgentSessionCount).toBe(0);
+    expect(result.note).toContain("restart it");
+    // The hooks are written so the restarted session registers.
+    const detail = await getWorkspace(db, created.workspaceId);
+    const settings = JSON.parse(
+      readFileSync(join(detail!.rootPath, ".claude/settings.json"), "utf8"),
+    ) as { hooks: Record<string, unknown[]> };
+    expect(settings.hooks.SessionStart).toHaveLength(1);
+  });
+
+  it("send_workspace_instruction leaves the settings alone for other refusals", async () => {
+    const created = await activeWorkspace("Bad instruction");
+    const detail = await getWorkspace(db, created.workspaceId);
+    rmSync(join(detail!.rootPath, ".claude"), { recursive: true, force: true });
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      sendSessionInstruction: async () => {
+        throw new Error("instruction is empty");
+      },
+    });
+
+    const result = (await tools.send_workspace_instruction.execute!(
+      { workspaceId: created.workspaceId, instruction: "commit" },
+      opts,
+    )) as { note?: string };
+
+    expect(result.note).not.toContain("restart it");
+    expect(() => readFileSync(join(detail!.rootPath, ".claude/settings.json"))).toThrow();
+  });
+
+  it("send_workspace_instruction gives the generic note when a session is registered", async () => {
+    const created = await activeWorkspace("Registered but busy");
+    await recordAgentSessionStart(db, {
+      workspaceId: created.workspaceId,
+      sessionKey: `ws-claude:${created.workspaceId}`,
+      claudeSessionId: "agent-tab",
+      pid: process.pid,
+      source: "startup",
+    });
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      sendSessionInstruction: async () => {
+        throw new Error("the configured agent is not what is reading that session's prompt");
+      },
+    });
+
+    const result = (await tools.send_workspace_instruction.execute!(
+      { workspaceId: created.workspaceId, instruction: "commit" },
+      opts,
+    )) as { registeredAgentSessionCount?: number; note?: string };
+
+    expect(result.registeredAgentSessionCount).toBe(1);
+    expect(result.note).not.toContain("restart it");
   });
 
   it("send_workspace_instruction errors on an unknown workspace without sending", async () => {

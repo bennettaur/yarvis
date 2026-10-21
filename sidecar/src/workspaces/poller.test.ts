@@ -537,6 +537,34 @@ describe("pollOnce", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.lastError).toContain("429");
   });
+
+  it("backs off the whole cycle on a 403 GitHub says is a rate limit", async () => {
+    await seedReadyRepo("a");
+    await seedReadyRepo("b");
+    const gh = clientWith((path) =>
+      path.includes("head=") ? { __status: 403, message: "API rate limit exceeded" } : {},
+    );
+
+    await pollOnce(db, { github: gh });
+
+    expect(await db.select().from(workspaceRepoPr)).toHaveLength(1);
+  });
+
+  it("keeps polling the other repos when one 403s for access, not a rate limit", async () => {
+    await seedReadyRepo("a");
+    await seedReadyRepo("b");
+    const gh = clientWith((path) =>
+      path.includes("head=")
+        ? { __status: 403, message: "Resource protected by organization SAML enforcement" }
+        : {},
+    );
+
+    await pollOnce(db, { github: gh });
+
+    const rows = await db.select().from(workspaceRepoPr);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.lastError).toContain("SAML");
+  });
 });
 
 describe("reconcileOrphans", () => {
@@ -563,6 +591,47 @@ describe("reconcileOrphans", () => {
     const [b] = await db.select().from(workspaces).where(eq(workspaces.id, fresh!.id));
     expect(a?.status).toBe("error");
     expect(b?.status).toBe("creating"); // within the age margin, untouched
+  });
+
+  it("keeps an interrupted archive in the archive flow, and leaves a failed one alone", async () => {
+    const old = new Date(Date.now() - 5 * 60_000);
+    const [interrupted] = await db
+      .insert(workspaces)
+      .values({ name: "a", slug: "a", rootPath: "/tmp/a", status: "archiving", updatedAt: old })
+      .returning();
+    const [failed] = await db
+      .insert(workspaces)
+      .values({
+        name: "b",
+        slug: "b",
+        rootPath: "/tmp/b",
+        status: "archiving",
+        error: "one or more worktrees could not be removed",
+        updatedAt: old,
+      })
+      .returning();
+
+    await reconcileOrphans(db);
+
+    const [a] = await db.select().from(workspaces).where(eq(workspaces.id, interrupted!.id));
+    const [b] = await db.select().from(workspaces).where(eq(workspaces.id, failed!.id));
+    expect(a?.status).toBe("archiving");
+    expect(a?.error).toContain("archive again");
+    expect(b?.status).toBe("archiving");
+    expect(b?.error).toBe("one or more worktrees could not be removed");
+  });
+
+  it("leaves an archive that may still be running alone", async () => {
+    const [running] = await db
+      .insert(workspaces)
+      .values({ name: "c", slug: "c", rootPath: "/tmp/c", status: "archiving" })
+      .returning();
+
+    await reconcileOrphans(db);
+
+    const [c] = await db.select().from(workspaces).where(eq(workspaces.id, running!.id));
+    expect(c?.status).toBe("archiving");
+    expect(c?.error).toBeNull();
   });
 });
 

@@ -70,6 +70,8 @@ export const EVENT_TYPES = [
   "todo.created",
   "todo.updated",
   "todo.closed",
+  "work_stream.created",
+  "work_stream.closed",
   "project.created",
   "project.updated",
   "project.item_added",

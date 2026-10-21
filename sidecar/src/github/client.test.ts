@@ -4,7 +4,6 @@ import {
   createGitHubClient,
   encodeRepoPath,
   GitHubClient,
-  type PrSummary,
   summarizeCheckItems,
   summarizeChecks,
   summarizeReviewDecision,
@@ -1057,9 +1056,9 @@ describe("github endpoints", () => {
       api: "http://127.0.0.1:4010",
       graphql: "http://127.0.0.1:4010/graphql",
     });
+    await gh.searchIssues("is:open");
     await gh.viewer();
-    await gh.lookupBranches([{ owner: "o", repo: "r", number: 1 } as PrSummary]);
-    expect(urls[0]).toBe("http://127.0.0.1:4010/user");
+    expect(urls[0]).toStartWith("http://127.0.0.1:4010/search/issues");
     expect(urls[1]).toBe("http://127.0.0.1:4010/graphql");
   });
 
@@ -1080,7 +1079,7 @@ describe("github endpoints", () => {
     } finally {
       globalThis.fetch = original;
     }
-    expect(urls[0]).toBe("http://127.0.0.1:4010/user");
+    expect(urls[0]).toBe("http://127.0.0.1:4011/q");
   });
 
   it("uses github.com when the config doesn't override it", async () => {
@@ -1092,6 +1091,6 @@ describe("github endpoints", () => {
     } finally {
       globalThis.fetch = original;
     }
-    expect(urls[0]).toBe("https://api.github.com/user");
+    expect(urls[0]).toBe("https://api.github.com/graphql");
   });
 });

@@ -10,7 +10,7 @@ import { type AttentionItemRow, type AttentionNavTarget, attentionItems } from "
  */
 
 export type AttentionSource = "claude-hook" | "chat-agent" | "system";
-export type AttentionKind = "permission" | "idle" | "completed" | "error" | "info";
+export type AttentionKind = "permission" | "idle" | "completed" | "error" | "info" | "question";
 export type AttentionStatus = "pending" | "read" | "resolved" | "dismissed";
 
 export interface CreateAttentionInput {
@@ -132,7 +132,8 @@ export interface AttentionScope {
  * them; an empty scope matches nothing rather than clearing the whole stream.
  *
  * Both fields set matches their *union*, not their intersection — the route
- * rejects that combination rather than leaving the reading ambiguous.
+ * rejects that combination rather than leaving the reading ambiguous. Marking a
+ * scope read leaves its `question` items pending.
  */
 export async function clearAttentionScope(
   db: Db,
@@ -153,7 +154,37 @@ export async function clearAttentionScope(
       ...(status === "read" ? { readAt: now } : {}),
       ...(status === "resolved" || status === "dismissed" ? { resolvedAt: now } : {}),
     })
-    .where(and(eq(attentionItems.status, "pending"), or(...filters)))
+    .where(
+      and(
+        eq(attentionItems.status, "pending"),
+        or(...filters),
+        // Seeing the session doesn't answer its question; only a reply or an
+        // explicit dismiss takes a question off the stream.
+        status === "read" ? ne(attentionItems.kind, "question") : undefined,
+      ),
+    )
+    .returning();
+}
+
+/**
+ * Resolves a session's pending permission item once none of its prompts is
+ * waiting any more. Returns the updated rows so the caller can publish them.
+ */
+export async function resolvePermissionItems(
+  db: Db,
+  sessionKey: string,
+): Promise<AttentionItemRow[]> {
+  const now = new Date();
+  return db
+    .update(attentionItems)
+    .set({ status: "resolved", resolvedAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(attentionItems.sessionKey, sessionKey),
+        eq(attentionItems.kind, "permission"),
+        eq(attentionItems.status, "pending"),
+      ),
+    )
     .returning();
 }
 

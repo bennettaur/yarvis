@@ -1449,7 +1449,7 @@ function writeWorkspaceFiles(detail: WorkspaceDetail): void {
   }
 
   writeClaudeSettings(detail.rootPath, detail.id);
-  writeMcpConfig(detail.rootPath);
+  writeMcpConfig(detail.rootPath, detail.id);
 }
 
 /**
@@ -2048,6 +2048,7 @@ async function removeWorktreesAndFinish(
       await withRepoLock(wr.repoId, () =>
         removeWorktree(runner, wr.repo.primaryClonePath, wr.worktreePath, {
           force: input.force ?? false,
+          workspaceRoot: detail.rootPath,
         }),
       );
       await db
