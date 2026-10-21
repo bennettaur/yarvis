@@ -3,10 +3,20 @@ import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
+import { readSessionActivityById } from "../cc/sessions.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { type AttentionNavTarget, workspaces } from "../db/schema.ts";
 import { type AttentionStreamEvent, publish, subscribe } from "./hub.ts";
+import {
+  awaitPermissionDecision,
+  decidePermission,
+  hasPendingPermission,
+  hookOutputFor,
+  listPendingPermissions,
+  type PermissionDecision,
+  summarizePermission,
+} from "./permissions.ts";
 import {
   type AttentionKind,
   type AttentionStatus,
@@ -48,6 +58,42 @@ export const ingestSchema = z.object({
   kind: KIND,
   hookEvent: z.string().max(64).optional(),
 });
+
+/**
+ * How long the ingest route holds a permission request open waiting for the
+ * user. Kept under Bun's 255s idle timeout (`server.ts`), which would otherwise
+ * close the silent connection first. The hook's own `timeout` in
+ * `claudeSettings.ts` sits just above this.
+ */
+export const PERMISSION_HOLD_MS = 240_000;
+
+/** Caps on what a reply or prompt pulled from the transcript adds to the request. */
+const MAX_CONTEXT_CHARS = 2_000;
+
+/**
+ * The stdin Claude Code gives a `PermissionRequest` hook, which the hook posts
+ * as-is. Only the fields the app shows are read; the rest are ignored.
+ */
+export const permissionHookSchema = z.object({
+  session_id: z.string().max(256).optional(),
+  cwd: z.string().max(4096).optional(),
+  permission_mode: z.string().max(64).optional(),
+  tool_name: z.string().min(1).max(256),
+  tool_input: z.record(z.string(), z.unknown()).default({}),
+});
+
+/**
+ * Who is asking. The hook can't put these in the body, which is Claude Code's
+ * stdin, so it sends them as headers with the same values the attention hook
+ * bakes in.
+ */
+const permissionOriginSchema = z.object({
+  workspaceId: UUID.optional(),
+  sessionKey: z.string().min(1).max(MAX_SESSION_KEY),
+});
+
+const clip = (text: string | undefined | null) =>
+  text ? (text.length > MAX_CONTEXT_CHARS ? `${text.slice(0, MAX_CONTEXT_CHARS)}…` : text) : null;
 
 /** A human summary for each kind, used when the hook carries no message. */
 function defaultBody(kind: AttentionKind): string {
@@ -122,8 +168,98 @@ export function createAttentionIngestRoutes(config: Config): Hono {
     return c.json({ id: item.id }, 201);
   });
 
+  // Holds the hook's connection until the user answers in the app. The reply
+  // is the hook's stdout: a decision, or an empty body to leave the prompt to
+  // Claude Code's own dialog.
+  router.post("/permission", async (c) => {
+    const origin = permissionOriginSchema.safeParse({
+      workspaceId: c.req.header("x-yarvis-workspace-id") || undefined,
+      sessionKey: c.req.header("x-yarvis-session-key"),
+    });
+    if (!origin.success) return c.json({ error: origin.error.flatten() }, 400);
+    const parsed = permissionHookSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const { workspaceId, sessionKey } = origin.data;
+    const hook = parsed.data;
+
+    const [ws] = workspaceId
+      ? await db()
+          .select({ name: workspaces.name })
+          .from(workspaces)
+          .where(eq(workspaces.id, workspaceId))
+      : [];
+
+    // What the agent said just before asking is the best answer to "why does it
+    // want this". Missing context never blocks the request.
+    const activity =
+      hook.cwd && hook.session_id
+        ? await readSessionActivityById(hook.cwd, hook.session_id, 1).catch(() => null)
+        : null;
+
+    const summary = summarizePermission(hook.tool_name, hook.tool_input);
+    let raised: Promise<string | null> = Promise.resolve(null);
+
+    const decision = await awaitPermissionDecision(
+      {
+        sessionKey,
+        workspaceId: workspaceId ?? null,
+        workspaceName: ws?.name ?? null,
+        toolName: hook.tool_name,
+        toolInput: hook.tool_input,
+        cwd: hook.cwd ?? null,
+        permissionMode: hook.permission_mode ?? null,
+        lastReply: clip(activity?.lastReply?.text),
+        lastPrompt: clip(activity?.prompts.at(-1)?.text),
+      },
+      {
+        timeoutMs: PERMISSION_HOLD_MS,
+        signal: c.req.raw.signal,
+        onRegistered: (requestId) => {
+          raised = createAttention(db(), {
+            source: "claude-hook",
+            sessionKey,
+            workspaceId: workspaceId ?? null,
+            kind: "permission",
+            title: ws?.name ?? "Claude session",
+            body: summary,
+            navTarget: navTargetFor(sessionKey, workspaceId),
+            payload: { requestId, toolName: hook.tool_name, summary },
+          })
+            .then((item) => {
+              publish(item);
+              return item.id;
+            })
+            .catch((e) => {
+              console.error("[attention] could not raise a permission item:", e?.message ?? e);
+              return null;
+            });
+        },
+      },
+    );
+
+    // Answered (here or in the terminal, which ends the hook) means nobody is
+    // blocked any more. A timeout or a hand-back leaves the terminal dialog
+    // waiting, so the item stays for the user to follow.
+    const handled = decision !== null && decision.behavior !== "terminal";
+    const abandoned = decision === null && c.req.raw.signal.aborted;
+    const itemId = await raised;
+    if (itemId && (handled || abandoned) && !hasPendingPermission(sessionKey)) {
+      const row = await updateAttentionStatus(db(), itemId, "resolved").catch(() => undefined);
+      if (row) publish(row);
+    }
+
+    const output = hookOutputFor(decision);
+    return output ? c.json(output) : c.body(null, 204);
+  });
+
   return router;
 }
+
+const decisionSchema = z.discriminatedUnion("behavior", [
+  z.object({ behavior: z.literal("allow") }),
+  z.object({ behavior: z.literal("deny"), message: z.string().trim().max(4_000).optional() }),
+  z.object({ behavior: z.literal("terminal") }),
+]);
 
 const patchSchema = z.object({
   status: z.enum(["read", "resolved", "dismissed"]),
@@ -238,6 +374,21 @@ export function createAttentionRoutes(config: Config): Hono {
     const rows = await clearAttentionScope(db(), scope, status);
     for (const row of rows) publish(row);
     return c.json(rows);
+  });
+
+  // Permission requests still waiting on this sidecar, optionally for one session.
+  router.get("/permissions", (c) =>
+    c.json(listPendingPermissions({ sessionKey: c.req.query("sessionKey") || undefined })),
+  );
+
+  router.post("/permissions/:id", async (c) => {
+    const parsed = decisionSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const decision: PermissionDecision = parsed.data;
+    if (!decidePermission(c.req.param("id"), decision)) {
+      return c.json({ error: "no longer waiting" }, 410);
+    }
+    return c.json({ ok: true });
   });
 
   router.patch("/:id", async (c) => {

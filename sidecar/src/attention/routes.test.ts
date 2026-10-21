@@ -1,7 +1,8 @@
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
+import { resetPendingPermissions } from "./permissions.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -205,5 +206,124 @@ describe("attention ingest route", () => {
 
     const after = await app.request("/api/attention?status=pending", { headers: bearer });
     expect((await after.json()) as unknown[]).toHaveLength(0);
+  });
+});
+
+describe("permission requests", () => {
+  const sessionKey = `ws:${workspaceId}/t1/p1`;
+  const permissionAuth = {
+    ...ingestAuth,
+    "X-Yarvis-Workspace-Id": workspaceId,
+    "X-Yarvis-Session-Key": sessionKey,
+  };
+  const hookInput = {
+    session_id: "s1",
+    cwd: "/nonexistent/for/test",
+    tool_name: "Bash",
+    tool_input: { command: "rm -rf build", description: "Clean the build output" },
+  };
+
+  afterEach(() => resetPendingPermissions());
+
+  /** Starts a hook's request, then waits until the app can see it. */
+  async function ask(): Promise<{ response: Promise<Response>; id: string }> {
+    const response = Promise.resolve(
+      app.request("/ingest/permission", {
+        method: "POST",
+        headers: permissionAuth,
+        body: JSON.stringify(hookInput),
+      }),
+    );
+    for (let i = 0; i < 100; i++) {
+      const res = await app.request(`/api/attention/permissions?sessionKey=${sessionKey}`, {
+        headers: bearer,
+      });
+      const waiting = (await res.json()) as { id: string }[];
+      if (waiting.length > 0) return { response, id: waiting[0]!.id };
+      await Bun.sleep(10);
+    }
+    throw new Error("the request never became visible");
+  }
+
+  async function decide(id: string, decision: unknown) {
+    return app.request(`/api/attention/permissions/${id}`, {
+      method: "POST",
+      headers: bearer,
+      body: JSON.stringify(decision),
+    });
+  }
+
+  async function pendingItems() {
+    const list = await app.request("/api/attention?status=pending", { headers: bearer });
+    return (await list.json()) as { kind: string; body: string; title: string }[];
+  }
+
+  it("shows what is being asked, and answers the hook with an approval", async () => {
+    await seedWorkspace(workspaceId, "Fix the API");
+    const { response, id } = await ask();
+
+    const [waiting] = (await (
+      await app.request("/api/attention/permissions", { headers: bearer })
+    ).json()) as { toolName: string; toolInput: unknown; workspaceName: string }[];
+    expect(waiting!.toolName).toBe("Bash");
+    expect(waiting!.toolInput).toEqual(hookInput.tool_input);
+    expect(waiting!.workspaceName).toBe("Fix the API");
+
+    // The item lands asynchronously beside the request; give it a moment.
+    for (let i = 0; i < 100 && (await pendingItems()).length === 0; i++) await Bun.sleep(10);
+    const [item] = await pendingItems();
+    expect(item).toMatchObject({ kind: "permission", title: "Fix the API" });
+    expect(item!.body).toBe("Bash: rm -rf build");
+
+    expect((await decide(id, { behavior: "allow" })).status).toBe(200);
+    const hookReply = await response;
+    expect(await hookReply.json()).toEqual({
+      hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } },
+    });
+    expect(await pendingItems()).toHaveLength(0);
+  });
+
+  it("passes a denial's message on to Claude", async () => {
+    await seedWorkspace(workspaceId, "WS");
+    const { response, id } = await ask();
+    await decide(id, { behavior: "deny", message: "Use the clean script instead" });
+    expect(await (await response).json()).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PermissionRequest",
+        decision: { behavior: "deny", message: "Use the clean script instead" },
+      },
+    });
+  });
+
+  it("hands the prompt back to the terminal with an empty reply and keeps the item", async () => {
+    await seedWorkspace(workspaceId, "WS");
+    const { response, id } = await ask();
+    await decide(id, { behavior: "terminal" });
+    const reply = await response;
+    expect(reply.status).toBe(204);
+    expect(await reply.text()).toBe("");
+    expect(await pendingItems()).toHaveLength(1);
+  });
+
+  it("refuses a decision for a request that is no longer waiting", async () => {
+    const res = await decide("00000000-0000-0000-0000-000000000000", { behavior: "allow" });
+    expect(res.status).toBe(410);
+  });
+
+  it("needs the scoped token to ask and the main bearer to answer", async () => {
+    const asked = await app.request("/ingest/permission", {
+      method: "POST",
+      headers: { ...permissionAuth, Authorization: "Bearer test-token" },
+      body: JSON.stringify(hookInput),
+    });
+    expect(asked.status).toBe(401);
+
+    // A session holding the attention token must not be able to approve itself.
+    const answered = await app.request("/api/attention/permissions/x", {
+      method: "POST",
+      headers: ingestAuth,
+      body: JSON.stringify({ behavior: "allow" }),
+    });
+    expect(answered.status).toBe(401);
   });
 });

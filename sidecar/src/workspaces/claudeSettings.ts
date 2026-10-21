@@ -7,8 +7,15 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
  * testable without touching the filesystem.
  */
 
-/** Marks our hook commands so re-provision can replace them without duplicating. */
-const INGEST_MARKER = "/ingest/attention";
+/** Mark our hook commands so re-provision can replace them without duplicating. */
+const INGEST_MARKERS = ["/ingest/attention", "/ingest/permission"];
+
+/**
+ * Seconds Claude Code lets the permission hook run. Just above how long the
+ * sidecar holds the request (`PERMISSION_HOLD_MS`), so the sidecar's own
+ * "no decision" reply arrives before Claude Code kills the hook.
+ */
+export const PERMISSION_HOOK_TIMEOUT_S = 250;
 
 export type AttentionHookKind = "permission" | "idle" | "completed";
 
@@ -44,11 +51,7 @@ export function attentionHookCommand(
   fallbackSessionKey: string,
   kind: AttentionHookKind,
 ): string {
-  for (const value of [workspaceId, fallbackSessionKey]) {
-    if (!SHELL_SAFE.test(value)) {
-      throw new Error(`attention hook: refusing to embed unsafe value ${JSON.stringify(value)}`);
-    }
-  }
+  assertShellSafe(workspaceId, fallbackSessionKey);
   // Single-quoted JSON either side of a double-quoted env expansion: the shell
   // concatenates the three segments into one argument.
   const body =
@@ -64,9 +67,39 @@ export function attentionHookCommand(
   );
 }
 
+function assertShellSafe(...values: string[]): void {
+  for (const value of values) {
+    if (!SHELL_SAFE.test(value)) {
+      throw new Error(`attention hook: refusing to embed unsafe value ${JSON.stringify(value)}`);
+    }
+  }
+}
+
+/**
+ * The shell command a `PermissionRequest` hook runs so the user can answer the
+ * prompt from the app. It forwards Claude Code's stdin (the tool and its input)
+ * to the sidecar and prints whatever decision comes back, which Claude Code
+ * reads as the hook's output. The session's identity rides in headers because
+ * the body is Claude Code's own JSON.
+ *
+ * Every failure prints nothing: outside a Yarvis terminal, with the app closed,
+ * or past the hold, Claude Code shows its normal dialog as if no hook ran.
+ */
+export function permissionHookCommand(workspaceId: string, fallbackSessionKey: string): string {
+  assertShellSafe(workspaceId, fallbackSessionKey);
+  return (
+    `curl -sf -m ${PERMISSION_HOOK_TIMEOUT_S - 5} -X POST "http://127.0.0.1:\${YARVIS_SIDECAR_PORT}/ingest/permission" ` +
+    `-H "Authorization: Bearer \${YARVIS_ATTENTION_TOKEN}" ` +
+    `-H "Content-Type: application/json" ` +
+    `-H 'X-Yarvis-Workspace-Id: ${workspaceId}' ` +
+    `-H "X-Yarvis-Session-Key: \${YARVIS_SESSION_KEY:-${fallbackSessionKey}}" ` +
+    `--data-binary @- 2>/dev/null || true`
+  );
+}
+
 interface HookEntry {
   matcher?: string;
-  hooks: { type: "command"; command: string }[];
+  hooks: { type: "command"; command: string; timeout?: number }[];
 }
 
 /** True if an existing hook entry is one we wrote (so re-provision replaces it). */
@@ -75,7 +108,11 @@ function isOurEntry(entry: unknown): boolean {
   const hooks = (entry as HookEntry).hooks;
   return (
     Array.isArray(hooks) &&
-    hooks.some((h) => typeof h?.command === "string" && h.command.includes(INGEST_MARKER))
+    hooks.some(
+      (h) =>
+        typeof h?.command === "string" &&
+        INGEST_MARKERS.some((marker) => h.command.includes(marker)),
+    )
   );
 }
 
@@ -93,7 +130,7 @@ function dropPathsKey(settings: Record<string, unknown>, key: string): void {
 }
 
 /**
- * Merges our three attention hooks into any existing settings. Unrelated
+ * Merges our three hooks into any existing settings. Unrelated
  * top-level keys and the user's own hooks for these events are preserved — our
  * entry is *appended* alongside them, not substituted for the array. Idempotent:
  * a prior Yarvis entry for an event is dropped before ours is re-added, so
@@ -128,7 +165,15 @@ export function buildClaudeSettings(
     ...existing,
     hooks: {
       ...existingHooks,
-      PermissionRequest: withOurEntry("PermissionRequest", { hooks: [command("permission")] }),
+      PermissionRequest: withOurEntry("PermissionRequest", {
+        hooks: [
+          {
+            type: "command",
+            command: permissionHookCommand(workspaceId, fallbackSessionKey),
+            timeout: PERMISSION_HOOK_TIMEOUT_S,
+          },
+        ],
+      }),
       Notification: withOurEntry("Notification", {
         matcher: "idle_prompt",
         hooks: [command("idle")],

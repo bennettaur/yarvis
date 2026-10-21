@@ -219,6 +219,32 @@ export async function readSessionActivity(
   return parseRecentActivity(tail, promptLimit);
 }
 
+/**
+ * The recent activity of one session, located from the directory it runs in and
+ * its id. Null when no such transcript exists, or the identifiers are unusable.
+ */
+export async function readSessionActivityById(
+  cwd: string,
+  sessionId: string,
+  promptLimit: number,
+): Promise<RecentActivity | null> {
+  const projectDir = ccProjectDirFor(cwd);
+  if (!safeName(projectDir) || !safeName(sessionId)) return null;
+  const file = join(projectsDir(), projectDir, `${sessionId}.jsonl`);
+  if (!within(projectsDir(), file)) return null;
+  let s: Awaited<ReturnType<typeof stat>>;
+  try {
+    s = await stat(file);
+  } catch {
+    return null;
+  }
+  return readSessionActivity(
+    projectDir,
+    { sessionId, mtimeMs: s.mtimeMs, bytes: s.size },
+    promptLimit,
+  );
+}
+
 export async function listPlans(): Promise<PlanInfo[]> {
   let files: string[];
   try {
