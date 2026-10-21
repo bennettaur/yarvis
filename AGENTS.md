@@ -52,6 +52,9 @@ Run from the repo root unless noted.
 bun install                      # install deps (root + sidecar workspace)
 
 bun run tauri dev                # full app: frontend + Rust core + sidecar
+bun run tauri:preview            # same, but on the production frontend build
+                                  #   (no Vite dev server, React prod mode)
+bun run tauri:build              # release bundle, with the compiled sidecar
 bun run dev:instance <name>       # a second app beside the primary one; add
                                   #   YARVIS_DATABASE_URL to give it its own DB
 bun run sidecar:dev               # sidecar only (prints a dev bearer token)
@@ -199,7 +202,7 @@ back to ad-hoc.
   worktree does.
 - What models a provider offers is data, not code: `llm/catalog.ts` holds the
   bundled defaults and the capability tags (`chat`, `stt`, `tts`, `vision`,
-  `embed`), and entries in `~/.yarvis/settings.json`'s `providerModels` section
+  `embed`, `decision`), and entries in `~/.yarvis/settings.json`'s `providerModels` section
   take a provider's catalogue over the moment the user saves one — no database
   needed, so custom providers and the model catalogue work even without
   Postgres configured. Surfaces ask for the capability they need rather than
@@ -219,12 +222,14 @@ back to ad-hoc.
   is set to. Which speech backends to use lives in `~/.yarvis/settings.json`
   (`sidecar/src/voice/config.ts`), not in the frontend, because the Telegram bot
   runs in the sidecar and needs the same settings (#226).
-- Outbound speech calls go through `guardedFetch` in that same file, never a
-  bare `fetch`: it re-runs the SSRF guard on every redirect hop rather than only
+- Outbound speech and Ollama decision calls go through `guardedFetch` in
+  `sidecar/src/lib/guardedFetch.ts`, never a bare `fetch`: it re-runs the SSRF guard on every redirect hop rather than only
   the first (`redirect: "manual"`, mirroring `memory/ingest.ts`) and puts a
   deadline on the whole chain. `fetch` strips `Authorization` across origins but
   not a custom provider's own auth headers, so following a redirect unchecked
-  would hand those to whatever host it named.
+  would hand those to whatever host it named. A call whose body is private (the
+  decision model's review carries the conversation) also sets `sameOriginOnly`,
+  since a redirect replays the body too.
 - What a surface can do without asking depends on whether the user proof-read
   the turn. `ChatMessageMetadata.source` records where it came from, and
   `runAgentTurn` uses it: a `voice` turn puts the tools in
@@ -245,6 +250,11 @@ back to ad-hoc.
   over that endpoint is reached by outside clients holding only the scoped
   `YARVIS_MCP_TOKEN`, so it must be one that token is meant to grant — the
   endpoint deliberately sits outside the main bearer wall, like attention-ingest.
+  It grants the memory tools and, for a session whose `.mcp.json` names its
+  workspace, listing and resolving that workspace's review comments. Review
+  comment bodies go out unfenced, the one exception to the rule below, because
+  the user is their only author; a feature that writes them from anywhere else
+  has to fence them first.
 - Anything an outside party can influence — file contents, diffs, PR titles,
   recalled memories — enters a prompt as data, not instruction: fenced in
   per-request nonce tags (see `sidecar/src/pr/ask.ts`) with the system prompt
@@ -319,7 +329,17 @@ back to ad-hoc.
   and a resync that finds a tool's description or schema changed resets it to
   "ask", since consent was given for the tool as it was described then. Neither
   mechanism gives MCP tools to a surface that cannot prompt: that still requires
-  `approval` hooks to exist at all.
+  `approval` hooks to exist at all. Auto mode (`chat/toolReview.ts`) is a third
+  gate in front of the same prompt, and it can only say yes: the decision model
+  reviews an MCP call against the chat, and anything short of a clear approval —
+  a refusal, an error, a timeout — raises the prompt as before. It follows
+  standing consent's limits (off on a spoken turn) and never reviews a built-in,
+  since the built-ins that ask are the ones whose answer must come from the user.
+  Every call that goes through approval also carries a required `callReason`
+  (`mcp/callReason.ts`), added to the tool's schema and stripped before the tool
+  runs. The approval bar shows it and the reviewer weighs it, both as the
+  model's own claim about its call: it explains intent, it never counts as the
+  user asking.
 - A list a tab shows is read through `lib/resourceCache`, not fetched into local
   state on mount. `App` renders one panel at a time (the Chat tab aside, kept
   mounted so a turn outlives the switch), so a tab switch unmounts a page
@@ -489,9 +509,20 @@ back to ad-hoc.
   jobs, the recap and the browser all filter on it. The kinds a *turn* may write
   exclude the ones the jobs author, so hand-written text can't masquerade as a
   consolidated summary. A fact that changed is superseded — the old row stays for
-  the trail and drops out of recall — rather than contradicted by a second
+  the trail and drops out of recall, except a recall `asOf` a time it still
+  held — rather than contradicted by a second
   memory, and an edit re-embeds, since a corrected fact findable only by its old
   wording is worse than no correction.
+  - A memory also records when its claim holds (`valid_from`/`valid_until`),
+    separately from when it was written. An expired memory is still returned by
+    recall, flagged and ranked lower, because the agent can only re-check a
+    claim it can see. A correction closes the old claim's window where the
+    replacement starts, which is what lets `asOf` answer for the past. Recall
+    ranks by similarity scaled by a strength that decays from the last
+    confirmation (`memory/ranking.ts`). Strength is computed at query time, so
+    nothing rewrites rows on a timer, and only an explicit confirmation resets
+    it. Being retrieved does not count, since every top-k hit would reinforce
+    itself.
 - The user's `tasks` and the assistant's `agent_todos` are different tables on
   purpose: one is what the user intends to do, the other is what the assistant
   has taken on. The todo tools are deliberately absent from the MCP endpoint — a

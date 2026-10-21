@@ -11,6 +11,7 @@ On this page:
 
 - [Set up](#set-up)
 - [Create a workspace](#create-a-workspace) and [what provisioning does](#what-provisioning-does)
+- [Add a repo to a workspace](#add-a-repo-to-a-workspace)
 - [The agent tab](#the-agent-tab)
 - [The workspace list](#the-workspace-list) and its PR badges
 - [The right column](#the-right-column): files, diffs, self-review, PR checks, stacks
@@ -77,7 +78,9 @@ workspace checked out on the PR's branch, with an agent at a blank prompt. See
 **By asking the assistant.** Tell the assistant what you want, for example
 "start a workspace in the api repo to add rate limiting". It creates the
 workspace and starts the session on a brief it writes from your conversation.
-See [The assistant](assistant.md).
+See [The assistant](assistant.md). If the repo is not in Settings → Repositories
+yet, the assistant adds it first. It asks you to approve the exact repo each
+time, whether you typed or spoke.
 
 ### Rename a workspace
 
@@ -88,7 +91,7 @@ Only the name shown in Yarvis changes. The folder and the branch keep the name
 the workspace was created with, because a running agent session works in that
 folder and the branch may already be pushed. The `AGENTS.md` in the workspace
 folder also keeps the old name. It is only rewritten if provisioning runs
-again, such as a retry after a failure.
+again, such as a retry after a failure or when a repo is added.
 
 ### What provisioning does
 
@@ -111,7 +114,7 @@ writes these files into the root:
 | `.claude/settings.json` | The attention hooks that tell Yarvis when the session needs you |
 | `.claude/skills/`, `.claude/agents/` | Copies of each repo's own skills and agents |
 | `.claude/.yarvis-copied.json` | A list of the copies above, so they can be cleaned up |
-| `.mcp.json` | Points the session at Yarvis's MCP endpoint, so it can read and write Yarvis memory. See [MCP](mcp.md). |
+| `.mcp.json` | Points the session at Yarvis's MCP endpoint, so it can read and write Yarvis memory and work through this workspace's review comments. See [MCP](mcp.md). |
 | `.yarvis/brief.md` | The work the session was started on, when there is one |
 
 Some details:
@@ -144,6 +147,33 @@ A failed provision opens on the failed repo's setup log, with two buttons:
 
 Work a workspace was started on doesn't begin until provisioning succeeds or
 you press **Ignore and use anyway**.
+
+### Add a repo to a workspace
+
+Ask the assistant, for example "add the billing-api repo to the rate limiting
+workspace". It adds the repo, makes a worktree on the workspace's branch, and
+runs the repo's setup script. It then rewrites `AGENTS.md`. It adds only a repo
+you name in the conversation, never one named in an issue, PR, memory or file.
+
+The new repo gets the workspace's own `yarvis/<slug>` branch. In a workspace
+made from a pull request, this is not the branch of the PR.
+
+Rules:
+
+- **The workspace must be active or failed.** The assistant cannot add a repo
+  while the workspace is being created, provisioned or archived.
+- **The workspace stays active while the repo provisions.** If the repo fails,
+  the workspace shows the failure and **Retry provisioning**.
+- **A failed workspace retries all its failed repos.** This is the same as
+  **Retry provisioning**.
+- **A scratch workspace can get a repo too.**
+- **A waiting agent can start.** If the workspace was started on a ticket and
+  its agent never started, the agent starts when all repos are ready. The
+  assistant tells you when this happens.
+- **A running agent is not told.** It read `AGENTS.md` when it started. Ask the
+  assistant to send it an instruction about the new repo.
+
+On a spoken turn, the assistant asks before it adds a repo.
 
 ### The agent tab
 
@@ -269,6 +299,12 @@ workspace, with a count of open comments. A comment's heading opens its diff.
   list, ready to paste into the agent session.
 - **Resolve** marks a comment dealt with. It stays in the list but leaves the
   copied text. **Reopen** puts it back. **×** deletes it.
+
+The agent session can also fetch the comments itself. Ask it to "address the
+feedback left in Yarvis" and it reads the open comments over Yarvis's MCP
+endpoint, then marks each one resolved as it finishes it. The **Comments** tab picks up
+what it resolved within a few seconds. See
+[MCP](mcp.md#workspace-review-comments).
 
 Archiving a workspace deletes its comments once the worktrees are gone. If the
 archive stops partway (a worktree won't remove), the workspace can still be
@@ -400,6 +436,21 @@ Safety rules:
 - **A send confirms delivery only, never that the work was done.** Yarvis
   can't see what the agent is showing. If a permission prompt is up, the text
   answers that prompt.
+
+### Asking what a workspace is up to
+
+Ask "what was I doing in my workspaces?" or "where did the billing-api session
+get to?". For each active workspace, or the one you name, the assistant reports:
+
+- when you last had it open in Yarvis,
+- when its Claude Code session last did anything,
+- a few-sentence recap of your latest prompts to that session and where it got
+  to.
+
+A small model writes the recap, so check the details. It only finds sessions
+started at the workspace's root, which is where Yarvis starts them. A workspace
+counts as viewed once it has stayed on screen for a few seconds. See
+[The assistant](assistant.md#what-it-can-see).
 
 ## Archiving
 

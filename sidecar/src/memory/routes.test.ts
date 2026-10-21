@@ -56,6 +56,21 @@ describe("memory routes", () => {
     expect((await app.request("/api/memory")).status).toBe(401);
   });
 
+  it("reports a memory past its validUntil as expired, with its window", async () => {
+    await sql`INSERT INTO memories (content, valid_from, valid_until)
+      VALUES ('GitHub is down', '2026-10-08T10:00:00Z', '2026-10-08T11:00:00Z')`;
+
+    const page = (await (await app.request("/api/memory", { headers: auth })).json()) as {
+      items: Record<string, unknown>[];
+    };
+    expect(page.items[0]).toMatchObject({
+      content: "GitHub is down",
+      validity: "expired",
+      validFrom: "2026-10-08T10:00:00.000Z",
+      validUntil: "2026-10-08T11:00:00.000Z",
+    });
+  });
+
   it("adds a note and lists it filtered by kind", async () => {
     const add = await app.request("/api/memory/notes", {
       method: "POST",

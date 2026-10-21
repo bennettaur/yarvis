@@ -5,6 +5,9 @@ mod custom_providers;
 mod embeddings_secrets;
 mod instance;
 mod keychain;
+// Only a release build reads it; `tauri dev` already has the terminal's `PATH`.
+#[cfg_attr(debug_assertions, allow(dead_code))]
+mod login_path;
 mod mcp;
 mod onepassword;
 mod pty;
@@ -193,6 +196,8 @@ pub fn run() {
             settings::set_jira_email,
             settings::set_google_client_id,
             settings::set_telegram_otp_window_minutes,
+            settings::set_color_theme,
+            settings::set_terminal_font_size,
             settings::set_secret_backend,
         ])
         .run(tauri::generate_context!())

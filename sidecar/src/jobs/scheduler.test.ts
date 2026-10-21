@@ -80,12 +80,16 @@ describe("consolidate-events", () => {
     await recordEvent(db, { type: "pr.viewed" });
     await recordEvent(db, { type: "memory.consolidated" });
     await recordEvent(db, { type: "cc.session_summarized" });
+    await recordEvent(db, {
+      type: "workspace.viewed",
+      payload: { workspaceId: "w1", tab: "agent" },
+    });
 
     const result = await runJob(consolidateEventsJob, config, db);
     expect(result.status).toBe("skipped");
 
-    // The two bookkeeping rows are claimed even on a skip: left unprocessed they
-    // would eventually fill the window and wedge the job.
+    // The rows that are never summarized are claimed even on a skip: left
+    // unprocessed they would eventually fill the window and wedge the job.
     const rows = await sql`SELECT type FROM events WHERE processed_at IS NULL`;
     expect(rows.map((r) => r.type)).toEqual(["pr.viewed"]);
   });
