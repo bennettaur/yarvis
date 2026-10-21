@@ -105,6 +105,7 @@ const skillsGit: GitRunner = async (args, opts) => {
 
 beforeEach(async () => {
   await sql`TRUNCATE repos, workspaces, workspace_repos, workspace_repo_pr, tasks, issue_links RESTART IDENTITY CASCADE`;
+  refusedWorktrees.clear();
 });
 
 /**
@@ -589,11 +590,23 @@ async function addRepo(cloneUrl = "git@github.com:acme/widget.git"): Promise<{ i
   return (await res.json()) as { id: string };
 }
 
+/** Worktrees a fake refused to remove. git keeps a refused worktree registered,
+ *  so the fakes keep listing them; cleared before each test. */
+const refusedWorktrees = new Set<string>();
+
+const listRefusedWorktrees = () => ({
+  stdout: [...refusedWorktrees].map((path) => `worktree ${path}\0\0`).join(""),
+  stderr: "",
+  exitCode: 0,
+});
+
 /** Refuses a worktree removal until it's forced, as a dirty worktree does. */
 const dirtyGit: GitRunner = async (args, opts) => {
   if (args[0] === "worktree" && args[1] === "remove" && !args.includes("--force")) {
+    refusedWorktrees.add(args[2] ?? "");
     return { stdout: "", stderr: "worktree contains modified files", exitCode: 1 };
   }
+  if (args[0] === "worktree" && args[1] === "list") return listRefusedWorktrees();
   return fakeGit(args, opts);
 };
 
@@ -1819,13 +1832,12 @@ describe("provision + archive (injected git runner)", () => {
 
     // Removal fails only for the "other" repo's worktree.
     const failingGit: GitRunner = async (args) => {
-      if (
-        args[0] === "worktree" &&
-        args[1] === "remove" &&
-        args[args.length - 1]?.includes("other")
-      ) {
+      const path = args[args.length - 1] ?? "";
+      if (args[0] === "worktree" && args[1] === "remove" && path.includes("other")) {
+        refusedWorktrees.add(path);
         return { stdout: "", stderr: "worktree contains modified files", exitCode: 1 };
       }
+      if (args[0] === "worktree" && args[1] === "list") return listRefusedWorktrees();
       return { stdout: "", stderr: "", exitCode: 0 };
     };
     const result = await archiveWorkspace(db, ws.id, {}, failingGit);
@@ -1955,13 +1967,12 @@ describe("provision + archive (injected git runner)", () => {
     await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     const failingGit: GitRunner = async (args) => {
-      if (
-        args[0] === "worktree" &&
-        args[1] === "remove" &&
-        args[args.length - 1]?.includes("other")
-      ) {
+      const path = args[args.length - 1] ?? "";
+      if (args[0] === "worktree" && args[1] === "remove" && path.includes("other")) {
+        refusedWorktrees.add(path);
         return { stdout: "", stderr: "dirty", exitCode: 1 };
       }
+      if (args[0] === "worktree" && args[1] === "list") return listRefusedWorktrees();
       return { stdout: "", stderr: "", exitCode: 0 };
     };
     const result = await archiveWorkspace(db, ws.id, {}, failingGit);
