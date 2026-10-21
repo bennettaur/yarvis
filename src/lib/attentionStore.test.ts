@@ -74,6 +74,12 @@ describe("clearTargetsFor", () => {
     });
   });
 
+  it("leaves a question pending with its session on screen", () => {
+    const viewing = scope({ sessionKeys: new Set(["ws:w1/t1/p1"]) });
+    const items = [item({ id: "a", seq: 1, sessionKey: "ws:w1/t1/p1", kind: "question" })];
+    expect(clearTargetsFor(items, viewing)).toEqual({ sessionKeys: [], itemIds: [] });
+  });
+
   it("keeps a permission prompt the user is looking at, and clears the rest around it", () => {
     // The terminal may not show the prompt while Yarvis holds it, so the bell
     // item is the user's only way to answer it.

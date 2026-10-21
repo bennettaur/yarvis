@@ -86,18 +86,20 @@ variables:
 
 | Variable | What it's for |
 | --- | --- |
-| `YARVIS_SESSION_KEY` | Names this exact terminal, so an attention item jumps back to it |
+| `YARVIS_SESSION_KEY` | Names this exact terminal, so an attention item or an `ask_user` question jumps back to it |
 | `YARVIS_WORKSPACE_ID` | The workspace it belongs to (workspace terminals only) |
 | `YARVIS_ATTENTION_TOKEN` | Lets hooks in this terminal raise attention items, pass permission prompts to the app and register a Claude Code session, and nothing else |
 | `YARVIS_SESSION_TOKEN` | Signs this terminal's session registrations and permission prompts, so one terminal can't send either under another's name |
-| `YARVIS_SIDECAR_PORT`, `YARVIS_MCP_TOKEN` | Let a Claude Code session here reach Yarvis's MCP endpoint, its memory tools and, in a workspace, its review comment tools |
+| `YARVIS_SIDECAR_PORT`, `YARVIS_MCP_TOKEN` | Let a Claude Code session here reach Yarvis's MCP endpoint, its memory and question tools and, in a workspace, its review comment tools |
 
 What this gives you:
 
 - **A flagged tab shows an amber ●** with the tooltip "needs you". Opening the
   attention item switches to that exact tab and pane. Looking at the pane
-  clears it. See [Workspaces](workspaces.md#the-attention-bell).
-- **Claude Code runs here share Yarvis memory.** In a workspace, the `.mcp.json`
+  clears it, except a question from `ask_user`, which stays until you answer,
+  skip or dismiss it. See [Workspaces](workspaces.md#the-attention-bell).
+- **Claude Code runs here share Yarvis memory** and can ask you questions
+  through the bell. In a workspace, the `.mcp.json`
   Yarvis writes points at the endpoint. For the Terminal tab, or any other
   client, see [MCP](mcp.md).
 

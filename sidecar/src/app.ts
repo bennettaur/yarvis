@@ -33,6 +33,7 @@ import { createOmniRoutes } from "./omni/routes.ts";
 import { createPrModelRoutes } from "./pr/modelRoutes.ts";
 import { createPrRoutes } from "./pr/routes.ts";
 import { createProjectRoutes } from "./projects/routes.ts";
+import { createQuestionRoutes } from "./questions/routes.ts";
 import { createReadiness, type Readiness } from "./readiness.ts";
 import { createTaskRoutes } from "./tasks/routes.ts";
 import { createTelegramRoutes } from "./telegram/routes.ts";
@@ -170,6 +171,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/jobs", createJobRoutes(config));
   app.route("/api/logs", createLogRoutes());
   app.route("/api/attention", createAttentionRoutes(config));
+  app.route("/api/questions", createQuestionRoutes(config));
   app.route("/api/wip", createWipRoutes(config));
   app.route("/api/calendar", createCalendarRoutes(config));
   app.route("/api/omni", createOmniRoutes(config));

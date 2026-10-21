@@ -366,6 +366,14 @@ Always available:
   suggestion, and summarize the week.
 - **Delegation.** List specialists and delegate to one.
 - **Attention.** Raise a notification when it needs you.
+- **Questions.** Ask you something and wait for the answer (`ask_user`,
+  `wait_for_answer`). The question rings the attention bell as **Yarvis**, and
+  you answer in a dialog from wherever you are in the app. It is meant for when
+  you may not be watching the chat; when you're talking to it, it asks in its
+  reply. A turn sent from Telegram can't use them, since you aren't at the app
+  to see the bell. A [heads-down](heads-down.md) pass has its own `ask_user` that doesn't wait
+  for you, and specialists and scheduled jobs never get these. See
+  [MCP](mcp.md#asking-you-questions).
 - **Heads down.** Start heads-down mode once you agree, stop it, and check
   whether it's running.
 

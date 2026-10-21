@@ -32,6 +32,9 @@ const FAMILY_POLICY: Record<string, ToolPolicy> = {
   tasks: "always",
   memory: "always",
   attention: "always",
+  // Always on, since `wait_for_answer` has to be reachable the moment
+  // `ask_user` comes back pending.
+  questions: "always",
   projects: "always",
   todos: "always",
   events: "always",

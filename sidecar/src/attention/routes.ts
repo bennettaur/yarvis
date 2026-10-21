@@ -7,13 +7,14 @@ import { z } from "zod";
 import { readSessionActivityById } from "../cc/sessions.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import { type AttentionNavTarget, workspaces } from "../db/schema.ts";
+import { workspaces } from "../db/schema.ts";
 import {
   SESSION_KEY_HEADER,
   SESSION_TOKEN_HEADER,
   sessionTokenMatches,
 } from "../workspaces/agentSessions.ts";
 import { type AttentionStreamEvent, publish, subscribe } from "./hub.ts";
+import { navTargetFor } from "./navTarget.ts";
 import {
   awaitPermissionDecision,
   canHoldAnotherPermission,
@@ -27,7 +28,6 @@ import {
   truncate,
 } from "./permissions.ts";
 import {
-  type AttentionKind,
   type AttentionStatus,
   clearAttentionScope,
   createAttention,
@@ -110,8 +110,11 @@ const permissionOriginSchema = z.object({
 
 const clip = (text: string | undefined | null) => (text ? truncate(text, MAX_CONTEXT_CHARS) : null);
 
-/** A human summary for each kind, used when the hook carries no message. */
-function defaultBody(kind: AttentionKind): string {
+/**
+ * A human summary for each kind, used when the hook carries no message. Typed on
+ * the ingest enum, which leaves out `question`: only `ask_user` raises those.
+ */
+function defaultBody(kind: z.infer<typeof KIND>): string {
   switch (kind) {
     case "permission":
       return "Needs permission to continue";
@@ -124,19 +127,6 @@ function defaultBody(kind: AttentionKind): string {
     case "info":
       return "Wants your attention";
   }
-}
-
-/**
- * Where clicking the item lands. A workspace's pinned Claude session keeps the
- * `workspace-claude` target (the frontend already knows how to focus that tab);
- * anything else is a specific terminal session, so we address the tab directly
- * and carry the workspace along when there is one.
- */
-function navTargetFor(sessionKey: string, workspaceId?: string): AttentionNavTarget {
-  if (workspaceId && sessionKey === `ws-claude:${workspaceId}`) {
-    return { type: "workspace-claude", workspaceId };
-  }
-  return { type: "terminal", sessionKey, ...(workspaceId ? { workspaceId } : {}) };
 }
 
 /**

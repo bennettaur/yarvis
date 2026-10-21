@@ -49,6 +49,8 @@ const _server = Bun.serve({
   // for the provider's first token, after which each streamed chunk resets the
   // idle timer. Without this the socket is closed mid-generation and the client
   // sees a timeout with no output. 255s is Bun's maximum.
+  // `ANSWER_WAIT_MS` in `questions/contract.ts` stays under this, since an
+  // `ask_user` call sends nothing while it waits.
   idleTimeout: 255,
 });
 if (config.tokenGenerated) {

@@ -1036,8 +1036,10 @@ export const attentionSource = pgEnum("attention_source", ["claude-hook", "chat-
 
 /**
  * The nature of the signal. `permission`/`idle` mean a session is *blocked* and
- * cannot proceed without the user; `completed` means it finished; `error` a
- * failure; `info` a generic nudge (the chat agent's request_attention).
+ * cannot proceed without the user; `question` is a session blocked on an
+ * `ask_user` call the user can answer from the attention panel; `completed`
+ * means it finished; `error` a failure; `info` a generic nudge (the chat agent's
+ * request_attention).
  */
 export const attentionKind = pgEnum("attention_kind", [
   "permission",
@@ -1045,6 +1047,7 @@ export const attentionKind = pgEnum("attention_kind", [
   "completed",
   "error",
   "info",
+  "question",
 ]);
 
 /**
@@ -1131,6 +1134,76 @@ export const attentionItems = pgTable(
 
 export type AttentionItemRow = typeof attentionItems.$inferSelect;
 export type NewAttentionItemRow = typeof attentionItems.$inferInsert;
+
+/** One choice offered for a question. */
+export interface AgentQuestionOption {
+  label: string;
+  description?: string;
+}
+
+/** A single question in an `ask_user` call. */
+export interface AgentQuestionItem {
+  question: string;
+  /** A short tag shown above the question, like "Auth method". */
+  header?: string;
+  /** Absent means the question is answered in free text only. */
+  options?: AgentQuestionOption[];
+  multiSelect?: boolean;
+}
+
+/** The user's reply to one question, in the same order as the questions. */
+export interface AgentQuestionAnswer {
+  /** Labels of the options picked; empty when the user only typed. */
+  selected: string[];
+  /** Free text the user added, as its own answer or alongside a choice. */
+  text?: string;
+}
+
+/** What the agent says it is working on, shown beside the questions. */
+export interface AgentQuestionContext {
+  task: string;
+  reason?: string;
+}
+
+/**
+ * `pending` until the user replies; `answered` with their answers; `declined`
+ * when they chose not to answer, which the agent is told so it can proceed on
+ * its own judgement instead of waiting.
+ */
+export const agentQuestionStatus = pgEnum("agent_question_status", [
+  "pending",
+  "answered",
+  "declined",
+]);
+
+/**
+ * Questions a coding agent asked through the MCP `ask_user` tool. Kept apart
+ * from `attention_items` because an attention item coalesces per (session,
+ * kind) while each question set needs its own answer: the item is the bell,
+ * this row is the conversation.
+ */
+export const agentQuestions = pgTable(
+  "agent_questions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // The asking session's PTY id, read from the MCP request headers; null for a
+    // client Yarvis didn't launch.
+    sessionKey: text("session_key"),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, { onDelete: "set null" }),
+    context: jsonb("context").$type<AgentQuestionContext>().notNull(),
+    questions: jsonb("questions").$type<AgentQuestionItem[]>().notNull(),
+    status: agentQuestionStatus("status").notNull().default("pending"),
+    answers: jsonb("answers").$type<AgentQuestionAnswer[]>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    answeredAt: timestamp("answered_at", { withTimezone: true }),
+  },
+  (t) => [
+    // The modal lists a session's pending questions.
+    index("agent_questions_session_status_idx").on(t.sessionKey, t.status),
+  ],
+);
+
+export type AgentQuestionRow = typeof agentQuestions.$inferSelect;
 
 /** Which work-in-progress sources are included in the roll-up. */
 export interface WipSourcesConfig {

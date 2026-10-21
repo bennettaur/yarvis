@@ -297,6 +297,7 @@ sidecar/        Bun + TS service (Hono)
   src/mcpServer/   the MCP endpoint Yarvis serves
   src/attention/   attention stream: hook ingest, SSE, clearing, held
                    permission prompts
+  src/questions/   questions agents ask over MCP, and their answers
   drizzle/         generated SQL migrations
 scripts/        dev tooling (dev-instance.ts)
 demo/           Playwright demo recordings: mocked Rust core, seeded demo DB (see demo/README.md)

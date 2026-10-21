@@ -13,6 +13,7 @@ import type { MemoryService } from "../memory/index.ts";
 import { buildMemoryTools } from "../memory/tools.ts";
 import { buildPrReviewTools } from "../pr/reviewTools.ts";
 import { buildProjectTools } from "../projects/tools.ts";
+import { buildQuestionTools } from "../questions/tools.ts";
 import { buildTodoTools } from "../todos/tools.ts";
 import { buildWorkStreamTools } from "../workStreams/tools.ts";
 import { buildWorkspaceTools } from "../workspaces/tools.ts";
@@ -39,6 +40,13 @@ export interface BuiltinToolDeps {
   attention: AttentionState;
   /** Whether sessions this turn starts should be remotely controllable. */
   remoteControl: boolean;
+  /**
+   * Whether the user can answer a question from the attention bell. False on
+   * Telegram, in a heads-down pass and in a delegated run: the question tools
+   * are left out there rather than refused, so a pass keeps its own `ask_user`,
+   * which never waits, as the only one.
+   */
+  atTheApp: boolean;
   /** A turn nobody is watching, a heads-down pass: what it records is marked as its own. */
   unattended?: boolean;
 }
@@ -52,11 +60,12 @@ export interface BuiltinToolDeps {
  * silently make a tool unreachable or always-on.
  */
 export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Record<string, Tool>> {
-  const { db, config, sessionId, memory, attention, remoteControl, unattended } = deps;
+  const { db, config, sessionId, memory, attention, remoteControl, atTheApp, unattended } = deps;
   return {
     tasks: buildTaskTools(db, sessionId),
     memory: buildMemoryTools(memory, sessionId),
     attention: buildAttentionTool(attention),
+    questions: atTheApp ? buildQuestionTools(db, sessionId) : {},
     projects: buildProjectTools(db),
     todos: buildTodoTools(db),
     workStreams: buildWorkStreamTools(db, { unattended }),
@@ -103,5 +112,6 @@ function inertDeps(): BuiltinToolDeps {
     // A metadata read starts no sessions, so remote control is irrelevant here —
     // it only shapes wording in two tool descriptions.
     remoteControl: false,
+    atTheApp: true,
   };
 }

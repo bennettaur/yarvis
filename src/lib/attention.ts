@@ -7,7 +7,7 @@ import { ensureOk, sidecarFetch, streamSSE } from "./api";
  */
 
 export type AttentionSource = "claude-hook" | "chat-agent" | "system";
-export type AttentionKind = "permission" | "idle" | "completed" | "error" | "info";
+export type AttentionKind = "permission" | "idle" | "completed" | "error" | "info" | "question";
 export type AttentionStatus = "pending" | "read" | "resolved" | "dismissed";
 
 /** Where clicking an item should take the user; mirrors the sidecar union. */
@@ -34,6 +34,8 @@ export interface AttentionItem {
   body: string | null;
   status: AttentionStatus;
   navTarget: AttentionNavTarget | null;
+  /** What the producer attached; a `question` item carries `{ questionId }`. */
+  payload?: unknown;
   createdAt: string;
   updatedAt: string;
 }
