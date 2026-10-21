@@ -129,7 +129,32 @@ shows and edits its **Repro steps** instead. Descriptions are saved as plain
 text, so editing one replaces any formatting it had in Azure. Tags are
 separated by `;` or `,`.
 
-Creating work items isn't supported yet.
+The Issues tab can't create work items yet, but the assistant can.
+
+### Which tracker a repo uses
+
+Under **Settings → Repositories**, each repo has a **Tickets go to** setting:
+GitHub issues, an Azure Boards project (with an optional area path such as
+`Web\Payments`), or a JIRA project key. The assistant reads it to decide where
+to file and update a repo's tickets. With no setting, it asks you. The Azure
+Boards organization is always the one set under **Settings → Credentials**.
+
+### With the assistant
+
+The assistant can work with tickets on all three trackers. It can read and
+search them, file new ones, edit them, move them to another status, assign
+them, and comment. You can say things like:
+
+- "File a bug in the api repo: the login page times out."
+- "Move PROJ-45 to In Review and add a comment that the PR is up."
+- "What's blocking work item 1234?"
+
+On GitHub it works only in repos registered under **Settings → Repositories**.
+On Azure Boards it can assign a work item to you or unassign it, but not
+assign it to someone else. Ticket text the assistant reads is marked as
+untrusted, so it treats it as data rather than instructions. Each change it
+makes asks you first when the request was spoken. See
+[The assistant](assistant.md).
 
 ### Start work
 

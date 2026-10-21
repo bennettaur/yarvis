@@ -10,7 +10,26 @@ import {
   type Repo,
   repos,
 } from "../db/schema.ts";
+import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
 import type { IssueSummary } from "./types.ts";
+
+/** The tag ticket text is fenced in, shared by every tracker's tools. */
+export const TICKET_TEXT_TAG = "ticket-text";
+
+/**
+ * Returns a function that sanitizes and fences one piece of ticket text, plus
+ * the warning naming the nonce. A ticket body or comment is written by whoever
+ * can file on the tracker, so it reaches the model as data: sanitizing alone
+ * strips what a reader can't see, but not text that is plainly addressed to the
+ * model.
+ */
+export function ticketTextFence(): { warning: string; fenceText: (text: string) => string } {
+  const nonce = newNonce();
+  return {
+    warning: untrustedWarning(nonce, TICKET_TEXT_TAG),
+    fenceText: (text) => fence(sanitizeIssueText(text), nonce, TICKET_TEXT_TAG),
+  };
+}
 
 /**
  * Local persistence for the Issues integration: which repos to pull issues
