@@ -87,7 +87,10 @@ async function workspaceWithRepos(
   const ws = await createWorkspace(db, config, { name, repoIds });
   await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
   const detail = await getWorkspace(db, ws.id);
-  return { id: ws.id, repoIds: (detail?.repos ?? []).map((r) => r.id) };
+  // Looked up by name: the rows are inserted together, so they share a
+  // created_at and come back from getWorkspace in no fixed order.
+  const idOf = new Map((detail?.repos ?? []).map((r) => [r.repo.name, r.id]));
+  return { id: ws.id, repoIds: repoNames.map((repoName) => idOf.get(repoName) ?? "") };
 }
 
 /** The common case: one repo, and its worktree row id to file comments against. */
