@@ -30,6 +30,9 @@ export const ALWAYS_CONFIRM_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // may come from an issue or other injected text, or be a squatted look-alike,
   // so the user confirms the exact remote before any of its code can arrive.
   "register_repo",
+  // Starts an unattended loop that starts work, files tickets and instructs
+  // agent sessions on its own until it is stopped.
+  "start_heads_down",
 ]);
 
 export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
@@ -74,6 +77,9 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "navigate_browser_tab",
   // Deletes a memory outright, where correcting one keeps the trail.
   "forget_memory",
+  // Stores an answer that later turns act on without asking, typed ones
+  // included, so a misheard "yes" would outlive the turn it was heard in.
+  "record_decision",
   // Runs a whole specialist with its own tools; a misheard task becomes a
   // multi-step run nobody reviewed.
   "delegate",

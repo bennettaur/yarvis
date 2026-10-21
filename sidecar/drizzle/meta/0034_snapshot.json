@@ -1,5 +1,5 @@
 {
-  "id": "83d52684-6877-49e3-bfae-ad1b8fa08aac",
+  "id": "baec47e4-9b93-48af-8aaf-2ebe9ed28e6d",
   "prevId": "245e0792-ba99-44ba-a493-ee2b15c85ad8",
   "version": "7",
   "dialect": "postgresql",
@@ -2528,12 +2528,6 @@
           "notNull": true,
           "default": false
         },
-        "tracker": {
-          "name": "tracker",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -3167,6 +3161,269 @@
       },
       "indexes": {},
       "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.work_stream_links": {
+      "name": "work_stream_links",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "stream_id": {
+          "name": "stream_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "work_stream_link_kind",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ref_key": {
+          "name": "ref_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ref": {
+          "name": "ref",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "observed_at": {
+          "name": "observed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "work_stream_links_ref_unique_idx": {
+          "name": "work_stream_links_ref_unique_idx",
+          "columns": [
+            {
+              "expression": "stream_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "ref_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "work_stream_links_ref_key_idx": {
+          "name": "work_stream_links_ref_key_idx",
+          "columns": [
+            {
+              "expression": "ref_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "work_stream_links_stream_id_work_streams_id_fk": {
+          "name": "work_stream_links_stream_id_work_streams_id_fk",
+          "tableFrom": "work_stream_links",
+          "tableTo": "work_streams",
+          "columnsFrom": [
+            "stream_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.work_streams": {
+      "name": "work_streams",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "summary": {
+          "name": "summary",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "work_stream_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "priority": {
+          "name": "priority",
+          "type": "project_item_priority",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'medium'"
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "next_action": {
+          "name": "next_action",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "waiting_on": {
+          "name": "waiting_on",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "wake_at": {
+          "name": "wake_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "notes": {
+          "name": "notes",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "closed_at": {
+          "name": "closed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "work_streams_status_idx": {
+          "name": "work_streams_status_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "priority",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "work_streams_project_id_projects_id_fk": {
+          "name": "work_streams_project_id_projects_id_fk",
+          "tableFrom": "work_streams",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -3924,6 +4181,28 @@
       "values": [
         "builtin",
         "mcp"
+      ]
+    },
+    "public.work_stream_link_kind": {
+      "name": "work_stream_link_kind",
+      "schema": "public",
+      "values": [
+        "ticket",
+        "workspace",
+        "pr",
+        "message",
+        "review-request"
+      ]
+    },
+    "public.work_stream_status": {
+      "name": "work_stream_status",
+      "schema": "public",
+      "values": [
+        "active",
+        "waiting-on-user",
+        "waiting-on-others",
+        "done",
+        "dropped"
       ]
     },
     "public.workspace_repo_status": {

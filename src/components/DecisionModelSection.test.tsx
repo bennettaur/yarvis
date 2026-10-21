@@ -116,6 +116,22 @@ describe("DecisionModelSection", () => {
     expect(JSON.parse(saved?.body ?? "{}")).toEqual({ autoApproveTools: true });
   });
 
+  it("turns on auto mode for heads-down mode on its own", async () => {
+    config = { model: SAVED, autoApproveTools: false, autoApproveHeadsDown: false };
+    const mounted = await mountForInteraction(createElement(DecisionModelSection));
+    unmount = mounted.unmount;
+    await settle();
+
+    const headsDown = [...mounted.host.querySelectorAll("label")]
+      .find((label) => label.textContent?.includes("Auto mode for heads-down mode"))
+      ?.querySelector("input[type=checkbox]") as HTMLInputElement;
+    headsDown.click();
+    await settle();
+
+    const saved = calls.find((c) => c.method === "PATCH");
+    expect(JSON.parse(saved?.body ?? "{}")).toEqual({ autoApproveHeadsDown: true });
+  });
+
   it("clears the model on picking None", async () => {
     config = { model: SAVED, autoApproveTools: true };
     const mounted = await mountForInteraction(createElement(DecisionModelSection));

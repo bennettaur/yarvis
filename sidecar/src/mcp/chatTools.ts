@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { type Tool, type ToolExecutionOptions, tool } from "ai";
+import { type ModelMessage, type Tool, type ToolExecutionOptions, tool } from "ai";
 import { z } from "zod";
 import { builtinToolIds, syncBuiltins } from "../agentTools/registry.ts";
 import { listRegistryTools, type RegistryTool, searchRegistry } from "../agentTools/store.ts";
@@ -46,16 +46,27 @@ export function modelToolKey(id: string): string {
 export interface ApprovalHooks {
   /**
    * Emits an approval request to the client (e.g. over SSE). `reason` is the
-   * model's own account of why it is making the call.
+   * model's own account of why it is making the call. A surface that decides
+   * on the spot can return what the model is told if it says no.
    */
   onRequest: (info: {
     toolCallId: string;
     id: string;
     args: unknown;
     reason: string | null;
-  }) => Promise<void>;
+    /** The tool's own description, for a surface that reviews the call itself. */
+    description?: string;
+    /** The conversation so far, as the AI SDK hands it to `execute`. */
+    messages?: ModelMessage[];
+  }) => Promise<void | { deniedMessage?: string }>;
   /** Aborted when the client disconnects, so pending approvals don't hang. */
   signal?: AbortSignal;
+  /**
+   * What the model is told when a call isn't approved. A surface where the
+   * user answers later says so, so the model moves on rather than taking it
+   * as a no.
+   */
+  deniedMessage?: string;
 }
 
 const STOPPED = { denied: true, message: "The user stopped this turn." };
@@ -103,13 +114,26 @@ export function wrapToolWithApproval(
       // stopped turn neither runs the call nor raises a prompt nobody can answer.
       if (hooks.signal?.aborted) return STOPPED;
       if (autoApproved) return run(args, opts);
-      await hooks.onRequest({ toolCallId: opts.toolCallId, id, args, reason });
+      const requested = await hooks.onRequest({
+        toolCallId: opts.toolCallId,
+        id,
+        args,
+        reason,
+        description: typeof t.description === "string" ? t.description : undefined,
+        messages: opts.messages,
+      });
       const approved = await waitForApproval(opts.toolCallId, {
         signal: hooks.signal,
         timeoutMs: APPROVAL_TIMEOUT_MS,
       });
       if (!approved) {
-        return { denied: true, message: "The user denied this tool call." };
+        return {
+          denied: true,
+          message:
+            (requested ? requested.deniedMessage : undefined) ??
+            hooks.deniedMessage ??
+            "The user denied this tool call.",
+        };
       }
       return run(args, opts);
     },

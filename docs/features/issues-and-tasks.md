@@ -13,7 +13,8 @@ Tasks need only the database.
 
 For **GitHub issues**:
 
-1. Save a **GitHub token** under **Settings → Credentials**. See
+1. Click **Sign in with GitHub**, or save a **GitHub token**, under
+   **Settings → Credentials**. See
    [Configuration](../configuration.md#token-scopes) for the scopes.
 2. Add the repo under **Settings → Repositories** and tick **Pull issues**.
    Only repos with that box ticked show up on the Issues tab.

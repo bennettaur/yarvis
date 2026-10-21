@@ -142,6 +142,27 @@ export default function DecisionModelSection() {
             </span>
           </span>
         </label>
+
+        <label className="flex items-start gap-2 text-sm text-zinc-300">
+          <input
+            type="checkbox"
+            className="mt-1"
+            checked={config.autoApproveHeadsDown}
+            disabled={!selection}
+            onChange={(e) => void save({ autoApproveHeadsDown: e.target.checked })}
+          />
+          <span>
+            Auto mode for heads-down mode
+            <span className="block text-xs text-zinc-600">
+              When heads-down mode wants to call an MCP tool you haven't allowed, it can go ahead
+              without asking if you approved this exact call before, or your last three answers for
+              that tool on the Heads down page were approvals, and the decision model says the call
+              fits what you asked for and isn't risky or destructive. Built-in actions always ask.
+              Calls approved this way are listed on the Heads down page and never count as your
+              approval next time.
+            </span>
+          </span>
+        </label>
       </div>
 
       {error && <p className="mt-2 text-sm text-red-400">{error}</p>}

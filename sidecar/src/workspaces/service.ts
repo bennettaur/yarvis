@@ -2053,6 +2053,7 @@ async function removeWorktreesAndFinish(
       await withRepoLock(wr.repoId, () =>
         removeWorktree(runner, wr.repo.primaryClonePath, wr.worktreePath, {
           force: input.force ?? false,
+          workspaceRoot: detail.rootPath,
         }),
       );
       await db

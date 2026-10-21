@@ -149,6 +149,7 @@ named. It works well for status updates and brag docs.
 | --- | --- | --- |
 | **Tasks** | What *you* intend to do, scoped to today or this week | Tasks tab |
 | **Agent todos** | What the *assistant* has promised to do, with a progress log | Memory → Agent todos |
+| **Work streams** | Threads of work the assistant is pushing forward, such as a ticket to ship or a message to answer, each with its tickets, workspaces, PRs and messages, what it's waiting on, and the assistant's notes | Heads down page |
 | **Projects** | A status, a focus for the week, and tracked tickets with priorities (urgent, high, medium, low) | Memory → Projects |
 | **Memories** | Durable facts, typed by kind | Memory → Memories |
 | **Activity log** | A record of what you did in the app | Memory → Activity |
@@ -175,6 +176,37 @@ they can be matched exactly.
 
 When a fact changes, the assistant corrects the memory instead of storing a
 contradiction. The old version stays for the record but drops out of search.
+
+### Decisions it learns from you
+
+When the assistant has to ask you to choose, such as which channel to ask for
+a review in or which approach to take, it first checks how you answered the
+same question before:
+
+- **You answered it in the same situation before.** It goes with your most
+  recent answer instead of asking, and tells you it did, so you can overrule
+  it.
+- **You gave the same answer in at least three related situations.** It goes
+  with that answer too.
+- **Otherwise it asks.** That covers no past answer, too few, or past answers
+  that disagree.
+
+Each answer you give is saved as a `decision` memory, with the situation, the
+question and your answer, so it has more to go on next time. Only a reply you
+sent after it asked is saved, never something it read in a ticket or a page.
+When you overrule a choice it made, that is saved too. In the same situation
+your newest answer wins from then on. In related situations a change of mind
+means your answers now disagree, so it asks again. An answer that only holds
+for a while ("don't tag Sam this week") gets a window like any other memory,
+and stops counting once it expires. To make it forget an answer, find it under
+Memory → Memories and delete it. Changing your mind is done by answering
+again: it won't edit a saved answer.
+
+It only does this for choices, not for facts only you know, like a date or a
+name. A past answer never stands in for your go-ahead on an action that needs
+it, like starting work on a ticket or archiving a workspace: it asks about
+those every time. On a spoken turn, saving an answer shows the approval prompt
+first, so a misheard "yes" isn't kept.
 
 ### When a memory holds
 
@@ -293,6 +325,9 @@ you asked.
 - **Registering a repo** asks every time. Later tools clone the repo and run
   its code, and a repo name can come from an issue or a look-alike name. Check
   the exact repo before you approve.
+- **Going heads down** asks every time, since it starts a loop that keeps
+  acting on its own until you stop it. See [Heads-down mode](heads-down.md)
+  for what it may do without asking.
 - **MCP tools** ask unless you set them to auto-approve in the Tool manager.
 - **Spoken turns** ask before anything irreversible: deleting a task, archiving
   a workspace, starting work, adding a repo to a workspace, filing, editing,
@@ -322,7 +357,8 @@ Always available:
 
 - **Tasks.** Create, list, update, complete, delete, roll over and find
   finished tasks.
-- **Memory.** Remember, recall, correct, confirm, list, forget and take notes.
+- **Memory.** Remember, recall, correct, confirm, list, forget, take notes,
+  and check or record how you answered a question before.
 - **Projects.** Create, read and update projects, and track, list and untrack
   tickets with priorities.
 - **Todos.** The assistant's own todo list.
@@ -331,6 +367,16 @@ Always available:
   suggestion, and summarize the week.
 - **Delegation.** List specialists and delegate to one.
 - **Attention.** Raise a notification when it needs you.
+- **Questions.** Ask you something and wait for the answer (`ask_user`,
+  `wait_for_answer`). The question rings the attention bell as **Yarvis**, and
+  you answer in a dialog from wherever you are in the app. It is meant for when
+  you may not be watching the chat; when you're talking to it, it asks in its
+  reply. A turn sent from Telegram can't use them, since you aren't at the app
+  to see the bell. A [heads-down](heads-down.md) pass has its own `ask_user` that doesn't wait
+  for you, and specialists and scheduled jobs never get these. See
+  [MCP](mcp.md#asking-you-questions).
+- **Heads down.** Start heads-down mode once you agree, stop it, and check
+  whether it's running.
 
 Loaded on demand:
 
@@ -344,6 +390,9 @@ Loaded on demand:
 - **Azure Boards.** Search with WIQL or title words, read a work item with its
   links (parent, children, what blocks it), create one, edit its title,
   description, tags or state, assign it to you or unassign it, and comment.
+- **Work streams.** Track a thread of work, link its tickets, workspaces, PRs,
+  messages and review requests, mark what it's waiting on, and find the stream
+  something belongs to.
 - **PR review.** List your guided reviews and search the notes you took while
   reviewing.
 - **Calendar.** List events and create one.
