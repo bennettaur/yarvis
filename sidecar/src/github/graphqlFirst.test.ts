@@ -42,7 +42,7 @@ const REST_PR = {
 const REST_CHECKS = { check_runs: [{ status: "completed", conclusion: "success" }] };
 
 describe("reads through GraphQL", () => {
-  it("reads a PR's status in one request, counting check runs only", async () => {
+  it("reads a PR's status in one request, counting check runs and commit statuses", async () => {
     const { gh, requests } = fakeGitHub(() =>
       data({
         repository: {
@@ -60,7 +60,8 @@ describe("reads through GraphQL", () => {
                         nodes: [
                           { __typename: "CheckRun", status: "COMPLETED", conclusion: "SUCCESS" },
                           { __typename: "CheckRun", status: "IN_PROGRESS", conclusion: null },
-                          { __typename: "StatusContext" },
+                          { __typename: "StatusContext", state: "FAILURE" },
+                          { __typename: "StatusContext", state: "EXPECTED" },
                         ],
                       },
                     },
@@ -77,7 +78,7 @@ describe("reads through GraphQL", () => {
       merged: false,
       mergeable: false,
       mergeableState: "dirty",
-      checks: { total: 2, success: 1, failure: 0, pending: 1 },
+      checks: { total: 4, success: 1, failure: 1, pending: 2 },
     });
     expect(requests).toEqual(["GRAPHQL"]);
   });
@@ -180,6 +181,7 @@ describe("falls back to REST", () => {
       "GRAPHQL",
       "/repos/o/r/pulls/1",
       "/repos/o/r/commits/abc/check-runs",
+      "/repos/o/r/commits/abc/status",
     ]);
   });
 
@@ -204,6 +206,7 @@ describe("falls back to REST", () => {
       "GRAPHQL",
       "/repos/o/r/pulls/1",
       "/repos/o/r/commits/abc/check-runs",
+      "/repos/o/r/commits/abc/status",
     ]);
   });
 

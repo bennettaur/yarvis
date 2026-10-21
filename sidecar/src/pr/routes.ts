@@ -19,7 +19,7 @@ import {
   saveInsight,
 } from "./insights.ts";
 import { type PrModelFeature, resolvePrModel } from "./models.ts";
-import { azurePrSource, githubPrSource, type PrCodeSource } from "./source.ts";
+import { type PrCodeSource, prSourceFor } from "./source.ts";
 import { generateTour } from "./tour.ts";
 import { type PrRef, parseRefKey, refKey } from "./types.ts";
 import { PrWorkspaceRefusal, startWorkspaceForPr } from "./workspace.ts";
@@ -133,26 +133,7 @@ export function createPrRoutes(config: Config): Hono {
 
   const db = () => getDb(config.databaseUrl as string).db;
 
-  /**
-   * Builds the code source for a ref, or an error message naming what is
-   * missing. The Azure organization is bound from configuration rather than
-   * trusted from the request, so a ref naming a different org is refused
-   * outright instead of being pointed at a host we did not configure.
-   */
-  const sourceFor = (ref: PrRef): PrCodeSource | { error: string } => {
-    if (ref.provider === "github") {
-      const token = config.secrets.githubToken;
-      if (!token) return { error: "github token not configured" };
-      return githubPrSource(createGitHubClient(config, token), ref);
-    }
-    const { azureDevopsToken, azureDevopsOrgUrl } = config.secrets;
-    if (!azureDevopsToken || !azureDevopsOrgUrl) return { error: "azure devops not configured" };
-    if (!isAllowedAzureOrgUrl(azureDevopsOrgUrl)) return { error: "invalid azure org url" };
-    if (orgFromOrgUrl(azureDevopsOrgUrl) !== ref.org) {
-      return { error: "pull request belongs to a different azure organization" };
-    }
-    return azurePrSource(new AzureDevOpsClient(azureDevopsToken, azureDevopsOrgUrl), ref);
-  };
+  const sourceFor = (ref: PrRef): PrCodeSource | { error: string } => prSourceFor(config, ref);
 
   /**
    * Keeps the attention stream in step with a guide's progress. The item
