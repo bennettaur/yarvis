@@ -464,6 +464,47 @@ describe("reconcileOrphans", () => {
     expect(a?.status).toBe("error");
     expect(b?.status).toBe("creating"); // within the age margin, untouched
   });
+
+  it("keeps an interrupted archive in the archive flow, and leaves a failed one alone", async () => {
+    const old = new Date(Date.now() - 5 * 60_000);
+    const [interrupted] = await db
+      .insert(workspaces)
+      .values({ name: "a", slug: "a", rootPath: "/tmp/a", status: "archiving", updatedAt: old })
+      .returning();
+    const [failed] = await db
+      .insert(workspaces)
+      .values({
+        name: "b",
+        slug: "b",
+        rootPath: "/tmp/b",
+        status: "archiving",
+        error: "one or more worktrees could not be removed",
+        updatedAt: old,
+      })
+      .returning();
+
+    await reconcileOrphans(db);
+
+    const [a] = await db.select().from(workspaces).where(eq(workspaces.id, interrupted!.id));
+    const [b] = await db.select().from(workspaces).where(eq(workspaces.id, failed!.id));
+    expect(a?.status).toBe("archiving");
+    expect(a?.error).toContain("archive again");
+    expect(b?.status).toBe("archiving");
+    expect(b?.error).toBe("one or more worktrees could not be removed");
+  });
+
+  it("leaves an archive that may still be running alone", async () => {
+    const [running] = await db
+      .insert(workspaces)
+      .values({ name: "c", slug: "c", rootPath: "/tmp/c", status: "archiving" })
+      .returning();
+
+    await reconcileOrphans(db);
+
+    const [c] = await db.select().from(workspaces).where(eq(workspaces.id, running!.id));
+    expect(c?.status).toBe("archiving");
+    expect(c?.error).toBeNull();
+  });
 });
 
 function eqWr(wrId: string) {
