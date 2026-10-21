@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { EditorSelection } from "@codemirror/state";
 import { useState } from "react";
+import { type EditorPlace, resetEditorPlaces } from "../../lib/editorPlaces";
 import { draftKey, getDraft, resetDrafts, setDraft } from "../../lib/fileDrafts";
 import type { WorkspaceFile } from "../../lib/workspaces";
 import { mountForInteraction } from "../../test/render";
@@ -46,11 +48,23 @@ mock.module("../../lib/workspaces", () => ({
   },
 }));
 
+interface EditorProps {
+  value: string;
+  initialPlace?: EditorPlace | null;
+  onPlaceChange?: (place: EditorPlace) => void;
+}
+
+/** What the most recently rendered editor was handed. */
+let editorProps: EditorProps | null = null;
+
 // The editor itself is CodeMirror, which owns a live DOM of its own. These tests
 // are about the tab around it — what it loads, what it refuses, and what it
 // saves — so it is replaced with a marker.
 mock.module("../editor/CodeEditor", () => ({
-  default: ({ value }: { value: string }) => <pre data-testid="editor">{value}</pre>,
+  default: (props: EditorProps) => {
+    editorProps = props;
+    return <pre data-testid="editor">{props.value}</pre>;
+  },
 }));
 
 const { default: WorkspaceFileEditor } = await import("./WorkspaceFileEditor");
@@ -62,6 +76,8 @@ let unmount: (() => void) | null = null;
 
 beforeEach(() => {
   resetDrafts();
+  resetEditorPlaces();
+  editorProps = null;
   saved = [];
   filesByPath = {};
   conflictOnSave = false;
@@ -284,6 +300,34 @@ describe("WorkspaceFileEditor", () => {
     const host = await mount();
 
     expect(host.textContent).not.toContain("changed on disk after you opened it");
+  });
+
+  it("reopens the editor where it was left", async () => {
+    const place: EditorPlace = { selection: EditorSelection.single(6), scrollSnapshot: null };
+    await mount();
+    editorProps?.onPlaceChange?.(place);
+    unmount?.();
+
+    await mount();
+
+    expect(editorProps?.initialPlace).toBe(place);
+  });
+
+  it("keeps one file's place out of another file's editor", async () => {
+    filesByPath = {
+      "src/a.ts": fileOf("src/a.ts", "AAA\n", HASH_A),
+      "src/b.ts": fileOf("src/b.ts", "BBB\n", HASH_B),
+    };
+    const placeInA: EditorPlace = { selection: EditorSelection.single(2), scrollSnapshot: null };
+    await mountSwitchable();
+    editorProps?.onPlaceChange?.(placeInA);
+
+    await switchTo("src/b.ts");
+    expect(editorProps?.initialPlace).toBeNull();
+    editorProps?.onPlaceChange?.({ selection: EditorSelection.single(3), scrollSnapshot: null });
+
+    await switchTo("src/a.ts");
+    expect(editorProps?.initialPlace).toBe(placeInA);
   });
 
   it("reports a file it could not read", async () => {

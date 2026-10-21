@@ -7,6 +7,7 @@ import {
   type TodoStatus,
   updateTodo,
 } from "../../lib/todos";
+import LoadingIndicator from "../LoadingIndicator";
 import RefreshingIndicator from "../RefreshingIndicator";
 
 /**
@@ -82,7 +83,9 @@ export default function TodosTab() {
         </button>
       </div>
 
-      {todos.length === 0 ? (
+      {todosRes.loading ? (
+        <LoadingIndicator label="Loading todos…" />
+      ) : todos.length === 0 ? (
         <p className="text-sm text-zinc-600">Nothing on the assistant's list.</p>
       ) : (
         <ul className="divide-y divide-zinc-800 rounded-xl border border-zinc-800 bg-zinc-900/50">

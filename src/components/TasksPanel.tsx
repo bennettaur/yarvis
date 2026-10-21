@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import { requestNewWorkspace } from "../lib/nav";
 import { useCachedResource } from "../lib/resourceCache";
 import { completeTask, createTask, deleteTask, listTasks, type Task } from "../lib/tasks";
+import LoadingIndicator from "./LoadingIndicator";
 import RefreshingIndicator from "./RefreshingIndicator";
 
 const TASKS_KEY = "tasks:open";
@@ -32,6 +33,31 @@ function describeDate(target: string): string {
 function isOverdue(target: string | null): boolean {
   if (!target) return false;
   return target < todayIso();
+}
+
+export interface TaskGroups {
+  overdue: Task[];
+  today: Task[];
+  /** Daily tasks dated after today. */
+  upcoming: Task[];
+  /** Weekly tasks and undated daily ones, unless overdue. */
+  weekly: Task[];
+}
+
+/**
+ * Sorts open tasks into the panel's groups. Every task lands in exactly one, so
+ * none drops off the panel. A daily task dated after today, which the
+ * assistant's tools can create, goes under Upcoming.
+ */
+export function groupTasks(tasks: Task[], todayDate: string): TaskGroups {
+  const groups: TaskGroups = { overdue: [], today: [], upcoming: [], weekly: [] };
+  for (const task of tasks) {
+    if (task.targetDate && task.targetDate < todayDate) groups.overdue.push(task);
+    else if (task.scope === "weekly" || !task.targetDate) groups.weekly.push(task);
+    else if (task.targetDate === todayDate) groups.today.push(task);
+    else groups.upcoming.push(task);
+  }
+  return groups;
 }
 
 function TaskRow({
@@ -231,14 +257,10 @@ export default function TasksPanel() {
     [refresh],
   );
 
-  const { daily, weekly, overdue } = useMemo(() => {
-    const today = todayIso();
-    return {
-      overdue: tasks.filter((t) => t.targetDate && t.targetDate < today),
-      daily: tasks.filter((t) => t.scope === "daily" && t.targetDate === today),
-      weekly: tasks.filter((t) => t.scope === "weekly" || (t.scope === "daily" && !t.targetDate)),
-    };
-  }, [tasks]);
+  const { overdue, today, upcoming, weekly } = useMemo(
+    () => groupTasks(tasks, todayIso()),
+    [tasks],
+  );
 
   return (
     <div className="mx-auto max-w-3xl space-y-5">
@@ -250,6 +272,7 @@ export default function TasksPanel() {
           <input
             value={title}
             placeholder="Add a task..."
+            aria-label="New task"
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") void onAdd();
@@ -258,6 +281,7 @@ export default function TasksPanel() {
           />
           <select
             value={scope}
+            aria-label="Task scope"
             onChange={(e) => setScope(e.target.value as "daily" | "weekly")}
             className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-2 text-sm outline-none focus:border-indigo-500"
           >
@@ -273,32 +297,48 @@ export default function TasksPanel() {
         </div>
       </div>
 
-      {overdue.length > 0 && (
-        <TaskGroup
-          title="Overdue"
-          caption="Carry over or complete to clear"
-          tasks={overdue}
-          onComplete={onComplete}
-          onDelete={onDelete}
-          accent="zinc"
-        />
-      )}
+      {tasksRes.loading ? (
+        <LoadingIndicator label="Loading tasks…" />
+      ) : (
+        <>
+          {overdue.length > 0 && (
+            <TaskGroup
+              title="Overdue"
+              caption="Carry over or complete to clear"
+              tasks={overdue}
+              onComplete={onComplete}
+              onDelete={onDelete}
+              accent="zinc"
+            />
+          )}
 
-      <TaskGroup
-        title="Today"
-        tasks={daily}
-        onComplete={onComplete}
-        onDelete={onDelete}
-        accent="indigo"
-      />
-      <TaskGroup
-        title="This week"
-        caption="No fixed day"
-        tasks={weekly}
-        onComplete={onComplete}
-        onDelete={onDelete}
-        accent="violet"
-      />
+          <TaskGroup
+            title="Today"
+            tasks={today}
+            onComplete={onComplete}
+            onDelete={onDelete}
+            accent="indigo"
+          />
+          {upcoming.length > 0 && (
+            <TaskGroup
+              title="Upcoming"
+              caption="Due on a later day"
+              tasks={upcoming}
+              onComplete={onComplete}
+              onDelete={onDelete}
+              accent="indigo"
+            />
+          )}
+          <TaskGroup
+            title="This week"
+            caption="No fixed day"
+            tasks={weekly}
+            onComplete={onComplete}
+            onDelete={onDelete}
+            accent="violet"
+          />
+        </>
+      )}
 
       {error && <p className="text-sm text-red-400">{error}</p>}
     </div>

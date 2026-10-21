@@ -6,7 +6,7 @@ import { sidecarFetch } from "./api";
  * sidecar itself. Recording is best-effort — a failure must never disrupt the
  * action the user actually took, so callers fire-and-forget via `recordEvent`.
  */
-export type UiEventType = "pr.viewed" | "alarm.created";
+export type UiEventType = "pr.viewed" | "alarm.created" | "workspace.viewed";
 
 /** One row of the activity log. */
 export interface EventRecord {

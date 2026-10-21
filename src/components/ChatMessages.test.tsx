@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { type ComponentProps, createElement } from "react";
-import { renderToHtml } from "../test/render";
+import { renderToHtml, textOf } from "../test/render";
 import ChatMessages from "./ChatMessages";
 
 const EMPTY_HINT = "Start a conversation.";
@@ -65,6 +65,14 @@ describe("ChatMessages", () => {
     expect(html).toContain('title="https://elsewhere.example/p.png?q=1"');
   });
 
+  it("opens a PR link from an assistant reply inside Yarvis instead of the browser", async () => {
+    const html = await render({
+      messages: [{ role: "assistant", content: "See [#12](https://github.com/o/r/pull/12)" }],
+    });
+    expect(html).toContain('aria-label="Open in Yarvis: https://github.com/o/r/pull/12"');
+    expect(html).toContain('aria-label="Open in browser"');
+  });
+
   it("keeps user text verbatim while formatting the assistant's reply", async () => {
     const html = await render({
       messages: [
@@ -108,5 +116,54 @@ describe("ChatMessages", () => {
   it("shows the empty hint until there is something to render", async () => {
     const html = await render({});
     expect(html).toContain(EMPTY_HINT);
+  });
+
+  it("offers Resend and Edit on persisted user messages when the thread can rewind", async () => {
+    const html = await render({
+      messages: [
+        { id: "m1", role: "user", content: "hello" },
+        { id: "m2", role: "assistant", content: "hi" },
+      ],
+      onRewind: () => {},
+    });
+    expect(html).toContain(">Resend</button>");
+    expect(html).toContain(">Edit</button>");
+    // Only the one user message gets them.
+    expect(html.match(/>Resend</g)).toHaveLength(1);
+  });
+
+  it("hides the rewind controls without a handler, without an id, or while busy", async () => {
+    const withId = [{ id: "m1", role: "user", content: "hello" }];
+    expect(await render({ messages: withId })).not.toContain("Resend");
+    expect(
+      await render({ messages: [{ role: "user", content: "hello" }], onRewind: () => {} }),
+    ).not.toContain("Resend");
+    expect(await render({ messages: withId, onRewind: () => {}, busy: true })).not.toContain(
+      "Resend",
+    );
+  });
+
+  it("folds the in-flight tool calls once the reply text starts", async () => {
+    const activity = [{ id: "c1", name: "search_pages", status: "ok" as const }];
+    const open = await render({ busy: true, activity });
+    expect(textOf(open)).not.toContain("tool call");
+    const folded = await render({ busy: true, activity, streaming: "found it" });
+    expect(textOf(folded)).toContain("Used 1 tool call");
+  });
+
+  it("folds a finished turn's tool calls and tells the speakers apart", async () => {
+    const html = await render({
+      messages: [
+        { role: "user", content: "hi" },
+        {
+          role: "assistant",
+          content: "done",
+          activity: [{ id: "c1", name: "search_pages", status: "ok" as const }],
+        },
+      ],
+    });
+    expect(textOf(html)).toContain("Used 1 tool call");
+    expect(html).toContain("border-violet-500");
+    expect(html).toContain("bg-sky-950");
   });
 });

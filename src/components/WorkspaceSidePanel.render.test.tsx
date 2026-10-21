@@ -1,21 +1,36 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import type { ChangedFile, WorkspaceRepoDetail } from "../lib/workspaces";
+import type { ChangedFile, WorkspaceRepoDetail, WorkspaceRepoWorktrees } from "../lib/workspaces";
 import { clipboardWrites, resetClipboardWrites } from "../test/clipboard";
-import { mountForInteraction } from "../test/render";
+import { mountForInteraction, textOf } from "../test/render";
 
 let files: string[] = [];
 let changes: ChangedFile[] = [];
+let worktrees: WorkspaceRepoWorktrees[] = [];
+/** The worktree each changes read asked for; undefined is the primary one. */
+let changesReadFrom: (string | undefined)[] = [];
+/** The worktrees a live PR lookup was asked for, and what it answers. */
+let prLookups: string[] = [];
+let prLookup: () => Promise<unknown> = async () => ({ branch: null, pr: null });
 
-// Only the two worktree readers are stubbed; the rest of the module stays real
-// so sibling tests of `lib/workspaces` still see the actual implementations.
+// Only the worktree readers are stubbed; the rest of the module stays real so
+// sibling tests of `lib/workspaces` still see the actual implementations.
 const actual = await import("../lib/workspaces");
 mock.module("../lib/workspaces", () => ({
   ...actual,
   workspaceRepoFiles: async () => files,
-  workspaceRepoChanges: async () => changes,
+  workspaceRepoChanges: async (_workspaceId: string, _repoId: string, worktree?: string) => {
+    changesReadFrom.push(worktree);
+    return changes;
+  },
+  listWorkspaceWorktrees: async () => worktrees,
+  worktreePr: async (_workspaceId: string, _repoId: string, worktree: string) => {
+    prLookups.push(worktree);
+    return prLookup();
+  },
 }));
 
 const { default: WorkspaceSidePanel } = await import("./WorkspaceSidePanel");
+type OpenFile = import("./shell/terminalTabs/TerminalTabs").OpenFileDiff;
 
 // A workspace id distinct from every other test file: `useReviewComments`
 // caches comments in a module-level Map keyed by this id, and that cache is
@@ -71,6 +86,10 @@ let unmount: (() => void) | null = null;
 
 beforeEach(() => {
   resetClipboardWrites();
+  worktrees = [];
+  changesReadFrom = [];
+  prLookups = [];
+  prLookup = async () => ({ branch: "stack/api", pr: null });
   files = ["src/components/a.tsx", "src/components/b.tsx", "README.md"];
   changes = [
     { path: "src/components/a.tsx", status: "modified", additions: 3, deletions: 1 },
@@ -84,8 +103,8 @@ afterEach(() => {
 });
 
 const mount = async (
-  onOpenFile: (repoId: string, path: string) => void = () => {},
-  onEditFile: (repoId: string, path: string) => void = () => {},
+  onOpenFile: (file: OpenFile) => void = () => {},
+  onEditFile: (file: OpenFile) => void = () => {},
   repo: WorkspaceRepoDetail = REPO,
 ) => {
   const mounted = await mountForInteraction(
@@ -131,7 +150,7 @@ describe("WorkspaceSidePanel", () => {
 
   it("opens the diff for a changed file's full path, not its basename", async () => {
     const opened: string[] = [];
-    const host = await mount((_repoId, path) => opened.push(path));
+    const host = await mount((file) => opened.push(file.path));
     const row = host.querySelector<HTMLButtonElement>(
       '[title="Open diff for src/components/a.tsx"]',
     );
@@ -151,7 +170,7 @@ describe("WorkspaceSidePanel", () => {
     const edited: string[] = [];
     const host = await mount(
       () => {},
-      (_repoId, path) => edited.push(path),
+      (file) => edited.push(file.path),
     );
     await clickTab(host, "All files");
     host.querySelector<HTMLButtonElement>('[title="Edit src/components/b.tsx"]')?.click();
@@ -162,7 +181,7 @@ describe("WorkspaceSidePanel", () => {
     const edited: string[] = [];
     const host = await mount(
       () => {},
-      (_repoId, path) => edited.push(path),
+      (file) => edited.push(file.path),
     );
     host.querySelector<HTMLButtonElement>('[title="Edit src/components/a.tsx"]')?.click();
     expect(edited).toEqual(["src/components/a.tsx"]);
@@ -225,6 +244,96 @@ describe("WorkspaceSidePanel", () => {
     resetClipboardWrites();
     await clickCopy(host, "Copy the link to web #12");
     expect(clipboardWrites()).toEqual(["https://github.com/octo/web/pull/12"]);
+  });
+
+  describe("with a second worktree in the workspace", () => {
+    const STACKED = "/tmp/ws-1/web-api";
+
+    beforeEach(() => {
+      worktrees = [
+        {
+          workspaceRepoId: REPO.id,
+          worktrees: [
+            { path: REPO.worktreePath, branch: "feature", primary: true },
+            { path: STACKED, branch: "stack/api", primary: false },
+          ],
+          error: null,
+        },
+      ];
+    });
+
+    const pick = async (host: HTMLElement, label: string) => {
+      const select = host.querySelector<HTMLSelectElement>(
+        'select[aria-label="Repo and worktree to show"]',
+      );
+      const option = [...(select?.options ?? [])].find((o) => o.textContent === label);
+      if (!select || !option) throw new Error(`no "${label}" worktree option`);
+      select.value = option.value;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      await settle();
+    };
+
+    it("offers each worktree and says which branch is showing", async () => {
+      const host = await mount();
+      const labels = [...host.querySelectorAll("option")].map((o) => o.textContent);
+      expect(labels).toEqual(["feature (workspace branch)", "stack/api"]);
+      expect(textOf(host.innerHTML)).toContain("Viewing feature");
+    });
+
+    it("reads the picked worktree and opens its files there", async () => {
+      const opened: OpenFile[] = [];
+      const host = await mount((file) => opened.push(file));
+      await pick(host, "stack/api");
+
+      expect(textOf(host.innerHTML)).toContain("Viewing stack/api");
+      expect(changesReadFrom[changesReadFrom.length - 1]).toBe(STACKED);
+      host.querySelector<HTMLButtonElement>('[title="Open diff for README.md"]')?.click();
+      expect(opened).toEqual([
+        { repoId: REPO.id, path: "README.md", worktree: STACKED, worktreeLabel: "stack/api" },
+      ]);
+    });
+
+    // The poller only caches the workspace branch's PR, so another worktree's
+    // checks are a live lookup — and a failed one must still offer a retry.
+    it("looks the picked worktree's PR up live, and keeps Refresh after a failure", async () => {
+      prLookup = async () => {
+        throw new Error("load pull request failed (502)");
+      };
+      const host = await mount();
+      await pick(host, "stack/api");
+      await clickTab(host, "PR checks");
+
+      expect(prLookups).toEqual([STACKED]);
+      expect(host.textContent).toContain("load pull request failed (502)");
+      expect([...host.querySelectorAll("button")].some((b) => b.textContent === "Refresh")).toBe(
+        true,
+      );
+    });
+
+    it("asks no provider about a worktree on a detached HEAD", async () => {
+      worktrees = [
+        {
+          workspaceRepoId: REPO.id,
+          worktrees: [
+            { path: REPO.worktreePath, branch: "feature", primary: true },
+            { path: STACKED, branch: null, primary: false },
+          ],
+          error: null,
+        },
+      ];
+      const host = await mount();
+      await pick(host, "detached HEAD");
+      await clickTab(host, "PR checks");
+
+      expect(host.textContent).toContain("detached HEAD");
+      expect(prLookups).toEqual([]);
+    });
+  });
+
+  it("shows no picker for a repo with only its own worktree", async () => {
+    const host = await mount();
+    expect(host.querySelector("select")).toBeNull();
+    expect(textOf(host.innerHTML)).toContain("Viewing feature");
   });
 
   it("reaches the self-review comments through their own tab", async () => {

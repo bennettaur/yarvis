@@ -264,7 +264,7 @@ export default function EmbeddingsSection() {
           <button
             onClick={() => void reembed()}
             disabled={busy !== null}
-            className="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-medium text-amber-50 hover:bg-amber-500 disabled:opacity-40"
+            className="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-medium text-amber-50 hover:bg-amber-700 disabled:opacity-40"
           >
             {busy === "reembed" ? "Re-embedding…" : "Re-embed all"}
           </button>
@@ -292,6 +292,7 @@ export default function EmbeddingsSection() {
           </Labeled>
           <Labeled label="Dimension">
             <input
+              title="Length of the vector the model returns. It must match the size your memory store was built with, and existing memories need Re-embed all after a change."
               value={draft.dimensions}
               inputMode="numeric"
               placeholder="1536"

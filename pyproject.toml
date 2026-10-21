@@ -1,7 +1,7 @@
 [project]
 # Not the app — the app is TypeScript and Rust. This is the local speech server
 # the Voice feature talks to, kept here so `uv sync` reproduces it in one step.
-# See README → Voice.
+# See docs/voice-server.md.
 name = "yarvis-speech"
 version = "0.1.0"
 description = "Local speech-to-text and text-to-speech server for the Yarvis Voice feature"

@@ -106,6 +106,27 @@ describe("stateAfterCloseTab", () => {
 describe("stateAfterOpenEditor", () => {
   const FILE = { repoId: "wr-1", path: "src/a.ts" };
 
+  // The same path in another of the repo's worktrees is a different file, so it
+  // gets a tab of its own — and asking again finds that tab, not the primary's.
+  it("gives a file in another worktree its own tab", () => {
+    const primary = stateAfterOpenEditor(withTabs(1), FILE, "a.ts");
+    const stacked = stateAfterOpenEditor(
+      primary,
+      { ...FILE, worktree: "/ws/web-api" },
+      "a.ts · stack/api",
+    );
+    expect(stacked.tabs).toHaveLength(3);
+    expect(stacked.tabs[2]).toMatchObject({ worktree: "/ws/web-api", title: "a.ts · stack/api" });
+
+    const again = stateAfterOpenEditor(
+      { ...stacked, activeTabId: "t0" },
+      { ...FILE, worktree: "/ws/web-api" },
+      "a.ts · stack/api",
+    );
+    expect(again.tabs).toHaveLength(3);
+    expect(again.activeTabId).toBe(stacked.tabs[2]?.id);
+  });
+
   it("opens a tab for a file nothing is editing yet, and selects it", () => {
     const next = stateAfterOpenEditor(withTabs(1), FILE, "a.ts");
     expect(next.tabs).toHaveLength(2);

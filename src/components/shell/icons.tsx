@@ -23,6 +23,7 @@ export type IconName =
   | "dashboard"
   | "settings"
   | "shortcuts"
+  | "help"
   | "bell";
 
 const PATHS: Record<IconName, React.ReactNode> = {
@@ -158,6 +159,13 @@ const PATHS: Record<IconName, React.ReactNode> = {
       <path d="M14 9h.01" />
       <path d="M18 9h.01" />
       <path d="M8 14h8" />
+    </>
+  ),
+  help: (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+      <path d="M12 17h.01" />
     </>
   ),
   settings: (

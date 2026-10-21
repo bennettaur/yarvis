@@ -6,6 +6,8 @@ import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 import { createCustomProvider } from "../customProviders/service.ts";
+import { getDb } from "../db/client.ts";
+import { addMessage, createSession } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -180,5 +182,101 @@ describe("chat routes", () => {
     });
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toContain("Anthropic API key");
+  });
+
+  it("404s a rewind to a message that isn't a user message in the session", async () => {
+    const row = await createCustomProvider({
+      name: "litellm",
+      baseUrl: "https://litellm.example.invalid/v1",
+      apiKind: "openai",
+      models: ["gpt-4o"],
+      headerNames: [],
+    });
+    const session = await app.request("/api/chat/sessions", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ title: "x" }),
+    });
+    const { id } = (await session.json()) as { id: string };
+
+    const res = await app.request("/api/chat", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        sessionId: id,
+        message: "hello",
+        provider: `custom:${row.id}`,
+        model: "gpt-4o",
+        rewindTo: "00000000-0000-4000-8000-000000000000",
+      }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("leaves history alone when a rewind request can't resolve its model", async () => {
+    const session = await app.request("/api/chat/sessions", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ title: "x" }),
+    });
+    const { id } = (await session.json()) as { id: string };
+    const [msg] = await sql`
+      INSERT INTO chat_messages (session_id, role, content) VALUES (${id}, 'user', 'keep me')
+      RETURNING id`;
+
+    const res = await app.request("/api/chat", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        sessionId: id,
+        message: "edited",
+        provider: "anthropic", // no key configured
+        model: "claude-sonnet-4-6",
+        rewindTo: msg!.id,
+      }),
+    });
+    expect(res.status).toBe(400);
+    const rows = await sql`SELECT content FROM chat_messages WHERE session_id = ${id}`;
+    expect(rows.map((r) => r.content)).toEqual(["keep me"]);
+  });
+
+  describe("chat config", () => {
+    const put = (body: unknown) =>
+      app.request("/api/chat/config", {
+        method: "PUT",
+        headers: jsonAuth,
+        body: JSON.stringify(body),
+      });
+    const valid = { maxSteps: 40, maxOutputTokens: null, compactAtTokens: 120_000 };
+
+    it("saves the compaction threshold and reads it back", async () => {
+      expect((await put(valid)).status).toBe(200);
+      const res = await app.request("/api/chat/config", { headers: auth });
+      const body = (await res.json()) as { config: { compactAtTokens: number } };
+      expect(body.config.compactAtTokens).toBe(120_000);
+    });
+
+    it.each([9_999, 2_000_001, 150_000.5, "150000"])("rejects a threshold of %p", async (bad) => {
+      expect((await put({ ...valid, compactAtTokens: bad })).status).toBe(400);
+    });
+
+    it("accepts the bounds themselves", async () => {
+      expect((await put({ ...valid, compactAtTokens: 10_000 })).status).toBe(200);
+      expect((await put({ ...valid, compactAtTokens: 2_000_000 })).status).toBe(200);
+    });
+
+    it("requires the threshold", async () => {
+      expect((await put({ maxSteps: 40, maxOutputTokens: null })).status).toBe(400);
+    });
+  });
+
+  it("hides compaction summaries from a session's messages", async () => {
+    const { db } = getDb(url);
+    const session = await createSession(db, "s");
+    await addMessage(db, { sessionId: session.id, role: "user", content: "hello" });
+    await addMessage(db, { sessionId: session.id, role: "system", content: "a summary" });
+    const res = await app.request(`/api/chat/sessions/${session.id}/messages`, { headers: auth });
+    const rows = (await res.json()) as Array<{ role: string }>;
+    expect(rows.map((m) => m.role)).toEqual(["user"]);
   });
 });

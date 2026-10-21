@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { MAX_COMPACT_AT_TOKENS, MIN_COMPACT_AT_TOKENS } from "../chat/config.ts";
 import {
   catalogFor,
   DEFAULT_MODELS,
@@ -43,6 +44,17 @@ describe("catalogFor", () => {
     expect(catalog).toEqual([{ id: "only-this", capabilities: ["chat"] }]);
   });
 
+  it("carries a saved compaction threshold onto the model, and omits it when unset", () => {
+    const catalog = catalogFor("gemini", [
+      row({ providerId: "gemini", modelId: "a", compactAtTokens: 90_000 }),
+      row({ providerId: "gemini", modelId: "b" }),
+    ]);
+    expect(catalog).toEqual([
+      { id: "a", capabilities: ["chat"], compactAtTokens: 90_000 },
+      { id: "b", capabilities: ["chat"] },
+    ]);
+  });
+
   it("ignores rows belonging to another provider", () => {
     expect(catalogFor("gemini", [row({ providerId: "anthropic", modelId: "x" })])).toEqual(
       DEFAULT_MODELS.gemini!,
@@ -81,6 +93,17 @@ describe("withCapability", () => {
 });
 
 describe("the bundled defaults", () => {
+  it("gives every bundled chat model a compaction threshold within the accepted range", () => {
+    const chatModels = Object.values(DEFAULT_MODELS)
+      .flat()
+      .filter((m) => m.capabilities.includes("chat"));
+    expect(chatModels.length).toBeGreaterThan(0);
+    for (const model of chatModels) {
+      expect(model.compactAtTokens).toBeGreaterThanOrEqual(MIN_COMPACT_AT_TOKENS);
+      expect(model.compactAtTokens).toBeLessThanOrEqual(MAX_COMPACT_AT_TOKENS);
+    }
+  });
+
   it("never tags a text-to-speech model as something to think with", () => {
     const speech = Object.values(DEFAULT_MODELS)
       .flat()
@@ -133,6 +156,24 @@ describe("provider_models storage", () => {
       sortOrder: 5,
     });
     expect(await listProviderModels()).toEqual([saved]);
+  });
+
+  it("stores a compaction threshold and clears it when saved as null", async () => {
+    const base = { providerId: "anthropic", modelId: "m", capabilities: ["chat" as const] };
+    const saved = await saveProviderModel({ ...base, compactAtTokens: 120_000 });
+    expect(saved.compactAtTokens).toBe(120_000);
+    expect((await listProviderModels())[0]?.compactAtTokens).toBe(120_000);
+
+    const cleared = await saveProviderModel({ ...base, compactAtTokens: null });
+    expect(cleared.compactAtTokens).toBeUndefined();
+    expect((await listProviderModels())[0]?.compactAtTokens).toBeUndefined();
+  });
+
+  it("keeps a saved threshold when a later save leaves the field out", async () => {
+    const base = { providerId: "anthropic", modelId: "m", capabilities: ["chat" as const] };
+    await saveProviderModel({ ...base, compactAtTokens: 120_000 });
+    const resaved = await saveProviderModel({ ...base, capabilities: ["chat", "vision"] });
+    expect(resaved.compactAtTokens).toBe(120_000);
   });
 
   it("defaults enabled to true and sortOrder to 0 when omitted", async () => {

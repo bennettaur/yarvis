@@ -11,12 +11,16 @@ import { listMcpServers } from "../mcp/service.ts";
 import { runAgentTurn } from "./agent.ts";
 import {
   type ChatConfig,
+  getChatBudget,
   getChatConfig,
+  MAX_COMPACT_AT_TOKENS,
   MAX_OUTPUT_TOKENS_CEILING,
   MAX_STEPS_CEILING,
+  MAX_TOOL_RESULT_CHARS_CEILING,
+  MIN_COMPACT_AT_TOKENS,
   saveChatConfig,
 } from "./config.ts";
-import { createSession, getMessages, listSessions } from "./service.ts";
+import { createSession, getMessages, listSessions, rewindToMessage } from "./service.ts";
 
 // Re-exported from the shared agent module so the existing context test (which
 // imports it from here) keeps passing and callers have one import surface.
@@ -42,6 +46,12 @@ const chatSchema = z.object({
    * so it is the user's choice per surface rather than something always on.
    */
   reasoning: z.boolean().optional(),
+  /**
+   * Id of a user message to restart the conversation from: it and everything
+   * after it are dropped before `message` runs as the new turn. `message` may
+   * differ from the original, which is how an edit is sent.
+   */
+  rewindTo: z.string().uuid().optional(),
 });
 
 const createSessionSchema = z.object({ title: z.string().nullish() });
@@ -58,6 +68,9 @@ const approvalSchema = z.object({ approved: z.boolean() });
 const configSchema = z.object({
   maxSteps: z.number().int().min(1).max(MAX_STEPS_CEILING),
   maxOutputTokens: z.number().int().min(256).max(MAX_OUTPUT_TOKENS_CEILING).nullable(),
+  // Optional so a client that predates the field leaves the stored value alone.
+  toolResultChars: z.number().int().min(100).max(MAX_TOOL_RESULT_CHARS_CEILING).optional(),
+  compactAtTokens: z.number().int().min(MIN_COMPACT_AT_TOKENS).max(MAX_COMPACT_AT_TOKENS),
 });
 
 export function createChatRoutes(config: Config): Hono {
@@ -95,7 +108,8 @@ export function createChatRoutes(config: Config): Hono {
   router.put("/config", async (c) => {
     const parsed = configSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const saved: ChatConfig = await saveChatConfig(parsed.data);
+    const toolResultChars = parsed.data.toolResultChars ?? (await getChatConfig()).toolResultChars;
+    const saved: ChatConfig = await saveChatConfig({ ...parsed.data, toolResultChars });
     return c.json({ config: saved });
   });
 
@@ -108,15 +122,17 @@ export function createChatRoutes(config: Config): Hono {
     return c.json(await createSession(db(), parsed.data.title), 201);
   });
 
+  // Compaction summaries are `system` rows meant for the model, not the thread.
   router.get("/sessions/:id/messages", async (c) =>
-    c.json(await getMessages(db(), c.req.param("id"))),
+    c.json((await getMessages(db(), c.req.param("id"))).filter((m) => m.role !== "system")),
   );
 
   router.post("/", async (c) => {
     const body = await c.req.json().catch(() => null);
     const parsed = chatSchema.safeParse(body);
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const { sessionId, message, provider, model, context, source, reasoning } = parsed.data;
+    const { sessionId, message, provider, model, context, source, reasoning, rewindTo } =
+      parsed.data;
 
     const dbh = db();
     let chatModel;
@@ -126,10 +142,14 @@ export function createChatRoutes(config: Config): Hono {
       console.error("[chat] model resolution failed:", describeError(e));
       return c.json({ error: clientError(e), detail: errorDetail(e) }, 400);
     }
+    // After the model resolves, so a request that can't run leaves the history alone.
+    if (rewindTo && !(await rewindToMessage(dbh, sessionId, rewindTo))) {
+      return c.json({ error: "rewindTo is not a user message in this session" }, 404);
+    }
     const servers = await listMcpServers();
     const serverNames = new Map(servers.map((s) => [s.id, s.name]));
     const providerOptions = reasoning ? await reasoningOptions(provider, model) : undefined;
-    const budget = await getChatConfig();
+    const budget = await getChatBudget(config, provider, model);
 
     return streamSSE(c, async (stream) => {
       // Tool-approval requests are emitted from inside a tool's `execute`, out of
@@ -161,7 +181,7 @@ export function createChatRoutes(config: Config): Hono {
         // tool approval; the answer comes back on POST /approvals/:toolCallId.
         approval: {
           signal: c.req.raw.signal,
-          onRequest: async ({ toolCallId, id, args }) => {
+          onRequest: async ({ toolCallId, id, args, reason }) => {
             const [, serverId = "", ...rest] = id.split(":");
             await safeWrite({
               type: "tool_approval_request",
@@ -172,6 +192,7 @@ export function createChatRoutes(config: Config): Hono {
               name: rest.join(":"),
               server: serverNames.get(serverId) ?? serverId,
               args,
+              reason,
             });
           },
         },

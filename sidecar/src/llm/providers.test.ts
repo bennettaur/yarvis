@@ -14,6 +14,8 @@ import {
   availableProviders,
   CUSTOM_PROVIDER_PREFIX,
   defaultProviderModel,
+  modelCompactAtTokens,
+  ollamaUrl,
   reasoningOptions,
   resolveModel,
 } from "./providers.ts";
@@ -189,6 +191,34 @@ describe("the model catalogue", () => {
   });
 });
 
+describe("modelCompactAtTokens", () => {
+  it("reads a bundled model's threshold and returns undefined for one without", async () => {
+    const config = configWithSecrets();
+    expect(await modelCompactAtTokens(config, "anthropic", "claude-haiku-4-5")).toBe(150_000);
+    expect(await modelCompactAtTokens(config, "anthropic", "not-a-model")).toBeUndefined();
+    expect(await modelCompactAtTokens(config, "nope", "x")).toBeUndefined();
+  });
+
+  it("prefers a saved row over the bundled default, and clearing it leaves none", async () => {
+    const config = configWithSecrets();
+    await saveProviderModel({
+      providerId: "anthropic",
+      modelId: "claude-haiku-4-5",
+      capabilities: ["chat"],
+      compactAtTokens: 60_000,
+    });
+    expect(await modelCompactAtTokens(config, "anthropic", "claude-haiku-4-5")).toBe(60_000);
+
+    await saveProviderModel({
+      providerId: "anthropic",
+      modelId: "claude-haiku-4-5",
+      capabilities: ["chat"],
+      compactAtTokens: null,
+    });
+    expect(await modelCompactAtTokens(config, "anthropic", "claude-haiku-4-5")).toBeUndefined();
+  });
+});
+
 describe("defaultProviderModel", () => {
   it("prefers a configured key provider over always-available Bedrock", async () => {
     // Bedrock reports available unconditionally; with only a Gemini key set the
@@ -284,6 +314,23 @@ describe("resolveModel for custom providers", () => {
       "claude-sonnet-4-6",
     );
     expect((model as { modelId?: string }).modelId).toBe("claude-sonnet-4-6");
+  });
+
+  it("builds an ollama-kind chat model against the server's OpenAI-compatible API", async () => {
+    const row = await createCustomProvider({
+      name: "ollama",
+      baseUrl: "http://localhost:11434/",
+      apiKind: "ollama",
+      models: ["llama3.2"],
+      headerNames: [],
+    });
+    const model = await resolveModel(
+      configWithSecrets(),
+      `${CUSTOM_PROVIDER_PREFIX}${row.id}`,
+      "llama3.2",
+    );
+    expect((model as { modelId?: string }).modelId).toBe("llama3.2");
+    expect(ollamaUrl(row.baseUrl, "/v1")).toBe("http://localhost:11434/v1");
   });
 
   it("throws when the custom provider id is unknown", async () => {

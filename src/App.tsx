@@ -13,6 +13,8 @@ import IssuesPanel from "./components/IssuesPanel";
 import MemoryPanel from "./components/MemoryPanel";
 import OmniView from "./components/omni/OmniView";
 import OmniChat from "./components/omnichat/OmniChat";
+import SetupGuide from "./components/onboarding/SetupGuide";
+import Tour from "./components/onboarding/Tour";
 import PrsPanel from "./components/PrsPanel";
 import ScheduledJobsPanel from "./components/ScheduledJobsPanel";
 import SessionsPanel from "./components/SessionsPanel";
@@ -28,6 +30,7 @@ import { useTabShortcuts } from "./components/shell/useTabShortcuts";
 import TasksPanel from "./components/TasksPanel";
 import WorkspacesPanel from "./components/WorkspacesPanel";
 import { useRingingAlarms } from "./lib/alarmStore";
+import type { AppPlace } from "./lib/appPlace";
 import type { AttentionItem } from "./lib/attention";
 import { markAttention } from "./lib/attentionStore";
 import { onClipboardSummon } from "./lib/clipboard";
@@ -36,6 +39,7 @@ import {
   type NewWorkspaceRequest,
   type OpenWorkspaceRequest,
   useNewWorkspaceListener,
+  useOpenPlaceListener,
   useOpenPrListener,
   useOpenWorkspaceListener,
 } from "./lib/nav";
@@ -43,7 +47,10 @@ import { notify } from "./lib/notify";
 import { onOmniChatSummon } from "./lib/omniChat";
 import { useOmniChatContext } from "./lib/omniChatContext";
 import { OmniChatOverlayProvider } from "./lib/omniChatOverlay";
+import { shouldAutoOpenSetupGuide } from "./lib/onboarding";
 import type { PrSummary } from "./lib/pr/types";
+import type { SettingsTabKey } from "./lib/settingsTabs";
+import { CHAT_TAB_SESSION_KEY } from "./lib/useChatThread";
 import { useTelegramSecurityAlerts } from "./lib/useTelegramSecurityAlerts";
 import { getWip, type WipItem } from "./lib/wip";
 
@@ -81,12 +88,20 @@ export default function App() {
   // A PTY session on the standalone Terminal tab that an attention item asked us
   // to bring into view. The terminal surface consumes and clears it.
   const [requestedTerminalSession, setRequestedTerminalSession] = useState<string | null>(null);
+  // A Settings tab asked for by a `yarvis://settings/...` link or the setup
+  // guide's Open buttons. SettingsPanel consumes and clears it.
+  const [requestedSettingsTab, setRequestedSettingsTab] = useState<SettingsTabKey | null>(null);
+  const [setupGuideOpen, setSetupGuideOpen] = useState(false);
+  const [tourOpen, setTourOpen] = useState(false);
+  const clearRequestedSettingsTab = useCallback(() => setRequestedSettingsTab(null), []);
 
   useTabShortcuts(tab, setTab);
 
   const handleOpenPr = useCallback((pr: PrSummary) => {
     setRequestedPr(pr);
     setTab("prs");
+    // A link clicked in the Omni Chat overlay would otherwise navigate behind it.
+    setOmniChatOpen(false);
   }, []);
   useOpenPrListener(handleOpenPr);
 
@@ -101,6 +116,49 @@ export default function App() {
     setTab("workspaces");
   }, []);
   useNewWorkspaceListener(handleNewWorkspace);
+
+  const startTour = useCallback(() => {
+    setOmniChatOpen(false);
+    setTourOpen(true);
+  }, []);
+
+  const openSetupGuide = useCallback(() => {
+    setOmniChatOpen(false);
+    setSetupGuideOpen(true);
+  }, []);
+
+  const handleOpenPlace = useCallback((place: AppPlace) => {
+    // A link clicked in the Omni Chat overlay would otherwise navigate behind it.
+    setOmniChatOpen(false);
+    switch (place.kind) {
+      case "setup":
+        setSetupGuideOpen(true);
+        break;
+      case "tour":
+        setTourOpen(true);
+        break;
+      case "settings":
+        setRequestedSettingsTab(place.tab);
+        setTab("settings");
+        break;
+      case "tab":
+        setTab(place.tab);
+        break;
+    }
+  }, []);
+  useOpenPlaceListener(handleOpenPlace);
+
+  // On launch, open the setup guide if it has never been closed and the
+  // database or a chat provider is missing. BootGate holds the app until the
+  // sidecar answers, so a failure here is a real one; it opens nothing, and the
+  // Help menu still reaches the guide.
+  useEffect(() => {
+    shouldAutoOpenSetupGuide()
+      .then((open) => {
+        if (open) setSetupGuideOpen(true);
+      })
+      .catch((e) => console.error("[onboarding] setup check failed:", e));
+  }, []);
 
   // Surface Telegram unlock/failed/lockout activity as OS notifications, app-wide.
   useTelegramSecurityAlerts();
@@ -206,7 +264,10 @@ export default function App() {
         case "issue":
           // The detail view re-fetches from (provider, sourceKey, externalId).
           setRequestedIssue({
-            provider: target.provider === "jira" ? "jira" : "github",
+            provider:
+              target.provider === "jira" || target.provider === "azure"
+                ? target.provider
+                : "github",
             sourceKey: target.sourceKey,
             sourceLabel: target.sourceKey,
             externalId: target.externalId,
@@ -279,13 +340,18 @@ export default function App() {
         onOpenOmniChat={openOmniChat}
         onOpenClipboard={() => setClipboardOpen(true)}
         onOpenAttention={openAttentionPanel}
+        onOpenSetupGuide={openSetupGuide}
+        onStartTour={startTour}
         attentionPending={attention !== null || ringingAlarms.length > 0}
       >
-        {/* Chat and Omni fill the region and manage their own layout; page-like
-            views scroll as a padded document. */}
-        {tab === "chat" ? (
-          <ChatPanel />
-        ) : tab === "omni" ? (
+        {/* Chat stays mounted while another tab is showing, so a turn keeps
+            streaming instead of being cancelled by the unmount. */}
+        <div className={tab === "chat" ? "h-full" : "hidden"}>
+          <ChatPanel active={tab === "chat"} sessionStorageKey={CHAT_TAB_SESSION_KEY} focusOnShow />
+        </div>
+        {/* Omni fills the region and manages its own layout; page-like views
+            scroll as a padded document. Chat is rendered above. */}
+        {tab === "chat" ? null : tab === "omni" ? (
           <OmniView />
         ) : tab === "terminal" ? (
           <TerminalTabs
@@ -326,7 +392,12 @@ export default function App() {
             {tab === "jobs" && <ScheduledJobsPanel />}
             {tab === "sessions" && <SessionsPanel />}
             {tab === "dashboard" && <Dashboard />}
-            {tab === "settings" && <SettingsPanel />}
+            {tab === "settings" && (
+              <SettingsPanel
+                requestedTab={requestedSettingsTab}
+                onRequestConsumed={clearRequestedSettingsTab}
+              />
+            )}
           </div>
         )}
       </AppShell>
@@ -355,6 +426,15 @@ export default function App() {
       <AttentionAutoClear />
 
       <AlarmTakeover />
+
+      <SetupGuide
+        open={setupGuideOpen}
+        onClose={() => setSetupGuideOpen(false)}
+        onNavigate={handleOpenPlace}
+        onStartTour={startTour}
+      />
+
+      <Tour open={tourOpen} onClose={() => setTourOpen(false)} onTabChange={setTab} />
     </OmniChatOverlayProvider>
   );
 }

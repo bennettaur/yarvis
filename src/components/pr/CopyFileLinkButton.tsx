@@ -33,6 +33,9 @@ export default function CopyFileLinkButton({
       url={prFileUrl(prUrl, prRef.provider, headSha, path)}
       subject="file link"
       title={`Copy the ${refProviderName(prRef)} link to ${path}`}
+      // This sits right next to CopyPathButton in the file list and diff
+      // header, so it needs a glyph of its own to tell the two apart.
+      icon="link"
       className={className}
     />
   );

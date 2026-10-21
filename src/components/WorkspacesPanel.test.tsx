@@ -42,6 +42,54 @@ const JUST_CREATED = {
   issues: [],
 };
 
+const WEB_REPO = {
+  id: "wr-web",
+  workspaceId: "ws-archiving",
+  repoId: "repo-web",
+  status: "ready",
+  branch: "feature",
+  existingBranch: false,
+  baseBranch: "main",
+  worktreePath: "/tmp/ws-archiving/web",
+  setupLog: null,
+  setupExitCode: null,
+  error: null,
+  createdAt: "2026-06-01T09:00:00.000Z",
+  repo: {
+    id: "repo-web",
+    name: "web",
+    owner: "octo",
+    repo: "web",
+    cloneUrl: "https://github.com/octo/web.git",
+    defaultBranch: "main",
+    primaryClonePath: "/tmp/web",
+    setupScript: null,
+    runScript: null,
+    pullIssues: false,
+    createdAt: "2026-06-01T09:00:00.000Z",
+    updatedAt: "2026-06-01T09:00:00.000Z",
+  },
+  pr: null,
+};
+
+// An archive whose teardown is still deleting the worktrees.
+const ARCHIVING = {
+  ...JUST_CREATED,
+  id: "ws-archiving",
+  name: "Archive in flight",
+  status: "archiving",
+  error: null,
+  repos: [WEB_REPO],
+};
+
+// An archive that stopped on a worktree with uncommitted work.
+const ARCHIVE_STOPPED = {
+  ...ARCHIVING,
+  id: "ws-archive-stopped",
+  name: "Archive stopped",
+  error: "one or more worktrees could not be removed",
+};
+
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
@@ -101,6 +149,8 @@ mock.module("../lib/api", () => ({
   sidecarFetch: async (path: string) => {
     if (path === "/api/workspaces") return json([EXISTING]);
     if (path === `/api/workspaces/${JUST_CREATED.id}`) return json(JUST_CREATED);
+    if (path === `/api/workspaces/${ARCHIVING.id}`) return json(ARCHIVING);
+    if (path === `/api/workspaces/${ARCHIVE_STOPPED.id}`) return json(ARCHIVE_STOPPED);
     if (path.startsWith("/api/workspaces/ws-missing")) return json({ error: "not found" }, 404);
     return json([]);
   },
@@ -126,6 +176,20 @@ describe("WorkspacesPanel", () => {
     const html = await renderToHtml(<WorkspacesPanel />);
 
     expect(html).toContain("web #12 checks failing");
+  });
+
+  it("hides the right column while an archive is deleting the worktrees", async () => {
+    const html = await renderToHtml(<WorkspacesPanel requested={{ id: ARCHIVING.id }} />);
+
+    expect(html).toContain("Removing worktrees…");
+    expect(html).not.toContain("All files");
+  });
+
+  it("keeps the right column for an archive stopped on a dirty worktree", async () => {
+    const html = await renderToHtml(<WorkspacesPanel requested={{ id: ARCHIVE_STOPPED.id }} />);
+
+    expect(html).not.toContain("Removing worktrees…");
+    expect(html).toContain("All files");
   });
 
   it("drops the selection when the workspace really is gone", async () => {

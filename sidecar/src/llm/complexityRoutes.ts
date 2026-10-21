@@ -28,7 +28,7 @@ const modelId = z
 
 const providerId = z.string().min(1).max(128);
 
-const selectionSchema = z.object({ provider: providerId, model: modelId }).nullable();
+export const selectionSchema = z.object({ provider: providerId, model: modelId }).nullable();
 
 const saveSchema = z.object({
   low: selectionSchema.optional(),

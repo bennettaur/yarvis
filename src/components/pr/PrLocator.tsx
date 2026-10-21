@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ghPrSummary } from "../../lib/pr/github";
+import { fetchPrSummary } from "../../lib/pr/api";
 import { type KnownRepo, resolvePrLocator } from "../../lib/pr/locate";
 import { refDisplayRepo, refNumber } from "../../lib/pr/ref";
 import type { PrRef, PrSummary } from "../../lib/pr/types";
@@ -45,7 +45,7 @@ export default function PrLocator({ onOpen }: { onOpen: (pr: PrSummary) => void 
   const open = async (ref: PrRef) => {
     setState({ kind: "loading" });
     try {
-      const summary = await ghPrSummary(ref);
+      const summary = await fetchPrSummary(ref);
       setInput("");
       setState({ kind: "idle" });
       onOpen(summary);

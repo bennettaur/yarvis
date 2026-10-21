@@ -1,7 +1,10 @@
 import { describe, expect, it } from "bun:test";
+import type { Config } from "../config.ts";
 import {
+  createGitHubClient,
   encodeRepoPath,
   GitHubClient,
+  type PrSummary,
   summarizeCheckItems,
   summarizeChecks,
   summarizeReviewDecision,
@@ -102,6 +105,79 @@ describe("github client", () => {
       author: "me",
       createdAt: "2025-12-30",
       updatedAt: "2026-01-01",
+    });
+  });
+
+  describe("lookupBranches", () => {
+    const summary = (number: number) => ({
+      number,
+      title: `PR ${number}`,
+      url: `https://github.com/o/r/pull/${number}`,
+      owner: "o",
+      repo: "r",
+      author: "me",
+      draft: false,
+      state: "open",
+      createdAt: "",
+      updatedAt: "",
+    });
+
+    it("adds each PR's base and head branch, leaving unresolved PRs as they were", async () => {
+      const gh = new GitHubClient(
+        "t",
+        fakeFetch({
+          "/graphql": {
+            data: {
+              pr0: { pullRequest: { baseRefName: "main", headRefName: "one" } },
+              pr1: null,
+            },
+          },
+        }),
+      );
+      const prs = await gh.lookupBranches([summary(1), summary(2)]);
+      expect(prs[0]).toMatchObject({ number: 1, baseRef: "main", headRef: "one" });
+      expect(prs[1]).toEqual(summary(2));
+    });
+
+    it("leaves a fork PR's head branch unset", async () => {
+      const gh = new GitHubClient(
+        "t",
+        fakeFetch({
+          "/graphql": {
+            data: {
+              pr0: {
+                pullRequest: { baseRefName: "main", headRefName: "main", isCrossRepository: true },
+              },
+            },
+          },
+        }),
+      );
+      const [pr] = await gh.lookupBranches([summary(1)]);
+      expect(pr?.baseRef).toBe("main");
+      expect(pr?.headRef).toBeUndefined();
+    });
+
+    it("keeps the branches it resolved when the response also carries errors", async () => {
+      const gh = new GitHubClient(
+        "t",
+        fakeFetch({
+          "/graphql": {
+            data: {
+              pr0: { pullRequest: { baseRefName: "main", headRefName: "one" } },
+              pr1: null,
+            },
+            errors: [{ message: "Could not resolve to a Repository" }],
+          },
+        }),
+      );
+      const prs = await gh.lookupBranches([summary(1), summary(2)]);
+      expect(prs[0]).toMatchObject({ baseRef: "main", headRef: "one" });
+      expect(prs[1]).toEqual(summary(2));
+    });
+
+    it("returns the PRs unchanged when the lookup fails", async () => {
+      const gh = new GitHubClient("t", fakeFetch({}));
+      expect(await gh.lookupBranches([summary(1)])).toEqual([summary(1)]);
     });
   });
 
@@ -230,6 +306,88 @@ describe("github client", () => {
     );
     const detail = await gh.prDetail("o", "r", 9);
     expect(detail).toMatchObject({ number: 9, draft: true, checks: [] });
+    expect(detail.checksUnavailable).toBeUndefined();
+  });
+
+  // A fine-grained PAT cannot be granted the Checks permission, so GitHub nulls
+  // every CheckRun in the rollup and reports each one as FORBIDDEN.
+  const forbiddenCheck = (i: number) => ({
+    type: "FORBIDDEN",
+    path: [
+      "repository",
+      "pullRequest",
+      "commits",
+      "nodes",
+      0,
+      "commit",
+      "statusCheckRollup",
+      "contexts",
+      "nodes",
+      i,
+    ],
+    message: "Resource not accessible by personal access token",
+  });
+  const detailPayload = (contexts: unknown[]) => ({
+    repository: {
+      pullRequest: {
+        number: 9,
+        title: "T",
+        state: "OPEN",
+        isDraft: false,
+        mergeable: "MERGEABLE",
+        author: { login: "me" },
+        reviewThreads: { nodes: [] },
+        commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: contexts } } } }] },
+      },
+    },
+  });
+
+  it("loads PR detail when the token may not read its checks, and says so", async () => {
+    const gh = new GitHubClient(
+      "t",
+      fakeFetch({
+        "/graphql": {
+          data: detailPayload([
+            null,
+            {
+              __typename: "StatusContext",
+              context: "ci/legacy",
+              state: "SUCCESS",
+              targetUrl: null,
+            },
+            null,
+          ]),
+          errors: [forbiddenCheck(0), forbiddenCheck(2)],
+        },
+      }),
+    );
+    const detail = await gh.prDetail("o", "r", 9);
+    expect(detail.title).toBe("T");
+    expect(detail.checksUnavailable).toBe(true);
+    // What the token could read is still shown.
+    expect(detail.checks).toEqual([
+      { name: "ci/legacy", status: "COMPLETED", conclusion: "SUCCESS", url: null },
+    ]);
+  });
+
+  it("still fails PR detail on an error outside the checks", async () => {
+    const gh = new GitHubClient(
+      "t",
+      fakeFetch({
+        "/graphql": {
+          data: detailPayload([null]),
+          errors: [
+            forbiddenCheck(0),
+            {
+              type: "FORBIDDEN",
+              path: ["repository", "pullRequest", "reviewThreads"],
+              message: "no",
+            },
+          ],
+        },
+      }),
+    );
+    await expect(gh.prDetail("o", "r", 9)).rejects.toThrow("github graphql");
   });
 
   it("reads merge methods and auto-merge state from the detail payload", () => {
@@ -845,5 +1003,57 @@ describe("github stack restack detection", () => {
     expect((await new GitHubClient("t", stackFetch(stack)).prStack("o", "r", 2)).truncated).toBe(
       false,
     );
+  });
+});
+
+describe("github endpoints", () => {
+  const recording = (urls: string[]) =>
+    (async (url: string) => {
+      urls.push(String(url));
+      return new Response(JSON.stringify({ login: "octo", data: { viewer: { login: "octo" } } }));
+    }) as unknown as typeof fetch;
+
+  it("sends REST and GraphQL requests to the configured endpoints", async () => {
+    const urls: string[] = [];
+    const gh = new GitHubClient("t", recording(urls), {
+      api: "http://127.0.0.1:4010",
+      graphql: "http://127.0.0.1:4010/graphql",
+    });
+    await gh.viewer();
+    await gh.lookupBranches([{ owner: "o", repo: "r", number: 1 } as PrSummary]);
+    expect(urls[0]).toBe("http://127.0.0.1:4010/user");
+    expect(urls[1]).toBe("http://127.0.0.1:4010/graphql");
+  });
+
+  it("sends requests to the endpoints the config overrides", async () => {
+    const original = globalThis.fetch;
+    const urls: string[] = [];
+    globalThis.fetch = recording(urls);
+    try {
+      await createGitHubClient(
+        {
+          endpoints: {
+            githubApi: "http://127.0.0.1:4010",
+            githubGraphql: "http://127.0.0.1:4011/q",
+          },
+        },
+        "t",
+      ).viewer();
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(urls[0]).toBe("http://127.0.0.1:4010/user");
+  });
+
+  it("uses github.com when the config doesn't override it", async () => {
+    const original = globalThis.fetch;
+    const urls: string[] = [];
+    globalThis.fetch = recording(urls);
+    try {
+      await createGitHubClient({} as Config, "t").viewer();
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(urls[0]).toBe("https://api.github.com/user");
   });
 });

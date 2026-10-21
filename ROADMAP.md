@@ -78,7 +78,8 @@ Status of the build against the original vision. The full V1 plan lives at
   jsdiff since Azure has no unified-diff endpoint). Clicking a diff line opens a
   composer that posts a single-line comment to the PR, and existing review
   threads render inline at their line — for both providers. A static header at
-  the top of the detail view shows a derived lifecycle status
+  the top of the detail view shows a star toggle (the same star as the list
+  rows), a derived lifecycle status
   (Draft / CI failing / Awaiting review / Ready to merge) plus a review toolbar
   that publishes a draft (GitHub `markPullRequestReadyForReview`; Azure
   `isDraft=false` PATCH), approves, or requests changes (GitHub native review
@@ -183,7 +184,9 @@ Status of the build against the original vision. The full V1 plan lives at
   store), and a management UI to search/delete (Memory tab). Reuses the
   `memories` table, typed by a `kind` column (fact, preference, note, doc, the
   three summary kinds, agent-feedback, project, decision) with corrections that
-  supersede rather than contradict.
+  supersede rather than contradict. Memories carry validity windows (expired
+  ones are flagged for re-checking, and recall can ask `asOf` a past time), and
+  recall ranks by similarity scaled by how long a memory has gone unconfirmed.
 - **Google Calendar** — desktop OAuth (`calendar.events`: read plus create, with
   no update or delete anywhere in the client or the tools) + a date-range events
   fetch backing a
@@ -240,7 +243,13 @@ Status of the build against the original vision. The full V1 plan lives at
   resolve/reopen, and delete; a completed archive deletes them all. Any file in
   the worktree also opens in an editor tab (CodeMirror, grammar from the file's
   name), whose save carries the hash it was read with so it cannot land on top
-  of what the agent session wrote in the meantime.
+  of what the agent session wrote in the meantime. The column also finds every
+  other worktree of a repo's clone inside the workspace folder — the usual shape
+  of a stack built one worktree per branch — and a picker switches All files,
+  Changed, PR checks and Stack between them without a checkout. Changed measures
+  a stacked worktree from the branch below it, so each layer shows only its own
+  changes; another worktree's PR checks are looked up on demand rather than
+  polled, and its diffs take no self-review comments.
 - **Omni Chat + keyboard navigation** — a global `Control+Shift+Space` hotkey
   (registered in the Rust core) raises a centered chat overlay over any tab; Esc
   hides it while the session keeps streaming in the background, and re-summoning
@@ -329,10 +338,20 @@ The integration is built but unexercised.
 
 ### 3. Memory & knowledge follow-ups
 The core is shipped; optional extensions remain.
-- **OpenMemory backend:** `openmemory-js` was deferred because it boots its own
-  server on import and is mid-rewrite; if its graph/temporal features become
-  worth it, run it as a standalone server and add an HTTP-backed `MemoryService`
-  (the interface already supports swapping).
+- **OpenMemory / LongMemory backend: decided against.** `openmemory-js` was
+  deferred because it booted its own server on import. Its successor,
+  LongMemory 1.0 (evaluated Oct 2026), is SQLite-only, has no delete, list or
+  kind filter, keeps the whole graph in process memory (so instances sharing a
+  database wouldn't see each other's writes), and shipped without a test suite.
+  Instead, the ideas worth having are built into the pgvector store: validity
+  windows with revalidation, `asOf` recall, and decay-weighted ranking.
+- **Recall follow-ups:** hybrid lexical + semantic ranking (Postgres full-text
+  beside the cosine search), dedup on write (restating a fact should confirm the
+  existing memory rather than add a copy), and `correct_memory` /
+  `confirm_memory` over the MCP endpoint so a coding session can revalidate an
+  expired memory too. A future-dated correction supersedes the old memory
+  straight away, so plain recall loses what holds until the change starts. The decay half-lives and floor in `memory/ranking.ts` are
+  first guesses and want tuning against real recall.
 - **Needs from you:** an embeddings provider for good-quality semantic recall —
   either a local Ollama server (no key) or a proxy/Gemini key, configured in
   Settings → Embeddings. Works offline via the hash embedder at lower quality
@@ -354,10 +373,9 @@ overnight day rollup, and the nightly transcript digest, all under
 
 ## Cross-cutting / polish / tech debt
 
-- **Packaging & distribution:** compile the Bun sidecar to a single binary
-  (`bun build --compile`) and wire the production spawn path in `sidecar.rs`
-  (`externalBin` + `extractFromBunfs` for the Agent SDK's bundled CLI); app
-  bundle + code signing.
+- **Packaging & distribution:** notarize the release bundle. `bun run
+  tauri:build` already bundles the compiled sidecar, but the nightly is only
+  ad-hoc signed.
 - **Live verification:** exercise the credential-gated paths once keys are
   entered — chat streaming + task tool-calls, GitHub queries, Gemini embeddings.
 - **Tray + autostart:** the plugins are installed but not yet wired to behaviors

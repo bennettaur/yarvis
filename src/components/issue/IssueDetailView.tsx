@@ -10,6 +10,7 @@ import { useGithubStartWork } from "../../lib/issues/useGithubStartWork";
 import { formatRelativeTime } from "../../lib/time";
 import { openExternal } from "../../lib/url";
 import CopyLinkButton from "../CopyLinkButton";
+import LoadingIndicator from "../LoadingIndicator";
 import Markdown from "../Markdown";
 
 const fieldInput =
@@ -578,7 +579,7 @@ export default function IssueDetailView({
               )}
             </div>
             {!detail ? (
-              <p className="text-sm text-zinc-500">Loading…</p>
+              <LoadingIndicator />
             ) : editingBody ? (
               <div className="space-y-2">
                 <textarea

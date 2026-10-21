@@ -2,7 +2,13 @@ import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import * as schema from "../db/schema.ts";
-import { addMessage, createSession, getMessages, listSessions } from "./service.ts";
+import {
+  addMessage,
+  createSession,
+  getMessages,
+  listSessions,
+  rewindToMessage,
+} from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -67,5 +73,31 @@ describe("chat service", () => {
       subMilliseconds.push(row!.sub);
     }
     expect(subMilliseconds.some((sub) => sub !== 0)).toBe(true);
+  });
+
+  it("rewinds to a user message, dropping it and everything after", async () => {
+    const session = await createSession(db, "Rewind");
+    await addMessage(db, { sessionId: session.id, role: "user", content: "one" });
+    await addMessage(db, { sessionId: session.id, role: "assistant", content: "reply one" });
+    const second = await addMessage(db, { sessionId: session.id, role: "user", content: "two" });
+    await addMessage(db, { sessionId: session.id, role: "assistant", content: "reply two" });
+
+    expect(await rewindToMessage(db, session.id, second.id)).toBe(true);
+
+    const messages = await getMessages(db, session.id);
+    expect(messages.map((m) => m.content)).toEqual(["one", "reply one"]);
+  });
+
+  it("refuses to rewind to an assistant message or another session's message", async () => {
+    const session = await createSession(db, "Mine");
+    const other = await createSession(db, "Other");
+    await addMessage(db, { sessionId: session.id, role: "user", content: "question" });
+    const reply = await addMessage(db, { sessionId: session.id, role: "assistant", content: "a" });
+    const foreign = await addMessage(db, { sessionId: other.id, role: "user", content: "theirs" });
+
+    expect(await rewindToMessage(db, session.id, reply.id)).toBe(false);
+    expect(await rewindToMessage(db, session.id, foreign.id)).toBe(false);
+    expect(await getMessages(db, session.id)).toHaveLength(2);
+    expect(await getMessages(db, other.id)).toHaveLength(1);
   });
 });

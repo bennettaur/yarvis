@@ -1,5 +1,5 @@
 import { clipboardSafeUrl } from "../lib/clipboard";
-import CopyButton from "./CopyButton";
+import CopyButton, { type CopyIconKind } from "./CopyButton";
 
 /**
  * Copies a provider-supplied link — a PR, a check, an issue. Renders nothing
@@ -11,6 +11,7 @@ export default function CopyLinkButton({
   url,
   subject,
   title,
+  icon,
   className = "",
 }: {
   url: string | null | undefined;
@@ -18,10 +19,14 @@ export default function CopyLinkButton({
   subject: string;
   /** Overrides the tooltip and accessible name, e.g. to name the target. */
   title?: string;
+  /** Idle glyph; pass "link" where this sits next to a copy-path button. */
+  icon?: CopyIconKind;
   /** Extra classes from the host, e.g. hover-reveal in a dense list row. */
   className?: string;
 }) {
   const safe = clipboardSafeUrl(url);
   if (!safe) return null;
-  return <CopyButton value={safe} subject={subject} title={title} className={className} />;
+  return (
+    <CopyButton value={safe} subject={subject} title={title} icon={icon} className={className} />
+  );
 }

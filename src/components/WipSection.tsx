@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getWipConfig, saveWipConfig, type WipConfig, type WipSourcesConfig } from "../lib/wip";
+import LoadingIndicator from "./LoadingIndicator";
 
 /** The toggleable sources, in display order, with human labels. */
 const SOURCE_FIELDS: { key: keyof WipSourcesConfig; label: string; hint: string }[] = [
@@ -59,7 +60,7 @@ export default function WipSection() {
   if (error && !config) {
     return <p className="text-sm text-red-400">Couldn't load config: {error}</p>;
   }
-  if (!config) return <p className="text-sm text-zinc-500">Loading…</p>;
+  if (!config) return <LoadingIndicator />;
 
   const setSource = (key: keyof WipSourcesConfig, value: boolean) => {
     setSavedAt(false);

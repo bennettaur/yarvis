@@ -41,7 +41,22 @@ export interface Settings {
   telegramOtpWindowMinutes: number | null;
   /** The window that applies while `telegramOtpWindowMinutes` is null. */
   defaultTelegramOtpWindowMinutes: number;
+  /** Which store holds the secrets blob; null means the macOS Keychain. */
+  secretBackend: SecretBackend | null;
+  /** 1Password vault holding the secrets item. Kept even while the Keychain is
+   *  selected, so switching back doesn't mean retyping it. */
+  onePasswordVault: string | null;
+  /** Title of the 1Password item holding the secrets blob. */
+  onePasswordItem: string | null;
+  /** The colour theme's key (`lib/theme`); null means the default theme. */
+  colorTheme: string | null;
+  /** Font size every terminal renders at (`lib/terminalFont`); null means the
+   *  default size. */
+  terminalFontSize: number | null;
 }
+
+/** Stores the secrets blob can live in; mirrors `secret_store.rs`. */
+export type SecretBackend = "keychain" | "onepassword";
 
 export const getSettings = () => invoke<Settings>("get_settings");
 
@@ -55,6 +70,16 @@ export const setMaxPtySessions = (value: number | null) =>
  * started — no restart. Rejects a value spanning more than one line. */
 export const setAgent = (name: string | null, command: string | null) =>
   invoke<Settings>("set_agent", { name, command });
+
+/** Stores the colour theme; `null` clears it back to the default. The webview
+ * applies a theme as it is chosen, so this only makes it survive a restart. */
+export const saveColorTheme = (value: string | null) =>
+  invoke<Settings>("set_color_theme", { value });
+
+/** Stores the terminal font size; `null` clears it back to the default. Like
+ * the theme, it is already applied by the time this is called. */
+export const saveTerminalFontSize = (value: number | null) =>
+  invoke<Settings>("set_terminal_font_size", { value });
 
 /**
  * The settings below are injected into the sidecar's environment at spawn
@@ -77,3 +102,34 @@ export const setGoogleClientId = (value: string | null) =>
 /** Rejects zero; `null` clears back to `defaultTelegramOtpWindowMinutes`. */
 export const setTelegramOtpWindowMinutes = (value: number | null) =>
   invoke<Settings>("set_telegram_otp_window_minutes", { value });
+
+/** What became of the secrets during a backend switch. */
+export type Copied =
+  /** The selection was already what was asked for, so nothing moved. */
+  | "unchanged"
+  /** They were carried into the new store. */
+  | "secrets"
+  /** The old store held nothing to carry. */
+  | "nothingToCopy"
+  /** The new store already held secrets and was left exactly as it was — so
+   *  the app is now running on a different set of credentials. */
+  | "targetAlreadyHadSecrets";
+
+export interface BackendSwitch {
+  settings: Settings;
+  copied: Copied;
+}
+
+/**
+ * Points the app at a different secret store, copying the stored secrets into
+ * it first. Rejects when the new store can't be reached, leaving the current
+ * one selected — so a failure here is safe to show and retry. The old store's
+ * copy is left behind untouched.
+ *
+ * `vault` and `item` are required for `"onepassword"` and ignored otherwise.
+ */
+export const setSecretBackend = (
+  backend: SecretBackend,
+  vault: string | null,
+  item: string | null,
+) => invoke<BackendSwitch>("set_secret_backend", { backend, vault, item });

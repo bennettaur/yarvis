@@ -13,6 +13,7 @@ import { useJiraStartWork } from "../../lib/jira/useJiraStartWork";
 import { formatRelativeTime } from "../../lib/time";
 import { openExternal } from "../../lib/url";
 import CopyLinkButton from "../CopyLinkButton";
+import LoadingIndicator from "../LoadingIndicator";
 import Markdown from "../Markdown";
 import JiraRepoPickerModal from "./JiraRepoPickerModal";
 import { StatusBadge } from "./jiraStatus";
@@ -478,7 +479,7 @@ export default function JiraIssueDetailView({
               )}
             </div>
             {!detail ? (
-              <p className="text-sm text-zinc-500">Loading…</p>
+              <LoadingIndicator />
             ) : editingDesc ? (
               <div className="space-y-2">
                 <textarea

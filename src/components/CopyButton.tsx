@@ -6,6 +6,9 @@ export const FEEDBACK_MS = 1500;
 
 type CopyState = "idle" | "copied" | "failed";
 
+/** Which glyph the idle button shows. "link" marks a copy that yields a URL. */
+export type CopyIconKind = "copy" | "link";
+
 /**
  * What the button says in each state. `subject` names the thing being copied
  * ("path", "PR link", "checks"), so the confirmation reads as a sentence about
@@ -37,6 +40,7 @@ export default function CopyButton({
   value,
   subject,
   title,
+  icon = "copy",
   className = "",
 }: {
   value: string | (() => string);
@@ -44,6 +48,8 @@ export default function CopyButton({
   subject: string;
   /** Overrides the tooltip and accessible name, e.g. to include the value. */
   title?: string;
+  /** Idle glyph. Set "link" where a copy-path button sits next to this one. */
+  icon?: CopyIconKind;
   /** Extra classes from the host, e.g. hover-reveal in a dense list row. */
   className?: string;
 }) {
@@ -93,6 +99,8 @@ export default function CopyButton({
           <CheckIcon />
         ) : copyState === "failed" ? (
           <AlertIcon />
+        ) : icon === "link" ? (
+          <LinkIcon />
         ) : (
           <CopyIcon />
         )}
@@ -112,6 +120,15 @@ function CopyIcon() {
     <IconFrame>
       <path d="M3.75 10.25h-.5a1.5 1.5 0 0 1-1.5-1.5v-5.5a1.5 1.5 0 0 1 1.5-1.5h5.5a1.5 1.5 0 0 1 1.5 1.5v.5" />
       <rect x="5.75" y="5.75" width="8.5" height="8.5" rx="1.5" />
+    </IconFrame>
+  );
+}
+
+function LinkIcon() {
+  return (
+    <IconFrame>
+      <path d="M6.75 9.25a2.5 2.5 0 0 0 3.5 0l2.5-2.5a2.5 2.5 0 0 0-3.5-3.5l-.75.75" />
+      <path d="M9.25 6.75a2.5 2.5 0 0 0-3.5 0l-2.5 2.5a2.5 2.5 0 0 0 3.5 3.5l.75-.75" />
     </IconFrame>
   );
 }

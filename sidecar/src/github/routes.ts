@@ -5,7 +5,7 @@ import { getDb } from "../db/client.ts";
 import { emitEvent } from "../events/service.ts";
 import { retireGuide } from "../pr/guides.ts";
 import { refKey } from "../pr/types.ts";
-import { GitHubClient } from "./client.ts";
+import { createGitHubClient } from "./client.ts";
 import { getGithubPrConfig, saveGithubPrConfig } from "./config.ts";
 import { getReviewingList } from "./reviewing.ts";
 import {
@@ -128,7 +128,7 @@ export function createGithubRoutes(config: Config): Hono {
 
   const db = () => getDb(config.databaseUrl as string).db;
   const client = () =>
-    config.secrets.githubToken ? new GitHubClient(config.secrets.githubToken) : null;
+    config.secrets.githubToken ? createGitHubClient(config, config.secrets.githubToken) : null;
 
   // --- Live GitHub queries (require a token) ---
 
@@ -148,7 +148,7 @@ export function createGithubRoutes(config: Config): Hono {
     const q = c.req.query("q");
     if (!q) return c.json({ error: "missing q" }, 400);
     try {
-      return c.json(await gh.search(q));
+      return c.json(await gh.lookupBranches(await gh.search(q)));
     } catch (e) {
       return c.json({ error: String(e) }, 502);
     }

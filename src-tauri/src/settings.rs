@@ -3,10 +3,14 @@
 //! Non-secret preferences, persisted as `settings.json` in `~/.yarvis` — the
 //! same home-directory convention the sidecar uses for `~/.yarvis/agents` —
 //! written with an atomic rename. Secrets belong in the Keychain
-//! (`keychain.rs`) and settings the sidecar owns belong in its database; this
-//! is only for values the core itself reads or injects into the sidecar's
-//! environment, so the frontend can change them without the core having to ask
-//! the sidecar.
+//! (`keychain.rs`); the fields here are only values the core itself reads or
+//! injects into the sidecar's environment, so the frontend can change them
+//! without the core having to ask the sidecar.
+//!
+//! The core owns only these fields, not the file: the sidecar keeps its own
+//! top-level sections in the same document (`sidecar/src/settings/store.ts`),
+//! so a save writes the core's fields over the document on disk and carries
+//! every other key across unchanged.
 //!
 //! The file is shared across `dev:instance` copies the same way the Keychain
 //! item is, so every setter re-reads it before merging in its one field rather
@@ -26,13 +30,15 @@
 //! never touches the Keychain again for this purpose (`keychain_settings_migrated`).
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
 use crate::keychain;
+use crate::onepassword;
+use crate::secret_store::{self, Store, KEYCHAIN, ONEPASSWORD};
 
 /// The persisted settings document. Every field is optional and absent means
 /// "use the built-in default", so a settings file written by an older build
@@ -65,6 +71,22 @@ pub struct Settings {
     /// the allowlist is then the bot's *only* access-control check; a plain
     /// file has no per-item authorization the way a Keychain entry does.
     pub telegram_otp_window_minutes: Option<u32>,
+    /// Which store holds the secrets blob: `"onepassword"`, or the macOS
+    /// Keychain for anything else including unset. See `secret_store.rs`.
+    pub secret_backend: Option<String>,
+    /// 1Password vault holding the secrets item; only read while
+    /// `secret_backend` is `"onepassword"`.
+    pub one_password_vault: Option<String>,
+    /// Title of the 1Password item holding the secrets blob.
+    pub one_password_item: Option<String>,
+    /// The app's colour theme, chosen in Settings → Appearance. Only the
+    /// webview reads it, which maps a name it doesn't know to its default
+    /// (`lib/theme.ts`), so the core stores it as plain text.
+    pub color_theme: Option<String>,
+    /// Font size every terminal renders at. The webview clamps it to the range
+    /// it supports on read (`lib/terminalFont.ts`), so a hand edit can't push
+    /// it out of bounds.
+    pub terminal_font_size: Option<u32>,
     /// Set once [`migrate_keychain_settings`] has run, so steady-state startup
     /// never re-reads the Keychain to check for values that can no longer be
     /// there — the whole point of the migration is one Keychain access, not
@@ -138,7 +160,17 @@ fn migrate_keychain_settings(state: &SettingsState) {
     if state.snapshot().keychain_settings_migrated == Some(true) {
         return;
     }
-    let root = keychain::read_root();
+    // Pinned to the Keychain rather than the configured store: this is about
+    // values a *past* build wrote to the Keychain, so routing it through the
+    // front door would have a fresh install set to 1Password create an item
+    // before the user has stored anything in it.
+    let root = match keychain::read_root_from(&Store::Keychain) {
+        Ok(root) => root,
+        Err(e) => {
+            eprintln!("[settings] skipping Keychain migration: {e}");
+            return;
+        }
+    };
     let mut settings = state.snapshot();
     let migrated = apply_legacy_migration(&mut settings, &root);
     settings.keychain_settings_migrated = Some(true);
@@ -162,7 +194,7 @@ fn migrate_keychain_settings(state: &SettingsState) {
             obj.remove(*key);
         }
     }
-    if let Err(e) = keychain::write_root(&new_root) {
+    if let Err(e) = keychain::write_root_to(&Store::Keychain, &new_root) {
         eprintln!(
             "[settings] migrated settings saved, but failed to clear them from the Keychain: {e}"
         );
@@ -194,13 +226,38 @@ impl SettingsState {
             .unwrap_or_default()
     }
 
+    /// The whole document, sidecar sections included, with the same leniency
+    /// as [`Self::read_from_disk`]: a file that isn't a JSON object reads as
+    /// empty, so a save replaces it as it always has.
+    fn read_document(path: &std::path::Path) -> serde_json::Map<String, Value> {
+        match std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        {
+            Some(Value::Object(document)) => document,
+            _ => serde_json::Map::new(),
+        }
+    }
+
     /// Persists the current settings, reporting failure to the caller — unlike
     /// the alarm store this mirrors, every write here is one the user asked for
     /// and is told about, so a silent failure would report a change as saved
     /// that then reverts on the next launch.
+    ///
+    /// The sidecar keeps its own top-level sections in this file
+    /// (`sidecar/src/settings/store.ts`), which `Settings` doesn't model, so the
+    /// save overlays the core's fields onto the document on disk rather than
+    /// replacing it. Every core field is written, `None` as `null`, so clearing
+    /// one overwrites the value on disk instead of leaving it behind.
     fn save(&self) -> Result<(), String> {
         let settings = self.snapshot();
-        let json = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+        let Value::Object(fields) = serde_json::to_value(&settings).map_err(|e| e.to_string())?
+        else {
+            return Err("settings did not serialize to an object".to_string());
+        };
+        let mut document = Self::read_document(&self.path);
+        document.extend(fields);
+        let json = serde_json::to_string_pretty(&document).map_err(|e| e.to_string())?;
         // Atomic write: serialize to a sibling file then rename over the target
         // so a crash mid-write can't leave settings.json truncated.
         let tmp = self.path.with_extension("json.tmp");
@@ -318,6 +375,121 @@ impl SettingsState {
         }
         self.save()
     }
+
+    /// Stores the terminal font size, or clears it back to the webview's
+    /// default with `None`. Zero is rejected for the same reason as the OTP
+    /// window: it can only be a bug, never a choice.
+    fn set_terminal_font_size(&self, value: Option<u32>) -> Result<(), String> {
+        if value == Some(0) {
+            return Err("the terminal font size must be at least 1".to_string());
+        }
+        {
+            let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
+            *settings = Self::read_from_disk(&self.path);
+            settings.terminal_font_size = value;
+        }
+        self.save()
+    }
+
+    /// Points the app at a different secret store, carrying the existing
+    /// secrets across.
+    ///
+    /// The order is the whole of the safety here: reach the new store, copy the
+    /// blob into it, and only then persist the selection. Reversed, a store
+    /// that turns out to be unreachable leaves the app pointing at nothing
+    /// while its own error message is the only clue. The old store's copy is
+    /// deliberately left in place — this is a switch, not a move, and a user
+    /// who mistypes a vault has somewhere to switch back to.
+    fn set_secret_backend(
+        &self,
+        backend: &str,
+        vault: Option<String>,
+        item: Option<String>,
+    ) -> Result<Copied, String> {
+        let vault = non_blank(vault);
+        let item = non_blank(item);
+        let target = secret_store::store_from(Some(backend), vault.as_deref(), item.as_deref())?;
+        // The store this instance is leaving, derived from this state's own
+        // file rather than `secret_store::active()`'s global, so the method
+        // cannot disagree with the path it will write the selection back to.
+        let settings = Self::read_from_disk(&self.path);
+        let current = secret_store::store_from(
+            settings.secret_backend.as_deref(),
+            settings.one_password_vault.as_deref(),
+            settings.one_password_item.as_deref(),
+        )
+        .unwrap_or(Store::Keychain);
+        // Re-saving the same selection is not a switch: there is nothing to
+        // probe and nothing to carry, and reporting it as a copy that found
+        // nothing would tell a user with a full store that it was empty.
+        let copied = if target == current {
+            Copied::Unchanged
+        } else {
+            if let Store::OnePassword(item_ref) = &target {
+                onepassword::probe(item_ref)?;
+            }
+            copy_secrets(&current, &target)?
+        };
+        {
+            let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
+            *settings = Self::read_from_disk(&self.path);
+            settings.secret_backend = target.backend_setting().map(str::to_string);
+            // Kept even when switching back to the Keychain, so returning to
+            // 1Password doesn't mean retyping the vault and item.
+            if vault.is_some() {
+                settings.one_password_vault = vault;
+            }
+            if item.is_some() {
+                settings.one_password_item = item;
+            }
+        }
+        self.save()?;
+        Ok(copied)
+    }
+}
+
+/// What [`copy_secrets`] did, so the caller can say so rather than leaving the
+/// user to infer it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Copied {
+    /// The selection was already what was asked for, so nothing moved.
+    Unchanged,
+    /// The secrets were carried into the new store.
+    Secrets,
+    /// The old store held nothing to carry.
+    NothingToCopy,
+    /// The new store already held secrets and was left exactly as it was.
+    TargetAlreadyHadSecrets,
+}
+
+/// True when `root` carries at least one entry.
+fn has_secrets(root: &Value) -> bool {
+    root.as_object().map(|o| !o.is_empty()).unwrap_or(false)
+}
+
+/// Copies the secrets blob from `from` into `to`, unless `to` is already
+/// occupied — its contents are something the user put there, and overwriting
+/// them would lose whatever exists only in that copy.
+///
+/// Occupancy is judged on the *raw* stored text, not on the parsed root:
+/// `read_root_from` reads anything unparseable as an empty object, so a
+/// 1Password note the user wrote by hand — an item they can see and edit,
+/// unlike the Keychain's — would otherwise look empty and be overwritten.
+fn copy_secrets(from: &Store, to: &Store) -> Result<Copied, String> {
+    let occupied = to
+        .read()
+        .map_err(|e| format!("could not read secrets from {}: {e}", to.label()))?
+        .is_some_and(|raw| !raw.trim().is_empty());
+    if occupied {
+        return Ok(Copied::TargetAlreadyHadSecrets);
+    }
+    let source = keychain::read_root_from(from)?;
+    if !has_secrets(&source) {
+        return Ok(Copied::NothingToCopy);
+    }
+    keychain::write_root_to(to, &source)?;
+    Ok(Copied::Secrets)
 }
 
 /// The trimmed value, or `None` when it is absent or blank — an emptied field in
@@ -366,12 +538,34 @@ fn migrate_legacy_app_data_file(app: &AppHandle, new_path: &PathBuf) {
     }
 }
 
+/// Path of the settings file, published once `init` has run so
+/// [`from_disk`] can reach it without an `AppHandle`.
+static SETTINGS_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+/// The settings as they are on disk right now, or defaults before `init` has
+/// run. `secret_store::active` reads through this on every access rather than
+/// caching, so a backend switched in one `dev:instance` copy is honoured by the
+/// others without a restart.
+pub fn from_disk() -> Settings {
+    SETTINGS_PATH
+        .get()
+        .map(|path| SettingsState::read_from_disk(path))
+        .unwrap_or_default()
+}
+
 /// Loads persisted settings into managed state and runs the Keychain
 /// migration. Call from `setup`.
 pub fn init(app: &AppHandle) -> Result<(), String> {
     let dir = yarvis_dir(app)?;
     let path = dir.join("settings.json");
     migrate_legacy_app_data_file(app, &path);
+    // Must stay ahead of anything that can reach `keychain::read_root`: until
+    // this is set, `secret_store::active` sees default settings and answers
+    // "Keychain", so a 1Password user would silently read — and then write —
+    // the wrong store.
+    if SETTINGS_PATH.set(path.clone()).is_err() {
+        eprintln!("[settings] init ran twice; the first settings path stands");
+    }
     let state = SettingsState::load(path);
     migrate_keychain_settings(&state);
     app.manage(state);
@@ -500,9 +694,65 @@ pub fn set_telegram_otp_window_minutes(
     Ok(state.snapshot().into())
 }
 
+/// Sets the colour theme, or clears it back to the default on `None`/blank.
+/// Applied by the webview as it is chosen; this only makes it survive a restart.
+#[tauri::command]
+pub fn set_color_theme(
+    state: tauri::State<'_, SettingsState>,
+    value: Option<String>,
+) -> Result<SettingsView, String> {
+    state.set_text_field(value, |s| &mut s.color_theme)?;
+    Ok(state.snapshot().into())
+}
+
+/// Sets the terminal font size, or clears it back to the default with `None`.
+/// See `SettingsState::set_terminal_font_size`.
+#[tauri::command]
+pub fn set_terminal_font_size(
+    state: tauri::State<'_, SettingsState>,
+    value: Option<u32>,
+) -> Result<SettingsView, String> {
+    state.set_terminal_font_size(value)?;
+    Ok(state.snapshot().into())
+}
+
+/// Points the app at the macOS Keychain or at a 1Password item, copying the
+/// stored secrets into the new store first. See
+/// `SettingsState::set_secret_backend` for the ordering and what is rejected.
+#[tauri::command(async)]
+pub fn set_secret_backend(
+    state: tauri::State<'_, SettingsState>,
+    backend: String,
+    vault: Option<String>,
+    item: Option<String>,
+) -> Result<BackendSwitch, String> {
+    if backend != KEYCHAIN && backend != ONEPASSWORD {
+        return Err(format!("unknown secret backend: {backend}"));
+    }
+    let copied = state.set_secret_backend(&backend, vault, item)?;
+    Ok(BackendSwitch {
+        settings: state.snapshot().into(),
+        copied,
+    })
+}
+
+/// The result of a backend switch: the new settings, plus what became of the
+/// secrets. The second half is not cosmetic — a switch onto an item that
+/// already held secrets leaves the app authenticating with a *different* set
+/// of credentials, which the user has no other way to notice.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackendSwitch {
+    settings: SettingsView,
+    copied: Copied,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{apply_legacy_migration, Settings, SettingsState, SettingsView};
+    use super::{
+        apply_legacy_migration, copy_secrets, Copied, Settings, SettingsState, SettingsView,
+    };
+    use crate::secret_store::{MemoryStore, Store};
     use serde_json::json;
 
     /// A settings store over a unique path under the temp dir, so tests touch a
@@ -599,6 +849,11 @@ mod tests {
         assert!(json["azureDevopsOrgUrl"].is_null());
         assert!(json["telegramOtpWindowMinutes"].is_null());
         assert_eq!(json["defaultTelegramOtpWindowMinutes"], 120);
+        assert!(json["secretBackend"].is_null());
+        assert!(json["onePasswordVault"].is_null());
+        assert!(json["onePasswordItem"].is_null());
+        assert!(json["colorTheme"].is_null());
+        assert!(json["terminalFontSize"].is_null());
     }
 
     #[test]
@@ -676,6 +931,26 @@ mod tests {
             .unwrap();
 
         assert_eq!(store.snapshot().azure_devops_org_url, None);
+    }
+
+    #[test]
+    fn a_stored_appearance_survives_a_reload() {
+        let store = temp_store("appearance-round-trip");
+        store
+            .set_text_field(Some("palenight".to_string()), |s| &mut s.color_theme)
+            .unwrap();
+        store.set_terminal_font_size(Some(18)).unwrap();
+
+        let reloaded = SettingsState::load(store.path.clone()).snapshot();
+        assert_eq!(reloaded.color_theme.as_deref(), Some("palenight"));
+        assert_eq!(reloaded.terminal_font_size, Some(18));
+    }
+
+    #[test]
+    fn a_zero_terminal_font_size_is_rejected_and_nothing_is_stored() {
+        let store = temp_store("terminal-font-size-zero");
+        assert!(store.set_terminal_font_size(Some(0)).is_err());
+        assert_eq!(store.snapshot().terminal_font_size, None);
     }
 
     #[test]
@@ -791,5 +1066,144 @@ mod tests {
 
         let reloaded = SettingsState::load(store.path.clone());
         assert_eq!(reloaded.snapshot().keychain_settings_migrated, Some(true));
+    }
+
+    fn read_document(store: &SettingsState) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(&store.path).unwrap()).unwrap()
+    }
+
+    /// The sidecar keeps its own sections in this same file
+    /// (`sidecar/src/settings/store.ts`), so a core save must carry them across.
+    #[test]
+    fn a_save_keeps_the_sections_the_sidecar_owns() {
+        let store = temp_store("keeps-sidecar-sections");
+        let providers = json!({ "litellm": { "baseUrl": "http://localhost:4000" } });
+        std::fs::write(
+            &store.path,
+            json!({ "maxPtySessions": 5, "customProviders": providers }).to_string(),
+        )
+        .unwrap();
+
+        store.set_max_pty_sessions(Some(10)).unwrap();
+
+        let doc = read_document(&store);
+        assert_eq!(doc["customProviders"], providers);
+        assert_eq!(doc["maxPtySessions"], 10);
+    }
+
+    #[test]
+    fn a_cleared_field_does_not_keep_its_value_from_disk() {
+        let store = temp_store("cleared-over-disk");
+        std::fs::write(
+            &store.path,
+            json!({ "jiraEmail": "me@example.com", "customProviders": {} }).to_string(),
+        )
+        .unwrap();
+
+        store.set_text_field(None, |s| &mut s.jira_email).unwrap();
+
+        let doc = read_document(&store);
+        assert!(doc["jiraEmail"].is_null(), "{doc}");
+        assert_eq!(doc["customProviders"], json!({}));
+    }
+
+    #[test]
+    fn a_missing_file_saves_as_just_the_core_fields() {
+        let store = temp_store("missing-file");
+
+        store.set_max_pty_sessions(Some(3)).unwrap();
+
+        let doc = read_document(&store);
+        assert_eq!(doc["maxPtySessions"], 3);
+        assert_eq!(
+            doc,
+            serde_json::to_value(SettingsState::load(store.path.clone()).snapshot()).unwrap()
+        );
+    }
+
+    /// The switch carries the secrets when the new store has room for them.
+    #[test]
+    fn an_empty_target_receives_the_source_blob() {
+        let source = MemoryStore::holding(r#"{"github_token":"t"}"#);
+        let target = MemoryStore::empty();
+
+        let copied = copy_secrets(&Store::Memory(source), &Store::Memory(target.clone())).unwrap();
+
+        assert_eq!(copied, Copied::Secrets);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&target.contents().unwrap()).unwrap(),
+            json!({ "github_token": "t" })
+        );
+    }
+
+    #[test]
+    fn a_first_run_with_nothing_stored_copies_nothing() {
+        let target = MemoryStore::empty();
+
+        let copied = copy_secrets(
+            &Store::Memory(MemoryStore::empty()),
+            &Store::Memory(target.clone()),
+        )
+        .unwrap();
+
+        assert_eq!(copied, Copied::NothingToCopy);
+        assert!(target.writes().is_empty());
+    }
+
+    #[test]
+    fn a_target_that_already_holds_secrets_is_left_alone() {
+        let target = MemoryStore::holding(r#"{"github_token":"theirs"}"#);
+
+        let copied = copy_secrets(
+            &Store::Memory(MemoryStore::holding(r#"{"github_token":"ours"}"#)),
+            &Store::Memory(target.clone()),
+        )
+        .unwrap();
+
+        assert_eq!(copied, Copied::TargetAlreadyHadSecrets);
+        assert!(target.writes().is_empty());
+    }
+
+    /// Occupancy is judged on the raw stored text: a 1Password note the user
+    /// wrote by hand doesn't parse as JSON, and reading it as an empty object
+    /// would have the copy overwrite what they wrote.
+    #[test]
+    fn a_target_holding_text_we_did_not_write_is_left_alone() {
+        let target = MemoryStore::holding("my recovery codes");
+
+        let copied = copy_secrets(
+            &Store::Memory(MemoryStore::holding(r#"{"github_token":"ours"}"#)),
+            &Store::Memory(target.clone()),
+        )
+        .unwrap();
+
+        assert_eq!(copied, Copied::TargetAlreadyHadSecrets);
+        assert_eq!(target.contents().unwrap(), "my recovery codes");
+    }
+
+    /// Verify-then-copy-then-persist: a target that can't be reached must not
+    /// leave the app pointed at it.
+    #[test]
+    fn an_unreachable_target_is_reported_and_copies_nothing() {
+        let source = MemoryStore::holding(r#"{"github_token":"t"}"#);
+
+        let err = copy_secrets(
+            &Store::Memory(source),
+            &Store::Memory(MemoryStore::unreadable()),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("the fake store"), "{err}");
+    }
+
+    #[test]
+    fn a_target_that_cannot_be_written_is_reported() {
+        let source = MemoryStore::holding(r#"{"github_token":"t"}"#);
+
+        assert!(copy_secrets(
+            &Store::Memory(source),
+            &Store::Memory(MemoryStore::unwritable()),
+        )
+        .is_err());
     }
 }

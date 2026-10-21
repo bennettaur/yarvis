@@ -1,10 +1,15 @@
+import { createHash } from "node:crypto";
 import { type Tool, type ToolExecutionOptions, tool } from "ai";
 import { z } from "zod";
-import { listRegistryTools, searchRegistry } from "../agentTools/store.ts";
+import { builtinToolIds, syncBuiltins } from "../agentTools/registry.ts";
+import { listRegistryTools, type RegistryTool, searchRegistry } from "../agentTools/store.ts";
+import type { ToolCallReviewer } from "../chat/toolReview.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
+import { describeError, redactSecrets } from "../llm/errors.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { APPROVAL_TIMEOUT_MS, waitForApproval } from "./approvals.ts";
+import { splitCallReason, withCallReason } from "./callReason.ts";
 import { getMcpManager, type McpClientTool } from "./connectionManager.ts";
 import { activeMounted, mountTools, unmountAll, unmountTools } from "./mountedTools.ts";
 
@@ -14,18 +19,46 @@ import { activeMounted, mountTools, unmountAll, unmountTools } from "./mountedTo
  * the per-request assembly of the full tool set + the policy-driven active set.
  */
 
-/** A registry id maps to the model-facing tool key: built-ins use their bare
- * name; MCP tools use the full registry id. */
-function idToKey(id: string): string {
-  return id.startsWith("builtin:") ? id.slice("builtin:".length) : id;
+/** Bedrock and OpenAI reject tool names over 64 characters or outside `[A-Za-z0-9_-]`. */
+const MAX_TOOL_KEY_LENGTH = 64;
+
+/**
+ * 48 bits, so matching another tool's key takes brute force far beyond what an
+ * MCP server could manage, while leaving 47 characters for the tool's name.
+ */
+const KEY_DIGEST_HEX_CHARS = 12;
+
+/**
+ * The model-facing tool key for a registry id. Built-ins use their bare name.
+ * An MCP tool is `mcp_<hash>_<toolName>`, with the name made provider-safe and
+ * cut to fit. The hash is over the whole registry id and stands in for the
+ * server id, so keys stay distinct across servers and for names that differ
+ * only past the cut or in a replaced character.
+ */
+export function modelToolKey(id: string): string {
+  if (id.startsWith("builtin:")) return id.slice("builtin:".length);
+  const toolName = id.split(":").slice(2).join(":");
+  const digest = createHash("sha256").update(id).digest("hex").slice(0, KEY_DIGEST_HEX_CHARS);
+  const safeName = toolName.replace(/[^A-Za-z0-9_-]/g, "_");
+  return `mcp_${digest}_${safeName}`.slice(0, MAX_TOOL_KEY_LENGTH);
 }
 
 export interface ApprovalHooks {
-  /** Emits an approval request to the client (e.g. over SSE). */
-  onRequest: (info: { toolCallId: string; id: string; args: unknown }) => Promise<void>;
+  /**
+   * Emits an approval request to the client (e.g. over SSE). `reason` is the
+   * model's own account of why it is making the call.
+   */
+  onRequest: (info: {
+    toolCallId: string;
+    id: string;
+    args: unknown;
+    reason: string | null;
+  }) => Promise<void>;
   /** Aborted when the client disconnects, so pending approvals don't hang. */
   signal?: AbortSignal;
 }
+
+const STOPPED = { denied: true, message: "The user stopped this turn." };
 
 /**
  * Wraps a tool so that calling it first requires explicit user approval. On
@@ -35,18 +68,42 @@ export interface ApprovalHooks {
  * Every MCP tool goes through this because it is third-party code. A built-in
  * goes through it only when the *turn* is one the user didn't proof-read — see
  * `chat/destructiveTools.ts`.
+ *
+ * A `reviewer` (auto mode) is asked first and can only approve: anything short
+ * of its yes still asks the user.
  */
 export function wrapToolWithApproval(
   id: string,
   t: Tool | McpClientTool,
   hooks: ApprovalHooks,
+  reviewer?: ToolCallReviewer,
 ): Tool {
   const original = (t as McpClientTool).execute;
   if (!original) return t as unknown as Tool;
+  const run = (args: unknown, opts: ToolExecutionOptions<unknown>) =>
+    (original as (a: unknown, o: ToolExecutionOptions<unknown>) => unknown)(args, opts);
+  const reasoned = withCallReason(t as Tool);
   const wrapped = {
-    ...t,
-    async execute(args: unknown, opts: ToolExecutionOptions<unknown>) {
-      await hooks.onRequest({ toolCallId: opts.toolCallId, id, args });
+    ...reasoned.tool,
+    async execute(input: unknown, opts: ToolExecutionOptions<unknown>) {
+      const { reason, args } = (await reasoned.takesReason())
+        ? splitCallReason(input)
+        : { reason: null, args: input };
+      const autoApproved = reviewer
+        ? await reviewer({
+            id,
+            description: typeof t.description === "string" ? t.description : undefined,
+            args,
+            reason,
+            messages: opts.messages,
+            signal: hooks.signal,
+          })
+        : false;
+      // A review takes long enough for the user to stop the turn meanwhile. A
+      // stopped turn neither runs the call nor raises a prompt nobody can answer.
+      if (hooks.signal?.aborted) return STOPPED;
+      if (autoApproved) return run(args, opts);
+      await hooks.onRequest({ toolCallId: opts.toolCallId, id, args, reason });
       const approved = await waitForApproval(opts.toolCallId, {
         signal: hooks.signal,
         timeoutMs: APPROVAL_TIMEOUT_MS,
@@ -54,7 +111,7 @@ export function wrapToolWithApproval(
       if (!approved) {
         return { denied: true, message: "The user denied this tool call." };
       }
-      return (original as (a: unknown, o: ToolExecutionOptions<unknown>) => unknown)(args, opts);
+      return run(args, opts);
     },
   };
   return wrapped as unknown as Tool;
@@ -116,10 +173,10 @@ export function buildMetaTools(deps: MetaToolDeps): Record<string, Tool> {
         }
         if (toMount.length) mountTools(sessionId, toMount);
         return {
-          mounted: toMount,
+          mounted: toMount.map((id) => ({ id, callAs: modelToolKey(id) })),
           skipped,
           note: toMount.length
-            ? "These tools are now callable. An MCP tool call asks the user to approve it first, unless they have marked that tool as auto-approved."
+            ? "These tools are now callable, each under its callAs name. An MCP tool call asks the user to approve it first, unless they have marked that tool as auto-approved."
             : "No tools were mounted.",
         };
       },
@@ -154,6 +211,31 @@ export interface AgentToolset {
   tools: Record<string, Tool>;
   /** Recomputes the active tool keys for a step: always ∪ mounted ∪ meta. */
   computeActiveTools: () => string[];
+  /** Model-facing key to registry id, for every MCP tool in `tools`. */
+  registryIdByKey: ReadonlyMap<string, string>;
+}
+
+/**
+ * The tool registry, seeding the built-ins first if any are missing. Startup seeds them only on an instance that runs background
+ * workers, so a secondary instance with a database of its own, or one whose
+ * database an older build seeded, would otherwise lack some, and a built-in
+ * with no registry row is assembled but never offered to the model.
+ *
+ * A failed seed is logged rather than thrown, so chat still works without the
+ * missing built-ins. Two turns seeding at once insert the same ids; the
+ * loser's insert fails on the primary key and is logged, and its re-read
+ * returns the winner's rows.
+ */
+async function readRegistryWithBuiltins(config: Config, db: Db): Promise<RegistryTool[]> {
+  const registry = await listRegistryTools(db);
+  const registered = new Set(registry.map((t) => t.id));
+  if (builtinToolIds().every((id) => registered.has(id))) return registry;
+  try {
+    await syncBuiltins(db, await chooseEmbedder(config, db));
+  } catch (e) {
+    console.error("[mcp] seeding built-in tools failed:", redactSecrets(describeError(e)));
+  }
+  return listRegistryTools(db);
 }
 
 /**
@@ -188,6 +270,14 @@ export async function assembleAgentToolset(opts: {
    * turn is neither.
    */
   honourStandingConsent?: boolean;
+  /**
+   * Auto mode's decision model, asked before the user for an MCP tool call.
+   * Ignored when `honourStandingConsent` is false, for the same reason stored
+   * consent is: a turn nobody proof-read can't tell the reviewer what the user
+   * asked for. Built-ins never get it — the ones that ask are the ones whose
+   * answer has to come from the user.
+   */
+  reviewer?: ToolCallReviewer;
   /** The connected MCP tools to assemble; defaults to whatever is live. */
   liveTools?: Record<string, McpClientTool>;
 }): Promise<AgentToolset> {
@@ -200,11 +290,13 @@ export async function assembleAgentToolset(opts: {
     confirmBuiltins,
     honourStandingConsent = true,
   } = opts;
-  const registry = await listRegistryTools(db);
+  const reviewer = honourStandingConsent ? opts.reviewer : undefined;
+  const registry = await readRegistryWithBuiltins(config, db);
   const policyById = new Map(registry.map((r) => [r.id, r.policy]));
   const approvalById = new Map(registry.map((r) => [r.id, r.approval]));
 
   const tools: Record<string, Tool> = {};
+  const registryIdByKey = new Map<string, string>();
 
   // Built-ins: keyed by bare name; excluded only when explicitly disabled.
   // A built-in this turn wants confirmed is wrapped like an MCP tool — but only
@@ -221,7 +313,7 @@ export async function assembleAgentToolset(opts: {
     tools[name] = t;
   }
 
-  // Live MCP tools: keyed by registry id, wrapped with approval, excluded when
+  // Live MCP tools: keyed by `modelToolKey`, wrapped with approval, excluded when
   // disabled. (Tools whose server is disconnected simply aren't present here.)
   // With no approval channel they are skipped outright — see the note above.
   //
@@ -232,12 +324,23 @@ export async function assembleAgentToolset(opts: {
   // prompt on a turn nobody proof-read.
   if (approval) {
     const liveTools = opts.liveTools ?? getMcpManager().getLiveTools();
+    const collided = new Set<string>();
     for (const [id, t] of Object.entries(liveTools)) {
       if (policyById.get(id) === "disabled") continue;
-      tools[id] =
+      const key = modelToolKey(id);
+      if (registryIdByKey.has(key)) collided.add(key);
+      registryIdByKey.set(key, id);
+      tools[key] =
         honourStandingConsent && approvalById.get(id) === "auto"
           ? (t as unknown as Tool)
-          : wrapToolWithApproval(id, t, approval);
+          : wrapToolWithApproval(id, t, approval, reviewer);
+    }
+    // Neither side of a collision is offered: keeping either would let one
+    // server's tool answer to the name the model has for another's.
+    for (const key of collided) {
+      console.warn(`[mcp] dropping tools that share the model-facing name ${key}`);
+      delete tools[key];
+      registryIdByKey.delete(key);
     }
   }
 
@@ -249,15 +352,15 @@ export async function assembleAgentToolset(opts: {
   // MCP tool whose server is offline is skipped).
   const alwaysKeys = registry
     .filter((r) => r.policy === "always")
-    .map((r) => idToKey(r.id))
+    .map((r) => modelToolKey(r.id))
     .filter((key) => key in tools);
 
   const computeActiveTools = () => {
     const mountedKeys = activeMounted(sessionId)
-      .map(idToKey)
+      .map(modelToolKey)
       .filter((key) => key in tools);
     return Array.from(new Set([...alwaysKeys, ...mountedKeys, ...metaNames]));
   };
 
-  return { tools, computeActiveTools };
+  return { tools, computeActiveTools, registryIdByKey };
 }

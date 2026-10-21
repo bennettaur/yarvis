@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { emitEvent } from "../events/service.ts";
-import { GoogleCalendarClient, scopeSatisfied } from "./client.ts";
+import { createGoogleCalendarClient, scopeSatisfied } from "./client.ts";
 import { getStoredToken, getValidAccessToken } from "./service.ts";
 
 /**
@@ -15,12 +15,6 @@ import { getStoredToken, getValidAccessToken } from "./service.ts";
 
 /** Cap on events returned, so a busy week can't fill the context. */
 const MAX_EVENTS = 50;
-
-function makeClient(config: Config): GoogleCalendarClient | null {
-  const { googleClientId, googleClientSecret } = config.secrets;
-  if (!googleClientId || !googleClientSecret) return null;
-  return new GoogleCalendarClient(googleClientId, googleClientSecret);
-}
 
 export function buildCalendarTools(db: Db, config: Config) {
   return {
@@ -38,7 +32,7 @@ export function buildCalendarTools(db: Db, config: Config) {
         limit: z.number().int().min(1).max(MAX_EVENTS).optional(),
       }),
       execute: async ({ days, limit }) => {
-        const client = makeClient(config);
+        const client = createGoogleCalendarClient(config);
         if (!client) return { error: "Google Calendar is not configured in Settings" };
         const now = new Date();
         const timeMax = new Date(now.getTime() + (days ?? 7) * 24 * 60 * 60 * 1000);
@@ -87,7 +81,7 @@ export function buildCalendarTools(db: Db, config: Config) {
         conferenceLink: z.boolean().optional().describe("Ask Google to attach a Meet link"),
       }),
       execute: async (input) => {
-        const client = makeClient(config);
+        const client = createGoogleCalendarClient(config);
         if (!client) return { error: "Google Calendar is not configured in Settings" };
         const token = await getStoredToken(db);
         if (!token) return { error: "Google Calendar is not connected" };

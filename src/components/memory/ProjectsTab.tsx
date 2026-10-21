@@ -8,6 +8,7 @@ import {
   updateProjectItem,
 } from "../../lib/projects";
 import { useCachedResource } from "../../lib/resourceCache";
+import LoadingIndicator from "../LoadingIndicator";
 import RefreshingIndicator from "../RefreshingIndicator";
 
 /** Stable identity so an unloaded resource doesn't re-render the list. */
@@ -32,6 +33,13 @@ const STATUS_COLOR: Record<string, string> = {
   paused: "bg-amber-900 text-amber-200",
   shipped: "bg-emerald-900 text-emerald-200",
   abandoned: "bg-zinc-800 text-zinc-500",
+};
+
+const STATUS_HINT: Record<string, string> = {
+  active: "Being worked on now",
+  paused: "On hold for now",
+  shipped: "Finished and released",
+  abandoned: "Dropped, no longer being pursued",
 };
 
 export default function ProjectsTab() {
@@ -70,7 +78,9 @@ export default function ProjectsTab() {
         <RefreshingIndicator active={projectsRes.refreshing || overviewRes.refreshing} />
       </div>
 
-      {projects.length === 0 ? (
+      {projectsRes.loading ? (
+        <LoadingIndicator label="Loading projects…" />
+      ) : projects.length === 0 ? (
         <p className="text-sm text-zinc-600">No projects yet.</p>
       ) : (
         <div className="flex flex-wrap gap-2">
@@ -87,6 +97,7 @@ export default function ProjectsTab() {
             >
               {project.name}
               <span
+                title={STATUS_HINT[project.status]}
                 className={`ml-2 rounded px-1 text-[10px] ${STATUS_COLOR[project.status] ?? ""}`}
               >
                 {project.status}

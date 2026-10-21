@@ -7,7 +7,7 @@ const CATALOG = {
   capabilities: ["chat", "stt", "tts", "vision", "embed"],
   defaults: {
     gemini: [
-      { id: "gemini-3.5-flash", capabilities: ["chat", "vision", "stt"] },
+      { id: "gemini-3.5-flash", capabilities: ["chat", "vision", "stt"], compactAtTokens: 800000 },
       { id: "gemini-2.5-flash-preview-tts", capabilities: ["tts"] },
     ],
   },
@@ -19,6 +19,7 @@ const CATALOG = {
       capabilities: ["chat"],
       enabled: true,
       sortOrder: 0,
+      compactAtTokens: 90000,
     },
   ],
 };
@@ -140,11 +141,53 @@ describe("ModelCatalogSection", () => {
 
     const saved = calls
       .filter((c) => c.method === "PUT")
-      .map((c) => JSON.parse(c.body ?? "{}") as { modelId: string });
+      .map((c) => JSON.parse(c.body ?? "{}") as { modelId: string; compactAtTokens?: number });
     expect(saved.map((s) => s.modelId)).toEqual([
       "gemini-3.5-flash",
       "gemini-2.5-flash-preview-tts",
       "gemini-9-flash",
     ]);
+    // The copied default keeps its threshold, or adding a model would drop it.
+    expect(saved[0]?.compactAtTokens).toBe(800000);
+  });
+
+  describe("compaction threshold", () => {
+    /** Types into the saved row's threshold input and leaves it, as a user would. */
+    async function editThreshold(value: string) {
+      const mounted = await mountForInteraction(createElement(ModelCatalogSection));
+      unmount = mounted.unmount;
+      const input = mounted.host.querySelector<HTMLInputElement>(
+        'input[aria-label="Summarize claude-sonnet-4-6 chats past (tokens)"]',
+      );
+      expect(input?.value).toBe("90000");
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )?.set?.bind(input);
+      setter?.(value);
+      input?.dispatchEvent(new Event("input", { bubbles: true }));
+      input?.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return calls
+        .filter((c) => c.method === "PUT")
+        .map((c) => JSON.parse(c.body ?? "{}") as { compactAtTokens?: number | null });
+    }
+
+    it("saves an edited value as a number", async () => {
+      expect((await editThreshold("120000")).map((p) => p.compactAtTokens)).toEqual([120000]);
+    });
+
+    it("clears the value when the field is emptied", async () => {
+      expect((await editThreshold("")).map((p) => p.compactAtTokens)).toEqual([null]);
+    });
+
+    it("saves nothing when the value is unchanged", async () => {
+      expect(await editThreshold("90000")).toEqual([]);
+    });
+
+    it("shows a built-in model's threshold as a read-only chip", async () => {
+      const html = await renderToHtml(createElement(ModelCatalogSection));
+      expect(html).toContain("summarize 800k");
+    });
   });
 });

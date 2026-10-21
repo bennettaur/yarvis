@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { type EventRecord, listEvents, listEventTypes } from "../../lib/events";
 import { useCachedResource } from "../../lib/resourceCache";
+import LoadingIndicator from "../LoadingIndicator";
 import RefreshingIndicator from "../RefreshingIndicator";
 
 /**
@@ -89,6 +90,7 @@ export default function EventsTab() {
       <div className="flex flex-wrap items-center gap-2">
         <select
           value={domain}
+          aria-label="Filter events by domain"
           onChange={(e) => {
             setOffset(0);
             setDomain(e.target.value);
@@ -105,6 +107,7 @@ export default function EventsTab() {
         <input
           value={query}
           placeholder="Search events…"
+          aria-label="Search events"
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
             if (e.key !== "Enter") return;
@@ -125,13 +128,13 @@ export default function EventsTab() {
         </button>
         <RefreshingIndicator active={pageRes.refreshing} />
         <span className="text-xs text-zinc-500">
-          {page.total === 0
-            ? "no events"
-            : `${offset + 1}–${shownTo} of ${page.total}${pageRes.loading ? " · loading…" : ""}`}
+          {page.total === 0 ? "no events" : `${offset + 1}–${shownTo} of ${page.total}`}
         </span>
       </div>
 
-      {page.items.length === 0 ? (
+      {pageRes.loading ? (
+        <LoadingIndicator label="Loading events…" />
+      ) : page.items.length === 0 ? (
         <p className="text-sm text-zinc-600">Nothing recorded for this filter.</p>
       ) : (
         <ul className="divide-y divide-zinc-800 rounded-xl border border-zinc-800 bg-zinc-900/50">
@@ -146,7 +149,12 @@ export default function EventsTab() {
                 {/* Whether the consolidation job has folded this in yet — the
                     difference between "not summarized" and "not recorded". */}
                 {!event.processedAt && (
-                  <span className="rounded bg-zinc-800 px-1 text-[10px] text-zinc-500">new</span>
+                  <span
+                    title="Not yet summarized into your memories"
+                    className="rounded bg-zinc-800 px-1 text-[10px] text-zinc-500"
+                  >
+                    new
+                  </span>
                 )}
               </div>
               {event.payload && (

@@ -150,6 +150,8 @@ export default function PrDetailView({
   pr,
   onBack,
   recordView = true,
+  starred,
+  onToggleStar,
 }: {
   pr: PrSummary;
   onBack: () => void;
@@ -160,9 +162,11 @@ export default function PrDetailView({
    * log with the same PR.
    */
   recordView?: boolean;
+  starred: boolean;
+  onToggleStar: (pr: PrSummary, starred: boolean) => Promise<void>;
 }) {
   const prRef = pr.ref;
-  const { data: detail, error, loading } = usePrDetail(prRef);
+  const { data: detail, error, loading, refreshing } = usePrDetail(prRef);
   // Null for a provider with no stacks (Azure), and a one-entry stack for a PR
   // that simply isn't stacked — the section renders for neither.
   const { data: fetchedStack } = usePrStack(prRef);
@@ -202,7 +206,15 @@ export default function PrDetailView({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <PrFloatingHeader pr={pr} detail={detail} loading={loading} onBack={onBack} />
+      <PrFloatingHeader
+        pr={pr}
+        detail={detail}
+        loading={loading}
+        refreshing={refreshing}
+        onBack={onBack}
+        starred={starred}
+        onToggleStar={onToggleStar}
+      />
 
       {/* The vertical padding lives on the inner wrapper, not this scroll
           container: a sticky file header uses `top-0` against this container, and

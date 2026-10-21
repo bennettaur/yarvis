@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
-import { handleMessage, handleUnlock, isConflict } from "./bot.ts";
+import { handleMessage, handleUnlock, isConflict, stripAppLinks } from "./bot.ts";
 import { TelegramApiError, type TelegramClient, type TelegramMessage } from "./client.ts";
 import { OtpGate } from "./otpGate.ts";
 import { securityLog } from "./securityLog.ts";
@@ -161,5 +161,18 @@ describe("handleUnlock", () => {
     await handleUnlock(client.asClient(), gate(), msg("/unlock", 9), { name: "unlock", args: "" });
     expect(client.sent.at(-1)!.text).toContain("Usage: /unlock");
     expect(client.deleted).toHaveLength(0);
+  });
+});
+
+describe("stripAppLinks", () => {
+  it("keeps the label of an in-app link, which Telegram can't open", () => {
+    expect(stripAppLinks("Open [Settings → Credentials](yarvis://settings/credentials).")).toBe(
+      "Open Settings → Credentials.",
+    );
+  });
+
+  it("leaves web links alone", () => {
+    const text = "See [#12](https://github.com/o/r/pull/12)";
+    expect(stripAppLinks(text)).toBe(text);
   });
 });

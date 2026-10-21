@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { listWorkspaces, type WorkspaceStatus, type WorkspaceSummary } from "../../lib/workspaces";
+import LoadingIndicator from "../LoadingIndicator";
 import WorkspacePrBadges from "./WorkspacePrBadges";
 
 const STATUS_COLOR: Record<WorkspaceStatus, string> = {
@@ -22,7 +23,7 @@ export default function WorkspaceListWidget() {
   }, []);
 
   if (error) return <p className="p-3 text-sm text-red-400">{error}</p>;
-  if (!items) return <p className="p-3 text-sm text-zinc-500">Loading…</p>;
+  if (!items) return <LoadingIndicator className="p-3 text-sm text-zinc-500" />;
   if (items.length === 0) return <p className="p-3 text-sm text-zinc-500">No workspaces.</p>;
 
   return (

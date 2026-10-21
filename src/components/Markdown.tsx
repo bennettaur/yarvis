@@ -1,8 +1,29 @@
 import type { ReactNode } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown, { type Components, defaultUrlTransform } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import { parseAppPlace } from "../lib/appPlace";
+import { requestOpenPlace, requestOpenPr } from "../lib/nav";
+import { parsePrLink } from "../lib/prLink";
 import { openExternal } from "../lib/url";
+
+type LinkProps = { href?: string; children?: ReactNode };
+
+const externalLink = ({ href, children }: LinkProps): ReactNode => (
+  // The webview has no status bar, so the destination is only visible on
+  // hover — link text is free to claim it points somewhere else.
+  <a
+    href={href}
+    title={href}
+    onClick={(e) => {
+      e.preventDefault();
+      openExternal(href);
+    }}
+    className="text-sky-400 hover:underline"
+  >
+    {children}
+  </a>
+);
 
 /**
  * Tailwind-styled element overrides for rendered markdown. The project has no
@@ -16,21 +37,7 @@ const components: Components = {
   ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5">{children}</ul>,
   ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
   li: ({ children }) => <li className="leading-relaxed">{children}</li>,
-  a: ({ href, children }) => (
-    // The webview has no status bar, so the destination is only visible on
-    // hover — link text is free to claim it points somewhere else.
-    <a
-      href={href}
-      title={href}
-      onClick={(e) => {
-        e.preventDefault();
-        openExternal(href);
-      }}
-      className="text-sky-400 hover:underline"
-    >
-      {children}
-    </a>
-  ),
+  a: externalLink,
   strong: ({ children }) => <strong className="font-semibold text-zinc-100">{children}</strong>,
   blockquote: ({ children }) => (
     <blockquote className="my-2 border-l-2 border-zinc-700 pl-3 text-zinc-400">
@@ -91,11 +98,79 @@ const deferredImage: Components["img"] = ({ src, alt }) => {
 
 const componentsWithDeferredImages: Components = { ...components, img: deferredImage };
 
+/** Plain text of a link's children, used as the title of the PR it opens. */
+function textOfChildren(children: ReactNode): string {
+  if (typeof children === "string") return children;
+  if (Array.isArray(children)) return children.map(textOfChildren).join("");
+  return "";
+}
+
+/**
+ * A link to a place in Yarvis (`yarvis://settings/credentials`) navigates there.
+ * A link to a PR opens it inside Yarvis, with a small control (shown on hover)
+ * to open it in the browser instead. Any other link keeps the default `a`.
+ */
+const appLink: Components["a"] = (props) => {
+  const { href, children } = props;
+  const place = parseAppPlace(href);
+  if (place) {
+    return (
+      <a
+        href={href}
+        title={href}
+        onClick={(e) => {
+          e.preventDefault();
+          requestOpenPlace(place);
+        }}
+        className="text-sky-400 hover:underline"
+      >
+        {children}
+      </a>
+    );
+  }
+  const pr = parsePrLink(href, textOfChildren(children));
+  if (!pr) return externalLink(props);
+  return (
+    <span className="group inline-flex items-baseline gap-1">
+      <a
+        href={href}
+        // Same hover-destination guarantee as externalLink: the assistant
+        // (or third-party PR data it relays) chose the link text, so the
+        // title has to carry the real URL, not just "Open in Yarvis".
+        title={href}
+        aria-label={`Open in Yarvis: ${href}`}
+        onClick={(e) => {
+          e.preventDefault();
+          requestOpenPr(pr);
+        }}
+        className="text-sky-400 hover:underline"
+      >
+        {children}
+      </a>
+      <button
+        type="button"
+        title={`Open in browser: ${href}`}
+        aria-label="Open in browser"
+        onClick={() => openExternal(href)}
+        className="text-xs text-zinc-500 opacity-0 hover:text-sky-400 focus:opacity-100 group-hover:opacity-100"
+      >
+        ↗
+      </button>
+    </span>
+  );
+};
+
+/** The default transform drops unknown schemes, which would blank a `yarvis://` link. */
+function keepAppLinks(url: string): string {
+  return parseAppPlace(url) ? url : defaultUrlTransform(url);
+}
+
 /** Renders GitHub-flavored markdown with the app's dark styling. */
 export default function Markdown({
   children,
   className = "text-sm text-zinc-300",
   allowImages = false,
+  allowAppLinks = false,
 }: {
   children: string;
   /** Replaces — rather than extends — the wrapper's base text size and color. */
@@ -105,14 +180,23 @@ export default function Markdown({
    * asked to see (a PR or issue body); leave it off for generated text.
    */
   allowImages?: boolean;
+  /**
+   * Open links to things Yarvis has a view for (PRs, `yarvis://` places)
+   * inside the app, offering the browser as a secondary choice for PRs. Off by
+   * default: a link in PR or issue text is the author's, and the reader expects
+   * it to go where it says.
+   */
+  allowAppLinks?: boolean;
 }): ReactNode {
+  const base = allowImages ? components : componentsWithDeferredImages;
   return (
     <div className={className}>
       {/* remark-breaks keeps a single newline a line break, the way GitHub
           renders one — chat replies and issue bodies both rely on it. */}
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkBreaks]}
-        components={allowImages ? components : componentsWithDeferredImages}
+        components={allowAppLinks ? { ...base, a: appLink } : base}
+        urlTransform={allowAppLinks ? keepAppLinks : defaultUrlTransform}
       >
         {children}
       </ReactMarkdown>

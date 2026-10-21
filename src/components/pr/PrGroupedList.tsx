@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { usePrStatus } from "../../lib/pr/cache";
+import { nestStacks } from "../../lib/pr/listStacks";
 import { refDisplayRepo, refNumber } from "../../lib/pr/ref";
 import type { PrStatus, PrSummary } from "../../lib/pr/types";
 import { formatRelativeTime } from "../../lib/time";
@@ -71,29 +72,45 @@ export function groupByRepo(prs: PrSummary[]): { repo: string; prs: PrSummary[] 
 }
 
 function DraftBadge() {
-  return <span className="rounded bg-zinc-700 px-1.5 py-0.5 text-xs text-zinc-300">draft</span>;
+  return (
+    <span
+      className="rounded bg-zinc-700 px-1.5 py-0.5 text-xs text-zinc-300"
+      title="Draft: the author hasn't marked this PR ready for review"
+    >
+      draft
+    </span>
+  );
 }
 
 /** CI/merge state for a row. Renders nothing while loading or when no signal. */
 function StatusBadge({ status }: { status: PrStatus | null }) {
   if (!status) return null;
   let text: string | null = null;
+  let title = "";
   let color = "";
   if (status.checks.failure > 0) {
     text = "CI failing";
+    title = "At least one check has failed";
     color = "bg-red-900 text-red-200";
   } else if (status.checks.pending > 0) {
     text = "CI running";
+    title = "Some checks are still running";
     color = "bg-amber-900 text-amber-200";
   } else if (status.mergeable === false) {
     text = "conflicts";
+    title = "This PR has merge conflicts with its base branch";
     color = "bg-red-900 text-red-200";
   } else if (status.checks.total > 0) {
     text = "CI passing";
+    title = "All checks have passed";
     color = "bg-emerald-900 text-emerald-200";
   }
   if (!text) return null;
-  return <span className={`rounded px-1.5 py-0.5 text-xs ${color}`}>{text}</span>;
+  return (
+    <span className={`rounded px-1.5 py-0.5 text-xs ${color}`} title={title}>
+      {text}
+    </span>
+  );
 }
 
 /** Optional per-row annotation, e.g. the user's own review verdict. */
@@ -103,12 +120,18 @@ function PrRow({
   pr,
   starred,
   note,
+  layersAbove = 0,
+  isStackLayer = false,
   onToggleStar,
   onReview,
 }: {
   pr: PrSummary;
   starred: boolean;
   note: string | null;
+  /** How many PRs are stacked on this one. Only a stack's bottom has any. */
+  layersAbove?: number;
+  /** A layer above a stack's bottom, drawn indented under it. */
+  isStackLayer?: boolean;
   onToggleStar: (pr: PrSummary, starred: boolean) => void;
   onReview: (pr: PrSummary) => void;
 }) {
@@ -121,8 +144,15 @@ function PrRow({
   return (
     <li
       onClick={() => onReview(pr)}
-      className="flex cursor-pointer items-center gap-3 px-4 py-3 hover:bg-zinc-800/50"
+      className={`flex cursor-pointer items-center gap-3 py-3 pr-4 hover:bg-zinc-800/50 ${
+        isStackLayer ? "bg-zinc-900/80 pl-10" : "pl-4"
+      }`}
     >
+      {isStackLayer && (
+        <span className="-ml-5 text-zinc-600" aria-hidden="true">
+          ↳
+        </span>
+      )}
       <button
         onClick={(e) => {
           e.stopPropagation();
@@ -140,6 +170,14 @@ function PrRow({
           {note && ` · ${note}`}
         </div>
       </div>
+      {layersAbove > 0 && (
+        <span
+          className="rounded bg-indigo-950 px-1.5 py-0.5 text-xs text-indigo-300"
+          title="The PRs below are stacked on this one"
+        >
+          stack of {layersAbove + 1}
+        </span>
+      )}
       {pr.draft && <DraftBadge />}
       <StatusBadge status={status} />
       <span className="shrink-0 text-xs text-zinc-600" title={`Updated ${pr.updatedAt}`}>
@@ -176,7 +214,10 @@ export default function PrGroupedList({
   prs: PrSummary[];
   note?: PrRowNote;
 }) {
-  const groups = useMemo(() => groupByRepo(prs), [prs]);
+  const groups = useMemo(
+    () => groupByRepo(prs).map((group) => ({ ...group, items: nestStacks(group.prs) })),
+    [prs],
+  );
   const { isCollapsed, toggle } = useCollapsedRepos();
   if (prs.length === 0) return <p className="text-sm text-zinc-600">None.</p>;
   return (
@@ -196,16 +237,28 @@ export default function PrGroupedList({
             </button>
             {!collapsed && (
               <ul className="divide-y divide-zinc-800 rounded-xl border border-zinc-800 bg-zinc-900/50">
-                {group.prs.map((pr) => (
+                {group.items.flatMap(({ pr, layers }) => [
                   <PrRow
                     key={pr.url}
                     pr={pr}
                     starred={isStarred(pr)}
                     note={note?.(pr) ?? null}
+                    layersAbove={layers.length}
                     onToggleStar={onToggleStar}
                     onReview={onReview}
-                  />
-                ))}
+                  />,
+                  ...layers.map((layer) => (
+                    <PrRow
+                      key={layer.url}
+                      pr={layer}
+                      starred={isStarred(layer)}
+                      note={note?.(layer) ?? null}
+                      isStackLayer
+                      onToggleStar={onToggleStar}
+                      onReview={onReview}
+                    />
+                  )),
+                ])}
               </ul>
             )}
           </section>

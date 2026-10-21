@@ -195,7 +195,26 @@ async fn supervise(app: AppHandle, port: u16, token: String, restart: Arc<Notify
         if let Some(path) = &log {
             rotate_if_large(path);
         }
-        let mut command = build_command(&app, port, &token);
+        // Off the async runtime's worker: reading the secrets can block on a
+        // 1Password authorization prompt for as long as `OP_TIMEOUT`, and a
+        // supervisor restart must not hold a worker thread for a minute.
+        let (build_app, build_token) = (app.clone(), token.clone());
+        let mut command = match tauri::async_runtime::spawn_blocking(move || {
+            build_command(&build_app, port, &build_token)
+        })
+        .await
+        {
+            Ok(Ok(command)) => command,
+            Ok(Err(e)) => {
+                eprintln!("[sidecar] not starting: {e}; retrying shortly");
+                sleep(SPAWN_RETRY_DELAY).await;
+                continue;
+            }
+            Err(e) => {
+                eprintln!("[sidecar] could not prepare the launch command: {e}");
+                return;
+            }
+        };
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         match command.spawn() {
             Ok(mut child) => {
@@ -227,8 +246,27 @@ async fn supervise(app: AppHandle, port: u16, token: String, restart: Arc<Notify
     }
 }
 
-fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
-    let mut cmd = command_base();
+/// Env vars that point the sidecar's GitHub and Google clients at local fakes.
+/// They exist for the demo recordings, which start the sidecar themselves. The
+/// app must never pass them on: the sidecar would send the Keychain's GitHub
+/// token and Google credentials wherever they point, and they could be planted
+/// in the shell or launchd environment the app inherits.
+const ENDPOINT_OVERRIDE_VARS: [&str; 4] = [
+    "YARVIS_GITHUB_API_URL",
+    "YARVIS_GITHUB_GRAPHQL_URL",
+    "YARVIS_GOOGLE_CALENDAR_API_URL",
+    "YARVIS_GOOGLE_TOKEN_URL",
+];
+
+fn strip_endpoint_overrides(cmd: &mut Command) {
+    for var in ENDPOINT_OVERRIDE_VARS {
+        cmd.env_remove(var);
+    }
+}
+
+fn build_command(app: &AppHandle, port: u16, token: &str) -> Result<Command, String> {
+    let mut cmd = command_base(app)?;
+    strip_endpoint_overrides(&mut cmd);
     cmd.env("YARVIS_SIDECAR_PORT", port.to_string());
     cmd.env("YARVIS_SIDECAR_TOKEN", token);
     cmd.env(
@@ -274,9 +312,15 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
         cmd.env("YARVIS_DEBUG_MCP", value);
     }
 
-    // Read the single secrets item once; one Keychain access covers every
-    // value injected below.
-    let secrets = read_root();
+    // Read the single secrets item once; one store access covers every value
+    // injected below. A failed read is loud but not fatal: the sidecar still
+    // starts, so the user can reach Settings and fix the store rather than
+    // facing an app that won't come up. Everything below is simply absent,
+    // which is what the sidecar already handles for an unconfigured install.
+    let secrets = read_root().unwrap_or_else(|e| {
+        eprintln!("[sidecar] starting without secrets: {e}");
+        serde_json::Value::Object(serde_json::Map::new())
+    });
     if let Some(url) = database_url(
         crate::instance::database_url_override(),
         secret_from_root(&secrets, "database_url"),
@@ -353,24 +397,41 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Command {
 
     // Ensure the child dies with the parent rather than lingering.
     cmd.kill_on_drop(true);
-    cmd
+    Ok(cmd)
 }
 
 #[cfg(debug_assertions)]
-fn command_base() -> Command {
+fn command_base(_app: &AppHandle) -> Result<Command, String> {
     // Dev: run the TypeScript entrypoint directly with Bun (no build step).
     let entry = concat!(env!("CARGO_MANIFEST_DIR"), "/../sidecar/src/server.ts");
     let mut cmd = Command::new("bun");
     cmd.arg("run").arg(entry);
-    cmd
+    Ok(cmd)
 }
 
 #[cfg(not(debug_assertions))]
-fn command_base() -> Command {
-    // Production: run the compiled sidecar binary bundled via `externalBin`.
-    // TODO(packaging): resolve the bundled binary path from resources and apply
-    // the Bun `extractFromBunfs` workaround for the Agent SDK's embedded CLI.
-    Command::new("yarvis-sidecar")
+fn command_base(app: &AppHandle) -> Result<Command, String> {
+    // Production: the binary `bun run sidecar:compile` builds, which
+    // `tauri.release.conf.json` bundles via `externalBin`. Tauri places it
+    // beside the app's own executable. Never a `PATH` lookup: whatever answers
+    // to the name would be handed every secret.
+    let exe = tauri::utils::platform::current_exe()
+        .map_err(|e| format!("can't locate the app executable: {e}"))?;
+    let bin = exe.with_file_name(format!("yarvis-sidecar{}", std::env::consts::EXE_SUFFIX));
+    let mut cmd = Command::new(bin);
+
+    // The compiled binary has no checkout to find its migrations in, so they
+    // ship as a bundle resource.
+    let resources = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("can't locate the bundled migrations: {e}"))?;
+    cmd.env("YARVIS_MIGRATIONS_DIR", resources.join("drizzle"));
+
+    if let Some(path) = crate::login_path::get() {
+        cmd.env("PATH", path);
+    }
+    Ok(cmd)
 }
 
 /// The log file the frontend offers to reveal, so a user chasing a failure can
@@ -395,6 +456,22 @@ pub fn restart_sidecar(control: tauri::State<'_, SidecarControl>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn endpoint_overrides_never_reach_the_sidecar() {
+        let mut cmd = Command::new("true");
+        cmd.env("YARVIS_GITHUB_API_URL", "https://attacker.example");
+        strip_endpoint_overrides(&mut cmd);
+        let envs: Vec<_> = cmd.as_std().get_envs().collect();
+        for var in ENDPOINT_OVERRIDE_VARS {
+            // `None` is how Command records a removal, which also stops an
+            // inherited value from passing through.
+            assert!(
+                envs.contains(&(std::ffi::OsStr::new(var), None)),
+                "{var} is not removed"
+            );
+        }
+    }
 
     #[test]
     fn the_origin_list_carries_this_instances_dev_server() {

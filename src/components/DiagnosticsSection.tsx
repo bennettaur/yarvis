@@ -84,6 +84,7 @@ export default function DiagnosticsSection() {
             value={minLevel}
             onChange={(e) => setMinLevel(e.target.value as LogLevel)}
             aria-label="Minimum level"
+            title="Hide log lines below this level."
             className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs"
           >
             {LEVELS.map((level) => (
@@ -96,6 +97,7 @@ export default function DiagnosticsSection() {
             value={scope}
             onChange={(e) => setScope(e.target.value)}
             aria-label="Scope"
+            title="Show only lines from one part of the sidecar."
             className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs"
           >
             <option value="">all scopes</option>
@@ -110,9 +112,13 @@ export default function DiagnosticsSection() {
             onChange={(e) => setContains(e.target.value)}
             placeholder="filter text"
             aria-label="Filter text"
+            title="Show only lines containing this text."
             className="w-36 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs outline-none focus:border-zinc-500"
           />
-          <label className="flex items-center gap-1 text-xs text-zinc-400">
+          <label
+            title="Keep refreshing the log and scroll to the newest line."
+            className="flex items-center gap-1 text-xs text-zinc-400"
+          >
             <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
             Follow
           </label>

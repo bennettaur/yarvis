@@ -1,11 +1,15 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { tool } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import postgres from "postgres";
+import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { resolveApproval } from "../mcp/approvals.ts";
+import { modelToolKey } from "../mcp/chatTools.ts";
+import type { McpClientTool } from "../mcp/connectionManager.ts";
 import { type AgentEvent, runAgentTurn } from "./agent.ts";
-import { createSession, getMessages } from "./service.ts";
+import { addMessage, createSession, getMessages } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -95,7 +99,8 @@ async function collect(
   sessionId: string,
   approval?: { onRequest: (info: { toolCallId: string }) => Promise<void> },
   signal?: AbortSignal,
-  budget?: { maxSteps?: number; maxOutputTokens?: number | null },
+  budget?: { maxSteps?: number; maxOutputTokens?: number | null; compactAtTokens?: number },
+  liveTools?: Record<string, McpClientTool>,
 ): Promise<AgentEvent[]> {
   const events: AgentEvent[] = [];
   for await (const event of runAgentTurn({
@@ -108,6 +113,7 @@ async function collect(
     approval,
     signal,
     budget,
+    liveTools,
   })) {
     events.push(event);
   }
@@ -117,9 +123,9 @@ async function collect(
 beforeEach(async () => {
   await sql`TRUNCATE chat_messages, chat_sessions, agent_tools RESTART IDENTITY CASCADE`;
   // Only tools the registry marks "always" are offered to the model each step,
-  // and nothing has synced the built-ins into this database. Register the two
+  // and nothing has synced the built-ins into this database. Register the ones
   // these tests drive.
-  for (const name of ["list_tasks", "create_calendar_event"]) {
+  for (const name of ["list_tasks", "create_calendar_event", "register_repo"]) {
     await sql`
       INSERT INTO agent_tools (id, source, server_id, name, description, policy, content_hash)
       VALUES (${`builtin:${name}`}, 'builtin', NULL, ${name}, '', 'always', '')
@@ -141,6 +147,16 @@ describe("runAgentTurn", () => {
     expect(done).toMatchObject({ text: "hello", finishReason: "stop" });
     const stored = await getMessages(db, session.id);
     expect(stored.map((m) => m.role)).toEqual(["user", "assistant"]);
+  });
+
+  it("tells the model how to register and add a repo", async () => {
+    const session = await createSession(db, null);
+    const model = streamingModel([...text("ok"), finish("stop")]);
+    await collect(model, session.id);
+    const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+    expect(prompt).toContain("register_repo");
+    expect(prompt).toContain("add_repo_to_workspace");
+    expect(prompt).toContain("register a repo");
   });
 
   // A turn that spends its last step on a tool call used to persist an empty
@@ -207,6 +223,7 @@ describe("runAgentTurn", () => {
             title: "sync",
             start: "2026-01-01T10:00:00Z",
             end: "2026-01-01T10:30:00Z",
+            callReason: "The user asked for a sync",
           }),
           finish("tool-calls"),
         ],
@@ -221,22 +238,89 @@ describe("runAgentTurn", () => {
     expect(assistant?.toolCalls?.map((a) => a.status)).toEqual(["denied"]);
   });
 
-  it("names the MCP server a tool belongs to", async () => {
+  // A repo name can come from an issue the user just read, so a typed turn asks
+  // as well as a spoken one. Denied proves the call reached the approval bar
+  // rather than running.
+  it("asks before registering a repo on a typed turn", async () => {
     const session = await createSession(db, null);
     const events = await collect(
       streamingModel(
-        [toolCall("c1", "mcp:server-uuid:search_pages", { query: "notion" }), finish("tool-calls")],
+        [
+          toolCall("c1", "register_repo", { repo: "acme/widget", callReason: "The user asked" }),
+          finish("tool-calls"),
+        ],
+        [...text("told them no"), finish("stop")],
+      ),
+      session.id,
+      denyingApproval,
+    );
+
+    expect(events.find((e) => e.type === "tool_result")).toMatchObject({ status: "denied" });
+  });
+
+  it("names the MCP server a tool belongs to", async () => {
+    const session = await createSession(db, null);
+    const id = "mcp:server-uuid:search_pages";
+    await sql`
+      INSERT INTO agent_tools (id, source, server_id, name, description, policy, content_hash)
+      VALUES (${id}, 'mcp', NULL, 'search_pages', '', 'always', '')
+    `;
+    const liveTools = {
+      [id]: tool({
+        description: "search_pages",
+        inputSchema: z.object({ query: z.string() }),
+        execute: async () => ({ pages: [] }),
+      }) as unknown as McpClientTool,
+    };
+    const events = await collect(
+      streamingModel(
+        [
+          toolCall("c1", modelToolKey(id), { query: "notion", callReason: "The user asked" }),
+          finish("tool-calls"),
+        ],
         [...text("done"), finish("stop")],
       ),
       session.id,
+      // MCP tools are only offered to a turn that has an approval channel.
+      denyingApproval,
+      undefined,
+      undefined,
+      liveTools,
     );
 
-    // The model-facing key of an MCP tool is its registry id; only the tool's
-    // own name means anything to a reader.
+    // The model calls the tool by a provider-safe key; the reader sees the
+    // tool's own name and the server it lives on.
     expect(events.find((e) => e.type === "tool_call")).toMatchObject({
       name: "search_pages",
       server: "Notion",
     });
+    // Denied proves the key reached the approval-wrapped MCP tool.
+    expect(events.find((e) => e.type === "tool_result")).toMatchObject({ status: "denied" });
+  });
+
+  // Bedrock rejects the whole turn over one tool name it can't accept (#321).
+  it("offers every tool to the provider under a name it accepts", async () => {
+    const session = await createSession(db, null);
+    const serverId = "907bd56b-f417-419e-92db-2f1e4e1aa0ce";
+    const id = `mcp:${serverId}:github__update_pull_request`;
+    await sql`
+      INSERT INTO agent_tools (id, source, server_id, name, description, policy, content_hash)
+      VALUES (${id}, 'mcp', ${serverId}, 'github__update_pull_request', '', 'always', '')
+    `;
+    const liveTools = {
+      [id]: tool({
+        description: "github__update_pull_request",
+        inputSchema: z.object({}),
+        execute: async () => ({}),
+      }) as unknown as McpClientTool,
+    };
+    const model = streamingModel([...text("done"), finish("stop")]);
+
+    await collect(model, session.id, denyingApproval, undefined, undefined, liveTools);
+
+    const offered = (model.doStreamCalls[0]?.tools ?? []).map((t) => t.name);
+    expect(offered).toContain(modelToolKey(id));
+    expect(offered.every((name) => /^[A-Za-z0-9_-]{1,64}$/.test(name))).toBe(true);
   });
 
   // The turn changed things outside this app. Losing that record is what makes
@@ -333,5 +417,124 @@ describe("runAgentTurn", () => {
     expect(error?.message).toBe("model not found (status 404)");
     expect(error?.detail).toContain("no such model");
     expect(error?.detail).toContain("gateway.internal");
+  });
+
+  describe("compaction", () => {
+    /** One model for both jobs: `doGenerate` writes the summary, `doStream` the reply. */
+    function chatAndSummarizer(summary: string, reply = "ok") {
+      const model = streamingModel([...text(reply), finish("stop")]);
+      model.doGenerate = async () => ({
+        content: [{ type: "text", text: summary }],
+        finishReason: { unified: "stop", raw: "stop" },
+        usage,
+        warnings: [],
+      });
+      return model;
+    }
+
+    async function seedLongSession(): Promise<string> {
+      const session = await createSession(db, "long");
+      for (let i = 0; i < 16; i++) {
+        await addMessage(db, {
+          sessionId: session.id,
+          role: i % 2 === 0 ? "user" : "assistant",
+          // 16 x 60k chars is about 240k tokens, past the default compaction threshold.
+          content: `m${i} ${"x".repeat(60_000)}`,
+        });
+      }
+      return session.id;
+    }
+
+    it("summarizes a long history before the turn and replays the summary", async () => {
+      const sessionId = await seedLongSession();
+      const model = chatAndSummarizer("They talked about x.");
+      const events = await collect(model, sessionId);
+      expect(events.at(-1)?.type).toBe("done");
+
+      const rows = await getMessages(db, sessionId);
+      expect(rows.filter((m) => m.role === "system")).toHaveLength(1);
+
+      const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+      expect(prompt).toContain("They talked about x.");
+      expect(prompt).not.toContain("m0 ");
+      // The current message is sent once.
+      expect(prompt.match(/"text":"hi"/g)).toHaveLength(1);
+    });
+
+    it("compacts at the configured threshold rather than the default", async () => {
+      const session = await createSession(db, "small");
+      for (let i = 0; i < 12; i++) {
+        await addMessage(db, {
+          sessionId: session.id,
+          role: i % 2 === 0 ? "user" : "assistant",
+          content: `m${i} ${"x".repeat(10_000)}`,
+        });
+      }
+      // About 30k tokens: far under the 200k default, over a 10k setting.
+      const model = chatAndSummarizer("Lower threshold summary.");
+      await collect(model, session.id, undefined, undefined, { compactAtTokens: 10_000 });
+      expect((await getMessages(db, session.id)).some((m) => m.role === "system")).toBe(true);
+    });
+
+    it("leaves a history under a raised threshold alone", async () => {
+      const sessionId = await seedLongSession();
+      const model = chatAndSummarizer("unused");
+      await collect(model, sessionId, undefined, undefined, { compactAtTokens: 1_000_000 });
+      expect((await getMessages(db, sessionId)).some((m) => m.role === "system")).toBe(false);
+      expect(model.doGenerateCalls).toHaveLength(0);
+    });
+
+    it("still answers from the full history when the summarizer fails", async () => {
+      const sessionId = await seedLongSession();
+      const model = streamingModel([...text("ok"), finish("stop")]);
+      model.doGenerate = async () => {
+        throw new Error("boom");
+      };
+      const events = await collect(model, sessionId);
+      expect(events.at(-1)?.type).toBe("done");
+      expect((await getMessages(db, sessionId)).some((m) => m.role === "system")).toBe(false);
+    });
+
+    it("does not duplicate a resent message when a summary follows it", async () => {
+      const session = await createSession(db, "retry");
+      await addMessage(db, { sessionId: session.id, role: "user", content: "hi" });
+      const first = (await getMessages(db, session.id))[0]!;
+      await addMessage(db, {
+        sessionId: session.id,
+        role: "system",
+        content: "summary",
+        metadata: { compaction: { throughMessageId: first.id } },
+      });
+
+      await collect(streamingModel([...text("ok"), finish("stop")]), session.id);
+      const users = (await getMessages(db, session.id)).filter((m) => m.role === "user");
+      expect(users).toHaveLength(1);
+    });
+
+    it("compacts after a context-window error so a retry can go through", async () => {
+      const session = await createSession(db, "overflow");
+      for (let i = 0; i < 12; i++) {
+        await addMessage(db, {
+          sessionId: session.id,
+          role: i % 2 === 0 ? "user" : "assistant",
+          content: `message ${i} ${"y".repeat(500)}`,
+        });
+      }
+      const model = new MockLanguageModelV3({
+        doStream: async () => {
+          throw new Error("prompt is too long: 1152621 tokens > 1000000 maximum");
+        },
+        doGenerate: async () => ({
+          content: [{ type: "text", text: "short" }],
+          finishReason: { unified: "stop", raw: "stop" },
+          usage,
+          warnings: [],
+        }),
+      });
+      const events = await collect(model, session.id);
+      const error = events.find((e) => e.type === "error");
+      expect(error?.type === "error" && error.message).toContain("summarized");
+      expect((await getMessages(db, session.id)).some((m) => m.role === "system")).toBe(true);
+    });
   });
 });

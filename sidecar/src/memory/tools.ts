@@ -3,6 +3,12 @@ import { z } from "zod";
 import { MEMORY_KINDS, type MemoryKind } from "../db/schema.ts";
 import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
 import type { MemoryService } from "./index.ts";
+import {
+  isoInstant,
+  resolveValidityWindow,
+  validityFields,
+  validityWindowShape,
+} from "./validity.ts";
 
 /**
  * Memory tools for the chat model: store durable facts the user shares, correct
@@ -37,23 +43,28 @@ export function buildMemoryTools(memory: MemoryService, sessionId: string) {
   return {
     remember: tool({
       description:
-        "Store a durable fact, preference, or note the user shares so it can be recalled in future conversations. Pick the kind that fits: 'preference' for how they like to work, 'project' for the state of a project, 'decision' for a choice worth keeping, 'agent-feedback' for guidance about how an agent should behave, 'fact' otherwise.",
+        "Store a durable fact, preference, or note the user shares so it can be recalled in future conversations. Pick the kind that fits: 'preference' for how they like to work, 'project' for the state of a project, 'decision' for a choice worth keeping, 'agent-feedback' for guidance about how an agent should behave, 'fact' otherwise. When the claim only holds for a while — an outage, someone out this week, a temporary workaround — give it a window (validFor or validUntil) so a later recall knows to re-check it.",
       inputSchema: z.object({
         content: z.string().describe("The fact to remember, in a self-contained sentence"),
         kind: z.enum(WRITABLE_KINDS).default("fact"),
+        ...validityWindowShape,
       }),
-      execute: async ({ content, kind }) => {
+      execute: async ({ content, kind, ...windowRequest }) => {
+        const requested = resolveValidityWindow(windowRequest, new Date());
+        if (!requested.ok) return { error: requested.error };
         const record = await memory.add(content, {
           kind,
           sourceRef: { type: "chat", sessionId },
+          validFrom: requested.validFrom,
+          validUntil: requested.validUntil,
         });
-        return { id: record.id, kind: record.kind };
+        return { id: record.id, kind: record.kind, ...validityFields(record) };
       },
     }),
 
     recall: tool({
       description:
-        "Search the user's stored memories, notes, summaries, and ingested documents for anything relevant to a query. Narrow by kind when you know what you're after — 'session-summary' for past Claude Code sessions, 'day-summary'/'activity-summary' for what they did on a day, 'project' for project state.",
+        "Search the user's stored memories, notes, summaries, and ingested documents for anything relevant to a query. Narrow by kind when you know what you're after — 'session-summary' for past Claude Code sessions, 'day-summary'/'activity-summary' for what they did on a day, 'project' for project state. Each result's validity is 'current', 'upcoming' (not true yet) or 'expired' (past its validUntil, so it may no longer be true).",
       inputSchema: z.object({
         query: z.string(),
         kinds: z
@@ -61,9 +72,17 @@ export function buildMemoryTools(memory: MemoryService, sessionId: string) {
           .optional()
           .describe("Restrict the search to these kinds"),
         limit: z.number().int().min(1).max(20).optional(),
+        asOf: isoInstant()
+          .optional()
+          .describe(
+            "Return what held at this instant instead of now, including memories corrected since. A full ISO 8601 datetime: for a day, pick a time on it, e.g. 2026-10-01T12:00:00. Results are judged against that instant, so none come back expired relative to it",
+          ),
       }),
-      execute: async ({ query, kinds, limit }) => {
-        const results = await memory.search(query, limit ?? 5, { kinds });
+      execute: async ({ query, kinds, limit, asOf }) => {
+        const results = await memory.search(query, limit ?? 5, {
+          kinds,
+          asOf: asOf ? new Date(asOf) : undefined,
+        });
         const nonce = newNonce();
         return {
           warning: untrustedWarning(nonce),
@@ -72,6 +91,7 @@ export function buildMemoryTools(memory: MemoryService, sessionId: string) {
             kind: r.kind,
             score: r.score,
             createdAt: r.createdAt.toISOString(),
+            ...validityFields(r),
             content: fence(r.content, nonce),
           })),
         };
@@ -94,6 +114,7 @@ export function buildMemoryTools(memory: MemoryService, sessionId: string) {
             id: r.id,
             kind: r.kind,
             createdAt: r.createdAt.toISOString(),
+            ...validityFields(r),
             content: fence(r.content, nonce),
           })),
         };
@@ -106,14 +127,42 @@ export function buildMemoryTools(memory: MemoryService, sessionId: string) {
       inputSchema: z.object({
         id: z.string().describe("Id of the memory to correct (from recall or list_memories)"),
         content: z.string().describe("What is true now, as a self-contained sentence"),
+        ...validityWindowShape,
       }),
-      execute: async ({ id, content }) => {
+      execute: async ({ id, content, ...windowRequest }) => {
+        const requested = resolveValidityWindow(windowRequest, new Date());
+        if (!requested.ok) return { error: requested.error };
         const replacement = await memory.supersede(id, content, {
           sourceRef: { type: "chat", sessionId },
+          validFrom: requested.validFrom,
+          validUntil: requested.validUntil,
         });
         return replacement
-          ? { id: replacement.id, supersededId: id }
-          : { error: "no memory with that id" };
+          ? { id: replacement.id, supersededId: id, ...validityFields(replacement) }
+          : { error: "no current memory with that id" };
+      },
+    }),
+
+    confirm_memory: tool({
+      description:
+        "Record that you checked a memory and it still holds — typically one recall marked expired. It ranks as fresh again and, if it had an expiry, gets a new one: the same window as before unless you pass validFor or validUntil. If the check showed it no longer holds, use correct_memory instead.",
+      inputSchema: z.object({
+        id: z.string().describe("Id of the memory you checked (from recall or list_memories)"),
+        validFor: validityWindowShape.validFor,
+        validUntil: validityWindowShape.validUntil,
+      }),
+      execute: async ({ id, validFor, validUntil }) => {
+        const existing = await memory.get(id);
+        if (!existing || existing.supersededAt) return { error: "no current memory with that id" };
+        // A memory that hasn't started holding yet gets its new window from its
+        // own start, or the window could end before the claim begins.
+        const measuredFrom = new Date(Math.max(Date.now(), existing.validFrom.getTime()));
+        const requested = resolveValidityWindow({ validFor, validUntil }, measuredFrom);
+        if (!requested.ok) return { error: requested.error };
+        const confirmed = await memory.confirm(id, { validUntil: requested.validUntil });
+        return confirmed
+          ? { id: confirmed.id, confirmCount: confirmed.confirmCount, ...validityFields(confirmed) }
+          : { error: "no current memory with that id" };
       },
     }),
 

@@ -18,7 +18,8 @@ export interface TerminalTab {
 
 /**
  * A tab viewing the diff of a changed file. The tab only tracks which file it
- * shows (repo + path); the surface's owner supplies the actual renderer via
+ * shows (repo + path, and which of the repo's worktrees when it isn't the
+ * primary one); the surface's owner supplies the actual renderer via
  * `renderFileDiff`. Tracking the file here is what lets us avoid opening the
  * same file twice — a repeat request just re-selects this tab.
  */
@@ -28,6 +29,7 @@ export interface DiffTab {
   kind: "diff";
   repoId: string;
   path: string;
+  worktree?: string;
 }
 
 /**
@@ -57,6 +59,7 @@ export interface EditorTab {
   kind: "editor";
   repoId: string;
   path: string;
+  worktree?: string;
 }
 
 export type Tab = TerminalTab | DiffTab | SetupLogTab | EditorTab;
@@ -149,11 +152,15 @@ export function loadState(key: string, initialTab: InitialTab): SurfaceState {
  */
 export function stateAfterOpenEditor(
   prev: SurfaceState,
-  file: { repoId: string; path: string },
+  file: { repoId: string; path: string; worktree?: string },
   title: string,
 ): SurfaceState {
   const existing = prev.tabs.find(
-    (t) => t.kind === "editor" && t.repoId === file.repoId && t.path === file.path,
+    (t) =>
+      t.kind === "editor" &&
+      t.repoId === file.repoId &&
+      t.path === file.path &&
+      t.worktree === file.worktree,
   );
   if (existing) {
     return prev.activeTabId === existing.id ? prev : { ...prev, activeTabId: existing.id };
@@ -164,6 +171,7 @@ export function stateAfterOpenEditor(
     kind: "editor",
     repoId: file.repoId,
     path: file.path,
+    ...(file.worktree ? { worktree: file.worktree } : {}),
   };
   return { ...prev, tabs: [...prev.tabs, tab], activeTabId: tab.id };
 }

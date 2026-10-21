@@ -6,8 +6,9 @@ import { ensureOk, sidecarFetch } from "./api";
  * - `openai`       → Responses API (default for OpenAI SDK)
  * - `openai-chat`  → legacy `/chat/completions` (for gateways without Responses)
  * - `anthropic`    → Anthropic Messages API
+ * - `ollama`       → Ollama's native API, needed for its decision models
  */
-export type CustomProviderApiKind = "openai" | "openai-chat" | "anthropic";
+export type CustomProviderApiKind = "openai" | "openai-chat" | "anthropic" | "ollama";
 
 /**
  * Structural fields for a user-configured proxy. Stored in Postgres. Secret
