@@ -4,7 +4,7 @@ import { addMessage } from "../chat/service.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { BrowserBridge } from "./bridge.ts";
-import { createBrowserChatRoutes, describeTab, newestThatFit } from "./chat.ts";
+import { createBrowserChatRoutes, describeTab, newestThatFit, previewArgs } from "./chat.ts";
 import { createBrowserRoutes } from "./routes.ts";
 
 const host = { Host: "127.0.0.1:8765" };
@@ -180,5 +180,22 @@ describe("newestThatFit", () => {
       { content: big },
     ]);
     expect(kept).toHaveLength(2);
+  });
+
+  it("measures the thread in UTF-8 bytes, not characters", () => {
+    // 150,000 characters of three-byte text is 450 KB, so only one fits.
+    const wide = "字".repeat(150_000);
+    expect(newestThatFit([{ content: wide }, { content: wide }, { content: wide }])).toHaveLength(
+      1,
+    );
+  });
+});
+
+describe("previewArgs", () => {
+  it("keeps every key in view when one value is long", () => {
+    const preview = previewArgs({ body: "x".repeat(5_000), to: "someone@example.com" });
+    expect(preview).toContain("someone@example.com");
+    expect(preview).toContain("more characters");
+    expect(preview.length).toBeLessThan(1_000);
   });
 });

@@ -184,12 +184,15 @@ async function currentTabContext() {
 
 function renderApproval() {
   const next = approvals[0];
+  const appearing = approvalBar.hidden && next;
   approvalBar.hidden = !next;
   if (!next) return;
   const more = approvals.length > 1 ? ` (+${approvals.length - 1} more)` : "";
   const where = next.server ? ` from ${next.server}` : "";
   approvalText.textContent = `Yarvis wants to run ${next.name}${where}${more}.`;
   approvalArgs.textContent = next.args ?? "";
+  // The composer is disabled during a turn, so focus goes where the answer is.
+  if (appearing) document.getElementById("approve").focus();
 }
 
 function answerApproval(approved) {

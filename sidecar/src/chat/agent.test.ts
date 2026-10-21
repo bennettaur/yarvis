@@ -282,7 +282,9 @@ describe("runAgentTurn", () => {
 
     // The same call typed in the app runs without asking.
     const typed = await collect(deleteCall(), session.id, denyingApproval);
-    expect(typed.find((e) => e.type === "tool_result")).not.toMatchObject({ status: "denied" });
+    const typedResult = typed.find((e) => e.type === "tool_result");
+    expect(typedResult).toBeDefined();
+    expect(typedResult).not.toMatchObject({ status: "denied" });
   });
 
   it("names the MCP server a tool belongs to", async () => {

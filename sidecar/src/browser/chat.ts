@@ -6,7 +6,7 @@ import { getChatBudget } from "../chat/config.ts";
 import { createSession, getMessages, listSessions } from "../chat/service.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import { clientError, describeError } from "../llm/errors.ts";
+import { clientError, describeError, redactSecrets } from "../llm/errors.ts";
 import { defaultProviderModel, resolveModel } from "../llm/providers.ts";
 import { resolveApproval } from "../mcp/approvals.ts";
 import { listMcpServers } from "../mcp/service.ts";
@@ -31,10 +31,14 @@ const MAX_SESSIONS = 50;
  * framing. The full thread is in the app.
  */
 const MAX_THREAD_MESSAGES = 60;
-const MAX_THREAD_CHARS = 800_000;
+const MAX_THREAD_BYTES = 800_000;
 
-/** An approval prompt shows the arguments so the user knows what they allow, not a page of them. */
-const MAX_APPROVAL_ARGS_CHARS = 2_000;
+/**
+ * An approval prompt shows the arguments so the user knows what they allow.
+ * Each string is cut rather than the whole, so a long body can't push the
+ * recipient or address out of view.
+ */
+const MAX_APPROVAL_STRING_CHARS = 300;
 
 const MAX_SELECTION_CHARS = 2_000;
 
@@ -66,11 +70,12 @@ const approvalSchema = z.object({ approved: z.boolean() });
 /** The newest messages that fit the panel's count and size limits, oldest first. */
 export function newestThatFit<T extends { content: string }>(messages: T[]): T[] {
   const kept: T[] = [];
-  let chars = 0;
+  let bytes = 0;
   for (let i = messages.length - 1; i >= 0 && kept.length < MAX_THREAD_MESSAGES; i--) {
     const message = messages[i] as T;
-    chars += message.content.length;
-    if (chars > MAX_THREAD_CHARS) break;
+    // Chrome's cap is on the UTF-8 JSON, where escapes and non-ASCII text weigh more than a character.
+    bytes += Buffer.byteLength(JSON.stringify(message.content));
+    if (bytes > MAX_THREAD_BYTES) break;
     kept.push(message);
   }
   return kept.reverse();
@@ -83,11 +88,17 @@ function describeToolId(id: string, serverNames: ReadonlyMap<string, string>) {
   return { name: rest.join(":"), server: serverNames.get(serverId) ?? serverId };
 }
 
-function previewArgs(args: unknown): string {
-  const text = JSON.stringify(args ?? {}, null, 2) ?? "";
-  return text.length > MAX_APPROVAL_ARGS_CHARS
-    ? `${text.slice(0, MAX_APPROVAL_ARGS_CHARS)}\n…`
-    : text;
+export function previewArgs(args: unknown): string {
+  const text = JSON.stringify(
+    args ?? {},
+    (_key, value) =>
+      typeof value === "string" && value.length > MAX_APPROVAL_STRING_CHARS
+        ? `${value.slice(0, MAX_APPROVAL_STRING_CHARS)}… (${value.length - MAX_APPROVAL_STRING_CHARS} more characters)`
+        : value,
+    2,
+  );
+  // The arguments leave the sidecar for the extension, so credential shapes are masked.
+  return redactSecrets(text ?? "");
 }
 
 /**
@@ -199,47 +210,50 @@ export function createBrowserChatRoutes(config: Config): Hono {
         return chain;
       };
       const asked: string[] = [];
-      // Tool results stay out of the stream: a page's text can be most of a
-      // native message's 1 MiB, and the panel only shows tool names.
-      for await (const event of runAgentTurn({
-        config,
-        db: db(),
-        model,
-        sessionId,
-        message,
-        context: tab ? describeTab(tab) : undefined,
-        userMetadata: { source: "browser" },
-        budget,
-        serverNames,
-        signal: c.req.raw.signal,
-        approval: {
+      try {
+        // Tool results stay out of the stream: a page's text can be most of a
+        // native message's 1 MiB, and the panel only shows tool names.
+        for await (const event of runAgentTurn({
+          config,
+          db: db(),
+          model,
+          sessionId,
+          message,
+          context: tab ? describeTab(tab) : undefined,
+          userMetadata: { source: "browser" },
+          budget,
+          serverNames,
           signal: c.req.raw.signal,
-          onRequest: async ({ toolCallId, id, args }) => {
-            askedHere.add(toolCallId);
-            asked.push(toolCallId);
-            await write({
-              type: "tool_approval_request",
-              id: toolCallId,
-              ...describeToolId(id, serverNames),
-              args: previewArgs(args),
-            });
+          approval: {
+            signal: c.req.raw.signal,
+            onRequest: async ({ toolCallId, id, args }) => {
+              askedHere.add(toolCallId);
+              asked.push(toolCallId);
+              await write({
+                type: "tool_approval_request",
+                id: toolCallId,
+                ...describeToolId(id, serverNames),
+                args: previewArgs(args),
+              });
+            },
           },
-        },
-      })) {
-        if (event.type === "delta") await write({ type: "delta", text: event.text });
-        else if (event.type === "tool_call") {
-          await write({ type: "tool_call", id: event.id, name: event.name });
-        } else if (event.type === "tool_result") {
-          await write({ type: "tool_result", id: event.id, status: event.status });
-        } else if (event.type === "attention") {
-          await write({ type: "attention", reason: event.reason });
-        } else if (event.type === "error") {
-          await write({ type: "error", message: event.message });
-        } else if (event.type === "done") {
-          await write({ type: "done" });
+        })) {
+          if (event.type === "delta") await write({ type: "delta", text: event.text });
+          else if (event.type === "tool_call") {
+            await write({ type: "tool_call", id: event.id, name: event.name });
+          } else if (event.type === "tool_result") {
+            await write({ type: "tool_result", id: event.id, status: event.status });
+          } else if (event.type === "attention") {
+            await write({ type: "attention", reason: event.reason });
+          } else if (event.type === "error") {
+            await write({ type: "error", message: event.message });
+          } else if (event.type === "done") {
+            await write({ type: "done" });
+          }
         }
+      } finally {
+        for (const id of asked) askedHere.delete(id);
       }
-      for (const id of asked) askedHere.delete(id);
     });
   });
 

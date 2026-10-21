@@ -544,7 +544,10 @@ back to ad-hoc.
   so the browser token also runs agent turns and reads recent chats from every
   surface (the panel picks from them). Approval requests travel back on the
   turn's stream and answers on `/browser/chat/approvals/:id`, which only decides
-  calls a panel turn asked about. The tab it sends as context is fenced like any
+  calls a panel turn asked about. That leaves the token able to approve its own
+  turn's calls, so anything that can read the discovery file can use every tool
+  the panel can; it is as scoped as the user's own account, not narrower. The
+  tab it sends as context is fenced like any
   screen context.
 - Follow the repo's existing comment style: comments explain *why*, not
   *what* — no restating what a well-named function already says.

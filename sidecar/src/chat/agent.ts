@@ -375,9 +375,10 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
     confirmBuiltins: confirmDestructive
       ? new Set([...ALWAYS_CONFIRM_BUILTIN_TOOLS, ...DESTRUCTIVE_BUILTIN_TOOLS])
       : ALWAYS_CONFIRM_BUILTIN_TOOLS,
-    // Standing consent for an MCP tool was given about typed turns. A spoken one
-    // was never read back, so it asks again for everything.
-    honourStandingConsent: !spoken,
+    // Standing consent for an MCP tool was given about typed turns the user read
+    // back. A spoken one wasn't, and a side-panel one carries page-written text,
+    // so both ask again for everything.
+    honourStandingConsent: !confirmDestructive,
     liveTools,
   });
 
