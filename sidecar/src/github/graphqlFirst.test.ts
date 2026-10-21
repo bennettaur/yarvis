@@ -228,3 +228,155 @@ describe("falls back to REST", () => {
     expect(requests).toEqual(["GRAPHQL"]);
   });
 });
+
+describe("GraphQL reads match REST", () => {
+  it("doesn't narrow an unfiltered issue list to unassigned issues", async () => {
+    let sent: Record<string, unknown> = {};
+    const { gh } = fakeGitHub(({ variables }) => {
+      sent = variables;
+      return data({ repository: { issues: { nodes: [] } } });
+    });
+    await gh.listRepoIssues("o", "r");
+    expect(sent.filterBy).toEqual({});
+    await gh.listRepoIssues("o", "r", { assignee: "me" });
+    expect(sent.filterBy).toEqual({ assignee: "me" });
+  });
+
+  it("still reads a PR's status when a fine-grained token can't see its checks", async () => {
+    const { gh, requests } = fakeGitHub(
+      () =>
+        new Response(
+          JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: {
+                  state: "OPEN",
+                  merged: false,
+                  mergeable: "MERGEABLE",
+                  mergeStateStatus: "CLEAN",
+                  commits: { nodes: [{ commit: { statusCheckRollup: null } }] },
+                },
+              },
+            },
+            errors: [
+              {
+                type: "FORBIDDEN",
+                path: [
+                  "repository",
+                  "pullRequest",
+                  "commits",
+                  "nodes",
+                  0,
+                  "commit",
+                  "statusCheckRollup",
+                ],
+              },
+            ],
+          }),
+        ),
+    );
+    expect(await gh.prStatus("o", "r", 1)).toMatchObject({
+      mergeable: true,
+      mergeableState: "clean",
+      checks: { total: 0 },
+    });
+    expect(requests).toEqual(["GRAPHQL"]);
+  });
+
+  it("collapses reviews to the latest verdict from someone who could merge", async () => {
+    const review = (login: string, state: string, authorAssociation = "MEMBER") => ({
+      state,
+      authorAssociation,
+      author: { login },
+    });
+    const { gh } = fakeGitHub(() =>
+      data({
+        repository: {
+          pullRequest: {
+            reviews: {
+              nodes: [
+                review("a", "APPROVED"),
+                review("a", "DISMISSED"),
+                review("drive-by", "APPROVED", "NONE"),
+                review("b", "COMMENTED"),
+              ],
+            },
+          },
+        },
+      }),
+    );
+    expect(await gh.prReviewDecision("o", "r", 1)).toBe("review_required");
+  });
+
+  it("reads an issue with its comments", async () => {
+    const { gh } = fakeGitHub(() =>
+      data({
+        repository: {
+          issueOrPullRequest: {
+            __typename: "Issue",
+            number: 5,
+            title: "Detailed",
+            url: "https://github.com/o/r/issues/5",
+            state: "OPEN",
+            createdAt: "2026-10-01",
+            updatedAt: "2026-10-02",
+            author: { login: "me" },
+            assignees: { nodes: [] },
+            labels: { nodes: [] },
+            comments: { totalCount: 1 },
+            body: "desc",
+            thread: { nodes: [{ body: "hi", createdAt: "2026-10-03", author: { login: "eve" } }] },
+          },
+        },
+      }),
+    );
+    const detail = await gh.issueDetail("o", "r", 5);
+    expect(detail).toMatchObject({ externalId: "5", title: "Detailed", body: "desc" });
+    expect(detail.comments).toEqual([{ author: "eve", body: "hi", createdAt: "2026-10-03" }]);
+  });
+
+  it("shares one request between concurrent login lookups, and retries after a failure", async () => {
+    let calls = 0;
+    const { gh } = fakeGitHub(() => {
+      calls++;
+      return calls === 1
+        ? graphqlErrors([{ type: "FORBIDDEN", message: "no" }])
+        : data({ viewer: { login: "me" } });
+    });
+    await expect(gh.viewer()).rejects.toThrow();
+    const [a, b] = await Promise.all([gh.viewer(), gh.viewer()]);
+    expect([a, b]).toEqual([{ login: "me" }, { login: "me" }]);
+    expect(calls).toBe(2);
+  });
+});
+
+describe("falls back to REST when GraphQL can't answer", () => {
+  const rest = { "/repos/o/r/pulls/1": REST_PR, "/repos/o/r/commits/abc/check-runs": REST_CHECKS };
+  const cases: [string, Handler][] = [
+    [
+      "the network fails",
+      () => {
+        throw new TypeError("fetch failed");
+      },
+    ],
+    ["there's no GraphQL endpoint", () => new Response("not found", { status: 404 })],
+    ["the reply is empty", () => new Response("{}")],
+    ["the reply is an HTML page", () => new Response("<html>Unicorn</html>")],
+  ];
+  for (const [when, graphql] of cases) {
+    it(`when ${when}`, async () => {
+      const { gh } = fakeGitHub(graphql, rest);
+      expect(await gh.prStatus("o", "r", 1)).toMatchObject({ mergeable: true });
+    });
+  }
+
+  it("but not when GitHub rejects the token", async () => {
+    const { gh, requests } = fakeGitHub(
+      () => new Response(JSON.stringify({ message: "Bad credentials" }), { status: 401 }),
+      rest,
+    );
+    const error = await gh.prStatus("o", "r", 1).catch((e) => e);
+    expect((error as GitHubError).reason).toBe("unauthorized");
+    expect(requests).toEqual(["GRAPHQL"]);
+  });
+});

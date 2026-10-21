@@ -198,10 +198,8 @@ export function summarizeReviewDecision(reviews: any[]): ReviewDecision {
   return "review_required";
 }
 
-type GraphqlError = GraphqlErrorEntry;
-
 /** GitHub withholding one check from a token that may not read it, rather than failing the query. */
-function isRefusedCheck(error: GraphqlError): boolean {
+function isRefusedCheck(error: GraphqlErrorEntry): boolean {
   return error.type === "FORBIDDEN" && (error.path ?? []).includes("statusCheckRollup");
 }
 
@@ -626,23 +624,33 @@ export function encodeRepoPath(path: string): string {
   return segments.map(encodeURIComponent).join("/");
 }
 
-/** Where a `GitHubClient` sends REST and GraphQL requests. */
-/** Each token's login, by `tokenKey`. Process-wide, since clients are built per request. */
-const viewerLogins = new Map<string, Promise<string>>();
+/**
+ * Each token's login, by `tokenKey`. Process-wide, since clients are built per
+ * request. Kept for as long as the PRs tab trusts its own probe of the token,
+ * so a token revoked on GitHub shows up there as one.
+ */
+const viewerLogins = new Map<string, { login: Promise<string>; expiresAt: number }>();
+const VIEWER_LOGIN_TTL_MS = 10 * 60_000;
 
 /** Test hook: forget every cached login. */
 export function resetViewerLogins(): void {
   viewerLogins.clear();
 }
 
-let lastFallbackNote = 0;
+/** When each distinct fallback reason was last logged. */
+const lastFallbackNotes = new Map<string, number>();
 
-/** Logs a switch to REST at most once a minute: while GraphQL is limited, every read switches. */
+/**
+ * Logs a switch to REST once a minute per reason: while GraphQL is limited
+ * every read switches, but a broken query is its own line rather than lost
+ * among those.
+ */
 function noteRestFallback(e: unknown): void {
+  const reason = String(e);
   const now = Date.now();
-  if (now - lastFallbackNote < 60_000) return;
-  lastFallbackNote = now;
-  console.warn("[github] GraphQL unavailable, reading through REST:", String(e));
+  if (now - (lastFallbackNotes.get(reason) ?? 0) < 60_000) return;
+  lastFallbackNotes.set(reason, now);
+  console.warn("[github] GraphQL couldn't answer, reading through REST:", reason);
 }
 
 const VIEWER_QUERY = "query{ viewer{ login } }";
@@ -669,7 +677,7 @@ query($owner:String!,$repo:String!,$number:Int!){
 const PR_BY_BRANCH_QUERY = `
 query($owner:String!,$repo:String!,$branch:String!){
   repository(owner:$owner,name:$repo){
-    pullRequests(headRefName:$branch, first:5, orderBy:{field:CREATED_AT,direction:DESC}){
+    pullRequests(headRefName:$branch, first:20, orderBy:{field:CREATED_AT,direction:DESC}){
       nodes{ ${PR_SUMMARY_FIELDS} headRepositoryOwner{ login } }
     }
   }
@@ -703,7 +711,7 @@ const ISSUE_FIELDS = `
   number title url state createdAt updatedAt
   author{ login }
   assignees(first:20){ nodes{ login } }
-  labels(first:20){ nodes{ name color } }
+  labels(first:50){ nodes{ name color } }
   comments{ totalCount }
 `;
 
@@ -712,9 +720,9 @@ const ISSUE_FIELDS = `
  * The caller narrows to all, so a page of OR matches can hold fewer than 50.
  */
 const REPO_ISSUES_QUERY = `
-query($owner:String!,$repo:String!,$states:[IssueState!],$assignee:String,$labels:[String!]){
+query($owner:String!,$repo:String!,$states:[IssueState!],$filterBy:IssueFilters){
   repository(owner:$owner,name:$repo){
-    issues(first:50, states:$states, filterBy:{assignee:$assignee, labels:$labels},
+    issues(first:50, states:$states, filterBy:$filterBy,
            orderBy:{field:CREATED_AT,direction:DESC}){
       nodes{ ${ISSUE_FIELDS} }
     }
@@ -793,6 +801,7 @@ function restMergeable(value: unknown): boolean | null {
   return null;
 }
 
+/** Where a `GitHubClient` sends REST and GraphQL requests. */
 export interface GitHubEndpoints {
   api: string;
   graphql: string;
@@ -857,7 +866,7 @@ export class GitHubClient {
     query: string,
     variables: Record<string, unknown>,
     signal?: AbortSignal,
-  ): Promise<{ data?: T; errors?: GraphqlError[] }> {
+  ): Promise<{ data?: T; errors?: GraphqlErrorEntry[] }> {
     let res: Response;
     try {
       res = await this.fetchImpl(this.endpoints.graphql, {
@@ -890,7 +899,18 @@ export class GitHubClient {
       );
     }
     if (!res.ok) throw await githubErrorFrom(res, "graphql");
-    const payload = (await res.json()) as { data?: T; errors?: GraphqlError[] };
+    let payload: { data?: T; errors?: GraphqlErrorEntry[] };
+    try {
+      payload = (await res.json()) as { data?: T; errors?: GraphqlErrorEntry[] };
+    } catch {
+      // A proxy or outage page can come back as HTML with a 200.
+      throw new GitHubError(
+        502,
+        "upstream_error",
+        "GitHub's GraphQL reply wasn't JSON.",
+        "graphql",
+      );
+    }
     if (payload.data == null && !payload.errors?.length) {
       throw new GitHubError(502, "upstream_error", "GitHub's GraphQL reply was empty.", "graphql");
     }
@@ -918,17 +938,19 @@ export class GitHubClient {
   /** The signed-in account. Asked once per token, since it can't change under one. */
   viewer(): Promise<{ login: string }> {
     const key = tokenKey(this.token);
-    let login = viewerLogins.get(key);
-    if (!login) {
-      login = this.graphqlFirst(
-        async () =>
-          (await this.graphql<{ viewer: { login: string } }>(VIEWER_QUERY, {})).viewer.login,
-        async () => (await this.api<{ login: string }>("/user")).login,
-      );
-      viewerLogins.set(key, login);
-      // A failure isn't an answer worth keeping; the next caller asks again.
-      login.catch(() => viewerLogins.delete(key));
-    }
+    const cached = viewerLogins.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.login.then((login) => ({ login }));
+    const login = this.graphqlFirst(
+      async () =>
+        (await this.graphql<{ viewer: { login: string } }>(VIEWER_QUERY, {})).viewer.login,
+      async () => (await this.api<{ login: string }>("/user")).login,
+    );
+    const entry = { login, expiresAt: Date.now() + VIEWER_LOGIN_TTL_MS };
+    viewerLogins.set(key, entry);
+    // A failure isn't an answer worth keeping; the next caller asks again.
+    login.catch(() => {
+      if (viewerLogins.get(key) === entry) viewerLogins.delete(key);
+    });
     return login.then((value) => ({ login: value }));
   }
 
@@ -1042,12 +1064,13 @@ export class GitHubClient {
   async prStatus(owner: string, repo: string, number: number): Promise<PrStatus> {
     return this.graphqlFirst(
       async () => {
-        const data = await this.graphql<{ repository?: { pullRequest?: any } }>(PR_STATUS_QUERY, {
-          owner,
-          repo,
-          number,
-        });
-        const pr = data.repository?.pullRequest;
+        // A fine-grained token gets its check runs refused in place; the rest
+        // of the status still stands, as in `prDetail`.
+        const { data, errors } = await this.graphqlPayload<{
+          repository?: { pullRequest?: any };
+        }>(PR_STATUS_QUERY, { owner, repo, number });
+        if (errors && !(data && errors.every(isRefusedCheck))) throw githubErrorFromGraphql(errors);
+        const pr = data?.repository?.pullRequest;
         if (!pr) throw notFound(`${owner}/${repo}#${number}`);
         const contexts = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
         const runs = contexts
@@ -1610,8 +1633,12 @@ export class GitHubClient {
             owner,
             repo,
             states: state === "all" ? null : [state.toUpperCase()],
-            assignee: opts.assignee ?? null,
-            labels: opts.labels?.length ? opts.labels : null,
+            // Only the filters asked for: an assignee of null means
+            // "unassigned" to GitHub, not "anyone".
+            filterBy: {
+              ...(opts.assignee ? { assignee: opts.assignee } : {}),
+              ...(opts.labels?.length ? { labels: opts.labels } : {}),
+            },
           },
         );
         if (!data.repository) throw notFound(`${owner}/${repo}`);

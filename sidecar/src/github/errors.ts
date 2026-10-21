@@ -253,7 +253,9 @@ export function githubErrorFromGraphql(errors: GraphqlErrorEntry[]): GitHubError
  * Whether a read that failed through GraphQL should be retried through REST.
  * Only when GraphQL couldn't answer at all: its rate limit is spent, GitHub is
  * failing, or the network is. A refusal (no access, SSO, not found) would be
- * the answer either way, so it is reported, not retried.
+ * the answer either way, so it is reported, not retried. An error type this
+ * doesn't recognise, such as a query a GitHub Enterprise server can't run,
+ * falls back too, since REST may still answer it.
  */
 export function shouldFallBackToRest(e: unknown): boolean {
   return e instanceof GitHubError && (e.reason === "rate_limited" || e.reason === "upstream_error");
