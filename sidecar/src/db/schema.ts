@@ -645,6 +645,47 @@ export const workspaceRepos = pgTable(
   (t) => [uniqueIndex("workspace_repos_ws_repo_idx").on(t.workspaceId, t.repoId)],
 );
 
+/**
+ * Claude Code sessions that have announced themselves in a workspace, written by
+ * the SessionStart/SessionEnd hooks in its `.claude/settings.json`
+ * (`workspaces/claudeSettings.ts`). One row per Claude session id and PTY: a
+ * resume keeps the session id, so it reopens the same row with the new pid, and
+ * a `/clear` starts a new one.
+ *
+ * The pid is what lets the core confirm that Claude itself is reading a PTY's
+ * prompt (see `foreground_is_agent` in `src-tauri/src/pty.rs`). SessionEnd does
+ * not fire when Claude is killed, so `endedAt` being null is not proof of life;
+ * readers check the pid as well.
+ */
+export const workspaceAgentSessions = pgTable(
+  "workspace_agent_sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    // The PTY the session runs in: `ws-claude:<workspaceId>` for the workspace's
+    // own agent tab, `ws:<workspaceId>/...` for one started in a terminal pane.
+    sessionKey: text("session_key").notNull(),
+    claudeSessionId: text("claude_session_id").notNull(),
+    pid: integer("pid").notNull(),
+    // Claude's SessionStart `source` (startup, resume, clear, compact) the last
+    // time this session started, and SessionEnd's `reason` once it has ended, or
+    // `process-gone` when the sidecar found the pid dead without a SessionEnd.
+    source: text("source"),
+    endReason: text("end_reason"),
+    // Kept across resumes; orders sessions so the earliest is primary.
+    // `startedAt` is the latest (re)start.
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("workspace_agent_sessions_key_session_idx").on(t.sessionKey, t.claudeSessionId),
+    index("workspace_agent_sessions_workspace_idx").on(t.workspaceId),
+  ],
+);
+
 /** Background-poller cache of the PR + checks for each workspace repo (1:1). */
 export const workspaceRepoPr = pgTable(
   "workspace_repo_pr",

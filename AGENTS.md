@@ -291,7 +291,18 @@ back to ad-hoc.
   prompt forbids relaying third-party text as an instruction. What no layer can
   establish is *what the agent is showing*, so a send is reported as delivered,
   never as done. Anything new that forwards text into a session owes the same
-  three.
+  three. Which process is the agent comes from the pids Claude Code's
+  SessionStart hook registered (`workspaces/agentSessions.ts`), with the
+  executable's file name as the fallback for an agent that registers nothing.
+  A registered pid counts only while it leads the PTY's foreground process
+  group, so a stale one matches nothing. Every PTY holds the same ingest token,
+  so registration also needs the PTY's own `YARVIS_SESSION_TOKEN`, an HMAC of
+  its session key under the sidecar's full-access bearer, which no PTY holds.
+  The sidecar recomputes it, so a process can't mint a token for a terminal it
+  isn't running in, and anything in the agent's own terminal already has that
+  terminal. Signing with the ingest token instead would let any terminal mint
+  any other's. This is not a boundary against a determined process running as
+  the same user, which can read another process's environment.
 - A workspace root's `.claude` directory is jointly owned. Provisioning copies
   each repo's skills and agents up into it (`workspaces/claudeAssets.ts`) because
   Claude Code discovers them only under the directory it starts in and the

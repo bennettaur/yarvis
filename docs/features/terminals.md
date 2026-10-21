@@ -88,7 +88,8 @@ variables:
 | --- | --- |
 | `YARVIS_SESSION_KEY` | Names this exact terminal, so an attention item jumps back to it |
 | `YARVIS_WORKSPACE_ID` | The workspace it belongs to (workspace terminals only) |
-| `YARVIS_ATTENTION_TOKEN` | Lets hooks in this terminal raise attention items, and nothing else |
+| `YARVIS_ATTENTION_TOKEN` | Lets hooks in this terminal raise attention items and register a Claude Code session, and nothing else |
+| `YARVIS_SESSION_TOKEN` | Signs this terminal's session registrations, so one terminal can't mint a registration for another |
 | `YARVIS_SIDECAR_PORT`, `YARVIS_MCP_TOKEN` | Let a Claude Code session here reach Yarvis's MCP endpoint, its memory tools and, in a workspace, its review comment tools |
 
 What this gives you:
