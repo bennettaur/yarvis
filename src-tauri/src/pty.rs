@@ -911,14 +911,17 @@ fn is_claude_session_id(id: &str) -> bool {
         })
 }
 
-/// True when the agent command runs Claude Code, judged by the file name of its
-/// first word. `--resume` is a Claude Code flag, so no other agent is given it.
+/// True when the agent command is a single Claude Code invocation: its first
+/// word's file name is `claude` and it carries no shell syntax. `--resume` is a
+/// Claude Code flag, and it is appended to the end of the line, so a command
+/// like `claude && notify` or `claude # note` would hand it to something else.
 fn runs_claude_code(command: &str) -> bool {
-    command
+    let is_claude = command
         .split_whitespace()
         .next()
         .and_then(|argv0| Path::new(argv0).file_name())
-        .is_some_and(|name| name == "claude")
+        .is_some_and(|name| name == "claude");
+    is_claude && !command.contains(['&', '|', ';', '#', '<', '>', '`', '$', '('])
 }
 
 /// The launch line for `opening`. Extracted from `spawn_claude_session` so the
@@ -1560,6 +1563,20 @@ mod tests {
         assert!(runs_claude_code("claude --permission-mode auto"));
         assert!(!runs_claude_code("CLAUDE_CODE_FOO=1 claude"));
         assert!(!runs_claude_code(""));
+    }
+
+    #[test]
+    fn runs_claude_code_refuses_a_command_with_shell_syntax() {
+        for command in [
+            "claude && notify",
+            "claude; cleanup",
+            "claude # note",
+            "claude | tee log",
+            "claude > out",
+            "claude --model $(pick)",
+        ] {
+            assert!(!runs_claude_code(command), "{command:?}");
+        }
     }
 
     #[test]

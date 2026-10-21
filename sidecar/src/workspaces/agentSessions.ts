@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { existsSync } from "node:fs";
+import { access } from "node:fs/promises";
 import { basename, isAbsolute } from "node:path";
 import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
@@ -156,7 +156,12 @@ export async function resumableAgentTabSessionId(
   if (!isAbsolute(transcript) || basename(transcript) !== `${latest.claudeSessionId}.jsonl`) {
     return null;
   }
-  if (!existsSync(transcript)) return null;
+  // Async so a transcript on a slow mount can't stall the event loop.
+  const transcriptExists = await access(transcript).then(
+    () => true,
+    () => false,
+  );
+  if (!transcriptExists) return null;
 
   const running = await db
     .select({ pid: workspaceAgentSessions.pid })

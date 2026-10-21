@@ -150,7 +150,7 @@ export default function AgentSection() {
             When a workspace's agent tab starts again, for example after Yarvis restarts, it picks
             up the Claude Code session it last ran with <code>--resume</code>. A new session starts
             when there is nothing to resume, when Claude Code no longer has the transcript, or when
-            the command above doesn't start with <code>claude</code>.
+            the command above isn't a plain <code>claude …</code> command.
           </span>
         </span>
       </label>

@@ -193,7 +193,8 @@ that tab. No shell tab opens with it. Press `+` or Cmd+T when you want one.
   runs the command with `--resume <session id>` for the Claude Code session it
   last ran. It starts a new session instead when there is nothing to resume,
   when Claude Code no longer has that session's transcript, or when the agent
-  command doesn't start with `claude`. The resumed session carries its earlier
+  command isn't a plain `claude …` command (one with `&&`, `;`, `|` or similar
+  shell syntax isn't given the flag). The resumed session carries its earlier
   context with it. To start clean, run `/clear` in it, or turn this off with
   **Resume the last session when reopening a workspace** under **Settings →
   Repositories → Agent**.
