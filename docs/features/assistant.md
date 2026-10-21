@@ -284,7 +284,10 @@ only until the session moves on.
 ## What it asks before doing
 
 Some actions pause and ask you in the approval bar above the message box (press
-**A** to approve, **D** to deny):
+**A** to approve, **D** to deny). The bar shows what the assistant says it is
+calling the tool for: it has to give a one-sentence reason with every call that
+needs your approval. It's the assistant's own account, so check it against what
+you asked.
 
 - **Booking a calendar event** asks every time.
 - **Registering a repo** asks every time. Later tools clone the repo and run

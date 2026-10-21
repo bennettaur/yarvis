@@ -37,6 +37,7 @@ import { createTelegramRoutes } from "./telegram/routes.ts";
 import { createTodoRoutes } from "./todos/routes.ts";
 import { createVoiceRoutes } from "./voice/routes.ts";
 import { createWipRoutes } from "./wip/routes.ts";
+import { createAgentSessionIngestRoutes } from "./workspaces/agentSessionIngest.ts";
 import { createRepoRoutes, createWorkspaceRoutes } from "./workspaces/routes.ts";
 
 const SERVICE_NAME = "yarvis-sidecar";
@@ -101,6 +102,10 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   // own scoped token (checked inside the router), so a Claude session shell can
   // raise an attention flag without holding the full-access bearer.
   app.route("/ingest", createAttentionIngestRoutes(config));
+  // Same token and shape: the session hooks register the Claude process with
+  // its workspace. The attention router's `/ingest/*` middleware also runs for
+  // it; this router checks the token itself rather than relying on that.
+  app.route("/ingest/agent-session", createAgentSessionIngestRoutes(config));
 
   // The browser bridge is the same shape: the extension's native host holds only
   // this scoped token, checked inside the router, never the full-access bearer.

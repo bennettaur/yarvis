@@ -255,6 +255,11 @@ back to ad-hoc.
   over that endpoint is reached by outside clients holding only the scoped
   `YARVIS_MCP_TOKEN`, so it must be one that token is meant to grant — the
   endpoint deliberately sits outside the main bearer wall, like attention-ingest.
+  It grants the memory tools and, for a session whose `.mcp.json` names its
+  workspace, listing and resolving that workspace's review comments. Review
+  comment bodies go out unfenced, the one exception to the rule below, because
+  the user is their only author; a feature that writes them from anywhere else
+  has to fence them first.
 - Anything an outside party can influence — file contents, diffs, PR titles,
   recalled memories — enters a prompt as data, not instruction: fenced in
   per-request nonce tags (see `sidecar/src/pr/ask.ts`) with the system prompt
@@ -291,7 +296,18 @@ back to ad-hoc.
   prompt forbids relaying third-party text as an instruction. What no layer can
   establish is *what the agent is showing*, so a send is reported as delivered,
   never as done. Anything new that forwards text into a session owes the same
-  three.
+  three. Which process is the agent comes from the pids Claude Code's
+  SessionStart hook registered (`workspaces/agentSessions.ts`), with the
+  executable's file name as the fallback for an agent that registers nothing.
+  A registered pid counts only while it leads the PTY's foreground process
+  group, so a stale one matches nothing. Every PTY holds the same ingest token,
+  so registration also needs the PTY's own `YARVIS_SESSION_TOKEN`, an HMAC of
+  its session key under the sidecar's full-access bearer, which no PTY holds.
+  The sidecar recomputes it, so a process can't mint a token for a terminal it
+  isn't running in, and anything in the agent's own terminal already has that
+  terminal. Signing with the ingest token instead would let any terminal mint
+  any other's. This is not a boundary against a determined process running as
+  the same user, which can read another process's environment.
 - A workspace root's `.claude` directory is jointly owned. Provisioning copies
   each repo's skills and agents up into it (`workspaces/claudeAssets.ts`) because
   Claude Code discovers them only under the directory it starts in and the
@@ -335,6 +351,11 @@ back to ad-hoc.
   a refusal, an error, a timeout — raises the prompt as before. It follows
   standing consent's limits (off on a spoken turn) and never reviews a built-in,
   since the built-ins that ask are the ones whose answer must come from the user.
+  Every call that goes through approval also carries a required `callReason`
+  (`mcp/callReason.ts`), added to the tool's schema and stripped before the tool
+  runs. The approval bar shows it and the reviewer weighs it, both as the
+  model's own claim about its call: it explains intent, it never counts as the
+  user asking.
 - A list a tab shows is read through `lib/resourceCache`, not fetched into local
   state on mount. `App` renders one panel at a time (the Chat tab aside, kept
   mounted so a turn outlives the switch), so a tab switch unmounts a page
