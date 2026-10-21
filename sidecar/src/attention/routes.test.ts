@@ -1,4 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
@@ -225,24 +228,47 @@ describe("permission requests", () => {
 
   afterEach(() => resetPendingPermissions());
 
-  /** Starts a hook's request, then waits until the app can see it. */
-  async function ask(): Promise<{ response: Promise<Response>; id: string }> {
+  async function waitingRequests() {
+    const res = await app.request(`/api/attention/permissions?sessionKey=${sessionKey}`, {
+      headers: bearer,
+    });
+    return (await res.json()) as {
+      id: string;
+      lastReply: string | null;
+      lastPrompt: string | null;
+    }[];
+  }
+
+  /**
+   * Starts a hook's request, then waits until the app can see it. Returns the
+   * newest request's id, so calling it twice gives two different ones.
+   */
+  async function ask(
+    input: unknown = hookInput,
+    signal?: AbortSignal,
+  ): Promise<{ response: Promise<Response>; id: string }> {
+    const before = (await waitingRequests()).length;
     const response = Promise.resolve(
-      app.request("/ingest/permission", {
-        method: "POST",
-        headers: permissionAuth,
-        body: JSON.stringify(hookInput),
-      }),
+      app.request(
+        new Request("http://localhost/ingest/permission", {
+          method: "POST",
+          headers: permissionAuth,
+          body: JSON.stringify(input),
+          signal,
+        }),
+      ),
     );
-    for (let i = 0; i < 100; i++) {
-      const res = await app.request(`/api/attention/permissions?sessionKey=${sessionKey}`, {
-        headers: bearer,
-      });
-      const waiting = (await res.json()) as { id: string }[];
-      if (waiting.length > 0) return { response, id: waiting[0]!.id };
+    for (let i = 0; i < 300; i++) {
+      const waiting = await waitingRequests();
+      if (waiting.length > before) return { response, id: waiting.at(-1)!.id };
       await Bun.sleep(10);
     }
     throw new Error("the request never became visible");
+  }
+
+  /** The item is raised beside the request rather than before it. */
+  async function untilItemRaised() {
+    for (let i = 0; i < 300 && (await pendingItems()).length === 0; i++) await Bun.sleep(10);
   }
 
   async function decide(id: string, decision: unknown) {
@@ -269,8 +295,7 @@ describe("permission requests", () => {
     expect(waiting!.toolInput).toEqual(hookInput.tool_input);
     expect(waiting!.workspaceName).toBe("Fix the API");
 
-    // The item lands asynchronously beside the request; give it a moment.
-    for (let i = 0; i < 100 && (await pendingItems()).length === 0; i++) await Bun.sleep(10);
+    await untilItemRaised();
     const [item] = await pendingItems();
     expect(item).toMatchObject({ kind: "permission", title: "Fix the API" });
     expect(item!.body).toBe("Bash: rm -rf build");
@@ -305,6 +330,36 @@ describe("permission requests", () => {
     expect(await pendingItems()).toHaveLength(1);
   });
 
+  it("drops the request and resolves the item when the hook goes away", async () => {
+    // What happens when the prompt is answered in the terminal: Claude Code
+    // kills the hook, which closes its connection.
+    await seedWorkspace(workspaceId, "WS");
+    const controller = new AbortController();
+    const { response } = await ask(hookInput, controller.signal);
+    await untilItemRaised();
+    controller.abort();
+    await response.catch(() => undefined);
+    for (let i = 0; i < 300 && (await pendingItems()).length > 0; i++) await Bun.sleep(10);
+    expect(await waitingRequests()).toHaveLength(0);
+    expect(await pendingItems()).toHaveLength(0);
+  });
+
+  it("keeps the item until every request from the session is answered", async () => {
+    await seedWorkspace(workspaceId, "WS");
+    const first = await ask();
+    const second = await ask({ ...hookInput, tool_input: { command: "bun test" } });
+    await untilItemRaised();
+
+    await decide(first.id, { behavior: "allow" });
+    await first.response;
+    expect(await pendingItems()).toHaveLength(1);
+    expect((await waitingRequests()).map((r) => r.id)).toEqual([second.id]);
+
+    await decide(second.id, { behavior: "allow" });
+    await second.response;
+    expect(await pendingItems()).toHaveLength(0);
+  });
+
   it("refuses a decision for a request that is no longer waiting", async () => {
     const res = await decide("00000000-0000-0000-0000-000000000000", { behavior: "allow" });
     expect(res.status).toBe(410);
@@ -325,5 +380,51 @@ describe("permission requests", () => {
       body: JSON.stringify({ behavior: "allow" }),
     });
     expect(answered.status).toBe(401);
+  });
+
+  describe("context from the session's transcript", () => {
+    const priorHome = process.env.CLAUDE_HOME;
+    const cwd = "/Users/me/ws/fix-the-api";
+    let home = "";
+
+    beforeEach(() => {
+      home = mkdtempSync(join(tmpdir(), "yarvis-cc-home-"));
+      process.env.CLAUDE_HOME = home;
+      const dir = join(home, "projects", cwd.replace(/[^A-Za-z0-9]/g, "-"));
+      mkdirSync(dir, { recursive: true });
+      const lines = [
+        { type: "user", message: { role: "user", content: "rebuild the client" } },
+        {
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Clearing build first." }],
+          },
+        },
+      ];
+      writeFileSync(join(dir, "s1.jsonl"), lines.map((l) => JSON.stringify(l)).join("\n"));
+    });
+
+    afterEach(() => {
+      rmSync(home, { recursive: true, force: true });
+      if (priorHome === undefined) delete process.env.CLAUDE_HOME;
+      else process.env.CLAUDE_HOME = priorHome;
+    });
+
+    it("shows what Claude said before asking and the user's last prompt", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      await ask({ ...hookInput, cwd, session_id: "s1" });
+      const [waiting] = await waitingRequests();
+      expect(waiting!.lastReply).toBe("Clearing build first.");
+      expect(waiting!.lastPrompt).toBe("rebuild the client");
+    });
+
+    it("reads nothing for a session id that tries to leave the transcripts folder", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      await ask({ ...hookInput, cwd, session_id: "../../../../etc/passwd" });
+      const [waiting] = await waitingRequests();
+      expect(waiting!.lastReply).toBeNull();
+      expect(waiting!.lastPrompt).toBeNull();
+    });
   });
 });

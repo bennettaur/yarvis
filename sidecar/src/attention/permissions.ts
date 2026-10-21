@@ -37,12 +37,24 @@ export interface PermissionRequestInfo {
   createdAt: string;
 }
 
-interface Pending {
+interface PendingRequest {
   info: PermissionRequestInfo;
   resolve: (decision: PermissionDecision | null) => void;
 }
 
-const pending = new Map<string, Pending>();
+const pending = new Map<string, PendingRequest>();
+
+/**
+ * Most requests held at once. Each holds a socket for minutes, and any process
+ * in a Yarvis terminal holds the token that opens one. Past this, a new request
+ * goes straight to Claude Code's own dialog.
+ */
+const MAX_PENDING = 64;
+
+/** Whether another request can be held, or should be left to Claude Code's dialog. */
+export function canHoldAnotherPermission(): boolean {
+  return pending.size < MAX_PENDING;
+}
 
 export type NewPermissionRequest = Omit<PermissionRequestInfo, "id" | "createdAt">;
 
@@ -56,7 +68,11 @@ export type NewPermissionRequest = Omit<PermissionRequestInfo, "id" | "createdAt
  */
 export function awaitPermissionDecision(
   request: NewPermissionRequest,
-  options: { timeoutMs: number; signal?: AbortSignal; onRegistered?: (id: string) => void },
+  options: {
+    timeoutMs: number;
+    signal?: AbortSignal;
+    onRegistered?: (info: PermissionRequestInfo) => void;
+  },
 ): Promise<PermissionDecision | null> {
   const id = randomUUID();
   const info: PermissionRequestInfo = { ...request, id, createdAt: new Date().toISOString() };
@@ -78,7 +94,7 @@ export function awaitPermissionDecision(
       return;
     }
     options.signal?.addEventListener("abort", onAbort, { once: true });
-    options.onRegistered?.(id);
+    options.onRegistered?.(info);
   });
 }
 
@@ -105,7 +121,12 @@ export function hasPendingPermission(sessionKey: string): boolean {
 }
 
 /** Longest one-line summary, so a long heredoc doesn't fill the attention row. */
-const SUMMARY_MAX = 160;
+const MAX_SUMMARY_CHARS = 160;
+
+/** Cuts `text` to at most `max` characters, marking the cut with an ellipsis. */
+export function truncate(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
 
 /**
  * One line describing what the tool wants to do, for the attention row and the
@@ -116,7 +137,7 @@ export function summarizePermission(toolName: string, toolInput: Record<string, 
   const pick = (key: string) => (typeof toolInput[key] === "string" ? toolInput[key] : null);
   const detail = pick("command") ?? pick("file_path") ?? pick("url") ?? pick("pattern");
   const line = detail ? `${toolName}: ${detail.replace(/\s+/g, " ").trim()}` : toolName;
-  return line.length > SUMMARY_MAX ? `${line.slice(0, SUMMARY_MAX - 1)}…` : line;
+  return truncate(line, MAX_SUMMARY_CHARS);
 }
 
 /**

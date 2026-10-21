@@ -88,7 +88,7 @@ variables:
 | --- | --- |
 | `YARVIS_SESSION_KEY` | Names this exact terminal, so an attention item jumps back to it |
 | `YARVIS_WORKSPACE_ID` | The workspace it belongs to (workspace terminals only) |
-| `YARVIS_ATTENTION_TOKEN` | Lets hooks in this terminal raise attention items, and nothing else |
+| `YARVIS_ATTENTION_TOKEN` | Lets hooks in this terminal raise attention items and pass permission prompts to the app, and nothing else |
 | `YARVIS_SIDECAR_PORT`, `YARVIS_MCP_TOKEN` | Let a Claude Code session here reach Yarvis's MCP endpoint and its memory tools |
 
 What this gives you:
@@ -121,10 +121,14 @@ Some details:
 - **Yarvis holds the prompt for about four minutes.** After that, Claude Code
   shows its own dialog in the terminal and the bell item stays until you answer
   there.
+- **Looking at the session doesn't clear the item.** It clears once the prompt
+  is answered, here or in the terminal, or when the session finishes.
 - **Several prompts from one session queue up.** The window shows the oldest
   first with a count of the rest.
 - **Only the app instance that launched the session can answer it.** Another
   instance sharing the database shows the item but not the prompt.
+- **A workspace made by an older version of Yarvis** only flags the prompt in
+  the bell. It gets the new hook the next time it is provisioned.
 - **A Claude run outside Yarvis is unaffected.** The hook can't reach the app,
   so Claude Code shows its normal dialog.
 

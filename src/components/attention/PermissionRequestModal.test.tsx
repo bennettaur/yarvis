@@ -23,13 +23,15 @@ const REQUEST: PermissionRequest = {
 const armed = () => new Promise((resolve) => setTimeout(resolve, 500));
 
 let queue: PermissionRequest[] = [];
+// False when the request was gone by the time the answer reached the sidecar.
+let delivers = true;
 const decisions: [string, PermissionDecision][] = [];
 const spies = [
   spyOn(attention, "getPermissionRequests").mockImplementation(async () => queue),
   spyOn(attention, "decidePermission").mockImplementation(async (id, decision) => {
     decisions.push([id, decision]);
     queue = queue.filter((r) => r.id !== id);
-    return true;
+    return delivers;
   }),
 ];
 
@@ -41,6 +43,7 @@ afterEach(() => {
   unmount?.();
   unmount = null;
   queue = [];
+  delivers = true;
   decisions.length = 0;
   closed = 0;
   wentToSession = 0;
@@ -108,5 +111,62 @@ describe("PermissionRequestModal", () => {
     expect([...host.querySelectorAll("button")].some((b) => b.textContent === "Approve")).toBe(
       false,
     );
+  });
+
+  it("denies with the note the user typed", async () => {
+    queue = [REQUEST];
+    const host = await mount();
+    await armed();
+    const input = host.querySelector("input") as HTMLInputElement;
+    // React tracks the value itself, so set it the way a keystroke would.
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+      input,
+      "Use the clean script",
+    );
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await armed();
+    button(host, "Send").click();
+    await armed();
+    expect(decisions).toEqual([["req-1", { behavior: "deny", message: "Use the clean script" }]]);
+  });
+
+  it("stays open and says so when the prompt was already answered elsewhere", async () => {
+    queue = [REQUEST];
+    delivers = false;
+    const host = await mount();
+    await armed();
+    button(host, "Deny").click();
+    await armed();
+    expect(decisions).toEqual([["req-1", { behavior: "deny" }]]);
+    expect(host.textContent).toContain("already answered or timed out");
+    expect(closed).toBe(0);
+  });
+
+  it("ignores a second click that would land on the next request in the queue", async () => {
+    queue = [REQUEST, { ...REQUEST, id: "req-2", toolInput: { command: "bun test" } }];
+    const host = await mount();
+    expect(host.textContent).toContain("+1 waiting");
+    await armed();
+    button(host, "Approve").click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    button(host, "Approve").click();
+    await armed();
+    expect(decisions).toEqual([["req-1", { behavior: "allow" }]]);
+    expect(host.textContent).toContain("bun test");
+    expect(closed).toBe(0);
+  });
+
+  it("never hides a Bash field beyond the command, and flags an unsandboxed run", async () => {
+    queue = [
+      {
+        ...REQUEST,
+        toolInput: { ...REQUEST.toolInput, dangerouslyDisableSandbox: true, timeout: 600000 },
+      },
+    ];
+    const host = await mount();
+    const text = host.textContent ?? "";
+    expect(text).toContain("Runs outside the sandbox");
+    expect(text).toContain('"dangerouslyDisableSandbox": true');
+    expect(text).toContain('"timeout": 600000');
   });
 });

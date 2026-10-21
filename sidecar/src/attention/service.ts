@@ -150,6 +150,28 @@ export async function clearAttentionScope(
     .returning();
 }
 
+/**
+ * Resolves a session's pending permission item once none of its prompts is
+ * waiting any more. Returns the updated rows so the caller can publish them.
+ */
+export async function resolvePermissionItems(
+  db: Db,
+  sessionKey: string,
+): Promise<AttentionItemRow[]> {
+  const now = new Date();
+  return db
+    .update(attentionItems)
+    .set({ status: "resolved", resolvedAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(attentionItems.sessionKey, sessionKey),
+        eq(attentionItems.kind, "permission"),
+        eq(attentionItems.status, "pending"),
+      ),
+    )
+    .returning();
+}
+
 /** Terminal + read statuses stamp the matching timestamp column. */
 export async function updateAttentionStatus(
   db: Db,

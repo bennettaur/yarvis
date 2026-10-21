@@ -26,28 +26,28 @@ function payloadOf(command: string, env: Record<string, string> = {}): unknown {
 describe("attentionHookCommand", () => {
   it("emits a body that satisfies the ingest route's schema", () => {
     // The whole feature silently breaks if these two sides drift, so pin them.
-    const command = attentionHookCommand(WORKSPACE_ID, `ws-claude:${WORKSPACE_ID}`, "permission");
+    const command = attentionHookCommand(WORKSPACE_ID, `ws-claude:${WORKSPACE_ID}`, "idle");
     const parsed = ingestSchema.safeParse(payloadOf(command));
     expect(parsed.success).toBe(true);
     expect(parsed.success && parsed.data).toEqual({
       workspaceId: WORKSPACE_ID,
       sessionKey: `ws-claude:${WORKSPACE_ID}`,
-      kind: "permission",
+      kind: "idle",
     });
   });
 
   it("reports the PTY session it runs in, so the item names the exact tab", () => {
-    const command = attentionHookCommand(WORKSPACE_ID, `ws-claude:${WORKSPACE_ID}`, "permission");
+    const command = attentionHookCommand(WORKSPACE_ID, `ws-claude:${WORKSPACE_ID}`, "idle");
     const payload = payloadOf(command, { YARVIS_SESSION_KEY: `ws:${WORKSPACE_ID}/t1/p2` });
     expect(payload).toEqual({
       workspaceId: WORKSPACE_ID,
       sessionKey: `ws:${WORKSPACE_ID}/t1/p2`,
-      kind: "permission",
+      kind: "idle",
     });
   });
 
   it("treats a hostile session key as data, not as shell to run", () => {
-    const command = attentionHookCommand(WORKSPACE_ID, `ws-claude:${WORKSPACE_ID}`, "permission");
+    const command = attentionHookCommand(WORKSPACE_ID, `ws-claude:${WORKSPACE_ID}`, "idle");
     const payload = payloadOf(command, { YARVIS_SESSION_KEY: "$(echo pwned);id" }) as {
       sessionKey: string;
     };
@@ -142,6 +142,21 @@ describe("permissionHookCommand", () => {
     expect(stdout).toBe("");
   });
 
+  it("prints nothing outside a Yarvis terminal, without calling anything", async () => {
+    let called = false;
+    const { stdout, exitCode } = await runAgainst(
+      () => {
+        called = true;
+        return Response.json({ hookSpecificOutput: { decision: { behavior: "allow" } } });
+      },
+      "{}",
+      { YARVIS_SIDECAR_PORT: "" },
+    );
+    expect(exitCode).toBe(0);
+    expect(stdout).toBe("");
+    expect(called).toBe(false);
+  });
+
   it("stays inside Claude Code's timeout for the hook", () => {
     const command = permissionHookCommand(WORKSPACE_ID, `ws-claude:${WORKSPACE_ID}`);
     const maxTime = Number(command.match(/-m (\d+)/)?.[1]);
@@ -194,11 +209,8 @@ describe("buildClaudeSettings", () => {
             hooks: [
               {
                 type: "command",
-                command: attentionHookCommand(
-                  WORKSPACE_ID,
-                  `ws-claude:${WORKSPACE_ID}`,
-                  "permission",
-                ),
+                // What an earlier version wrote: a flag-only post to the attention ingest.
+                command: `cat >/dev/null 2>&1; curl -sf -m 5 -X POST "http://127.0.0.1:\${YARVIS_SIDECAR_PORT}/ingest/attention" -d '{"workspaceId":"${WORKSPACE_ID}","kind":"permission"}' || true`,
               },
             ],
           },
