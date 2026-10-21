@@ -111,10 +111,10 @@ writes these files into the root:
 | File | What it's for |
 | --- | --- |
 | `AGENTS.md` and `CLAUDE.md` | Tells the agent which repos are present and on what branch. `CLAUDE.md` just includes `AGENTS.md`. |
-| `.claude/settings.json` | The hooks that tell Yarvis when the session needs you, and let you answer its permission prompts from the app |
+| `.claude/settings.json` | The hooks that tell Yarvis when the session needs you, let you answer its permission prompts from the app, and register each Claude Code session with the workspace |
 | `.claude/skills/`, `.claude/agents/` | Copies of each repo's own skills and agents |
 | `.claude/.yarvis-copied.json` | A list of the copies above, so they can be cleaned up |
-| `.mcp.json` | Points the session at Yarvis's MCP endpoint, so it can read and write Yarvis memory. See [MCP](mcp.md). |
+| `.mcp.json` | Points the session at Yarvis's MCP endpoint, so it can read and write Yarvis memory and work through this workspace's review comments. See [MCP](mcp.md). |
 | `.yarvis/brief.md` | The work the session was started on, when there is one |
 
 Some details:
@@ -300,6 +300,12 @@ workspace, with a count of open comments. A comment's heading opens its diff.
 - **Resolve** marks a comment dealt with. It stays in the list but leaves the
   copied text. **Reopen** puts it back. **×** deletes it.
 
+The agent session can also fetch the comments itself. Ask it to "address the
+feedback left in Yarvis" and it reads the open comments over Yarvis's MCP
+endpoint, then marks each one resolved as it finishes it. The **Comments** tab picks up
+what it resolved within a few seconds. See
+[MCP](mcp.md#workspace-review-comments).
+
 Archiving a workspace deletes its comments once the worktrees are gone. If the
 archive stops partway (a worktree won't remove), the workspace can still be
 reopened, so its comments are kept.
@@ -424,7 +430,13 @@ Safety rules:
 
 - **The send is refused unless the configured agent is what's reading the
   prompt.** If the agent exited, or something else is running in that
-  terminal, nothing is typed.
+  terminal, nothing is typed. Yarvis knows which process is Claude because
+  each Claude Code session registers itself with the workspace when it starts.
+  A session started before its workspace had the registration hooks isn't
+  known that way. Yarvis then goes by the agent's executable name, which fails
+  for Claude Code's native installer. Yarvis adds the hooks when it next starts
+  a session in the workspace, or when a send is refused for this reason, so
+  restarting the session once after that fixes it.
 - **An instruction can't start with `!`, `/`, `#` or `@`.** The agent reads
   those as commands, not requests.
 - **A send confirms delivery only, never that the work was done.** Yarvis

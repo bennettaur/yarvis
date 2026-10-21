@@ -39,12 +39,12 @@ const KIND = z.enum(["permission", "idle", "completed", "error", "info"]);
  * with zod's `.uuid()`, which additionally enforces RFC version/variant bits
  * that Postgres itself does not.
  */
-const UUID = z
+export const UUID = z
   .string()
   .regex(/^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/, "must be a uuid");
 
 /** Bounds what a token holder can persist per item (stored twice: column + payload). */
-const MAX_SESSION_KEY = 256;
+export const MAX_SESSION_KEY = 256;
 
 /** Cap on a single stream's pending-write queue, so a stalled reader is bounded. */
 const MAX_STREAM_QUEUE = 256;

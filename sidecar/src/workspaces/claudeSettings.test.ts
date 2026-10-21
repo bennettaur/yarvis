@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { ingestSchema } from "../attention/routes.ts";
 import {
+  agentSessionHookCommand,
   attentionHookCommand,
   buildClaudeSettings,
   PERMISSION_HOOK_TIMEOUT_S,
@@ -164,14 +165,94 @@ describe("permissionHookCommand", () => {
   });
 });
 
+/** A request the registration hook made, as the sidecar would receive it. */
+interface CapturedRequest {
+  url: URL;
+  headers: Headers;
+  body: unknown;
+}
+
+/**
+ * Runs the registration hook in a real shell against a stand-in sidecar, with
+ * `hookInput` on stdin the way Claude Code delivers it.
+ */
+async function runRegistrationHook(
+  env: Record<string, string>,
+  hookInput: unknown,
+): Promise<{ requests: CapturedRequest[]; shellParent: number }> {
+  const requests: CapturedRequest[] = [];
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: async (req) => {
+      requests.push({ url: new URL(req.url), headers: req.headers, body: await req.json() });
+      return new Response(null, { status: 204 });
+    },
+  });
+  try {
+    const run = Bun.spawn(["sh", "-c", agentSessionHookCommand(WORKSPACE_ID)], {
+      env: {
+        PATH: process.env.PATH ?? "",
+        YARVIS_SIDECAR_PORT: String(server.port),
+        YARVIS_ATTENTION_TOKEN: "tok",
+        YARVIS_SESSION_TOKEN: "session-tok",
+        ...env,
+      },
+      stdin: new Blob([JSON.stringify(hookInput)]),
+    });
+    expect(await run.exited).toBe(0);
+    // The shell's parent is this test process, which stands in for Claude.
+    return { requests, shellParent: process.pid };
+  } finally {
+    server.stop(true);
+  }
+}
+
+describe("agentSessionHookCommand", () => {
+  const hookInput = {
+    session_id: "d8cb83ea-8ef9-42b0-95b2-bf4602c282bc",
+    hook_event_name: "SessionStart",
+    source: "startup",
+    cwd: "/ws",
+  };
+
+  it("forwards Claude's hook input with its pid and the PTY it runs in", async () => {
+    const { requests, shellParent } = await runRegistrationHook(
+      { YARVIS_SESSION_KEY: `ws-claude:${WORKSPACE_ID}` },
+      hookInput,
+    );
+    expect(requests).toHaveLength(1);
+    const [req] = requests;
+    expect(req!.url.pathname).toBe("/ingest/agent-session");
+    expect(req!.url.searchParams.get("workspaceId")).toBe(WORKSPACE_ID);
+    expect(req!.url.searchParams.get("pid")).toBe(String(shellParent));
+    expect(req!.headers.get("authorization")).toBe("Bearer tok");
+    expect(req!.headers.get("x-yarvis-session-key")).toBe(`ws-claude:${WORKSPACE_ID}`);
+    expect(req!.headers.get("x-yarvis-session-token")).toBe("session-tok");
+    expect(req!.body).toEqual(hookInput);
+  });
+
+  it("registers nothing outside a Yarvis PTY", async () => {
+    // A headless `claude -p` in the workspace has no prompt to deliver to.
+    const { requests } = await runRegistrationHook({}, hookInput);
+    expect(requests).toEqual([]);
+  });
+
+  it("refuses to embed a workspace id the shell would scan", () => {
+    expect(() => agentSessionHookCommand("w$(id)")).toThrow(/unsafe value/);
+  });
+});
+
 describe("buildClaudeSettings", () => {
-  it("writes the three attention hooks with the idle_prompt matcher on Notification", () => {
+  it("writes the attention and registration hooks, with idle_prompt on Notification", () => {
     const settings = buildClaudeSettings(WORKSPACE_ID) as {
       hooks: Record<string, { matcher?: string }[]>;
     };
     expect(Object.keys(settings.hooks).sort()).toEqual([
       "Notification",
       "PermissionRequest",
+      "SessionEnd",
+      "SessionStart",
       "Stop",
     ]);
     expect(settings.hooks.Notification![0]!.matcher).toBe("idle_prompt");
@@ -234,6 +315,8 @@ describe("buildClaudeSettings", () => {
     expect(twice.hooks.PermissionRequest).toHaveLength(1);
     expect(twice.hooks.Notification).toHaveLength(1);
     expect(twice.hooks.Stop).toHaveLength(1);
+    expect(twice.hooks.SessionStart).toHaveLength(1);
+    expect(twice.hooks.SessionEnd).toHaveLength(1);
   });
 
   it("strips the skills/agents paths an earlier version wrote", () => {

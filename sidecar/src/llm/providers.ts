@@ -174,6 +174,23 @@ export function pickDefaultModel(
   };
 }
 
+/**
+ * An endpoint on an Ollama server. The provider's base URL is the server root,
+ * since chat and decision calls reach different paths on it.
+ */
+export function ollamaUrl(baseUrl: string, path: "/v1" | "/api/chat"): string {
+  return `${baseUrl.replace(/\/+$/, "")}${path}`;
+}
+
+/** The saved row behind a `custom:<id>` provider id, or null for a built-in or unknown id. */
+export async function findCustomProvider(
+  providerId: ProviderId,
+): Promise<CustomProviderRow | null> {
+  if (!providerId.startsWith(CUSTOM_PROVIDER_PREFIX)) return null;
+  const id = providerId.slice(CUSTOM_PROVIDER_PREFIX.length);
+  return (await listCustomProviders()).find((r) => r.id === id) ?? null;
+}
+
 function resolveCustom(row: CustomProviderRow, config: Config, modelId: string): LanguageModel {
   // Defense-in-depth: the create/update routes already validate, but DB rows
   // can have been seeded by an earlier version, so re-check at resolve time.
@@ -195,6 +212,10 @@ function resolveCustom(row: CustomProviderRow, config: Config, modelId: string):
       return createOpenAI(options).chat(modelId);
     case "anthropic":
       return createAnthropic(options)(modelId);
+    case "ollama":
+      // The base URL names the Ollama server itself, which decision calls reach
+      // at `/api/chat`; a chat turn goes through its OpenAI-compatible `/v1`.
+      return createOpenAI({ ...options, baseURL: ollamaUrl(row.baseUrl, "/v1") }).chat(modelId);
     default:
       throw new Error(`unsupported apiKind: ${row.apiKind}`);
   }

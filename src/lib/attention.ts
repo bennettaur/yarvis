@@ -20,7 +20,8 @@ export type AttentionNavTarget =
   | { type: "pr"; owner: string; repo: string; number: number }
   | { type: "azure-pr"; org: string; project: string; repo: string; prId: number }
   | { type: "issue"; provider: string; sourceKey: string; externalId: string }
-  | { type: "task"; taskId: string };
+  | { type: "task"; taskId: string }
+  | { type: "heads-down" };
 
 export interface AttentionItem {
   id: string;
