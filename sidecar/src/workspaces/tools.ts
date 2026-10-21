@@ -186,6 +186,7 @@ const ATTENTION_KIND_MEANING: Record<AttentionKind, string> = {
   completed: "the session finished its turn and the user has not looked yet",
   error: "something failed",
   info: "a notice",
+  question: "the session asked the user a question and is waiting for the answer",
 };
 
 /**

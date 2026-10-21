@@ -719,7 +719,7 @@ query($owner:String!,$repo:String!,$branch:String!){
   }
 }`;
 
-/** Check runs only, matching what the REST check-runs endpoint lists. */
+/** Check runs and legacy commit statuses, matching the two REST reads. */
 const PR_STATUS_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!){
   repository(owner:$owner,name:$repo){
@@ -728,6 +728,7 @@ query($owner:String!,$repo:String!,$number:Int!){
       commits(last:1){ nodes{ commit{ statusCheckRollup{ contexts(first:100){ nodes{
         __typename
         ... on CheckRun { status conclusion }
+        ... on StatusContext { state }
       }}}}}}
     }
   }
@@ -1115,12 +1116,19 @@ export class GitHubClient {
             status: String(c.status ?? "").toLowerCase(),
             conclusion: c.conclusion ? String(c.conclusion).toLowerCase() : null,
           }));
+        // EXPECTED is a required status that hasn't reported yet, so it waits
+        // like REST's pending rather than counting as a failure.
+        const statuses = contexts
+          .filter((c: any) => c?.__typename === "StatusContext")
+          .map((c: any) => ({
+            state: c.state === "EXPECTED" ? "pending" : String(c.state ?? "").toLowerCase(),
+          }));
         return {
           state: pr.state === "OPEN" ? "open" : "closed",
           merged: Boolean(pr.merged),
           mergeable: restMergeable(pr.mergeable),
           mergeableState: String(pr.mergeStateStatus ?? "unknown").toLowerCase(),
-          checks: summarizeChecks(runs),
+          checks: sumCheckSummaries(summarizeChecks(runs), summarizeCommitStatuses(statuses)),
         };
       },
       () => this.prStatusViaRest(owner, repo, number),
