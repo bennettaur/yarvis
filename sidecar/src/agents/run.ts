@@ -93,10 +93,10 @@ export interface SpecialistRun {
 const NEVER_DELEGATABLE: ReadonlySet<string> = new Set([
   "delegate",
   "list_specialists",
-  // A check-back is a turn in a chat, and a delegated run has no chat to return to.
-  "schedule_check_back",
-  "list_check_backs",
-  "cancel_check_back",
+  // A scheduled task is a turn in a chat, and a delegated run has no chat to return to.
+  "schedule_task",
+  "list_scheduled_tasks",
+  "cancel_scheduled_task",
 ]);
 
 /**

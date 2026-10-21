@@ -75,18 +75,18 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The only built-ins a check-back turn is offered.
+ * The only built-ins a scheduled task's turn is offered.
  *
- * A check-back runs a prompt the model wrote for itself, often just after
+ * A scheduled task runs a prompt the model wrote for itself, often just after
  * reading a CI log or a PR comment, and nobody is watching it run. Dropping the
  * tools above is not enough there: a memory or task written on that turn is read
  * back on later turns as though the user had agreed to it. So the turn gets what
  * it needs to look, report and look again, and nothing that writes.
  */
-export const CHECK_BACK_TOOLS: ReadonlySet<string> = new Set([
-  "schedule_check_back",
-  "list_check_backs",
-  "cancel_check_back",
+export const SCHEDULED_TASK_TOOLS: ReadonlySet<string> = new Set([
+  "schedule_task",
+  "list_scheduled_tasks",
+  "cancel_scheduled_task",
   "request_attention",
   "list_tasks",
   "recall",
@@ -96,6 +96,10 @@ export const CHECK_BACK_TOOLS: ReadonlySet<string> = new Set([
   "list_project_items",
   "list_todos",
   "get_todo",
+  "list_work_streams",
+  "get_work_stream",
+  "find_work_streams_for",
+  "heads_down_status",
   "search_events",
   "activity_summary",
   "find_dangling_work",
