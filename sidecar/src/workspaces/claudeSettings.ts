@@ -73,7 +73,7 @@ export function attentionHookCommand(
 function assertShellSafe(...values: string[]): void {
   for (const value of values) {
     if (!SHELL_SAFE.test(value)) {
-      throw new Error(`attention hook: refusing to embed unsafe value ${JSON.stringify(value)}`);
+      throw new Error(`hook command: refusing to embed unsafe value ${JSON.stringify(value)}`);
     }
   }
 }

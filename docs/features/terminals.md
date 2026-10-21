@@ -130,8 +130,9 @@ Some details:
   instance sharing the database shows the item but not the prompt.
 - **A workspace made by an older version of Yarvis** only flags the prompt in
   the bell. It gets the new hook the next time it is provisioned.
-- **A Claude run outside Yarvis is unaffected.** The hook can't reach the app,
-  so Claude Code shows its normal dialog.
+- **A Claude run outside Yarvis is unaffected.** The hook needs a Yarvis
+  terminal's environment and stands aside without it, so Claude Code shows its
+  normal dialog.
 
 ## Known gap
 

@@ -366,17 +366,29 @@ describe("permission requests", () => {
     expect(await pendingItems()).toHaveLength(0);
   });
 
-  it("refuses a prompt raised under another terminal's name", async () => {
-    // Every terminal holds the ingest token; the session token is what ties a
-    // request to the terminal it claims to come from.
-    const res = await app.request("/ingest/permission", {
-      method: "POST",
-      headers: { ...permissionAuth, "X-Yarvis-Session-Token": tokenFor(`ws:${workspaceId}/t9/p1`) },
-      body: JSON.stringify(hookInput),
+  // Every terminal holds the ingest token; the session token is what ties a
+  // request to the terminal it claims to come from.
+  const badTokens: [string, string | null][] = [
+    ["minted for another terminal", tokenFor(`ws:${workspaceId}/t9/p1`)],
+    [
+      "signed with the ingest token, which every terminal holds",
+      createHmac("sha256", config.attentionToken).update(`session:${sessionKey}`).digest("hex"),
+    ],
+    ["that isn't a token at all", "not-hex"],
+    ["that is missing", null],
+  ];
+  for (const [label, token] of badTokens) {
+    it(`refuses a prompt whose session token is ${label}`, async () => {
+      const { "X-Yarvis-Session-Token": _, ...rest } = permissionAuth;
+      const res = await app.request("/ingest/permission", {
+        method: "POST",
+        headers: token === null ? rest : { ...rest, "X-Yarvis-Session-Token": token },
+        body: JSON.stringify(hookInput),
+      });
+      expect(res.status).toBe(403);
+      expect(await waitingRequests()).toHaveLength(0);
     });
-    expect(res.status).toBe(403);
-    expect(await waitingRequests()).toHaveLength(0);
-  });
+  }
 
   it("refuses a decision for a request that is no longer waiting", async () => {
     const res = await decide("00000000-0000-0000-0000-000000000000", { behavior: "allow" });
