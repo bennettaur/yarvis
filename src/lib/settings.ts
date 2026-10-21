@@ -26,6 +26,9 @@ export interface Settings {
   defaultAgentCommand: string;
   /** True while `YARVIS_CLAUDE_COMMAND` is set, which outranks `agentCommand`. */
   agentCommandOverriddenByEnv: boolean;
+  /** Whether reopening a workspace's agent tab resumes the Claude session it
+   *  last ran; null means the default, which is on. */
+  resumeAgentSessions: boolean | null;
   /** Azure DevOps organization base URL for the PR dashboard. */
   azureDevopsOrgUrl: string | null;
   /** Atlassian Cloud site base URL for the Issues dashboard. */
@@ -70,6 +73,11 @@ export const setMaxPtySessions = (value: number | null) =>
  * started — no restart. Rejects a value spanning more than one line. */
 export const setAgent = (name: string | null, command: string | null) =>
   invoke<Settings>("set_agent", { name, command });
+
+/** Turns resuming a workspace's last agent session on or off. Takes effect on
+ * the next agent session started. */
+export const setResumeAgentSessions = (value: boolean) =>
+  invoke<Settings>("set_resume_agent_sessions", { value });
 
 /** Stores the colour theme; `null` clears it back to the default. The webview
  * applies a theme as it is chosen, so this only makes it survive a restart. */

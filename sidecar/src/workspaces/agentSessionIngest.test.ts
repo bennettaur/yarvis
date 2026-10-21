@@ -36,8 +36,8 @@ const config: Config = {
 };
 const app = createApp(config);
 
-const WORKSPACE = "11111111-1111-1111-1111-111111111111";
-const OTHER_WORKSPACE = "22222222-2222-2222-2222-222222222222";
+const WORKSPACE = "11111111-1111-4111-8111-111111111111";
+const OTHER_WORKSPACE = "22222222-2222-4222-8222-222222222222";
 const AGENT_TAB = `ws-claude:${WORKSPACE}`;
 const PANE = `ws:${WORKSPACE}/t1/p1`;
 
@@ -256,6 +256,59 @@ describe("reapAndListAgentSessions", () => {
     const sessions = await reapAndListAgentSessions(db, [WORKSPACE, OTHER_WORKSPACE]);
     expect(sessions.get(WORKSPACE)).toHaveLength(1);
     expect(sessions.get(OTHER_WORKSPACE)).toEqual([]);
+  });
+});
+
+describe("GET /api/workspaces/:id/agent-session", () => {
+  async function resumable(workspaceId = WORKSPACE) {
+    const res = await app.request(`/api/workspaces/${workspaceId}/agent-session`, {
+      headers: { Authorization: `Bearer ${config.token}` },
+    });
+    expect(res.status).toBe(200);
+    return ((await res.json()) as { claudeSessionId: string | null }).claudeSessionId;
+  }
+
+  it("answers the agent tab's most recently started session", async () => {
+    await hook(start("older"));
+    await hook(end("older"));
+    await hook(start("newer"));
+    await hook(end("newer"));
+    // Resuming moves a session back to the front.
+    await hook(start("older", "resume"));
+    await hook(end("older"));
+
+    expect(await resumable()).toBe("older");
+  });
+
+  it("ignores sessions started in a terminal pane", async () => {
+    await hook(start("tab"));
+    await hook(end("tab"));
+    await hook(start("pane"), { sessionKey: PANE });
+    await hook(end("pane"), { sessionKey: PANE });
+
+    expect(await resumable()).toBe("tab");
+  });
+
+  it("counts a session whose process died without a SessionEnd", async () => {
+    await hook(start("crashed"), { pid: "999999" });
+    expect(await resumable()).toBe("crashed");
+  });
+
+  it("answers null while the latest session is still running", async () => {
+    // This test process stands in for a Claude that is still alive.
+    await hook(start("running"));
+    expect(await resumable()).toBeNull();
+  });
+
+  it("answers null for a workspace with no registered session", async () => {
+    expect(await resumable(OTHER_WORKSPACE)).toBeNull();
+  });
+
+  it("refuses a malformed workspace id", async () => {
+    const res = await app.request("/api/workspaces/not-a-uuid/agent-session", {
+      headers: { Authorization: `Bearer ${config.token}` },
+    });
+    expect(res.status).toBe(400);
   });
 });
 

@@ -54,6 +54,9 @@ pub struct Settings {
     /// Base command a workspace's agent session is launched from; see
     /// `pty::agent_command`.
     pub agent_command: Option<String>,
+    /// Whether reopening a workspace's agent tab resumes the Claude session it
+    /// last ran; unset means yes. See `pty::resume_agent_sessions`.
+    pub resume_agent_sessions: Option<bool>,
     /// Azure DevOps organization base URL for the PR dashboard; see
     /// `sidecar::build_command`.
     pub azure_devops_org_url: Option<String>,
@@ -341,6 +344,15 @@ impl SettingsState {
             *settings = Self::read_from_disk(&self.path);
             settings.agent_name = name;
             settings.agent_command = command;
+        }
+        self.save()
+    }
+
+    fn set_resume_agent_sessions(&self, value: bool) -> Result<(), String> {
+        {
+            let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
+            *settings = Self::read_from_disk(&self.path);
+            settings.resume_agent_sessions = Some(value);
         }
         self.save()
     }
@@ -639,6 +651,17 @@ pub fn set_agent(
     Ok(state.snapshot().into())
 }
 
+/// Sets whether reopening a workspace's agent tab resumes its last session.
+/// Takes effect on the next agent session started.
+#[tauri::command]
+pub fn set_resume_agent_sessions(
+    state: tauri::State<'_, SettingsState>,
+    value: bool,
+) -> Result<SettingsView, String> {
+    state.set_resume_agent_sessions(value)?;
+    Ok(state.snapshot().into())
+}
+
 /// Sets the Azure DevOps organization base URL for the PR dashboard, or clears
 /// it on `None`/blank. Takes effect on the sidecar's next restart.
 #[tauri::command]
@@ -846,6 +869,7 @@ mod tests {
             crate::pty::DEFAULT_AGENT_COMMAND
         );
         assert!(json["agentCommandOverriddenByEnv"].is_boolean());
+        assert!(json["resumeAgentSessions"].is_null());
         assert!(json["azureDevopsOrgUrl"].is_null());
         assert!(json["telegramOtpWindowMinutes"].is_null());
         assert_eq!(json["defaultTelegramOtpWindowMinutes"], 120);
@@ -869,6 +893,15 @@ mod tests {
             reloaded.snapshot().agent_command.as_deref(),
             Some("codex --yolo")
         );
+    }
+
+    #[test]
+    fn turning_session_resume_off_survives_a_reload() {
+        let store = temp_store("resume-round-trip");
+        store.set_resume_agent_sessions(false).unwrap();
+
+        let reloaded = SettingsState::load(store.path.clone());
+        assert_eq!(reloaded.snapshot().resume_agent_sessions, Some(false));
     }
 
     #[test]

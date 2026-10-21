@@ -183,9 +183,15 @@ that tab. No shell tab opens with it. Press `+` or Cmd+T when you want one.
 
 - **Closing the agent tab ends its session.** It stays closed until you leave
   the workspace.
-- **Coming back starts a new session.** Returning from another workspace or
+- **Coming back starts the session again.** Returning from another workspace or
   another nav rail tab counts as opening the workspace again.
 - **To bring it back sooner,** press the start-session button in the header.
+- **A restarted tab resumes its last session.** Whenever the agent tab starts
+  again, after you closed it or after Yarvis restarted, it runs the command with
+  `--resume <session id>` for the Claude Code session it last ran. It starts a
+  new session when there is nothing to resume or Claude Code no longer has the
+  transcript. Turn this off with **Resume the last session when reopening a
+  workspace** under **Settings → Repositories → Agent**.
 
 Workspace tabs are terminals, so everything in [Terminals](terminals.md)
 applies, including splits. A workspace's tabs can also hold diffs, the file

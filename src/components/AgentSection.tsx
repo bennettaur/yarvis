@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { getSettings, type Settings, setAgent } from "../lib/settings";
+import { getSettings, type Settings, setAgent, setResumeAgentSessions } from "../lib/settings";
 
 /**
  * The agent every workspace opens with: its tab title and the command its
@@ -63,6 +63,20 @@ export default function AgentSection() {
     }
   }, [adopt, commandDraft, nameDraft]);
 
+  // Saved as it is toggled. Not `adopt`, which would discard unsaved edits in
+  // the fields above.
+  const toggleResume = useCallback(
+    async (value: boolean) => {
+      clearNotices();
+      try {
+        setSettings(await setResumeAgentSessions(value));
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [clearNotices],
+  );
+
   return (
     <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
       <h2 className="mb-1 text-sm font-medium uppercase tracking-wide text-zinc-500">Agent</h2>
@@ -118,6 +132,24 @@ export default function AgentSection() {
           <span className="font-mono">{settings.defaultAgentCommand}</span>.
         </p>
       )}
+
+      <label className="mt-4 flex items-start gap-2 text-sm text-zinc-300">
+        <input
+          type="checkbox"
+          className="mt-1"
+          checked={settings?.resumeAgentSessions !== false}
+          disabled={settings === null}
+          onChange={(e) => void toggleResume(e.target.checked)}
+        />
+        <span>
+          Resume the last session when reopening a workspace
+          <span className="block text-xs text-zinc-600">
+            When a workspace's agent tab starts again, for example after Yarvis restarts, it picks
+            up the Claude Code session it last ran with <code>--resume</code>. A new session starts
+            when there is nothing to resume, or when Claude Code no longer has the transcript.
+          </span>
+        </span>
+      </label>
     </section>
   );
 }

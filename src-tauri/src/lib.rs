@@ -191,6 +191,7 @@ pub fn run() {
             settings::get_settings,
             settings::set_max_pty_sessions,
             settings::set_agent,
+            settings::set_resume_agent_sessions,
             settings::set_azure_devops_org_url,
             settings::set_jira_base_url,
             settings::set_jira_email,

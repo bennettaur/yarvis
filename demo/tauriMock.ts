@@ -67,6 +67,7 @@ let settings: Settings = {
   defaultAgentName: "Claude",
   defaultAgentCommand: "claude --permission-mode auto",
   agentCommandOverriddenByEnv: false,
+  resumeAgentSessions: null,
   azureDevopsOrgUrl: null,
   jiraBaseUrl: null,
   jiraEmail: null,
@@ -134,6 +135,8 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
         agentName: (args.name as string | null) || null,
         agentCommand: (args.command as string | null) || null,
       });
+    case "set_resume_agent_sessions":
+      return updateSettings({ resumeAgentSessions: args.value as boolean });
     case "set_azure_devops_org_url":
       return updateSettings({ azureDevopsOrgUrl: args.value as string | null });
     case "set_jira_base_url":

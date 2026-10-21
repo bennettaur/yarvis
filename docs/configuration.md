@@ -149,6 +149,7 @@ has written your providers and MCP servers into it.
 | --- | --- | --- |
 | `agentName` | `"Claude"` | Title of a workspace's agent tab |
 | `agentCommand` | `"claude --permission-mode auto"` | The command a workspace's agent session runs. Add a model or permission flags here. `YARVIS_CLAUDE_COMMAND` overrides it. |
+| `resumeAgentSessions` | `true` | Whether a workspace's agent tab resumes the Claude Code session it last ran when it starts again |
 | `maxPtySessions` | `60` | Maximum number of open terminal sessions (1–1000) |
 | `secretBackend` | `"keychain"` | `"keychain"` or `"onepassword"` |
 | `onePasswordVault`, `onePasswordItem` | unset | Where the secrets item lives when using 1Password |

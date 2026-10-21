@@ -216,6 +216,17 @@ export async function ignoreWorkspaceError(id: string): Promise<WorkspaceDetail>
 }
 
 /**
+ * The Claude session the workspace's agent tab last ran, or null when there is
+ * none to resume: it never registered one, or that one is still running.
+ */
+export async function getResumableAgentSession(workspaceId: string): Promise<string | null> {
+  const res = await sidecarFetch(`/api/workspaces/${workspaceId}/agent-session`);
+  if (!res.ok) return readError(res, "look up the agent session");
+  const body: { claudeSessionId: string | null } = await res.json();
+  return body.claudeSessionId;
+}
+
+/**
  * One of a workspace repo's worktrees. `primary` is the one provisioning cut;
  * the rest are worktrees an agent added inside the workspace folder, typically
  * one per layer of a stack of pull requests.

@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
+import { resumableAgentTabSession } from "./agentSessions.ts";
 import { resolveWorkspaceBrief } from "./brief.ts";
 import { CONTROL_CHARACTERS, MAX_FILE_BYTES, WorktreeFileError } from "./files.ts";
 import { defaultGitRunner } from "./git.ts";
@@ -362,6 +363,15 @@ export function createWorkspaceRoutes(config: Config): Hono {
       const running = e instanceof Error && e.message.includes("still running");
       return c.json({ error: e instanceof Error ? e.message : String(e) }, running ? 409 : 400);
     }
+  });
+
+  // The Claude session the agent tab last ran, so reopening the tab can resume it.
+  router.get("/:id/agent-session", async (c) => {
+    const id = c.req.param("id");
+    if (!z.string().uuid().safeParse(id).success) {
+      return c.json({ error: "invalid workspace id" }, 400);
+    }
+    return c.json({ claudeSessionId: await resumableAgentTabSession(db(), id) });
   });
 
   // Files / changed-files for a workspace repo's worktree (right-column views).

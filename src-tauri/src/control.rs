@@ -43,7 +43,9 @@ mod unix_impl {
     use tokio::net::{UnixListener, UnixStream};
 
     use super::ControlSocketPath;
-    use crate::pty::{kill_session, send_session_instruction, spawn_claude_session, PtyState};
+    use crate::pty::{
+        kill_session, send_session_instruction, spawn_claude_session, Opening, PtyState,
+    };
 
     /// Cap on a single request line, bounding what one message can buffer.
     const MAX_LINE: usize = 64 * 1024;
@@ -238,7 +240,9 @@ mod unix_impl {
                     p.cwd,
                     &p.name,
                     p.remote_control,
-                    p.instruction.as_deref(),
+                    p.instruction
+                        .as_deref()
+                        .map_or(Opening::Fresh, Opening::Instruction),
                 )
             }
             "claude.kill" => {

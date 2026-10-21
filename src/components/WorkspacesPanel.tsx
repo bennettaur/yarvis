@@ -10,6 +10,7 @@ import { listTasks, type Task } from "../lib/tasks";
 import { openExternal } from "../lib/url";
 import {
   createWorkspace,
+  getResumableAgentSession,
   getWorkspace,
   ignoreWorkspaceError,
   listWorkspaces,
@@ -1085,10 +1086,22 @@ function WorkspaceDetailView({
   const startAgent = useCallback(async () => {
     if (!detail) return;
     setAgentError(null);
+    // A failed lookup costs only the resume, so the tab still opens on a fresh
+    // session rather than not at all.
+    const resumeSessionId = await getResumableAgentSession(id).catch((e) => {
+      console.warn("[workspaces] could not look up the session to resume:", e);
+      return null;
+    });
     try {
       // No Remote Control: this session opens in a tab right here. Enable it
       // from inside the session if the work has to continue away from the machine.
-      await startClaudeSession(id, agentCwdForWorkspace(detail), detail.name, false);
+      await startClaudeSession(
+        id,
+        agentCwdForWorkspace(detail),
+        detail.name,
+        false,
+        resumeSessionId,
+      );
       // The session now exists; reflect it immediately (the poll would catch up).
       setAgentActive(true);
     } catch (e) {

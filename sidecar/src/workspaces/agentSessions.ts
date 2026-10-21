@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { workspaceAgentSessions } from "../db/schema.ts";
 
@@ -116,6 +116,33 @@ export function pidIsAlive(pid: number): boolean {
   } catch (e) {
     return (e as NodeJS.ErrnoException).code === "EPERM";
   }
+}
+
+/**
+ * The Claude session id the workspace's agent tab last ran, for the tab to
+ * resume when it is started again. Null when it has never registered one, or
+ * when that session's process is still running, since resuming it would put a
+ * second process on the same transcript.
+ */
+export async function resumableAgentTabSession(
+  db: Db,
+  workspaceId: string,
+  isAlive: (pid: number) => boolean = pidIsAlive,
+): Promise<string | null> {
+  const [latest] = await db
+    .select()
+    .from(workspaceAgentSessions)
+    .where(
+      and(
+        eq(workspaceAgentSessions.workspaceId, workspaceId),
+        eq(workspaceAgentSessions.sessionKey, `ws-claude:${workspaceId}`),
+      ),
+    )
+    .orderBy(desc(workspaceAgentSessions.startedAt))
+    .limit(1);
+  if (!latest) return null;
+  if (latest.endedAt === null && isAlive(latest.pid)) return null;
+  return latest.claudeSessionId;
 }
 
 /**

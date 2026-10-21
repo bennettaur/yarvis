@@ -50,13 +50,16 @@ export const ptyExists = (id: string) => invoke<boolean>("pty_exists", { id });
 /** Starts an agent session for a workspace, keyed `ws-claude:<workspaceId>`.
  * Resolves once the session is registered. `remoteControl` adds Claude Code's
  * `--remote-control`; the app doesn't set it, since a session started here opens
- * in a tab the user is looking at and can enable it from inside the session. */
+ * in a tab the user is looking at and can enable it from inside the session.
+ * `resumeSessionId` is the Claude session to pick back up, which the core
+ * ignores while resuming is turned off in Settings. */
 export const startClaudeSession = (
   workspaceId: string,
   cwd: string,
   name: string,
   remoteControl: boolean,
-) => invoke("pty_start_claude", { workspaceId, cwd, name, remoteControl });
+  resumeSessionId: string | null = null,
+) => invoke("pty_start_claude", { workspaceId, cwd, name, remoteControl, resumeSessionId });
 
 /** The agent a workspace surfaces: its tab title and the base command its
  *  launches are built from. */

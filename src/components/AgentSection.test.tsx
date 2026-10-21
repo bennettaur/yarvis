@@ -25,6 +25,7 @@ function defaultSettings(): Settings {
     defaultAgentName: "Claude",
     defaultAgentCommand: "claude --permission-mode auto",
     agentCommandOverriddenByEnv: false,
+    resumeAgentSessions: null,
     azureDevopsOrgUrl: null,
     jiraBaseUrl: null,
     jiraEmail: null,
@@ -47,7 +48,16 @@ mock.module("@tauri-apps/api/core", () => ({
       const { name, command: cmd } = args as { name: string | null; command: string | null };
       stored = { ...stored, agentName: name, agentCommand: cmd };
     }
-    if (command === "get_settings" || command === "set_agent") return stored;
+    if (command === "set_resume_agent_sessions") {
+      stored = { ...stored, resumeAgentSessions: (args as { value: boolean }).value };
+    }
+    if (
+      command === "get_settings" ||
+      command === "set_agent" ||
+      command === "set_resume_agent_sessions"
+    ) {
+      return stored;
+    }
     return nativeInvoke(command);
   },
 }));
@@ -151,6 +161,35 @@ describe("AgentSection", () => {
     stored = { ...defaultSettings(), agentCommandOverriddenByEnv: true };
     const html = await renderToHtml(createElement(AgentSection));
     expect(html).toContain("takes precedence");
+  });
+
+  it("shows resuming as on until it is turned off", async () => {
+    const checked = async () => {
+      const { host, cleanup } = await mount();
+      const value = (host.querySelector('input[type="checkbox"]') as HTMLInputElement).checked;
+      cleanup();
+      return value;
+    };
+    expect(await checked()).toBe(true);
+
+    stored = { ...defaultSettings(), resumeAgentSessions: false };
+    expect(await checked()).toBe(false);
+  });
+
+  it("saves the resume toggle without touching unsaved field edits", async () => {
+    const { host, cleanup } = await mount();
+    typeName(host, "Codex");
+    (host.querySelector('input[type="checkbox"]') as HTMLInputElement).click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(invoked).toContainEqual({
+      command: "set_resume_agent_sessions",
+      args: { value: false },
+    });
+    expect(invoked.some((call) => call.command === "set_agent")).toBe(false);
+    expect((host.querySelectorAll("input")[0] as HTMLInputElement).value).toBe("Codex");
+    expect((host.querySelector('input[type="checkbox"]') as HTMLInputElement).checked).toBe(false);
+    cleanup();
   });
 
   it("drops a stale save notice once a field is edited again", async () => {

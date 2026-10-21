@@ -565,6 +565,14 @@ fn resolve_agent_command(env: Option<String>, configured: Option<String>) -> Str
         .unwrap_or_else(|| DEFAULT_AGENT_COMMAND.to_string())
 }
 
+/// Whether reopening a workspace's agent tab resumes its last session. On
+/// unless the user turned it off.
+fn resume_agent_sessions(app: &AppHandle) -> bool {
+    app.try_state::<SettingsState>()
+        .and_then(|state| state.snapshot().resume_agent_sessions)
+        .unwrap_or(true)
+}
+
 /// The configured (or default) display name for a workspace's agent.
 fn agent_name(app: &AppHandle) -> String {
     non_blank(
@@ -887,6 +895,24 @@ fn agent_launch_command(
     }
 }
 
+/// True for a Claude Code session id: a UUID in its hyphenated form. The id is
+/// typed into the launch line unquoted, so nothing else is let through.
+fn is_claude_session_id(id: &str) -> bool {
+    id.len() == 36
+        && id.char_indices().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        })
+}
+
+/// The launch line that resumes `session_id`, falling back to `fresh` when it
+/// can't. Claude Code exits non-zero when the transcript is gone (it prunes old
+/// ones), so without the fallback the tab would be left at a bare shell, and
+/// would land there again on every reopen since nothing new gets registered.
+fn resume_launch_command(fresh: &str, session_id: &str) -> String {
+    format!("{fresh} --resume {session_id} || {fresh}")
+}
+
 /// Builds the shell-safe single-quoted form of `s` for injection into a shell
 /// command line. Wraps in single quotes and escapes any embedded single quote.
 fn shell_single_quote(s: &str) -> String {
@@ -901,6 +927,16 @@ fn shell_single_quote(s: &str) -> String {
     }
     out.push('\'');
     out
+}
+
+/// What a new agent session opens on.
+pub enum Opening<'a> {
+    /// An empty prompt.
+    Fresh,
+    /// A request the session starts working on, such as an issue's brief.
+    Instruction(&'a str),
+    /// The Claude session with this id, picked up where it left off.
+    Resume(&'a str),
 }
 
 /// Starts an agent session in `cwd` under the stable id `ws-claude:<workspace_id>`,
@@ -919,6 +955,9 @@ fn shell_single_quote(s: &str) -> String {
 /// when the launch came from somewhere the user isn't at the machine — a
 /// Telegram turn. A session started at the laptop is driven in its own tab, and
 /// can be made remotely controllable later from inside the session itself.
+///
+/// A resume id that isn't shaped like a Claude session id is dropped and a
+/// fresh session started instead, since the id is not quoted on the line.
 pub fn spawn_claude_session(
     app: &AppHandle,
     state: &PtyState,
@@ -926,10 +965,25 @@ pub fn spawn_claude_session(
     cwd: String,
     name: &str,
     remote_control: bool,
-    instruction: Option<&str>,
+    opening: Opening<'_>,
 ) -> Result<(), String> {
     let id = format!("ws-claude:{workspace_id}");
-    let command = agent_launch_command(&agent_command(app), name, remote_control, instruction);
+    let base = agent_command(app);
+    let command = match opening {
+        Opening::Fresh => agent_launch_command(&base, name, remote_control, None),
+        Opening::Instruction(instruction) => {
+            agent_launch_command(&base, name, remote_control, Some(instruction))
+        }
+        Opening::Resume(session_id) => {
+            let fresh = agent_launch_command(&base, name, remote_control, None);
+            if is_claude_session_id(session_id) {
+                resume_launch_command(&fresh, session_id)
+            } else {
+                eprintln!("[pty] not resuming {session_id:?}: not a Claude session id");
+                fresh
+            }
+        }
+    };
     spawn_into_state(
         app,
         state,
@@ -1014,6 +1068,9 @@ pub fn pty_exists(state: tauri::State<'_, PtyState>, id: String) -> Result<bool,
 /// Starts an agent session for an existing workspace, so the frontend can open
 /// one on entering a workspace. Mirrors what the control channel does for the
 /// sidecar/agent; both go through `spawn_claude_session`.
+///
+/// `resume_session_id` is the Claude session the tab last ran, which is resumed
+/// unless the user turned that off in Settings.
 #[tauri::command]
 pub fn pty_start_claude(
     app: AppHandle,
@@ -1022,10 +1079,15 @@ pub fn pty_start_claude(
     cwd: String,
     name: String,
     remote_control: bool,
+    resume_session_id: Option<String>,
 ) -> Result<(), String> {
     // No instruction: a session the frontend opens on entering a workspace is
     // one the user drives themselves. The issue "Start work" sequence runs in
     // the sidecar and spawns through the control channel instead.
+    let opening = match resume_session_id.as_deref() {
+        Some(session_id) if resume_agent_sessions(&app) => Opening::Resume(session_id),
+        _ => Opening::Fresh,
+    };
     spawn_claude_session(
         &app,
         state.inner(),
@@ -1033,7 +1095,7 @@ pub fn pty_start_claude(
         cwd,
         &name,
         remote_control,
-        None,
+        opening,
     )
 }
 
@@ -1113,11 +1175,11 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_launch_command, attention_workspace_id, hmac_sha256_hex, is_unsafe_name_char,
-        lock_scrollback, prepare_instruction, remote_control_command, resolve_agent_command,
-        resolve_max_sessions, session_env, session_token, snapshot, Scrollback,
-        DEFAULT_AGENT_COMMAND, DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS,
-        MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
+        agent_launch_command, attention_workspace_id, hmac_sha256_hex, is_claude_session_id,
+        is_unsafe_name_char, lock_scrollback, prepare_instruction, remote_control_command,
+        resolve_agent_command, resolve_max_sessions, resume_launch_command, session_env,
+        session_token, snapshot, Scrollback, DEFAULT_AGENT_COMMAND, DEFAULT_MAX_SESSIONS,
+        MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
     };
     use std::sync::Mutex;
 
@@ -1404,6 +1466,37 @@ mod tests {
             agent_launch_command("claude", "n", false, Some("   ")),
             "claude"
         );
+    }
+
+    #[test]
+    fn resume_launch_command_falls_back_to_a_fresh_session() {
+        assert_eq!(
+            resume_launch_command(
+                "claude --permission-mode auto",
+                "3f2b1c9e-5d4a-4b6c-8e7f-0a1b2c3d4e5f"
+            ),
+            "claude --permission-mode auto --resume 3f2b1c9e-5d4a-4b6c-8e7f-0a1b2c3d4e5f \
+             || claude --permission-mode auto"
+        );
+    }
+
+    #[test]
+    fn is_claude_session_id_accepts_only_a_hyphenated_uuid() {
+        assert!(is_claude_session_id("3f2b1c9e-5d4a-4b6c-8e7f-0a1b2c3d4e5f"));
+        assert!(is_claude_session_id("3F2B1C9E-5D4A-4B6C-8E7F-0A1B2C3D4E5F"));
+        for id in [
+            "",
+            "s1",
+            "3f2b1c9e5d4a4b6c8e7f0a1b2c3d4e5f",
+            "3f2b1c9e-5d4a-4b6c-8e7f-0a1b2c3d4e5",
+            "3f2b1c9e-5d4a-4b6c-8e7f-0a1b2c3d4e5f0",
+            "3f2b1c9e-5d4a-4b6c-8e7f-0a1b2c3d4e;f",
+            "3f2b1c9e-5d4a-4b6c-8e7f 0a1b2c3d4e5f",
+            // Multi-byte characters must not slip past the byte-length check.
+            "3f2b1c9e-5d4a-4b6c-8e7f-0a1b2c3d4eé",
+        ] {
+            assert!(!is_claude_session_id(id), "{id:?}");
+        }
     }
 
     #[test]
