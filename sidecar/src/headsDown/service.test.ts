@@ -260,7 +260,12 @@ describe("what a pass may do", () => {
     const run = await startRun(db, null);
     let queued = 0;
     const hooks = passApprovalHooks(db, run, () => queued++);
-    await hooks.onRequest({ toolCallId: "call-1", id: "archive_workspace", args: { workspaceId } });
+    await hooks.onRequest({
+      toolCallId: "call-1",
+      id: "archive_workspace",
+      args: { workspaceId },
+      reason: null,
+    });
 
     expect(await waitForApproval("call-1", { timeoutMs: 1000 })).toBe(false);
     expect(queued).toBe(1);
@@ -275,7 +280,12 @@ describe("what a pass may do", () => {
   it("tells the model plainly when a tool isn't available, without filing a question", async () => {
     const run = await startRun(db, null);
     const hooks = passApprovalHooks(db, run, () => {});
-    const result = await hooks.onRequest({ toolCallId: "call-2", id: "record_decision", args: {} });
+    const result = await hooks.onRequest({
+      toolCallId: "call-2",
+      id: "record_decision",
+      args: {},
+      reason: null,
+    });
 
     expect(result).toEqual({ deniedMessage: expect.stringContaining("Not available") });
     expect(await waitForApproval("call-2", { timeoutMs: 1000 })).toBe(false);

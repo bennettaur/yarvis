@@ -105,7 +105,7 @@ describe("a heads-down pass", () => {
           streamId: stream.id,
           options: ["#billing-reviews", "ask Sam"],
         }),
-        toolCall("c2", "archive_workspace", { workspaceId }),
+        toolCall("c2", "archive_workspace", { workspaceId, callReason: "the work is merged" }),
         toolCall("c3", "finish_pass", {
           notes: "Asked where to request review.",
           sleepMinutes: 10,
