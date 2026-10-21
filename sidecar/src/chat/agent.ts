@@ -352,6 +352,11 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
   // assistant. The tools that can't be taken back therefore ask first.
   const spoken = userMetadata?.source === "voice";
 
+  // A turn from the Chrome side panel was typed, but it carries the open tab's
+  // title and selection, which the page wrote. A page that injects through them
+  // reaches every turn, so the irreversible tools ask there too.
+  const confirmDestructive = spoken || userMetadata?.source === "browser";
+
   const { tools, computeActiveTools, registryIdByKey } = await assembleAgentToolset({
     config,
     db,
@@ -366,8 +371,8 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
     }),
     approval,
     // The outward-facing tools ask on every turn; the wider destructive set asks
-    // only when the turn was spoken and therefore never proof-read.
-    confirmBuiltins: spoken
+    // only when the turn was spoken or carries page text the user didn't write.
+    confirmBuiltins: confirmDestructive
       ? new Set([...ALWAYS_CONFIRM_BUILTIN_TOOLS, ...DESTRUCTIVE_BUILTIN_TOOLS])
       : ALWAYS_CONFIRM_BUILTIN_TOOLS,
     // Standing consent for an MCP tool was given about typed turns. A spoken one

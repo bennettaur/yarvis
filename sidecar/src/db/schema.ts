@@ -43,7 +43,8 @@ export const messageRole = pgEnum("message_role", ["user", "assistant", "system"
  * show that a message came from Telegram and which Telegram user sent it, and
  * the Voice tab sets it so a turn the user *spoke* is distinguishable from one
  * they typed and read back. The Chrome extension's side panel marks its turns
- * `browser`; they were typed, so they are treated like the in-app chat's.
+ * `browser`. Those were typed, but they carry the open tab's page-written title
+ * and selection, so the destructive tools ask first there as well.
  *
  * That distinction is load-bearing, not cosmetic: a spoken turn was never
  * proof-read, so `runAgentTurn` puts the destructive tools behind an explicit

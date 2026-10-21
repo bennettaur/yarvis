@@ -232,7 +232,9 @@ back to ad-hoc.
   the turn. `ChatMessageMetadata.source` records where it came from, and
   `runAgentTurn` uses it: a `voice` turn puts the tools in
   `chat/destructiveTools.ts` behind the same approval prompt MCP tools use,
-  because a transcript can be misheard or picked up from the room. A surface
+  because a transcript can be misheard or picked up from the room. A `browser`
+  turn (the Chrome side panel) does the same: it was typed, but it carries the
+  open tab's page-written title and selection on every turn. A surface
   that can't prompt gets those tools dropped rather than run unattended —
   silently doing the irreversible thing is the one unacceptable outcome.
 - Secrets flow one way — the webview writes them to the Keychain, the core
@@ -540,8 +542,9 @@ back to ad-hoc.
   do. The side panel's chat runs the other way through the same host: it maps
   each panel request onto a fixed `/browser/chat` route (`scripts/browser/chat.ts`),
   so the browser token also runs agent turns and reads recent chats from every
-  surface (the panel picks from them). That surface has no approval
-  channel, so MCP tools and the always-confirm built-ins are left out of its
-  turns, and the tab it sends as context is fenced like any screen context.
+  surface (the panel picks from them). Approval requests travel back on the
+  turn's stream and answers on `/browser/chat/approvals/:id`, which only decides
+  calls a panel turn asked about. The tab it sends as context is fenced like any
+  screen context.
 - Follow the repo's existing comment style: comments explain *why*, not
   *what* — no restating what a well-named function already says.

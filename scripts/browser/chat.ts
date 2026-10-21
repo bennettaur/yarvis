@@ -16,6 +16,9 @@ export interface ChatRequest {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** Tool call ids are provider-made (`toolu_…`, `call_…`); nothing that could change the path. */
+const TOOL_CALL_ID = /^[A-Za-z0-9_-]{1,200}$/;
+
 /** Null for anything the panel isn't allowed to ask for. */
 export function chatRequest(message: unknown): ChatRequest | null {
   const m = message as Record<string, unknown> | null;
@@ -44,6 +47,15 @@ export function chatRequest(message: unknown): ChatRequest | null {
         path: "/browser/chat",
         body: { sessionId: m.sessionId, message: m.message, tab: m.tab },
         stream: true,
+      };
+    case "approve":
+      if (typeof m.toolCallId !== "string" || !TOOL_CALL_ID.test(m.toolCallId)) return null;
+      if (typeof m.approved !== "boolean") return null;
+      return {
+        method: "POST",
+        path: `/browser/chat/approvals/${m.toolCallId}`,
+        body: { approved: m.approved },
+        stream: false,
       };
     default:
       return null;
@@ -112,6 +124,15 @@ export async function relayChat(
   }
   if (!request.stream) return { ok: true, data: await res.json() };
 
+  // A turn that fails inside the stream closes it without a word, which must
+  // not look like a reply that was just empty.
+  let ended = false;
+  const forward = (event: unknown) => {
+    const type = (event as { type?: unknown } | null)?.type;
+    if (type === "done" || type === "error") ended = true;
+    onEvent(event);
+  };
+
   const reader = res.body?.getReader();
   if (!reader) return { ok: false, error: "Yarvis sent no reply." };
   const decoder = new TextDecoder();
@@ -119,7 +140,7 @@ export async function relayChat(
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    for (const event of events.push(decoder.decode(value, { stream: true }))) onEvent(event);
+    for (const event of events.push(decoder.decode(value, { stream: true }))) forward(event);
   }
-  return { ok: true };
+  return ended ? { ok: true } : { ok: false, error: "The turn ended without an answer." };
 }

@@ -4,7 +4,7 @@ import { addMessage } from "../chat/service.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { BrowserBridge } from "./bridge.ts";
-import { createBrowserChatRoutes, describeTab } from "./chat.ts";
+import { createBrowserChatRoutes, describeTab, newestThatFit } from "./chat.ts";
 import { createBrowserRoutes } from "./routes.ts";
 
 const host = { Host: "127.0.0.1:8765" };
@@ -43,6 +43,16 @@ describe("browser chat routes", () => {
       body: JSON.stringify({ sessionId: "not-a-uuid", message: "hi" }),
     });
     expect(res.status).toBe(400);
+  });
+
+  it("won't answer an approval no panel turn asked for", async () => {
+    const app = setup("postgres://unused/db");
+    const res = await app.request("/chat/approvals/toolu_from_the_app", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ approved: true }),
+    });
+    expect(res.status).toBe(404);
   });
 
   it("refuses a session id that isn't a uuid", async () => {
@@ -149,5 +159,26 @@ describe("browser chat sessions", () => {
     const messages = (await res.json()) as { content: string }[];
     expect(messages).toHaveLength(60);
     expect(messages.at(-1)?.content).toBe("m64");
+  });
+});
+
+describe("newestThatFit", () => {
+  it("keeps the newest messages, oldest first", () => {
+    const messages = Array.from({ length: 70 }, (_, i) => ({ content: `m${i}` }));
+    const kept = newestThatFit(messages);
+    expect(kept).toHaveLength(60);
+    expect(kept[0]?.content).toBe("m10");
+    expect(kept.at(-1)?.content).toBe("m69");
+  });
+
+  it("stops before the thread outgrows a native message", () => {
+    const big = "x".repeat(300_000);
+    const kept = newestThatFit([
+      { content: "old" },
+      { content: big },
+      { content: big },
+      { content: big },
+    ]);
+    expect(kept).toHaveLength(2);
   });
 });

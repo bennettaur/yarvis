@@ -8,14 +8,18 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
 import { defaultProviderModel, resolveModel } from "../llm/providers.ts";
+import { resolveApproval } from "../mcp/approvals.ts";
+import { listMcpServers } from "../mcp/service.ts";
 
 /**
  * Chat with the agent from the extension's side panel, mounted at
  * `/browser/chat` behind the browser bridge's host pin and scoped token.
  *
- * The panel is a typed surface, so a turn runs like one from the in-app chat
- * except that it has no way to ask for approval: MCP tools and the built-ins
- * that always confirm are left out of the turn rather than run unapproved.
+ * A turn asks the panel before any tool that needs approval, the same way the
+ * in-app chat does: the request goes out on the turn's stream and the answer
+ * comes back on `/approvals/:toolCallId`. Because the tab's page-written text
+ * rides along on every turn, the destructive built-ins ask here too (see
+ * `runAgentTurn`).
  */
 
 /** The panel shows recent sessions to pick from, not the whole history. */
@@ -23,9 +27,14 @@ const MAX_SESSIONS = 50;
 
 /**
  * A native message to the extension is capped at 1 MiB, so a long thread is
- * sent from its newest end. The full thread is in the app.
+ * sent from its newest end, up to a count and a size that leave room for the
+ * framing. The full thread is in the app.
  */
 const MAX_THREAD_MESSAGES = 60;
+const MAX_THREAD_CHARS = 800_000;
+
+/** An approval prompt shows the arguments so the user knows what they allow, not a page of them. */
+const MAX_APPROVAL_ARGS_CHARS = 2_000;
 
 const MAX_SELECTION_CHARS = 2_000;
 
@@ -37,10 +46,7 @@ const tabSchema = z.object({
   tabId: z.number().int().nonnegative(),
   url: z.string().max(2_000),
   title: z.string().max(500),
-  selection: z
-    .string()
-    .transform((text) => text.slice(0, MAX_SELECTION_CHARS))
-    .optional(),
+  selection: z.string().max(MAX_SELECTION_CHARS).optional(),
   /** The Chrome profile's name, which the browser tools take as `profile`. */
   profile: z.string().min(1).max(40),
 });
@@ -55,6 +61,35 @@ const sendSchema = z.object({
 
 const createSessionSchema = z.object({ title: z.string().max(200).nullish() });
 
+const approvalSchema = z.object({ approved: z.boolean() });
+
+/** The newest messages that fit the panel's count and size limits, oldest first. */
+export function newestThatFit<T extends { content: string }>(messages: T[]): T[] {
+  const kept: T[] = [];
+  let chars = 0;
+  for (let i = messages.length - 1; i >= 0 && kept.length < MAX_THREAD_MESSAGES; i--) {
+    const message = messages[i] as T;
+    chars += message.content.length;
+    if (chars > MAX_THREAD_CHARS) break;
+    kept.push(message);
+  }
+  return kept.reverse();
+}
+
+/** How a tool asking for approval is named to the user: `mcp:<server>:<tool>` or a bare built-in. */
+function describeToolId(id: string, serverNames: ReadonlyMap<string, string>) {
+  const [kind, serverId = "", ...rest] = id.split(":");
+  if (kind !== "mcp" || rest.length === 0) return { name: id };
+  return { name: rest.join(":"), server: serverNames.get(serverId) ?? serverId };
+}
+
+function previewArgs(args: unknown): string {
+  const text = JSON.stringify(args ?? {}, null, 2) ?? "";
+  return text.length > MAX_APPROVAL_ARGS_CHARS
+    ? `${text.slice(0, MAX_APPROVAL_ARGS_CHARS)}\n…`
+    : text;
+}
+
 /**
  * What the agent is told about the tab, attached as this turn's screen context.
  * The fields are JSON so a selection with newlines can't pass itself off as
@@ -67,7 +102,7 @@ export function describeTab(tab: BrowserTab): string {
     chromeProfile: tab.profile,
     tabId: tab.tabId,
     title: tab.title,
-    url: withoutQuery(tab.url),
+    url: contextUrl(tab.url),
     ...(selection ? { selectedText: selection } : {}),
   };
   return [
@@ -81,7 +116,7 @@ export function describeTab(tab: BrowserTab): string {
  * so neither reaches the model. Other schemes give only their name, since a
  * `file:` path names local files and a `data:` URL is the page itself.
  */
-function withoutQuery(url: string): string {
+function contextUrl(url: string): string {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return parsed.protocol;
@@ -99,7 +134,12 @@ export function createBrowserChatRoutes(config: Config): Hono {
     return next();
   });
 
+  // The middleware above has already answered when there is no URL.
   const db = () => getDb(config.databaseUrl as string).db;
+
+  // Only calls a panel turn asked about can be answered from here, so the
+  // browser token can't decide an approval the in-app chat is waiting on.
+  const askedHere = new Set<string>();
 
   router.get("/sessions", async (c) => {
     const sessions = await listSessions(db());
@@ -121,9 +161,12 @@ export function createBrowserChatRoutes(config: Config): Hono {
     if (!z.string().uuid().safeParse(id).success) return c.json({ error: "invalid session" }, 400);
     const messages = (await getMessages(db(), id)).filter((m) => m.role !== "system");
     return c.json(
-      messages
-        .slice(-MAX_THREAD_MESSAGES)
-        .map(({ id, role, content, createdAt }) => ({ id, role, content, createdAt })),
+      newestThatFit(messages).map(({ id, role, content, createdAt }) => ({
+        id,
+        role,
+        content,
+        createdAt,
+      })),
     );
   });
 
@@ -145,13 +188,19 @@ export function createBrowserChatRoutes(config: Config): Hono {
       return c.json({ error: clientError(e) }, 400);
     }
     const budget = await getChatBudget(config, choice.provider, choice.model);
+    const serverNames = new Map((await listMcpServers()).map((s) => [s.id, s.name]));
 
     return streamSSE(c, async (stream) => {
-      const write = (data: unknown) => stream.writeSSE({ data: JSON.stringify(data) });
-      // Tool arguments and results stay out of the stream: a page's text can be
-      // most of a native message's 1 MiB, and the panel only shows tool names.
-      // No `approval` hooks on purpose: with nothing to prompt on, the turn drops
-      // MCP tools and the always-confirm built-ins instead of running them.
+      // Approval requests are written from inside a tool's execute, beside the
+      // event loop below, so every write goes through one chain to keep frames whole.
+      let chain: Promise<void> = Promise.resolve();
+      const write = (data: unknown): Promise<void> => {
+        chain = chain.then(() => stream.writeSSE({ data: JSON.stringify(data) }));
+        return chain;
+      };
+      const asked: string[] = [];
+      // Tool results stay out of the stream: a page's text can be most of a
+      // native message's 1 MiB, and the panel only shows tool names.
       for await (const event of runAgentTurn({
         config,
         db: db(),
@@ -161,7 +210,21 @@ export function createBrowserChatRoutes(config: Config): Hono {
         context: tab ? describeTab(tab) : undefined,
         userMetadata: { source: "browser" },
         budget,
+        serverNames,
         signal: c.req.raw.signal,
+        approval: {
+          signal: c.req.raw.signal,
+          onRequest: async ({ toolCallId, id, args }) => {
+            askedHere.add(toolCallId);
+            asked.push(toolCallId);
+            await write({
+              type: "tool_approval_request",
+              id: toolCallId,
+              ...describeToolId(id, serverNames),
+              args: previewArgs(args),
+            });
+          },
+        },
       })) {
         if (event.type === "delta") await write({ type: "delta", text: event.text });
         else if (event.type === "tool_call") {
@@ -176,7 +239,17 @@ export function createBrowserChatRoutes(config: Config): Hono {
           await write({ type: "done" });
         }
       }
+      for (const id of asked) askedHere.delete(id);
     });
+  });
+
+  router.post("/approvals/:toolCallId", async (c) => {
+    const toolCallId = c.req.param("toolCallId");
+    if (!askedHere.has(toolCallId)) return c.json({ error: "no such approval" }, 404);
+    const parsed = approvalSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: "invalid approval" }, 400);
+    askedHere.delete(toolCallId);
+    return c.json({ delivered: resolveApproval(toolCallId, parsed.data.approved) });
   });
 
   return router;

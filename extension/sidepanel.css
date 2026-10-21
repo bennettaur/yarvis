@@ -159,3 +159,21 @@ pre {
 .composer button {
   align-self: flex-end;
 }
+.approval {
+  border: 1px solid var(--text);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+}
+.approval p {
+  margin: 0 0 4px;
+}
+.approval pre {
+  max-height: 20vh;
+}
+.approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 6px;
+}

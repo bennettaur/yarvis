@@ -24,10 +24,21 @@ describe("chatRequest", () => {
     });
   });
 
+  it("sends an approval to the call it names", () => {
+    expect(chatRequest({ op: "approve", toolCallId: "toolu_01AB", approved: false })).toEqual({
+      method: "POST",
+      path: "/browser/chat/approvals/toolu_01AB",
+      body: { approved: false },
+      stream: false,
+    });
+  });
+
   it("refuses an unknown operation or a session id that could change the path", () => {
     expect(chatRequest({ op: "delete" })).toBeNull();
     expect(chatRequest({ op: "messages", sessionId: "../../api/tasks" })).toBeNull();
     expect(chatRequest({ op: "send", sessionId: "nope", message: "hi" })).toBeNull();
+    expect(chatRequest({ op: "approve", toolCallId: "../x", approved: true })).toBeNull();
+    expect(chatRequest({ op: "approve", toolCallId: "toolu_1", approved: "yes" })).toBeNull();
     expect(chatRequest(null)).toBeNull();
   });
 });
@@ -70,6 +81,16 @@ describe("relayChat", () => {
     expect(events).toEqual([{ type: "delta", text: "a" }, { type: "done" }]);
     expect(seen?.url).toBe("http://127.0.0.1:4321/browser/chat");
     expect(seen?.headers.get("authorization")).toBe("Bearer browser-token");
+  });
+
+  it("fails a turn whose stream ends without done or error", async () => {
+    const fetchImpl = (async () =>
+      new Response('data: {"type":"delta","text":"a"}\n\n')) as unknown as typeof fetch;
+    const request = chatRequest({ op: "send", sessionId: SESSION, message: "hi" });
+    if (!request) throw new Error("expected a request");
+    expect(
+      await relayChat(instance, request, () => {}, new AbortController().signal, fetchImpl),
+    ).toEqual({ ok: false, error: "The turn ended without an answer." });
   });
 
   it("returns the body of a request that isn't streamed", async () => {

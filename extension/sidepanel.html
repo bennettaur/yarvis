@@ -19,6 +19,14 @@
       </div>
       <p id="chat-status" class="hint" hidden></p>
       <ol id="thread" class="thread" aria-live="polite"></ol>
+      <div id="approval" class="approval" role="alertdialog" aria-labelledby="approval-text" hidden>
+        <p id="approval-text"></p>
+        <pre id="approval-args"></pre>
+        <div class="approval-actions">
+          <button id="deny" type="button">Deny</button>
+          <button id="approve" type="button">Allow</button>
+        </div>
+      </div>
       <form id="composer" class="composer">
         <label class="share">
           <input id="share-tab" type="checkbox" checked />

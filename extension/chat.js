@@ -16,6 +16,9 @@ const input = document.getElementById("message");
 const sendButton = document.getElementById("send");
 const shareTab = document.getElementById("share-tab");
 const tabTitle = document.getElementById("tab-title");
+const approvalBar = document.getElementById("approval");
+const approvalText = document.getElementById("approval-text");
+const approvalArgs = document.getElementById("approval-args");
 
 const NEW_CHAT = "";
 const STOPPED = Symbol("stopped");
@@ -26,6 +29,19 @@ const pending = new Map();
 
 /** The turn being streamed, so Stop can cancel it. */
 let turnId = null;
+
+/** From Send until the turn settles, including the setup before it streams. */
+let busy = false;
+let stopRequested = false;
+
+/** A switch of Yarvis app during a turn waits for it, or it would clear the reply being written. */
+let refreshAfterTurn = false;
+
+/** Tool calls waiting on the user, answered front first. */
+const approvals = [];
+
+/** The app the running turn went to; an answer to its approvals must go there too. */
+let turnInstance = "";
 
 function worker() {
   if (port) return port;
@@ -166,11 +182,31 @@ async function currentTabContext() {
   return tabContext(tab, await selectionIn(tab), profile.name) ?? undefined;
 }
 
-function setBusy(busy) {
-  sendButton.textContent = busy ? "Stop" : "Send";
-  input.disabled = busy;
-  sessionSelect.disabled = busy;
-  instanceSelect.disabled = busy;
+function renderApproval() {
+  const next = approvals[0];
+  approvalBar.hidden = !next;
+  if (!next) return;
+  const more = approvals.length > 1 ? ` (+${approvals.length - 1} more)` : "";
+  const where = next.server ? ` from ${next.server}` : "";
+  approvalText.textContent = `Yarvis wants to run ${next.name}${where}${more}.`;
+  approvalArgs.textContent = next.args ?? "";
+}
+
+function answerApproval(approved) {
+  const next = approvals.shift();
+  renderApproval();
+  if (!next) return;
+  ask("approve", { toolCallId: next.id, approved, instance: turnInstance }).promise.catch((error) =>
+    showStatus(error.message),
+  );
+}
+
+function setBusy(next) {
+  busy = next;
+  sendButton.textContent = next ? "Stop" : "Send";
+  input.disabled = next;
+  sessionSelect.disabled = next;
+  instanceSelect.disabled = next;
 }
 
 async function send(text) {
@@ -180,18 +216,27 @@ async function send(text) {
   reply.classList.add("streaming");
   const body = reply.querySelector(".body");
   const tools = new Map();
+  stopRequested = false;
+  turnInstance = instanceSelect.value;
   setBusy(true);
   try {
     let sessionId = sessionSelect.value;
     if (sessionId === NEW_CHAT) {
-      const session = await ask("create_session", { title: titleFor(text) }).promise;
+      const session = await ask("create_session", {
+        title: titleFor(text),
+        instance: turnInstance,
+      }).promise;
       sessionSelect.add(new Option(sessionLabel(session), session.id), 1);
       sessionSelect.value = session.id;
       sessionId = session.id;
-      await chrome.storage.local.set({ [sessionKey(instanceSelect.value)]: sessionId });
+      await chrome.storage.local.set({ [sessionKey(turnInstance)]: sessionId });
     }
     const tab = await currentTabContext();
-    const turn = ask("send", { sessionId, message: text, tab }, (event) => {
+    if (stopRequested) {
+      reply.remove();
+      return;
+    }
+    const turn = ask("send", { sessionId, message: text, tab, instance: turnInstance }, (event) => {
       if (event?.type === "delta") {
         body.textContent += event.text;
         reply.scrollIntoView({ block: "end" });
@@ -203,6 +248,9 @@ async function send(text) {
           const name = line.dataset.tool;
           line.textContent = event.status === "ok" ? `Used ${name}` : `${name} (${event.status})`;
         }
+      } else if (event?.type === "tool_approval_request") {
+        approvals.push(event);
+        renderApproval();
       } else if (event?.type === "attention") {
         showStatus(`Yarvis wants your attention${event.reason ? `: ${event.reason}` : "."}`);
       } else if (event?.type === "error") {
@@ -210,33 +258,44 @@ async function send(text) {
       }
     });
     turnId = turn.id;
-    // A stopped turn saves nothing in Yarvis, so its partial reply goes too.
+    // A stopped turn usually saves nothing in Yarvis, so its partial reply goes too.
     if ((await turn.promise) === STOPPED) reply.remove();
     else if (!body.textContent && statusLine.hidden) body.textContent = "(no response)";
   } catch (error) {
     showStatus(error.message);
   } finally {
     turnId = null;
+    // A turn that ended stopped waiting on its approvals.
+    approvals.length = 0;
+    renderApproval();
     reply.classList.remove("streaming");
     if (!body.textContent) reply.remove();
     setBusy(false);
     input.focus();
+    if (refreshAfterTurn) {
+      refreshAfterTurn = false;
+      refresh();
+    }
   }
 }
 
 function stop() {
-  if (!turnId) return;
+  showStatus("Stopped.");
+  if (!turnId) {
+    // Still creating the chat or reading the tab; send() checks this before streaming.
+    stopRequested = true;
+    return;
+  }
   const id = turnId;
   worker().postMessage({ id, cancel: true });
   const request = pending.get(id);
   pending.delete(id);
   request?.resolve(STOPPED);
-  showStatus("Stopped.");
 }
 
 composer.addEventListener("submit", (event) => {
   event.preventDefault();
-  if (turnId) {
+  if (busy) {
     stop();
     return;
   }
@@ -264,8 +323,16 @@ chrome.tabs.onUpdated.addListener((_id, info, tab) => {
   if (tab.active && (info.title || info.url)) showActiveTab();
 });
 
+document.getElementById("approve").addEventListener("click", () => answerApproval(true));
+document.getElementById("deny").addEventListener("click", () => answerApproval(false));
+
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "session" && changes.status && renderInstances(changes.status.newValue)) refresh();
+  if (area !== "session" || !changes.status) return;
+  const instanceChanged = renderInstances(changes.status.newValue);
+  // With no app left there is nothing to load, and the note above says why.
+  if (!instanceChanged || !instanceSelect.value) return;
+  if (busy) refreshAfterTurn = true;
+  else refresh();
 });
 
 async function init() {

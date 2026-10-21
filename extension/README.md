@@ -126,8 +126,10 @@ The extension enforces this, not the sidecar:
   safety net, not a guarantee. Links to pages on the site are screened by
   address instead (`/logout`, `/delete`, `/leave`, ...), so a channel called
   `post-mortems` still opens.
-- **Approval on spoken turns.** `click_browser_element` and `navigate_browser_tab`
-  sit in `chat/destructiveTools.ts`, so a voice turn asks first.
+- **Approval on spoken and side-panel turns.** `click_browser_element` and
+  `navigate_browser_tab` sit in `chat/destructiveTools.ts`, so a voice turn asks
+  first. So does a turn from the side panel's chat, since it carries the page's
+  title and selection: the panel shows an Allow/Deny bar.
 
 Page text is fenced as untrusted data before it reaches the model.
 
@@ -144,11 +146,9 @@ you turn that on for it in `chrome://extensions`; leave it off.
   is for a dev checkout; a packaged app would need to ship the host.
 - Every running Yarvis instance can drive the browser, and two could act in the
   same tab at once. That is on purpose, for testing branches side by side.
-- The side panel's chat has no approval prompt yet, so MCP tools and the
-  built-ins that always ask (such as creating a calendar event) are left out of
-  its turns. It uses the default model, the same one Telegram falls back to, and
-  shows replies as plain text.
-- Clicks are not asked about on typed turns. That is what makes reading many
+- The side panel's chat uses the default model, the same one Telegram falls back
+  to, and shows replies as plain text.
+- Clicks are not asked about on turns typed in the app. That is what makes reading many
   channels practical, and it is a decision to revisit if it feels too loose.
 - `<all_urls>` lets a read reach any tab, including signed-in ones; there is no
   per-site allowlist yet.
