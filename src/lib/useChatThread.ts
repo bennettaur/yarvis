@@ -337,6 +337,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
                 name: evt.name ?? id,
                 server: evt.server ?? "",
                 args: evt.args,
+                reason: evt.reason ?? null,
               },
             ]);
           } else if (evt.type === "attention" && evt.reason) {

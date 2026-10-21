@@ -88,16 +88,9 @@ export interface SpecialistRun {
 /**
  * Tools no specialist may hold under any configuration. Delegation is the
  * orchestrator's job: a specialist that could delegate could delegate to itself,
- * and one bad prompt becomes an unbounded chain of runs. The question tools wait
- * on the user for longer than a run is allowed, holding up the chat or job that
- * started it, and a run has no chat of its own to show the question against.
+ * and one bad prompt becomes an unbounded chain of runs.
  */
-const NEVER_DELEGATABLE: ReadonlySet<string> = new Set([
-  "delegate",
-  "list_specialists",
-  "ask_user",
-  "wait_for_answer",
-]);
+const NEVER_DELEGATABLE: ReadonlySet<string> = new Set(["delegate", "list_specialists"]);
 
 /**
  * Tools a specialist holds only if it has been granted them explicitly.
@@ -238,6 +231,8 @@ export async function runSpecialistDefinition(input: RunDefinitionInput): Promis
     // A delegated run is not the user asking for a session, so nothing it starts
     // is made remotely controllable.
     remoteControl: false,
+    // The question tools wait on the user for longer than a run may last, holding
+    // up the chat or job that started it, and a run has no chat to show them in.
     atTheApp: false,
   });
   const disabled = new Set((await listDisabledToolIds(db)).map((t) => t.id));

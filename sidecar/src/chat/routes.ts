@@ -181,7 +181,7 @@ export function createChatRoutes(config: Config): Hono {
         // tool approval; the answer comes back on POST /approvals/:toolCallId.
         approval: {
           signal: c.req.raw.signal,
-          onRequest: async ({ toolCallId, id, args }) => {
+          onRequest: async ({ toolCallId, id, args, reason }) => {
             const [, serverId = "", ...rest] = id.split(":");
             await safeWrite({
               type: "tool_approval_request",
@@ -192,6 +192,7 @@ export function createChatRoutes(config: Config): Hono {
               name: rest.join(":"),
               server: serverNames.get(serverId) ?? serverId,
               args,
+              reason,
             });
           },
         },

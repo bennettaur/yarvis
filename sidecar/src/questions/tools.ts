@@ -22,8 +22,8 @@ import { askQuestions, getQuestion, waitForReply } from "./service.ts";
  */
 
 /**
- * The attention session key for a chat. Delegated runs never get these tools,
- * so an empty id only comes from the registry's metadata build.
+ * The attention session key for a chat. Only the registry's metadata build has
+ * no chat, so an empty id never reaches a question.
  */
 function chatSessionKey(sessionId: string): string | null {
   return sessionId ? `chat:${sessionId}` : null;
@@ -46,11 +46,7 @@ function failure(label: string, error: unknown) {
 const CHAT_PENDING_MESSAGE =
   "The user hasn't answered yet. Call wait_for_answer with this questionId to keep waiting. If you reply instead, a later turn can't pick the answer up, so tell the user to answer you here in the chat.";
 
-/** Away from the app, as on Telegram, nobody can see the bell to answer it. */
-const AWAY_FROM_APP =
-  "The user is away from the Yarvis app and can't see the question there. Ask in your reply instead.";
-
-export function buildQuestionTools(db: Db, sessionId: string, { atTheApp }: { atTheApp: boolean }) {
+export function buildQuestionTools(db: Db, sessionId: string) {
   const sessionKey = chatSessionKey(sessionId);
   return {
     ask_user: tool({
@@ -59,7 +55,6 @@ export function buildQuestionTools(db: Db, sessionId: string, { atTheApp }: { at
       ),
       inputSchema: z.object(askInputShape),
       execute: async ({ task, reason, questions }, { abortSignal }) => {
-        if (!atTheApp) return { error: AWAY_FROM_APP };
         try {
           const row = await askQuestions(db, {
             from: "yarvis",

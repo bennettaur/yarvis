@@ -1,22 +1,25 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { SESSION_KEY_HEADER, SESSION_TOKEN_HEADER } from "./agentSessions.ts";
 
 /**
  * Generates the `.claude/settings.json` hook config that makes a Yarvis-launched
- * Claude Code session signal the app when it needs the user. Split out from the
+ * Claude Code session register itself with its workspace and signal the app when
+ * it needs the user. Split out from the
  * workspace service so the hook↔ingest contract and the merge semantics are unit
  * testable without touching the filesystem.
  */
 
 /** Marks our hook commands so re-provision can replace them without duplicating. */
-const INGEST_MARKER = "/ingest/attention";
+const INGEST_MARKERS = ["/ingest/attention", "/ingest/agent-session"];
 
 export type AttentionHookKind = "permission" | "idle" | "completed";
 
 /**
- * Characters allowed in the values baked into the hook command. Both land in a
- * shell string — the workspace id inside single quotes, the fallback key inside
- * the *default word* of a `${VAR:-word}` expansion, which the shell still scans
- * for command substitution even within double quotes. Callers pass ids the app
+ * Characters allowed in the values baked into the hook commands. Every value
+ * lands in a shell string — the workspace id inside single quotes or, in the
+ * session hook, a double-quoted URL; the fallback key inside the *default word*
+ * of a `${VAR:-word}` expansion, which the shell still scans for command
+ * substitution even within double quotes. Callers pass ids the app
  * generated, so this is an assertion of that invariant rather than a filter.
  */
 const SHELL_SAFE = /^[A-Za-z0-9:_./-]+$/;
@@ -64,6 +67,42 @@ export function attentionHookCommand(
   );
 }
 
+/**
+ * The shell command the SessionStart and SessionEnd hooks run to register the
+ * session with its workspace (see `agentSessions.ts`). Claude Code's hook input
+ * goes to the sidecar unchanged as the body, since it already carries the
+ * session id and the start source or end reason. Three values ride alongside:
+ *
+ * - `$PPID`, the Claude process itself: Claude runs the command through a
+ *   shell, so the shell's parent is Claude.
+ * - `YARVIS_SESSION_KEY`, the PTY the session runs in. Without it the session
+ *   isn't in a Yarvis PTY (a terminal outside the app, or a headless run with
+ *   no Yarvis environment), there is no prompt to deliver to, and nothing is
+ *   registered. The hook's stdin is still drained so Claude never blocks
+ *   writing it.
+ * - `YARVIS_SESSION_TOKEN`, which proves the request comes from that PTY.
+ *
+ * Throws on a workspace id that isn't `SHELL_SAFE`: it lands inside a
+ * double-quoted URL, where a `$` or backtick would be run by the shell.
+ */
+export function agentSessionHookCommand(workspaceId: string): string {
+  if (!SHELL_SAFE.test(workspaceId)) {
+    throw new Error(
+      `agent session hook: refusing to embed unsafe value ${JSON.stringify(workspaceId)}`,
+    );
+  }
+  return (
+    `if [ -n "\${YARVIS_SESSION_KEY}" ] && [ -n "\${YARVIS_SESSION_TOKEN}" ]; then ` +
+    `curl -sf -m 5 -X POST "http://127.0.0.1:\${YARVIS_SIDECAR_PORT}/ingest/agent-session?workspaceId=${workspaceId}&pid=\${PPID}" ` +
+    `-H "Authorization: Bearer \${YARVIS_ATTENTION_TOKEN}" ` +
+    `-H "${SESSION_KEY_HEADER}: \${YARVIS_SESSION_KEY}" ` +
+    `-H "${SESSION_TOKEN_HEADER}: \${YARVIS_SESSION_TOKEN}" ` +
+    `-H "Content-Type: application/json" ` +
+    `--data-binary @- >/dev/null 2>&1; ` +
+    `else cat >/dev/null 2>&1; fi; true`
+  );
+}
+
 interface HookEntry {
   matcher?: string;
   hooks: { type: "command"; command: string }[];
@@ -75,7 +114,11 @@ function isOurEntry(entry: unknown): boolean {
   const hooks = (entry as HookEntry).hooks;
   return (
     Array.isArray(hooks) &&
-    hooks.some((h) => typeof h?.command === "string" && h.command.includes(INGEST_MARKER))
+    hooks.some(
+      (h) =>
+        typeof h?.command === "string" &&
+        INGEST_MARKERS.some((marker) => h.command.includes(marker)),
+    )
   );
 }
 
@@ -93,7 +136,8 @@ function dropPathsKey(settings: Record<string, unknown>, key: string): void {
 }
 
 /**
- * Merges our three attention hooks into any existing settings. Unrelated
+ * Merges our hooks into any existing settings: the three attention hooks, and
+ * the SessionStart/SessionEnd pair that registers the session. Unrelated
  * top-level keys and the user's own hooks for these events are preserved — our
  * entry is *appended* alongside them, not substituted for the array. Idempotent:
  * a prior Yarvis entry for an event is dropped before ours is re-added, so
@@ -113,6 +157,7 @@ export function buildClaudeSettings(
     type: "command" as const,
     command: attentionHookCommand(workspaceId, fallbackSessionKey, kind),
   });
+  const registration = { type: "command" as const, command: agentSessionHookCommand(workspaceId) };
 
   const existingHooks =
     existing.hooks && typeof existing.hooks === "object"
@@ -134,6 +179,8 @@ export function buildClaudeSettings(
         hooks: [command("idle")],
       }),
       Stop: withOurEntry("Stop", { hooks: [command("completed")] }),
+      SessionStart: withOurEntry("SessionStart", { hooks: [registration] }),
+      SessionEnd: withOurEntry("SessionEnd", { hooks: [registration] }),
     },
   };
 
@@ -144,10 +191,10 @@ export function buildClaudeSettings(
 
 /**
  * (Re)writes `.claude/settings.json` at the workspace root so a Claude Code
- * session launched there signals Yarvis when it needs the user (blocked on a
- * permission, idle waiting for input, or finished). Both launch flows start
- * Claude with cwd = the workspace root, so a project settings file here covers
- * them. Best-effort: a corrupt existing file is overwritten and any failure is
+ * session launched there registers itself with Yarvis and signals when it
+ * needs the user (blocked on a permission, idle waiting for input, or
+ * finished). Both launch flows start Claude with cwd = the workspace root, so
+ * a project settings file here covers them. Best-effort: a corrupt existing file is overwritten and any failure is
  * logged, never fatal to provisioning.
  */
 export function writeClaudeSettings(rootPath: string, workspaceId: string): void {

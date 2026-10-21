@@ -166,15 +166,17 @@ has written your providers and MCP servers into it.
 
 | Key | Holds | Set from |
 | --- | --- | --- |
-| `customProviders` | Your OpenAI- or Anthropic-compatible endpoints, keyed by id | Settings → LLM Providers |
+| `customProviders` | Your OpenAI-, Anthropic- or Ollama-compatible endpoints, keyed by id | Settings → LLM Providers |
 | `providerModels` | Your edited model list per provider. Replaces the built-in list for that provider once saved. | Settings → LLM Providers → Models |
 | `mcpServers` | MCP servers Yarvis connects to, keyed by id | Settings → Tools & MCP |
 | `chatConfig` | `maxSteps` (100, up to 500), `maxOutputTokens` (none, up to 200000), `compactAtTokens` (200000, from 10000 to 2000000). A model's own compaction threshold in its catalog entry wins over `compactAtTokens`. | Settings → Assistant → Turn budget |
 | `complexityModels` | The provider and model behind the `low`, `medium` and `max` tiers specialists can ask for | Settings → Assistant |
+| `decisionModel` | `model`, the provider and model tagged `decision` that answers yes/no judgements, `autoApproveTools`, which lets it approve MCP tool calls before you are asked, and `autoApproveHeadsDown`, which lets it approve a heads-down call to an MCP tool you've approved in similar situations before (see [Heads-down mode](features/heads-down.md)) | Settings → Tools & MCP |
 | `githubPrConfig` | `reviewQuery` for the Needs review tab, `reviewingLookbackDays` for Reviewing | Settings → PR review |
 | `prModels` | The provider and model behind guided reviews (`guide`) and line questions (`ask`). Unset uses the default chat model. | Settings → PR review |
 | `wipConfig` | Which sources feed the **In progress** list in the attention panel (the bell in the top bar), and a GitHub issue label filter | Settings → Work in progress |
 | `jobConfig` | `ccDigestEnabled` and `ccDigestProjectDirs` for the Claude Code transcript digest | Settings → Assistant |
+| `headsDown` | Heads-down mode: `minSleepMinutes` (5), `maxSleepMinutes` (120) and `idleSleepMinutes` (60) between passes, `workingHours` (`days` with 0 for Sunday, `start` and `end` as `HH:MM`; Monday to Friday 09:00–17:00 by default; an end at or before the start runs past midnight; `null` for any time), which is also when it may tag people, `userAwayAfterMinutes` (120), and the `provider` and `model` its passes run on (unset uses the default chat model). Per machine, so a work laptop and a personal one can keep different hours. See [Heads-down mode](features/heads-down.md). | Heads down page |
 | `voiceConfig` | Speech providers and models, voice, speak replies, hands-free | Settings → Voice |
 | `embeddingsConfig` | The embeddings endpoint | Settings → Embeddings |
 
@@ -265,7 +267,7 @@ The tabs in **Settings**, in order:
 2. **LLM Providers.** Each provider's model list and capability tags, and your
    custom providers.
 3. **Tools & MCP.** MCP servers Yarvis connects to, Yarvis's own MCP endpoint,
-   and the Tool manager.
+   the Tool manager, and the decision model behind auto mode.
 4. **Repositories.** The repos workspaces can use, the workspace agent
    command, and the terminal cap.
 5. **PR review.** The Needs review search, the Reviewing lookback, and the

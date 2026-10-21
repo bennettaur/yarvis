@@ -61,7 +61,7 @@ async function callTool(
       Accept: "application/json, text/event-stream",
       Host: "127.0.0.1:8765",
       ...(origin.sessionKey ? { "X-Yarvis-Session-Key": origin.sessionKey } : {}),
-      ...(origin.workspaceId ? { "X-Yarvis-Workspace-Id": origin.workspaceId } : {}),
+      ...(origin.workspaceId ? { "X-Yarvis-Workspace": origin.workspaceId } : {}),
     },
     body: JSON.stringify({
       jsonrpc: "2.0",

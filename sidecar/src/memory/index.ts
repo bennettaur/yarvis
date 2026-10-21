@@ -78,6 +78,15 @@ export interface MemorySearchOptions {
    * search scans every row; that is acceptable only because it is rare.
    */
   asOf?: Date;
+  /**
+   * Rank every row that passes the filters instead of the HNSW index's
+   * candidates. The index applies a `kind` filter after choosing its
+   * candidates, so when the planner misjudges how selective the filter is
+   * (stale statistics, or a cached generic plan for the parameterized query)
+   * a search for a rare kind can come back short of rows that match. Only for
+   * kinds small enough to scan.
+   */
+  exact?: boolean;
 }
 
 /** What a write records beyond the text itself. */
@@ -89,6 +98,12 @@ export interface MemoryWriteInput {
   validFrom?: Date;
   /** When the claim needs re-checking. Unset means it holds until corrected. */
   validUntil?: Date;
+  /**
+   * The text the memory is found by, when that differs from what it says. A
+   * decision is found by its situation and question, while its content also
+   * records the answer. Kept in metadata so a re-embed uses it too.
+   */
+  searchText?: string;
 }
 
 export interface MemoryConfirmInput {
@@ -240,6 +255,12 @@ const RECORD_COLUMNS = {
   confirmCount: memories.confirmCount,
 } as const;
 
+/** The text a stored memory was embedded from: its `searchText` if it has one, else its content. */
+function embeddedText(content: string, metadata: unknown): string {
+  const searchText = (metadata as { searchText?: unknown } | null)?.searchText;
+  return typeof searchText === "string" ? searchText : content;
+}
+
 /** MemoryService backed by Postgres + pgvector, using a pluggable embedder. */
 export class PgVectorMemoryStore implements MemoryService {
   constructor(
@@ -264,7 +285,9 @@ export class PgVectorMemoryStore implements MemoryService {
       content,
       kind: input.kind ?? "fact",
       sourceRef: input.sourceRef ?? null,
-      metadata: this.stamp(input.metadata),
+      metadata: this.stamp(
+        input.searchText ? { ...input.metadata, searchText: input.searchText } : input.metadata,
+      ),
       embedding,
       validFrom: input.validFrom ?? now,
       validUntil: input.validUntil ?? null,
@@ -273,7 +296,7 @@ export class PgVectorMemoryStore implements MemoryService {
   }
 
   async add(content: string, input: MemoryWriteInput = {}): Promise<MemoryRecord> {
-    const embedding = await this.embedder.embed(content);
+    const embedding = await this.embedder.embed(input.searchText ?? content);
     const now = this.now();
     const [row] = await this.db
       .insert(memories)
@@ -289,7 +312,7 @@ export class PgVectorMemoryStore implements MemoryService {
 
   async addMany(items: MemoryInput[]): Promise<MemoryRecord[]> {
     if (items.length === 0) return [];
-    const embeddings = await this.embedder.embedMany(items.map((i) => i.content));
+    const embeddings = await this.embedder.embedMany(items.map((i) => i.searchText ?? i.content));
     const now = this.now();
     const rows = await this.db
       .insert(memories)
@@ -305,7 +328,11 @@ export class PgVectorMemoryStore implements MemoryService {
     options: MemorySearchOptions = {},
   ): Promise<MemoryRecord[]> {
     const queryVec = await this.embedder.embedQuery(query);
-    const distance = cosineDistance(memories.embedding, queryVec);
+    const rawDistance = cosineDistance(memories.embedding, queryVec);
+    // `+ 0` keeps the planner off the HNSW index, which can only serve the bare
+    // operator. The same expression is selected and sorted on, so each row's
+    // distance is computed once.
+    const distance = options.exact ? sql<number>`(${rawDistance}) + 0` : rawDistance;
     const conditions: SQL[] = [];
     if (options.kinds?.length) conditions.push(inArray(memories.kind, [...options.kinds]));
     if (options.asOf) {
@@ -378,10 +405,16 @@ export class PgVectorMemoryStore implements MemoryService {
     if (!existing) return null;
     // A changed claim needs a new vector: leaving the old one in place would
     // leave the memory findable by its previous wording and not its current one.
+    // Its search text described the old wording, so the new vector comes from
+    // the new content and the search text is dropped.
     const embedding =
       patch.content !== undefined && patch.content !== existing.content
         ? await this.embedder.embed(patch.content)
         : undefined;
+    const { searchText: _stale, ...metadata } = (existing.metadata ?? {}) as Record<
+      string,
+      unknown
+    >;
     const [row] = await this.db
       .update(memories)
       .set({
@@ -393,7 +426,7 @@ export class PgVectorMemoryStore implements MemoryService {
         ...(embedding
           ? {
               embedding,
-              metadata: this.stamp(existing.metadata as Record<string, unknown> | null),
+              metadata: this.stamp(metadata),
             }
           : {}),
         updatedAt: this.now(),
@@ -410,7 +443,7 @@ export class PgVectorMemoryStore implements MemoryService {
   ): Promise<MemoryRecord | null> {
     // Embedded before the transaction, so the row lock isn't held across a
     // call to the embeddings provider.
-    const embedding = await this.embedder.embed(content);
+    const embedding = await this.embedder.embed(input.searchText ?? content);
     const now = this.now();
     const replacement = await this.db.transaction(async (tx) => {
       // Locked, so two corrections of one memory racing (parallel tool calls,
@@ -428,6 +461,7 @@ export class PgVectorMemoryStore implements MemoryService {
           kind: input.kind ?? existing.kind,
           sourceRef: input.sourceRef ?? existing.sourceRef ?? null,
           metadata: input.metadata,
+          searchText: input.searchText,
           validFrom: input.validFrom,
           validUntil: input.validUntil,
         },
@@ -526,7 +560,9 @@ export class PgVectorMemoryStore implements MemoryService {
     let updated = 0;
     for (let i = 0; i < rows.length; i += batchSize) {
       const batch = rows.slice(i, i + batchSize);
-      const embeddings = await this.embedder.embedMany(batch.map((r) => r.content));
+      const embeddings = await this.embedder.embedMany(
+        batch.map((r) => embeddedText(r.content, r.metadata)),
+      );
       // The updates within a batch are independent, so issue them together
       // rather than serializing one DB round-trip per row.
       await Promise.all(

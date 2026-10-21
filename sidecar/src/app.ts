@@ -15,10 +15,12 @@ import { pingDb } from "./db/client.ts";
 import { createEventRoutes } from "./events/routes.ts";
 import { createGithubRoutes } from "./github/routes.ts";
 import { createCalendarRoutes, createGoogleCallbackRoutes } from "./google/routes.ts";
+import { createHeadsDownRoutes } from "./headsDown/routes.ts";
 import { createIssueRoutes } from "./issues/routes.ts";
 import { createJiraRoutes } from "./jira/routes.ts";
 import { createJobRoutes } from "./jobs/routes.ts";
 import { createComplexityModelRoutes } from "./llm/complexityRoutes.ts";
+import { createDecisionModelRoutes } from "./llm/decisionRoutes.ts";
 import { redactSecrets } from "./llm/errors.ts";
 import { createModelCatalogRoutes } from "./llm/routes.ts";
 import { createLogRoutes } from "./logs/routes.ts";
@@ -37,6 +39,8 @@ import { createTelegramRoutes } from "./telegram/routes.ts";
 import { createTodoRoutes } from "./todos/routes.ts";
 import { createVoiceRoutes } from "./voice/routes.ts";
 import { createWipRoutes } from "./wip/routes.ts";
+import { createWorkStreamRoutes } from "./workStreams/routes.ts";
+import { createAgentSessionIngestRoutes } from "./workspaces/agentSessionIngest.ts";
 import { createRepoRoutes, createWorkspaceRoutes } from "./workspaces/routes.ts";
 
 const SERVICE_NAME = "yarvis-sidecar";
@@ -101,6 +105,10 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   // own scoped token (checked inside the router), so a Claude session shell can
   // raise an attention flag without holding the full-access bearer.
   app.route("/ingest", createAttentionIngestRoutes(config));
+  // Same token and shape: the session hooks register the Claude process with
+  // its workspace. The attention router's `/ingest/*` middleware also runs for
+  // it; this router checks the token itself rather than relying on that.
+  app.route("/ingest/agent-session", createAgentSessionIngestRoutes(config));
 
   // The browser bridge is the same shape: the extension's native host holds only
   // this scoped token, checked inside the router, never the full-access bearer.
@@ -142,6 +150,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/custom-providers", createCustomProviderRoutes(config));
   app.route("/api/model-catalog", createModelCatalogRoutes(config));
   app.route("/api/complexity-models", createComplexityModelRoutes(config));
+  app.route("/api/decision-model", createDecisionModelRoutes());
   app.route("/api/mcp", createMcpRoutes(config));
   app.route("/api/mcp-endpoint", createMcpEndpointInfoRoutes(config));
   app.route("/api/cc", createCcRoutes());
@@ -154,6 +163,8 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/events", createEventRoutes(config));
   app.route("/api/projects", createProjectRoutes(config));
   app.route("/api/todos", createTodoRoutes(config));
+  app.route("/api/work-streams", createWorkStreamRoutes(config));
+  app.route("/api/heads-down", createHeadsDownRoutes(config));
   app.route("/api/specialists", createSpecialistRoutes(config));
   app.route("/api/jobs", createJobRoutes(config));
   app.route("/api/logs", createLogRoutes());

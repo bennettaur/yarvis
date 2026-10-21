@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import postgres from "postgres";
-import { selectTools } from "../agents/run.ts";
+import { newAttentionState } from "../chat/attentionTools.ts";
+import { buildBuiltinTools } from "../chat/builtinTools.ts";
 import { getDb } from "../db/client.ts";
 import { replyToQuestion } from "./service.ts";
 import { buildQuestionTools } from "./tools.ts";
@@ -28,7 +29,7 @@ const ASK = {
 const callOptions = () =>
   ({ toolCallId: "call-1", messages: [], abortSignal: new AbortController().signal }) as never;
 
-const chatTools = (sessionId: string) => buildQuestionTools(db, sessionId, { atTheApp: true });
+const chatTools = (sessionId: string) => buildQuestionTools(db, sessionId);
 
 async function pendingQuestionId(): Promise<string> {
   for (let i = 0; i < 100; i++) {
@@ -93,21 +94,23 @@ describe("the in-app agent's question tools", () => {
     expect(Date.now() - started).toBeLessThan(10_000);
   });
 
-  it("tells the agent to ask in its reply when the user is away from the app", async () => {
-    const away = buildQuestionTools(db, "chat-1", { atTheApp: false });
-    expect(await away.ask_user.execute!(ASK, callOptions())).toMatchObject({
-      error: expect.stringContaining("Ask in your reply"),
-    });
-    expect(await sql`SELECT id FROM agent_questions`).toHaveLength(0);
-  });
-
-  it("is never handed to a delegated run, even one that names it", () => {
-    const all = { ...chatTools("chat-1"), recall: chatTools("chat-1").ask_user };
-    const selected = selectTools(all, [
-      "builtin:ask_user",
-      "builtin:wait_for_answer",
-      "builtin:recall",
-    ]);
-    expect(Object.keys(selected)).toEqual(["recall"]);
+  it("is offered only where the user can answer in the bell", () => {
+    const toolsFor = (atTheApp: boolean) =>
+      Object.keys(
+        buildBuiltinTools({
+          db,
+          config: { secrets: {} } as never,
+          sessionId: "chat-1",
+          memory: undefined as never,
+          attention: newAttentionState(),
+          remoteControl: false,
+          atTheApp,
+        }),
+      );
+    expect(toolsFor(true)).toEqual(expect.arrayContaining(["ask_user", "wait_for_answer"]));
+    // Telegram, a heads-down pass and a delegated run: a heads-down pass has its
+    // own ask_user, which never waits, and must not share the name.
+    expect(toolsFor(false)).not.toContain("ask_user");
+    expect(toolsFor(false)).not.toContain("wait_for_answer");
   });
 });

@@ -9,7 +9,7 @@ import {
   validityFields,
   validityWindowShape,
 } from "../memory/validity.ts";
-import { jsonResult, toolError, toolMessage } from "./toolResults.ts";
+import { callerError, jsonResult, toolError, UUID } from "./results.ts";
 
 /**
  * The memory tools Yarvis serves over MCP, so Claude Code (or any other MCP
@@ -30,16 +30,6 @@ const MAX_CONTENT_CHARS = 4000;
 
 /** A search query is a phrase; anything longer embeds badly and costs the same. */
 const MAX_QUERY_CHARS = 500;
-
-/**
- * A memory id lands in a `uuid` column, so a non-uuid would surface as a
- * database error rather than a schema rejection. Matched by shape rather than
- * with zod's `.uuid()`, which additionally enforces RFC version/variant bits
- * that Postgres itself does not — the same check `attention/routes.ts` applies.
- */
-const UUID = z
-  .string()
-  .regex(/^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/, "must be a uuid");
 
 /** Marks memories written through this endpoint rather than by the user directly. */
 const MCP_SOURCE = "mcp";
@@ -112,7 +102,7 @@ export function registerMemoryTools(server: McpServer, memory: () => Promise<Mem
     async ({ content, ...windowRequest }) => {
       const requested = resolveValidityWindow(windowRequest, new Date());
       if (!requested.ok) {
-        return toolMessage(requested.error);
+        return callerError(requested.error);
       }
       try {
         const record = await (await memory()).add(content, {

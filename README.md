@@ -111,6 +111,7 @@ but it isn't notarized, so macOS blocks its first launch.
 | [MCP](docs/features/mcp.md) | Connect MCP servers to Yarvis, and give Claude Code sessions Yarvis's memory and a way to ask you questions |
 | [Browser](docs/features/browser.md) | Let the assistant read Slack, Gmail, Calendar and other pages open in your Chrome |
 | [Telegram](docs/features/telegram.md) | Drive the assistant from your phone |
+| [Heads-down mode](docs/features/heads-down.md) | Let Yarvis keep your work moving on its own while you focus, asking only what it must |
 | [Scheduled jobs](docs/features/scheduled-jobs.md) | Run a prompt on a cron schedule |
 | [Keyboard shortcuts](docs/features/keyboard-shortcuts.md) | Every shortcut in one place |
 

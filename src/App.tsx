@@ -10,6 +10,7 @@ import ChatPanel from "./components/ChatPanel";
 import CalendarView from "./components/calendar/CalendarView";
 import ClipboardPalette from "./components/clipboard/ClipboardPalette";
 import Dashboard from "./components/Dashboard";
+import HeadsDownPanel from "./components/headsDown/HeadsDownPanel";
 import IssuesPanel from "./components/IssuesPanel";
 import MemoryPanel from "./components/MemoryPanel";
 import OmniView from "./components/omni/OmniView";
@@ -292,6 +293,9 @@ export default function App() {
         case "task":
           setTab("tasks");
           break;
+        case "heads-down":
+          setTab("heads-down");
+          break;
       }
     },
     [openOmniChat],
@@ -410,6 +414,7 @@ export default function App() {
             {tab === "alarms" && <AlarmsPanel />}
             {tab === "jobs" && <ScheduledJobsPanel />}
             {tab === "sessions" && <SessionsPanel />}
+            {tab === "heads-down" && <HeadsDownPanel />}
             {tab === "dashboard" && <Dashboard />}
             {tab === "settings" && (
               <SettingsPanel

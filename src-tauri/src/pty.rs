@@ -19,7 +19,9 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use hmac::{Hmac, Mac};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use sha2::Sha256;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::settings::{non_blank, SettingsState};
@@ -282,6 +284,13 @@ fn is_attention_addressable(id: &str) -> bool {
 /// the workspace as a whole; `YARVIS_WORKSPACE_ID` is set only when the id
 /// encodes one.
 ///
+/// The session token proves which PTY a request came from. The attention token
+/// is the same in every session, so on its own it can't stop one session from
+/// speaking for another; the agent-session registry needs that, because a
+/// registered pid decides who `send_session_instruction` will type at. It is
+/// signed with `signing_key`, the sidecar's full-access bearer, which no session
+/// holds, so no session can mint another's. See `session_token`.
+///
 /// The MCP token lets a Claude Code session reach the Yarvis memory tools via
 /// the `.mcp.json` written at the workspace root, which references it rather
 /// than carrying it. It is absent when the core has no token to give, so the
@@ -297,6 +306,7 @@ fn session_env(
     id: &str,
     port: u16,
     attention_token: &str,
+    signing_key: &str,
     mcp_token: Option<&str>,
 ) -> Vec<(String, String)> {
     if !is_attention_addressable(id) {
@@ -309,6 +319,10 @@ fn session_env(
             attention_token.to_string(),
         ),
         ("YARVIS_SESSION_KEY".to_string(), id.to_string()),
+        (
+            "YARVIS_SESSION_TOKEN".to_string(),
+            session_token(signing_key, id),
+        ),
     ];
     if let Some(token) = mcp_token {
         env.push(("YARVIS_MCP_TOKEN".to_string(), token.to_string()));
@@ -317,6 +331,25 @@ fn session_env(
         env.push(("YARVIS_WORKSPACE_ID".to_string(), workspace_id.to_string()));
     }
     env
+}
+
+/// A PTY's session token: an HMAC of its session key under the sidecar's
+/// bearer. The sidecar holds the bearer too, so it recomputes this from the
+/// session key a request names instead of keeping a list of issued tokens. The
+/// `session:` prefix keeps these from being valid for any other use of that key.
+fn session_token(signing_key: &str, session_key: &str) -> String {
+    hmac_sha256_hex(signing_key, &format!("session:{session_key}"))
+}
+
+fn hmac_sha256_hex(key: &str, message: &str) -> String {
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(key.as_bytes()).expect("HMAC accepts a key of any length");
+    mac.update(message.as_bytes());
+    mac.finalize()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Spawns a shell in a new PTY and starts the reader thread that streams its
@@ -336,14 +369,20 @@ fn spawn_session(app: &AppHandle, id: &str, spec: &SpawnSpec) -> Result<PtySessi
     }
     // Every session carries the sidecar port + the two scoped tokens, so whatever
     // runs in it can post to the ingest endpoint (keyed by this exact PTY id) and
-    // call the MCP endpoint, without ever seeing the full-access bearer.
+    // call the MCP endpoint, without ever seeing the full-access bearer. The
+    // bearer only signs the session token.
     if let (Some(info), Some(attn)) = (
         app.try_state::<crate::sidecar::SidecarInfo>(),
         app.try_state::<crate::sidecar::AttentionIngestToken>(),
     ) {
         let mcp = app.try_state::<crate::sidecar::McpToken>();
-        for (key, value) in session_env(id, info.port, &attn.0, mcp.as_ref().map(|m| m.0.as_str()))
-        {
+        for (key, value) in session_env(
+            id,
+            info.port,
+            &attn.0,
+            &info.token,
+            mcp.as_ref().map(|m| m.0.as_str()),
+        ) {
             cmd.env(key, value);
         }
     }
@@ -639,13 +678,18 @@ fn prepare_instruction(text: &str) -> Result<String, String> {
 /// Types `instruction` at the prompt of the agent session for `workspace_id` and
 /// submits it, exactly as if the user had typed it there.
 ///
-/// Refused unless the configured agent itself holds the PTY's foreground (see
-/// `foreground_is_agent`). The session is a real terminal: its agent can be
+/// Refused unless the agent holds the PTY's foreground: a registered Claude
+/// process, or the configured agent command (see `foreground_is_agent`). The session is a real terminal: its agent can be
 /// interrupted, leaving the bare shell — where the text would run as a command
 /// line — or replaced by whatever the user ran next, and text plus a carriage
 /// return typed into `vim` or a REPL is no better. The check needs the
-/// foreground process's executable, so it is refused on platforms that can't
-/// report one.
+/// foreground process group, so it is refused on platforms that can't report
+/// one.
+///
+/// `agent_pids` are the agent processes the sidecar has on record for this
+/// session (see `foreground_is_agent`). They only widen what is recognised as
+/// the agent: a pid that has exited or doesn't lead the foreground matches
+/// nothing.
 ///
 /// What it still cannot establish is *what the agent is showing*. An agent
 /// sitting on a permission prompt or any select-list dialog also holds the
@@ -657,6 +701,7 @@ pub fn send_session_instruction(
     state: &PtyState,
     workspace_id: &str,
     instruction: &str,
+    agent_pids: &[u32],
 ) -> Result<(), String> {
     let text = prepare_instruction(instruction)?;
     let id = format!("ws-claude:{workspace_id}");
@@ -667,7 +712,7 @@ pub fn send_session_instruction(
     if !matches!(session.child.try_wait(), Ok(None)) {
         return Err("the agent session has exited".into());
     }
-    if !foreground_is_agent(app, session) {
+    if !foreground_is_agent(app, session, agent_pids) {
         return Err(
             "the configured agent is not what is reading that session's prompt; open the workspace and check what is running there".into(),
         );
@@ -715,31 +760,60 @@ fn foreground_pid(session: &PtySession) -> Option<u32> {
 }
 
 /// True when the process reading the PTY's input is the agent the session was
-/// launched with, matched on the executable's file name against the launch
-/// command's first word.
+/// launched with. Two ways to know that:
 ///
-/// Matching on the executable rather than on "anything that isn't the shell" is
+/// - `agent_pids`, the Claude Code processes that registered themselves for
+///   this session through the workspace's SessionStart hook. A match means
+///   that agent leads the PTY's foreground process group, whatever its
+///   executable is called on disk. Only the leader counts: a registered
+///   `claude -p` run as a child of a script in the foreground is in the
+///   script's group, and the script is what reads the terminal.
+/// - Otherwise, the foreground executable's file name against the launch
+///   command's first word. This covers an agent that registers nothing (a
+///   non-Claude agent, or a session started before the hook was installed).
+///   Claude Code's native installer fails it: `claude` links to
+///   `versions/<version>`, and that version-numbered file is what the OS
+///   reports.
+///
+/// Matching on the process rather than on "anything that isn't the shell" is
 /// what makes this a gate: `vim`, a language REPL, or a test run left in the
 /// foreground would all pass the weaker check and then be handed a line of text
 /// and a carriage return.
 ///
-/// It fails closed, and an agent installed as a script rather than a binary
-/// fails with it: the foreground executable is then the interpreter (`node`,
-/// `bun`), which doesn't match the command's first word, so the send is refused
-/// rather than delivered to a process this can't identify.
-fn foreground_is_agent(app: &AppHandle, session: &PtySession) -> bool {
+/// It fails closed, and an unregistered agent installed as a script rather than
+/// a binary fails with it: the foreground executable is then the interpreter
+/// (`node`, `bun`), which doesn't match the command's first word, so the send is
+/// refused rather than delivered to a process this can't identify.
+fn foreground_is_agent(app: &AppHandle, session: &PtySession, agent_pids: &[u32]) -> bool {
     let Some(pid) = foreground_pid(session) else {
+        eprintln!(
+            "[pty] refused instruction: no process other than the shell holds the session's foreground"
+        );
         return false;
     };
+    if agent_pids.contains(&pid) {
+        return true;
+    }
     let Some(exe) = process_executable(pid) else {
+        eprintln!("[pty] refused instruction: could not read the executable of pid {pid}");
         return false;
     };
     let command = agent_command(app);
     let Some(argv0) = command.split_whitespace().next() else {
+        eprintln!("[pty] refused instruction: no agent command is configured");
         return false;
     };
     let expected = Path::new(argv0).file_name().unwrap_or(argv0.as_ref());
-    Path::new(&exe).file_name() == Some(expected)
+    let matched = Path::new(&exe).file_name() == Some(expected);
+    if !matched {
+        // The command itself isn't logged: it is user-written and can carry an
+        // inline `VAR=secret` assignment.
+        eprintln!(
+            "[pty] refused instruction: foreground executable {exe} is not the configured agent, and none of the {} registered agent pid(s) leads the foreground process group",
+            agent_pids.len()
+        );
+    }
+    matched
 }
 
 /// Absolute path to a running process's executable, or None when it can't be
@@ -1039,10 +1113,11 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_launch_command, attention_workspace_id, is_unsafe_name_char, lock_scrollback,
-        prepare_instruction, remote_control_command, resolve_agent_command, resolve_max_sessions,
-        session_env, snapshot, Scrollback, DEFAULT_AGENT_COMMAND, DEFAULT_MAX_SESSIONS,
-        MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
+        agent_launch_command, attention_workspace_id, hmac_sha256_hex, is_unsafe_name_char,
+        lock_scrollback, prepare_instruction, remote_control_command, resolve_agent_command,
+        resolve_max_sessions, session_env, session_token, snapshot, Scrollback,
+        DEFAULT_AGENT_COMMAND, DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS,
+        MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
     };
     use std::sync::Mutex;
 
@@ -1348,7 +1423,7 @@ mod tests {
 
     #[test]
     fn session_env_populates_workspace_claude_sessions() {
-        let env = session_env("ws-claude:abc-123", 8765, "tok", Some("mcp-tok"));
+        let env = session_env("ws-claude:abc-123", 8765, "tok", "bearer", Some("mcp-tok"));
         assert_eq!(
             env,
             vec![
@@ -1358,6 +1433,10 @@ mod tests {
                     "YARVIS_SESSION_KEY".to_string(),
                     "ws-claude:abc-123".to_string()
                 ),
+                (
+                    "YARVIS_SESSION_TOKEN".to_string(),
+                    session_token("bearer", "ws-claude:abc-123")
+                ),
                 ("YARVIS_MCP_TOKEN".to_string(), "mcp-tok".to_string()),
                 ("YARVIS_WORKSPACE_ID".to_string(), "abc-123".to_string()),
             ]
@@ -1366,7 +1445,7 @@ mod tests {
 
     #[test]
     fn session_env_keys_a_workspace_terminal_pane_by_its_pty_id() {
-        let env = session_env("ws:abc-123/t1/p1", 8765, "tok", Some("mcp-tok"));
+        let env = session_env("ws:abc-123/t1/p1", 8765, "tok", "bearer", Some("mcp-tok"));
         assert_eq!(
             env,
             vec![
@@ -1375,6 +1454,10 @@ mod tests {
                 (
                     "YARVIS_SESSION_KEY".to_string(),
                     "ws:abc-123/t1/p1".to_string()
+                ),
+                (
+                    "YARVIS_SESSION_TOKEN".to_string(),
+                    session_token("bearer", "ws:abc-123/t1/p1")
                 ),
                 ("YARVIS_MCP_TOKEN".to_string(), "mcp-tok".to_string()),
                 ("YARVIS_WORKSPACE_ID".to_string(), "abc-123".to_string()),
@@ -1386,16 +1469,22 @@ mod tests {
     fn session_env_is_empty_for_sessions_the_ui_cannot_navigate_to() {
         // An Omni-hosted terminal or a repo run script has nowhere to be shown,
         // so it must receive neither the ingest token nor the MCP token.
-        assert!(session_env("omni:s1/t1/p1", 8765, "tok", Some("mcp-tok")).is_empty());
-        assert!(session_env("ws-run:repo-1", 8765, "tok", Some("mcp-tok")).is_empty());
+        assert!(session_env("omni:s1/t1/p1", 8765, "tok", "bearer", Some("mcp-tok")).is_empty());
+        assert!(session_env("ws-run:repo-1", 8765, "tok", "bearer", Some("mcp-tok")).is_empty());
         // A surface key with no tab/pane names no session the UI can focus.
-        assert!(session_env("ws:w1", 8765, "tok", Some("mcp-tok")).is_empty());
-        assert!(session_env("tab:terminal", 8765, "tok", Some("mcp-tok")).is_empty());
+        assert!(session_env("ws:w1", 8765, "tok", "bearer", Some("mcp-tok")).is_empty());
+        assert!(session_env("tab:terminal", 8765, "tok", "bearer", Some("mcp-tok")).is_empty());
     }
 
     #[test]
     fn session_env_omits_the_workspace_for_a_standalone_terminal() {
-        let env = session_env("tab:terminal/abc/def", 8765, "tok", Some("mcp-tok"));
+        let env = session_env(
+            "tab:terminal/abc/def",
+            8765,
+            "tok",
+            "bearer",
+            Some("mcp-tok"),
+        );
         assert_eq!(
             env,
             vec![
@@ -1404,6 +1493,10 @@ mod tests {
                 (
                     "YARVIS_SESSION_KEY".to_string(),
                     "tab:terminal/abc/def".to_string()
+                ),
+                (
+                    "YARVIS_SESSION_TOKEN".to_string(),
+                    session_token("bearer", "tab:terminal/abc/def")
                 ),
                 ("YARVIS_MCP_TOKEN".to_string(), "mcp-tok".to_string()),
             ]
@@ -1414,9 +1507,35 @@ mod tests {
     fn session_env_still_carries_attention_when_no_mcp_token_exists() {
         // The two tokens are managed together today, but a session that can raise
         // an attention item must not lose that because the MCP side is absent.
-        let env = session_env("tab:terminal/abc/def", 8765, "tok", None);
+        let env = session_env("tab:terminal/abc/def", 8765, "tok", "bearer", None);
         assert!(env.iter().any(|(key, _)| key == "YARVIS_ATTENTION_TOKEN"));
         assert!(!env.iter().any(|(key, _)| key == "YARVIS_MCP_TOKEN"));
+    }
+
+    #[test]
+    fn hmac_sha256_hex_matches_the_standard() {
+        // RFC 4231 test case 2. The sidecar verifies with node:crypto's
+        // HMAC-SHA256, so both ends have to agree with the standard.
+        assert_eq!(
+            hmac_sha256_hex("Jefe", "what do ya want for nothing?"),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+    }
+
+    #[test]
+    fn session_token_signs_the_prefixed_session_key() {
+        assert_eq!(
+            session_token("bearer", "ws-claude:a"),
+            hmac_sha256_hex("bearer", "session:ws-claude:a")
+        );
+    }
+
+    #[test]
+    fn session_token_differs_per_session() {
+        assert_ne!(
+            session_token("bearer", "ws-claude:a"),
+            session_token("bearer", "ws-claude:b")
+        );
     }
 
     #[test]

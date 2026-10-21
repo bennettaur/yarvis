@@ -4,9 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildMcpConfig, writeMcpConfig } from "./mcpConfig.ts";
 
+const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
+
 describe("workspace .mcp.json", () => {
   it("points at the sidecar through the session's environment, never a literal token", () => {
-    const servers = buildMcpConfig().mcpServers as Record<string, Record<string, unknown>>;
+    const servers = buildMcpConfig(WORKSPACE_ID).mcpServers as Record<
+      string,
+      Record<string, unknown>
+    >;
     expect(servers.yarvis).toEqual({
       type: "http",
       // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
@@ -14,16 +19,15 @@ describe("workspace .mcp.json", () => {
       headers: {
         // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
         Authorization: "Bearer ${YARVIS_MCP_TOKEN}",
+        "X-Yarvis-Workspace": WORKSPACE_ID,
         // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
         "X-Yarvis-Session-Key": "${YARVIS_SESSION_KEY:-}",
-        // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
-        "X-Yarvis-Workspace-Id": "${YARVIS_WORKSPACE_ID:-}",
       },
     });
   });
 
   it("keeps the user's own servers and unrelated keys", () => {
-    const merged = buildMcpConfig({
+    const merged = buildMcpConfig(WORKSPACE_ID, {
       mcpServers: { linear: { type: "http", url: "https://mcp.linear.app/mcp" } },
       somethingElse: true,
     });
@@ -33,7 +37,7 @@ describe("workspace .mcp.json", () => {
   });
 
   it("refreshes a prior entry rather than stacking a second one", () => {
-    const stale = buildMcpConfig({
+    const stale = buildMcpConfig(WORKSPACE_ID, {
       mcpServers: { yarvis: { type: "http", url: "http://127.0.0.1:1234/mcp" } },
     });
     const servers = stale.mcpServers as Record<string, Record<string, unknown>>;
@@ -51,7 +55,7 @@ describe("workspace .mcp.json", () => {
       }),
     );
 
-    writeMcpConfig(root);
+    writeMcpConfig(root, WORKSPACE_ID);
 
     const written = JSON.parse(readFileSync(join(root, ".mcp.json"), "utf8")) as {
       mcpServers: Record<string, { url?: string }>;
@@ -64,7 +68,7 @@ describe("workspace .mcp.json", () => {
     const root = mkdtempSync(join(tmpdir(), "yarvis-mcp-config-"));
     writeFileSync(join(root, ".mcp.json"), "{ not json");
 
-    writeMcpConfig(root);
+    writeMcpConfig(root, WORKSPACE_ID);
 
     const written = JSON.parse(readFileSync(join(root, ".mcp.json"), "utf8")) as {
       mcpServers: Record<string, unknown>;

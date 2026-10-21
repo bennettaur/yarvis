@@ -11,7 +11,7 @@ import {
   waitInputShape,
 } from "../questions/contract.ts";
 import type { AskInput } from "../questions/service.ts";
-import { jsonResult, toolError, toolMessage } from "./toolResults.ts";
+import { callerError, jsonResult, toolError } from "./results.ts";
 
 /**
  * The question tools Yarvis serves over MCP. A coding agent calls `ask_user`
@@ -79,7 +79,7 @@ export function registerQuestionTools(server: McpServer, deps: QuestionToolDeps)
       try {
         const asked = await deps.getQuestion(questionId);
         if (!asked || !mayWaitOn(asked, deps.origin.sessionKey)) {
-          return toolMessage(NO_SUCH_QUESTION);
+          return callerError(NO_SUCH_QUESTION);
         }
         const row = await deps.waitForReply(questionId, ANSWER_WAIT_MS);
         return jsonResult(replyPayload(row ?? asked));

@@ -95,6 +95,10 @@ mod unix_impl {
         /// What to type at the running agent's prompt. Composed by the chat
         /// model, so `pty::send_session_instruction` sanitizes and bounds it.
         instruction: String,
+        /// Agent processes registered for the session by its SessionStart hook.
+        /// Defaults to empty, which leaves only the executable-name check.
+        #[serde(default, rename = "agentPids")]
+        agent_pids: Vec<u32>,
     }
 
     #[derive(Deserialize)]
@@ -246,7 +250,13 @@ mod unix_impl {
             "claude.send" => {
                 let p: SendParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
                 validate_workspace_id(&p.workspace_id)?;
-                send_session_instruction(app, state.inner(), &p.workspace_id, &p.instruction)
+                send_session_instruction(
+                    app,
+                    state.inner(),
+                    &p.workspace_id,
+                    &p.instruction,
+                    &p.agent_pids,
+                )
             }
             "mcp.saveOAuth" => {
                 let p: SaveOAuthParams =

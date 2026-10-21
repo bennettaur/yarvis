@@ -1,11 +1,12 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { MCP_SERVER_NAME } from "../mcpServer/server.ts";
+import { MCP_SERVER_NAME, WORKSPACE_HEADER } from "../mcpServer/server.ts";
 
 /**
  * Generates the `.mcp.json` that points a Yarvis-launched Claude Code session at
  * the sidecar's own MCP endpoint, so the session can read and write Yarvis
- * memory. Split out from the workspace service — like `claudeSettings.ts` — so
- * the config shape and the merge semantics are testable without a filesystem.
+ * memory and work through the workspace's review comments. Split out from the
+ * workspace service — like `claudeSettings.ts` — so the config shape and the
+ * merge semantics are testable without a filesystem.
  */
 
 /**
@@ -13,8 +14,10 @@ import { MCP_SERVER_NAME } from "../mcpServer/server.ts";
  * (injected by the Rust core when it spawns the PTY, see `pty.rs`), never
  * written to disk: the token grants read and write access to the user's memory,
  * and a file is a far easier thing to copy out of than a process environment.
+ * The workspace id is no secret, so it is written as-is: that way a session
+ * started from any shell in the workspace still reaches its review comments.
  */
-function yarvisServerEntry(): Record<string, unknown> {
+function yarvisServerEntry(workspaceId: string): Record<string, unknown> {
   return {
     type: "http",
     // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
@@ -22,13 +25,11 @@ function yarvisServerEntry(): Record<string, unknown> {
     headers: {
       // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
       Authorization: "Bearer ${YARVIS_MCP_TOKEN}",
-      // Tell `ask_user` which session and workspace a question comes from. The
-      // empty defaults keep a session without them (a plain Terminal tab has no
-      // workspace) from failing to expand.
+      [WORKSPACE_HEADER]: workspaceId,
+      // Tells `ask_user` which terminal a question comes from. The empty default
+      // keeps a shell that isn't one of Yarvis's PTYs from failing to expand.
       // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
       "X-Yarvis-Session-Key": "${YARVIS_SESSION_KEY:-}",
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
-      "X-Yarvis-Workspace-Id": "${YARVIS_WORKSPACE_ID:-}",
     },
   };
 }
@@ -38,7 +39,10 @@ function yarvisServerEntry(): Record<string, unknown> {
  * configured are preserved, as are unrelated top-level keys; our own entry is
  * recomputed every time, so a re-provision refreshes it rather than stacking.
  */
-export function buildMcpConfig(existing: Record<string, unknown> = {}): Record<string, unknown> {
+export function buildMcpConfig(
+  workspaceId: string,
+  existing: Record<string, unknown> = {},
+): Record<string, unknown> {
   const servers =
     existing.mcpServers && typeof existing.mcpServers === "object"
       ? (existing.mcpServers as Record<string, unknown>)
@@ -46,7 +50,7 @@ export function buildMcpConfig(existing: Record<string, unknown> = {}): Record<s
 
   return {
     ...existing,
-    mcpServers: { ...servers, [MCP_SERVER_NAME]: yarvisServerEntry() },
+    mcpServers: { ...servers, [MCP_SERVER_NAME]: yarvisServerEntry(workspaceId) },
   };
 }
 
@@ -57,7 +61,7 @@ export function buildMcpConfig(existing: Record<string, unknown> = {}): Record<s
  * Best-effort: a corrupt existing file is overwritten and any failure is logged,
  * never fatal to provisioning.
  */
-export function writeMcpConfig(rootPath: string): void {
+export function writeMcpConfig(rootPath: string, workspaceId: string): void {
   try {
     const file = `${rootPath}/.mcp.json`;
     let existing: Record<string, unknown> = {};
@@ -72,7 +76,7 @@ export function writeMcpConfig(rootPath: string): void {
       }
     }
 
-    writeFileSync(file, `${JSON.stringify(buildMcpConfig(existing), null, 2)}\n`);
+    writeFileSync(file, `${JSON.stringify(buildMcpConfig(workspaceId, existing), null, 2)}\n`);
   } catch (e) {
     console.error("[workspaces] failed to write .mcp.json:", e);
   }

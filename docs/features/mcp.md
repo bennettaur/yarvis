@@ -100,13 +100,36 @@ Whether it needs approval:
 
 A denied call is not retried or worked around.
 
+**Auto mode** lets a decision model answer some of those prompts for you. Pick a
+model under **Settings → Tools & MCP → Decision model** and tick **Auto mode for
+tool approvals**. Only models tagged `decision` in the model catalogue are
+offered. A local model served by Ollama is a good fit: add a custom provider
+with the **Ollama** protocol and the server's root URL (for example
+`http://localhost:11434`, without `/v1` — Yarvis adds the path itself), then tag
+its model `decision`. Only an Ollama on this machine works; one elsewhere on
+your network is refused like any other private address.
+
+Before any tool set to **Ask** raises the approval bar, the decision model reads
+your message this turn, the recent conversation (tool results included, and
+the assistant's reasoning from earlier steps where the provider returns it),
+the call, and the assistant's stated reason for this call. Your last few typed messages go with yours only to make clear what it
+refers to ("that PR"); the call has to serve what you asked this turn, and a
+reason that says you asked for something is checked against that. It answers
+three questions: does it match what
+you asked for, is it risky, and is it destructive. The call runs without a
+prompt only when it matches and is neither. Any other answer, an error, or no
+answer within 20 seconds raises the approval bar as usual, and so do arguments
+too long for it to read in full. Each verdict is logged under `[auto-approve]`
+in **Settings → Diagnostics**. Everything it reads is sent to the decision
+model's provider, so a local model keeps your conversation on this machine.
+
 Your consent is for the tool as it was described. If a resync finds a tool's
 description or schema changed, its approval resets to **Ask**.
 
 Two cases where MCP tools behave differently:
 
-- **Spoken turns.** A turn that came from the microphone ignores Auto and asks
-  for every MCP tool, because a transcript was never proofread. See
+- **Spoken turns.** A turn that came from the microphone ignores Auto and auto
+  mode, and asks for every MCP tool, because a transcript was never proofread. See
   [Voice](voice.md).
 - **Delegated runs.** Specialists and scheduled Yarvis jobs get no MCP tools at
   all. They have no way to hold an approval prompt open. See
@@ -141,9 +164,14 @@ Memory tools:
 | `list_memories` | Lists memories, newest first, optionally by `kind` (`fact`, `note`, `session-summary`, …), with the same validity fields |
 | `forget` | Deletes a memory |
 
+A session that Yarvis launched in a workspace gets two more tools. See
+[Workspace review comments](#workspace-review-comments).
+
 Confirming or correcting a memory is in-app only for now, so a coding session
 can see that a memory has expired but can't re-validate it. It can tell you, or
-`remember` what it found.
+`remember` what it found. Checking and recording how you answered a question
+before is in-app only too, so a coding session neither consults past answers
+nor adds to them.
 
 Not exposed, on purpose:
 
@@ -171,18 +199,44 @@ nothing for longer than that, so past it the tool returns `pending` with a
 given in between is kept and returned straight away.
 
 The question is shown against the workspace and terminal it came from. The
-session tells Yarvis which ones through two headers in the workspace's
-`.mcp.json`. A client Yarvis didn't launch sends neither, so its questions show
-as "Claude session" with no workspace.
+session tells Yarvis which ones through the `X-Yarvis-Workspace` and
+`X-Yarvis-Session-Key` headers in the workspace's `.mcp.json`. A client Yarvis
+didn't launch sends neither, so its questions show as "Claude session" with no
+workspace.
+
+### Workspace review comments
+
+A workspace's `.mcp.json` also sends an `X-Yarvis-Workspace` header naming the
+workspace. When that header is present, the endpoint adds tools for the
+[self-review comments](workspaces.md#the-right-column) left on that
+workspace's diffs:
+
+| Tool | What it does |
+| --- | --- |
+| `list_review_comments` | Lists the open comments, oldest first, with the repo, worktree path, file, line range and commit each one was left on. `includeResolved: true` adds the resolved ones |
+| `resolve_review_comment` | Marks a comment resolved, or reopens it with `resolved: false` |
+
+So "address the feedback left in Yarvis" is enough for the session to fetch the
+comments, work through them, and resolve each one.
+
+The tools only see the workspace the header names. That is a convenience, not
+a boundary: the same token can name any workspace. Comment bodies are returned
+as written, without the untrusted-data fencing memory gets, because only you
+write them and acting on them is the point.
+
+A workspace provisioned before this header existed gets it the next time it
+is provisioned.
 
 ### Sessions Yarvis launches need no setup
 
 When Yarvis provisions a workspace, it writes a `.mcp.json` at the workspace
 root. That file points at `${YARVIS_SIDECAR_PORT}` with an
-`Authorization: Bearer ${YARVIS_MCP_TOKEN}` header. It also sends
-`X-Yarvis-Session-Key` and `X-Yarvis-Workspace-Id`, so a question shows up
-against the right session. The Rust core puts these variables into the
-session's shell, so the file on disk holds no secret.
+`Authorization: Bearer ${YARVIS_MCP_TOKEN}` header. The Rust core puts both
+variables into the session's shell, so the file on disk holds no secret. It
+also sends an `X-Yarvis-Workspace` header with the workspace id, which isn't a
+secret and is written as-is, and an `X-Yarvis-Session-Key` header filled in
+from the terminal's `YARVIS_SESSION_KEY`, so a question shows up against the
+right terminal.
 
 Claude Code asks you to approve the project's MCP server the first time it sees
 it.
@@ -212,7 +266,7 @@ pointing by hand.
 
 The command puts the token in your shell history, and Claude Code saves it in
 `~/.claude.json`. That exposure is limited: the token only grants the memory
-and question tools, and it changes every time Yarvis relaunches.
+and review comment and question tools, and it changes every time Yarvis relaunches.
 
 The port and token are made once per app launch. Restarting the sidecar (which
 saving a secret does) keeps them. Relaunching Yarvis picks new ones, so copy
@@ -224,8 +278,9 @@ and never printed. Set `YARVIS_MCP_TOKEN` yourself to point a client at one.
 ### Security
 
 - The endpoint is `POST http://127.0.0.1:<sidecar port>/mcp`.
-- It uses a **scoped token** that grants the memory and question tools and
-  nothing else. The rest of the sidecar API keeps its own bearer token.
+- It uses a **scoped token** that grants the memory, review comment and
+  question tools and nothing else. The rest of the sidecar API keeps its own
+  bearer token.
 - The session and workspace headers are the caller's claim, the same trust
   attention hooks get. They decide where a question is shown, and
   `wait_for_answer` only returns a question to the session that asked it. A
