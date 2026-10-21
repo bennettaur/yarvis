@@ -88,8 +88,8 @@ variables:
 | --- | --- |
 | `YARVIS_SESSION_KEY` | Names this exact terminal, so an attention item jumps back to it |
 | `YARVIS_WORKSPACE_ID` | The workspace it belongs to (workspace terminals only) |
-| `YARVIS_ATTENTION_TOKEN` | Lets hooks in this terminal raise attention items and register a Claude Code session, and nothing else |
-| `YARVIS_SESSION_TOKEN` | Signs this terminal's session registrations, so one terminal can't mint a registration for another |
+| `YARVIS_ATTENTION_TOKEN` | Lets hooks in this terminal raise attention items, pass permission prompts to the app and register a Claude Code session, and nothing else |
+| `YARVIS_SESSION_TOKEN` | Signs this terminal's session registrations and permission prompts, so one terminal can't send either under another's name |
 | `YARVIS_SIDECAR_PORT`, `YARVIS_MCP_TOKEN` | Let a Claude Code session here reach Yarvis's MCP endpoint, its memory tools and, in a workspace, its review comment tools |
 
 What this gives you:
@@ -100,6 +100,39 @@ What this gives you:
 - **Claude Code runs here share Yarvis memory.** In a workspace, the `.mcp.json`
   Yarvis writes points at the endpoint. For the Terminal tab, or any other
   client, see [MCP](mcp.md).
+
+## Answering permission prompts
+
+When a Claude session in a workspace asks permission to run something, the bell
+shows what it wants, for example `Bash: bun test`. Click the item to answer it
+in a window over whatever page you're on. It shows:
+
+- the tool and its full input, with Claude's own description of a command,
+- the workspace and the directory the session runs in,
+- what Claude said just before asking, and the last prompt you typed.
+
+You can **Approve**, **Deny**, or type what Claude should do instead and press
+**Send**, which denies the request and passes your note to Claude. **Answer in
+terminal** hands the prompt back to Claude Code's own dialog, for its other
+options such as "don't ask again". **Go to session** opens the terminal without
+answering.
+
+Some details:
+
+- **Yarvis holds the prompt for about four minutes.** After that, Claude Code
+  shows its own dialog in the terminal and the bell item stays until you answer
+  there.
+- **Looking at the session doesn't clear the item.** It clears once the prompt
+  is answered, here or in the terminal, or when the session finishes.
+- **Several prompts from one session queue up.** The window shows the oldest
+  first with a count of the rest.
+- **Only the app instance that launched the session can answer it.** Another
+  instance sharing the database shows the item but not the prompt.
+- **A workspace made by an older version of Yarvis** only flags the prompt in
+  the bell. It gets the new hook the next time it is provisioned.
+- **A Claude run outside Yarvis is unaffected.** The hook needs a Yarvis
+  terminal's environment and stands aside without it, so Claude Code shows its
+  normal dialog.
 
 ## Known gap
 

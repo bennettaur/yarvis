@@ -5,6 +5,7 @@ import AlarmsPanel from "./components/AlarmsPanel";
 import AlarmTakeover from "./components/AlarmTakeover";
 import AttentionAutoClear from "./components/attention/AttentionAutoClear";
 import AttentionPanel from "./components/attention/AttentionPanel";
+import PermissionRequestModal from "./components/attention/PermissionRequestModal";
 import ChatPanel from "./components/ChatPanel";
 import CalendarView from "./components/calendar/CalendarView";
 import ClipboardPalette from "./components/clipboard/ClipboardPalette";
@@ -70,6 +71,8 @@ export default function App() {
   const [clipboardOpen, setClipboardOpen] = useState(false);
   const [attention, setAttention] = useState<string | null>(null);
   const [attentionPanelOpen, setAttentionPanelOpen] = useState(false);
+  // A Claude session's permission prompt being answered from the modal.
+  const [permissionItem, setPermissionItem] = useState<AttentionItem | null>(null);
   const [wip, setWip] = useState<WipItem[]>([]);
   const [wipLoading, setWipLoading] = useState(false);
   // A PR another view (workspaces, omni) has asked us to open. PrsPanel reads
@@ -301,6 +304,13 @@ export default function App() {
 
   const openAttentionItem = useCallback(
     (item: AttentionItem) => {
+      // A prompt can be answered where the user already is. The item stays
+      // pending until it is answered, which resolves it on the sidecar.
+      if (item.kind === "permission" && item.source === "claude-hook" && item.sessionKey) {
+        setAttentionPanelOpen(false);
+        setPermissionItem(item);
+        return;
+      }
       void markAttention(item.id, "read");
       navigateTo(item.navTarget, item.title);
     },
@@ -425,6 +435,18 @@ export default function App() {
         onOpenAlarms={() => {
           setTab("alarms");
           setAttentionPanelOpen(false);
+        }}
+      />
+
+      <PermissionRequestModal
+        sessionKey={permissionItem?.sessionKey ?? null}
+        title={permissionItem?.title ?? ""}
+        onClose={() => setPermissionItem(null)}
+        onGoToSession={() => {
+          if (!permissionItem) return;
+          setPermissionItem(null);
+          void markAttention(permissionItem.id, "read");
+          navigateTo(permissionItem.navTarget, permissionItem.title);
         }}
       />
 
