@@ -555,5 +555,14 @@ back to ad-hoc.
   screens, applied to what the click actually lands on. Per-site behaviour goes
   in `extension/adapters/` and may change what a tool returns, never what it may
   do.
+- `read_web_page` (`sidecar/src/web/`) reads a public page as an anonymous
+  visitor: no cookies, the SSRF guard on every redirect hop, and the deadline
+  covering the body read. Before the model sees a page, `web/extract.ts` drops
+  what a browser wouldn't show and strips invisible Unicode, `detectInjection`
+  flags instruction-like text, and the result is nonce-fenced. Extraction runs
+  synchronously on up to 5MB, so its regexes must stay linear and nesting is
+  tracked with counters rather than stack scans. Which URLs the model may fetch
+  is only a system-prompt rule, not a code boundary, so the tool needs an
+  explicit grant in `agents/run.ts` before an unattended run gets it.
 - Follow the repo's existing comment style: comments explain *why*, not
   *what* — no restating what a well-named function already says.
