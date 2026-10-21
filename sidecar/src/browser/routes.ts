@@ -7,8 +7,8 @@ import { type BrowserBridge, browserBridge } from "./bridge.ts";
 /**
  * The browser bridge's endpoints, mounted at `/browser` OUTSIDE the main bearer
  * wall. Like attention-ingest, they authenticate with their own scoped token, so
- * the extension's host reaches these two routes without holding the full-access
- * bearer.
+ * the extension's host reaches these routes without holding the full-access
+ * bearer. With the side panel's chat mounted, that token also runs agent turns.
  */
 
 /** A page's text is capped by the tool asking for it; this bounds a misbehaving sender. */
@@ -46,6 +46,8 @@ const resultSchema = z.object({
 export function createBrowserRoutes(
   config: Pick<Config, "port">,
   bridge: BrowserBridge = browserBridge,
+  /** The side panel's chat routes, served at `/chat` behind the same token. */
+  chat?: Hono,
 ): Hono {
   const router = new Hono();
 
@@ -60,6 +62,8 @@ export function createBrowserRoutes(
   });
 
   router.use("*", bearerAuth({ token: bridge.token }));
+
+  if (chat) router.route("/chat", chat);
 
   // Lets the host show an instance as connected without waiting out a long poll.
   router.get("/ping", (c) => c.body(null, 204));

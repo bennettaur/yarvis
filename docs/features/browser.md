@@ -36,10 +36,15 @@ them when a question needs them.
   to.
 - **Several Yarvis instances.** Every running Yarvis app, including one started
   with `bun run dev:instance`, can use the browser, and the popup lists them.
-- **Watching what it does.** In the extension's popup, **Show activity beside
-  the page** opens Chrome's side panel with every command Yarvis sent, its
-  arguments and the full result. The log is kept in memory and is gone when
-  Chrome quits.
+- **Chatting from Chrome.** In the extension's popup, **Chat with Yarvis beside
+  the page** opens Chrome's side panel. Pick one of your chats or start a new
+  one, and ask away. Each message tells Yarvis which tab you're looking at (its
+  title, address and any text you've selected), so "what is this page about?"
+  just works. Untick **Share this tab** to leave it out. These chats are the
+  same ones the app shows, marked "Chrome".
+- **Watching what it does.** The side panel's **Activity** view lists every
+  command Yarvis sent, its arguments and the full result. The log is kept in
+  memory and is gone when Chrome quits.
 
 ## Sites it knows
 
@@ -70,6 +75,10 @@ page. What a page says is treated as text written by someone else, never as an
 instruction to the assistant.
 
 ## Privacy
+
+Chatting from the side panel sends the tab's title, address (without its query
+string) and any selected text with each message, unless **Share this tab** is
+unticked. The page's text is only sent when Yarvis reads it.
 
 What Yarvis reads from a page goes into the chat, so it reaches your model
 provider and is kept in the chat history like any other tool result. Page

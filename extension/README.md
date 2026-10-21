@@ -27,8 +27,10 @@ Yarvis sidecar  <--HTTP long poll-->  native host  <--stdio-->  extension
   set in the extension's popup. Tools take that name as `profile`, so you can
   say "look at Slack in my work profile". With one profile connected the name
   can be left out.
-- The token reaches only the two `/browser` routes — never the full-access
-  bearer.
+- The token reaches only the `/browser` routes — never the full-access bearer.
+  Those include the side panel's chat (`/browser/chat`), so the token can run
+  agent turns, list chats and read their messages. The host maps each panel
+  request onto one of those fixed routes; the panel can't name any other.
 - Chrome only starts the host for extension ids listed in the host manifest.
 
 ## Install
@@ -41,10 +43,19 @@ Yarvis sidecar  <--HTTP long poll-->  native host  <--stdio-->  extension
    name (e.g. `work`).
 4. With Yarvis running, ask it about your current tab.
 
-The popup's "Show activity beside the page" opens Chrome's side panel with a log
-of every command Yarvis sent this profile: the tool, the arguments and the full
-result or error, newest first. It lives in session storage, so it is gone when
-Chrome quits, and each result is kept up to 100,000 characters.
+The popup's "Chat with Yarvis beside the page" opens Chrome's side panel. It has
+two views:
+
+- **Chat** talks to the same agent as the app's chat. Pick an existing chat or
+  start a new one; with more than one Yarvis running, pick which one too. Each
+  message can carry the tab beside the panel (its title, URL, tab id and any
+  selected text), so "summarize this page" means this page. Untick "Share this
+  tab" to send without it. The page's own text is not sent: the agent reads it
+  with `read_browser_page` when it needs it.
+- **Activity** is a log of every command Yarvis sent this profile: the tool, the
+  arguments and the full result or error, newest first. It lives in session
+  storage, so it is gone when Chrome quits, and each result is kept up to
+  100,000 characters.
 
 The popup shows whether the helper is running and which Yarvis instances it can
 reach, with a dot for whether each one is answering. The badge on the icon is
@@ -133,6 +144,10 @@ you turn that on for it in `chrome://extensions`; leave it off.
   is for a dev checkout; a packaged app would need to ship the host.
 - Every running Yarvis instance can drive the browser, and two could act in the
   same tab at once. That is on purpose, for testing branches side by side.
+- The side panel's chat has no approval prompt yet, so MCP tools and the
+  built-ins that always ask (such as creating a calendar event) are left out of
+  its turns. It uses the default model, the same one Telegram falls back to, and
+  shows replies as plain text.
 - Clicks are not asked about on typed turns. That is what makes reading many
   channels practical, and it is a decision to revisit if it feels too loose.
 - `<all_urls>` lets a read reach any tab, including signed-in ones; there is no

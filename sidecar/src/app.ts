@@ -5,6 +5,8 @@ import { createSpecialistRoutes } from "./agents/routes.ts";
 import { createAttentionIngestRoutes, createAttentionRoutes } from "./attention/routes.ts";
 import { createAzureRoutes } from "./azure/routes.ts";
 import { createAzureBoardsRoutes } from "./azureBoards/routes.ts";
+import { browserBridge } from "./browser/bridge.ts";
+import { createBrowserChatRoutes } from "./browser/chat.ts";
 import { createBrowserRoutes } from "./browser/routes.ts";
 import { createCcRoutes } from "./cc/routes.ts";
 import { createChatRoutes } from "./chat/routes.ts";
@@ -103,7 +105,11 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
 
   // The browser bridge is the same shape: the extension's native host holds only
   // this scoped token, checked inside the router, never the full-access bearer.
-  app.route("/browser", createBrowserRoutes(config));
+  // It also carries the side panel's chat, so that token can run agent turns.
+  app.route(
+    "/browser",
+    createBrowserRoutes(config, browserBridge, createBrowserChatRoutes(config)),
+  );
 
   // The MCP endpoint sits outside the bearer wall for the same reason and with
   // the same shape: its own scoped token, checked inside the router, so an MCP

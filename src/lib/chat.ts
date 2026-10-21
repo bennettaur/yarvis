@@ -43,7 +43,7 @@ export interface ChatSession {
  * Telegram-originated messages and record the sender.
  */
 export interface ChatMessageMetadata {
-  source?: "telegram" | "voice";
+  source?: "telegram" | "voice" | "browser";
   telegramUserId?: number;
   telegramUsername?: string;
   telegramFirstName?: string;
@@ -96,6 +96,7 @@ export function messageLabel(role: string, metadata?: ChatMessageMetadata | null
   // A spoken turn is worth marking in the transcript: it was transcribed rather
   // than typed, so a word that looks wrong probably was misheard.
   if (metadata?.source === "voice") return `${role} · spoken`;
+  if (metadata?.source === "browser") return `${role} · Chrome`;
   if (metadata?.source === "telegram") {
     const who =
       (metadata.telegramUsername && `@${metadata.telegramUsername}`) ||
