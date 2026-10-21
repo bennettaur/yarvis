@@ -78,10 +78,11 @@ export default function McpEndpointSection() {
         Yarvis MCP endpoint
       </h2>
       <p className="mb-4 text-xs text-zinc-500">
-        Yarvis serves its memory tools over MCP, so Claude Code can recall and store memories.
-        Sessions Yarvis launches are configured automatically. Point another client here to give it
-        the same access — the token is scoped to this endpoint, and both it and the port are
-        reallocated each time you relaunch Yarvis (restarting the sidecar keeps them).
+        Yarvis serves its memory and question tools over MCP, so Claude Code can recall and store
+        memories, and ask you questions you answer from the attention bell. Sessions Yarvis launches
+        are configured automatically. Point another client here to give it the same access — the
+        token is scoped to this endpoint, and both it and the port are reallocated each time you
+        relaunch Yarvis (restarting the sidecar keeps them).
       </p>
 
       {error && (

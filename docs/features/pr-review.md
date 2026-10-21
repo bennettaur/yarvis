@@ -9,8 +9,8 @@ those notes later.
 
 ## Set up
 
-1. Save a **GitHub token** or an **Azure DevOps token** in **Settings →
-   Credentials**. For Azure DevOps, also set the organization URL
+1. Sign in with GitHub, or save a **GitHub token** or an **Azure DevOps token**,
+   in **Settings → Credentials**. For Azure DevOps, also set the organization URL
    (`https://dev.azure.com/your-org`) on the same screen. See
    [Token scopes](../configuration.md#token-scopes) for what each token needs.
 2. Guided reviews and line questions are agent runs, so they also need an LLM

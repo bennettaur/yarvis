@@ -15,6 +15,7 @@ import {
   CUSTOM_PROVIDER_PREFIX,
   defaultProviderModel,
   modelCompactAtTokens,
+  ollamaUrl,
   reasoningOptions,
   resolveModel,
 } from "./providers.ts";
@@ -313,6 +314,23 @@ describe("resolveModel for custom providers", () => {
       "claude-sonnet-4-6",
     );
     expect((model as { modelId?: string }).modelId).toBe("claude-sonnet-4-6");
+  });
+
+  it("builds an ollama-kind chat model against the server's OpenAI-compatible API", async () => {
+    const row = await createCustomProvider({
+      name: "ollama",
+      baseUrl: "http://localhost:11434/",
+      apiKind: "ollama",
+      models: ["llama3.2"],
+      headerNames: [],
+    });
+    const model = await resolveModel(
+      configWithSecrets(),
+      `${CUSTOM_PROVIDER_PREFIX}${row.id}`,
+      "llama3.2",
+    );
+    expect((model as { modelId?: string }).modelId).toBe("llama3.2");
+    expect(ollamaUrl(row.baseUrl, "/v1")).toBe("http://localhost:11434/v1");
   });
 
   it("throws when the custom provider id is unknown", async () => {

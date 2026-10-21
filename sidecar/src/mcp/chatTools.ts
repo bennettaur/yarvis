@@ -1,13 +1,15 @@
 import { createHash } from "node:crypto";
-import { type Tool, type ToolExecutionOptions, tool } from "ai";
+import { type ModelMessage, type Tool, type ToolExecutionOptions, tool } from "ai";
 import { z } from "zod";
 import { builtinToolIds, syncBuiltins } from "../agentTools/registry.ts";
 import { listRegistryTools, type RegistryTool, searchRegistry } from "../agentTools/store.ts";
+import type { ToolCallReviewer } from "../chat/toolReview.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { describeError, redactSecrets } from "../llm/errors.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { APPROVAL_TIMEOUT_MS, waitForApproval } from "./approvals.ts";
+import { splitCallReason, withCallReason } from "./callReason.ts";
 import { getMcpManager, type McpClientTool } from "./connectionManager.ts";
 import { activeMounted, mountTools, unmountAll, unmountTools } from "./mountedTools.ts";
 
@@ -42,11 +44,32 @@ export function modelToolKey(id: string): string {
 }
 
 export interface ApprovalHooks {
-  /** Emits an approval request to the client (e.g. over SSE). */
-  onRequest: (info: { toolCallId: string; id: string; args: unknown }) => Promise<void>;
+  /**
+   * Emits an approval request to the client (e.g. over SSE). `reason` is the
+   * model's own account of why it is making the call. A surface that decides
+   * on the spot can return what the model is told if it says no.
+   */
+  onRequest: (info: {
+    toolCallId: string;
+    id: string;
+    args: unknown;
+    reason: string | null;
+    /** The tool's own description, for a surface that reviews the call itself. */
+    description?: string;
+    /** The conversation so far, as the AI SDK hands it to `execute`. */
+    messages?: ModelMessage[];
+  }) => Promise<void | { deniedMessage?: string }>;
   /** Aborted when the client disconnects, so pending approvals don't hang. */
   signal?: AbortSignal;
+  /**
+   * What the model is told when a call isn't approved. A surface where the
+   * user answers later says so, so the model moves on rather than taking it
+   * as a no.
+   */
+  deniedMessage?: string;
 }
+
+const STOPPED = { denied: true, message: "The user stopped this turn." };
 
 /**
  * Wraps a tool so that calling it first requires explicit user approval. On
@@ -56,26 +79,63 @@ export interface ApprovalHooks {
  * Every MCP tool goes through this because it is third-party code. A built-in
  * goes through it only when the *turn* is one the user didn't proof-read — see
  * `chat/destructiveTools.ts`.
+ *
+ * A `reviewer` (auto mode) is asked first and can only approve: anything short
+ * of its yes still asks the user.
  */
 export function wrapToolWithApproval(
   id: string,
   t: Tool | McpClientTool,
   hooks: ApprovalHooks,
+  reviewer?: ToolCallReviewer,
 ): Tool {
   const original = (t as McpClientTool).execute;
   if (!original) return t as unknown as Tool;
+  const run = (args: unknown, opts: ToolExecutionOptions<unknown>) =>
+    (original as (a: unknown, o: ToolExecutionOptions<unknown>) => unknown)(args, opts);
+  const reasoned = withCallReason(t as Tool);
   const wrapped = {
-    ...t,
-    async execute(args: unknown, opts: ToolExecutionOptions<unknown>) {
-      await hooks.onRequest({ toolCallId: opts.toolCallId, id, args });
+    ...reasoned.tool,
+    async execute(input: unknown, opts: ToolExecutionOptions<unknown>) {
+      const { reason, args } = (await reasoned.takesReason())
+        ? splitCallReason(input)
+        : { reason: null, args: input };
+      const autoApproved = reviewer
+        ? await reviewer({
+            id,
+            description: typeof t.description === "string" ? t.description : undefined,
+            args,
+            reason,
+            messages: opts.messages,
+            signal: hooks.signal,
+          })
+        : false;
+      // A review takes long enough for the user to stop the turn meanwhile. A
+      // stopped turn neither runs the call nor raises a prompt nobody can answer.
+      if (hooks.signal?.aborted) return STOPPED;
+      if (autoApproved) return run(args, opts);
+      const requested = await hooks.onRequest({
+        toolCallId: opts.toolCallId,
+        id,
+        args,
+        reason,
+        description: typeof t.description === "string" ? t.description : undefined,
+        messages: opts.messages,
+      });
       const approved = await waitForApproval(opts.toolCallId, {
         signal: hooks.signal,
         timeoutMs: APPROVAL_TIMEOUT_MS,
       });
       if (!approved) {
-        return { denied: true, message: "The user denied this tool call." };
+        return {
+          denied: true,
+          message:
+            (requested ? requested.deniedMessage : undefined) ??
+            hooks.deniedMessage ??
+            "The user denied this tool call.",
+        };
       }
-      return (original as (a: unknown, o: ToolExecutionOptions<unknown>) => unknown)(args, opts);
+      return run(args, opts);
     },
   };
   return wrapped as unknown as Tool;
@@ -234,6 +294,14 @@ export async function assembleAgentToolset(opts: {
    * turn is neither.
    */
   honourStandingConsent?: boolean;
+  /**
+   * Auto mode's decision model, asked before the user for an MCP tool call.
+   * Ignored when `honourStandingConsent` is false, for the same reason stored
+   * consent is: a turn nobody proof-read can't tell the reviewer what the user
+   * asked for. Built-ins never get it — the ones that ask are the ones whose
+   * answer has to come from the user.
+   */
+  reviewer?: ToolCallReviewer;
   /** The connected MCP tools to assemble; defaults to whatever is live. */
   liveTools?: Record<string, McpClientTool>;
 }): Promise<AgentToolset> {
@@ -246,6 +314,7 @@ export async function assembleAgentToolset(opts: {
     confirmBuiltins,
     honourStandingConsent = true,
   } = opts;
+  const reviewer = honourStandingConsent ? opts.reviewer : undefined;
   const registry = await readRegistryWithBuiltins(config, db);
   const policyById = new Map(registry.map((r) => [r.id, r.policy]));
   const approvalById = new Map(registry.map((r) => [r.id, r.approval]));
@@ -288,7 +357,7 @@ export async function assembleAgentToolset(opts: {
       tools[key] =
         honourStandingConsent && approvalById.get(id) === "auto"
           ? (t as unknown as Tool)
-          : wrapToolWithApproval(id, t, approval);
+          : wrapToolWithApproval(id, t, approval, reviewer);
     }
     // Neither side of a collision is offered: keeping either would let one
     // server's tool answer to the name the model has for another's.

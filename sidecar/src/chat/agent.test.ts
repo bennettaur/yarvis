@@ -226,6 +226,7 @@ describe("runAgentTurn", () => {
             title: "sync",
             start: "2026-01-01T10:00:00Z",
             end: "2026-01-01T10:30:00Z",
+            callReason: "The user asked for a sync",
           }),
           finish("tool-calls"),
         ],
@@ -247,7 +248,10 @@ describe("runAgentTurn", () => {
     const session = await createSession(db, null);
     const events = await collect(
       streamingModel(
-        [toolCall("c1", "register_repo", { repo: "acme/widget" }), finish("tool-calls")],
+        [
+          toolCall("c1", "register_repo", { repo: "acme/widget", callReason: "The user asked" }),
+          finish("tool-calls"),
+        ],
         [...text("told them no"), finish("stop")],
       ),
       session.id,
@@ -303,7 +307,10 @@ describe("runAgentTurn", () => {
     };
     const events = await collect(
       streamingModel(
-        [toolCall("c1", modelToolKey(id), { query: "notion" }), finish("tool-calls")],
+        [
+          toolCall("c1", modelToolKey(id), { query: "notion", callReason: "The user asked" }),
+          finish("tool-calls"),
+        ],
         [...text("done"), finish("stop")],
       ),
       session.id,

@@ -12,11 +12,21 @@ import { emitEvent } from "../events/service.ts";
 
 /** Chat session + message persistence. */
 
-export async function createSession(db: Db, title?: string | null): Promise<ChatSession> {
+/**
+ * Starts a chat session. A hidden one (a heads-down pass) stays out of the
+ * chat list and the activity log, since the user didn't start a conversation.
+ */
+export async function createSession(
+  db: Db,
+  title?: string | null,
+  options: { hidden?: boolean } = {},
+): Promise<ChatSession> {
+  const hidden = options.hidden ?? false;
   const [row] = await db
     .insert(chatSessions)
-    .values({ title: title ?? null })
+    .values({ title: title ?? null, hidden })
     .returning();
+  if (hidden) return row!;
   await emitEvent(db, {
     type: "chat.started",
     source: "chat",
@@ -26,7 +36,11 @@ export async function createSession(db: Db, title?: string | null): Promise<Chat
 }
 
 export async function listSessions(db: Db): Promise<ChatSession[]> {
-  return db.select().from(chatSessions).orderBy(desc(chatSessions.updatedAt));
+  return db
+    .select()
+    .from(chatSessions)
+    .where(eq(chatSessions.hidden, false))
+    .orderBy(desc(chatSessions.updatedAt));
 }
 
 export async function getMessages(db: Db, sessionId: string): Promise<ChatMessage[]> {

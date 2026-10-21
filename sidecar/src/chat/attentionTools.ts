@@ -26,7 +26,7 @@ export function buildAttentionTool(state: AttentionState) {
   return {
     request_attention: tool({
       description:
-        "Signal that you need the user's attention. Call this when you've finished work they asked for in the background, or you need a decision only they can make. It raises a notification so they can return to this chat. Provide a short reason.",
+        "Signal that you need the user's attention. Call this when you've finished work they asked for in the background, or they should come back to read something. It raises a notification so they can return to this chat. To get a decision from them, use ask_user instead. Provide a short reason.",
       inputSchema: z.object({
         reason: z
           .string()

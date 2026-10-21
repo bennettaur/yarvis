@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   applyStartWorkSideEffects,
-  mergeIssues,
+  mergeRepoIssues,
   type StartWorkSideEffectClient,
 } from "./service.ts";
 import type { IssueSummary } from "./types.ts";
@@ -25,19 +25,32 @@ function issue(externalId: string, createdAt: string): IssueSummary {
   };
 }
 
-describe("mergeIssues", () => {
-  it("merges fulfilled results newest-first and drops rejected repos", () => {
-    const results: PromiseSettledResult<IssueSummary[]>[] = [
-      { status: "fulfilled", value: [issue("1", "2026-01-01"), issue("3", "2026-01-03")] },
-      { status: "rejected", reason: new Error("repo B is a 404") },
-      { status: "fulfilled", value: [issue("2", "2026-01-02")] },
-    ];
-    const merged = mergeIssues(results);
+describe("mergeRepoIssues", () => {
+  const repos = [
+    { owner: "o", repo: "a" },
+    { owner: "o", repo: "b" },
+  ];
+
+  it("merges the repos that answered newest-first, leaving out one that failed", () => {
+    const merged = mergeRepoIssues(
+      [...repos, { owner: "o", repo: "c" }],
+      [
+        { status: "fulfilled", value: [issue("1", "2026-01-01"), issue("3", "2026-01-03")] },
+        { status: "rejected", reason: new Error("github /repos/o/b/issues -> 403") },
+        { status: "fulfilled", value: [issue("2", "2026-01-02")] },
+      ],
+    );
     expect(merged.map((i) => i.externalId)).toEqual(["3", "2", "1"]);
   });
 
-  it("returns empty when every repo failed", () => {
-    expect(mergeIssues([{ status: "rejected", reason: new Error("x") }])).toEqual([]);
+  it("throws the failure when every repo failed, rather than showing no issues", () => {
+    const sso = new Error("github /repos/o/a/issues -> 403: requires SAML SSO");
+    expect(() =>
+      mergeRepoIssues(repos, [
+        { status: "rejected", reason: sso },
+        { status: "rejected", reason: new Error("x") },
+      ]),
+    ).toThrow(sso);
   });
 });
 
