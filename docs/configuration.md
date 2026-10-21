@@ -176,6 +176,7 @@ has written your providers and MCP servers into it.
 | `prModels` | The provider and model behind guided reviews (`guide`) and line questions (`ask`). Unset uses the default chat model. | Settings → PR review |
 | `wipConfig` | Which sources feed the **In progress** list in the attention panel (the bell in the top bar), and a GitHub issue label filter | Settings → Work in progress |
 | `jobConfig` | `ccDigestEnabled` and `ccDigestProjectDirs` for the Claude Code transcript digest | Settings → Assistant |
+| `headsDown` | Heads-down mode: `minSleepMinutes` (5), `maxSleepMinutes` (120) and `idleSleepMinutes` (60) between passes, `workingHours` (`days` with 0 for Sunday, `start` and `end` as `HH:MM`; Monday to Friday 09:00–17:00 by default; an end at or before the start runs past midnight; `null` for any time), which is also when it may tag people, `userAwayAfterMinutes` (120), and the `provider` and `model` its passes run on (unset uses the default chat model). Per machine, so a work laptop and a personal one can keep different hours. | Heads down page |
 | `voiceConfig` | Speech providers and models, voice, speak replies, hands-free | Settings → Voice |
 | `embeddingsConfig` | The embeddings endpoint | Settings → Embeddings |
 

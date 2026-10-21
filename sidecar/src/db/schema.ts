@@ -49,7 +49,8 @@ export const messageRole = pgEnum("message_role", ["user", "assistant", "system"
  * confirmation for it.
  */
 export interface ChatMessageMetadata {
-  source?: "telegram" | "voice";
+  /** `heads-down` marks a pass of the heads-down loop, which runs with nobody watching. */
+  source?: "telegram" | "voice" | "heads-down";
   telegramUserId?: number;
   telegramUsername?: string;
   telegramFirstName?: string;
@@ -85,6 +86,12 @@ export const taskScope = pgEnum("task_scope", ["daily", "weekly"]);
 export const chatSessions = pgTable("chat_sessions", {
   id: uuid("id").primaryKey().defaultRandom(),
   title: text("title"),
+  /**
+   * Kept out of the chat list. A heads-down pass runs as a chat turn so its
+   * tool calls are stored the way any turn's are, but it isn't a conversation
+   * the user had, and it is read from the Heads down page instead.
+   */
+  hidden: boolean("hidden").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -191,7 +198,8 @@ export type MemorySourceRef =
   | { type: "chat"; sessionId: string }
   | { type: "project"; projectId: string }
   | { type: "pr"; provider: string; key: string }
-  | { type: "issue"; provider: string; key: string };
+  | { type: "issue"; provider: string; key: string }
+  | { type: "heads-down-question"; questionId: string };
 
 export const memories = pgTable(
   "memories",
@@ -963,6 +971,12 @@ export const agentTools = pgTable("agent_tools", {
   inputSchema: jsonb("input_schema"),
   policy: toolPolicy("policy").notNull().default("search"),
   approval: toolApproval("approval").notNull().default("ask"),
+  /**
+   * The user's consent for heads-down mode to call this tool with nobody
+   * watching. Separate from `approval`, which was given for chats the user
+   * reads, and reset with it when the tool's description or schema changes.
+   */
+  unattended: boolean("unattended").notNull().default(false),
   contentHash: text("content_hash").notNull(),
   embedding: vector("embedding", { dimensions: EMBED_DIM }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -1407,6 +1421,13 @@ export const workStreamLinkKind = pgEnum("work_stream_link_kind", [
 ]);
 
 /**
+ * Who made a link: a chat turn the user typed or spoke in, or a heads-down
+ * pass. Heads-down mode only steers work the user put in its hands, so a link
+ * a pass made itself doesn't count as the user's go-ahead.
+ */
+export const workStreamLinkSource = pgEnum("work_stream_link_source", ["chat", "heads-down"]);
+
+/**
  * The thing a link points at, by kind. A message is identified by
  * `messageRef`: its id or permalink when the tool that read it gave one, or
  * the author and time as shown when it didn't (the Chrome extension gives
@@ -1457,6 +1478,7 @@ export const workStreamLinks = pgTable(
     state: text("state"),
     /** When `state` was last recorded. */
     observedAt: timestamp("observed_at", { withTimezone: true }),
+    createdBy: workStreamLinkSource("created_by").notNull().default("chat"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1464,6 +1486,115 @@ export const workStreamLinks = pgTable(
     uniqueIndex("work_stream_links_ref_unique_idx").on(t.streamId, t.refKey),
     // Finding which stream a PR or workspace belongs to, from the other side.
     index("work_stream_links_ref_key_idx").on(t.refKey),
+  ],
+);
+
+/** Whether heads-down mode is running. At most one run is `active` at a time. */
+export const headsDownRunStatus = pgEnum("heads_down_run_status", ["active", "stopped"]);
+
+/**
+ * One stretch of heads-down mode, from the user turning it on to turning it
+ * off. `focus` is what they asked it to push on, in their words.
+ */
+export const headsDownRuns = pgTable(
+  "heads_down_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    focus: text("focus"),
+    status: headsDownRunStatus("status").notNull().default("active"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    stoppedAt: timestamp("stopped_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("heads_down_runs_one_active_idx").on(t.status).where(sql`${t.status} = 'active'`),
+  ],
+);
+
+/**
+ * One pass of the heads-down loop. The pass runs as a hidden chat turn in
+ * `chatSessionId`, so what it did is that session's transcript. `notes` is what
+ * it left for the next pass, which starts with no memory of this one.
+ */
+export const headsDownPasses = pgTable(
+  "heads_down_passes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => headsDownRuns.id, { onDelete: "cascade" }),
+    chatSessionId: uuid("chat_session_id").references(() => chatSessions.id, {
+      onDelete: "set null",
+    }),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    notes: text("notes"),
+    /** How long the loop slept after this pass, after clamping the agent's request. */
+    sleepMinutes: integer("sleep_minutes"),
+    sleepReason: text("sleep_reason"),
+    error: text("error"),
+  },
+  (t) => [index("heads_down_passes_run_idx").on(t.runId, t.startedAt)],
+);
+
+/**
+ * Something the user told heads-down mode while it runs: a direction, new work,
+ * a standing instruction. Read by the next pass, which marks it seen.
+ */
+export const headsDownMessages = pgTable(
+  "heads_down_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    body: text("body").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    seenAt: timestamp("seen_at", { withTimezone: true }),
+  },
+  (t) => [index("heads_down_messages_unseen_idx").on(t.createdAt).where(sql`${t.seenAt} is null`)],
+);
+
+/**
+ * `question`: the loop needs the user to choose. `approval`: a tool call the
+ * loop may not make on its own, waiting for the user to allow it.
+ */
+export const headsDownQuestionKind = pgEnum("heads_down_question_kind", ["question", "approval"]);
+
+export const headsDownQuestionStatus = pgEnum("heads_down_question_status", [
+  "open",
+  "answered",
+  "dismissed",
+]);
+
+/**
+ * A question heads-down mode put to the user. The loop never waits on one: the
+ * stream it belongs to waits, the rest carry on, and a later pass reads the
+ * answer. An approved `approval` is a one-time grant for that exact call,
+ * spent (`usedAt`) when the loop makes it.
+ */
+export const headsDownQuestions = pgTable(
+  "heads_down_questions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    kind: headsDownQuestionKind("kind").notNull(),
+    streamId: uuid("stream_id").references(() => workStreams.id, { onDelete: "set null" }),
+    question: text("question").notNull(),
+    /** What is going on, so the answer can be stored as a decision and weighed later. */
+    situation: text("situation"),
+    /** Answers the loop offered, which become the decision's choice labels. */
+    options: jsonb("options").$type<string[]>().notNull().default([]),
+    /** The tool the question is about: the one an approval would let run. */
+    action: text("action"),
+    /** An approval's exact tool arguments, and their hash for matching the retry. */
+    toolArgs: jsonb("tool_args"),
+    argsHash: text("args_hash"),
+    status: headsDownQuestionStatus("status").notNull().default("open"),
+    choice: text("choice"),
+    answer: text("answer"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    answeredAt: timestamp("answered_at", { withTimezone: true }),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("heads_down_questions_status_idx").on(t.status, t.createdAt),
+    index("heads_down_questions_args_idx").on(t.action, t.argsHash),
   ],
 );
 
@@ -1553,6 +1684,10 @@ export type AgentTodo = typeof agentTodos.$inferSelect;
 export type NewAgentTodo = typeof agentTodos.$inferInsert;
 export type WorkStream = typeof workStreams.$inferSelect;
 export type WorkStreamLink = typeof workStreamLinks.$inferSelect;
+export type HeadsDownRun = typeof headsDownRuns.$inferSelect;
+export type HeadsDownPass = typeof headsDownPasses.$inferSelect;
+export type HeadsDownMessage = typeof headsDownMessages.$inferSelect;
+export type HeadsDownQuestion = typeof headsDownQuestions.$inferSelect;
 export type JobRun = typeof jobRuns.$inferSelect;
 export type NewJobRun = typeof jobRuns.$inferInsert;
 export type CcSessionDigest = typeof ccSessionDigests.$inferSelect;

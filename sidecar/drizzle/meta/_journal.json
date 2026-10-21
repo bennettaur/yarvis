@@ -246,6 +246,13 @@
       "when": 1792555621760,
       "tag": "0034_left_sebastian_shaw",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1792555654820,
+      "tag": "0035_noisy_quicksilver",
+      "breakpoints": true
     }
   ]
 }

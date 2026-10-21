@@ -138,7 +138,14 @@ function presentLink(link: WorkStreamLink, nonce: string) {
   };
 }
 
-export function buildWorkStreamTools(db: Db) {
+/**
+ * `unattended` marks the tools a heads-down pass uses: links it makes are
+ * recorded as its own, so they don't count as the user's go-ahead.
+ */
+export function buildWorkStreamTools(
+  db: Db,
+  { unattended = false }: { unattended?: boolean } = {},
+) {
   return {
     list_work_streams: tool({
       description:
@@ -212,6 +219,14 @@ export function buildWorkStreamTools(db: Db) {
         note: z.string().max(2000).optional(),
       }),
       execute: async ({ id, wakeAt, ...patch }) => {
+        // Whether a stream is open decides what heads-down mode may act on, so
+        // only the user brings back one that was closed.
+        if (unattended && patch.status && !["done", "dropped"].includes(patch.status)) {
+          const current = await getStream(db, id);
+          if (current && ["done", "dropped"].includes(current.status)) {
+            return { error: "a closed stream can only be reopened by the user" };
+          }
+        }
         const wakeAtDate = wakeAt === undefined ? undefined : wakeAt ? new Date(wakeAt) : null;
         const stream = await updateStream(db, id, { ...patch, wakeAt: wakeAtDate });
         return stream
@@ -231,7 +246,12 @@ export function buildWorkStreamTools(db: Db) {
       }),
       execute: async ({ streamId, ref, title, state }) => {
         if (!(await streamExists(db, streamId))) return { error: "no work stream with that id" };
-        const link = await linkToStream(db, streamId, { ref, title, state });
+        const link = await linkToStream(db, streamId, {
+          ref,
+          title,
+          state,
+          createdBy: unattended ? "heads-down" : "chat",
+        });
         return { id: link.id, kind: link.kind };
       },
     }),

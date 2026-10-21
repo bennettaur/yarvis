@@ -40,6 +40,8 @@ const FAMILY_POLICY: Record<string, ToolPolicy> = {
   // Heads-down mode's working state. A chat reaches for it while planning; the
   // heads-down loop picks its own tools.
   workStreams: "search",
+  // Small, and the chat needs it in hand to offer heads-down mode when planning ends.
+  headsDown: "always",
   workspaces: "search",
   jira: "search",
   prReview: "search",

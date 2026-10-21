@@ -228,6 +228,39 @@ describe("work stream tools", () => {
     expect(result).toEqual({ error: "no link with that id" });
   });
 
+  it("won't let a pass reopen a stream the user closed", async () => {
+    const passTools = buildWorkStreamTools(db, { unattended: true });
+    const stream = await createStream(db, { title: "old work", status: "dropped" });
+
+    const refused = await passTools.update_work_stream.execute!(
+      { id: stream.id, status: "active" },
+      opts,
+    );
+    expect(refused).toEqual({ error: "a closed stream can only be reopened by the user" });
+    const reopened = await tools.update_work_stream.execute!(
+      { id: stream.id, status: "active" },
+      opts,
+    );
+    expect(reopened).toMatchObject({ status: "active" });
+  });
+
+  it("won't let a pass rewrite a link the user made", async () => {
+    const stream = await createStream(db, { title: "ship billing" });
+    await linkToStream(db, stream.id, { ref: { ...pr, url: `${pr.url}/files` } });
+    await linkToStream(db, stream.id, {
+      ref: { ...pr, url: `${pr.url}#evil` },
+      state: "CI failing",
+      createdBy: "heads-down",
+    });
+
+    const [link] = (await getStream(db, stream.id))!.links;
+    expect(link).toMatchObject({
+      createdBy: "chat",
+      state: "CI failing",
+      ref: { url: `${pr.url}/files` },
+    });
+  });
+
   it("refuses to link to a stream that doesn't exist", async () => {
     const result = await tools.link_to_work_stream.execute!(
       { streamId: "00000000-0000-4000-8000-000000000000", ref: pr },

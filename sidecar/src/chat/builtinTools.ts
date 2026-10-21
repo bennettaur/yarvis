@@ -6,6 +6,7 @@ import type { Db } from "../db/client.ts";
 import { buildDigestTools } from "../digest/tools.ts";
 import { buildEventTools } from "../events/tools.ts";
 import { buildCalendarTools } from "../google/tools.ts";
+import { buildHeadsDownTools } from "../headsDown/tools.ts";
 import { buildHelpTools } from "../help/tools.ts";
 import { buildJiraTools } from "../jira/tools.ts";
 import type { MemoryService } from "../memory/index.ts";
@@ -38,6 +39,8 @@ export interface BuiltinToolDeps {
   attention: AttentionState;
   /** Whether sessions this turn starts should be remotely controllable. */
   remoteControl: boolean;
+  /** A turn nobody is watching, a heads-down pass: what it records is marked as its own. */
+  unattended?: boolean;
 }
 
 /**
@@ -49,14 +52,15 @@ export interface BuiltinToolDeps {
  * silently make a tool unreachable or always-on.
  */
 export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Record<string, Tool>> {
-  const { db, config, sessionId, memory, attention, remoteControl } = deps;
+  const { db, config, sessionId, memory, attention, remoteControl, unattended } = deps;
   return {
     tasks: buildTaskTools(db, sessionId),
     memory: buildMemoryTools(memory, sessionId),
     attention: buildAttentionTool(attention),
     projects: buildProjectTools(db),
     todos: buildTodoTools(db),
-    workStreams: buildWorkStreamTools(db),
+    workStreams: buildWorkStreamTools(db, { unattended }),
+    headsDown: buildHeadsDownTools(db),
     events: buildEventTools(db),
     digest: buildDigestTools(db, config),
     delegation: buildDelegationTools(db, config),
