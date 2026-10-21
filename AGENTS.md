@@ -539,7 +539,8 @@ back to ad-hoc.
   in `extension/adapters/` and may change what a tool returns, never what it may
   do. The side panel's chat runs the other way through the same host: it maps
   each panel request onto a fixed `/browser/chat` route (`scripts/browser/chat.ts`),
-  so the browser token also runs agent turns. That surface has no approval
+  so the browser token also runs agent turns and reads recent chats from every
+  surface (the panel picks from them). That surface has no approval
   channel, so MCP tools and the always-confirm built-ins are left out of its
   turns, and the tab it sends as context is fenced like any screen context.
 - Follow the repo's existing comment style: comments explain *why*, not

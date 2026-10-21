@@ -379,12 +379,17 @@ function failPendingChats(error) {
 
 chrome.runtime.onConnect.addListener((panel) => {
   if (panel.name !== "chat") return;
-  // Only the extension's own pages can connect; a web page cannot reach this.
-  if (panel.sender?.id !== chrome.runtime.id) {
+  // Only the side panel may run turns. A content script shares the extension's
+  // id, so the sender's page is checked too, not just the id.
+  const fromPanel =
+    panel.sender?.id === chrome.runtime.id &&
+    !panel.sender.tab &&
+    panel.sender.url?.startsWith(chrome.runtime.getURL("sidepanel.html"));
+  if (!fromPanel) {
     panel.disconnect();
     return;
   }
-  const mine = new Set();
+  const panelRequestIds = new Set();
   panel.onMessage.addListener((request) => {
     if (typeof request?.id !== "string") return;
     if (request.cancel) {
@@ -402,13 +407,13 @@ chrome.runtime.onConnect.addListener((panel) => {
       });
       return;
     }
-    mine.add(request.id);
+    panelRequestIds.add(request.id);
     chatRequests.set(request.id, panel);
     port.postMessage({ ...request, type: "chat" });
   });
   // Closing the panel stops its turn, the way leaving the in-app chat does.
   panel.onDisconnect.addListener(() => {
-    for (const id of mine) {
+    for (const id of panelRequestIds) {
       if (!chatRequests.delete(id)) continue;
       port?.postMessage({ type: "chat_cancel", id });
     }

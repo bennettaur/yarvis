@@ -68,7 +68,8 @@ into one line, for example "Used 4 tool calls". Reasoning, when the provider
 returns it, shows as a "Thinking…" block you can expand.
 
 Messages you spoke are labeled `spoken`. Messages relayed from Telegram are
-labeled with the Telegram user.
+labeled with the Telegram user. Messages sent from the Chrome extension's side
+panel are labeled `Chrome`.
 
 ### Approving tool calls
 

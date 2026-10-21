@@ -8,7 +8,8 @@ import { type BrowserBridge, browserBridge } from "./bridge.ts";
  * The browser bridge's endpoints, mounted at `/browser` OUTSIDE the main bearer
  * wall. Like attention-ingest, they authenticate with their own scoped token, so
  * the extension's host reaches these routes without holding the full-access
- * bearer. With the side panel's chat mounted, that token also runs agent turns.
+ * bearer. With the side panel's chat mounted, that token also runs agent turns
+ * and reads recent chats from every surface, since the panel picks from them.
  */
 
 /** A page's text is capped by the tool asking for it; this bounds a misbehaving sender. */

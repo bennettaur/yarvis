@@ -7,12 +7,6 @@
  */
 import type { Instance } from "./instances.ts";
 
-export type ChatOp =
-  | { op: "sessions" }
-  | { op: "create_session"; title?: string }
-  | { op: "messages"; sessionId: string }
-  | { op: "send"; sessionId: string; message: string; tab?: unknown };
-
 export interface ChatRequest {
   method: "GET" | "POST";
   path: string;
@@ -43,7 +37,8 @@ export function chatRequest(message: unknown): ChatRequest | null {
         stream: false,
       };
     case "send":
-      if (typeof m.sessionId !== "string" || typeof m.message !== "string") return null;
+      if (typeof m.sessionId !== "string" || !UUID.test(m.sessionId)) return null;
+      if (typeof m.message !== "string") return null;
       return {
         method: "POST",
         path: "/browser/chat",

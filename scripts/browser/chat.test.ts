@@ -27,6 +27,7 @@ describe("chatRequest", () => {
   it("refuses an unknown operation or a session id that could change the path", () => {
     expect(chatRequest({ op: "delete" })).toBeNull();
     expect(chatRequest({ op: "messages", sessionId: "../../api/tasks" })).toBeNull();
+    expect(chatRequest({ op: "send", sessionId: "nope", message: "hi" })).toBeNull();
     expect(chatRequest(null)).toBeNull();
   });
 });
@@ -69,6 +70,25 @@ describe("relayChat", () => {
     expect(events).toEqual([{ type: "delta", text: "a" }, { type: "done" }]);
     expect(seen?.url).toBe("http://127.0.0.1:4321/browser/chat");
     expect(seen?.headers.get("authorization")).toBe("Bearer browser-token");
+  });
+
+  it("returns the body of a request that isn't streamed", async () => {
+    const fetchImpl = (async () => Response.json([{ id: SESSION }])) as unknown as typeof fetch;
+    const request = chatRequest({ op: "sessions" });
+    if (!request) throw new Error("expected a request");
+    expect(
+      await relayChat(instance, request, () => {}, new AbortController().signal, fetchImpl),
+    ).toEqual({ ok: true, data: [{ id: SESSION }] });
+  });
+
+  it("names the status when the error isn't JSON", async () => {
+    const fetchImpl = (async () =>
+      new Response("boom", { status: 500 })) as unknown as typeof fetch;
+    const request = chatRequest({ op: "sessions" });
+    if (!request) throw new Error("expected a request");
+    expect(
+      await relayChat(instance, request, () => {}, new AbortController().signal, fetchImpl),
+    ).toEqual({ ok: false, error: "Yarvis answered 500." });
   });
 
   it("passes the sidecar's error back", async () => {

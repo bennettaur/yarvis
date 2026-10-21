@@ -203,7 +203,7 @@ async function rescan(): Promise<void> {
 }
 
 /** Side-panel chat operations in flight, so closing the panel can stop a turn. */
-const chats = new Map<string, AbortController>();
+const chatAborts = new Map<string, AbortController>();
 
 /** The named instance, or the only one connected when the panel didn't say. */
 function chatInstance(name: unknown): Instance | null {
@@ -212,7 +212,7 @@ function chatInstance(name: unknown): Instance | null {
   return connected.length === 1 ? (connected[0] as Instance) : null;
 }
 
-function sendSafely(message: unknown): void {
+function sendUnlessOversize(message: unknown): void {
   try {
     send(message);
   } catch {
@@ -237,12 +237,12 @@ async function handleChat(message: { id: string; instance?: unknown }): Promise<
     return;
   }
   const controller = new AbortController();
-  chats.set(id, controller);
+  chatAborts.set(id, controller);
   try {
     const reply = await relayChat(
       instance,
       request,
-      (event) => sendSafely({ type: "chat_event", id, event }),
+      (event) => sendUnlessOversize({ type: "chat_event", id, event }),
       controller.signal,
     );
     try {
@@ -255,7 +255,7 @@ async function handleChat(message: { id: string; instance?: unknown }): Promise<
       send({ type: "chat_reply", id, ok: false, error: `Couldn't reach Yarvis: ${String(error)}` });
     }
   } finally {
-    chats.delete(id);
+    chatAborts.delete(id);
   }
 }
 
@@ -289,7 +289,7 @@ process.stdin.on("data", (chunk: Buffer) => {
       continue;
     }
     if (message.type === "chat_cancel") {
-      chats.get(message.id)?.abort();
+      chatAborts.get(message.id)?.abort();
       continue;
     }
     const route = pending.get(message.id);

@@ -29,7 +29,7 @@ Yarvis sidecar  <--HTTP long poll-->  native host  <--stdio-->  extension
   can be left out.
 - The token reaches only the `/browser` routes — never the full-access bearer.
   Those include the side panel's chat (`/browser/chat`), so the token can run
-  agent turns, list chats and read their messages. The host maps each panel
+  agent turns, list and create chats, and read their messages. The host maps each panel
   request onto one of those fixed routes; the panel can't name any other.
 - Chrome only starts the host for extension ids listed in the host manifest.
 

@@ -41,7 +41,9 @@ them when a question needs them.
   one, and ask away. Each message tells Yarvis which tab you're looking at (its
   title, address and any text you've selected), so "what is this page about?"
   just works. Untick **Share this tab** to leave it out. These chats are the
-  same ones the app shows, marked "Chrome".
+  same ones the app shows, marked "Chrome". The panel can't ask for approval
+  yet, so tools that need it (MCP integrations, creating a calendar event)
+  aren't available there; use the app for those. It uses your default model.
 - **Watching what it does.** The side panel's **Activity** view lists every
   command Yarvis sent, its arguments and the full result. The log is kept in
   memory and is gone when Chrome quits.

@@ -9,7 +9,7 @@ import { loadProfile } from "./profile.js";
 
 const instanceSelect = document.getElementById("instance");
 const sessionSelect = document.getElementById("session");
-const status = document.getElementById("chat-status");
+const statusLine = document.getElementById("chat-status");
 const thread = document.getElementById("thread");
 const composer = document.getElementById("composer");
 const input = document.getElementById("message");
@@ -62,8 +62,8 @@ function ask(op, fields = {}, onEvent) {
 }
 
 function showStatus(text) {
-  status.textContent = text ?? "";
-  status.hidden = !text;
+  statusLine.textContent = text ?? "";
+  statusLine.hidden = !text;
 }
 
 function addBubble(role, text) {
@@ -81,6 +81,7 @@ function addBubble(role, text) {
 function addToolLine(bubble, name) {
   const line = document.createElement("div");
   line.className = "tool-line";
+  line.dataset.tool = name;
   line.textContent = `Using ${name}…`;
   bubble.insertBefore(line, bubble.querySelector(".body"));
   return line;
@@ -198,11 +199,10 @@ async function send(text) {
         tools.set(event.id, addToolLine(reply, event.name));
       } else if (event?.type === "tool_result") {
         const line = tools.get(event.id);
-        if (line)
-          line.textContent = line.textContent.replace(
-            "…",
-            event.status === "ok" ? "" : ` (${event.status})`,
-          );
+        if (line) {
+          const name = line.dataset.tool;
+          line.textContent = event.status === "ok" ? `Used ${name}` : `${name} (${event.status})`;
+        }
       } else if (event?.type === "attention") {
         showStatus(`Yarvis wants your attention${event.reason ? `: ${event.reason}` : "."}`);
       } else if (event?.type === "error") {
@@ -212,7 +212,7 @@ async function send(text) {
     turnId = turn.id;
     // A stopped turn saves nothing in Yarvis, so its partial reply goes too.
     if ((await turn.promise) === STOPPED) reply.remove();
-    else if (!body.textContent && status.hidden) body.textContent = "(no response)";
+    else if (!body.textContent && statusLine.hidden) body.textContent = "(no response)";
   } catch (error) {
     showStatus(error.message);
   } finally {

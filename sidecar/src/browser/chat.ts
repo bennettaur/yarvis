@@ -55,29 +55,39 @@ const sendSchema = z.object({
 
 const createSessionSchema = z.object({ title: z.string().max(200).nullish() });
 
-/** What the agent is told about the tab, attached as this turn's screen context. */
+/**
+ * What the agent is told about the tab, attached as this turn's screen context.
+ * The fields are JSON so a selection with newlines can't pass itself off as
+ * another field, such as a different tab id. The block holds facts only: how to
+ * read a tab is in the system prompt, not inside fenced data.
+ */
 export function describeTab(tab: BrowserTab): string {
-  const lines = [
-    `The user is writing from the Yarvis side panel in their Chrome profile "${tab.profile}". The tab open beside it:`,
-    `Title: ${tab.title}`,
-    `URL: ${stripQuery(tab.url)}`,
-    `Tab id: ${tab.tabId}`,
-  ];
   const selection = tab.selection?.trim();
-  if (selection) lines.push("Text they have selected on the page:", selection);
-  lines.push(
-    `To read more of this page, mount the browser tools and call read_browser_page with tabId ${tab.tabId} and profile "${tab.profile}".`,
-  );
-  return lines.join("\n");
+  const fields = {
+    chromeProfile: tab.profile,
+    tabId: tab.tabId,
+    title: tab.title,
+    url: withoutQuery(tab.url),
+    ...(selection ? { selectedText: selection } : {}),
+  };
+  return [
+    "The user is writing from the Yarvis side panel in Chrome. The tab open beside it:",
+    JSON.stringify(fields, null, 2),
+  ].join("\n");
 }
 
-/** Listed URLs drop their query and fragment everywhere else the browser reaches the model. */
-function stripQuery(url: string): string {
+/**
+ * Like the browser tools' tab listing: a query or fragment can carry a token,
+ * so neither reaches the model. Other schemes give only their name, since a
+ * `file:` path names local files and a `data:` URL is the page itself.
+ */
+function withoutQuery(url: string): string {
   try {
     const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return parsed.protocol;
     return `${parsed.origin}${parsed.pathname}`;
   } catch {
-    return url.split(/[?#]/)[0] ?? "";
+    return "";
   }
 }
 
@@ -140,6 +150,8 @@ export function createBrowserChatRoutes(config: Config): Hono {
       const write = (data: unknown) => stream.writeSSE({ data: JSON.stringify(data) });
       // Tool arguments and results stay out of the stream: a page's text can be
       // most of a native message's 1 MiB, and the panel only shows tool names.
+      // No `approval` hooks on purpose: with nothing to prompt on, the turn drops
+      // MCP tools and the always-confirm built-ins instead of running them.
       for await (const event of runAgentTurn({
         config,
         db: db(),
