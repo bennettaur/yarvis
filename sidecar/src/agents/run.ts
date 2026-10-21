@@ -9,7 +9,7 @@ import {
 } from "../chat/destructiveTools.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
-import { resolveComplexityModel } from "../llm/complexity.ts";
+import { type ModelSelection, resolveComplexityModel } from "../llm/complexity.ts";
 import { describeError } from "../llm/errors.ts";
 import { defaultProviderModel, resolveModel } from "../llm/providers.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
@@ -179,14 +179,17 @@ export function materialBlock(material: string, nonce: string): string {
 export async function specialistModel(
   config: Config,
   specialist: SpecialistDefinition,
-): Promise<{ provider: string; model: string } | null> {
+): Promise<ModelSelection | null> {
+  const effort = specialist.effort ?? undefined;
   if (specialist.provider && specialist.model) {
-    return { provider: specialist.provider, model: specialist.model };
+    return { provider: specialist.provider, model: specialist.model, effort };
   }
   if (specialist.complexityTier) {
-    return resolveComplexityModel(config, specialist.complexityTier);
+    const tier = await resolveComplexityModel(config, specialist.complexityTier);
+    return tier && { ...tier, effort: effort ?? tier.effort };
   }
-  return defaultProviderModel(config);
+  const fallback = await defaultProviderModel(config);
+  return fallback && { ...fallback, effort };
 }
 
 export async function runSpecialist(input: RunSpecialistInput): Promise<SpecialistRun> {
@@ -212,12 +215,14 @@ export interface RunDefinitionInput extends Omit<RunSpecialistInput, "name"> {
 export async function runSpecialistDefinition(input: RunDefinitionInput): Promise<SpecialistRun> {
   const { config, db, specialist, task, material, signal } = input;
 
-  const chosen =
+  const chosen: ModelSelection | null =
     input.provider && input.model
       ? { provider: input.provider, model: input.model }
       : await specialistModel(config, specialist);
   if (!chosen) throw new Error("no chat model is configured");
-  const model = await resolveModel(config, chosen.provider, chosen.model);
+  const model = await resolveModel(config, chosen.provider, chosen.model, {
+    effort: chosen.effort,
+  });
 
   const memory = new PgVectorMemoryStore(db, await chooseEmbedder(config, db));
   const allTools = buildBuiltinTools({

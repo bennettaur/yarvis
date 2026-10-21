@@ -109,11 +109,14 @@ export async function decide<T>(
     ),
   );
   const custom = await findCustomProvider(selection.provider);
+  // Ollama's native API has no effort level, so a saved one is not sent there.
   if (custom?.apiKind === "ollama") {
     return decideWithOllama(config, custom, selection.model, request, signal);
   }
 
-  const model = await resolveModel(config, selection.provider, selection.model);
+  const model = await resolveModel(config, selection.provider, selection.model, {
+    effort: selection.effort,
+  });
   const { output } = await generateText({
     model,
     system: request.system,

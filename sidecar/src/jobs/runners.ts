@@ -70,6 +70,7 @@ function defaultAgentDefinition(): SpecialistDefinition {
     provider: null,
     model: null,
     complexityTier: null,
+    effort: null,
     maxSteps: DEFAULT_AGENT_MAX_STEPS,
     enabled: true,
     source: "builtin",

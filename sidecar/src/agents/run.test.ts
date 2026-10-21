@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import { tool } from "ai";
 import { z } from "zod";
+import type { Config } from "../config.ts";
+import { saveComplexityModelConfig } from "../llm/complexity.ts";
 import type { SpecialistDefinition } from "./catalog.ts";
-import { materialBlock, selectTools, specialistSystemPrompt } from "./run.ts";
+import { materialBlock, selectTools, specialistModel, specialistSystemPrompt } from "./run.ts";
 
 const fake = (name: string) =>
   tool({
@@ -95,5 +97,33 @@ describe("specialist prompting", () => {
     const block = materialBlock("x".repeat(40_000), "nonce0000000");
     expect(block).toContain("…(truncated)");
     expect(block.length).toBeLessThan(30_000);
+  });
+});
+
+describe("specialist model choice", () => {
+  const config = { secrets: {}, customProviderSecrets: {} } as unknown as Config;
+  const withTier = {
+    ...specialist,
+    provider: null,
+    model: null,
+    complexityTier: "medium",
+  } as SpecialistDefinition;
+
+  it("uses a complexity tier's saved effort", async () => {
+    await saveComplexityModelConfig({
+      medium: { provider: "anthropic", model: "claude-opus-4-7", effort: "low" },
+    });
+    expect(await specialistModel(config, { ...withTier, effort: null })).toEqual({
+      provider: "anthropic",
+      model: "claude-opus-4-7",
+      effort: "low",
+    });
+  });
+
+  it("lets the file's own effort override the tier's", async () => {
+    await saveComplexityModelConfig({
+      medium: { provider: "anthropic", model: "claude-opus-4-7", effort: "low" },
+    });
+    expect((await specialistModel(config, { ...withTier, effort: "high" }))?.effort).toBe("high");
   });
 });

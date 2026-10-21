@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { builtinToolMetadata } from "../chat/builtinTools.ts";
 import { COMPLEXITY_TIERS, type ComplexityTier, isComplexityTier } from "../llm/complexity.ts";
+import { REASONING_EFFORTS, type ReasoningEffort } from "../llm/effort.ts";
 import activityConsolidator from "./definitions/activity-consolidator.md" with { type: "text" };
 import planner from "./definitions/planner.md" with { type: "text" };
 import projectManager from "./definitions/project-manager.md" with { type: "text" };
@@ -58,6 +59,11 @@ export interface SpecialistDefinition {
   model: string | null;
   /** A complexity tier to resolve its model from, in place of a literal `model:`. */
   complexityTier: ComplexityTier | null;
+  /**
+   * How hard its model thinks, when that model is tagged `reasoning`. Set with
+   * a complexity tier, it overrides the tier's own effort.
+   */
+  effort: ReasoningEffort | null;
   maxSteps: number;
   enabled: boolean;
   source: SpecialistSource;
@@ -113,6 +119,7 @@ const KNOWN_KEYS = [
   "unattended",
   "model",
   "complexity",
+  "effort",
   "maxSteps",
   "enabled",
 ] as const;
@@ -194,6 +201,12 @@ export function parseSpecialist(
     complexityTier = complexityRef;
   }
 
+  const effortRef = asString(path, data, "effort");
+  if (effortRef && !(REASONING_EFFORTS as readonly string[]).includes(effortRef)) {
+    throw new FrontmatterError(path, `'effort' must be one of: ${REASONING_EFFORTS.join(", ")}`, 1);
+  }
+  const effort = (effortRef as ReasoningEffort | undefined) ?? null;
+
   const maxSteps = asInteger(path, data, "maxSteps") ?? DEFAULT_MAX_STEPS;
   if (maxSteps > MAX_STEPS_CEILING) {
     throw new FrontmatterError(path, `'maxSteps' cannot exceed ${MAX_STEPS_CEILING}`, 1);
@@ -208,6 +221,7 @@ export function parseSpecialist(
     provider,
     model,
     complexityTier,
+    effort,
     maxSteps,
     enabled: asBoolean(path, data, "enabled") ?? true,
     source,

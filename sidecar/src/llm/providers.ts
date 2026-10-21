@@ -14,6 +14,7 @@ import {
   type ProviderModelRow,
   withCapability,
 } from "./catalog.ts";
+import { type ProviderModel, type ReasoningEffort, withEffort } from "./effort.ts";
 import { responsesCompatFetch, withoutServerSideStorage } from "./responsesCompat.ts";
 
 /**
@@ -186,7 +187,7 @@ export async function findCustomProvider(
   return (await listCustomProviders()).find((r) => r.id === id) ?? null;
 }
 
-function resolveCustom(row: CustomProviderRow, config: Config, modelId: string): LanguageModel {
+function resolveCustom(row: CustomProviderRow, config: Config, modelId: string): ProviderModel {
   // Defense-in-depth: the create/update routes already validate, but DB rows
   // can have been seeded by an earlier version, so re-check at resolve time.
   // Local providers (e.g. a local Ollama server) legitimately live on loopback.
@@ -219,12 +220,41 @@ function resolveCustom(row: CustomProviderRow, config: Config, modelId: string):
   }
 }
 
-/** Resolves a concrete language model for the given provider/model. */
+/**
+ * Resolves a concrete language model for the given provider/model.
+ *
+ * `effort` is baked into the returned model, so every call made with it asks
+ * for that level without the caller threading it through. It applies only
+ * when the catalogue tags the model `reasoning`: a saved selection outlives a
+ * later edit to the catalogue, and a provider that doesn't take the parameter
+ * can fail the whole call over it, while dropping it only costs a preference.
+ */
 export async function resolveModel(
   config: Config,
   providerId: ProviderId,
   modelId: string,
+  { effort }: { effort?: ReasoningEffort } = {},
 ): Promise<LanguageModel> {
+  const model = await resolveProviderModel(config, providerId, modelId);
+  if (!effort) return model;
+  const provider = (await availableProviders(config)).find((p) => p.id === providerId);
+  const info = provider?.models.find((m) => m.id === modelId);
+  if (!info?.capabilities.includes("reasoning")) return model;
+  return withEffort(model, effort, { forceReasoning: await speaksOpenAI(providerId) });
+}
+
+/** Whether a provider's models are reached through the OpenAI SDK. */
+async function speaksOpenAI(providerId: ProviderId): Promise<boolean> {
+  if (providerId === "cerebras") return true;
+  const row = await findCustomProvider(providerId);
+  return row !== null && row.apiKind !== "anthropic";
+}
+
+async function resolveProviderModel(
+  config: Config,
+  providerId: ProviderId,
+  modelId: string,
+): Promise<ProviderModel> {
   if (providerId.startsWith(CUSTOM_PROVIDER_PREFIX)) {
     const id = providerId.slice(CUSTOM_PROVIDER_PREFIX.length);
     const rows = await listCustomProviders();

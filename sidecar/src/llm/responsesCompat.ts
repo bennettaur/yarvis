@@ -1,6 +1,5 @@
-import { defaultSettingsMiddleware, type LanguageModel, wrapLanguageModel } from "ai";
-
-type ProviderModel = Parameters<typeof wrapLanguageModel>[0]["model"];
+import { defaultSettingsMiddleware, wrapLanguageModel } from "ai";
+import type { ProviderModel } from "./effort.ts";
 
 /**
  * Fixes for gateways that speak the OpenAI Responses API loosely, LiteLLM
@@ -71,7 +70,9 @@ export function responsesCompatFetch(inner: Fetch = globalThis.fetch): Fetch {
  * block a Claude model needs to continue a tool call. Inline, the item carries
  * that block in `encrypted_content`, which LiteLLM decodes back into thinking.
  */
-export function withoutServerSideStorage(model: ProviderModel): LanguageModel {
+export function withoutServerSideStorage(
+  model: ProviderModel,
+): ReturnType<typeof wrapLanguageModel> {
   return wrapLanguageModel({
     model,
     middleware: defaultSettingsMiddleware({

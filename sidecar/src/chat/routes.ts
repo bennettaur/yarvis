@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { isModelCapability } from "../llm/catalog.ts";
+import { reasoningEffortSchema } from "../llm/effort.ts";
 import { clientError, describeError, errorDetail } from "../llm/errors.ts";
 import { availableProviders, reasoningOptions, resolveModel } from "../llm/providers.ts";
 import { resolveApproval } from "../mcp/approvals.ts";
@@ -46,6 +47,8 @@ const chatSchema = z.object({
    * so it is the user's choice per surface rather than something always on.
    */
   reasoning: z.boolean().optional(),
+  /** How hard the model should think, for a model tagged `reasoning`. Absent means the provider's default. */
+  effort: reasoningEffortSchema.optional(),
   /**
    * Id of a user message to restart the conversation from: it and everything
    * after it are dropped before `message` runs as the new turn. `message` may
@@ -131,13 +134,13 @@ export function createChatRoutes(config: Config): Hono {
     const body = await c.req.json().catch(() => null);
     const parsed = chatSchema.safeParse(body);
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const { sessionId, message, provider, model, context, source, reasoning, rewindTo } =
+    const { sessionId, message, provider, model, context, source, reasoning, effort, rewindTo } =
       parsed.data;
 
     const dbh = db();
     let chatModel;
     try {
-      chatModel = await resolveModel(config, provider, model);
+      chatModel = await resolveModel(config, provider, model, { effort });
     } catch (e) {
       console.error("[chat] model resolution failed:", describeError(e));
       return c.json({ error: clientError(e), detail: errorDetail(e) }, 400);

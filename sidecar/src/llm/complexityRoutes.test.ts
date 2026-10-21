@@ -69,6 +69,19 @@ describe("GET/PATCH /api/complexity-models", () => {
     });
   });
 
+  it("saves a tier's effort level and rejects one the SDK doesn't name", async () => {
+    const save = (effort: string) =>
+      app().request("/api/complexity-models", {
+        method: "PATCH",
+        headers: jsonAuth,
+        body: JSON.stringify({ max: { provider: "anthropic", model: "claude-opus-4-7", effort } }),
+      });
+    expect((await save("high")).status).toBe(200);
+    const read = await app().request("/api/complexity-models", { headers: auth });
+    expect(await read.json()).toMatchObject({ max: { effort: "high" } });
+    expect((await save("ludicrous")).status).toBe(400);
+  });
+
   it("rejects an incomplete selection", async () => {
     const res = await app().request("/api/complexity-models", {
       method: "PATCH",

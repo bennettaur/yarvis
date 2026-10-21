@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { EMBED_DIM, MEMORY_KINDS, type MemoryKind } from "../db/schema.ts";
+import { reasoningEffortSchema } from "../llm/effort.ts";
 import { clientError } from "../llm/errors.ts";
 import { resolveModel } from "../llm/providers.ts";
 import { tasksCompletedBetween } from "../tasks/service.ts";
@@ -54,6 +55,7 @@ const recapSchema = z.object({
   range: z.enum(["day", "week"]),
   provider: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
+  effort: reasoningEffortSchema.optional(),
 });
 
 const embeddingsConfigSchema = z.object({
@@ -154,7 +156,7 @@ export function createMemoryRoutes(config: Config): Hono {
   router.post("/recap", async (c) => {
     const parsed = recapSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const { range, provider, model } = parsed.data;
+    const { range, provider, model, effort } = parsed.data;
 
     const db = getDb(config.databaseUrl as string).db;
     const window = dateRange(range);
@@ -167,7 +169,7 @@ export function createMemoryRoutes(config: Config): Hono {
     let recap = context;
     if (provider && model) {
       try {
-        const llm = await resolveModel(config, provider, model);
+        const llm = await resolveModel(config, provider, model, { effort });
         const { text } = await generateText({
           model: llm,
           system: recapSystemPrompt(window.label),

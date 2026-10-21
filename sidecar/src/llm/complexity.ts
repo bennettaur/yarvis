@@ -1,5 +1,6 @@
 import type { Config } from "../config.ts";
 import { readSection, withSection } from "../settings/store.ts";
+import type { ReasoningEffort } from "./effort.ts";
 import { defaultProviderModel, type ProviderId } from "./providers.ts";
 
 /**
@@ -19,6 +20,8 @@ export function isComplexityTier(value: string): value is ComplexityTier {
 export interface ModelSelection {
   provider: ProviderId;
   model: string;
+  /** Applies only when the model is tagged `reasoning`; absent means the provider's default. */
+  effort?: ReasoningEffort;
 }
 
 export interface ComplexityModelConfigInput {

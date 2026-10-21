@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getComplexityModelConfig, saveComplexityModelConfig } from "./complexity.ts";
+import { reasoningEffortSchema } from "./effort.ts";
 
 /**
  * Complexity-tier model routes, mounted under /api/complexity-models.
@@ -28,7 +29,9 @@ const modelId = z
 
 const providerId = z.string().min(1).max(128);
 
-export const selectionSchema = z.object({ provider: providerId, model: modelId }).nullable();
+export const selectionSchema = z
+  .object({ provider: providerId, model: modelId, effort: reasoningEffortSchema.optional() })
+  .nullable();
 
 const saveSchema = z.object({
   low: selectionSchema.optional(),
