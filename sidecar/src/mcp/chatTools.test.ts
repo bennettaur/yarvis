@@ -3,18 +3,19 @@ import { tool } from "ai";
 import postgres from "postgres";
 import { z } from "zod";
 import { syncBuiltins } from "../agentTools/registry.ts";
-import { setToolSettings } from "../agentTools/store.ts";
+import { setToolSettings, syncToolSet } from "../agentTools/store.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { HashEmbedder } from "../memory/embedder.ts";
 import { resolveApproval } from "./approvals.ts";
-import { assembleAgentToolset } from "./chatTools.ts";
+import { assembleAgentToolset, modelToolKey } from "./chatTools.ts";
+import type { McpClientTool } from "./connectionManager.ts";
 import { mountTools, unmountAll } from "./mountedTools.ts";
 
 /**
- * Toolset assembly + policy-driven active set. Requires Postgres with pgvector
- * (CI). MCP live tools are empty (no connections), so this focuses on the
- * built-in policy paths.
+ * Model tool keys, toolset assembly and the policy-driven active set. Assembly
+ * requires Postgres with pgvector (CI). There are no MCP connections, so MCP
+ * tools are injected as `liveTools` where a test needs them.
  */
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -49,6 +50,40 @@ afterAll(async () => {
   await sql.end();
 });
 
+describe("modelToolKey", () => {
+  const SERVER_ID = "907bd56b-f417-419e-92db-2f1e4e1aa0ce";
+
+  it("keeps a built-in's bare name", () => {
+    expect(modelToolKey("builtin:create_task")).toBe("create_task");
+  });
+
+  // Bedrock rejects a whole turn over one tool name it can't accept (#321).
+  it("keeps a GitHub-length MCP tool name readable and provider-safe", () => {
+    const key = modelToolKey(`mcp:${SERVER_ID}:github__update_pull_request`);
+    expect(key).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+    expect(key).toEndWith("_github__update_pull_request");
+  });
+
+  it("replaces characters providers refuse in a tool name", () => {
+    expect(modelToolKey(`mcp:${SERVER_ID}:pages.search`)).toMatch(
+      /^mcp_[0-9a-f]{12}_pages_search$/,
+    );
+  });
+
+  it("gives distinct keys to names that only differ past the cut", () => {
+    const stem = "x".repeat(60);
+    const a = modelToolKey(`mcp:${SERVER_ID}:${stem}_a`);
+    expect(a).toHaveLength(64);
+    expect(a).not.toBe(modelToolKey(`mcp:${SERVER_ID}:${stem}_b`));
+  });
+
+  it("gives distinct keys to the same tool name on two servers", () => {
+    expect(modelToolKey(`mcp:${SERVER_ID}:search`)).not.toBe(
+      modelToolKey("mcp:11111111-1111-4111-8111-111111111111:search"),
+    );
+  });
+});
+
 describe("assembleAgentToolset", () => {
   it("registers built-ins + meta tools and activates always-policy tools", async () => {
     unmountAll("sess-a");
@@ -70,6 +105,38 @@ describe("assembleAgentToolset", () => {
     const active = computeActiveTools();
     expect(active).toContain("create_task"); // built-ins default to "always"
     expect(active).toContain("search_tools"); // meta tools always active
+  });
+
+  it("seeds the built-ins when the registry has none, so they're still offered", async () => {
+    // What a secondary instance with its own database sees: startup seeding
+    // only runs where background workers do.
+    await sql`TRUNCATE agent_tools RESTART IDENTITY CASCADE`;
+    unmountAll("sess-empty");
+    const { computeActiveTools } = await assembleAgentToolset({
+      config,
+      db,
+      sessionId: "sess-empty",
+      builtinTools: { create_task: fakeBuiltin("create_task") },
+      approval: { onRequest: async () => {} },
+    });
+    expect(computeActiveTools()).toContain("create_task");
+    const [{ count }] = await sql<
+      { count: number }[]
+    >`SELECT count(*)::int AS count FROM agent_tools WHERE source = 'builtin'`;
+    expect(count).toBeGreaterThan(0);
+  });
+
+  it("seeds a built-in an older build never registered", async () => {
+    await sql`DELETE FROM agent_tools WHERE id = 'builtin:create_task'`;
+    unmountAll("sess-stale");
+    const { computeActiveTools } = await assembleAgentToolset({
+      config,
+      db,
+      sessionId: "sess-stale",
+      builtinTools: { create_task: fakeBuiltin("create_task") },
+      approval: { onRequest: async () => {} },
+    });
+    expect(computeActiveTools()).toContain("create_task");
   });
 
   it("excludes disabled tools and gates search-policy tools until mounted", async () => {
@@ -94,6 +161,50 @@ describe("assembleAgentToolset", () => {
     expect(computeActiveTools()).not.toContain("create_task"); // not mounted yet
     mountTools("sess-b", ["builtin:create_task"]);
     expect(computeActiveTools()).toContain("create_task"); // mounted → active
+  });
+
+  it("offers a mounted MCP tool under a key the provider accepts", async () => {
+    unmountAll("sess-mcp");
+    const serverId = "907bd56b-f417-419e-92db-2f1e4e1aa0ce";
+    const id = `mcp:${serverId}:github__update_pull_request`;
+    await sql`
+      INSERT INTO mcp_servers (id, name, transport, url)
+      VALUES (${serverId}, 'github', 'http', 'https://mcp.example.com/mcp')
+    `;
+    await syncToolSet(
+      db,
+      embedder,
+      [
+        {
+          id,
+          source: "mcp",
+          serverId,
+          name: "github__update_pull_request",
+          description: "",
+          inputSchema: null,
+        },
+      ],
+      { source: "mcp", serverId, defaultPolicy: "search" },
+    );
+    const { tools, computeActiveTools, registryIdByKey } = await assembleAgentToolset({
+      config,
+      db,
+      sessionId: "sess-mcp",
+      builtinTools: {},
+      approval: { onRequest: async () => {} },
+      liveTools: { [id]: fakeBuiltin("github__update_pull_request") as unknown as McpClientTool },
+    });
+
+    const result = await tools.mount_tools!.execute!({ ids: [id] }, {
+      toolCallId: "mount-1",
+      messages: [],
+    } as never);
+
+    const key = modelToolKey(id);
+    expect(result).toMatchObject({ mounted: [{ id, callAs: key }] });
+    expect(computeActiveTools()).toContain(key);
+    expect(computeActiveTools().every((k) => /^[A-Za-z0-9_-]{1,64}$/.test(k))).toBe(true);
+    expect(registryIdByKey.get(key)).toBe(id);
   });
 });
 

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import type { PrsPlace } from "../lib/pr/panelState";
-import { firstPaintOf, renderToHtml } from "../test/render";
+import { firstPaintOf, mountForInteraction, renderToHtml } from "../test/render";
 import PrsPanel from "./PrsPanel";
 
 const STORAGE_KEY = "yarvis.prs.place";
@@ -44,6 +44,9 @@ let recordedEvents: string[] = [];
  * that it doesn't have to wait for one.
  */
 let holdResponses: Promise<void> | null = null;
+
+/** The body Azure's viewer probe answers with (always a 401). */
+let azureViewerBody: Record<string, string> = { error: "no pat" };
 
 // GitHub is the configured provider throughout; Azure is not, which is what
 // lets the last test exercise a remembered Azure place going stale.
@@ -107,6 +110,16 @@ mock.module("../lib/api", () => ({
       return json({ ok: true });
     }
     if (path === "/api/github/viewer") return json({ login: "octo" });
+    if (path === "/api/github/stars")
+      return json([
+        {
+          owner: MY_PR.owner,
+          repo: MY_PR.repo,
+          number: MY_PR.number,
+          title: MY_PR.title,
+          url: MY_PR.url,
+        },
+      ]);
     if (path.startsWith("/api/github/search")) return json([MY_PR]);
     if (path === "/api/github/config")
       return json({ reviewQuery: "is:open", reviewingLookbackDays: 7 });
@@ -146,7 +159,20 @@ mock.module("../lib/api", () => ({
         reviewers: [],
       });
     if (path.startsWith("/api/pr/insights")) return json({ insights: [] });
-    if (path.startsWith("/api/azure")) return json({ error: "no pat" }, 401);
+    if (/^\/api\/azure\/pr\/Shop\/web\/42\/summary\?/.test(path))
+      return json({
+        prId: 42,
+        title: "Fix the cart",
+        url: "https://dev.azure.com/acme/Shop/_git/web/pullrequest/42",
+        org: "acme",
+        project: "Shop",
+        repo: "web",
+        author: "someone",
+        draft: false,
+        status: "active",
+        createdAt: "2026-06-01T09:00:00.000Z",
+      });
+    if (path.startsWith("/api/azure")) return json(azureViewerBody, 401);
     return json([]);
   },
   streamSSE: async function* () {},
@@ -166,6 +192,7 @@ describe("PrsPanel place", () => {
     localStorage.clear();
     recordedEvents = [];
     holdResponses = null;
+    azureViewerBody = { error: "no pat" };
   });
 
   it("paints the lists from the cache when the tab is revisited", async () => {
@@ -208,6 +235,15 @@ describe("PrsPanel place", () => {
 
     expect(html).toContain(MY_PR.title);
     expect(html).not.toContain(LIST_NAV);
+  });
+
+  it("shows whether the open PR is starred", async () => {
+    storePlace({ provider: "github", tab: "mine", selected: summaryOf(MY_PR) });
+
+    const html = await renderToHtml(<PrsPanel persistPlace />);
+
+    expect(html).not.toContain(LIST_NAV);
+    expect(html).toContain('title="Unstar"');
   });
 
   it("doesn't count reopening a remembered PR as viewing it", async () => {
@@ -276,5 +312,52 @@ describe("PrsPanel place", () => {
     expect(html).toContain(LIST_NAV);
     expect(html).toContain(MY_PR.title);
     expect(readPlace().selected).toBeNull();
+  });
+
+  it("says why Azure is missing when Azure rejects the saved token", async () => {
+    azureViewerBody = { error: "azure devops rejected the token", reason: "unauthorized" };
+
+    const html = await renderToHtml(<PrsPanel />);
+
+    expect(html).toContain("Azure DevOps rejected the saved token");
+    expect(html).toContain(MY_PR.title);
+  });
+
+  it("says nothing about Azure when no Azure token is saved", async () => {
+    azureViewerBody = { error: "azure devops not configured", reason: "missing_token" };
+
+    const html = await renderToHtml(<PrsPanel />);
+
+    expect(html).not.toContain("Azure DevOps rejected");
+    expect(html).not.toContain("organization URL");
+    expect(html).toContain(MY_PR.title);
+  });
+
+  it("opens an Azure DevOps PR pasted into the locator", async () => {
+    const { host, unmount } = await mountForInteraction(<PrsPanel />);
+    try {
+      const input = host.querySelector<HTMLInputElement>('input[placeholder^="PR link"]');
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setValue?.call(input, "https://dev.azure.com/acme/Shop/_git/web/pullrequest/42");
+      input?.dispatchEvent(new Event("input", { bubbles: true }));
+      input?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // Azure's probe failed here, so the toggle stays put; the PR still opens
+      // instead of being dropped by the switch back to a configured provider.
+      // "Shop/web" is the Azure ref's project/repo; the GitHub PRs here are octo/*.
+      expect(host.textContent).toContain("Shop/web");
+      expect(host.textContent).not.toContain(LIST_NAV);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("names the missing organization URL when only the token is saved", async () => {
+    azureViewerBody = { error: "azure devops not configured", reason: "missing_org_url" };
+
+    const html = await renderToHtml(<PrsPanel />);
+
+    expect(html).toContain("no organization URL is set");
   });
 });

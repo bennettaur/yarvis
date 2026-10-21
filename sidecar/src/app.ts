@@ -4,6 +4,8 @@ import { cors } from "hono/cors";
 import { createSpecialistRoutes } from "./agents/routes.ts";
 import { createAttentionIngestRoutes, createAttentionRoutes } from "./attention/routes.ts";
 import { createAzureRoutes } from "./azure/routes.ts";
+import { createAzureBoardsRoutes } from "./azureBoards/routes.ts";
+import { createBrowserRoutes } from "./browser/routes.ts";
 import { createCcRoutes } from "./cc/routes.ts";
 import { createChatRoutes } from "./chat/routes.ts";
 import { createClipboardRoutes } from "./clipboard/routes.ts";
@@ -17,6 +19,7 @@ import { createIssueRoutes } from "./issues/routes.ts";
 import { createJiraRoutes } from "./jira/routes.ts";
 import { createJobRoutes } from "./jobs/routes.ts";
 import { createComplexityModelRoutes } from "./llm/complexityRoutes.ts";
+import { createDecisionModelRoutes } from "./llm/decisionRoutes.ts";
 import { redactSecrets } from "./llm/errors.ts";
 import { createModelCatalogRoutes } from "./llm/routes.ts";
 import { createLogRoutes } from "./logs/routes.ts";
@@ -25,6 +28,7 @@ import { createMcpRoutes } from "./mcp/routes.ts";
 import { createMcpEndpointInfoRoutes, createMcpEndpointRoutes } from "./mcpServer/routes.ts";
 import { createMemoryRoutes } from "./memory/routes.ts";
 import { createOmniRoutes } from "./omni/routes.ts";
+import { createPrModelRoutes } from "./pr/modelRoutes.ts";
 import { createPrRoutes } from "./pr/routes.ts";
 import { createProjectRoutes } from "./projects/routes.ts";
 import { createReadiness, type Readiness } from "./readiness.ts";
@@ -98,6 +102,10 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   // raise an attention flag without holding the full-access bearer.
   app.route("/ingest", createAttentionIngestRoutes(config));
 
+  // The browser bridge is the same shape: the extension's native host holds only
+  // this scoped token, checked inside the router, never the full-access bearer.
+  app.route("/browser", createBrowserRoutes(config));
+
   // The MCP endpoint sits outside the bearer wall for the same reason and with
   // the same shape: its own scoped token, checked inside the router, so an MCP
   // client reaches the memory tools and nothing else.
@@ -134,6 +142,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/custom-providers", createCustomProviderRoutes(config));
   app.route("/api/model-catalog", createModelCatalogRoutes(config));
   app.route("/api/complexity-models", createComplexityModelRoutes(config));
+  app.route("/api/decision-model", createDecisionModelRoutes());
   app.route("/api/mcp", createMcpRoutes(config));
   app.route("/api/mcp-endpoint", createMcpEndpointInfoRoutes(config));
   app.route("/api/cc", createCcRoutes());
@@ -141,6 +150,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/issues", createIssueRoutes(config));
   app.route("/api/jira", createJiraRoutes(config));
   app.route("/api/azure", createAzureRoutes(config));
+  app.route("/api/azure-boards", createAzureBoardsRoutes(config));
   app.route("/api/memory", createMemoryRoutes(config));
   app.route("/api/events", createEventRoutes(config));
   app.route("/api/projects", createProjectRoutes(config));
@@ -153,6 +163,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/calendar", createCalendarRoutes(config));
   app.route("/api/omni", createOmniRoutes(config));
   app.route("/api/pr", createPrRoutes(config));
+  app.route("/api/pr-models", createPrModelRoutes(config));
   app.route("/api/telegram", createTelegramRoutes());
   app.route("/api/voice", createVoiceRoutes(config));
   app.route("/api/repos", createRepoRoutes(config));

@@ -13,6 +13,7 @@ import {
   startMs,
   startOfMonth,
 } from "../../lib/calendarGrid";
+import LoadingIndicator from "../LoadingIndicator";
 import CalendarConnectionGate from "./CalendarConnectionGate";
 import EventAlarmButton from "./EventAlarmButton";
 import { useNow, useRangeEvents } from "./useRangeEvents";
@@ -149,7 +150,7 @@ function Month() {
       </div>
 
       {error && <p className="py-1 text-sm text-red-400">{error}</p>}
-      {loading && <p className="py-1 text-xs text-zinc-600">Loading…</p>}
+      {loading && <LoadingIndicator className="py-1 text-xs text-zinc-600" />}
 
       <div
         className="grid min-h-0 flex-1 grid-cols-7 border-r border-b border-zinc-800"

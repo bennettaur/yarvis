@@ -1,3 +1,4 @@
+import { parsePrLink } from "../prLink";
 import type { PrRef } from "./types";
 
 /**
@@ -8,12 +9,12 @@ import type { PrRef } from "./types";
  *
  * Recognized forms:
  * - `https://github.com/owner/repo/pull/123` (any trailing path, query or hash)
+ * - an Azure DevOps PR link, on `dev.azure.com` or `{org}.visualstudio.com`
  * - `owner/repo#123`, `owner/repo 123`, `owner/repo/123`
  * - `repo#123` / `repo 123`, resolved against the registered repos
  *
  * A bare number is deliberately not accepted: there is no repo to attach it to.
- * GitHub only — the Azure DevOps side of the dashboard has no equivalent
- * single-PR lookup wired up.
+ * The shorthands are GitHub only, since an Azure PR also needs its project.
  */
 
 /** A registered repo's identity, enough to resolve a bare repo name. */
@@ -52,6 +53,11 @@ export function resolvePrLocator(input: string, knownRepos: KnownRepo[] = []): P
 
   const url = trimmed.match(GITHUB_URL);
   if (url) return [githubRef(url[1]!, url[2]!, url[3]!)];
+
+  // Links copied from an address bar carry a scheme, but one typed by hand may
+  // not. GitHub links already matched above, so this only picks up Azure ones.
+  const link = parsePrLink(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
+  if (link?.ref.provider === "azure") return [link.ref];
 
   const qualified = trimmed.match(OWNER_REPO_NUMBER);
   if (qualified) return [githubRef(qualified[1]!, qualified[2]!, qualified[3]!)];

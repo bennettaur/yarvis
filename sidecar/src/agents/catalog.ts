@@ -8,6 +8,8 @@ import planner from "./definitions/planner.md" with { type: "text" };
 import projectManager from "./definitions/project-manager.md" with { type: "text" };
 import sessionSummarizer from "./definitions/session-summarizer.md" with { type: "text" };
 import workScout from "./definitions/work-scout.md" with { type: "text" };
+import workspaceRecap from "./definitions/workspace-recap.md" with { type: "text" };
+import yarvisGuide from "./definitions/yarvis-guide.md" with { type: "text" };
 import {
   asBoolean,
   asInteger,
@@ -87,7 +89,9 @@ const BUILTIN_FILES: { path: string; content: string }[] = [
   { path: "definitions/project-manager.md", content: projectManager },
   { path: "definitions/activity-consolidator.md", content: activityConsolidator },
   { path: "definitions/session-summarizer.md", content: sessionSummarizer },
+  { path: "definitions/workspace-recap.md", content: workspaceRecap },
   { path: "definitions/planner.md", content: planner },
+  { path: "definitions/yarvis-guide.md", content: yarvisGuide },
 ];
 
 /** `~/.yarvis/agents`, overridable so tests and a second instance can point elsewhere. */

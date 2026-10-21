@@ -7,11 +7,13 @@ import { ensureOk, sidecarFetch, streamSSE } from "./api";
 export type ProviderId = string;
 
 /** What a model can be asked to do; mirrors the sidecar's `ModelCapability`. */
-export type ModelCapability = "chat" | "stt" | "tts" | "vision" | "embed";
+export type ModelCapability = "chat" | "stt" | "tts" | "vision" | "embed" | "decision";
 
 export interface ModelInfo {
   id: string;
   capabilities: ModelCapability[];
+  /** Estimated tokens past which a chat on this model is summarized; absent uses the global setting. */
+  compactAtTokens?: number;
 }
 
 export interface ProviderInfo {
@@ -74,6 +76,8 @@ export interface ChatMessage {
 
 /** A message as rendered in a thread: its persisted role, text and provenance. */
 export interface ThreadMessage {
+  /** The persisted message id. Absent until the thread has re-read the transcript. */
+  id?: string;
   role: string;
   content: string;
   metadata?: ChatMessageMetadata | null;
@@ -119,8 +123,11 @@ export interface ChatEvent {
   /** `done`: why the model stopped, and how many steps the turn took. */
   finishReason?: string;
   steps?: number;
-  /** Present on `attention` events: why the agent needs the user. */
-  reason?: string;
+  /**
+   * `attention`: why the agent needs the user. `tool_approval_request`: why the
+   * assistant says it is making the call, null when it gave no reason.
+   */
+  reason?: string | null;
   /** `tool_approval_request`: the tool call id to approve or deny. */
   id?: string;
   /** `tool_approval_request`: the tool's registry id, for a standing "always allow". */
@@ -144,6 +151,8 @@ export interface PendingApproval {
   name: string;
   server: string;
   args: unknown;
+  /** Why the assistant says it is making the call: its own account, not the user's request. */
+  reason: string | null;
 }
 
 /**
@@ -193,6 +202,8 @@ export interface ChatRequest {
   source?: "voice";
   /** Ask the provider to stream the model's reasoning, where it supports it. */
   reasoning?: boolean;
+  /** Restart from this persisted user message: it and everything after it are dropped first. */
+  rewindTo?: string;
 }
 
 /** Responds to a pending MCP tool-call approval mid-stream. */
@@ -230,6 +241,10 @@ export interface ChatConfig {
   maxSteps: number;
   /** Null leaves the provider's own output limit in place. */
   maxOutputTokens: number | null;
+  /** How much of each tool result the chat keeps to show; the model sees all of it. */
+  toolResultChars: number;
+  /** Estimated history size, in tokens, past which older messages are summarized. */
+  compactAtTokens: number;
 }
 
 export async function getChatConfig(): Promise<ChatConfig> {

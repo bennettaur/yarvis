@@ -13,6 +13,7 @@ import {
   azPrFileDiff,
   azPrFiles,
   azPrStatus,
+  azPrSummary,
   azRemoveStar,
   azSubmitVote,
 } from "./azure";
@@ -27,10 +28,23 @@ import {
   ghPrDetail,
   ghPrFiles,
   ghPrStatus,
+  ghPrSummary,
   ghRemoveStar,
   ghSubmitReview,
 } from "./github";
-import type { MergeMethod, NewComment, PrDetail, PrFile, PrRef, PrStatus } from "./types";
+import type {
+  MergeMethod,
+  NewComment,
+  PrDetail,
+  PrFile,
+  PrRef,
+  PrStatus,
+  PrSummary,
+} from "./types";
+
+/** The list-row summary for one PR the user named rather than picked from a list. */
+export const fetchPrSummary = (ref: PrRef): Promise<PrSummary> =>
+  ref.provider === "github" ? ghPrSummary(ref) : azPrSummary(ref);
 
 export const fetchPrStatus = (ref: PrRef): Promise<PrStatus> =>
   ref.provider === "github" ? ghPrStatus(ref) : azPrStatus(ref);

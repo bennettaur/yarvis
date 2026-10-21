@@ -26,6 +26,10 @@ export const ALWAYS_CONFIRM_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // Puts a meeting on someone else's calendar and mails everyone invited, and
   // there is deliberately no tool to move or cancel it afterwards.
   "create_calendar_event",
+  // Saves a remote that later tools clone and run setup scripts from. The name
+  // may come from an issue or other injected text, or be a squatted look-alike,
+  // so the user confirms the exact remote before any of its code can arrive.
+  "register_repo",
 ]);
 
 export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
@@ -42,6 +46,9 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "create_workspace_session",
   "create_scratch_workspace_session",
   "start_workspace_session",
+  // Clones code that an auto-mode agent will read, and can start a kick-off
+  // session a failed provision still owed.
+  "add_repo_to_workspace",
   // Merges and pushes across every active workspace by default, publishing a
   // branch that had never been pushed before.
   "sync_workspaces_with_base",
@@ -49,6 +56,11 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // session may have been showing a dialog that the text answers instead — so a
   // misheard instruction is both unreviewable and unrecoverable.
   "send_workspace_instruction",
+  // Act inside the user's signed-in browser session. The extension keeps them on
+  // the current site and off destructive controls, but a misheard "open the
+  // billing page" is still an action nobody reviewed.
+  "click_browser_element",
+  "navigate_browser_tab",
   // Deletes a memory outright, where correcting one keeps the trail.
   "forget_memory",
   // Runs a whole specialist with its own tools; a misheard task becomes a

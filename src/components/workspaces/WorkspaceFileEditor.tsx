@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getEditorPlace, setEditorPlace } from "../../lib/editorPlaces";
 import { clearDraft, draftKey, getDraft, setDraft, useDraft } from "../../lib/fileDrafts";
 import {
   FileConflictError,
@@ -8,6 +9,7 @@ import {
   workspaceRepoFile,
 } from "../../lib/workspaces";
 import CodeEditor from "../editor/CodeEditor";
+import LoadingIndicator from "../LoadingIndicator";
 
 /**
  * A workspace editor tab's body: one file from a repo's worktree, opened for
@@ -22,6 +24,7 @@ import CodeEditor from "../editor/CodeEditor";
  *
  * The text being edited lives in `fileDrafts`, not in this component, so
  * switching tabs — which unmounts it — doesn't discard what has been typed.
+ * The cursor and scroll position live in `editorPlaces` for the same reason.
  */
 
 const UNREADABLE_REASON: Record<FileUnreadable, string> = {
@@ -34,10 +37,13 @@ export default function WorkspaceFileEditor({
   workspaceId,
   repoId,
   path,
+  worktree,
 }: {
   workspaceId: string;
   repoId: string;
   path: string;
+  /** One of the repo's other worktrees; the primary one when unset. */
+  worktree?: string;
 }) {
   const [file, setFile] = useState<WorkspaceFile | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -51,7 +57,7 @@ export default function WorkspaceFileEditor({
    *  reloading or by an explicit overwrite. */
   const [conflict, setConflict] = useState(false);
 
-  const key = draftKey(workspaceId, repoId, path);
+  const key = draftKey(workspaceId, repoId, path, worktree);
   const draft = useDraft(key);
 
   /** `live` is false once a newer read has been asked for, so two reads that
@@ -59,7 +65,7 @@ export default function WorkspaceFileEditor({
   const load = useCallback(
     async (live: () => boolean = () => true) => {
       try {
-        const next = await workspaceRepoFile(workspaceId, repoId, path);
+        const next = await workspaceRepoFile(workspaceId, repoId, path, worktree);
         if (!live()) return;
         setFile(next);
         setLoadError(null);
@@ -74,7 +80,7 @@ export default function WorkspaceFileEditor({
         setLoadError(e instanceof Error ? e.message : String(e));
       }
     },
-    [workspaceId, repoId, path, key],
+    [workspaceId, repoId, path, worktree, key],
   );
 
   useEffect(() => {
@@ -116,7 +122,14 @@ export default function WorkspaceFileEditor({
       setSaving(true);
       setSaveError(null);
       try {
-        const result = await saveWorkspaceRepoFile(workspaceId, repoId, path, text, baseHash);
+        const result = await saveWorkspaceRepoFile(
+          workspaceId,
+          repoId,
+          path,
+          text,
+          baseHash,
+          worktree,
+        );
         setFile({ ...file, content: text, hash: result.hash, size: result.size });
         // Anything typed while the write was in flight is a newer edit than what
         // landed, so it stays a draft rather than being dropped on the return.
@@ -130,7 +143,7 @@ export default function WorkspaceFileEditor({
         setSaving(false);
       }
     },
-    [file, editable, dirty, text, workspaceId, repoId, path, key],
+    [file, editable, dirty, text, workspaceId, repoId, path, worktree, key],
   );
 
   /** Re-reads the file, throwing away the unsaved buffer — the way out of a
@@ -212,7 +225,7 @@ export default function WorkspaceFileEditor({
         {loadError ? (
           <p className="p-3 text-xs text-red-400">{loadError}</p>
         ) : file === null ? (
-          <p className="p-3 text-xs text-zinc-500">Loading…</p>
+          <LoadingIndicator className="p-3 text-xs text-zinc-500" />
         ) : file.unreadable ? (
           <p className="p-3 text-xs text-zinc-500">
             {UNREADABLE_REASON[file.unreadable]} ({file.size.toLocaleString()} bytes)
@@ -223,6 +236,8 @@ export default function WorkspaceFileEditor({
             path={path}
             onChange={onChange}
             onSave={() => void save(draft?.baseHash ?? file.hash)}
+            initialPlace={getEditorPlace(key)}
+            onPlaceChange={(place) => setEditorPlace(key, place)}
           />
         )}
       </div>

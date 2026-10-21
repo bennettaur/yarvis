@@ -121,6 +121,7 @@ export default function BranchCombobox({
         value={query}
         disabled={loading || errored}
         placeholder={NEW_BRANCH_LABEL}
+        aria-label="Branch to start the new worktree from"
         onFocus={openList}
         // Close and revert when focus leaves the field (click-away or Tab-out).
         // Options commit on mousedown with preventDefault, so a pick keeps focus

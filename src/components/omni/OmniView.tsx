@@ -7,6 +7,7 @@ import {
 import { JSONUIProvider, Renderer } from "@json-render/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listProviders, type ProviderId, type ProviderInfo } from "../../lib/chat";
+import { MODEL_HINT, PROVIDER_HINT } from "../../lib/chatControlHints";
 import {
   deleteLayout,
   getLayout,
@@ -382,6 +383,7 @@ export default function OmniView() {
 
       <div className="flex flex-wrap gap-2 border-b border-zinc-800 px-4 py-2">
         <select
+          title={PROVIDER_HINT}
           value={provider}
           onChange={(e) => {
             const id = e.target.value as ProviderId;
@@ -398,6 +400,7 @@ export default function OmniView() {
           ))}
         </select>
         <select
+          title={MODEL_HINT}
           value={model}
           onChange={(e) => setModel(e.target.value)}
           className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs"

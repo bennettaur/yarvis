@@ -1,5 +1,7 @@
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import postgres from "postgres";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 
@@ -14,9 +16,6 @@ import type { Config } from "../config.ts";
  * typed, 502 for what the backend did) is what the UI branches on.
  */
 
-const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
-const sql = postgres(url, { max: 1 });
-
 const config: Config = {
   port: 0,
   token: "test-token",
@@ -24,7 +23,7 @@ const config: Config = {
   attentionToken: "test-attention-token",
   mcpToken: "test-mcp-token",
   allowedOrigins: null,
-  databaseUrl: url,
+  databaseUrl: undefined,
   workspacesRoot: "/tmp/yarvis-test-workspaces",
   secrets: {},
   customProviderSecrets: {},
@@ -106,12 +105,19 @@ function transcribeRequest(provider: string, model: string): Request {
   );
 }
 
+let dir: string;
+let originalPath: string | undefined;
+
 beforeEach(async () => {
-  await sql`TRUNCATE custom_providers RESTART IDENTITY CASCADE`;
+  dir = await mkdtemp(join(tmpdir(), "yarvis-voice-round-trip-"));
+  originalPath = process.env.YARVIS_SETTINGS_PATH;
+  process.env.YARVIS_SETTINGS_PATH = join(dir, "settings.json");
 });
 
-afterAll(async () => {
-  await sql.end();
+afterEach(async () => {
+  if (originalPath === undefined) delete process.env.YARVIS_SETTINGS_PATH;
+  else process.env.YARVIS_SETTINGS_PATH = originalPath;
+  await rm(dir, { recursive: true, force: true });
 });
 
 describe("voice round trip through a local speech server", () => {

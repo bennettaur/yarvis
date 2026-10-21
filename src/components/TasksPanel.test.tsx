@@ -1,8 +1,9 @@
 import { describe, expect, it, mock, setSystemTime } from "bun:test";
 import { createElement } from "react";
+import { clearResourceCache } from "../lib/resourceCache";
 import type { Task } from "../lib/tasks";
-import { renderToHtml } from "../test/render";
-import TasksPanel from "./TasksPanel";
+import { firstPaintOf, renderToHtml } from "../test/render";
+import TasksPanel, { groupTasks } from "./TasksPanel";
 
 setSystemTime(new Date("2026-06-17T12:00:00"));
 
@@ -30,6 +31,9 @@ const TASKS: Task[] = [
     completedAt: "2026-06-11T09:00:00.000Z",
   },
 ];
+
+/** What the mocked sidecar returns for tasks; a test may swap it and must restore it. */
+let currentTasks: Task[] = TASKS;
 
 mock.module("../lib/api", () => ({
   sidecarInfo: async () => ({ port: 0, token: "test-token" }),
@@ -86,13 +90,43 @@ mock.module("../lib/api", () => ({
   getDbHealth: async () => ({ configured: true, reachable: true }),
   streamSSE: async function* streamSSE() {},
   sidecarFetch: async (path: string) =>
-    new Response(JSON.stringify(path.includes("/api/tasks") ? TASKS : {}), {
+    new Response(JSON.stringify(path.includes("/api/tasks") ? currentTasks : {}), {
       status: 200,
       headers: { "content-type": "application/json" },
     }),
 }));
 
 describe("TasksPanel", () => {
+  it("shows a loading indicator, not empty groups, before the first load lands", async () => {
+    clearResourceCache();
+    const cold = firstPaintOf(createElement(TasksPanel));
+    expect(cold.text).toContain("Loading tasks…");
+    expect(cold.text).not.toContain("Nothing here yet.");
+    cold.unmount();
+
+    const html = await renderToHtml(createElement(TasksPanel));
+    expect(html).not.toContain("Loading tasks…");
+  });
+
+  it("shows Upcoming only when a task is due on a later day", async () => {
+    clearResourceCache();
+    expect(await renderToHtml(createElement(TasksPanel))).not.toContain("Upcoming");
+
+    currentTasks = [
+      ...TASKS,
+      { ...TASKS[0], id: "task-friday", title: "Send the plan", targetDate: "2026-06-19" },
+    ];
+    try {
+      clearResourceCache();
+      const html = await renderToHtml(createElement(TasksPanel));
+      expect(html).toContain("Upcoming");
+      expect(html).toContain("Send the plan");
+    } finally {
+      currentTasks = TASKS;
+      clearResourceCache();
+    }
+  });
+
   it("renders each open task with a delete affordance", async () => {
     const html = await renderToHtml(createElement(TasksPanel));
 
@@ -112,5 +146,48 @@ describe("TasksPanel", () => {
     // appear exactly once — the done row must not offer workspace controls.
     const openIcons = html.match(/aria-label="Start work on this task"/g);
     expect(openIcons?.length).toBe(1);
+  });
+});
+
+describe("groupTasks", () => {
+  const task = (id: string, scope: Task["scope"], targetDate: string | null): Task => ({
+    id,
+    title: id,
+    status: "open",
+    scope,
+    targetDate,
+    notes: null,
+    sourceSessionId: null,
+    createdAt: "2026-06-10T09:00:00.000Z",
+    completedAt: null,
+  });
+  const ids = (tasks: Task[]) => tasks.map((t) => t.id);
+
+  it("puts a daily task dated after today under Upcoming", () => {
+    const groups = groupTasks([task("friday", "daily", "2026-06-19")], "2026-06-17");
+    expect(ids(groups.upcoming)).toEqual(["friday"]);
+    expect(ids(groups.today)).toEqual([]);
+  });
+
+  it("lists an overdue weekly task once, under Overdue", () => {
+    const groups = groupTasks([task("late", "weekly", "2026-06-12")], "2026-06-17");
+    expect(ids(groups.overdue)).toEqual(["late"]);
+    expect(ids(groups.weekly)).toEqual([]);
+  });
+
+  it("puts every task in exactly one group", () => {
+    const tasks = [
+      task("today", "daily", "2026-06-17"),
+      task("undated-daily", "daily", null),
+      task("weekly", "weekly", null),
+      task("weekly-friday", "weekly", "2026-06-19"),
+      task("upcoming", "daily", "2026-06-20"),
+      task("overdue", "daily", "2026-06-16"),
+    ];
+    const groups = groupTasks(tasks, "2026-06-17");
+    expect(ids(groups.today)).toEqual(["today"]);
+    expect(ids(groups.weekly)).toEqual(["undated-daily", "weekly", "weekly-friday"]);
+    expect(ids(groups.upcoming)).toEqual(["upcoming"]);
+    expect(ids(groups.overdue)).toEqual(["overdue"]);
   });
 });

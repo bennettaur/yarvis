@@ -12,6 +12,7 @@ import {
   type RecapResult,
 } from "../../lib/memory";
 import { primeCache, useCachedResource } from "../../lib/resourceCache";
+import LoadingIndicator from "../LoadingIndicator";
 import Markdown from "../Markdown";
 import RefreshingIndicator from "../RefreshingIndicator";
 
@@ -28,17 +29,41 @@ function kindColor(kind: string): string {
   return "bg-zinc-700 text-zinc-300";
 }
 
+/** Says when a memory with a validity window holds, or nothing for one that holds until corrected. */
+function validityNote(m: MemoryRecord): string {
+  if (m.validity === "upcoming") return ` · from ${new Date(m.validFrom).toLocaleString()}`;
+  if (!m.validUntil) return "";
+  const until = new Date(m.validUntil).toLocaleString();
+  return m.validity === "expired" ? ` · expired ${until}` : ` · until ${until}`;
+}
+
+/** A search hit's match score split into how well the text matched and how fresh the memory is. */
+function scoreBreakdown(m: MemoryRecord): string | undefined {
+  if (m.similarity == null || m.strength == null) return undefined;
+  return `${(m.similarity * 100).toFixed(0)}% similar · ${(m.strength * 100).toFixed(0)}% strength`;
+}
+
 function MemoryItem({ m, onDelete }: { m: MemoryRecord; onDelete: (id: string) => void }) {
   const source = (m.metadata as { source?: string } | null)?.source;
   return (
     <li className="flex items-start gap-3 px-4 py-3">
       <span className={`rounded px-1.5 py-0.5 text-xs ${kindColor(m.kind)}`}>{m.kind}</span>
       <div className="min-w-0 flex-1">
-        <p className="text-sm text-zinc-200">{m.content}</p>
+        <p className={`text-sm ${m.validity === "current" ? "text-zinc-200" : "text-zinc-400"}`}>
+          {m.validity !== "current" && (
+            <span className="mr-1.5 rounded bg-zinc-800 px-1 py-0.5 text-xs text-zinc-400">
+              {m.validity}
+            </span>
+          )}
+          {m.content}
+        </p>
         <div className="mt-0.5 text-xs text-zinc-600">
           {new Date(m.createdAt).toLocaleString()}
           {source ? ` · ${source}` : ""}
-          {m.score != null ? ` · ${(m.score * 100).toFixed(0)}% match` : ""}
+          {validityNote(m)}
+          {m.score != null ? (
+            <span title={scoreBreakdown(m)}>{` · ${(m.score * 100).toFixed(0)}% match`}</span>
+          ) : null}
         </div>
       </div>
       <button
@@ -189,6 +214,7 @@ export default function MemoryLibrary() {
           <button
             onClick={() => void runRecap("day")}
             disabled={recapBusy}
+            title="Summarize the tasks you finished and notes you saved since midnight"
             className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800 disabled:opacity-50"
           >
             Today
@@ -196,6 +222,7 @@ export default function MemoryLibrary() {
           <button
             onClick={() => void runRecap("week")}
             disabled={recapBusy}
+            title="Summarize the tasks you finished and notes you saved since Monday"
             className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800 disabled:opacity-50"
           >
             This week
@@ -269,6 +296,7 @@ export default function MemoryLibrary() {
           <RefreshingIndicator active={!searching && browseRes.refreshing} />
           <select
             value={kind}
+            aria-label="Filter memories by kind"
             onChange={(e) => {
               setOffset(0);
               setKind(e.target.value as MemoryKind | "");
@@ -285,6 +313,7 @@ export default function MemoryLibrary() {
           <input
             value={query}
             placeholder="Search memories…"
+            aria-label="Search memories"
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && void runSearch()}
             className="ml-auto w-48 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm"
@@ -307,7 +336,9 @@ export default function MemoryLibrary() {
             </button>
           )}
         </div>
-        {items.length === 0 ? (
+        {browseRes.loading && !searchResults ? (
+          <LoadingIndicator label="Loading memories…" />
+        ) : items.length === 0 ? (
           <p className="text-sm text-zinc-600">Nothing stored yet.</p>
         ) : (
           <ul className="divide-y divide-zinc-800 rounded-xl border border-zinc-800 bg-zinc-900/50">

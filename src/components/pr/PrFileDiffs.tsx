@@ -4,6 +4,7 @@ import { usePrDetail, usePrFileDiff, usePrFiles } from "../../lib/pr/cache";
 import { rowHtml } from "../../lib/pr/highlight";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { CodeText, rowClass } from "../diff/DiffRow";
+import LoadingIndicator from "../LoadingIndicator";
 import { usePersistedBoolean } from "../SplitPane";
 import ChangeMinimap from "./ChangeMinimap";
 import CopyFileLinkButton from "./CopyFileLinkButton";
@@ -427,7 +428,7 @@ function FileDiff({
       </summary>
       {open &&
         (loading && !patch ? (
-          <p className="px-3 py-2 text-xs text-zinc-600">Loading diff…</p>
+          <LoadingIndicator className="px-3 py-2 text-xs text-zinc-600" label="Loading diff…" />
         ) : patch ? (
           <>
             {expansion.error && (
@@ -500,7 +501,7 @@ export default function PrFileDiffs({
   );
 
   if (error) return <p className="text-sm text-red-400">{error}</p>;
-  if (loading || !data) return <p className="text-sm text-zinc-500">Loading diff…</p>;
+  if (loading || !data) return <LoadingIndicator label="Loading diff…" />;
   if (data.length === 0) return <p className="text-sm text-zinc-600">No file changes.</p>;
 
   const fold = (open: boolean) => setFoldAll((f) => ({ open, epoch: (f?.epoch ?? 0) + 1 }));

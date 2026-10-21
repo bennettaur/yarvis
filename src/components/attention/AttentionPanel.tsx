@@ -6,6 +6,7 @@ import type { AttentionGroup } from "../../lib/attentionGroups";
 import { markAttention, markAttentionScope, useAttentionGroups } from "../../lib/attentionStore";
 import { formatRelativeTime } from "../../lib/time";
 import type { WipItem, WipSource } from "../../lib/wip";
+import LoadingIndicator from "../LoadingIndicator";
 import { sessionTabTitle } from "../shell/terminalTabs/sessionIds";
 
 /**
@@ -28,6 +29,23 @@ const KIND_DOT: Record<AttentionKind, string> = {
   error: "bg-red-500",
   completed: "bg-emerald-500",
   info: "bg-indigo-400",
+};
+
+/** Tooltip for the kind dot, which carries its meaning by colour alone. */
+const KIND_HINT: Record<AttentionKind, string> = {
+  permission: "Needs permission to continue",
+  idle: "Waiting for your input",
+  error: "Hit an error",
+  completed: "Finished and ready for you",
+  info: "Wants your attention",
+};
+
+const WIP_HINT: Record<WipSource, string> = {
+  pr: "One of your open pull requests",
+  "starred-pr": "A pull request you starred",
+  issue: "An issue you are working on, labelled for you, or starred",
+  task: "One of today's open tasks",
+  workspace: "A workspace currently in use",
 };
 
 const WIP_LABEL: Record<WipSource, string> = {
@@ -76,12 +94,18 @@ function AttentionGroupRow({
 
   return (
     <li className="group flex items-start gap-3 px-4 py-3 hover:bg-zinc-800/60">
-      <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${KIND_DOT[lead.kind]}`} />
+      <span
+        title={KIND_HINT[lead.kind]}
+        className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${KIND_DOT[lead.kind]}`}
+      />
       <button type="button" onClick={() => onOpen(lead)} className="min-w-0 flex-1 text-left">
         <div className="flex items-center gap-2">
           <span className="truncate text-sm text-zinc-100">{lead.title}</span>
           {items.length > 1 && (
-            <span className="shrink-0 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400">
+            <span
+              title={`${items.length} pending items from this ${group.scope.workspaceId ? "workspace" : "tab"}`}
+              className="shrink-0 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400"
+            >
               {items.length}
             </span>
           )}
@@ -143,7 +167,10 @@ function WipRow({ item, onOpen }: { item: WipItem; onOpen: (item: WipItem) => vo
         onClick={() => onOpen(item)}
         className="flex w-full items-start gap-3 px-4 py-3 text-left"
       >
-        <span className="mt-0.5 shrink-0 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400">
+        <span
+          title={WIP_HINT[item.source]}
+          className="mt-0.5 shrink-0 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400"
+        >
           {WIP_LABEL[item.source]}
         </span>
         <span className="min-w-0 flex-1">
@@ -246,7 +273,7 @@ export default function AttentionPanel({
 
           <SectionHeader label="In progress" count={wip.length} />
           {wipLoading && wip.length === 0 ? (
-            <p className="px-4 py-4 text-xs text-zinc-500">Loading…</p>
+            <LoadingIndicator className="px-4 py-4 text-xs text-zinc-500" />
           ) : wip.length === 0 ? (
             <p className="px-4 py-4 text-xs text-zinc-500">No work in progress.</p>
           ) : (

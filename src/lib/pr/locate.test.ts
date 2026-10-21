@@ -59,11 +59,24 @@ describe("resolvePrLocator", () => {
     expect(resolvePrLocator("unknown#42", REPOS)).toEqual([]);
   });
 
-  it("rejects links that aren't GitHub PRs", () => {
+  it("reads an Azure DevOps PR link on either host", () => {
+    const expected: PrRef[] = [
+      { provider: "azure", org: "acme", project: "Shop App", repo: "web", prId: 42 },
+    ];
+    for (const input of [
+      "https://dev.azure.com/acme/Shop%20App/_git/web/pullrequest/42",
+      "https://dev.azure.com/acme/Shop%20App/_git/web/pullrequest/42?_a=files",
+      "dev.azure.com/acme/Shop%20App/_git/web/pullrequest/42",
+      "https://acme.visualstudio.com/Shop%20App/_git/web/pullrequest/42",
+    ]) {
+      expect(resolvePrLocator(input)).toEqual(expected);
+    }
+  });
+
+  it("rejects links that aren't PRs", () => {
     expect(resolvePrLocator("https://github.com/acme/widgets/issues/42")).toEqual([]);
     expect(resolvePrLocator("https://example.com/acme/widgets/pull/42")).toEqual([]);
-    expect(resolvePrLocator("https://dev.azure.com/org/proj/_git/widgets/pullrequest/42")).toEqual(
-      [],
-    );
+    expect(resolvePrLocator("https://dev.azure.com/acme/Shop/_git/web/commit/abc")).toEqual([]);
+    expect(resolvePrLocator("http://dev.azure.com/acme/Shop/_git/web/pullrequest/42")).toEqual([]);
   });
 });

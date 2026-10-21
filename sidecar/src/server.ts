@@ -1,5 +1,7 @@
 import { syncBuiltins } from "./agentTools/registry.ts";
 import { createApp } from "./app.ts";
+import { browserBridge } from "./browser/bridge.ts";
+import { removeDiscoveryOnExit, writeDiscovery } from "./browser/discovery.ts";
 import { loadConfig, loadInstanceConfig } from "./config.ts";
 import { getDb } from "./db/client.ts";
 import { runMigrations } from "./db/migrate.ts";
@@ -62,6 +64,17 @@ if (config.tokenGenerated) {
   }
 }
 
+// The extension's native host finds this sidecar through a file, since the port
+// is new each launch. Every instance writes one, so several can share a browser.
+writeDiscovery({
+  name: instance.name,
+  port: config.port,
+  token: browserBridge.token,
+  pid: process.pid,
+})
+  .then(removeDiscoveryOnExit)
+  .catch((e) => console.error("[browser] could not write the discovery file:", e));
+
 if (config.databaseUrl) {
   runMigrations(config.databaseUrl)
     .then(async () => {
@@ -93,8 +106,9 @@ if (config.databaseUrl) {
       // Seed the built-in tools into the unified registry so the Tool Manager
       // and tool search see them. Best-effort: a failure here (e.g. embedder
       // misconfig) must not take the service down. Gated with the rest because
-      // it embeds and upserts against the shared database; the tool routes seed
-      // the registry lazily, so a secondary instance still reads a correct one.
+      // it embeds and upserts against the shared database; the tool routes sync
+      // the built-ins on first use and chat seeds any it finds missing, so a
+      // secondary instance still reads a correct one.
       try {
         const db = getDb(config.databaseUrl as string).db;
         await syncBuiltins(db, await chooseEmbedder(config, db));

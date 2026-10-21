@@ -29,6 +29,7 @@ export default function MicButton({
 }) {
   // Loudness rarely passes ~0.3 at normal speech, so scale before clamping or
   // the ring barely moves.
+  const label = recording ? "Stop listening" : "Start listening";
   const ring = recording ? Math.min(1, level * 3) : 0;
 
   return (
@@ -36,7 +37,8 @@ export default function MicButton({
       type="button"
       onClick={() => (recording ? onStop() : onStart())}
       disabled={disabled}
-      aria-label={recording ? "Stop listening" : "Start listening"}
+      aria-label={label}
+      title={label}
       className={`relative flex ${SIZES[size].button} items-center justify-center rounded-full border-2 transition-colors disabled:opacity-40 ${
         recording
           ? "border-red-500 bg-red-500/10 text-red-300"

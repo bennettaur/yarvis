@@ -41,6 +41,8 @@ const FAMILY_POLICY: Record<string, ToolPolicy> = {
   jira: "search",
   prReview: "search",
   calendar: "search",
+  browser: "search",
+  help: "search",
 };
 
 function builtinDescriptors(): ToolDescriptor[] {
@@ -95,6 +97,14 @@ export function builtinIdForName(name: string): string {
 
 export function nameForBuiltinId(id: string): string {
   return id.replace(/^builtin:/, "");
+}
+
+let cachedBuiltinIds: string[] | undefined;
+
+/** Registry ids of every built-in tool, the set `syncBuiltins` writes. Fixed for a build. */
+export function builtinToolIds(): string[] {
+  cachedBuiltinIds ??= builtinDescriptors().map((d) => d.id);
+  return cachedBuiltinIds;
 }
 
 /**

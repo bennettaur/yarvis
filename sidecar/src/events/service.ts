@@ -8,6 +8,7 @@ import {
   inArray,
   isNull,
   lte,
+  max,
   or,
   type SQL,
   sql,
@@ -54,12 +55,17 @@ export const EVENT_TYPES = [
   "jira.issue.updated",
   "jira.issue.commented",
   "jira.work_started",
+  "azure_boards.item.updated",
+  "azure_boards.item.commented",
+  "azure_boards.work_started",
   "workspace.created",
+  "workspace.repo_added",
   "workspace.session_started",
   "workspace.instruction_sent",
   "workspace.synced",
   "workspace.comment_added",
   "workspace.archived",
+  "workspace.viewed",
   "calendar.event_created",
   "todo.created",
   "todo.updated",
@@ -222,6 +228,24 @@ export async function markEventsProcessed(db: Db, ids: string[]): Promise<number
     .where(inArray(events.id, ids))
     .returning({ id: events.id });
   return updated.length;
+}
+
+/**
+ * When each workspace was last on screen, from its newest `workspace.viewed`
+ * event. A workspace never viewed has no entry.
+ */
+export async function lastWorkspaceViews(db: Db): Promise<Map<string, Date>> {
+  const workspaceId = sql<string | null>`${events.payload}->>'workspaceId'`;
+  const rows = await db
+    .select({ workspaceId, viewedAt: max(events.occurredAt) })
+    .from(events)
+    .where(eq(events.type, "workspace.viewed"))
+    .groupBy(workspaceId);
+  const views = new Map<string, Date>();
+  for (const row of rows) {
+    if (row.workspaceId && row.viewedAt) views.set(row.workspaceId, row.viewedAt);
+  }
+  return views;
 }
 
 export interface EventTypeCount {

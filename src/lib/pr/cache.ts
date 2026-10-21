@@ -1,4 +1,10 @@
-import { invalidate, PROVIDER_FRESHNESS, type Resource, useCachedResource } from "../resourceCache";
+import {
+  invalidate,
+  invalidatePrefix,
+  PROVIDER_FRESHNESS,
+  type Resource,
+  useCachedResource,
+} from "../resourceCache";
 import {
   fetchPrDetail,
   fetchPrFileContent,
@@ -60,6 +66,28 @@ export const prDetailKey = (ref: PrRef) => `detail:${refKey(ref)}`;
  */
 export const prStackKey = (ref: PrRef) => `stack:${refKey(ref)}`;
 
+/**
+ * Drops everything cached for one pull request so each mounted piece refetches:
+ * detail, stack, file list, status, and every per-file diff and full-text
+ * fetch. For a reader who knows the PR moved on the provider (a push, a new
+ * comment) and doesn't want to wait out the freshness window.
+ */
+export function invalidatePrReview(ref: PrRef): void {
+  invalidate(prDetailKey(ref));
+  invalidate(prStackKey(ref));
+  invalidate(prFilesKey(ref));
+  invalidate(prStatusKey(ref));
+  invalidatePrefix(prFileDiffPrefix(ref));
+  invalidatePrefix(prFileContentPrefix(ref));
+}
+
+export const prFilesKey = (ref: PrRef) => `files:${refKey(ref)}`;
+export const prStatusKey = (ref: PrRef) => `status:${refKey(ref)}`;
+// Per-file keys share this prefix; the trailing colon stops one PR's prefix
+// matching another's (#7 and #70).
+export const prFileDiffPrefix = (ref: PrRef) => `filediff:${refKey(ref)}:`;
+export const prFileContentPrefix = (ref: PrRef) => `content:${refKey(ref)}:`;
+
 export function usePrDetail(ref: PrRef | null): Resource<PrDetail> {
   return useCachedResource(
     ref ? prDetailKey(ref) : null,
@@ -70,7 +98,7 @@ export function usePrDetail(ref: PrRef | null): Resource<PrDetail> {
 
 export function usePrFiles(ref: PrRef | null): Resource<PrFile[]> {
   return useCachedResource(
-    ref ? `files:${refKey(ref)}` : null,
+    ref ? prFilesKey(ref) : null,
     () => fetchPrFiles(ref!),
     PROVIDER_FRESHNESS,
   );
@@ -78,7 +106,7 @@ export function usePrFiles(ref: PrRef | null): Resource<PrFile[]> {
 
 export function usePrStatus(ref: PrRef | null): Resource<PrStatus> {
   return useCachedResource(
-    ref ? `status:${refKey(ref)}` : null,
+    ref ? prStatusKey(ref) : null,
     () => fetchPrStatus(ref!),
     PROVIDER_FRESHNESS,
   );
@@ -107,7 +135,7 @@ export function usePrStack(ref: PrRef | null): Resource<PrStack | null> {
  * otherwise open hundreds of connections at once and collect rate-limit errors.
  */
 export function usePrFileDiff(ref: PrRef, file: PrFile, enabled: boolean): Resource<PrFile> {
-  const key = enabled ? `filediff:${refKey(ref)}:${file.filename}` : null;
+  const key = enabled ? `${prFileDiffPrefix(ref)}${file.filename}` : null;
   return useCachedResource(key, () => queued(() => fetchPrFileDiff(ref, file)), PROVIDER_FRESHNESS);
 }
 
@@ -122,7 +150,7 @@ export function usePrFileContent(
   sha: string,
   enabled: boolean,
 ): Resource<string> {
-  const key = enabled && sha ? `content:${refKey(ref)}:${sha}:${path}` : null;
+  const key = enabled && sha ? `${prFileContentPrefix(ref)}${sha}:${path}` : null;
   return useCachedResource(
     key,
     () => queued(() => fetchPrFileContent(ref, path, sha)),

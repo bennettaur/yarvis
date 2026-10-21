@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useOmniChatContext } from "../lib/omniChatContext";
 import { addStar, removeStar } from "../lib/pr/api";
 import {
+  AzureViewerError,
+  type AzureViewerReason,
   azCreateFilter,
   azDeleteFilter,
   azFilters,
@@ -29,6 +31,7 @@ import {
   PROVIDER_FRESHNESS,
   useCachedResource,
 } from "../lib/resourceCache";
+import DeleteFilterButton from "./DeleteFilterButton";
 import PrDetailView from "./PrDetailView";
 import PrGroupedList from "./pr/PrGroupedList";
 import PrLocator from "./pr/PrLocator";
@@ -56,7 +59,40 @@ async function probe(viewer: () => Promise<unknown>): Promise<boolean> {
 }
 
 const probeGithub = () => probe(ghViewer);
-const probeAzure = () => probe(azViewer);
+
+/** `true` when Azure's credentials work, otherwise the sidecar's reason they don't. */
+type AzureProbeResult = true | AzureViewerReason;
+
+/**
+ * Like {@link probe}, but a rejection keeps Azure's reason, so the panel can
+ * say why Azure is missing instead of just leaving it off the toggle.
+ */
+async function probeAzure(): Promise<AzureProbeResult> {
+  try {
+    await azViewer();
+    return true;
+  } catch (e) {
+    if (e instanceof AzureViewerError && e.status >= 400 && e.status < 500) return e.reason;
+    throw e;
+  }
+}
+
+/**
+ * What to tell the user when Azure DevOps is set up but its probe failed. A
+ * missing token gets no notice: that is how a GitHub-only setup looks.
+ */
+function azureSetupMessage(probeResult: AzureProbeResult | null): string | null {
+  switch (probeResult) {
+    case "missing_org_url":
+      return "An Azure DevOps token is saved, but no organization URL is set. Add it in Settings → Credentials.";
+    case "invalid_org_url":
+      return "The Azure DevOps organization URL must be an https dev.azure.com or visualstudio.com address. Fix it in Settings → Credentials.";
+    case "unauthorized":
+      return "Azure DevOps rejected the saved token. It may have expired, or it was made for a different organization. Update it in Settings → Credentials.";
+    default:
+      return null;
+  }
+}
 
 /** The lists this panel shows for one provider, loaded together. */
 interface ProviderLists {
@@ -73,12 +109,12 @@ async function loadProviderLists(provider: Provider): Promise<ProviderLists> {
     // The needs-review query is user-configurable (Settings → PR review), since
     // what counts as needing your attention varies by team.
     const config = await ghPrConfig();
-    return {
-      ...NO_LISTS,
-      mine: await ghSearch(GH_MY),
-      review: await ghSearch(config.reviewQuery),
-      ghFilters: await ghFilters(),
-    };
+    const [mine, review, filters] = await Promise.all([
+      ghSearch(GH_MY),
+      ghSearch(config.reviewQuery),
+      ghFilters(),
+    ]);
+    return { ...NO_LISTS, mine, review, ghFilters: filters };
   }
   return {
     ...NO_LISTS,
@@ -145,8 +181,8 @@ export default function PrsPanel({
    * from "checked, found nothing", so the empty state can't flash on first
    * paint.
    *
-   * A probe that finds no working credentials resolves to `false` rather than
-   * rejecting: "this provider isn't configured" is an answer worth caching, and
+   * A probe that finds no working credentials resolves to `false` (GitHub) or
+   * the rejection reason (Azure) rather than rejecting: "this provider isn't configured" is an answer worth caching, and
    * errors are not cached. A user with only GitHub set up would otherwise
    * re-probe Azure on every remount and hold `probeComplete` — and with it the
    * lists — behind that round trip.
@@ -156,10 +192,11 @@ export default function PrsPanel({
   const availableProviders = useMemo(() => {
     const set = new Set<Provider>();
     if (ghProbe.data) set.add("github");
-    if (azProbe.data) set.add("azure");
+    if (azProbe.data === true) set.add("azure");
     return set;
   }, [ghProbe.data, azProbe.data]);
   const probeComplete = !ghProbe.loading && !azProbe.loading;
+  const azureProblem = azureSetupMessage(azProbe.data);
 
   // The probe already confirmed the viewer works, so the lists skip a second
   // round trip and search straight away. Credentials invalidated mid-session
@@ -251,6 +288,17 @@ export default function PrsPanel({
     setSelected(null);
     setFilterResults(null);
   }, []);
+
+  // A PR opened from the locator can belong to either provider, so the toggle
+  // follows it. Only to a provider whose probe passed, though: switching to one
+  // that hasn't would have the effect below switch back and drop the PR.
+  const openLocatedPr = useCallback(
+    (pr: PrSummary) => {
+      if (availableProviders.has(pr.ref.provider)) setProvider(pr.ref.provider);
+      setSelected(pr);
+    },
+    [availableProviders],
+  );
 
   // Once probing is done, if the user is sitting on a provider that turned out
   // not to be configured, jump them to one that is. Done in a separate effect
@@ -353,6 +401,7 @@ export default function PrsPanel({
     const unreachable = ghProbe.error ?? azProbe.error;
     return (
       <div className="h-full overflow-y-auto p-6">
+        {azureProblem && <p className="mb-2 text-sm text-amber-400">{azureProblem}</p>}
         <p className="text-sm text-zinc-400">
           No PR provider configured. Add a GitHub token or Azure DevOps PAT in Settings →
           Credentials to see your PRs here.
@@ -370,6 +419,8 @@ export default function PrsPanel({
         pr={selected}
         onBack={() => setSelected(null)}
         recordView={selected !== restoredPlace.selected}
+        starred={isStarred(selected)}
+        onToggleStar={onToggleStar}
       />
     );
   }
@@ -384,7 +435,9 @@ export default function PrsPanel({
           <RefreshingIndicator active={refreshing} />
         </div>
 
-        {availableProviders.has("github") && <PrLocator onOpen={setSelected} />}
+        {azureProblem && <p className="text-sm text-amber-400">{azureProblem}</p>}
+
+        <PrLocator onOpen={openLocatedPr} />
 
         <nav className="flex gap-1 border-b border-zinc-800">
           {tabs.map((tab) => {
@@ -434,15 +487,12 @@ export default function PrsPanel({
                     >
                       {f.name}
                     </button>
-                    <button
-                      onClick={async () => {
+                    <DeleteFilterButton
+                      onDelete={async () => {
                         await ghDeleteFilter(f.id);
                         await listsRes.refresh();
                       }}
-                      className="text-zinc-600 hover:text-red-400"
-                    >
-                      ✕
-                    </button>
+                    />
                   </span>
                 ))}
               </div>
@@ -450,12 +500,14 @@ export default function PrsPanel({
                 <input
                   value={newGhFilter.name}
                   placeholder="Filter name"
+                  aria-label="Name for the new saved filter"
                   onChange={(e) => setNewGhFilter((p) => ({ ...p, name: e.target.value }))}
                   className="w-32 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
                 />
                 <input
                   value={newGhFilter.query}
                   placeholder="is:open is:pr ..."
+                  aria-label="GitHub search query for the new saved filter"
                   onChange={(e) => setNewGhFilter((p) => ({ ...p, query: e.target.value }))}
                   className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
                 />
@@ -486,15 +538,12 @@ export default function PrsPanel({
                     >
                       {f.name}
                     </button>
-                    <button
-                      onClick={async () => {
+                    <DeleteFilterButton
+                      onDelete={async () => {
                         await azDeleteFilter(f.id);
                         await listsRes.refresh();
                       }}
-                      className="text-zinc-600 hover:text-red-400"
-                    >
-                      ✕
-                    </button>
+                    />
                   </span>
                 ))}
               </div>
@@ -502,11 +551,13 @@ export default function PrsPanel({
                 <input
                   value={newAzFilter.name}
                   placeholder="Filter name"
+                  aria-label="Name for the new saved filter"
                   onChange={(e) => setNewAzFilter((p) => ({ ...p, name: e.target.value }))}
                   className="w-32 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
                 />
                 <select
                   value={newAzFilter.scope}
+                  aria-label="Which pull requests the new saved filter lists"
                   onChange={(e) =>
                     setNewAzFilter((p) => ({ ...p, scope: e.target.value as "mine" | "review" }))
                   }
@@ -518,6 +569,7 @@ export default function PrsPanel({
                 <input
                   value={newAzFilter.project}
                   placeholder="Project (optional)"
+                  aria-label="Azure DevOps project to limit the new saved filter to (optional)"
                   onChange={(e) => setNewAzFilter((p) => ({ ...p, project: e.target.value }))}
                   className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
                 />

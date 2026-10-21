@@ -81,6 +81,7 @@ export default function VoiceControls({
         <button
           type="button"
           onClick={voice.cancel}
+          title="Stop listening or speaking and discard any recording in progress."
           className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
         >
           Stop

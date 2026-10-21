@@ -1,5 +1,13 @@
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { eq } from "drizzle-orm";
@@ -10,17 +18,22 @@ import { getDb } from "../db/client.ts";
 import {
   attentionItems,
   issueLinks,
+  repos,
   tasks,
   workspaceRepoPr,
   workspaceRepos,
+  workspaces,
 } from "../db/schema.ts";
+import { listEvents } from "../events/service.ts";
 import { createTask } from "../tasks/service.ts";
 import type { StartClaudeSessionInput } from "./claudeSession.ts";
 import type { RunResult } from "./exec.ts";
-import type { GitRunner } from "./git.ts";
+import { defaultGitRunner, type GitRunner } from "./git.ts";
 import {
+  addRepoToWorkspace,
   archiveWorkspace,
   assertSafeBranchName,
+  createRepo,
   createWorkspace,
   getWorkspace,
   ignoreWorkspaceError,
@@ -32,6 +45,7 @@ import {
   unlinkTask,
 } from "./service.ts";
 import { type GhRunner, mergeWorkspaceRepoStack, workspaceRepoStack } from "./stack.ts";
+import { listWorkspaceWorktrees, resolveWorktree } from "./worktrees.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -94,6 +108,315 @@ beforeEach(async () => {
 });
 
 /**
+ * Worktrees an agent adds beside the provisioned one — typically one per layer
+ * of a stack. Most cases fake the listing, since what matters is which of git's
+ * answers are accepted; one end-to-end case runs real git.
+ */
+describe("workspace worktrees", () => {
+  /** Folders made outside the workspaces root, removed even when a test fails. */
+  const scratch: string[] = [];
+  const scratchDir = (prefix: string) => {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
+    scratch.push(dir);
+    return dir;
+  };
+  afterEach(() => {
+    for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Workspace folders outlive the rows TRUNCATE clears, so each test gets its
+   *  own name rather than provisioning over the last one's folder. */
+  let workspaceCount = 0;
+
+  /** A provisioned repo, plus `listing(paths)`, which builds a runner whose
+   *  `worktree list` reports those paths. */
+  async function provisioned() {
+    const repo = await addRepo();
+    const created = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: `with worktrees ${++workspaceCount}`, repoIds: [repo.id] }),
+    });
+    const ws = (await created.json()) as { id: string };
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    const detail = await getWorkspace(db, ws.id);
+    const wr = detail!.repos[0]!;
+    const listing = (paths: [string, string | null][]): GitRunner => {
+      const stdout = paths
+        .map(([path, branch]) =>
+          [`worktree ${path}`, "HEAD abc", branch ? `branch refs/heads/${branch}` : "detached"]
+            .map((field) => `${field}\0`)
+            .join(""),
+        )
+        .map((recordText) => `${recordText}\0`)
+        .join("");
+      return async (args, opts) =>
+        args[0] === "worktree" && args[1] === "list"
+          ? { stdout, stderr: "", exitCode: 0 }
+          : fakeGit(args, opts);
+    };
+    return { workspaceId: ws.id, root: detail!.rootPath, wr, listing };
+  }
+
+  it("lists worktrees inside the workspace folder and nothing outside it", async () => {
+    const { workspaceId, root, wr, listing } = await provisioned();
+    const sibling = join(root, "widget-api");
+    mkdirSync(sibling, { recursive: true });
+    const elsewhere = scratchDir("yarvis-elsewhere-");
+    const runner = listing([
+      [wr.worktreePath, wr.branch],
+      [sibling, "stack/api"],
+      // Another workspace whose folder name starts with this one's.
+      [`${root}-2/widget`, "other"],
+      [elsewhere, "unrelated"],
+      // Registered, but its folder was deleted out of band.
+      [join(root, "widget-gone"), "stack/gone"],
+    ]);
+
+    const [listed] = await listWorkspaceWorktrees(db, workspaceId, runner);
+
+    expect(listed?.worktrees).toEqual([
+      { path: wr.worktreePath, branch: wr.branch, primary: true },
+      // The path the containment check ran on, with symlinks resolved.
+      { path: realpathSync(sibling), branch: "stack/api", primary: false },
+    ]);
+  });
+
+  it("resolves a worktree git reports, and refuses a folder it doesn't", async () => {
+    const { root, wr, listing } = await provisioned();
+    const sibling = join(root, "widget-api");
+    const stray = join(root, "not-a-worktree");
+    mkdirSync(sibling, { recursive: true });
+    mkdirSync(stray, { recursive: true });
+    const runner = listing([
+      [wr.worktreePath, wr.branch],
+      [sibling, "stack/api"],
+    ]);
+
+    const resolved = await resolveWorktree(db, wr.id, sibling, runner);
+    expect(resolved).toMatchObject({
+      path: realpathSync(sibling),
+      branch: "stack/api",
+      primary: false,
+    });
+    await expect(resolveWorktree(db, wr.id, stray, runner)).rejects.toThrow(
+      "worktree not found in this workspace",
+    );
+  });
+
+  it("still answers with the primary worktree when the clone can't be listed", async () => {
+    const { wr } = await provisioned();
+    const broken: GitRunner = async () => ({ stdout: "", stderr: "not a repo", exitCode: 128 });
+
+    const resolved = await resolveWorktree(db, wr.id, undefined, broken);
+    expect(resolved).toMatchObject({ path: wr.worktreePath, primary: true });
+    await expect(resolveWorktree(db, wr.id, wr.worktreePath, broken)).rejects.toThrow("not a repo");
+  });
+
+  // End to end on a real repo: the workspace's own branch, plus a two-layer
+  // stack an agent built beside it, each layer in a worktree of its own.
+  it("shows each stacked worktree's own layer, measured from the one below", async () => {
+    const { workspaceId, root, wr } = await provisioned();
+    const clone = scratchDir("yarvis-clone-");
+    const git = async (cwd: string, ...args: string[]) => {
+      const result = await defaultGitRunner(
+        ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args],
+        { cwd },
+      );
+      if (result.exitCode !== 0) throw new Error(result.stderr);
+    };
+    const commit = async (cwd: string, file: string) => {
+      writeFileSync(join(cwd, file), file);
+      await git(cwd, "add", file);
+      await git(cwd, "commit", "-m", file);
+    };
+    await git(clone, "init", "-b", "main");
+    await commit(clone, "base.ts");
+    await git(clone, "update-ref", "refs/remotes/origin/main", "main");
+    // Provisioning with the fake runner left an empty folder where the real
+    // worktree goes.
+    rmSync(wr.worktreePath, { recursive: true, force: true });
+    await git(clone, "worktree", "add", "-b", wr.branch, wr.worktreePath, "main");
+    await commit(wr.worktreePath, "feature.ts");
+    const authLayer = join(root, "widget-auth");
+    const apiLayer = join(root, "widget-api");
+    await git(clone, "worktree", "add", "-b", "stack/auth", authLayer, "main");
+    await commit(authLayer, "auth.ts");
+    await git(clone, "worktree", "add", "-b", "stack/api", apiLayer, "stack/auth");
+    await commit(apiLayer, "api.ts");
+    await db.update(repos).set({ primaryClonePath: clone }).where(eq(repos.id, wr.repoId));
+
+    const changed = async (worktree?: string) => {
+      const query = worktree ? `?worktree=${encodeURIComponent(worktree)}` : "";
+      const res = await app.request(
+        `/api/workspaces/${workspaceId}/repos/${wr.id}/changes${query}`,
+        { headers: auth },
+      );
+      return ((await res.json()) as { path: string }[]).map((f) => f.path);
+    };
+
+    expect(await changed()).toEqual(["feature.ts"]);
+    expect(await changed(authLayer)).toEqual(["auth.ts"]);
+    expect(await changed(apiLayer)).toEqual(["api.ts"]);
+
+    const listed = await app.request(`/api/workspaces/${workspaceId}/worktrees`, {
+      headers: auth,
+    });
+    const [only] = (await listed.json()) as { worktrees: { branch: string }[] }[];
+    const [primary, ...others] = only?.worktrees ?? [];
+    expect(primary?.branch).toBe(wr.branch);
+    expect(others.map((w) => w.branch).sort()).toEqual(["stack/api", "stack/auth"]);
+  });
+
+  it("refuses to read a worktree while its archive is still running", async () => {
+    const { workspaceId, wr } = await provisioned();
+    await db
+      .update(workspaces)
+      .set({ status: "archiving", error: null })
+      .where(eq(workspaces.id, workspaceId));
+
+    const res = await app.request(`/api/workspaces/${workspaceId}/repos/${wr.id}/changes`, {
+      headers: auth,
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "workspace is being archived" });
+  });
+
+  it("still reads a worktree an archive stopped on", async () => {
+    const { workspaceId, wr } = await provisioned();
+    await db
+      .update(workspaces)
+      .set({ status: "archiving", error: "one or more worktrees could not be removed" })
+      .where(eq(workspaces.id, workspaceId));
+
+    const resolved = await resolveWorktree(db, wr.id, undefined, fakeGit);
+    expect(resolved).toMatchObject({ path: wr.worktreePath, primary: true });
+  });
+
+  it("refuses a worktree inside a .git directory", async () => {
+    const { workspaceId, root, wr, listing } = await provisioned();
+    const gitDir = join(root, "nested", ".git");
+    mkdirSync(gitDir, { recursive: true });
+    const runner = listing([
+      [wr.worktreePath, wr.branch],
+      [gitDir, "forged"],
+    ]);
+
+    const [listed] = await listWorkspaceWorktrees(db, workspaceId, runner);
+    expect(listed?.worktrees.map((w) => w.branch)).toEqual([wr.branch]);
+    await expect(resolveWorktree(db, wr.id, gitDir, runner)).rejects.toThrow(
+      "worktree not found in this workspace",
+    );
+  });
+
+  describe("stack in another worktree", () => {
+    const view = {
+      trunk: "main",
+      branches: [
+        { name: "stack/auth", pr: { number: 1, state: "OPEN" } },
+        { name: "stack/api", isCurrent: true, pr: { number: 2, state: "OPEN" } },
+      ],
+    };
+
+    /** A `gh` that records where each call ran. */
+    function recordingGh(): { gh: GhRunner; ranIn: string[]; calls: string[][] } {
+      const ranIn: string[] = [];
+      const calls: string[][] = [];
+      return {
+        ranIn,
+        calls,
+        gh: async (args, opts) => {
+          ranIn.push(opts.cwd);
+          calls.push(args);
+          return {
+            stdout: args[1] === "merge" ? "merged" : JSON.stringify(view),
+            stderr: "",
+            exitCode: 0,
+          };
+        },
+      };
+    }
+
+    // `gh stack` acts on whatever branch its cwd has checked out, so reading or
+    // merging in the wrong worktree reads or merges a different stack — and the
+    // plan check would not notice, because it is read in the same wrong place.
+    it("reads and merges in the picked worktree", async () => {
+      const { workspaceId, root, wr, listing } = await provisioned();
+      const sibling = join(root, "widget-api");
+      mkdirSync(sibling, { recursive: true });
+      const git = listing([
+        [wr.worktreePath, wr.branch],
+        [sibling, "stack/api"],
+      ]);
+      const { gh, ranIn } = recordingGh();
+
+      const read = await workspaceRepoStack(db, config, workspaceId, wr.id, {
+        worktree: sibling,
+        gh,
+        git,
+      });
+      expect(read.stack?.entries.map((e) => e.number)).toEqual([1, 2]);
+      await mergeWorkspaceRepoStack(db, config, workspaceId, wr.id, 2, [1, 2], {
+        worktree: sibling,
+        gh,
+        git,
+      });
+
+      expect(ranIn.length).toBeGreaterThan(0);
+      expect(ranIn.every((cwd) => cwd === realpathSync(sibling))).toBe(true);
+    });
+
+    it("refuses to merge through a worktree git doesn't list", async () => {
+      const { workspaceId, root, wr, listing } = await provisioned();
+      const stray = join(root, "not-a-worktree");
+      mkdirSync(stray, { recursive: true });
+      const { gh, calls } = recordingGh();
+
+      await expect(
+        mergeWorkspaceRepoStack(db, config, workspaceId, wr.id, 2, [1, 2], {
+          worktree: stray,
+          gh,
+          git: listing([[wr.worktreePath, wr.branch]]),
+        }),
+      ).rejects.toThrow("worktree not found in this workspace");
+      expect(calls).toEqual([]);
+    });
+  });
+
+  it("answers the PR route with no PR when no provider is configured", async () => {
+    const { workspaceId, wr } = await provisioned();
+    // The fake-provisioned clone can't be listed, so this resolves to the
+    // primary worktree, and this suite configures no provider token.
+    const res = await app.request(`/api/workspaces/${workspaceId}/repos/${wr.id}/pr`, {
+      headers: auth,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ branch: wr.branch, pr: null });
+  });
+
+  it("rejects a malformed id or worktree on the PR route", async () => {
+    const { workspaceId, wr } = await provisioned();
+    const badId = await app.request(`/api/workspaces/${workspaceId}/repos/not-a-uuid/pr`, {
+      headers: auth,
+    });
+    const badWorktree = await app.request(
+      `/api/workspaces/${workspaceId}/repos/${wr.id}/pr?worktree=relative/path`,
+      { headers: auth },
+    );
+    expect([badId.status, badWorktree.status]).toEqual([400, 400]);
+  });
+
+  it("rejects a worktree that isn't an absolute path before it reaches git", async () => {
+    const { workspaceId, wr } = await provisioned();
+    const res = await app.request(
+      `/api/workspaces/${workspaceId}/repos/${wr.id}/files?worktree=../elsewhere`,
+      { headers: auth },
+    );
+    expect(res.status).toBe(400);
+  });
+});
+
+/**
  * The stack merge is the one irreversible thing in this file: `gh stack merge N`
  * takes every layer below N with it. These exercise the guards through the real
  * database rows, with `gh` faked — a route-level test would shell out to the
@@ -143,7 +466,10 @@ describe("workspace stack", () => {
     const { workspaceId, workspaceRepoId } = await workspaceRepo();
     const { gh, calls } = fakeGh();
 
-    const result = await workspaceRepoStack(db, config, workspaceId, workspaceRepoId, gh);
+    const result = await workspaceRepoStack(db, config, workspaceId, workspaceRepoId, {
+      gh,
+      git: fakeGit,
+    });
 
     expect(calls[0]).toEqual(["stack", "view", "--json"]);
     expect(result.stack?.entries.map((e) => e.number)).toEqual([1, 2]);
@@ -157,7 +483,10 @@ describe("workspace stack", () => {
     const { gh, calls } = fakeGh();
 
     await expect(
-      mergeWorkspaceRepoStack(db, config, workspaceId, workspaceRepoId, 99, [99], undefined, gh),
+      mergeWorkspaceRepoStack(db, config, workspaceId, workspaceRepoId, 99, [99], {
+        gh,
+        git: fakeGit,
+      }),
     ).rejects.toThrow("#99 is not part of this stack");
     // The safety property: it never reached the merge.
     expect(calls.map((c) => c[1])).not.toContain("merge");
@@ -171,7 +500,10 @@ describe("workspace stack", () => {
     const { gh, calls } = fakeGh();
 
     await expect(
-      mergeWorkspaceRepoStack(db, config, workspaceId, workspaceRepoId, 2, [2], undefined, gh),
+      mergeWorkspaceRepoStack(db, config, workspaceId, workspaceRepoId, 2, [2], {
+        gh,
+        git: fakeGit,
+      }),
     ).rejects.toThrow("the stack changed since you looked");
     expect(calls.map((c) => c[1])).not.toContain("merge");
   });
@@ -187,8 +519,7 @@ describe("workspace stack", () => {
       workspaceRepoId,
       2,
       [1, 2],
-      "SQUASH",
-      gh,
+      { method: "SQUASH", gh, git: fakeGit },
     );
 
     expect(result.merged).toBe(true);
@@ -200,7 +531,10 @@ describe("workspace stack", () => {
     const gh: GhRunner = async () => ({ stdout: "", stderr: "no stack here", exitCode: 1 });
 
     await expect(
-      mergeWorkspaceRepoStack(db, config, workspaceId, workspaceRepoId, 2, [1, 2], undefined, gh),
+      mergeWorkspaceRepoStack(db, config, workspaceId, workspaceRepoId, 2, [1, 2], {
+        gh,
+        git: fakeGit,
+      }),
     ).rejects.toThrow("gh stack is not available here");
   });
 
@@ -211,7 +545,7 @@ describe("workspace stack", () => {
     const { gh } = fakeGh();
 
     await expect(
-      workspaceRepoStack(db, config, other.workspaceId, workspaceRepoId, gh),
+      workspaceRepoStack(db, config, other.workspaceId, workspaceRepoId, { gh, git: fakeGit }),
     ).rejects.toThrow("workspace repo not found");
   });
 
@@ -221,9 +555,9 @@ describe("workspace stack", () => {
     );
     const { gh } = fakeGh();
 
-    await expect(workspaceRepoStack(db, config, workspaceId, workspaceRepoId, gh)).rejects.toThrow(
-      "stacked pull requests are a GitHub feature",
-    );
+    await expect(
+      workspaceRepoStack(db, config, workspaceId, workspaceRepoId, { gh, git: fakeGit }),
+    ).rejects.toThrow("stacked pull requests are a GitHub feature");
   });
 
   it("rejects a merge body with no plan to check against", async () => {
@@ -667,6 +1001,75 @@ describe("workspace routes", () => {
     });
     expect(res.status).toBe(201);
   });
+
+  it("renames a workspace without moving its folder or branch", async () => {
+    const repo = await addRepo();
+    const created = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "Old name", repoIds: [repo.id] }),
+    });
+    const ws = (await created.json()) as { id: string; slug: string; rootPath: string };
+    const branch = (await getWorkspace(db, ws.id))!.repos[0]!.branch;
+
+    // Fields beside `name` are ignored rather than applied.
+    const res = await app.request(`/api/workspaces/${ws.id}`, {
+      method: "PATCH",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        name: "  New name  ",
+        slug: "new-name",
+        rootPath: "/elsewhere",
+        status: "archived",
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.name).toBe("New name");
+    expect(body).not.toHaveProperty("pendingBrief");
+
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail!.name).toBe("New name");
+    expect(detail!.slug).toBe(ws.slug);
+    expect(detail!.rootPath).toBe(ws.rootPath);
+    expect(detail!.status).toBe("creating");
+    expect(detail!.repos[0]!.branch).toBe(branch);
+  });
+
+  it("refuses a blank, multi-line or overlong name", async () => {
+    const created = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "keep me" }),
+    });
+    const ws = (await created.json()) as { id: string };
+
+    for (const name of ["   ", "x\n\n## Instructions", "x".repeat(201)]) {
+      const res = await app.request(`/api/workspaces/${ws.id}`, {
+        method: "PATCH",
+        headers: jsonAuth,
+        body: JSON.stringify({ name }),
+      });
+      expect(res.status).toBe(400);
+    }
+    expect((await getWorkspace(db, ws.id))!.name).toBe("keep me");
+  });
+
+  it("404s when renaming a workspace that doesn't exist, and 400s on a bad id", async () => {
+    const missing = await app.request("/api/workspaces/00000000-0000-0000-0000-000000000000", {
+      method: "PATCH",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "anything" }),
+    });
+    expect(missing.status).toBe(404);
+
+    const malformed = await app.request("/api/workspaces/not-a-uuid", {
+      method: "PATCH",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "anything" }),
+    });
+    expect(malformed.status).toBe(400);
+  });
 });
 
 describe("workspace issue links", () => {
@@ -823,6 +1226,202 @@ describe("workspace issue links", () => {
     const rows = await db.select().from(issueLinks);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.workspaceId).toBe(second);
+  });
+});
+
+describe("createWorkspace repo folders", () => {
+  it("gives both repos in a clashing pair name-owner", async () => {
+    const db = getDb(url).db;
+    const a = await createRepo(db, config, { cloneUrl: "git@github.com:acme/widget.git" });
+    const b = await createRepo(db, config, { cloneUrl: "git@github.com:other/widget.git" });
+    const ws = await createWorkspace(db, config, { name: "pair", repoIds: [a.id, b.id] });
+    const detail = await getWorkspace(db, ws.id);
+    const folders = detail!.repos.map((wr) => basename(wr.worktreePath)).sort();
+    expect(folders).toEqual(["widget-acme", "widget-other"]);
+  });
+
+  it("refuses a pair whose name-owner also clashes", async () => {
+    const db = getDb(url).db;
+    // Same owner, same display name: both would land in "api-acme".
+    const a = await createRepo(db, config, { cloneUrl: "git@github.com:acme/api.git" });
+    const b = await createRepo(db, config, {
+      cloneUrl: "git@github.com:acme/api-v2.git",
+      name: "api",
+    });
+    await expect(
+      createWorkspace(db, config, { name: "clash", repoIds: [a.id, b.id] }),
+    ).rejects.toThrow("both in use");
+  });
+
+  it("refuses a display name that is not a safe folder", async () => {
+    const db = getDb(url).db;
+    const repo = await createRepo(db, config, {
+      cloneUrl: "git@github.com:acme/widget.git",
+      name: "..",
+    });
+    await expect(
+      createWorkspace(db, config, { name: "escape", repoIds: [repo.id] }),
+    ).rejects.toThrow("unsafe folder name");
+  });
+});
+
+/** The event is fire-and-forget (`void emitEvent`), so poll briefly for it. */
+async function repoAddedEvents(workspaceId: string) {
+  for (let i = 0; i < 40; i++) {
+    const rows = await listEvents(getDb(url).db, { type: "workspace.repo_added" });
+    const hits = rows.filter(
+      (r) => (r.payload as { workspaceId?: string }).workspaceId === workspaceId,
+    );
+    if (hits.length) return hits;
+    await Bun.sleep(25);
+  }
+  return [];
+}
+
+/** A provisioned, active workspace holding the given repos. */
+async function activeWith(name: string, cloneUrls: string[]) {
+  const db = getDb(url).db;
+  const ids = [];
+  for (const cloneUrl of cloneUrls) ids.push((await createRepo(db, config, { cloneUrl })).id);
+  const ws = await createWorkspace(db, config, { name, repoIds: ids });
+  await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+  return ws;
+}
+
+describe("addRepoToWorkspace", () => {
+  it("adds a pending row on the workspace branch", async () => {
+    const db = getDb(url).db;
+    const ws = await activeWith("feature", ["git@github.com:acme/widget.git"]);
+    const repo = await createRepo(db, config, { cloneUrl: "git@github.com:acme/gadget.git" });
+
+    const row = await addRepoToWorkspace(db, ws.id, repo.id);
+
+    expect(row).toMatchObject({
+      workspaceId: ws.id,
+      repoId: repo.id,
+      status: "pending",
+      branch: `yarvis/${ws.slug}`,
+      baseBranch: "main",
+      existingBranch: false,
+      worktreePath: `${ws.rootPath}/gadget`,
+    });
+    const events = await repoAddedEvents(ws.id);
+    expect(events[0]?.payload).toMatchObject({ workspaceId: ws.id, repo: "acme/gadget" });
+  });
+
+  it("uses name-owner when the folder is taken", async () => {
+    const db = getDb(url).db;
+    const ws = await activeWith("clash", ["git@github.com:acme/widget.git"]);
+    const repo = await createRepo(db, config, { cloneUrl: "git@github.com:other/widget.git" });
+    const row = await addRepoToWorkspace(db, ws.id, repo.id);
+    expect(basename(row.worktreePath)).toBe("widget-other");
+  });
+
+  it("refuses when both folder names are taken", async () => {
+    const db = getDb(url).db;
+    const ws = await activeWith("full", ["git@github.com:acme/widget.git"]);
+    const squatter = await createRepo(db, config, {
+      cloneUrl: "git@github.com:zeta/thing.git",
+      name: "widget-other",
+    });
+    await addRepoToWorkspace(db, ws.id, squatter.id);
+    const repo = await createRepo(db, config, { cloneUrl: "git@github.com:other/widget.git" });
+    await expect(addRepoToWorkspace(db, ws.id, repo.id)).rejects.toThrow("both in use");
+  });
+
+  it("refuses a repo whose name is not a safe folder", async () => {
+    const db = getDb(url).db;
+    const ws = await activeWith("unsafe", []);
+    const repo = await createRepo(db, config, {
+      cloneUrl: "git@github.com:acme/widget.git",
+      name: "..",
+    });
+    await expect(addRepoToWorkspace(db, ws.id, repo.id)).rejects.toThrow("unsafe folder name");
+    expect((await getWorkspace(db, ws.id))?.repos).toHaveLength(0);
+  });
+
+  it("accepts a repo in a scratch workspace", async () => {
+    const db = getDb(url).db;
+    const ws = await activeWith("scratch", []);
+    const repo = await createRepo(db, config, { cloneUrl: "git@github.com:acme/widget.git" });
+    const row = await addRepoToWorkspace(db, ws.id, repo.id);
+    expect(row.worktreePath).toBe(`${ws.rootPath}/widget`);
+  });
+
+  it("refuses an unknown workspace", async () => {
+    const db = getDb(url).db;
+    const repo = await createRepo(db, config, { cloneUrl: "git@github.com:acme/widget.git" });
+    await expect(
+      addRepoToWorkspace(db, "00000000-0000-0000-0000-000000000000", repo.id),
+    ).rejects.toThrow("workspace not found");
+  });
+
+  it("refuses a workspace that is not active or error", async () => {
+    const db = getDb(url).db;
+    const repo = await createRepo(db, config, { cloneUrl: "git@github.com:acme/widget.git" });
+    const ws = await createWorkspace(db, config, { name: "creating", repoIds: [] });
+    await expect(addRepoToWorkspace(db, ws.id, repo.id)).rejects.toThrow(
+      "workspace that is creating",
+    );
+  });
+
+  it("refuses while a provision is running", async () => {
+    const db = getDb(url).db;
+    const first = await createRepo(db, config, { cloneUrl: "git@github.com:acme/widget.git" });
+    const ws = await createWorkspace(db, config, { name: "busy", repoIds: [first.id] });
+    const failGit: GitRunner = async (args, opts) =>
+      args[0] === "worktree" && args[1] === "add"
+        ? { stdout: "", stderr: "boom", exitCode: 1 }
+        : fakeGit(args, opts);
+    await provisionWorkspace(db, ws.id, () => {}, { runner: failGit }); // -> error
+
+    const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+    const slowGit: GitRunner = async (args, opts) => {
+      if (args[0] === "worktree" && args[1] === "add") await gate;
+      return fakeGit(args, opts);
+    };
+    const retry = provisionWorkspace(db, ws.id, () => {}, { runner: slowGit });
+    await Bun.sleep(50);
+
+    const repo = await createRepo(db, config, { cloneUrl: "git@github.com:acme/gadget.git" });
+    await expect(addRepoToWorkspace(db, ws.id, repo.id)).rejects.toThrow(
+      "provisioning is still running",
+    );
+    release();
+    await retry;
+  });
+
+  it("refuses an unknown repo", async () => {
+    const db = getDb(url).db;
+    const ws = await activeWith("norepo", []);
+    await expect(
+      addRepoToWorkspace(db, ws.id, "00000000-0000-0000-0000-000000000000"),
+    ).rejects.toThrow("repo not found");
+  });
+
+  it("refuses a repo already in the workspace", async () => {
+    const db = getDb(url).db;
+    const ws = await activeWith("dupe", ["git@github.com:acme/widget.git"]);
+    const detail = await getWorkspace(db, ws.id);
+    await expect(addRepoToWorkspace(db, ws.id, detail!.repos[0]!.repoId)).rejects.toThrow(
+      "already in this workspace",
+    );
+  });
+
+  // Review Focus: both calls pass the read; the unique index decides.
+  it("turns a concurrent double add into the same refusal", async () => {
+    const db = getDb(url).db;
+    const ws = await activeWith("race", []);
+    const repo = await createRepo(db, config, { cloneUrl: "git@github.com:acme/widget.git" });
+    const results = await Promise.allSettled([
+      addRepoToWorkspace(db, ws.id, repo.id),
+      addRepoToWorkspace(db, ws.id, repo.id),
+    ]);
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(rejected).toHaveLength(1);
+    expect(String((rejected[0] as PromiseRejectedResult).reason)).toContain(
+      "already in this workspace",
+    );
   });
 });
 
@@ -1022,6 +1621,7 @@ describe("provision + archive (injected git runner)", () => {
     // The repo is still there, so the tool-manager guidance stays.
     expect(agents).toContain("## Running a repo's tools");
     expect(agents).toContain("mise");
+    expect(agents).toContain("`mise exec -- git commit`");
   });
 
   it("keeps the attention hooks and the copied skills in the same .claude dir", async () => {

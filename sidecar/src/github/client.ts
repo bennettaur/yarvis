@@ -3,6 +3,7 @@
  * implementation is injectable so response shaping can be unit-tested.
  */
 
+import type { Config } from "../config.ts";
 import type { IssueDetail, IssueLabel, IssueRepoMeta, IssueSummary } from "../issues/types.ts";
 import type {
   CheckItem,
@@ -189,6 +190,21 @@ export function summarizeReviewDecision(reviews: any[]): ReviewDecision {
   return "review_required";
 }
 
+interface GraphqlError {
+  type?: string;
+  path?: (string | number)[];
+  message?: string;
+}
+
+function graphqlError(errors: GraphqlError[]): Error {
+  return new Error(`github graphql: ${JSON.stringify(errors)}`);
+}
+
+/** GitHub withholding one check from a token that may not read it, rather than failing the query. */
+function isRefusedCheck(error: GraphqlError): boolean {
+  return error.type === "FORBIDDEN" && (error.path ?? []).includes("statusCheckRollup");
+}
+
 /** Normalizes a GraphQL statusCheckRollup context into a flat CheckItem. */
 function toCheckItem(node: any): CheckItem {
   if (node.__typename === "CheckRun") {
@@ -293,7 +309,8 @@ export function toPrDetail(pr: any, repo?: any): PrDetail {
     autoMergeEnabled: Boolean(pr.autoMergeRequest),
     canEnableAutoMerge: Boolean(pr.viewerCanEnableAutoMerge),
     canDisableAutoMerge: Boolean(pr.viewerCanDisableAutoMerge),
-    checks: rollupNodes.map(toCheckItem),
+    // A check the token may not read comes back as null; see `prDetail`.
+    checks: rollupNodes.filter(Boolean).map(toCheckItem),
     reviewers: toReviewers(pr),
     reviewThreads: threadNodes.map((thread: any) => ({
       path: thread.path ?? null,
@@ -523,6 +540,30 @@ function buildPrLookupQuery(count: number): string {
   return `query($viewer:String!,${varDecls}){\n${fields}\n}`;
 }
 
+/**
+ * How long the PR lists wait for branch names before rendering without them.
+ * Nesting is a nicety, so it must not hold the list itself hostage.
+ */
+const BRANCH_LOOKUP_TIMEOUT_MS = 5_000;
+
+/**
+ * Builds one aliased query that fetches each PR's base and head branch. Built
+ * the same way as {@link buildPrLookupQuery}, so nothing from a ref reaches the
+ * query text.
+ */
+function buildBranchLookupQuery(count: number): string {
+  const varDecls = Array.from(
+    { length: count },
+    (_, i) => `$o${i}:String!,$r${i}:String!,$n${i}:Int!`,
+  ).join(",");
+  const fields = Array.from(
+    { length: count },
+    (_, i) =>
+      `pr${i}: repository(owner:$o${i},name:$r${i}){ pullRequest(number:$n${i}){ baseRefName headRefName isCrossRepository } }`,
+  ).join("\n");
+  return `query(${varDecls}){\n${fields}\n}`;
+}
+
 const PR_DETAIL_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!){
   repository(owner:$owner,name:$repo){
@@ -585,14 +626,34 @@ export function encodeRepoPath(path: string): string {
   return segments.map(encodeURIComponent).join("/");
 }
 
+/** Where a `GitHubClient` sends REST and GraphQL requests. */
+export interface GitHubEndpoints {
+  api: string;
+  graphql: string;
+}
+
+const GITHUB_DEFAULT_ENDPOINTS: GitHubEndpoints = {
+  api: "https://api.github.com",
+  graphql: "https://api.github.com/graphql",
+};
+
+/** A client for the GitHub the config points at: github.com unless overridden. */
+export function createGitHubClient(config: Pick<Config, "endpoints">, token: string): GitHubClient {
+  return new GitHubClient(token, fetch, {
+    api: config.endpoints?.githubApi ?? GITHUB_DEFAULT_ENDPOINTS.api,
+    graphql: config.endpoints?.githubGraphql ?? GITHUB_DEFAULT_ENDPOINTS.graphql,
+  });
+}
+
 export class GitHubClient {
   constructor(
     private readonly token: string,
     private readonly fetchImpl: FetchFn = fetch,
+    private readonly endpoints: GitHubEndpoints = GITHUB_DEFAULT_ENDPOINTS,
   ) {}
 
   private async api<T>(path: string): Promise<T> {
-    const res = await this.fetchImpl(`https://api.github.com${path}`, {
+    const res = await this.fetchImpl(`${this.endpoints.api}${path}`, {
       headers: {
         Authorization: `Bearer ${this.token}`,
         Accept: "application/vnd.github+json",
@@ -612,10 +673,22 @@ export class GitHubClient {
   private async graphql<T>(
     query: string,
     variables: Record<string, unknown>,
-    { allowPartial = false }: { allowPartial?: boolean } = {},
+    { allowPartial = false, signal }: { allowPartial?: boolean; signal?: AbortSignal } = {},
   ): Promise<T> {
-    const res = await this.fetchImpl("https://api.github.com/graphql", {
+    const payload = await this.graphqlPayload<T>(query, variables, signal);
+    if (payload.errors && !(allowPartial && payload.data)) throw graphqlError(payload.errors);
+    return payload.data as T;
+  }
+
+  /** The raw response, errors included, for a caller that decides which it can live with. */
+  private async graphqlPayload<T>(
+    query: string,
+    variables: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<{ data?: T; errors?: GraphqlError[] }> {
+    const res = await this.fetchImpl(this.endpoints.graphql, {
       method: "POST",
+      signal,
       headers: {
         Authorization: `Bearer ${this.token}`,
         "Content-Type": "application/json",
@@ -623,11 +696,7 @@ export class GitHubClient {
       body: JSON.stringify({ query, variables }),
     });
     if (!res.ok) throw new Error(`github graphql -> ${res.status}`);
-    const payload = (await res.json()) as { data?: T; errors?: unknown };
-    if (payload.errors && !(allowPartial && payload.data)) {
-      throw new Error(`github graphql: ${JSON.stringify(payload.errors)}`);
-    }
-    return payload.data as T;
+    return (await res.json()) as { data?: T; errors?: GraphqlError[] };
   }
 
   viewer(): Promise<{ login: string }> {
@@ -639,6 +708,40 @@ export class GitHubClient {
       `/search/issues?q=${encodeURIComponent(query)}&per_page=50&sort=created&order=desc`,
     );
     return (data.items ?? []).filter((i) => i.pull_request).map(toPrSummary);
+  }
+
+  /**
+   * Fills in each PR's base and head branch, which the REST search omits, so a
+   * list can tell which PRs are stacked on one another. One batched request for
+   * the whole list. A failed or slow lookup returns the PRs unchanged: the list
+   * still renders, just without its stacks nested.
+   */
+  async lookupBranches(prs: PrSummary[]): Promise<PrSummary[]> {
+    if (prs.length === 0) return prs;
+    const variables: Record<string, unknown> = {};
+    prs.forEach((pr, i) => {
+      variables[`o${i}`] = pr.owner;
+      variables[`r${i}`] = pr.repo;
+      variables[`n${i}`] = pr.number;
+    });
+    let data: Record<string, { pullRequest?: any } | null> | undefined;
+    try {
+      data = await this.graphql(buildBranchLookupQuery(prs.length), variables, {
+        allowPartial: true,
+        signal: AbortSignal.timeout(BRANCH_LOOKUP_TIMEOUT_MS),
+      });
+    } catch (e) {
+      console.error("[github] could not look up PR branches:", e);
+      return prs;
+    }
+    return prs.map((pr, i) => {
+      const node = data?.[`pr${i}`]?.pullRequest;
+      if (!node) return pr;
+      // A fork's branch lives outside this repo, so no PR here can sit on it,
+      // and a fork's `main` would otherwise claim every PR targeting this `main`.
+      const headRef = node.isCrossRepository ? undefined : node.headRefName || undefined;
+      return { ...pr, baseRef: node.baseRefName || undefined, headRef };
+    });
   }
 
   /**
@@ -736,12 +839,17 @@ export class GitHubClient {
   }
 
   async prDetail(owner: string, repo: string, number: number): Promise<PrDetail> {
-    const data = await this.graphql<{
+    const { data, errors } = await this.graphqlPayload<{
       repository?: { pullRequest?: any };
     }>(PR_DETAIL_QUERY, { owner, repo, number });
-    const pr = data.repository?.pullRequest;
+    // A fine-grained token can't be granted the Checks permission, so GitHub
+    // refuses every CheckRun in the rollup. That costs the checks, not the PR:
+    // the rest of the page is still worth showing. Any other error still fails.
+    if (errors && !(data && errors.every(isRefusedCheck))) throw graphqlError(errors);
+    const pr = data?.repository?.pullRequest;
     if (!pr) throw new Error(`pull request ${owner}/${repo}#${number} not found`);
-    return toPrDetail(pr, data.repository);
+    const detail = toPrDetail(pr, data?.repository);
+    return errors ? { ...detail, checksUnavailable: true } : detail;
   }
 
   /**
@@ -757,7 +865,7 @@ export class GitHubClient {
   async fileContent(owner: string, repo: string, path: string, ref: string): Promise<string> {
     const encoded = encodeRepoPath(path);
     const res = await this.fetchImpl(
-      `https://api.github.com/repos/${owner}/${repo}/contents/${encoded}?ref=${encodeURIComponent(ref)}`,
+      `${this.endpoints.api}/repos/${owner}/${repo}/contents/${encoded}?ref=${encodeURIComponent(ref)}`,
       {
         headers: {
           Authorization: `Bearer ${this.token}`,
@@ -787,7 +895,7 @@ export class GitHubClient {
     const encoded = encodeRepoPath(path);
     const suffix = encoded ? `/${encoded}` : "";
     const res = await this.fetchImpl(
-      `https://api.github.com/repos/${owner}/${repo}/contents${suffix}?ref=${encodeURIComponent(ref)}`,
+      `${this.endpoints.api}/repos/${owner}/${repo}/contents${suffix}?ref=${encodeURIComponent(ref)}`,
       {
         headers: {
           Authorization: `Bearer ${this.token}`,
@@ -821,16 +929,13 @@ export class GitHubClient {
     limit = 10,
   ): Promise<{ path: string; fragments: string[] }[]> {
     const q = encodeURIComponent(`${query} repo:${owner}/${repo}`);
-    const res = await this.fetchImpl(
-      `https://api.github.com/search/code?q=${q}&per_page=${limit}`,
-      {
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-          Accept: "application/vnd.github.text-match+json",
-          "X-GitHub-Api-Version": "2022-11-28",
-        },
+    const res = await this.fetchImpl(`${this.endpoints.api}/search/code?q=${q}&per_page=${limit}`, {
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        Accept: "application/vnd.github.text-match+json",
+        "X-GitHub-Api-Version": "2022-11-28",
       },
-    );
+    });
     if (!res.ok) throw new Error(`github code search -> ${res.status}`);
     const body = (await res.json()) as { items?: any[] };
     return (body.items ?? []).map((item: any) => ({
@@ -1122,7 +1227,7 @@ export class GitHubClient {
     body?: string,
   ): Promise<void> {
     const res = await this.fetchImpl(
-      `https://api.github.com/repos/${owner}/${repo}/pulls/${number}/reviews`,
+      `${this.endpoints.api}/repos/${owner}/${repo}/pulls/${number}/reviews`,
       {
         method: "POST",
         headers: {
@@ -1145,7 +1250,7 @@ export class GitHubClient {
   async postComment(owner: string, repo: string, number: number, input: NewComment): Promise<void> {
     const pr = await this.api<{ head: { sha: string } }>(`/repos/${owner}/${repo}/pulls/${number}`);
     const res = await this.fetchImpl(
-      `https://api.github.com/repos/${owner}/${repo}/pulls/${number}/comments`,
+      `${this.endpoints.api}/repos/${owner}/${repo}/pulls/${number}/comments`,
       {
         method: "POST",
         headers: {
@@ -1300,12 +1405,12 @@ export class GitHubClient {
    */
   async ensureLabel(owner: string, repo: string, name: string, color = "ededed"): Promise<void> {
     const res = await this.fetchImpl(
-      `https://api.github.com/repos/${owner}/${repo}/labels/${encodeURIComponent(name)}`,
+      `${this.endpoints.api}/repos/${owner}/${repo}/labels/${encodeURIComponent(name)}`,
       { headers: this.restHeaders() },
     );
     if (res.ok) return;
     if (res.status !== 404) throw new Error(`github get label -> ${res.status}`);
-    const create = await this.fetchImpl(`https://api.github.com/repos/${owner}/${repo}/labels`, {
+    const create = await this.fetchImpl(`${this.endpoints.api}/repos/${owner}/${repo}/labels`, {
       method: "POST",
       headers: this.restHeaders(),
       body: JSON.stringify({ name, color }),
@@ -1330,7 +1435,7 @@ export class GitHubClient {
   }
 
   private async sendRest(path: string, method: string, body: unknown): Promise<Response> {
-    const res = await this.fetchImpl(`https://api.github.com${path}`, {
+    const res = await this.fetchImpl(`${this.endpoints.api}${path}`, {
       method,
       headers: this.restHeaders(),
       body: JSON.stringify(body),

@@ -7,15 +7,16 @@ Guidance for AI agents building features in this repo.
 Yarvis is a personal-assistant desktop app for macOS, built with Tauri v2: an
 LLM chat interface with memory, a spoken (STT/TTS) front end to the same agent,
 work tracking, PR review, calendar, and workspace/git-worktree management. See
-`README.md` for the full user-facing setup and feature docs — this file is about
-working in the codebase.
+`docs/getting-started.md` for setup and `docs/features/` for the user-facing
+feature docs — this file is about working in the codebase.
 
 ## Architecture
 
 Three processes, each with a clean ownership boundary:
 
 - **Rust core** (`src-tauri/`) — native OS integration (window, tray,
-  notifications), Keychain-backed secret storage, sidecar supervision
+  notifications), secret storage (macOS Keychain or 1Password), sidecar
+  supervision
   (port selection, bearer token, secrets injected as env vars), and every PTY
   session: both the Terminal tab's shells and each workspace's agent session
   live in `pty.rs`, independent of the webview that renders them. The sidecar
@@ -32,8 +33,16 @@ Three processes, each with a clean ownership boundary:
   remote-control bot.
 
 Data lives in local **PostgreSQL + pgvector**; small structural settings live
-in `~/.yarvis/settings.json` instead. See `README.md`'s "Project layout"
-section for a directory-by-directory map of both `src/` and `sidecar/src/`.
+in `~/.yarvis/settings.json` instead. See `docs/development.md`'s "Project
+layout" section for a directory-by-directory map of both `src/` and
+`sidecar/src/`. A user-visible behavior change updates the matching page in
+`docs/features/` (or `docs/configuration.md` for settings and secrets). Those
+pages are also what the in-app `yarvis-guide` specialist answers from:
+`sidecar/src/help/docs.ts` embeds them with `with { type: "text" }`, so a new
+user-facing page is added to its `DOCS` map too (`help/docs.test.ts` catches a
+missing `docs/features/` page, not a new top-level one). The guide's prompt
+lists every `yarvis://` address by hand; `src/lib/appPlace.test.ts` fails when
+a nav or Settings tab is added, renamed or removed without updating it.
 
 ## Commands
 
@@ -43,9 +52,15 @@ Run from the repo root unless noted.
 bun install                      # install deps (root + sidecar workspace)
 
 bun run tauri dev                # full app: frontend + Rust core + sidecar
+bun run tauri:preview            # same, but on the production frontend build
+                                  #   (no Vite dev server, React prod mode)
+bun run tauri:build              # release bundle, with the compiled sidecar
 bun run dev:instance <name>       # a second app beside the primary one; add
                                   #   YARVIS_DATABASE_URL to give it its own DB
 bun run sidecar:dev               # sidecar only (prints a dev bearer token)
+bun run demo                      # screenshots + video of the real UI in
+                                  #   Chromium, Rust core mocked; see
+                                  #   demo/README.md
 
 bun run test                      # frontend tests (src/, happy-dom) + the
                                   #   dev-script tests (scripts/)
@@ -70,9 +85,9 @@ cargo test --manifest-path src-tauri/Cargo.toml --all-targets   # Rust tests
 ```
 
 CI (`.github/workflows/ci.yml`) runs all of the above (frontend tests, sidecar
-tests against a `pgvector/pgvector:pg16` service container, both typechecks,
-biome, `bun audit --prod`, `cargo fmt --check`, `cargo clippy`, `cargo test`,
-`cargo audit`). Every job in it runs on a read-only `GITHUB_TOKEN` — ci.yml
+tests against a `pgvector/pgvector:pg16` service container, the frontend,
+sidecar and `video/` typechecks, biome, `bun audit --prod`, `cargo fmt --check`,
+`cargo clippy`, `cargo test`, `cargo audit`). Every job in it runs on a read-only `GITHUB_TOKEN` — ci.yml
 sets that default itself, so a job that needs to write back to GitHub has to
 say so in its own `permissions:` block, where review can see it — and its
 actions are pinned to commit SHAs, with the ref they were resolved from in a
@@ -95,6 +110,13 @@ back to ad-hoc.
 ## Conventions
 
 - Package manager is **Bun** everywhere, including the sidecar workspace.
+- `video/` is a standalone Remotion package for the showcase video, with its
+  own `bun.lock`; it is not a workspace, so the root `bun install` skips it. Its
+  scenes import prop-driven components from `src/`, so changing the props of a
+  component it uses can break it. The root typecheck doesn't cover it: run
+  `bun run typecheck` in `video/`, which CI's `video-typecheck` job also runs.
+  The `Demo site` workflow builds its web player into the Pages site at
+  `video/`.
 - `bun.lock` records no registry: every entry's resolution field stays `""` so
   CI's `--frozen-lockfile` install resolves from the default registry. A machine
   pointed at a private mirror has bun write that mirror's tarball URL into every
@@ -113,9 +135,24 @@ back to ad-hoc.
 - Sidecar tests that touch storage hit a real Postgres — see `sidecar/src/workspaces/routes.test.ts`
   for the pattern (temp workspaces root via `mkdtempSync`, `TRUNCATE` between
   tests, injected fake git runners to avoid real network/filesystem git ops).
+  Anything stored in `settings.json` is not in Postgres, so `TRUNCATE` doesn't
+  reset it: give the test its own `YARVIS_SETTINGS_PATH` (see
+  `sidecar/src/customProviders/routes.test.ts`). The preload in
+  `sidecar/src/test/setup.ts` points the whole suite at a temp file, so a test
+  that forgets never writes the user's real one.
 - Secrets (provider API keys, tokens, DB URL) are entered in the app's
-  Settings screen and stored in a single macOS Keychain item — never in env
-  files or committed anywhere. Non-secret configuration the user is expected
+  Settings screen and stored in a single item — never in env files or
+  committed anywhere. Which store holds that item, the macOS Keychain or a
+  1Password Secure Note reached through the `op` CLI, is `secret_store.rs`'s
+  only job; `keychain.rs` owns what the item contains and nothing downstream
+  knows the difference. The invariant that buys is stated in `keychain.rs`'s
+  module doc and is the thing to preserve: because every write is a
+  read-modify-write of that one shared blob, a read that *fails* must never
+  look like an empty store, so `read_root` is fallible and no caller writes on
+  an error. Historical migrations off the Keychain (`settings.rs`'s legacy
+  non-secret values, `embeddings_secrets.rs`'s standalone item) are pinned to
+  the Keychain rather than routed through the choice: they are about what a
+  past build wrote there. Non-secret configuration the user is expected
   to change from the UI goes in `src-tauri/src/settings.rs`'s
   `~/.yarvis/settings.json` instead, whether the Rust core enforces it
   directly (the PTY session cap, the workspace agent) or it just rides along
@@ -152,6 +189,12 @@ back to ad-hoc.
   the tools in `codeTools.ts` are written once and GitHub/Azure each supply an
   implementation. A capability one provider lacks resolves to `null` so the
   caller can say so, rather than throwing.
+- A GitHub or Google client is built with `createGitHubClient(config, token)` or
+  `createGoogleCalendarClient(config)`, never its constructor. The factories are
+  where the demo's endpoint overrides apply, so a bare `new GitHubClient(token)`
+  would send the demo's placeholder token, or a dev's real one, to the real
+  service. The overrides themselves are refused by the Rust core
+  (`ENDPOINT_OVERRIDE_VARS` in `sidecar.rs`) and accepted only for loopback URLs.
 - Stacked pull requests have two sources and neither is optional: the CLI
   decides membership, the API decides each layer's status, and either being
   absent degrades rather than fails. `sidecar/src/workspaces/stack.ts` explains
@@ -159,7 +202,7 @@ back to ad-hoc.
   worktree does.
 - What models a provider offers is data, not code: `llm/catalog.ts` holds the
   bundled defaults and the capability tags (`chat`, `stt`, `tts`, `vision`,
-  `embed`), and entries in `~/.yarvis/settings.json`'s `providerModels` section
+  `embed`, `decision`), and entries in `~/.yarvis/settings.json`'s `providerModels` section
   take a provider's catalogue over the moment the user saves one — no database
   needed, so custom providers and the model catalogue work even without
   Postgres configured. Surfaces ask for the capability they need rather than
@@ -179,12 +222,14 @@ back to ad-hoc.
   is set to. Which speech backends to use lives in `~/.yarvis/settings.json`
   (`sidecar/src/voice/config.ts`), not in the frontend, because the Telegram bot
   runs in the sidecar and needs the same settings (#226).
-- Outbound speech calls go through `guardedFetch` in that same file, never a
-  bare `fetch`: it re-runs the SSRF guard on every redirect hop rather than only
+- Outbound speech and Ollama decision calls go through `guardedFetch` in
+  `sidecar/src/lib/guardedFetch.ts`, never a bare `fetch`: it re-runs the SSRF guard on every redirect hop rather than only
   the first (`redirect: "manual"`, mirroring `memory/ingest.ts`) and puts a
   deadline on the whole chain. `fetch` strips `Authorization` across origins but
   not a custom provider's own auth headers, so following a redirect unchecked
-  would hand those to whatever host it named.
+  would hand those to whatever host it named. A call whose body is private (the
+  decision model's review carries the conversation) also sets `sameOriginOnly`,
+  since a redirect replays the body too.
 - What a surface can do without asking depends on whether the user proof-read
   the turn. `ChatMessageMetadata.source` records where it came from, and
   `runAgentTurn` uses it: a `voice` turn puts the tools in
@@ -205,6 +250,11 @@ back to ad-hoc.
   over that endpoint is reached by outside clients holding only the scoped
   `YARVIS_MCP_TOKEN`, so it must be one that token is meant to grant — the
   endpoint deliberately sits outside the main bearer wall, like attention-ingest.
+  It grants the memory tools and, for a session whose `.mcp.json` names its
+  workspace, listing and resolving that workspace's review comments. Review
+  comment bodies go out unfenced, the one exception to the rule below, because
+  the user is their only author; a feature that writes them from anywhere else
+  has to fence them first.
 - Anything an outside party can influence — file contents, diffs, PR titles,
   recalled memories — enters a prompt as data, not instruction: fenced in
   per-request nonce tags (see `sidecar/src/pr/ask.ts`) with the system prompt
@@ -224,7 +274,12 @@ back to ad-hoc.
   read, is refused on a mismatch, and goes through a single file descriptor — the
   worktree is shared with a live agent session, so an unconditional write drops
   whatever it did, and re-opening by path invites the leaf to be swapped
-  underneath. Anything new that reaches into a worktree owes all of this.
+  underneath. Anything new that reaches into a worktree owes all of this. Which
+  worktree is itself a client choice — the right column can read any worktree an
+  agent added inside the workspace folder — so a worktree path from a request
+  is used only after `resolveWorktree` in `workspaces/worktrees.ts` matches it
+  against a fresh `git worktree list` of that repo's clone, and what is used is
+  git's path, not the caller's.
 - Text a *model* composes that will be typed into another agent's prompt is the
   sharpest form of that, since the receiving agent acts on it with its own
   permissions. `claude.send` is the only such path and it is guarded on both
@@ -274,11 +329,22 @@ back to ad-hoc.
   and a resync that finds a tool's description or schema changed resets it to
   "ask", since consent was given for the tool as it was described then. Neither
   mechanism gives MCP tools to a surface that cannot prompt: that still requires
-  `approval` hooks to exist at all.
+  `approval` hooks to exist at all. Auto mode (`chat/toolReview.ts`) is a third
+  gate in front of the same prompt, and it can only say yes: the decision model
+  reviews an MCP call against the chat, and anything short of a clear approval —
+  a refusal, an error, a timeout — raises the prompt as before. It follows
+  standing consent's limits (off on a spoken turn) and never reviews a built-in,
+  since the built-ins that ask are the ones whose answer must come from the user.
+  Every call that goes through approval also carries a required `callReason`
+  (`mcp/callReason.ts`), added to the tool's schema and stripped before the tool
+  runs. The approval bar shows it and the reviewer weighs it, both as the
+  model's own claim about its call: it explains intent, it never counts as the
+  user asking.
 - A list a tab shows is read through `lib/resourceCache`, not fetched into local
-  state on mount. `App` renders one panel at a time, so every tab switch unmounts
-  a page outright, and the fetch-on-mount shape meant coming back always painted
-  an empty list first (#275). `useCachedResource` seeds a remount from the cache
+  state on mount. `App` renders one panel at a time (the Chat tab aside, kept
+  mounted so a turn outlives the switch), so a tab switch unmounts a page
+  outright, and the fetch-on-mount shape meant coming back always painted an
+  empty list first (#275). `useCachedResource` seeds a remount from the cache
   synchronously and revalidates behind it, which is why `Resource` distinguishes
   `refreshing` — a load running behind data already on screen, what
   `RefreshingIndicator` shows — from `loading`, which means there is nothing to
@@ -319,10 +385,10 @@ back to ad-hoc.
   above the composer, showing the front of the queue with a count, rather than a
   card per call inside the thread. Its `A`/`D` shortcuts are on `window`, so a
   bar the host is keeping off screen must be told — `visible` — or it answers
-  for a surface the user cannot see: Omni Chat stays mounted and streaming while
-  hidden, and the overlay covers a `ChatPanel` that has a bar of its own
-  (`lib/omniChatOverlay.ts`). Anything else that mounts a second bar owes the
-  same gate.
+  for a surface the user cannot see: Omni Chat and the Chat tab stay mounted and
+  streaming while hidden, and the overlay covers a `ChatPanel` that has a bar of
+  its own (`lib/omniChatOverlay.ts`). Anything else that mounts a second bar owes
+  the same gate.
 - Stopping a turn is the user's own doing, and both layers say so. The AI SDK
   ends its iteration normally on an abort rather than throwing, so `runAgentTurn`
   checks the abort *before* the empty-turn branch and saves nothing; the surface
@@ -348,6 +414,18 @@ back to ad-hoc.
   raise a limit they already raised. The specialists' own ceiling in
   `agents/catalog.ts` is deliberately separate and lower: a delegated run has no
   approval channel, so it is not covered by a setting the chat surfaces share.
+- A chat that outgrows the model's window is compacted, not truncated.
+  `chat/compaction.ts` summarizes the older messages into a `system` row whose
+  `metadata.compaction.throughMessageId` names the last one it covers, and
+  `runAgentTurn` replays that summary (fenced as data) plus what came after. No
+  row is deleted, and the messages route hides the `system` row, so the thread
+  the user sees is unchanged. The size that triggers it is `compactAtTokens` in
+  `chat/config.ts` (default 200k, edited in Settings). A model can carry its own
+  on its catalogue entry (`ModelInfo.compactAtTokens`, bundled defaults set under
+  each model's window), which wins over the global value: the right number is a
+  property of the model's window, and `getChatBudget` resolves it per turn. A context-window error
+  compacts too, so Retry succeeds. The retry collapse in `runAgentTurn` skips `system` rows when it
+  looks for the last message, since a summary can land after the user's turn.
 - A chat turn reports what it is doing, not only what it concluded.
   `runAgentTurn` drives `fullStream`, so tool calls, their outcomes and any
   reasoning the provider returns reach the surface as they happen; the tool
@@ -431,9 +509,20 @@ back to ad-hoc.
   jobs, the recap and the browser all filter on it. The kinds a *turn* may write
   exclude the ones the jobs author, so hand-written text can't masquerade as a
   consolidated summary. A fact that changed is superseded — the old row stays for
-  the trail and drops out of recall — rather than contradicted by a second
+  the trail and drops out of recall, except a recall `asOf` a time it still
+  held — rather than contradicted by a second
   memory, and an edit re-embeds, since a corrected fact findable only by its old
   wording is worse than no correction.
+  - A memory also records when its claim holds (`valid_from`/`valid_until`),
+    separately from when it was written. An expired memory is still returned by
+    recall, flagged and ranked lower, because the agent can only re-check a
+    claim it can see. A correction closes the old claim's window where the
+    replacement starts, which is what lets `asOf` answer for the past. Recall
+    ranks by similarity scaled by a strength that decays from the last
+    confirmation (`memory/ranking.ts`). Strength is computed at query time, so
+    nothing rewrites rows on a timer, and only an explicit confirmation resets
+    it. Being retrieved does not count, since every top-k hit would reinforce
+    itself.
 - The user's `tasks` and the assistant's `agent_todos` are different tables on
   purpose: one is what the user intends to do, the other is what the assistant
   has taken on. The todo tools are deliberately absent from the MCP endpoint — a
@@ -445,5 +534,26 @@ back to ad-hoc.
   so an agent can put a meeting on the calendar and only the user can move it. A
   suggestion the user declines is recorded as a dismissal keyed by ref, because
   "not that one" has to survive the next planning turn.
+- Yarvis reads the user's Chrome through an extension (`extension/`) that can only
+  connect *out*, so the direction is reversed: a native-messaging host
+  (`scripts/browser/host.ts`) long-polls the sidecar's `/browser/next` and posts
+  answers to `/browser/result`, behind a scoped token like attention-ingest and
+  `/mcp`. The token and the (per-launch) port reach the host through one file per
+  instance in `~/.yarvis/browser/instances/`, and the host polls every live
+  instance — nothing about the browser is singular to the machine, so this is
+  deliberately not behind `instance.rs`. Each Chrome profile polls under an id
+  and a name the user sets in the extension's popup, and every tool takes that
+  name as `profile`. Everything a page says is third-party text — a Slack DM is prime
+  injection material — so `browser/tools.ts` fences it with a per-request nonce.
+  The tools may click, scroll and navigate but the extension holds the line, not
+  the sidecar: it stays on the tab's origin, refuses controls that send or
+  change things, and there is no tool that types. The two that act
+  (`click_browser_element`, `navigate_browser_tab`) are in `destructiveTools.ts`,
+  so a spoken turn asks first. Everything that runs inside the page is
+  `extension/page.js`, and every way of picking a click target — a listed ref, an
+  inspected one, a CSS selector the model wrote — ends in its one set of
+  screens, applied to what the click actually lands on. Per-site behaviour goes
+  in `extension/adapters/` and may change what a tool returns, never what it may
+  do.
 - Follow the repo's existing comment style: comments explain *why*, not
   *what* — no restating what a well-named function already says.
