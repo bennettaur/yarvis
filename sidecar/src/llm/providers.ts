@@ -77,18 +77,12 @@ function builtInProviders(config: Config, rows: ProviderModelRow[]): ProviderInf
 }
 
 /**
- * A custom provider's own `models` column is its default catalogue. Those ids
- * were entered as chat models — that is the only thing the provider form asks
- * for — so they are tagged as such, and a `provider_models` row is how a
- * speech model on the same proxy gets named.
+ * A custom provider's own tagged model list is its default catalogue, which
+ * `provider_models` rows can still take over like any built-in's.
  */
 function customProviderInfo(row: CustomProviderRow, rows: ProviderModelRow[]): ProviderInfo {
   const id = `${CUSTOM_PROVIDER_PREFIX}${row.id}`;
-  const models = catalogFor(
-    id,
-    rows,
-    row.models.map((m) => ({ id: m, capabilities: ["chat" as const] })),
-  );
+  const models = catalogFor(id, rows, row.models);
   return {
     id,
     label: row.name,
@@ -179,7 +173,7 @@ export function pickDefaultModel(
  * An endpoint on an Ollama server. The provider's base URL is the server root,
  * since chat and decision calls reach different paths on it.
  */
-export function ollamaUrl(baseUrl: string, path: "/v1" | "/api/chat"): string {
+export function ollamaUrl(baseUrl: string, path: "/v1" | "/api/chat" | "/api/tags"): string {
   return `${baseUrl.replace(/\/+$/, "")}${path}`;
 }
 

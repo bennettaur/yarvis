@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { withSection } from "../settings/store.ts";
 import {
+  type CustomProviderInput,
   createCustomProvider,
   deleteCustomProvider,
   getCustomProvider,
@@ -25,11 +27,11 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-const input = {
+const input: CustomProviderInput = {
   name: "litellm",
   baseUrl: "https://litellm.example.com/v1",
-  apiKind: "openai" as const,
-  models: ["gpt-4o"],
+  apiKind: "openai",
+  models: [{ id: "gpt-4o", capabilities: ["chat"] }],
   headerNames: ["X-Tenant"],
 };
 
@@ -59,6 +61,28 @@ describe("customProviders/service", () => {
     expect(await getCustomProvider(row.id)).toEqual(row);
   });
 
+  it("reads a provider saved with bare model ids as chat models", async () => {
+    await withSection<Record<string, unknown>, void>("customProviders", () => ({
+      next: {
+        legacy: {
+          id: "legacy",
+          ...input,
+          models: ["gpt-4o"],
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      },
+      result: undefined,
+    }));
+    expect((await getCustomProvider("legacy"))?.models).toEqual([
+      { id: "gpt-4o", capabilities: ["chat"] },
+    ]);
+    // An update that leaves the models alone still writes them back tagged.
+    expect((await updateCustomProvider("legacy", { name: "renamed" }))?.models).toEqual([
+      { id: "gpt-4o", capabilities: ["chat"] },
+    ]);
+  });
+
   it("returns null getting an unknown id", async () => {
     expect(await getCustomProvider("does-not-exist")).toBeNull();
   });
@@ -66,9 +90,11 @@ describe("customProviders/service", () => {
   it("updates merges the patch and bumps updatedAt", async () => {
     const row = await createCustomProvider(input);
     await new Promise((resolve) => setTimeout(resolve, 2));
-    const updated = await updateCustomProvider(row.id, { models: ["gpt-4o-mini"] });
+    const updated = await updateCustomProvider(row.id, {
+      models: [{ id: "gpt-4o-mini", capabilities: ["chat"] }],
+    });
     expect(updated).not.toBeNull();
-    expect(updated?.models).toEqual(["gpt-4o-mini"]);
+    expect(updated?.models).toEqual([{ id: "gpt-4o-mini", capabilities: ["chat"] }]);
     expect(updated?.name).toBe(row.name);
     expect(updated?.createdAt).toBe(row.createdAt);
     expect(updated?.updatedAt).not.toBe(row.createdAt);

@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../config.ts";
+import { createCustomProvider } from "../customProviders/service.ts";
 import { availableVoiceProviders, resolveSpeechClient } from "./providers.ts";
 
 // Custom providers (part of `resolveSpeechClient`'s lookup) now live in
@@ -41,6 +42,25 @@ function configWith(secrets: Partial<Config["secrets"]> = {}): Config {
 }
 
 describe("availableVoiceProviders", () => {
+  it("suggests the speech models a custom provider tagged", async () => {
+    const row = await createCustomProvider({
+      name: "speech server",
+      baseUrl: "http://localhost:8000/v1",
+      apiKind: "openai",
+      models: [
+        { id: "llama3.2", capabilities: ["chat"] },
+        { id: "whisper-1", capabilities: ["stt"] },
+        { id: "kokoro", capabilities: ["tts"] },
+      ],
+      headerNames: [],
+    });
+    const custom = (await availableVoiceProviders(configWith())).find(
+      (p) => p.id === `custom:${row.id}`,
+    );
+    expect(custom?.sttModels).toEqual(["whisper-1"]);
+    expect(custom?.ttsModels).toEqual(["kokoro"]);
+  });
+
   it("marks Hugging Face unavailable without a token", async () => {
     const [huggingface] = await availableVoiceProviders(configWith());
     expect(huggingface?.id).toBe("huggingface");

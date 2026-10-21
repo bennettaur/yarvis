@@ -21,6 +21,8 @@ const DEFAULTS: Record<string, unknown> = {
   // A session with nothing captured yet. TerminalPanel destructures this to
   // splice the replay against live output, so an `undefined` answer throws.
   pty_attach: { scrollback: [], endOffset: 0 },
+  // No stored credentials. The custom provider section maps over this list.
+  list_custom_provider_secret_status: [],
 };
 
 export const nativeInvoke = async (command: string): Promise<unknown> => DEFAULTS[command];

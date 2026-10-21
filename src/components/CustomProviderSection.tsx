@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getHealth, waitForSidecarReady } from "../lib/api";
+import type { ModelCapability } from "../lib/chat";
 import {
+  type ConnectionTestResult,
   type CustomProvider,
   type CustomProviderApiKind,
   type CustomProviderInput,
+  type CustomProviderModel,
   type CustomProviderSecretStatus,
   createCustomProvider,
   deleteAllCustomProviderSecrets,
@@ -11,10 +14,15 @@ import {
   deleteCustomProviderSecret,
   listCustomProviderSecretStatus,
   listCustomProviders,
+  type ModelTestResult,
   setCustomProviderSecret,
+  testCustomProvider,
+  testCustomProviderModel,
   updateCustomProvider,
 } from "../lib/customProviders";
 import { restartSidecar } from "../lib/keychain";
+import { CAPABILITY_HINTS, MODEL_CAPABILITIES } from "../lib/modelCatalog";
+import ErrorNotice from "./ErrorNotice";
 import { MaskedInput } from "./MaskedInput";
 
 /**
@@ -41,7 +49,7 @@ interface Draft {
   name: string;
   baseUrl: string;
   apiKind: CustomProviderApiKind;
-  models: string[];
+  models: CustomProviderModel[];
   headerNames: string[];
 }
 
@@ -61,7 +69,7 @@ function draftFromProvider(p: CustomProvider): Draft {
     name: p.name,
     baseUrl: p.baseUrl,
     apiKind: p.apiKind,
-    models: [...p.models],
+    models: p.models.map((m) => ({ ...m, capabilities: [...m.capabilities] })),
     headerNames: [...p.headerNames],
   };
 }
@@ -71,7 +79,9 @@ function toInput(d: Draft): CustomProviderInput {
     name: d.name.trim(),
     baseUrl: d.baseUrl.trim(),
     apiKind: d.apiKind,
-    models: d.models.map((m) => m.trim()).filter(Boolean),
+    models: d.models
+      .map((m) => ({ ...m, id: m.id.trim() }))
+      .filter((m) => m.id && m.capabilities.length > 0),
     headerNames: d.headerNames.map((h) => h.trim()).filter(Boolean),
   };
 }
@@ -299,11 +309,9 @@ function DraftEditor({
         </Labeled>
       </div>
 
-      <ListEditor
-        title="Models"
-        placeholder="gpt-4o"
-        items={draft.models}
-        setItems={(next) => setDraft((d) => ({ ...d, models: next }))}
+      <ModelListEditor
+        models={draft.models}
+        setModels={(next) => setDraft((d) => ({ ...d, models: next }))}
       />
       <ListEditor
         title="Extra header names"
@@ -325,6 +333,113 @@ function DraftEditor({
           className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500"
         >
           Save
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The models a proxy serves, each with its capability tags. The tags decide
+ * which pickers offer the model, so a speech model here never shows up as
+ * something to chat with. A new model starts as `chat`, the common case.
+ */
+function ModelListEditor({
+  models,
+  setModels,
+}: {
+  models: CustomProviderModel[];
+  setModels: (next: CustomProviderModel[]) => void;
+}) {
+  const [pending, setPending] = useState("");
+  const addModel = useCallback(() => {
+    const id = pending.trim();
+    if (!id || models.some((m) => m.id === id)) return;
+    setModels([...models, { id, capabilities: ["chat"] }]);
+    setPending("");
+  }, [pending, models, setModels]);
+
+  const toggle = (id: string, capability: ModelCapability) =>
+    setModels(
+      models.map((m) => {
+        if (m.id !== id) return m;
+        const has = m.capabilities.includes(capability);
+        // A model with no tags would be offered nowhere; Remove is the way to drop it.
+        if (has && m.capabilities.length === 1) return m;
+        return {
+          ...m,
+          capabilities: has
+            ? m.capabilities.filter((c) => c !== capability)
+            : [...m.capabilities, capability],
+        };
+      }),
+    );
+
+  return (
+    <div className="mt-4">
+      <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
+        Models
+      </span>
+      <p className="mb-2 text-xs text-zinc-500">
+        Tags decide where a model shows up. Tag <span className="text-zinc-400">reasoning</span> on
+        models that take an effort level.
+      </p>
+      <ul className="space-y-1">
+        {models.map((model) => (
+          <li
+            key={model.id}
+            className="flex flex-wrap items-center gap-2 rounded-md bg-zinc-800/60 px-2 py-1.5"
+          >
+            <span className="font-mono text-xs text-zinc-200">{model.id}</span>
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              {MODEL_CAPABILITIES.map((capability) => (
+                <label
+                  key={capability}
+                  title={CAPABILITY_HINTS[capability]}
+                  className={`flex items-center gap-1 text-[10px] uppercase tracking-wide ${
+                    model.capabilities.includes(capability) ? "text-zinc-300" : "text-zinc-600"
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={model.capabilities.includes(capability)}
+                    onChange={() => toggle(model.id, capability)}
+                  />
+                  {capability}
+                </label>
+              ))}
+              <button
+                type="button"
+                onClick={() => setModels(models.filter((m) => m.id !== model.id))}
+                className="text-zinc-500 hover:text-zinc-200"
+                aria-label={`Remove ${model.id}`}
+              >
+                ×
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
+      <div className="mt-2 flex gap-2">
+        <input
+          value={pending}
+          placeholder="gpt-4o"
+          aria-label="Model id"
+          onChange={(e) => setPending(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addModel();
+            }
+          }}
+          className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 font-mono text-sm outline-none focus:border-zinc-500"
+        />
+        <button
+          type="button"
+          onClick={addModel}
+          className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
+        >
+          Add
         </button>
       </div>
     </div>
@@ -473,9 +588,7 @@ function ProviderCard({
         </div>
       </div>
 
-      {provider.models.length > 0 && (
-        <div className="mb-3 text-xs text-zinc-400">Models: {provider.models.join(", ")}</div>
-      )}
+      <ConnectionTests provider={provider} />
 
       <SecretRow
         label="API key"
@@ -503,6 +616,126 @@ function ProviderCard({
           onClear={() => onClearSecret(h.slot)}
         />
       ))}
+    </div>
+  );
+}
+
+function testFailure(result: { error: string; detail?: string }) {
+  return { message: result.error, detail: result.detail };
+}
+
+/**
+ * The provider's models with a Test button each, plus one for the connection.
+ * The connection test asks the proxy for its model list, so it also flags a
+ * configured model the proxy doesn't list, usually a typo in the id. Tests run
+ * against the saved settings and credentials, not unsaved edits.
+ */
+function ConnectionTests({ provider }: { provider: CustomProvider }) {
+  const [connection, setConnection] = useState<ConnectionTestResult | "running" | null>(null);
+  const [modelResults, setModelResults] = useState<
+    Record<string, ModelTestResult | "running" | undefined>
+  >({});
+  const [error, setError] = useState<string | null>(null);
+
+  const testConnection = useCallback(async () => {
+    setConnection("running");
+    setError(null);
+    try {
+      setConnection(await testCustomProvider(provider.id));
+    } catch (e) {
+      setConnection(null);
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [provider.id]);
+
+  const testModel = useCallback(
+    async (model: string) => {
+      setModelResults((prev) => ({ ...prev, [model]: "running" }));
+      setError(null);
+      try {
+        const result = await testCustomProviderModel(provider.id, model);
+        setModelResults((prev) => ({ ...prev, [model]: result }));
+      } catch (e) {
+        setModelResults((prev) => ({ ...prev, [model]: undefined }));
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [provider.id],
+  );
+
+  const listed = connection !== null && connection !== "running" && connection.ok;
+  const unlisted = listed
+    ? provider.models.filter((m) => !connection.models.includes(m.id)).map((m) => m.id)
+    : [];
+
+  return (
+    <div className="mb-3 space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          disabled={connection === "running"}
+          onClick={() => void testConnection()}
+          className="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+        >
+          {connection === "running" ? "Testing…" : "Test connection"}
+        </button>
+        {listed && (
+          <span className="text-xs text-emerald-400">
+            Connected in {connection.latencyMs} ms · the proxy lists {connection.models.length}{" "}
+            {connection.models.length === 1 ? "model" : "models"}
+          </span>
+        )}
+      </div>
+      {connection !== null && connection !== "running" && !connection.ok && (
+        <ErrorNotice error={testFailure(connection)} />
+      )}
+      {unlisted.length > 0 && (
+        <p className="text-xs text-amber-400">
+          The proxy doesn't list {unlisted.join(", ")}. Check the model id, or test the model to see
+          whether it answers anyway.
+        </p>
+      )}
+      {error && <p className="text-xs text-red-400">{error}</p>}
+
+      {provider.models.length > 0 && (
+        <ul className="space-y-1">
+          {provider.models.map((model) => {
+            const result = modelResults[model.id];
+            return (
+              <li key={model.id} className="space-y-1">
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="font-mono text-zinc-300">{model.id}</span>
+                  {model.capabilities.map((c) => (
+                    <span
+                      key={c}
+                      title={CAPABILITY_HINTS[c]}
+                      className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-zinc-400"
+                    >
+                      {c}
+                    </span>
+                  ))}
+                  {result && result !== "running" && result.ok && (
+                    <span className="text-emerald-400" title={`Replied: ${result.reply}`}>
+                      Answered in {result.latencyMs} ms
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    disabled={result === "running"}
+                    onClick={() => void testModel(model.id)}
+                    className="ml-auto rounded-md border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+                  >
+                    {result === "running" ? "Testing…" : "Test"}
+                  </button>
+                </div>
+                {result && result !== "running" && !result.ok && (
+                  <ErrorNotice error={testFailure(result)} />
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }

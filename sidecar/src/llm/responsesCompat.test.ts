@@ -77,7 +77,7 @@ async function fakeGateway(replies: Record<string, unknown>[]) {
     name: "litellm",
     baseUrl: `http://127.0.0.1:${server.port}/v1`,
     apiKind: "openai",
-    models: ["bedrock-claude-opus-5-5"],
+    models: [{ id: "bedrock-claude-opus-5-5", capabilities: ["chat"] }],
     headerNames: [],
   });
   const config = {

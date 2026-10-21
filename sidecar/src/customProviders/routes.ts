@@ -2,6 +2,8 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { UrlSafetyError, validateOutboundUrl } from "../lib/urlSafety.ts";
+import { MODEL_CAPABILITIES } from "../llm/catalog.ts";
+import { testProviderConnection, testProviderModel } from "./connectionTest.ts";
 import {
   createCustomProvider,
   deleteCustomProvider,
@@ -38,7 +40,15 @@ const headerName = z
     "header name is reserved and cannot be customised",
   );
 
-const trimmedStrings = z.array(z.string().min(1));
+const modelId = z.string().trim().min(1).max(256);
+
+/** A bare id is what clients sent before models carried tags; it means a chat model. */
+const models = z.array(
+  z.union([
+    modelId.transform((id) => ({ id, capabilities: ["chat" as const] })),
+    z.object({ id: modelId, capabilities: z.array(z.enum(MODEL_CAPABILITIES)).min(1) }),
+  ]),
+);
 const headerNames = z.array(headerName);
 
 const baseUrl = z
@@ -60,7 +70,7 @@ const createSchema = z.object({
   name: z.string().min(1),
   baseUrl,
   apiKind,
-  models: trimmedStrings.default([]),
+  models: models.default([]),
   headerNames: headerNames.default([]),
 });
 
@@ -68,17 +78,16 @@ const updateSchema = z.object({
   name: z.string().min(1).optional(),
   baseUrl: baseUrl.optional(),
   apiKind: apiKind.optional(),
-  models: trimmedStrings.optional(),
+  models: models.optional(),
   headerNames: headerNames.optional(),
 });
 
 /**
  * Custom provider CRUD, mounted under /api/custom-providers. Rows live in
- * `~/.yarvis/settings.json`, so no database handle is needed; `config` stays
- * a parameter only so callers can pass it uniformly with the other route
- * factories.
+ * `~/.yarvis/settings.json`, so no database handle is needed. `config` carries
+ * the saved credentials the connection tests send.
  */
-export function createCustomProviderRoutes(_config: Config): Hono {
+export function createCustomProviderRoutes(config: Config): Hono {
   const router = new Hono();
 
   router.get("/", async (c) => c.json(await listCustomProviders()));
@@ -103,6 +112,22 @@ export function createCustomProviderRoutes(_config: Config): Hono {
     const row = await updateCustomProvider(c.req.param("id"), parsed.data);
     if (!row) return c.json({ error: "not found" }, 404);
     return c.json(row);
+  });
+
+  /** Whether the proxy answers with the saved URL and credentials, and which models it lists. */
+  router.post("/:id/test", async (c) => {
+    const row = await getCustomProvider(c.req.param("id"));
+    if (!row) return c.json({ error: "not found" }, 404);
+    return c.json(await testProviderConnection(config, row));
+  });
+
+  /** Sends one model a short prompt through the same path a chat turn takes. */
+  router.post("/:id/test-model", async (c) => {
+    const parsed = z.object({ model: modelId }).safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const row = await getCustomProvider(c.req.param("id"));
+    if (!row) return c.json({ error: "not found" }, 404);
+    return c.json(await testProviderModel(config, row, parsed.data.model));
   });
 
   router.delete("/:id", async (c) => {

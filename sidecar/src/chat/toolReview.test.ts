@@ -226,7 +226,7 @@ describe("createToolCallReviewer", () => {
       name: "local ollama",
       baseUrl: "http://127.0.0.1:11434",
       apiKind: "ollama",
-      models: ["jev"],
+      models: [{ id: "jev", capabilities: ["chat"] }],
       headerNames: [],
     });
     const provider = `custom:${row.id}`;

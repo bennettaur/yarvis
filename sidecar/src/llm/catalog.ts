@@ -25,8 +25,21 @@ import { readSection, withSection } from "../settings/store.ts";
  * output, such as whether a tool call is safe to run without asking. A small
  * local model is often the right pick, since the call sits in the user's
  * latency path on every tool call it reviews.
+ *
+ * `reasoning` marks a chat model that takes an effort level: how much it
+ * thinks before answering. It is what puts an effort picker beside the model,
+ * so tag only models whose provider accepts the parameter; one that doesn't
+ * can fail the whole call over the extra field.
  */
-export const MODEL_CAPABILITIES = ["chat", "stt", "tts", "vision", "embed", "decision"] as const;
+export const MODEL_CAPABILITIES = [
+  "chat",
+  "stt",
+  "tts",
+  "vision",
+  "embed",
+  "decision",
+  "reasoning",
+] as const;
 
 export type ModelCapability = (typeof MODEL_CAPABILITIES)[number];
 
@@ -82,19 +95,21 @@ const chatWithWindow = (
  * is no separate ASR model to name. Its `-tts` models are the reverse: audio
  * out only, and deliberately not tagged `chat` so they can't be picked to
  * answer with.
+ *
+ * Claude Haiku 4.5 is not tagged `reasoning`: it predates the effort parameter.
  */
 export const DEFAULT_MODELS: Record<string, ModelInfo[]> = {
   anthropic: [
-    chatWithWindow("claude-opus-4-7", 150_000, "vision"),
-    chatWithWindow("claude-sonnet-4-6", 150_000, "vision"),
+    chatWithWindow("claude-opus-4-7", 150_000, "vision", "reasoning"),
+    chatWithWindow("claude-sonnet-4-6", 150_000, "vision", "reasoning"),
     chatWithWindow("claude-haiku-4-5", 150_000, "vision"),
   ],
-  bedrock: [chatWithWindow("anthropic.claude-sonnet-4-6-v1:0", 150_000, "vision")],
+  bedrock: [chatWithWindow("anthropic.claude-sonnet-4-6-v1:0", 150_000, "vision", "reasoning")],
   gemini: [
-    chatWithWindow("gemini-3.5-flash", 800_000, "vision", "stt"),
-    chatWithWindow("gemini-3-flash-preview", 800_000, "vision", "stt"),
-    chatWithWindow("gemini-3.1-flash-lite", 800_000, "vision", "stt"),
-    chatWithWindow("gemini-3.1-pro-preview", 800_000, "vision", "stt"),
+    chatWithWindow("gemini-3.5-flash", 800_000, "vision", "stt", "reasoning"),
+    chatWithWindow("gemini-3-flash-preview", 800_000, "vision", "stt", "reasoning"),
+    chatWithWindow("gemini-3.1-flash-lite", 800_000, "vision", "stt", "reasoning"),
+    chatWithWindow("gemini-3.1-pro-preview", 800_000, "vision", "stt", "reasoning"),
     { id: "gemini-2.5-flash-preview-tts", capabilities: ["tts"] },
     { id: "gemini-2.5-pro-preview-tts", capabilities: ["tts"] },
   ],

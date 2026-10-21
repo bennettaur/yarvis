@@ -1,3 +1,4 @@
+import { isModelCapability, type ModelInfo } from "../llm/catalog.ts";
 import { readSection, withSection } from "../settings/store.ts";
 
 /**
@@ -22,12 +23,19 @@ import { readSection, withSection } from "../settings/store.ts";
  */
 export type CustomProviderApiKind = "openai" | "openai-chat" | "anthropic" | "ollama";
 
+/**
+ * One model the proxy serves, tagged with what it can do. The tags decide
+ * which pickers offer it, exactly as they do for a built-in provider's
+ * catalogue entry.
+ */
+export type CustomProviderModel = Pick<ModelInfo, "id" | "capabilities">;
+
 export interface CustomProviderRow {
   id: string;
   name: string;
   baseUrl: string;
   apiKind: CustomProviderApiKind;
-  models: string[];
+  models: CustomProviderModel[];
   headerNames: string[];
   createdAt: string;
   updatedAt: string;
@@ -37,7 +45,7 @@ export interface CustomProviderInput {
   name: string;
   baseUrl: string;
   apiKind: CustomProviderApiKind;
-  models: string[];
+  models: CustomProviderModel[];
   headerNames: string[];
 }
 
@@ -47,16 +55,32 @@ const SETTINGS_KEY = "customProviders";
 
 type CustomProvidersSection = Record<string, CustomProviderRow>;
 
+/**
+ * A provider saved before models carried tags stores bare ids. Those were all
+ * entered as chat models, since that is all the form asked for, so they read
+ * back as `chat`. A tag this build doesn't know is dropped, as `catalog.ts`
+ * does for its own rows.
+ */
+function withTaggedModels(row: CustomProviderRow): CustomProviderRow {
+  const models = (row.models as unknown[]).map((m): CustomProviderModel => {
+    if (typeof m === "string") return { id: m, capabilities: ["chat"] };
+    const model = m as CustomProviderModel;
+    return { id: model.id, capabilities: model.capabilities.filter(isModelCapability) };
+  });
+  return { ...row, models };
+}
+
 export async function listCustomProviders(): Promise<CustomProviderRow[]> {
   const section = await readSection<CustomProvidersSection>(SETTINGS_KEY);
-  return Object.values(section ?? {}).sort((a, b) =>
-    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
-  );
+  return Object.values(section ?? {})
+    .map(withTaggedModels)
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
 export async function getCustomProvider(id: string): Promise<CustomProviderRow | null> {
   const section = await readSection<CustomProvidersSection>(SETTINGS_KEY);
-  return section?.[id] ?? null;
+  const row = section?.[id];
+  return row ? withTaggedModels(row) : null;
 }
 
 export async function createCustomProvider(input: CustomProviderInput): Promise<CustomProviderRow> {
@@ -79,7 +103,11 @@ export async function updateCustomProvider(
   return withSection<CustomProvidersSection, CustomProviderRow | null>(SETTINGS_KEY, (current) => {
     const existing = current?.[id];
     if (!existing) return { next: current ?? {}, result: null };
-    const row: CustomProviderRow = { ...existing, ...patch, updatedAt: new Date().toISOString() };
+    const row: CustomProviderRow = withTaggedModels({
+      ...existing,
+      ...patch,
+      updatedAt: new Date().toISOString(),
+    });
     return { next: { ...current, [id]: row }, result: row };
   });
 }

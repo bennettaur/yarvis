@@ -6,6 +6,7 @@ import {
   type ProviderInfo,
 } from "../lib/chat";
 import {
+  CAPABILITY_HINTS,
   deleteProviderModel,
   getModelCatalog,
   type ModelCatalog,
@@ -25,16 +26,6 @@ import {
 
 const FIELD =
   "w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500";
-
-/** What each tag means, shown as the checkbox's title so the list needs no key. */
-const CAPABILITY_HINTS: Record<ModelCapability, string> = {
-  chat: "Can answer a chat turn — the model that thinks.",
-  stt: "Can turn recorded speech into text.",
-  tts: "Can speak text aloud.",
-  vision: "Can read images in a prompt.",
-  embed: "Can produce embedding vectors.",
-  decision: "Can answer a yes/no judgement, such as whether a tool call is safe to run unasked.",
-};
 
 interface Draft {
   modelId: string;
@@ -244,6 +235,10 @@ export default function ModelCatalogSection() {
         const rows = rowsFor(providerId);
         const defaults = catalog.defaults[providerId] ?? [];
         const customised = rows.length > 0;
+        // A custom provider's defaults are the list saved in its own settings, not bundled ones.
+        const defaultsLabel = providerId.startsWith("custom:")
+          ? "provider's list"
+          : "built-in list";
         const draft = drafts[providerId] ?? blankDraft();
         const shown: {
           id: string;
@@ -270,7 +265,7 @@ export default function ModelCatalogSection() {
           >
             <div className="flex items-center gap-2">
               <h3 className="text-sm text-zinc-200">{labelFor(providerId)}</h3>
-              <Chip label={customised ? "customised" : "built-in list"} />
+              <Chip label={customised ? "customised" : defaultsLabel} />
               {customised && (
                 <button
                   type="button"
@@ -278,7 +273,7 @@ export default function ModelCatalogSection() {
                   onClick={() => void run(() => resetProviderModels(providerId))}
                   className="ml-auto rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800 disabled:opacity-40"
                 >
-                  Reset to built-in list
+                  Reset to {defaultsLabel}
                 </button>
               )}
             </div>
@@ -403,7 +398,7 @@ export default function ModelCatalogSection() {
 
             {!customised && defaults.length > 0 && (
               <p className="text-xs text-zinc-600">
-                Adding a model copies this built-in list into your settings, so it stays editable.
+                Adding a model copies the {defaultsLabel} into your settings, so it stays editable.
               </p>
             )}
           </div>
