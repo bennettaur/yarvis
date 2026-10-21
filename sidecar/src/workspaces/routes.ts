@@ -42,6 +42,7 @@ import {
   workspaceRepoSync,
 } from "./service.ts";
 import { mergeWorkspaceRepoStack, workspaceRepoStack } from "./stack.ts";
+import { repoTrackerSchema } from "./tracker.ts";
 import { listWorkspaceWorktrees, resolveWorktree } from "./worktrees.ts";
 
 const createRepoSchema = z.object({
@@ -50,6 +51,7 @@ const createRepoSchema = z.object({
   setupScript: z.string().nullish(),
   runScript: z.string().nullish(),
   pullIssues: z.boolean().optional(),
+  tracker: repoTrackerSchema.nullish(),
 });
 
 const updateRepoSchema = z.object({
@@ -58,6 +60,8 @@ const updateRepoSchema = z.object({
   setupScript: z.string().nullish(),
   runScript: z.string().nullish(),
   pullIssues: z.boolean().optional(),
+  // Null clears the setting; leaving it out keeps it.
+  tracker: repoTrackerSchema.nullish(),
 });
 
 const createWorkspaceSchema = z.object({

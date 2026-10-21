@@ -267,6 +267,13 @@
       "when": 1792558972065,
       "tag": "0037_tiresome_drax",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1792588873975,
+      "tag": "0038_yielding_leper_queen",
+      "breakpoints": true
     }
   ]
 }

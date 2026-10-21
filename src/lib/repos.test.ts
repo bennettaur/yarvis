@@ -97,6 +97,7 @@ describe("repoPrRef", () => {
     setupScript: null,
     runScript: null,
     pullIssues: false,
+    tracker: null,
     createdAt: "",
     updatedAt: "",
   };
