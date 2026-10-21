@@ -103,6 +103,9 @@ describe("GitHubClient rate limiting", () => {
     setSystemTime();
   });
 
+  /** A REST-only read, so these exercise the backoff without a GraphQL fallback in the way. */
+  const restRead = (gh: GitHubClient) => gh.prFiles("o", "r", 1);
+
   /** A GitHub that answers each call with the next status in `statuses`, 200 after that. */
   function scripted(
     statuses: { status: number; headers?: Record<string, string>; message?: string }[],
@@ -112,7 +115,7 @@ describe("GitHubClient rate limiting", () => {
       const next = statuses[calls++];
       return next
         ? respond(next.status, next.headers, next.message)
-        : new Response(JSON.stringify({ login: "me" }), { status: 200 });
+        : new Response("[]", { status: 200 });
     }) as unknown as typeof fetch;
     return { fetchImpl, calls: () => calls };
   }
@@ -121,32 +124,32 @@ describe("GitHubClient rate limiting", () => {
     setSystemTime(new Date("2026-10-18T12:00:00Z"));
     const github = scripted([{ status: 429, headers: { "Retry-After": "30" } }]);
     const gh = new GitHubClient("recovering-token", github.fetchImpl);
-    await expect(gh.viewer()).rejects.toBeInstanceOf(GitHubError);
+    await expect(restRead(gh)).rejects.toBeInstanceOf(GitHubError);
     setSystemTime(new Date("2026-10-18T12:00:31Z"));
-    expect(await gh.viewer()).toEqual({ login: "me" });
+    expect(await restRead(gh)).toEqual([]);
     expect(github.calls()).toBe(2);
   });
 
   it("doesn't hold back after a 403 that isn't a rate limit", async () => {
     const github = scripted([{ status: 403, headers: { "X-GitHub-SSO": "required; url=x" } }]);
     const gh = new GitHubClient("sso-token", github.fetchImpl);
-    await expect(gh.viewer()).rejects.toBeInstanceOf(GitHubError);
-    expect(await gh.viewer()).toEqual({ login: "me" });
+    await expect(restRead(gh)).rejects.toBeInstanceOf(GitHubError);
+    expect(await restRead(gh)).toEqual([]);
   });
 
   it("backs off a secondary limit that only the message names", async () => {
     const github = scripted([{ status: 403, message: "You have exceeded a secondary rate limit" }]);
     const gh = new GitHubClient("secondary-token", github.fetchImpl);
-    await expect(gh.viewer()).rejects.toBeInstanceOf(GitHubError);
-    await expect(gh.viewer()).rejects.toBeInstanceOf(GitHubError);
+    await expect(restRead(gh)).rejects.toBeInstanceOf(GitHubError);
+    await expect(restRead(gh)).rejects.toBeInstanceOf(GitHubError);
     expect(github.calls()).toBe(1);
   });
 
   it("limits each token on its own", async () => {
     const limited = scripted([{ status: 429 }]);
-    await expect(new GitHubClient("token-a", limited.fetchImpl).viewer()).rejects.toThrow();
+    await expect(restRead(new GitHubClient("token-a", limited.fetchImpl))).rejects.toThrow();
     const other = scripted([]);
-    expect(await new GitHubClient("token-b", other.fetchImpl).viewer()).toEqual({ login: "me" });
+    expect(await restRead(new GitHubClient("token-b", other.fetchImpl))).toEqual([]);
   });
 
   it("stops calling GitHub until the time it gave", async () => {
@@ -157,8 +160,8 @@ describe("GitHubClient rate limiting", () => {
     }) as unknown as typeof fetch;
     const gh = new GitHubClient("rate-limited-token", fetchImpl);
 
-    await expect(gh.viewer()).rejects.toBeInstanceOf(GitHubError);
-    const second = await gh.viewer().catch((e) => e);
+    await expect(restRead(gh)).rejects.toBeInstanceOf(GitHubError);
+    const second = await restRead(gh).catch((e) => e);
     expect(second).toBeInstanceOf(GitHubError);
     expect((second as GitHubError).reason).toBe("rate_limited");
     expect(calls).toBe(1);
@@ -170,12 +173,12 @@ describe("GitHubClient rate limiting", () => {
       const path = new URL(url).pathname;
       paths.push(path);
       if (path.startsWith("/search/")) return respond(403, { "X-RateLimit-Remaining": "0" });
-      return new Response(JSON.stringify({ login: "me" }), { status: 200 });
+      return new Response("[]", { status: 200 });
     }) as unknown as typeof fetch;
     const gh = new GitHubClient("search-limited-token", fetchImpl);
 
     await expect(gh.searchIssues("is:open")).rejects.toBeInstanceOf(GitHubError);
-    expect(await gh.viewer()).toEqual({ login: "me" });
-    expect(paths).toEqual(["/search/issues", "/user"]);
+    expect(await restRead(gh)).toEqual([]);
+    expect(paths).toEqual(["/search/issues", "/repos/o/r/pulls/1/files"]);
   });
 });

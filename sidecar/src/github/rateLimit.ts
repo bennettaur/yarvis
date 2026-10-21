@@ -17,7 +17,8 @@ function bucketOf(url: URL): string {
   return "core";
 }
 
-function tokenKey(token: string): string {
+/** A stand-in for a token in long-lived maps, so the token itself isn't kept. */
+export function tokenKey(token: string): string {
   return createHash("sha256").update(token).digest("hex").slice(0, 16);
 }
 
@@ -43,10 +44,23 @@ export function rateLimitedFetch(fetchImpl: FetchFn, token: string): FetchFn {
     // A secondary limit can be named only in the body, so a 403 reads a copy
     // of it; the caller still gets the untouched response.
     const message = res.status === 403 ? await res.clone().text() : null;
-    const wait = rateLimitWaitMs(res.status, res.headers, message);
+    const wait = rateLimitWaitMs(res.status, res.headers, message) ?? spentBudgetWaitMs(res);
     if (wait !== null) blockedUntil.set(key, Date.now() + wait);
     return res;
   }) as FetchFn;
+}
+
+/**
+ * A reply that succeeded but left nothing in the budget: the next call would
+ * be refused, so stop before it. GraphQL reports a spent limit this way, with
+ * a 200, which is what lets reads switch to REST straight away.
+ */
+function spentBudgetWaitMs(res: Response): number | null {
+  if (res.headers.get("x-ratelimit-remaining") !== "0") return null;
+  const reset = Number(res.headers.get("x-ratelimit-reset"));
+  if (!Number.isFinite(reset) || reset <= 0) return null;
+  const wait = reset * 1000 - Date.now();
+  return wait > 0 ? wait : null;
 }
 
 function rateLimitBackoffError(until: number, path: string): GitHubError {

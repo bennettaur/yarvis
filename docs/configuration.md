@@ -81,6 +81,11 @@ AWS Bedrock uses the standard AWS credential chain (`~/.aws`, `AWS_PROFILE`,
   token, an org that needs SSO authorization, a missing scope or permission,
   a private repo the token can't see, or a rate limit and when it resets.
   After a rate limit, Yarvis stops calling GitHub until the time GitHub gave.
+
+  GitHub gives REST and GraphQL separate budgets. The reads Yarvis repeats
+  most (the workspace poller, each PR row's status, issue lists and the
+  signed-in account) go through GraphQL and switch to REST only while GraphQL
+  is rate-limited or failing, so polling doesn't spend the REST budget.
 - **Azure DevOps.** A PAT with **Code (read & write)** and **Pull Request
   Threads (read & write)**. Code (read) is enough to browse and comment, but
   voting and publishing a draft write to the PR itself.

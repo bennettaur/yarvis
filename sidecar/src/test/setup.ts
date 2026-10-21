@@ -2,6 +2,7 @@ import { afterAll, beforeEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resetViewerLogins } from "../github/client.ts";
 import { resetRateLimits } from "../github/rateLimit.ts";
 
 // Keep the whole suite off the user's ~/.yarvis, so a test that forgets its own
@@ -16,9 +17,10 @@ afterAll(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-// GitHub rate limits are remembered per token for the life of the process, and
-// test files reuse tokens, so one test's 429 would otherwise skip the next one's
-// calls.
+// GitHub rate limits and logins are remembered per token for the life of the
+// process, and test files reuse tokens, so one test's 429 or login would
+// otherwise leak into the next.
 beforeEach(() => {
   resetRateLimits();
+  resetViewerLogins();
 });

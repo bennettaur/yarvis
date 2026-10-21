@@ -204,3 +204,57 @@ export function githubErrorResponse(c: Context, e: unknown): Response {
 export function missingTokenResponse(c: Context): Response {
   return c.json({ error: "github token not configured", reason: "missing_token" }, 400);
 }
+
+/** One entry of a GraphQL reply's `errors` array. */
+export interface GraphqlErrorEntry {
+  type?: string;
+  path?: (string | number)[];
+  message?: string;
+}
+
+/**
+ * Builds a {@link GitHubError} from a GraphQL reply that carries errors. GraphQL
+ * answers most refusals with a 200 and names the reason in each error's `type`,
+ * where REST would use the status and headers.
+ */
+export function githubErrorFromGraphql(errors: GraphqlErrorEntry[]): GitHubError {
+  const detail =
+    errors
+      .map((e) => e.message)
+      .filter(Boolean)
+      .join("; ") || JSON.stringify(errors);
+  const has = (type: string) => errors.some((e) => e.type === type);
+  if (has("RATE_LIMITED")) {
+    return new GitHubError(429, "rate_limited", "GitHub's GraphQL rate limit was hit.", "graphql");
+  }
+  if (errors.some((e) => /SAML/i.test(e.message ?? ""))) {
+    return new GitHubError(
+      403,
+      "sso_required",
+      `This organization requires SAML SSO, and the token isn't authorized for it. ${detail}`,
+      "graphql",
+    );
+  }
+  if (has("FORBIDDEN")) {
+    return new GitHubError(403, "forbidden", `GitHub refused the request: ${detail}`, "graphql");
+  }
+  if (has("NOT_FOUND")) {
+    return new GitHubError(
+      404,
+      "not_found",
+      `Not found (${detail}). GitHub also answers this for a private repository the token can't see, so check the token has access to it.`,
+      "graphql",
+    );
+  }
+  return new GitHubError(502, "upstream_error", `GitHub returned an error: ${detail}`, "graphql");
+}
+
+/**
+ * Whether a read that failed through GraphQL should be retried through REST.
+ * Only when GraphQL couldn't answer at all: its rate limit is spent, GitHub is
+ * failing, or the network is. A refusal (no access, SSO, not found) would be
+ * the answer either way, so it is reported, not retried.
+ */
+export function shouldFallBackToRest(e: unknown): boolean {
+  return e instanceof GitHubError && (e.reason === "rate_limited" || e.reason === "upstream_error");
+}
