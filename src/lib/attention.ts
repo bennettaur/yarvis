@@ -7,7 +7,7 @@ import { ensureOk, sidecarFetch, streamSSE } from "./api";
  */
 
 export type AttentionSource = "claude-hook" | "chat-agent" | "system";
-export type AttentionKind = "permission" | "idle" | "completed" | "error" | "info";
+export type AttentionKind = "permission" | "idle" | "completed" | "error" | "info" | "question";
 export type AttentionStatus = "pending" | "read" | "resolved" | "dismissed";
 
 /** Where clicking an item should take the user; mirrors the sidecar union. */
@@ -20,7 +20,8 @@ export type AttentionNavTarget =
   | { type: "pr"; owner: string; repo: string; number: number }
   | { type: "azure-pr"; org: string; project: string; repo: string; prId: number }
   | { type: "issue"; provider: string; sourceKey: string; externalId: string }
-  | { type: "task"; taskId: string };
+  | { type: "task"; taskId: string }
+  | { type: "heads-down" };
 
 export interface AttentionItem {
   id: string;
@@ -33,6 +34,8 @@ export interface AttentionItem {
   body: string | null;
   status: AttentionStatus;
   navTarget: AttentionNavTarget | null;
+  /** What the producer attached; a `question` item carries `{ questionId }`. */
+  payload?: unknown;
   createdAt: string;
   updatedAt: string;
 }
@@ -100,4 +103,52 @@ export async function* streamAttention(signal: AbortSignal): AsyncGenerator<Atte
       console.warn("[attention] dropped unparseable stream frame:", e);
     }
   }
+}
+
+/**
+ * A Claude Code permission prompt waiting on the user, mirroring the sidecar's
+ * `PermissionRequestInfo`. Only answerable while the session's hook is still
+ * connected, so it is listed live rather than kept in the attention table.
+ */
+export interface PermissionRequest {
+  id: string;
+  sessionKey: string;
+  workspaceId: string | null;
+  workspaceName: string | null;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  cwd: string | null;
+  permissionMode: string | null;
+  lastReply: string | null;
+  lastPrompt: string | null;
+  createdAt: string;
+}
+
+/** `terminal` leaves the prompt to Claude Code's own dialog in the session. */
+export type PermissionDecision =
+  | { behavior: "allow" }
+  | { behavior: "deny"; message?: string }
+  | { behavior: "terminal" };
+
+/** The permission prompts still waiting, oldest first, optionally for one session. */
+export async function getPermissionRequests(sessionKey?: string): Promise<PermissionRequest[]> {
+  const query = sessionKey ? `?sessionKey=${encodeURIComponent(sessionKey)}` : "";
+  const res = await sidecarFetch(`/api/attention/permissions${query}`);
+  await ensureOk(res, "list permission requests");
+  return res.json();
+}
+
+/**
+ * Answers a waiting prompt. Resolves false when it was no longer waiting —
+ * answered in the terminal, or the session moved on.
+ */
+export async function decidePermission(id: string, decision: PermissionDecision): Promise<boolean> {
+  const res = await sidecarFetch(`/api/attention/permissions/${encodeURIComponent(id)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(decision),
+  });
+  if (res.status === 410) return false;
+  await ensureOk(res, "answer permission request");
+  return true;
 }

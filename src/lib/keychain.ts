@@ -65,7 +65,7 @@ export const SECRETS: SecretMeta[] = [
     key: "github_token",
     label: "GitHub token",
     placeholder: "ghp_...",
-    help: "Fine-grained or classic PAT for the PR dashboard (repo + read access).",
+    help: "Sign in with GitHub, or paste a token: classic with repo and read:org, or fine-grained with access to your repos. Used for PRs, issues and stacks.",
   },
   {
     key: "azure_devops_token",

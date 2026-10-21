@@ -141,6 +141,25 @@ describe("pgvector memory store", () => {
     expect(hits[0]!.kind).toBe("note");
   });
 
+  it("embeds a memory by its search text, and keeps doing so after a re-embed", async () => {
+    const rec = await store.add("deploy freeze\nDecided: wait", { searchText: "deploy freeze" });
+    const similarityTo = async (query: string) =>
+      (await store.search(query, 1)).find((h) => h.id === rec.id)?.similarity;
+
+    expect(await similarityTo("deploy freeze")).toBeCloseTo(1, 5);
+    await store.reembedAll();
+    expect(await similarityTo("deploy freeze")).toBeCloseTo(1, 5);
+  });
+
+  it("drops the search text when an edit changes what the memory says", async () => {
+    const rec = await store.add("deploy freeze\nDecided: wait", { searchText: "deploy freeze" });
+    await store.update(rec.id, { content: "release train paused" });
+
+    expect((await store.get(rec.id))?.metadata).not.toHaveProperty("searchText");
+    const [hit] = await store.search("release train paused", 1);
+    expect(hit?.similarity).toBeCloseTo(1, 5);
+  });
+
   it("stamps the producing embedder onto each memory", async () => {
     const rec = await store.add("stamped");
     const got = await store.get(rec.id);

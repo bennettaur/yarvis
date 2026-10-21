@@ -7,7 +7,7 @@ import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import type { GitRunner } from "./git.ts";
-import { createReviewComment } from "./reviewComments.ts";
+import { createReviewComment, listLocatedReviewComments } from "./reviewComments.ts";
 import { archiveWorkspace, createWorkspace, getWorkspace, provisionWorkspace } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -77,7 +77,7 @@ async function addRepo(name: string): Promise<string> {
   return ((await res.json()) as { id: string }).id;
 }
 
-/** A provisioned workspace, plus the ids of its worktree rows in order. */
+/** A provisioned workspace, plus the ids of its worktree rows in the order the repos are named. */
 async function workspaceWithRepos(
   name: string,
   repoNames: string[],
@@ -87,7 +87,10 @@ async function workspaceWithRepos(
   const ws = await createWorkspace(db, config, { name, repoIds });
   await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
   const detail = await getWorkspace(db, ws.id);
-  return { id: ws.id, repoIds: (detail?.repos ?? []).map((r) => r.id) };
+  // Looked up by name: the rows are inserted together, so they share a
+  // created_at and come back from getWorkspace in no fixed order.
+  const idOf = new Map((detail?.repos ?? []).map((r) => [r.repo.name, r.id]));
+  return { id: ws.id, repoIds: repoNames.map((repoName) => idOf.get(repoName) ?? "") };
 }
 
 /** The common case: one repo, and its worktree row id to file comments against. */
@@ -219,6 +222,25 @@ describe("review comment routes", () => {
     const comments = await list(ws.id);
     expect(comments.map((c) => c.body)).toEqual(["In the first repo.", "In the second repo."]);
     expect(new Set(comments.map((c) => c.workspaceRepoId))).toEqual(new Set(ws.repoIds));
+  });
+
+  it("names each comment's repo and worktree for an agent working from the root", async () => {
+    const mine = await workspaceWithRepos("located", ["web", "api"]);
+    const theirs = await workspaceWithRepo("elsewhere");
+    const base = { path: "src/a.ts", startLine: 1, endLine: 1 };
+    await post(mine.id, { ...base, workspaceRepoId: mine.repoIds[0], body: "In web." });
+    await post(mine.id, { ...base, workspaceRepoId: mine.repoIds[1], body: "In api." });
+    await post(theirs.id, { ...base, workspaceRepoId: theirs.repoId, body: "Elsewhere." });
+
+    const detail = await getWorkspace(db, mine.id);
+    const worktreeOf = new Map<string, string>(
+      (detail?.repos ?? []).map((r) => [r.id, r.worktreePath]),
+    );
+    const comments = await listLocatedReviewComments(db, mine.id);
+    expect(comments.map((c) => [c.body, c.repoName, c.worktreePath])).toEqual([
+      ["In web.", "web", worktreeOf.get(mine.repoIds[0] ?? "") ?? ""],
+      ["In api.", "api", worktreeOf.get(mine.repoIds[1] ?? "") ?? ""],
+    ]);
   });
 
   // The copied text numbers entries in list order, so the order is a contract.
@@ -362,10 +384,18 @@ describe("review comment routes", () => {
       body: "Still needed — this archive did not finish.",
     });
 
-    const dirtyGit: GitRunner = async (args, opts) =>
-      args[0] === "worktree" && args[1] === "remove" && !args.includes("--force")
-        ? { stdout: "", stderr: "worktree contains modified files", exitCode: 1 }
-        : fakeGit(args, opts);
+    // The refused worktree stays listed, since git still has it registered.
+    let refused = "";
+    const dirtyGit: GitRunner = async (args, opts) => {
+      if (args[0] === "worktree" && args[1] === "remove" && !args.includes("--force")) {
+        refused = args[2] ?? "";
+        return { stdout: "", stderr: "worktree contains modified files", exitCode: 1 };
+      }
+      if (args[0] === "worktree" && args[1] === "list") {
+        return { stdout: `worktree ${refused}\0\0`, stderr: "", exitCode: 0 };
+      }
+      return fakeGit(args, opts);
+    };
 
     const result = await archiveWorkspace(db, ws.id, {}, dirtyGit);
     expect(result.status).toBe("archiving");

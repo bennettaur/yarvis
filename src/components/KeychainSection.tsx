@@ -10,6 +10,7 @@ import {
 import { clearResourceCache } from "../lib/resourceCache";
 import { restartAndWait } from "../lib/restart";
 import { StatusDot } from "./Dashboard";
+import { GithubSignIn } from "./GithubSignIn";
 import { MaskedInput } from "./MaskedInput";
 
 /**
@@ -78,6 +79,13 @@ export default function KeychainSection() {
     [refresh],
   );
 
+  // The sidecar already stored the token; it only takes effect on a restart.
+  const onGithubSignedIn = useCallback(async () => {
+    await restartAndWait();
+    clearResourceCache();
+    await refresh();
+  }, [refresh]);
+
   const isPresent = (key: SecretKey) => secrets.find((s) => s.key === key)?.present ?? false;
 
   return (
@@ -98,6 +106,7 @@ export default function KeychainSection() {
               </span>
             </div>
             <p className="mb-2 text-xs text-zinc-500">{meta.help}</p>
+            {meta.key === "github_token" && <GithubSignIn onSignedIn={onGithubSignedIn} />}
             <div className="flex gap-2">
               <MaskedInput
                 value={inputs[meta.key] ?? ""}

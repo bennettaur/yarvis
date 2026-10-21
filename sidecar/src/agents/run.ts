@@ -238,6 +238,9 @@ export async function runSpecialistDefinition(input: RunDefinitionInput): Promis
     // A delegated run is not the user asking for a session, so nothing it starts
     // is made remotely controllable.
     remoteControl: false,
+    // The question tools wait on the user for longer than a run may last, holding
+    // up the chat or job that started it, and a run has no chat to show them in.
+    atTheApp: false,
   });
   const disabled = new Set((await listDisabledToolIds(db)).map((t) => t.id));
   const tools = selectTools(allTools, specialist.tools.map(builtinIdForName), {

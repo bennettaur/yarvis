@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { SidecarError } from "../lib/api";
 import { useOmniChatContext } from "../lib/omniChatContext";
 import { addStar, removeStar } from "../lib/pr/api";
 import {
@@ -40,25 +41,43 @@ import RefreshingIndicator from "./RefreshingIndicator";
 
 const GH_MY = "is:open is:pr author:@me";
 
+/** `true` when the GitHub token works, `false` when none is saved, otherwise why GitHub refused it. */
+type GithubProbeResult = true | false | string;
+
 /**
- * Whether one provider's credentials work. A 4xx is a definite "these don't",
- * worth caching for as long as the credentials themselves last. Anything else —
- * a sidecar still starting up, a network blip — is rethrown so it is not cached
- * at all: a transient failure must not take a provider off the toggle until the
- * probe's long TTL expires.
+ * Whether GitHub's credentials work. A refusal is a definite answer, worth
+ * caching for as long as the credentials themselves last. Anything else — a
+ * sidecar still starting up, a network blip, a rate limit — is rethrown so it
+ * is not cached at all: a transient failure must not take GitHub off the toggle
+ * until the probe's long TTL expires.
  */
-async function probe(viewer: () => Promise<unknown>): Promise<boolean> {
+async function probeGithub(): Promise<GithubProbeResult> {
   try {
-    await viewer();
+    await ghViewer();
     return true;
   } catch (e) {
-    const status = e && typeof e === "object" ? (e as { status?: unknown }).status : undefined;
-    if (typeof status === "number" && status >= 400 && status < 500) return false;
-    throw e;
+    const refusal = githubRefusal(e);
+    if (!refusal || refusal.reason === "rate_limited" || refusal.reason === "upstream_error") {
+      throw e;
+    }
+    return refusal.reason === "missing_token" ? false : refusal.error;
   }
 }
 
-const probeGithub = () => probe(ghViewer);
+/** The sidecar's `{ error, reason }` for a GitHub route it answered with a 4xx. */
+function githubRefusal(e: unknown): { error: string; reason: string } | null {
+  const { status, detail } = (e ?? {}) as Partial<SidecarError>;
+  if (typeof status !== "number" || status < 400 || status >= 500) return null;
+  try {
+    const body = JSON.parse(detail ?? "") as { error?: unknown; reason?: unknown };
+    if (typeof body.error === "string" && typeof body.reason === "string") {
+      return { error: body.error, reason: body.reason };
+    }
+  } catch {
+    // Not the sidecar's JSON; treat it as unexplained.
+  }
+  return null;
+}
 
 /** `true` when Azure's credentials work, otherwise the sidecar's reason they don't. */
 type AzureProbeResult = true | AzureViewerReason;
@@ -181,9 +200,9 @@ export default function PrsPanel({
    * from "checked, found nothing", so the empty state can't flash on first
    * paint.
    *
-   * A probe that finds no working credentials resolves to `false` (GitHub) or
-   * the rejection reason (Azure) rather than rejecting: "this provider isn't configured" is an answer worth caching, and
-   * errors are not cached. A user with only GitHub set up would otherwise
+   * A probe that finds no working credentials resolves to `false` or the
+   * rejection reason rather than rejecting: "this provider isn't configured" is
+   * an answer worth caching, and errors are not cached. A user with only GitHub set up would otherwise
    * re-probe Azure on every remount and hold `probeComplete` — and with it the
    * lists — behind that round trip.
    */
@@ -191,12 +210,13 @@ export default function PrsPanel({
   const azProbe = useCachedResource(`${PRS_PROBE_PREFIX}azure`, probeAzure, PROBE_FRESHNESS);
   const availableProviders = useMemo(() => {
     const set = new Set<Provider>();
-    if (ghProbe.data) set.add("github");
+    if (ghProbe.data === true) set.add("github");
     if (azProbe.data === true) set.add("azure");
     return set;
   }, [ghProbe.data, azProbe.data]);
   const probeComplete = !ghProbe.loading && !azProbe.loading;
   const azureProblem = azureSetupMessage(azProbe.data);
+  const githubProblem = typeof ghProbe.data === "string" ? `GitHub: ${ghProbe.data}` : null;
 
   // The probe already confirmed the viewer works, so the lists skip a second
   // round trip and search straight away. Credentials invalidated mid-session
@@ -401,6 +421,7 @@ export default function PrsPanel({
     const unreachable = ghProbe.error ?? azProbe.error;
     return (
       <div className="h-full overflow-y-auto p-6">
+        {githubProblem && <p className="mb-2 text-sm text-amber-400">{githubProblem}</p>}
         {azureProblem && <p className="mb-2 text-sm text-amber-400">{azureProblem}</p>}
         <p className="text-sm text-zinc-400">
           No PR provider configured. Add a GitHub token or Azure DevOps PAT in Settings →
@@ -435,6 +456,7 @@ export default function PrsPanel({
           <RefreshingIndicator active={refreshing} />
         </div>
 
+        {githubProblem && <p className="text-sm text-amber-400">{githubProblem}</p>}
         {azureProblem && <p className="text-sm text-amber-400">{azureProblem}</p>}
 
         <PrLocator onOpen={openLocatedPr} />

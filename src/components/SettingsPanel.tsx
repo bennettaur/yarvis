@@ -4,6 +4,7 @@ import AppearanceSection from "./AppearanceSection";
 import ChatBudgetSection from "./ChatBudgetSection";
 import ComplexityModelSection from "./ComplexityModelSection";
 import CustomProviderSection from "./CustomProviderSection";
+import DecisionModelSection from "./DecisionModelSection";
 import DiagnosticsSection from "./DiagnosticsSection";
 import EmbeddingsSection from "./EmbeddingsSection";
 import IntegrationSettingsSection from "./IntegrationSettingsSection";
@@ -75,6 +76,7 @@ export default function SettingsPanel({
           <McpServerSection />
           <McpEndpointSection />
           <ToolManagerSection />
+          <DecisionModelSection />
         </div>
       )}
       {active === "repos" && (
