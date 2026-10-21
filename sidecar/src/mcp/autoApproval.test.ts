@@ -313,3 +313,50 @@ describe("auto mode's decision model", () => {
     expect(asked).toEqual([]);
   });
 });
+
+describe("the reason the model gives for a call", () => {
+  it("reaches the reviewer and the approval prompt, and never the tool", async () => {
+    let ran: unknown;
+    const tools = {
+      [ASK_ID]: tool({
+        description: "write_page",
+        inputSchema: z.object({ title: z.string() }),
+        execute: async (args) => {
+          ran = args;
+          return { ok: true };
+        },
+      }) as unknown as McpClientTool,
+    };
+    const requests: { args: unknown; reason: string | null }[] = [];
+    const reviewed: (string | null | undefined)[] = [];
+    const reviewer: ToolCallReviewer = async (call) => {
+      reviewed.push(call.reason);
+      return false;
+    };
+    const { tools: assembled } = await assembleAgentToolset({
+      config,
+      db,
+      sessionId: "s-reason",
+      builtinTools: {},
+      liveTools: tools,
+      reviewer,
+      approval: {
+        onRequest: async ({ toolCallId, args, reason }) => {
+          requests.push({ args, reason });
+          resolveApproval(toolCallId, true);
+        },
+      },
+    });
+
+    await (assembled[modelToolKey(ASK_ID)] as Tool).execute!(
+      { title: "notes", callReason: "The user asked for their notes in Notion" },
+      { toolCallId: "reason-1", messages: [] } as never,
+    );
+
+    expect(reviewed).toEqual(["The user asked for their notes in Notion"]);
+    expect(requests).toEqual([
+      { args: { title: "notes" }, reason: "The user asked for their notes in Notion" },
+    ]);
+    expect(ran).toEqual({ title: "notes" });
+  });
+});

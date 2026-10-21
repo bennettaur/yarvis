@@ -346,6 +346,11 @@ back to ad-hoc.
   a refusal, an error, a timeout — raises the prompt as before. It follows
   standing consent's limits (off on a spoken turn) and never reviews a built-in,
   since the built-ins that ask are the ones whose answer must come from the user.
+  Every call that goes through approval also carries a required `callReason`
+  (`mcp/callReason.ts`), added to the tool's schema and stripped before the tool
+  runs. The approval bar shows it and the reviewer weighs it, both as the
+  model's own claim about its call: it explains intent, it never counts as the
+  user asking.
 - A list a tab shows is read through `lib/resourceCache`, not fetched into local
   state on mount. `App` renders one panel at a time (the Chat tab aside, kept
   mounted so a turn outlives the switch), so a tab switch unmounts a page
