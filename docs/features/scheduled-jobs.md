@@ -81,13 +81,14 @@ Other limits on a Claude Code job:
 
 ## Background jobs that ship with the app
 
-These are code, not rows in the Jobs tab. They write memory rather than output
-you read, and they are what lets the assistant answer "what did I do
-yesterday?". Their status and a manual trigger are under **Settings →
-Assistant**.
+These are code, not rows in the Jobs tab. They write memory and the activity
+log rather than output you read, and they are what lets the assistant answer
+"what did I do yesterday?". Their status and a manual trigger are under
+**Settings → Assistant**.
 
 | Job | When | What it does |
 | --- | --- | --- |
+| GitHub review sync (`github-review-sync`) | Every 30 minutes. Needs a GitHub token. | Copies the approvals and change requests you gave on github.com into the activity log. Reviews you submitted in Yarvis are already there and are not logged twice. The first run reads the last 14 days. Covers every repo the token can see, private ones included. |
 | Transcript digest (`cc-session-digest`) | Daily at 02:00. **Off until you turn it on.** | Reads new or grown Claude Code transcripts under `~/.claude/projects` in the directories you allow, and writes a `session-summary` memory for each. Also writes an `agent-feedback` memory when a session held instructions about how an agent should behave. |
 | Event consolidation (`consolidate-events`) | Every 4 hours | Folds activity-log events nobody has summarized yet into one `activity-summary` memory |
 | Daily rollup (`daily-rollup`) | Daily at 03:00 | Folds yesterday's activity and session summaries into a single `day-summary` |

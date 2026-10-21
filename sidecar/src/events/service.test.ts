@@ -12,6 +12,7 @@ import {
   markEventsProcessed,
   pageEvents,
   recordEvent,
+  recordEventOnce,
 } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -54,6 +55,21 @@ describe("events service", () => {
     const unprocessed = await listEvents(db, { unprocessedOnly: true });
     expect(unprocessed.map((e) => e.id)).not.toContain(processed.id);
     expect(unprocessed.length).toBe(1);
+  });
+
+  it("records an action with an external id only once", async () => {
+    const first = await recordEventOnce(db, {
+      type: "pr.approved",
+      externalId: "github:review:R_1",
+    });
+    const again = await recordEventOnce(db, {
+      type: "pr.approved",
+      externalId: "github:review:R_1",
+    });
+    await emitEvent(db, { type: "pr.approved", externalId: "github:review:R_1" });
+    expect(first?.externalId).toBe("github:review:R_1");
+    expect(again).toBeNull();
+    expect(await countEvents(db, { type: "pr.approved" })).toBe(1);
   });
 
   it("emitEvent swallows failures without poisoning later writes", async () => {

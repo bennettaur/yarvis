@@ -274,6 +274,13 @@
       "when": 1792588873975,
       "tag": "0038_yielding_leper_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1792592427248,
+      "tag": "0039_complex_stepford_cuckoos",
+      "breakpoints": true
     }
   ]
 }
