@@ -10,7 +10,26 @@ import {
   type Repo,
   repos,
 } from "../db/schema.ts";
+import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
 import type { IssueSummary } from "./types.ts";
+
+/** The tag ticket text is fenced in, shared by every tracker's tools. */
+export const TICKET_TEXT_TAG = "ticket-text";
+
+/**
+ * Returns a function that sanitizes and fences one piece of ticket text, plus
+ * the warning naming the nonce. A ticket body or comment is written by whoever
+ * can file on the tracker, so it reaches the model as data: sanitizing alone
+ * strips what a reader can't see, but not text that is plainly addressed to the
+ * model.
+ */
+export function ticketTextFence(): { warning: string; fenceText: (text: string) => string } {
+  const nonce = newNonce();
+  return {
+    warning: untrustedWarning(nonce, TICKET_TEXT_TAG),
+    fenceText: (text) => fence(sanitizeIssueText(text), nonce, TICKET_TEXT_TAG),
+  };
+}
 
 /**
  * Local persistence for the Issues integration: which repos to pull issues
@@ -43,15 +62,33 @@ export function findRepoBySourceKey(db: Db, sourceKey: string): Promise<Repo | u
     .then((rows) => rows[0]);
 }
 
-/**
- * Merges per-repo issue lists newest-first, dropping repos whose fetch rejected
- * so a single failing repo doesn't blank the whole dashboard.
- */
-export function mergeIssues(results: PromiseSettledResult<IssueSummary[]>[]): IssueSummary[] {
+/** Merges per-repo issue lists newest-first, leaving out repos whose fetch rejected. */
+function mergeIssues(results: PromiseSettledResult<IssueSummary[]>[]): IssueSummary[] {
   const issues = results
     .filter((r): r is PromiseFulfilledResult<IssueSummary[]> => r.status === "fulfilled")
     .flatMap((r) => r.value);
   return issues.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/**
+ * Merges per-repo issue lists, logging each repo that failed. When every repo
+ * failed, the first failure is thrown instead: an empty list would read as "no
+ * issues" when the token can't see any of them.
+ */
+export function mergeRepoIssues(
+  repos: { owner: string; repo: string }[],
+  results: PromiseSettledResult<IssueSummary[]>[],
+): IssueSummary[] {
+  const failures: unknown[] = [];
+  results.forEach((result, i) => {
+    if (result.status === "fulfilled") return;
+    const repo = repos[i];
+    console.warn(`[issues] skipped ${repo?.owner}/${repo?.repo}:`, String(result.reason));
+    failures.push(result.reason);
+  });
+  // Only a failure when nothing loaded: one inaccessible repo mustn't blank the rest.
+  if (failures.length > 0 && failures.length === results.length) throw failures[0];
+  return mergeIssues(results);
 }
 
 export interface IssuePromptInput {

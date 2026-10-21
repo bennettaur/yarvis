@@ -111,7 +111,7 @@ writes these files into the root:
 | File | What it's for |
 | --- | --- |
 | `AGENTS.md` and `CLAUDE.md` | Tells the agent which repos are present and on what branch. `CLAUDE.md` just includes `AGENTS.md`. |
-| `.claude/settings.json` | The attention hooks that tell Yarvis when the session needs you, and the hooks that register each Claude Code session with the workspace |
+| `.claude/settings.json` | The hooks that tell Yarvis when the session needs you, let you answer its permission prompts from the app, and register each Claude Code session with the workspace |
 | `.claude/skills/`, `.claude/agents/` | Copies of each repo's own skills and agents |
 | `.claude/.yarvis-copied.json` | A list of the copies above, so they can be cleaned up |
 | `.mcp.json` | Points the session at Yarvis's MCP endpoint, so it can read and write Yarvis memory and work through this workspace's review comments. See [MCP](mcp.md). |
@@ -472,6 +472,10 @@ A worktree with uncommitted work won't remove. The workspace stays in
 "archiving" with that repo's error. Reopen the dialog to see it, and use
 **Force remove** only if the uncommitted work can go.
 
+A worktree whose folder is already gone counts as removed. If git has let go of
+a worktree but its folder still has files in it, the archive stops and names
+the folder. **Force remove** deletes it.
+
 Archived workspaces are hidden from the list. **Show archived** brings them
 back.
 
@@ -500,8 +504,17 @@ How the bell behaves:
 - **Cleared by looking.** Opening the workspace or terminal tab that raised an
   item marks it read. An item raised by something already on screen never
   sends an OS notification. Nothing clears itself while the window is in the
-  background.
+  background. Questions are the exception; see below.
 - **Marked where it happened.** A workspace with something pending is marked in
   the workspace list, and its tab is marked in the tab strip.
+- **Questions are answered in place.** When a session asks you something
+  through Yarvis's `ask_user` tool, its row opens a dialog with the workspace,
+  what the agent is working on, and its questions. Pick an option or type an
+  answer and press **Send answers**, or **Skip** to tell the agent to carry on
+  without you. Looking at the session doesn't clear a question; only answering,
+  skipping or dismissing it does. See [MCP](mcp.md#asking-you-questions).
+
+A permission prompt can be answered straight from the bell. See
+[Answering permission prompts](terminals.md#answering-permission-prompts).
 
 The assistant doesn't read the bell. It is for you.

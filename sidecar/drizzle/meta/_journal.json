@@ -239,6 +239,41 @@
       "when": 1792161879709,
       "tag": "0033_chemical_lethal_legion",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1792555621760,
+      "tag": "0034_left_sebastian_shaw",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1792555654820,
+      "tag": "0035_noisy_quicksilver",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1792555666214,
+      "tag": "0036_long_purple_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1792558972065,
+      "tag": "0037_tiresome_drax",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1792588873975,
+      "tag": "0038_yielding_leper_queen",
+      "breakpoints": true
     }
   ]
 }

@@ -9,6 +9,7 @@ import { buildIssuePrompt, upsertLink } from "../issues/service.ts";
 import { createWorkspace, startKickOff } from "../workspaces/service.ts";
 import { AzureBoardsClient } from "./client.ts";
 import { applyBoardsStartWorkSideEffects } from "./service.ts";
+import { projectName, tagList, workItemId } from "./validation.ts";
 
 /**
  * Azure Boards work item routes, mounted under /api/azure-boards. They use the
@@ -17,41 +18,12 @@ import { applyBoardsStartWorkSideEffects } from "./service.ts";
  * `/api/issues/azure`; the live queries and edits live here.
  */
 
-// Work item ids are positive integers. Parsed from the path, so the cap keeps a
-// long digit string from turning into an imprecise number.
-const workItemId = z.coerce.number().int().positive().max(2_147_483_647);
-
-// Azure project names can't contain `/`, `\` or control characters, and `..`
-// would traverse once interpolated into an API path. The name also lands in
-// the agent's brief, so a newline must not get through.
-const projectName = z
-  .string()
-  .min(1)
-  .max(64)
-  .refine(
-    (s) =>
-      ![...s].some((ch) => ch < " " || ch === "\x7f" || ch === "/" || ch === "\\") &&
-      !s.includes(".."),
-    "invalid project",
-  );
-
 const updateSchema = z
   .object({
     title: z.string().trim().min(1).max(255).optional(),
     description: z.string().max(32_000).optional(),
     reproSteps: z.string().max(32_000).optional(),
-    // Azure stores tags as one `;`-separated string, so a `;` would split a tag.
-    tags: z
-      .array(
-        z
-          .string()
-          .trim()
-          .min(1)
-          .max(400)
-          .refine((t) => !t.includes(";"), "tags can't contain ;"),
-      )
-      .max(50)
-      .optional(),
+    tags: tagList.optional(),
   })
   .refine((v) => Object.values(v).some((field) => field !== undefined), "no fields to update");
 

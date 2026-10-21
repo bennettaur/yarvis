@@ -3,16 +3,23 @@ import { SESSION_KEY_HEADER, SESSION_TOKEN_HEADER } from "./agentSessions.ts";
 
 /**
  * Generates the `.claude/settings.json` hook config that makes a Yarvis-launched
- * Claude Code session register itself with its workspace and signal the app when
- * it needs the user. Split out from the
+ * Claude Code session register itself with its workspace, signal the app when it
+ * needs the user, and let the app answer its permission prompts. Split out from the
  * workspace service so the hook↔ingest contract and the merge semantics are unit
  * testable without touching the filesystem.
  */
 
 /** Marks our hook commands so re-provision can replace them without duplicating. */
-const INGEST_MARKERS = ["/ingest/attention", "/ingest/agent-session"];
+const INGEST_MARKERS = ["/ingest/attention", "/ingest/permission", "/ingest/agent-session"];
 
-export type AttentionHookKind = "permission" | "idle" | "completed";
+/**
+ * Seconds Claude Code lets the permission hook run. Just above how long the
+ * sidecar holds the request (`PERMISSION_HOLD_MS`), so the sidecar's own
+ * "no decision" reply arrives before Claude Code kills the hook.
+ */
+export const PERMISSION_HOOK_TIMEOUT_S = 250;
+
+export type AttentionHookKind = "idle" | "completed";
 
 /**
  * Characters allowed in the values baked into the hook commands. Every value
@@ -47,11 +54,7 @@ export function attentionHookCommand(
   fallbackSessionKey: string,
   kind: AttentionHookKind,
 ): string {
-  for (const value of [workspaceId, fallbackSessionKey]) {
-    if (!SHELL_SAFE.test(value)) {
-      throw new Error(`attention hook: refusing to embed unsafe value ${JSON.stringify(value)}`);
-    }
-  }
+  assertShellSafe(workspaceId, fallbackSessionKey);
   // Single-quoted JSON either side of a double-quoted env expansion: the shell
   // concatenates the three segments into one argument.
   const body =
@@ -64,6 +67,46 @@ export function attentionHookCommand(
     `-H "Authorization: Bearer \${YARVIS_ATTENTION_TOKEN}" ` +
     `-H "Content-Type: application/json" ` +
     `-d ${body} >/dev/null 2>&1 || true`
+  );
+}
+
+function assertShellSafe(...values: string[]): void {
+  for (const value of values) {
+    if (!SHELL_SAFE.test(value)) {
+      throw new Error(`hook command: refusing to embed unsafe value ${JSON.stringify(value)}`);
+    }
+  }
+}
+
+/**
+ * The shell command a `PermissionRequest` hook runs so the user can answer the
+ * prompt from the app. It forwards Claude Code's stdin (the tool and its input)
+ * to the sidecar and prints whatever decision comes back, which Claude Code
+ * reads as the hook's output. The session's identity rides in headers because
+ * the body is Claude Code's own JSON: its PTY's key, and the PTY's
+ * `YARVIS_SESSION_TOKEN`, so a process in one terminal can't put a prompt in
+ * front of the user under another terminal's name.
+ *
+ * Every failure prints nothing: outside a Yarvis terminal, with the app closed,
+ * or past the hold, Claude Code shows its normal dialog as if no hook ran.
+ * Outside a Yarvis terminal the variables are unset, and curl would read the
+ * bare `127.0.0.1:` as port 80 and print whatever answers there as a decision,
+ * so the command stops before curl instead.
+ */
+export function permissionHookCommand(workspaceId: string): string {
+  assertShellSafe(workspaceId);
+  // curl gives up a little before Claude Code would kill the hook, so a stalled
+  // sidecar still ends in the empty "no decision" output rather than a kill.
+  return (
+    `{ [ -n "\${YARVIS_SIDECAR_PORT}" ] && [ -n "\${YARVIS_ATTENTION_TOKEN}" ] && ` +
+    `[ -n "\${YARVIS_SESSION_KEY}" ] && [ -n "\${YARVIS_SESSION_TOKEN}" ]; } || { cat >/dev/null; exit 0; }; ` +
+    `curl -sf -m ${PERMISSION_HOOK_TIMEOUT_S - 5} -X POST "http://127.0.0.1:\${YARVIS_SIDECAR_PORT}/ingest/permission" ` +
+    `-H "Authorization: Bearer \${YARVIS_ATTENTION_TOKEN}" ` +
+    `-H "Content-Type: application/json" ` +
+    `-H 'X-Yarvis-Workspace-Id: ${workspaceId}' ` +
+    `-H "${SESSION_KEY_HEADER}: \${YARVIS_SESSION_KEY}" ` +
+    `-H "${SESSION_TOKEN_HEADER}: \${YARVIS_SESSION_TOKEN}" ` +
+    `--data-binary @- 2>/dev/null || true`
   );
 }
 
@@ -105,7 +148,7 @@ export function agentSessionHookCommand(workspaceId: string): string {
 
 interface HookEntry {
   matcher?: string;
-  hooks: { type: "command"; command: string }[];
+  hooks: { type: "command"; command: string; timeout?: number }[];
 }
 
 /** True if an existing hook entry is one we wrote (so re-provision replaces it). */
@@ -136,8 +179,9 @@ function dropPathsKey(settings: Record<string, unknown>, key: string): void {
 }
 
 /**
- * Merges our hooks into any existing settings: the three attention hooks, and
- * the SessionStart/SessionEnd pair that registers the session. Unrelated
+ * Merges our hooks into any existing settings: the three attention hooks, which
+ * include the permission hook, and the SessionStart/SessionEnd pair that
+ * registers the session. Unrelated
  * top-level keys and the user's own hooks for these events are preserved — our
  * entry is *appended* alongside them, not substituted for the array. Idempotent:
  * a prior Yarvis entry for an event is dropped before ours is re-added, so
@@ -173,7 +217,15 @@ export function buildClaudeSettings(
     ...existing,
     hooks: {
       ...existingHooks,
-      PermissionRequest: withOurEntry("PermissionRequest", { hooks: [command("permission")] }),
+      PermissionRequest: withOurEntry("PermissionRequest", {
+        hooks: [
+          {
+            type: "command",
+            command: permissionHookCommand(workspaceId),
+            timeout: PERMISSION_HOOK_TIMEOUT_S,
+          },
+        ],
+      }),
       Notification: withOurEntry("Notification", {
         matcher: "idle_prompt",
         hooks: [command("idle")],

@@ -3,6 +3,7 @@ import assistant from "../../../docs/features/assistant.md" with { type: "text" 
 import browser from "../../../docs/features/browser.md" with { type: "text" };
 import calendarAndAlarms from "../../../docs/features/calendar-and-alarms.md" with { type: "text" };
 import clipboard from "../../../docs/features/clipboard.md" with { type: "text" };
+import headsDown from "../../../docs/features/heads-down.md" with { type: "text" };
 import issuesAndTasks from "../../../docs/features/issues-and-tasks.md" with { type: "text" };
 import keyboardShortcuts from "../../../docs/features/keyboard-shortcuts.md" with { type: "text" };
 import mcp from "../../../docs/features/mcp.md" with { type: "text" };
@@ -35,6 +36,7 @@ const DOCS: Record<string, string> = {
   "features/browser": browser,
   "features/calendar-and-alarms": calendarAndAlarms,
   "features/clipboard": clipboard,
+  "features/heads-down": headsDown,
   "features/issues-and-tasks": issuesAndTasks,
   "features/keyboard-shortcuts": keyboardShortcuts,
   "features/mcp": mcp,

@@ -212,6 +212,24 @@ describe("workspace tools", () => {
     expect(result[0]!.name).toBe("widget");
   });
 
+  it("list_repos says which tracker each repo's tickets go to", async () => {
+    await createRepo(db, config, {
+      cloneUrl: "https://github.com/acme/widget.git",
+      tracker: { provider: "jira", projectKey: "WID" },
+    });
+    await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
+
+    const result = (await tools.list_repos.execute!({}, opts)) as Array<{
+      name: string;
+      tracker: unknown;
+    }>;
+
+    const byName = Object.fromEntries(result.map((r) => [r.name, r.tracker]));
+    expect(byName.widget).toEqual({ provider: "jira", projectKey: "WID" });
+    expect(byName.gadget).toBeNull();
+  });
+
   it("create_workspace_session provisions and starts a session at the workspace root", async () => {
     const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
     let startedCwd = "";
@@ -1151,12 +1169,18 @@ describe("workspace tools", () => {
   it("archive_workspace refuses uncommitted work, then succeeds with force", async () => {
     const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
     // A worktree that refuses removal unless --force is passed — the real git
-    // behavior when the worktree has uncommitted changes.
+    // behavior when the worktree has uncommitted changes. git still has it
+    // registered afterwards, so it stays listed.
+    let refusedPath = "";
     const refuseUnlessForced: GitRunner = async (args) => {
       if (args[0] === "symbolic-ref") return { stdout: "origin/main\n", stderr: "", exitCode: 0 };
       if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 };
       if (args[0] === "worktree" && args[1] === "remove" && !args.includes("--force")) {
+        refusedPath = args[2] ?? "";
         return { stdout: "", stderr: "contains modified files", exitCode: 1 };
+      }
+      if (args[0] === "worktree" && args[1] === "list") {
+        return { stdout: `worktree ${refusedPath}\0\0`, stderr: "", exitCode: 0 };
       }
       return { stdout: "", stderr: "", exitCode: 0 };
     };

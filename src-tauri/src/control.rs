@@ -1,7 +1,7 @@
 //! Local control channel: a Unix-domain-socket RPC the Bun sidecar uses to ask
 //! the core to do things it can't do itself — spawning, killing, and typing an
 //! instruction into a Claude Code session in a workspace PTY, and writing an MCP
-//! server's OAuth credentials into the Keychain.
+//! server's OAuth credentials or a signed-in GitHub token into the Keychain.
 //!
 //! Security model: the socket lives in the app's private data dir (mode 0700) as
 //! a mode-0600 file, so only the same user can connect, and a UDS is never
@@ -15,9 +15,10 @@
 //! instead, which `pty::send_session_instruction` sanitizes, refuses to send
 //! unless the configured agent itself is what reads that prompt, and refuses
 //! outright when it opens with a character the agent reads as a command rather
-//! than a request. `mcp.saveOAuth` is the one method that writes a secret, and
-//! it can only reach the `oauth` subtree of one MCP server's entry — never a
-//! provider key, the database URL, or another server's headers. Requests and
+//! than a request. `mcp.saveOAuth` and `github.saveToken` are the two methods
+//! that write a secret. `mcp.saveOAuth` can only reach the `oauth` subtree of one
+//! MCP server's entry, and `github.saveToken` only the `github_token` key — never
+//! a provider key, the database URL, or another server's headers. Requests and
 //! responses are newline-delimited JSON.
 
 /// Absolute path to the control socket, kept in managed state so `sidecar.rs`
@@ -108,6 +109,11 @@ mod unix_impl {
         /// The credential bundle to store; null forgets what is stored.
         #[serde(default)]
         oauth: Option<Value>,
+    }
+
+    #[derive(Deserialize)]
+    struct SaveGitHubTokenParams {
+        token: String,
     }
 
     fn socket_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -269,6 +275,11 @@ mod unix_impl {
                 let p: SaveOAuthParams =
                     serde_json::from_value(params).map_err(|e| e.to_string())?;
                 crate::mcp::store_oauth(&p.server_id, p.oauth)
+            }
+            "github.saveToken" => {
+                let p: SaveGitHubTokenParams =
+                    serde_json::from_value(params).map_err(|e| e.to_string())?;
+                crate::keychain::store_github_token(&p.token)
             }
             other => Err(format!("unknown method: {other}")),
         }

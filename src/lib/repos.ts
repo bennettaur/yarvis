@@ -13,9 +13,16 @@ export interface Repo {
   setupScript: string | null;
   runScript: string | null;
   pullIssues: boolean;
+  /** Where the repo's tickets are filed; mirrors the sidecar's `RepoTracker`. */
+  tracker: RepoTracker | null;
   createdAt: string;
   updatedAt: string;
 }
+
+export type RepoTracker =
+  | { provider: "github" }
+  | { provider: "azure-boards"; project: string; areaPath?: string }
+  | { provider: "jira"; projectKey: string };
 
 export interface CreateRepoInput {
   cloneUrl: string;
@@ -23,6 +30,7 @@ export interface CreateRepoInput {
   setupScript?: string | null;
   runScript?: string | null;
   pullIssues?: boolean;
+  tracker?: RepoTracker | null;
 }
 
 export interface UpdateRepoInput {
@@ -31,6 +39,7 @@ export interface UpdateRepoInput {
   setupScript?: string | null;
   runScript?: string | null;
   pullIssues?: boolean;
+  tracker?: RepoTracker | null;
 }
 
 /**

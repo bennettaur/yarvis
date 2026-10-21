@@ -31,4 +31,15 @@ export interface BoardsWorkItemDetail extends IssueDetail {
   bodyField: BoardsBodyField;
   /** Every state the item's type allows, in workflow order. */
   states: BoardsState[];
+  /** Links to other work items (parent, child, predecessor, …). */
+  relations: BoardsRelation[];
+}
+
+export interface BoardsRelation {
+  id: number;
+  relation: string;
+  title: string;
+  state: string;
+  type: string;
+  url: string;
 }

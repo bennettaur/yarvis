@@ -54,6 +54,7 @@ describe("decision model config", () => {
     expect(saved).toEqual({
       model: { provider: "custom:abc", model: "jev" },
       autoApproveTools: true,
+      autoApproveHeadsDown: false,
     });
   });
 });

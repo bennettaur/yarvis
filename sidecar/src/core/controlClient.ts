@@ -172,3 +172,11 @@ export async function saveMcpOAuth(
 ): Promise<void> {
   await rpc("mcp.saveOAuth", { serverId, oauth: credentials });
 }
+
+/**
+ * Asks the core to store the GitHub token from a device-flow sign-in in the
+ * Keychain. The sidecar picks it up on its next start, like a pasted token.
+ */
+export async function saveGitHubToken(token: string): Promise<void> {
+  await rpc("github.saveToken", { token });
+}
