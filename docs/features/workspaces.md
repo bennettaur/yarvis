@@ -472,6 +472,10 @@ A worktree with uncommitted work won't remove. The workspace stays in
 "archiving" with that repo's error. Reopen the dialog to see it, and use
 **Force remove** only if the uncommitted work can go.
 
+A worktree whose folder is already gone counts as removed. If git has let go of
+a worktree but its folder still has files in it, the archive stops and names
+the folder. **Force remove** deletes it.
+
 Archived workspaces are hidden from the list. **Show archived** brings them
 back.
 

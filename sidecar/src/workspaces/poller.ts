@@ -7,7 +7,7 @@
  * DevOps repos are both refreshed in one cycle.
  */
 
-import { and, eq, inArray, lt } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt } from "drizzle-orm";
 import { AzureDevOpsClient, isAllowedAzureOrgUrl } from "../azure/client.ts";
 import type { Config } from "../config.ts";
 import { type Db, getDb } from "../db/client.ts";
@@ -224,19 +224,37 @@ export async function pollOnce(db: Db, clients: PollerClients): Promise<void> {
 }
 
 /**
- * Marks workspaces left in a transient state by an interrupted run as `error`,
- * along with their repos still mid-provision. Runs once at startup. Exported
- * for testing.
+ * Unsticks workspaces left in a transient state by an interrupted run: a
+ * provision becomes `error`, along with its repos still mid-provision, and an
+ * archive records that it needs retrying. Runs once at startup. Exported for
+ * testing.
  */
 export async function reconcileOrphans(db: Db): Promise<void> {
   const cutoff = new Date(Date.now() - ORPHAN_AGE_MS);
-  // creating | archiving are the only transient states a restart can strand.
+  // An interrupted archive stays in the archive flow, where the next step is
+  // archiving again; as `error` it would offer to provision the worktrees back.
+  // One that already stopped on an error isn't running, so it's left alone.
+  const interruptedArchives = await db
+    .update(workspaces)
+    .set({ error: "archive interrupted; archive again to finish", updatedAt: new Date() })
+    .where(
+      and(
+        eq(workspaces.status, "archiving"),
+        isNull(workspaces.error),
+        lt(workspaces.updatedAt, cutoff),
+      ),
+    )
+    .returning({ id: workspaces.id });
+  if (interruptedArchives.length) {
+    console.warn(
+      `[workspace poller] flagged ${interruptedArchives.length} interrupted archive(s) for retry`,
+    );
+  }
+
   const stuck = await db
     .update(workspaces)
     .set({ status: "error", error: "interrupted; retry provisioning", updatedAt: new Date() })
-    .where(
-      and(inArray(workspaces.status, ["creating", "archiving"]), lt(workspaces.updatedAt, cutoff)),
-    )
+    .where(and(eq(workspaces.status, "creating"), lt(workspaces.updatedAt, cutoff)))
     .returning({ id: workspaces.id });
   if (stuck.length) {
     // Scope the repo reset to the stranded workspaces so a repo provisioning in
