@@ -77,7 +77,7 @@ async function addRepo(name: string): Promise<string> {
   return ((await res.json()) as { id: string }).id;
 }
 
-/** A provisioned workspace, plus the ids of its worktree rows in order. */
+/** A provisioned workspace, plus the ids of its worktree rows in the order the repos are named. */
 async function workspaceWithRepos(
   name: string,
   repoNames: string[],
