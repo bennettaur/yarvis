@@ -330,11 +330,17 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
   return {
     list_repos: tool({
       description:
-        "List the repositories registered in Yarvis that can be used to build a workspace. Call this to resolve a repo the user names (e.g. 'yarvis') to its id before calling create_workspace_session. If the repo is not registered, call register_repo first.",
+        "List the repositories registered in Yarvis that can be used to build a workspace. Call this to resolve a repo the user names (e.g. 'yarvis') to its id before calling create_workspace_session. If the repo is not registered, call register_repo first. Each repo's tracker says where its tickets are filed: { provider: 'github' } (the repo's own GitHub issues), { provider: 'azure-boards', project, areaPath? }, or { provider: 'jira', projectKey }. A null tracker means the user hasn't set one; ask them rather than guessing.",
       inputSchema: z.object({}),
       execute: async () => {
         const repos = await listRepos(db);
-        return repos.map((r) => ({ id: r.id, name: r.name, owner: r.owner, repo: r.repo }));
+        return repos.map((r) => ({
+          id: r.id,
+          name: r.name,
+          owner: r.owner,
+          repo: r.repo,
+          tracker: r.tracker,
+        }));
       },
     }),
 

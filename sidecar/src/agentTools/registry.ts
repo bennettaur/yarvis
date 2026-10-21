@@ -47,6 +47,8 @@ const FAMILY_POLICY: Record<string, ToolPolicy> = {
   headsDown: "always",
   workspaces: "search",
   jira: "search",
+  githubIssues: "search",
+  azureBoards: "search",
   prReview: "search",
   calendar: "search",
   browser: "search",

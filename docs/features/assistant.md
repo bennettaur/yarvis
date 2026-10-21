@@ -339,8 +339,9 @@ you asked.
   for what it may do without asking.
 - **MCP tools** ask unless you set them to auto-approve in the Tool manager.
 - **Spoken turns** ask before anything irreversible: deleting a task, archiving
-  a workspace, starting work, adding a repo to a workspace, filing a JIRA
-  ticket, syncing branches, sending an instruction to a session, launching a
+  a workspace, starting work, adding a repo to a workspace, filing, editing,
+  moving, assigning or commenting on a ticket in GitHub, JIRA or Azure Boards,
+  syncing branches, sending an instruction to a session, launching a
   session, forgetting a memory, or delegating. A transcript can be misheard,
   or picked up from the room.
 
@@ -391,7 +392,13 @@ Loaded on demand:
 - **Workspaces.** List and add repos and issues, start work, create and start
   sessions (including a scratch session with no repo), add a repo to a
   workspace, check status, sync with base, send instructions, archive.
-- **JIRA.** Search, read, create, and start work on a ticket.
+- **JIRA.** Search, read, create, edit, move to another status, assign, comment
+  on, and start work on a ticket.
+- **GitHub issues.** Read, open, edit (title, body, open or closed, labels,
+  assignees) and comment on an issue in a registered repo.
+- **Azure Boards.** Search with WIQL or title words, read a work item with its
+  links (parent, children, what blocks it), create one, edit its title,
+  description, tags or state, assign it to you or unassign it, and comment.
 - **Work streams.** Track a thread of work, link its tickets, workspaces, PRs,
   messages and review requests, mark what it's waiting on, and find the stream
   something belongs to.

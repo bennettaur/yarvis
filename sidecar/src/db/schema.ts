@@ -17,6 +17,7 @@ import {
   vector,
 } from "drizzle-orm/pg-core";
 import type { ReviewDecision } from "../pr/types.ts";
+import type { RepoTracker } from "../workspaces/tracker.ts";
 
 /**
  * Embedding dimension of the `memories.embedding` column. This is a fixed
@@ -592,6 +593,8 @@ export const repos = pgTable(
     setupScript: text("setup_script"), // shell, run in each worktree after creation
     runScript: text("run_script"), // long-lived service command, run in a terminal
     pullIssues: boolean("pull_issues").notNull().default(false), // include this repo in the Issues dashboard
+    // Which tracker the repo's tickets are filed in; null until the user sets it.
+    tracker: jsonb("tracker").$type<RepoTracker>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

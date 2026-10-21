@@ -6,6 +6,7 @@ import {
   deleteRepo,
   listRepos,
   type Repo,
+  type RepoTracker,
   updateRepo,
 } from "../lib/repos";
 import { invalidatePrefix } from "../lib/resourceCache";
@@ -17,13 +18,30 @@ interface Draft {
   setupScript: string;
   runScript: string;
   pullIssues: boolean;
+  // "" means no tracker set. The text fields are kept apart so switching the
+  // provider back and forth in the editor doesn't lose what was typed.
+  trackerProvider: "" | RepoTracker["provider"];
+  azureProject: string;
+  azureAreaPath: string;
+  jiraProjectKey: string;
 }
 
 function blankDraft(): Draft {
-  return { name: "", cloneUrl: "", setupScript: "", runScript: "", pullIssues: false };
+  return {
+    name: "",
+    cloneUrl: "",
+    setupScript: "",
+    runScript: "",
+    pullIssues: false,
+    trackerProvider: "",
+    azureProject: "",
+    azureAreaPath: "",
+    jiraProjectKey: "",
+  };
 }
 
 function draftFromRepo(r: Repo): Draft {
+  const t = r.tracker;
   return {
     id: r.id,
     name: r.name,
@@ -31,7 +49,45 @@ function draftFromRepo(r: Repo): Draft {
     setupScript: r.setupScript ?? "",
     runScript: r.runScript ?? "",
     pullIssues: r.pullIssues,
+    trackerProvider: t?.provider ?? "",
+    azureProject: t?.provider === "azure-boards" ? t.project : "",
+    azureAreaPath: t?.provider === "azure-boards" ? (t.areaPath ?? "") : "",
+    jiraProjectKey: t?.provider === "jira" ? t.projectKey : "",
   };
+}
+
+/** The tracker a draft describes, or an error naming the missing field. */
+function trackerFromDraft(d: Draft): { tracker: RepoTracker | null } | { error: string } {
+  switch (d.trackerProvider) {
+    case "":
+      return { tracker: null };
+    case "github":
+      return { tracker: { provider: "github" } };
+    case "azure-boards": {
+      const project = d.azureProject.trim();
+      if (!project) return { error: "An Azure Boards project is required." };
+      const areaPath = d.azureAreaPath.trim();
+      return {
+        tracker: { provider: "azure-boards", project, ...(areaPath ? { areaPath } : {}) },
+      };
+    }
+    case "jira": {
+      const projectKey = d.jiraProjectKey.trim();
+      if (!projectKey) return { error: "A JIRA project key is required." };
+      return { tracker: { provider: "jira", projectKey } };
+    }
+  }
+}
+
+function trackerLabel(t: RepoTracker): string {
+  switch (t.provider) {
+    case "github":
+      return "GitHub issues";
+    case "azure-boards":
+      return `Azure Boards · ${t.project}${t.areaPath ? ` · ${t.areaPath}` : ""}`;
+    case "jira":
+      return `JIRA · ${t.projectKey}`;
+  }
 }
 
 /**
@@ -79,12 +135,18 @@ export default function ReposSection() {
         setError("A clone URL is required.");
         return;
       }
+      const tracker = trackerFromDraft(draft);
+      if ("error" in tracker) {
+        setError(tracker.error);
+        return;
+      }
       const payload: CreateRepoInput = {
         cloneUrl: draft.cloneUrl.trim(),
         name: draft.name.trim() || undefined,
         setupScript: draft.setupScript.trim() || null,
         runScript: draft.runScript.trim() || null,
         pullIssues: draft.pullIssues,
+        tracker: tracker.tracker,
       };
       if (draft.id) {
         await updateRepo(draft.id, payload);
@@ -233,6 +295,59 @@ function DraftEditor({
         </span>
       </label>
 
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <Labeled label="Tickets go to" full>
+          <select
+            value={draft.trackerProvider}
+            onChange={(e) =>
+              setDraft((d) => ({
+                ...d,
+                trackerProvider: e.target.value as Draft["trackerProvider"],
+              }))
+            }
+            className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500"
+          >
+            <option value="">Not set</option>
+            <option value="github">GitHub issues</option>
+            <option value="azure-boards">Azure Boards</option>
+            <option value="jira">JIRA</option>
+          </select>
+          <span className="mt-1 block normal-case tracking-normal text-zinc-500">
+            Where the assistant files and updates this repo's tickets.
+          </span>
+        </Labeled>
+        {draft.trackerProvider === "azure-boards" && (
+          <>
+            <Labeled label="Azure project">
+              <input
+                value={draft.azureProject}
+                placeholder="Web"
+                onChange={(e) => setDraft((d) => ({ ...d, azureProject: e.target.value }))}
+                className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500"
+              />
+            </Labeled>
+            <Labeled label="Area path (optional)">
+              <input
+                value={draft.azureAreaPath}
+                placeholder="Web\Payments"
+                onChange={(e) => setDraft((d) => ({ ...d, azureAreaPath: e.target.value }))}
+                className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500"
+              />
+            </Labeled>
+          </>
+        )}
+        {draft.trackerProvider === "jira" && (
+          <Labeled label="JIRA project key">
+            <input
+              value={draft.jiraProjectKey}
+              placeholder="PROJ"
+              onChange={(e) => setDraft((d) => ({ ...d, jiraProjectKey: e.target.value }))}
+              className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500"
+            />
+          </Labeled>
+        )}
+      </div>
+
       <div className="mt-4 flex justify-end gap-2">
         <button
           onClick={onCancel}
@@ -334,6 +449,7 @@ function RepoCard({
         <span>{repo.setupScript ? "setup ✓" : "no setup"}</span>
         <span>{repo.runScript ? "run ✓" : "no run"}</span>
         {repo.pullIssues && <span className="text-indigo-400">issues ✓</span>}
+        {repo.tracker && <span>tickets: {trackerLabel(repo.tracker)}</span>}
       </div>
     </div>
   );
