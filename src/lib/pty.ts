@@ -58,7 +58,7 @@ export const startClaudeSession = (
   cwd: string,
   name: string,
   remoteControl: boolean,
-  resumeSessionId: string | null = null,
+  resumeSessionId: string | null,
 ) => invoke("pty_start_claude", { workspaceId, cwd, name, remoteControl, resumeSessionId });
 
 /** The agent a workspace surfaces: its tab title and the base command its

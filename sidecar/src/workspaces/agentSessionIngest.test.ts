@@ -1,5 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { createHmac } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
@@ -36,6 +39,8 @@ const config: Config = {
 };
 const app = createApp(config);
 
+// Real v4 UUIDs: zod's uuid() checks the version and variant digits, and the
+// resumable-agent-session route validates the workspace id with it.
 const WORKSPACE = "11111111-1111-4111-8111-111111111111";
 const OTHER_WORKSPACE = "22222222-2222-4222-8222-222222222222";
 const AGENT_TAB = `ws-claude:${WORKSPACE}`;
@@ -259,9 +264,21 @@ describe("reapAndListAgentSessions", () => {
   });
 });
 
-describe("GET /api/workspaces/:id/agent-session", () => {
+describe("GET /api/workspaces/:id/resumable-agent-session", () => {
+  const OLDER = "0b6f3f2e-8c1a-4d2b-9e3f-1a2b3c4d5e6f";
+  const NEWER = "7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f";
+  const transcripts = mkdtempSync(join(tmpdir(), "yarvis-transcripts-"));
+  afterAll(() => rmSync(transcripts, { recursive: true, force: true }));
+
+  /** A SessionStart whose transcript exists on disk, as Claude's would. */
+  const startWithTranscript = (sessionId: string, source = "startup") => {
+    const transcript_path = join(transcripts, `${sessionId}.jsonl`);
+    writeFileSync(transcript_path, "");
+    return { ...start(sessionId, source), transcript_path };
+  };
+
   async function resumable(workspaceId = WORKSPACE) {
-    const res = await app.request(`/api/workspaces/${workspaceId}/agent-session`, {
+    const res = await app.request(`/api/workspaces/${workspaceId}/resumable-agent-session`, {
       headers: { Authorization: `Bearer ${config.token}` },
     });
     expect(res.status).toBe(200);
@@ -269,43 +286,81 @@ describe("GET /api/workspaces/:id/agent-session", () => {
   }
 
   it("answers the agent tab's most recently started session", async () => {
-    await hook(start("older"));
-    await hook(end("older"));
-    await hook(start("newer"));
-    await hook(end("newer"));
+    await hook(startWithTranscript(OLDER));
+    await hook(end(OLDER));
+    await hook(startWithTranscript(NEWER));
+    await hook(end(NEWER));
     // Resuming moves a session back to the front.
-    await hook(start("older", "resume"));
-    await hook(end("older"));
+    await hook(startWithTranscript(OLDER, "resume"));
+    await hook(end(OLDER));
 
-    expect(await resumable()).toBe("older");
+    expect(await resumable()).toBe(OLDER);
   });
 
   it("ignores sessions started in a terminal pane", async () => {
-    await hook(start("tab"));
-    await hook(end("tab"));
-    await hook(start("pane"), { sessionKey: PANE });
-    await hook(end("pane"), { sessionKey: PANE });
+    await hook(startWithTranscript(OLDER));
+    await hook(end(OLDER));
+    await hook(startWithTranscript(NEWER), { sessionKey: PANE });
+    await hook(end(NEWER), { sessionKey: PANE });
 
-    expect(await resumable()).toBe("tab");
+    expect(await resumable()).toBe(OLDER);
   });
 
   it("counts a session whose process died without a SessionEnd", async () => {
-    await hook(start("crashed"), { pid: "999999" });
-    expect(await resumable()).toBe("crashed");
+    await hook(startWithTranscript(OLDER), { pid: "999999" });
+    expect(await resumable()).toBe(OLDER);
   });
 
   it("answers null while the latest session is still running", async () => {
     // This test process stands in for a Claude that is still alive.
-    await hook(start("running"));
+    await hook(startWithTranscript(OLDER));
     expect(await resumable()).toBeNull();
   });
 
-  it("answers null for a workspace with no registered session", async () => {
+  it("answers null while the same session is running in a terminal pane", async () => {
+    await hook(startWithTranscript(OLDER));
+    await hook(end(OLDER));
+    await hook(startWithTranscript(OLDER, "resume"), { sessionKey: PANE });
+
+    expect(await resumable()).toBeNull();
+  });
+
+  it("answers null once the transcript is gone", async () => {
+    const started = startWithTranscript(OLDER);
+    await hook(started);
+    await hook(end(OLDER));
+    rmSync(started.transcript_path);
+
+    expect(await resumable()).toBeNull();
+  });
+
+  it("answers null for a transcript path that isn't the session's own file", async () => {
+    // Exists, but names another file, so it says nothing about this session.
+    const other = join(transcripts, "other.jsonl");
+    writeFileSync(other, "");
+    await hook({ ...start(OLDER), transcript_path: other });
+    await hook(end(OLDER));
+
+    expect(await resumable()).toBeNull();
+  });
+
+  it("answers null for a session that registered no transcript", async () => {
+    const { transcript_path: _none, ...withoutTranscript } = start(OLDER);
+    await hook(withoutTranscript);
+    await hook(end(OLDER));
+
+    expect(await resumable()).toBeNull();
+  });
+
+  it("does not answer with another workspace's session", async () => {
+    await hook(startWithTranscript(OLDER));
+    await hook(end(OLDER));
+
     expect(await resumable(OTHER_WORKSPACE)).toBeNull();
   });
 
   it("refuses a malformed workspace id", async () => {
-    const res = await app.request("/api/workspaces/not-a-uuid/agent-session", {
+    const res = await app.request("/api/workspaces/not-a-uuid/resumable-agent-session", {
       headers: { Authorization: `Bearer ${config.token}` },
     });
     expect(res.status).toBe(400);

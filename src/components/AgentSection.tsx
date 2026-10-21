@@ -63,9 +63,9 @@ export default function AgentSection() {
     }
   }, [adopt, commandDraft, nameDraft]);
 
-  // Saved as it is toggled. Not `adopt`, which would discard unsaved edits in
-  // the fields above.
-  const toggleResume = useCallback(
+  // Saved as it is toggled. This sets `settings` directly rather than going
+  // through `adopt`, which would reset the fields above and lose unsaved edits.
+  const saveResume = useCallback(
     async (value: boolean) => {
       clearNotices();
       try {
@@ -76,6 +76,9 @@ export default function AgentSection() {
     },
     [clearNotices],
   );
+
+  // Unset means on, matching the core's default.
+  const resumesSessions = settings?.resumeAgentSessions ?? true;
 
   return (
     <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
@@ -137,16 +140,17 @@ export default function AgentSection() {
         <input
           type="checkbox"
           className="mt-1"
-          checked={settings?.resumeAgentSessions !== false}
+          checked={resumesSessions}
           disabled={settings === null}
-          onChange={(e) => void toggleResume(e.target.checked)}
+          onChange={(e) => void saveResume(e.target.checked)}
         />
         <span>
           Resume the last session when reopening a workspace
           <span className="block text-xs text-zinc-600">
             When a workspace's agent tab starts again, for example after Yarvis restarts, it picks
             up the Claude Code session it last ran with <code>--resume</code>. A new session starts
-            when there is nothing to resume, or when Claude Code no longer has the transcript.
+            when there is nothing to resume, when Claude Code no longer has the transcript, or when
+            the command above doesn't start with <code>claude</code>.
           </span>
         </span>
       </label>

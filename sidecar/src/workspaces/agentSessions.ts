@@ -1,14 +1,17 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { existsSync } from "node:fs";
+import { basename, isAbsolute } from "node:path";
 import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { workspaceAgentSessions } from "../db/schema.ts";
 
 /**
- * The registry of Claude Code sessions running in each workspace, fed by the
- * SessionStart/SessionEnd hooks `claudeSettings.ts` installs. It answers two
- * questions: which sessions are attached to a workspace right now, and which
+ * The registry of Claude Code sessions started in each workspace, fed by the
+ * SessionStart/SessionEnd hooks `claudeSettings.ts` installs. It answers three
+ * questions: which sessions are attached to a workspace right now; which
  * process is the agent in a given PTY, which is what lets
- * `send_workspace_instruction` prove Claude is the one reading the prompt.
+ * `send_workspace_instruction` prove Claude is the one reading the prompt; and
+ * which session the agent tab last ran, so the tab can resume it.
  */
 
 /** Header carrying the PTY id, from the session's `YARVIS_SESSION_KEY`. */
@@ -26,6 +29,7 @@ export interface AgentSessionStart {
   claudeSessionId: string;
   pid: number;
   source: string | null;
+  transcriptPath?: string | null;
 }
 
 export interface AgentSessionEnd {
@@ -84,6 +88,7 @@ export async function recordAgentSessionStart(db: Db, start: AgentSessionStart):
       set: {
         pid: start.pid,
         source: start.source,
+        transcriptPath: start.transcriptPath ?? null,
         startedAt: sql`now()`,
         endedAt: null,
         endReason: null,
@@ -120,14 +125,20 @@ export function pidIsAlive(pid: number): boolean {
 
 /**
  * The Claude session id the workspace's agent tab last ran, for the tab to
- * resume when it is started again. Null when it has never registered one, or
- * when that session's process is still running, since resuming it would put a
- * second process on the same transcript.
+ * resume when it starts again. Null when there is nothing safe to resume:
+ *
+ * - no session was registered, or it registered no transcript;
+ * - its transcript is gone (Claude Code prunes old ones), where `--resume`
+ *   would fail and leave the tab at a bare shell;
+ * - that session is still running anywhere in the workspace, where resuming
+ *   would put a second process on the same transcript.
+ *
+ * The transcript path comes from a hook, so it counts only when its file name
+ * is the session's own.
  */
-export async function resumableAgentTabSession(
+export async function resumableAgentTabSessionId(
   db: Db,
   workspaceId: string,
-  isAlive: (pid: number) => boolean = pidIsAlive,
 ): Promise<string | null> {
   const [latest] = await db
     .select()
@@ -140,8 +151,24 @@ export async function resumableAgentTabSession(
     )
     .orderBy(desc(workspaceAgentSessions.startedAt))
     .limit(1);
-  if (!latest) return null;
-  if (latest.endedAt === null && isAlive(latest.pid)) return null;
+  if (!latest?.transcriptPath) return null;
+  const transcript = latest.transcriptPath;
+  if (!isAbsolute(transcript) || basename(transcript) !== `${latest.claudeSessionId}.jsonl`) {
+    return null;
+  }
+  if (!existsSync(transcript)) return null;
+
+  const running = await db
+    .select({ pid: workspaceAgentSessions.pid })
+    .from(workspaceAgentSessions)
+    .where(
+      and(
+        eq(workspaceAgentSessions.workspaceId, workspaceId),
+        eq(workspaceAgentSessions.claudeSessionId, latest.claudeSessionId),
+        isNull(workspaceAgentSessions.endedAt),
+      ),
+    );
+  if (running.some((r) => pidIsAlive(r.pid))) return null;
   return latest.claudeSessionId;
 }
 

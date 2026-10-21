@@ -49,7 +49,9 @@ Set the `YARVIS_WORKSPACES_ROOT` environment variable to use another folder.
 **Settings → Repositories → Agent** sets the agent tab's title and the command
 it runs. The defaults are `Claude` and `claude --permission-mode auto`. Add
 flags there, such as a model or a different permission mode. The
-`YARVIS_CLAUDE_COMMAND` environment variable overrides the stored command.
+`YARVIS_CLAUDE_COMMAND` environment variable overrides the stored command. The
+same section turns off [resuming the last session](#the-agent-tab), which is on
+by default.
 
 ## Use it
 
@@ -183,15 +185,18 @@ that tab. No shell tab opens with it. Press `+` or Cmd+T when you want one.
 
 - **Closing the agent tab ends its session.** It stays closed until you leave
   the workspace.
-- **Coming back starts the session again.** Returning from another workspace or
-  another nav rail tab counts as opening the workspace again.
+- **Coming back starts the agent tab again.** Returning from another workspace
+  or another nav rail tab counts as opening the workspace again.
 - **To bring it back sooner,** press the start-session button in the header.
-- **A restarted tab resumes its last session.** Whenever the agent tab starts
-  again, after you closed it or after Yarvis restarted, it runs the command with
-  `--resume <session id>` for the Claude Code session it last ran. It starts a
-  new session when there is nothing to resume or Claude Code no longer has the
-  transcript. Turn this off with **Resume the last session when reopening a
-  workspace** under **Settings → Repositories → Agent**.
+- **A restarted tab resumes its last session.** When you open the workspace or
+  press start-session, after closing the tab or after Yarvis restarted, the tab
+  runs the command with `--resume <session id>` for the Claude Code session it
+  last ran. It starts a new session instead when there is nothing to resume,
+  when Claude Code no longer has that session's transcript, or when the agent
+  command doesn't start with `claude`. The resumed session carries its earlier
+  context with it. To start clean, run `/clear` in it, or turn this off with
+  **Resume the last session when reopening a workspace** under **Settings →
+  Repositories → Agent**.
 
 Workspace tabs are terminals, so everything in [Terminals](terminals.md)
 applies, including splits. A workspace's tabs can also hold diffs, the file

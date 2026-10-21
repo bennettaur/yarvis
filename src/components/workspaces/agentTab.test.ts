@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { agentSessionId, resolveAgentTab, shouldAutoStartAgent } from "./agentTab";
+import { agentSessionId, resolveAgentTab, shouldAutoStartAgent, startAgentTab } from "./agentTab";
 
 const base = {
   agentActive: false,
@@ -81,5 +81,57 @@ describe("shouldAutoStartAgent", () => {
 
   it("fires only once per view", () => {
     expect(shouldAutoStartAgent({ ...ready, alreadyStarted: true })).toBe(false);
+  });
+});
+
+describe("startAgentTab", () => {
+  const SESSION = "3f2b1c9e-5d4a-4b6c-8e7f-0a1b2c3d4e5f";
+
+  function recordingStart() {
+    const calls: unknown[][] = [];
+    const start = async (...args: unknown[]) => {
+      calls.push(args);
+    };
+    return { calls, start };
+  }
+
+  it("starts the tab on the session it last ran", async () => {
+    const { calls, start } = recordingStart();
+    await startAgentTab("ws1", "/work/ws1", "Fix bug", {
+      lookupResumable: async () => SESSION,
+      start,
+    });
+    expect(calls).toEqual([["ws1", "/work/ws1", "Fix bug", false, SESSION]]);
+  });
+
+  it("starts a fresh session when there is nothing to resume", async () => {
+    const { calls, start } = recordingStart();
+    await startAgentTab("ws1", "/work/ws1", "Fix bug", {
+      lookupResumable: async () => null,
+      start,
+    });
+    expect(calls).toEqual([["ws1", "/work/ws1", "Fix bug", false, null]]);
+  });
+
+  it("still starts the tab when the lookup fails", async () => {
+    const { calls, start } = recordingStart();
+    await startAgentTab("ws1", "/work/ws1", "Fix bug", {
+      lookupResumable: async () => {
+        throw new Error("sidecar unreachable");
+      },
+      start,
+    });
+    expect(calls).toEqual([["ws1", "/work/ws1", "Fix bug", false, null]]);
+  });
+
+  it("rejects when the start itself fails", async () => {
+    await expect(
+      startAgentTab("ws1", "/work/ws1", "Fix bug", {
+        lookupResumable: async () => null,
+        start: async () => {
+          throw new Error("too many PTY sessions");
+        },
+      }),
+    ).rejects.toThrow("too many PTY sessions");
   });
 });

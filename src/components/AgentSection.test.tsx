@@ -12,7 +12,8 @@ import { renderToHtml } from "../test/render";
 
 const invoked: Array<{ command: string; args: unknown }> = [];
 let stored: Settings;
-/** Error the next `set_agent` rejects with, mimicking the core. */
+/** Error the next `set_agent` or `set_resume_agent_sessions` rejects with,
+ * mimicking the core. */
 let rejectSaveWith: string | null = null;
 
 function defaultSettings(): Settings {
@@ -49,6 +50,7 @@ mock.module("@tauri-apps/api/core", () => ({
       stored = { ...stored, agentName: name, agentCommand: cmd };
     }
     if (command === "set_resume_agent_sessions") {
+      if (rejectSaveWith) throw new Error(rejectSaveWith);
       stored = { ...stored, resumeAgentSessions: (args as { value: boolean }).value };
     }
     if (
@@ -189,6 +191,17 @@ describe("AgentSection", () => {
     expect(invoked.some((call) => call.command === "set_agent")).toBe(false);
     expect((host.querySelectorAll("input")[0] as HTMLInputElement).value).toBe("Codex");
     expect((host.querySelector('input[type="checkbox"]') as HTMLInputElement).checked).toBe(false);
+    cleanup();
+  });
+
+  it("shows an error and keeps the stored value when saving the toggle fails", async () => {
+    rejectSaveWith = "could not write settings.json";
+    const { host, cleanup } = await mount();
+    (host.querySelector('input[type="checkbox"]') as HTMLInputElement).click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(host.innerHTML).toContain("could not write settings.json");
+    expect((host.querySelector('input[type="checkbox"]') as HTMLInputElement).checked).toBe(true);
     cleanup();
   });
 

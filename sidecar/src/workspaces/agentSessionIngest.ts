@@ -41,8 +41,8 @@ const sessionKeySchema = z
   .regex(/^[A-Za-z0-9:_./-]+$/);
 
 /**
- * The fields used from Claude Code's hook input. Everything else in it
- * (transcript path, cwd, cost estimates on a resume) is dropped by the parse.
+ * The fields used from Claude Code's hook input. Everything else in it (cwd,
+ * cost estimates on a resume) is dropped by the parse.
  */
 const hookInputSchema = z.object({
   hook_event_name: z.enum(["SessionStart", "SessionEnd"]),
@@ -53,6 +53,7 @@ const hookInputSchema = z.object({
     .regex(/^[A-Za-z0-9-]+$/),
   source: z.string().max(32).optional(),
   reason: z.string().max(32).optional(),
+  transcript_path: z.string().max(4096).optional(),
 });
 
 /**
@@ -97,7 +98,7 @@ export function createAgentSessionIngestRoutes(config: Config): Hono {
       .where(eq(workspaces.id, workspaceId));
     if (!ws) return c.json({ error: "workspace not found" }, 404);
 
-    const { hook_event_name, session_id, source, reason } = input.data;
+    const { hook_event_name, session_id, source, reason, transcript_path } = input.data;
     if (hook_event_name === "SessionStart") {
       await recordAgentSessionStart(db(), {
         workspaceId,
@@ -105,6 +106,7 @@ export function createAgentSessionIngestRoutes(config: Config): Hono {
         claudeSessionId: session_id,
         pid,
         source: source ?? null,
+        transcriptPath: transcript_path ?? null,
       });
     } else {
       await recordAgentSessionEnd(db(), {

@@ -348,6 +348,7 @@ impl SettingsState {
         self.save()
     }
 
+    /// Stores whether reopening a workspace's agent tab resumes its last session.
     fn set_resume_agent_sessions(&self, value: bool) -> Result<(), String> {
         {
             let mut settings = self.settings.lock().map_err(|e| e.to_string())?;

@@ -565,12 +565,18 @@ fn resolve_agent_command(env: Option<String>, configured: Option<String>) -> Str
         .unwrap_or_else(|| DEFAULT_AGENT_COMMAND.to_string())
 }
 
-/// Whether reopening a workspace's agent tab resumes its last session. On
-/// unless the user turned it off.
-fn resume_agent_sessions(app: &AppHandle) -> bool {
-    app.try_state::<SettingsState>()
-        .and_then(|state| state.snapshot().resume_agent_sessions)
-        .unwrap_or(true)
+/// Whether reopening a workspace's agent tab resumes its last session.
+fn should_resume_agent_sessions(app: &AppHandle) -> bool {
+    resolve_resume_agent_sessions(
+        app.try_state::<SettingsState>()
+            .and_then(|state| state.snapshot().resume_agent_sessions),
+    )
+}
+
+/// On unless the user turned it off. Extracted from
+/// `should_resume_agent_sessions` so the default is unit-testable.
+fn resolve_resume_agent_sessions(configured: Option<bool>) -> bool {
+    configured.unwrap_or(true)
 }
 
 /// The configured (or default) display name for a workspace's agent.
@@ -905,12 +911,46 @@ fn is_claude_session_id(id: &str) -> bool {
         })
 }
 
-/// The launch line that resumes `session_id`, falling back to `fresh` when it
-/// can't. Claude Code exits non-zero when the transcript is gone (it prunes old
-/// ones), so without the fallback the tab would be left at a bare shell, and
-/// would land there again on every reopen since nothing new gets registered.
-fn resume_launch_command(fresh: &str, session_id: &str) -> String {
-    format!("{fresh} --resume {session_id} || {fresh}")
+/// True when the agent command runs Claude Code, judged by the file name of its
+/// first word. `--resume` is a Claude Code flag, so no other agent is given it.
+fn runs_claude_code(command: &str) -> bool {
+    command
+        .split_whitespace()
+        .next()
+        .and_then(|argv0| Path::new(argv0).file_name())
+        .is_some_and(|name| name == "claude")
+}
+
+/// The launch line for `opening`. Extracted from `spawn_claude_session` so the
+/// choice is unit-testable without app state.
+///
+/// A resume starts a fresh session instead when the id isn't shaped like a
+/// Claude session id, since it goes on the line unquoted, or when the configured
+/// agent isn't Claude Code. The sidecar only offers a session whose transcript
+/// still exists, so no fallback for a failed resume is built into the line.
+fn opening_launch_command(
+    base: &str,
+    name: &str,
+    remote_control: bool,
+    opening: Opening<'_>,
+) -> String {
+    match opening {
+        Opening::Fresh => agent_launch_command(base, name, remote_control, None),
+        Opening::Instruction(instruction) => {
+            agent_launch_command(base, name, remote_control, Some(instruction))
+        }
+        Opening::Resume(session_id) => {
+            let fresh = agent_launch_command(base, name, remote_control, None);
+            if !is_claude_session_id(session_id) {
+                eprintln!("[pty] not resuming {session_id:?}: not a Claude session id");
+                fresh
+            } else if !runs_claude_code(base) {
+                fresh
+            } else {
+                format!("{fresh} --resume {session_id}")
+            }
+        }
+    }
 }
 
 /// Builds the shell-safe single-quoted form of `s` for injection into a shell
@@ -946,18 +986,17 @@ pub enum Opening<'a> {
 /// The launch line is built here rather than taken from the caller, so a caller
 /// (including the control channel) chooses only *whether* to start the configured
 /// agent, not what runs. The command itself comes from settings, which only the
-/// webview can write; the one caller-supplied value that reaches the line is
-/// `name`, which `sanitize_session_name` strips before it is quoted. This is not
-/// argv safety — the line is typed into an interactive shell — so both of those
-/// matter.
+/// webview can write. Three caller-supplied values can reach the line: `name`,
+/// which `sanitize_session_name` strips before it is quoted; an instruction,
+/// which is quoted; and a resume id, which goes in unquoted and so is dropped
+/// unless `is_claude_session_id` accepts it. This is not argv safety — the line
+/// is typed into an interactive shell — so the stripping matters as much as the
+/// quoting.
 ///
 /// `remote_control` adds Claude Code's `--remote-control`, which is only wanted
 /// when the launch came from somewhere the user isn't at the machine — a
 /// Telegram turn. A session started at the laptop is driven in its own tab, and
 /// can be made remotely controllable later from inside the session itself.
-///
-/// A resume id that isn't shaped like a Claude session id is dropped and a
-/// fresh session started instead, since the id is not quoted on the line.
 pub fn spawn_claude_session(
     app: &AppHandle,
     state: &PtyState,
@@ -968,22 +1007,7 @@ pub fn spawn_claude_session(
     opening: Opening<'_>,
 ) -> Result<(), String> {
     let id = format!("ws-claude:{workspace_id}");
-    let base = agent_command(app);
-    let command = match opening {
-        Opening::Fresh => agent_launch_command(&base, name, remote_control, None),
-        Opening::Instruction(instruction) => {
-            agent_launch_command(&base, name, remote_control, Some(instruction))
-        }
-        Opening::Resume(session_id) => {
-            let fresh = agent_launch_command(&base, name, remote_control, None);
-            if is_claude_session_id(session_id) {
-                resume_launch_command(&fresh, session_id)
-            } else {
-                eprintln!("[pty] not resuming {session_id:?}: not a Claude session id");
-                fresh
-            }
-        }
-    };
+    let command = opening_launch_command(&agent_command(app), name, remote_control, opening);
     spawn_into_state(
         app,
         state,
@@ -1085,7 +1109,7 @@ pub fn pty_start_claude(
     // one the user drives themselves. The issue "Start work" sequence runs in
     // the sidecar and spawns through the control channel instead.
     let opening = match resume_session_id.as_deref() {
-        Some(session_id) if resume_agent_sessions(&app) => Opening::Resume(session_id),
+        Some(session_id) if should_resume_agent_sessions(&app) => Opening::Resume(session_id),
         _ => Opening::Fresh,
     };
     spawn_claude_session(
@@ -1176,9 +1200,10 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 mod tests {
     use super::{
         agent_launch_command, attention_workspace_id, hmac_sha256_hex, is_claude_session_id,
-        is_unsafe_name_char, lock_scrollback, prepare_instruction, remote_control_command,
-        resolve_agent_command, resolve_max_sessions, resume_launch_command, session_env,
-        session_token, snapshot, Scrollback, DEFAULT_AGENT_COMMAND, DEFAULT_MAX_SESSIONS,
+        is_unsafe_name_char, lock_scrollback, opening_launch_command, prepare_instruction,
+        remote_control_command, resolve_agent_command, resolve_max_sessions,
+        resolve_resume_agent_sessions, runs_claude_code, session_env, session_token, snapshot,
+        Opening, Scrollback, DEFAULT_AGENT_COMMAND, DEFAULT_MAX_SESSIONS,
         MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
     };
     use std::sync::Mutex;
@@ -1468,16 +1493,80 @@ mod tests {
         );
     }
 
+    const SESSION_ID: &str = "3f2b1c9e-5d4a-4b6c-8e7f-0a1b2c3d4e5f";
+
     #[test]
-    fn resume_launch_command_falls_back_to_a_fresh_session() {
+    fn opening_launch_command_appends_resume_for_claude_code() {
         assert_eq!(
-            resume_launch_command(
+            opening_launch_command(
                 "claude --permission-mode auto",
-                "3f2b1c9e-5d4a-4b6c-8e7f-0a1b2c3d4e5f"
+                "n",
+                false,
+                Opening::Resume(SESSION_ID)
             ),
-            "claude --permission-mode auto --resume 3f2b1c9e-5d4a-4b6c-8e7f-0a1b2c3d4e5f \
-             || claude --permission-mode auto"
+            format!("claude --permission-mode auto --resume {SESSION_ID}")
         );
+        assert_eq!(
+            opening_launch_command("claude", "Fix bug", true, Opening::Resume(SESSION_ID)),
+            format!("claude --remote-control 'Fix bug' --resume {SESSION_ID}")
+        );
+    }
+
+    #[test]
+    fn opening_launch_command_starts_fresh_for_a_malformed_resume_id() {
+        assert_eq!(
+            opening_launch_command("claude", "n", false, Opening::Resume("x; rm -rf ~")),
+            "claude"
+        );
+    }
+
+    #[test]
+    fn opening_launch_command_never_gives_another_agent_resume() {
+        for base in [
+            "codex --yolo",
+            "cd sub && claude",
+            "/usr/local/bin/claude-wrapper",
+        ] {
+            assert_eq!(
+                opening_launch_command(base, "n", false, Opening::Resume(SESSION_ID)),
+                base
+            );
+        }
+        assert_eq!(
+            opening_launch_command(
+                "/Users/me/.local/bin/claude",
+                "n",
+                false,
+                Opening::Resume(SESSION_ID)
+            ),
+            format!("/Users/me/.local/bin/claude --resume {SESSION_ID}")
+        );
+    }
+
+    #[test]
+    fn opening_launch_command_quotes_an_instruction() {
+        assert_eq!(
+            opening_launch_command("claude", "n", false, Opening::Instruction("it's done")),
+            "claude 'it'\\''s done'"
+        );
+        assert_eq!(
+            opening_launch_command("claude", "n", false, Opening::Fresh),
+            "claude"
+        );
+    }
+
+    #[test]
+    fn runs_claude_code_reads_the_first_word() {
+        assert!(runs_claude_code("claude --permission-mode auto"));
+        assert!(!runs_claude_code("CLAUDE_CODE_FOO=1 claude"));
+        assert!(!runs_claude_code(""));
+    }
+
+    #[test]
+    fn resuming_is_on_unless_turned_off() {
+        assert!(resolve_resume_agent_sessions(None));
+        assert!(resolve_resume_agent_sessions(Some(true)));
+        assert!(!resolve_resume_agent_sessions(Some(false)));
     }
 
     #[test]

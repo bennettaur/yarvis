@@ -1,6 +1,7 @@
 {
   "agentName": "Claude",
   "agentCommand": "claude --permission-mode auto",
+  "resumeAgentSessions": true,
   "maxPtySessions": 60,
   "secretBackend": "keychain",
   "jiraBaseUrl": null,

@@ -1,3 +1,5 @@
+import { startClaudeSession } from "../../lib/pty";
+import { getResumableAgentSessionId } from "../../lib/workspaces";
 import { DEFAULT_AGENT_TAB_TITLE } from "../shell/terminalTabs/sessionIds";
 import type { PinnedTab } from "../shell/terminalTabs/surfaceState";
 
@@ -87,4 +89,35 @@ export function shouldAutoStartAgent({
   // a workspace that already has one.
   if (!probed) return false;
   return !agentActive && !alreadyStarted;
+}
+
+/** The calls `startAgentTab` makes, injectable so it is testable without the
+ *  core or the sidecar. */
+export interface AgentTabStarters {
+  lookupResumable: (workspaceId: string) => Promise<string | null>;
+  start: typeof startClaudeSession;
+}
+
+/**
+ * Starts a workspace's agent tab on the Claude session it last ran, when the
+ * sidecar has one to resume. A failed lookup costs only the resume, so the tab
+ * still opens on a fresh session rather than not at all. Rejects only when the
+ * start itself fails.
+ */
+export async function startAgentTab(
+  workspaceId: string,
+  cwd: string,
+  name: string,
+  {
+    lookupResumable = getResumableAgentSessionId,
+    start = startClaudeSession,
+  }: Partial<AgentTabStarters> = {},
+): Promise<void> {
+  const resumeSessionId = await lookupResumable(workspaceId).catch((e) => {
+    console.warn("[workspaces] could not look up the session to resume:", e);
+    return null;
+  });
+  // No Remote Control: this session opens in a tab right here. Enable it from
+  // inside the session if the work has to continue away from the machine.
+  await start(workspaceId, cwd, name, false, resumeSessionId);
 }

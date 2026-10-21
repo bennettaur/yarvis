@@ -1,0 +1,1 @@
+ALTER TABLE "workspace_agent_sessions" ADD COLUMN "transcript_path" text;

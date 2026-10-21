@@ -668,6 +668,9 @@ export const workspaceAgentSessions = pgTable(
     // own agent tab, `ws:<workspaceId>/...` for one started in a terminal pane.
     sessionKey: text("session_key").notNull(),
     claudeSessionId: text("claude_session_id").notNull(),
+    // Where Claude Code keeps the session's transcript, from SessionStart. A
+    // session is only offered for resume while this file exists.
+    transcriptPath: text("transcript_path"),
     pid: integer("pid").notNull(),
     // Claude's SessionStart `source` (startup, resume, clear, compact) the last
     // time this session started, and SessionEnd's `reason` once it has ended, or
