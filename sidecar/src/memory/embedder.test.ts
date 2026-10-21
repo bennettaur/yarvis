@@ -90,28 +90,49 @@ describe("vector normalization", () => {
   });
 });
 
+interface FakeEmbeddingsOptions {
+  /** Requests with more texts than this are refused. */
+  maxInputs: number;
+  /** Status the refusal is sent with. */
+  refuseWith?: number;
+  /** Answers this many requests with a 429 before behaving normally. */
+  rateLimitFirst?: number;
+  /** Leaves the last vector out of every answer. */
+  dropLast?: boolean;
+}
+
 /**
- * A fake `/v1/embeddings` endpoint that refuses any request with more than
- * `maxInputs` texts, the way Vertex behind LiteLLM does. Each vector is the
- * number in its text ("t7" embeds as [7]) so order can be checked.
+ * A fake `/v1/embeddings` endpoint that refuses any request over `maxInputs`
+ * texts, the way Vertex behind LiteLLM does. Each vector is the number in its
+ * text ("t7" embeds as [7]) so order can be checked.
  */
-function startEmbeddingsServer(maxInputs: number) {
+function startEmbeddingsServer(opts: FakeEmbeddingsOptions) {
   const batchSizes: number[] = [];
+  let rateLimitsLeft = opts.rateLimitFirst ?? 0;
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
     async fetch(req) {
       const { input } = (await req.json()) as { input: string[] };
       batchSizes.push(input.length);
-      if (input.length > maxInputs) {
+      if (rateLimitsLeft > 0) {
+        rateLimitsLeft -= 1;
+        // A 1ms retry-after keeps the SDK's 2s default backoff out of the test.
         return Response.json(
-          { error: { message: `batchSize ${input.length} exceeds ${maxInputs}` } },
-          { status: 400 },
+          { error: { message: "slow down" } },
+          { status: 429, headers: { "retry-after-ms": "1" } },
         );
       }
+      if (input.length > opts.maxInputs) {
+        return Response.json(
+          { error: { message: `batchSize ${input.length} exceeds ${opts.maxInputs}` } },
+          { status: opts.refuseWith ?? 400 },
+        );
+      }
+      const answered = opts.dropLast ? input.slice(0, -1) : input;
       return Response.json({
         object: "list",
-        data: input.map((text, index) => ({
+        data: answered.map((text, index) => ({
           object: "embedding",
           index,
           embedding: [Number(text.slice(1))],
@@ -125,39 +146,78 @@ function startEmbeddingsServer(maxInputs: number) {
 }
 
 describe("OpenAICompatibleEmbedder.embedMany batching", () => {
-  let stop: (() => void) | undefined;
-  afterEach(() => stop?.());
-
-  const texts = (n: number) => Array.from({ length: n }, (_, i) => `t${i}`);
-
-  it("splits a large set into capped requests and keeps the order", async () => {
-    const fake = startEmbeddingsServer(250);
-    stop = () => fake.server.stop(true);
-    const e = new OpenAICompatibleEmbedder({ baseUrl: fake.baseUrl, model: "fake", dimensions: 1 });
-
-    const vecs = await e.embedMany(texts(348));
-
-    expect(fake.batchSizes).toEqual([100, 100, 100, 48]);
-    expect(vecs.map((v) => v[0])).toEqual(texts(348).map((_, i) => i));
+  let fake: ReturnType<typeof startEmbeddingsServer> | undefined;
+  afterEach(() => {
+    fake?.server.stop(true);
+    fake = undefined;
   });
 
-  it("halves a batch the backend refuses until it fits", async () => {
-    const fake = startEmbeddingsServer(30);
-    stop = () => fake.server.stop(true);
-    const e = new OpenAICompatibleEmbedder({ baseUrl: fake.baseUrl, model: "fake", dimensions: 1 });
+  function embedderAgainst(opts: FakeEmbeddingsOptions) {
+    fake = startEmbeddingsServer(opts);
+    const embedder = new OpenAICompatibleEmbedder({
+      baseUrl: fake.baseUrl,
+      model: "fake",
+      dimensions: 1,
+    });
+    return { embedder, batchSizes: fake.batchSizes };
+  }
 
-    const vecs = await e.embedMany(texts(100));
+  const texts = (n: number) => Array.from({ length: n }, (_, i) => `t${i}`);
+  const indexes = (n: number) => Array.from({ length: n }, (_, i) => i);
 
-    expect(fake.batchSizes).toEqual([100, 50, 25, 25, 50, 25, 25]);
-    expect(vecs.map((v) => v[0])).toEqual(texts(100).map((_, i) => i));
+  it("splits a large set into capped requests and keeps the order", async () => {
+    const { embedder, batchSizes } = embedderAgainst({ maxInputs: 250 });
+
+    const vecs = await embedder.embedMany(texts(348));
+
+    expect(batchSizes).toEqual([100, 100, 100, 48]);
+    expect(vecs.map((v) => v[0])).toEqual(indexes(348));
+  });
+
+  it.each([400, 413])("halves a batch refused with %i until it fits", async (status) => {
+    const { embedder, batchSizes } = embedderAgainst({ maxInputs: 30, refuseWith: status });
+
+    const vecs = await embedder.embedMany(texts(100));
+
+    // Depth first: 100 is refused, then 50, so each 50 goes out as two 25s.
+    expect(batchSizes).toEqual([100, 50, 25, 25, 50, 25, 25]);
+    expect(vecs.map((v) => v[0])).toEqual(indexes(100));
+  });
+
+  it("keeps the order when a refused batch has an odd length", async () => {
+    const { embedder } = embedderAgainst({ maxInputs: 10 });
+
+    const vecs = await embedder.embedMany(texts(25));
+
+    expect(vecs.map((v) => v[0])).toEqual(indexes(25));
+  });
+
+  it("still splits when the refusal follows a rate-limited attempt", async () => {
+    const { embedder, batchSizes } = embedderAgainst({ maxInputs: 50, rateLimitFirst: 1 });
+
+    const vecs = await embedder.embedMany(texts(100));
+
+    expect(batchSizes).toEqual([100, 100, 50, 50]);
+    expect(vecs.map((v) => v[0])).toEqual(indexes(100));
+  });
+
+  it("rethrows a refusal that is not about size without splitting", async () => {
+    const { embedder, batchSizes } = embedderAgainst({ maxInputs: 0, refuseWith: 401 });
+
+    await expect(embedder.embedMany(texts(10))).rejects.toThrow("batchSize 10 exceeds 0");
+    expect(batchSizes).toEqual([10]);
   });
 
   it("gives up when a single text is refused", async () => {
-    const fake = startEmbeddingsServer(0);
-    stop = () => fake.server.stop(true);
-    const e = new OpenAICompatibleEmbedder({ baseUrl: fake.baseUrl, model: "fake", dimensions: 1 });
+    const { embedder, batchSizes } = embedderAgainst({ maxInputs: 0 });
 
-    await expect(e.embedMany(texts(2))).rejects.toThrow("batchSize 1 exceeds 0");
-    expect(fake.batchSizes).toEqual([2, 1]);
+    await expect(embedder.embedMany(texts(2))).rejects.toThrow("batchSize 1 exceeds 0");
+    expect(batchSizes).toEqual([2, 1]);
+  });
+
+  it("fails when the backend returns fewer vectors than texts", async () => {
+    const { embedder } = embedderAgainst({ maxInputs: 100, dropLast: true });
+
+    await expect(embedder.embedMany(texts(5))).rejects.toThrow("returned 4 vectors for 5 texts");
   });
 });
