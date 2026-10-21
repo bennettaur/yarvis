@@ -16,6 +16,7 @@ import {
   getActiveRun,
   getPass,
   lastFinishedPass,
+  listAutoApprovals,
   listMessages,
   listPasses,
   listQuestions,
@@ -143,6 +144,9 @@ export function createHeadsDownRoutes(config: Config): Hono {
     if (!ok) return c.json({ error: "no MCP tool with that id" }, 404);
     return c.json({ id: c.req.param("id"), allowed: parsed.data.allowed });
   });
+
+  // Calls the decision model approved on the user's behalf, so they can see what ran without them.
+  router.get("/auto-approvals", async (c) => c.json(await listAutoApprovals(db())));
 
   router.get("/passes", async (c) => c.json(await listPasses(db(), 50)));
 

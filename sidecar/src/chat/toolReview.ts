@@ -2,6 +2,7 @@ import type { ModelMessage } from "ai";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { fence, newNonce } from "../lib/fencing.ts";
+import type { ModelSelection } from "../llm/complexity.ts";
 import { decide, getDecisionModelConfig, resolveDecisionModel } from "../llm/decision.ts";
 import { describeError, redactSecrets } from "../llm/errors.ts";
 import { MAX_CALL_REASON_CHARS } from "../mcp/callReason.ts";
@@ -45,7 +46,7 @@ export function approvesCall(verdict: ToolReviewVerdict): boolean {
 
 // Sized for a small local model's context window. The transcript keeps the
 // newest whole messages, since those are what the call answers.
-const MAX_REQUEST_CHARS = 4_000;
+export const MAX_REQUEST_CHARS = 4_000;
 const MAX_TRANSCRIPT_CHARS = 8_000;
 const MAX_PART_CHARS = 1_500;
 const MAX_DESCRIPTION_CHARS = 1_000;
@@ -211,33 +212,52 @@ export async function createToolCallReviewer(
   if (!settings.autoApproveTools) return undefined;
   const selection = await resolveDecisionModel(config, settings.model);
   if (!selection) return undefined;
+  return async (call) =>
+    (await reviewToolCall(config, selection, call, userRequest, fetchImpl)).approved;
+}
 
-  return async (call) => {
-    if (serializeArgs(call.args).length > MAX_ARGS_CHARS) {
-      console.info(`[auto-approve] ${call.id}: arguments too long to review, asking the user`);
-      return false;
-    }
-    try {
-      const verdict = await decide(config, selection, {
-        system: REVIEWER_SYSTEM,
-        prompt: buildReviewPrompt(call, userRequest, newNonce()),
-        schema: toolReviewVerdictSchema,
-        signal: call.signal,
-        fetchImpl,
-      });
-      const approved = approvesCall(verdict);
-      console.info(
-        `[auto-approve] ${call.id}: ${approved ? "approved" : "asking the user"} ` +
-          `(aligns=${verdict.alignsWithRequest} dangerous=${verdict.dangerous} ` +
-          `destructive=${verdict.destructive}) ${logReason(verdict.reason)}`,
-      );
-      return approved;
-    } catch (e) {
-      console.warn(
-        `[auto-approve] ${call.id}: review failed, asking the user:`,
-        redactSecrets(describeError(e)),
-      );
-      return false;
-    }
-  };
+/** A review's outcome, with the model's reason when it gave one. */
+export interface ToolReviewOutcome {
+  approved: boolean;
+  reason: string;
+}
+
+/**
+ * Asks the decision model about one call. Anything but a clear yes is a no:
+ * arguments too long to review whole, a refusal, an error or a timeout.
+ */
+export async function reviewToolCall(
+  config: Config,
+  selection: ModelSelection,
+  call: Parameters<ToolCallReviewer>[0],
+  userRequest: string,
+  fetchImpl?: typeof fetch,
+): Promise<ToolReviewOutcome> {
+  if (serializeArgs(call.args).length > MAX_ARGS_CHARS) {
+    console.info(`[auto-approve] ${call.id}: arguments too long to review, asking the user`);
+    return { approved: false, reason: "arguments too long to review" };
+  }
+  try {
+    const verdict = await decide(config, selection, {
+      system: REVIEWER_SYSTEM,
+      prompt: buildReviewPrompt(call, userRequest, newNonce()),
+      schema: toolReviewVerdictSchema,
+      signal: call.signal,
+      fetchImpl,
+    });
+    const approved = approvesCall(verdict);
+    console.info(
+      `[auto-approve] ${call.id}: ${approved ? "approved" : "asking the user"} ` +
+        `(aligns=${verdict.alignsWithRequest} dangerous=${verdict.dangerous} ` +
+        `destructive=${verdict.destructive}) ${logReason(verdict.reason)}`,
+    );
+    // Bounded for the page as well as the log: the reason is shown with the approval.
+    return { approved, reason: logReason(verdict.reason) };
+  } catch (e) {
+    console.warn(
+      `[auto-approve] ${call.id}: review failed, asking the user:`,
+      redactSecrets(describeError(e)),
+    );
+    return { approved: false, reason: "the review failed" };
+  }
 }

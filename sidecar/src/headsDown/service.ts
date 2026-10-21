@@ -1,5 +1,17 @@
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, type SQL } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import {
   agentTools,
@@ -19,6 +31,9 @@ import type { MemoryService } from "../memory/index.ts";
  * Heads-down mode's state: whether it is running, what each pass did, what
  * the user told it, and what it asked them.
  */
+
+/** Answered by the user, as opposed to approved by the decision model. */
+const answeredByUser = sql`${headsDownQuestions.answeredBy} is distinct from 'decision-model'`;
 
 export async function getActiveRun(db: Db): Promise<HeadsDownRun | null> {
   const [row] = await db.select().from(headsDownRuns).where(eq(headsDownRuns.status, "active"));
@@ -189,7 +204,8 @@ export async function listQuestions(
   db: Db,
   { statuses = ["open"], since, limit = 100 }: ListQuestionsOptions = {},
 ): Promise<HeadsDownQuestion[]> {
-  const conditions: SQL[] = [inArray(headsDownQuestions.status, [...statuses])];
+  // The decision model's approvals are listed by listAutoApprovals, never as the user's answers.
+  const conditions: SQL[] = [inArray(headsDownQuestions.status, [...statuses]), answeredByUser];
   if (since) conditions.push(gte(headsDownQuestions.createdAt, since));
   return db
     .select()
@@ -199,13 +215,69 @@ export async function listQuestions(
     .limit(limit);
 }
 
-/** Answered after `since`, oldest first: what the next pass has to act on. */
+/** Answered by the user after `since`, oldest first: what the next pass has to act on. */
 export async function answeredSince(db: Db, since: Date): Promise<HeadsDownQuestion[]> {
   return db
     .select()
     .from(headsDownQuestions)
-    .where(and(eq(headsDownQuestions.status, "answered"), gt(headsDownQuestions.answeredAt, since)))
+    .where(
+      and(
+        eq(headsDownQuestions.status, "answered"),
+        answeredByUser,
+        gt(headsDownQuestions.answeredAt, since),
+      ),
+    )
     .orderBy(asc(headsDownQuestions.answeredAt));
+}
+
+export interface AutoApprovalInput {
+  action: string;
+  args: unknown;
+  question: string;
+  situation: string;
+  /** The decision model's one-line reason. */
+  reason: string;
+}
+
+/**
+ * Records a call the decision model approved and the pass then made, so the
+ * user can see what ran without them. Not a decision memory: only the user's
+ * own answers are precedent.
+ */
+export async function recordAutoApproval(
+  db: Db,
+  input: AutoApprovalInput,
+): Promise<HeadsDownQuestion> {
+  const now = new Date();
+  const [row] = await db
+    .insert(headsDownQuestions)
+    .values({
+      kind: "approval",
+      question: input.question,
+      situation: input.situation,
+      options: ["approve", "deny"],
+      action: input.action,
+      toolArgs: input.args ?? null,
+      argsHash: hashArgs(input.args ?? null),
+      status: "answered",
+      choice: "approve",
+      answer: input.reason,
+      answeredBy: "decision-model",
+      answeredAt: now,
+      usedAt: now,
+    })
+    .returning();
+  return row!;
+}
+
+/** Calls the decision model approved, newest first, for the page. */
+export async function listAutoApprovals(db: Db, limit = 20): Promise<HeadsDownQuestion[]> {
+  return db
+    .select()
+    .from(headsDownQuestions)
+    .where(eq(headsDownQuestions.answeredBy, "decision-model"))
+    .orderBy(desc(headsDownQuestions.answeredAt))
+    .limit(limit);
 }
 
 /** A choice label is one short line, as decision memory compares them. */
@@ -248,6 +320,7 @@ export async function answerQuestion(
       status: "answered",
       choice: choiceLabel(text),
       answer: input.answer?.trim() || null,
+      answeredBy: "user",
       answeredAt: new Date(),
     })
     .where(and(eq(headsDownQuestions.id, id), eq(headsDownQuestions.status, "open")))
@@ -444,7 +517,7 @@ export async function lastUserActivityAt(db: Db, run: HeadsDownRun): Promise<Dat
     db
       .select({ at: headsDownQuestions.answeredAt })
       .from(headsDownQuestions)
-      .where(eq(headsDownQuestions.status, "answered"))
+      .where(and(eq(headsDownQuestions.status, "answered"), answeredByUser))
       .orderBy(desc(headsDownQuestions.answeredAt))
       .limit(1),
   ]);

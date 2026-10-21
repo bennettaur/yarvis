@@ -10,11 +10,14 @@ export interface DecisionModelConfig {
   model: ModelSelection | null;
   /** Let the decision model approve an MCP tool call before the user is asked. */
   autoApproveTools: boolean;
+  /** Let it approve a heads-down call to an MCP tool the user has approved in similar situations. */
+  autoApproveHeadsDown: boolean;
 }
 
 export const DEFAULT_DECISION_MODEL_CONFIG: DecisionModelConfig = {
   model: null,
   autoApproveTools: false,
+  autoApproveHeadsDown: false,
 };
 
 export async function getDecisionModelConfig(): Promise<DecisionModelConfig> {

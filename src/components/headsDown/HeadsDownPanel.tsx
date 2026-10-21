@@ -9,6 +9,7 @@ import {
   type HeadsDownQuestion,
   type HeadsDownState,
   listAllowedTools,
+  listAutoApprovals,
   listHeadsDownMessages,
   listOpenQuestions,
   listPasses,
@@ -21,6 +22,7 @@ import {
 } from "../../lib/headsDown";
 import { combineResources, useCachedResource } from "../../lib/resourceCache";
 import RefreshingIndicator from "../RefreshingIndicator";
+import AutoApprovals from "./AutoApprovals";
 import HeadsDownSettings from "./HeadsDownSettings";
 import PassList from "./PassList";
 import QuestionCard from "./QuestionCard";
@@ -35,6 +37,7 @@ const CACHE_KEYS = {
   messages: "heads-down:messages",
   config: "heads-down:config",
   allowedTools: "heads-down:allowed-tools",
+  autoApprovals: "heads-down:auto-approvals",
 };
 
 const NO_QUESTIONS: HeadsDownQuestion[] = [];
@@ -227,6 +230,10 @@ export default function HeadsDownPanel() {
   );
   const config = useCachedResource<HeadsDownConfig>(CACHE_KEYS.config, getHeadsDownConfig);
   const allowedTools = useCachedResource<AllowedTool[]>(CACHE_KEYS.allowedTools, listAllowedTools);
+  const autoApprovals = useCachedResource<HeadsDownQuestion[]>(
+    CACHE_KEYS.autoApprovals,
+    listAutoApprovals,
+  );
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const refreshState = state.refresh;
@@ -234,6 +241,7 @@ export default function HeadsDownPanel() {
   const refreshStreams = streams.refresh;
   const refreshPasses = passes.refresh;
   const refreshMessages = messages.refresh;
+  const refreshAutoApprovals = autoApprovals.refresh;
   const refreshConfig = config.refresh;
   const refreshAll = useCallback(() => {
     void refreshState();
@@ -241,7 +249,15 @@ export default function HeadsDownPanel() {
     void refreshStreams();
     void refreshPasses();
     void refreshMessages();
-  }, [refreshState, refreshQuestions, refreshStreams, refreshPasses, refreshMessages]);
+    void refreshAutoApprovals();
+  }, [
+    refreshState,
+    refreshQuestions,
+    refreshStreams,
+    refreshPasses,
+    refreshMessages,
+    refreshAutoApprovals,
+  ]);
   const live = useLivePass(refreshAll);
   const combined = combineResources([state, questions, streams, passes, messages]);
 
@@ -277,6 +293,12 @@ export default function HeadsDownPanel() {
                 onAllowTool={allowTool}
               />
             ))}
+          </Section>
+        )}
+
+        {(autoApprovals.data ?? NO_QUESTIONS).length > 0 && (
+          <Section title="Approved on its own">
+            <AutoApprovals approvals={autoApprovals.data ?? NO_QUESTIONS} />
           </Section>
         )}
 

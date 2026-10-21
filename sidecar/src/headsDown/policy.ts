@@ -10,7 +10,19 @@ import type { ApprovalHooks } from "../mcp/chatTools.ts";
 import { OPEN_STREAM_STATUSES, refKeyOf } from "../workStreams/service.ts";
 import { getRepo } from "../workspaces/service.ts";
 import { askUser } from "./attention.ts";
-import { deniedApprovalExists, getActiveRun, isToolUnattended, spendApproval } from "./service.ts";
+import {
+  approvalQuestion,
+  approvalSituation,
+  autoApproveReason,
+  type PassReviewContext,
+} from "./autoApprove.ts";
+import {
+  deniedApprovalExists,
+  getActiveRun,
+  isToolUnattended,
+  recordAutoApproval,
+  spendApproval,
+} from "./service.ts";
 
 /**
  * What a heads-down pass may do with nobody watching.
@@ -77,9 +89,6 @@ const DENIED =
 
 /** How long an approval can still be spent. */
 const APPROVAL_TTL_MS = 24 * 60 * 60_000;
-
-/** At most this much of an approval's arguments goes into its question, and so into memory. */
-const MAX_ARGS_IN_SITUATION = 500;
 
 function stringArg(args: unknown, key: string): string | null {
   const value = (args as Record<string, unknown> | null)?.[key];
@@ -192,12 +201,19 @@ export async function decideCall(
 
 /**
  * Approval hooks for a pass: each call is decided at once, and one that needs
- * the user becomes a question for them instead of a prompt to wait on.
+ * the user becomes a question for them instead of a prompt to wait on, unless
+ * the decision model may settle it (`autoApprove.ts`). `review` is absent when
+ * the user said nothing this run to judge a call against.
  */
-export function passApprovalHooks(db: Db, run: HeadsDownRun, onQueued: () => void): ApprovalHooks {
+export function passApprovalHooks(
+  db: Db,
+  run: HeadsDownRun,
+  onChanged: () => void,
+  review?: PassReviewContext,
+): ApprovalHooks {
   return {
     deniedMessage: QUEUED_FOR_APPROVAL,
-    onRequest: async ({ toolCallId, id, args }) => {
+    onRequest: async ({ toolCallId, id, args, description, messages }) => {
       let approved = false;
       try {
         const decision = await decideCall(db, run, id, args);
@@ -205,17 +221,38 @@ export function passApprovalHooks(db: Db, run: HeadsDownRun, onQueued: () => voi
         if (decision === "refuse") return { deniedMessage: REFUSED };
         if (decision === "denied") return { deniedMessage: DENIED };
         if (decision === "stopped") return { deniedMessage: STOPPED };
-        if (decision === "ask") {
+        if (decision !== "ask") return undefined;
+        const question = approvalQuestion(id);
+        const situation = approvalSituation(id, args);
+        // A failed review is a no, never a reason to drop the question.
+        const reason = review
+          ? await autoApproveReason(review, { tool: id, args, description, messages }).catch(
+              (e) => {
+                console.error(
+                  "[heads-down] auto approval failed:",
+                  e instanceof Error ? e.message : e,
+                );
+                return null;
+              },
+            )
+          : null;
+        let autoApproved = false;
+        if (reason !== null) {
+          await recordAutoApproval(db, { action: id, args, question, situation, reason });
+          autoApproved = true;
+        } else {
           await askUser(db, {
             kind: "approval",
-            question: `Heads-down mode wants to run ${id}.`,
-            situation: `A heads-down pass called ${id} with ${JSON.stringify(args).slice(0, MAX_ARGS_IN_SITUATION)}`,
+            question,
+            situation,
             action: id,
             toolArgs: args,
             options: ["approve", "deny"],
           });
-          onQueued();
         }
+        onChanged();
+        // Set last, so a failure above can't settle the call as approved.
+        approved = autoApproved;
         return undefined;
       } catch (e) {
         console.error("[heads-down] deciding a call failed:", e instanceof Error ? e.message : e);

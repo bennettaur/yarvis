@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { type Tool, type ToolExecutionOptions, tool } from "ai";
+import { type ModelMessage, type Tool, type ToolExecutionOptions, tool } from "ai";
 import { z } from "zod";
 import { builtinToolIds, syncBuiltins } from "../agentTools/registry.ts";
 import { listRegistryTools, type RegistryTool, searchRegistry } from "../agentTools/store.ts";
@@ -54,6 +54,10 @@ export interface ApprovalHooks {
     id: string;
     args: unknown;
     reason: string | null;
+    /** The tool's own description, for a surface that reviews the call itself. */
+    description?: string;
+    /** The conversation so far, as the AI SDK hands it to `execute`. */
+    messages?: ModelMessage[];
   }) => Promise<void | { deniedMessage?: string }>;
   /** Aborted when the client disconnects, so pending approvals don't hang. */
   signal?: AbortSignal;
@@ -110,7 +114,14 @@ export function wrapToolWithApproval(
       // stopped turn neither runs the call nor raises a prompt nobody can answer.
       if (hooks.signal?.aborted) return STOPPED;
       if (autoApproved) return run(args, opts);
-      const requested = await hooks.onRequest({ toolCallId: opts.toolCallId, id, args, reason });
+      const requested = await hooks.onRequest({
+        toolCallId: opts.toolCallId,
+        id,
+        args,
+        reason,
+        description: typeof t.description === "string" ? t.description : undefined,
+        messages: opts.messages,
+      });
       const approved = await waitForApproval(opts.toolCallId, {
         signal: hooks.signal,
         timeoutMs: APPROVAL_TIMEOUT_MS,
