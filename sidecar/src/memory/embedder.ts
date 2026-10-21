@@ -1,6 +1,6 @@
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
-import { embed, embedMany } from "ai";
+import { APICallError, embed, embedMany } from "ai";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { EMBED_DIM } from "../db/schema.ts";
@@ -224,19 +224,52 @@ export class OpenAICompatibleEmbedder implements Embedder {
   }
 
   async embedMany(texts: string[]): Promise<number[][]> {
-    return traceEmbedCall(
-      `openai-compatible embedMany model=${this.model} dims=${this.dimensions} count=${texts.length}`,
-      async () => {
-        const { embeddings } = await embedMany({
-          model: this.embeddingModel,
-          values: texts,
-          providerOptions: this.providerOptions(),
-        });
-        return embeddings;
-      },
-      (vecs) => `count=${vecs.length} ${vecs[0] ? vectorSummary(vecs[0]) : "empty"}`,
-    );
+    const vecs: number[][] = [];
+    for (let i = 0; i < texts.length; i += OPENAI_COMPATIBLE_BATCH_SIZE) {
+      vecs.push(...(await this.embedBatch(texts.slice(i, i + OPENAI_COMPATIBLE_BATCH_SIZE))));
+    }
+    return vecs;
   }
+
+  /** Embeds one request's worth of texts, halving it when the backend refuses the batch. */
+  private async embedBatch(texts: string[]): Promise<number[][]> {
+    try {
+      return await traceEmbedCall(
+        `openai-compatible embedMany model=${this.model} dims=${this.dimensions} count=${texts.length}`,
+        async () => {
+          const { embeddings } = await embedMany({
+            model: this.embeddingModel,
+            values: texts,
+            providerOptions: this.providerOptions(),
+          });
+          return embeddings;
+        },
+        (vecs) => `count=${vecs.length} ${vecs[0] ? vectorSummary(vecs[0]) : "empty"}`,
+      );
+    } catch (err) {
+      if (texts.length < 2 || !isRejectedRequest(err)) throw err;
+      const mid = Math.ceil(texts.length / 2);
+      const head = await this.embedBatch(texts.slice(0, mid));
+      const tail = await this.embedBatch(texts.slice(mid));
+      return [...head, ...tail];
+    }
+  }
+}
+
+/**
+ * Texts sent in one embeddings request. OpenAI itself takes 2048, but a gateway
+ * can front a model with a much lower cap (Vertex's gemini-embedding-001 takes
+ * 250), so this stays at the 100 the AI SDK's own Google provider uses.
+ */
+const OPENAI_COMPATIBLE_BATCH_SIZE = 100;
+
+/**
+ * A 400 or 413 from the backend. Gateways word a too-many-inputs or too-many-tokens
+ * refusal differently, so any of these is worth retrying as two smaller batches;
+ * a refusal that has nothing to do with size still fails at a batch of one.
+ */
+function isRejectedRequest(err: unknown): boolean {
+  return APICallError.isInstance(err) && (err.statusCode === 400 || err.statusCode === 413);
 }
 
 /**
