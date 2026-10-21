@@ -150,8 +150,13 @@ back to ad-hoc.
   module doc and is the thing to preserve: because every write is a
   read-modify-write of that one shared blob, a read that *fails* must never
   look like an empty store, so `read_root` is fallible and no caller writes on
-  an error. Historical migrations off the Keychain (`settings.rs`'s legacy
-  non-secret values, `embeddings_secrets.rs`'s standalone item) are pinned to
+  an error. For the same reason two writes must never overlap, or the second
+  drops the first's change: every write holds `keychain::lock_for_write` from
+  the read to the write, usually through `update_root` (or
+  `update_subtree`/`update_root_in`) — a mutex within the process plus
+  `~/.yarvis/secrets.lock`, since instances share the item. `write_root_to`
+  takes that lock's guard, so a write without it doesn't compile. Historical
+  migrations off the Keychain (`settings.rs`'s legacy non-secret values, `embeddings_secrets.rs`'s standalone item) are pinned to
   the Keychain rather than routed through the choice: they are about what a
   past build wrote there. Non-secret configuration the user is expected
   to change from the UI goes in `src-tauri/src/settings.rs`'s

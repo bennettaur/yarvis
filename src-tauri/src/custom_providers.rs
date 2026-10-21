@@ -32,13 +32,8 @@ fn providers_from_root(root: &Value) -> Value {
         .unwrap_or_else(|| Value::Object(Map::new()))
 }
 
-fn write_blob(value: &Value) -> Result<(), String> {
-    let mut root = keychain::read_root()?;
-    let obj = root
-        .as_object_mut()
-        .ok_or_else(|| "secrets store is not a JSON object".to_string())?;
-    obj.insert(CUSTOM_PROVIDERS_KEY.to_string(), value.clone());
-    keychain::write_root(&root)
+fn update_blob(edit: impl FnOnce(&mut Value) -> Result<bool, String>) -> Result<(), String> {
+    keychain::update_subtree(CUSTOM_PROVIDERS_KEY, edit)
 }
 
 fn provider_entry<'a>(blob: &'a mut Value, id: &str) -> &'a mut Map<String, Value> {
@@ -161,62 +156,58 @@ pub fn set_custom_provider_secret(
     value: String,
 ) -> Result<(), String> {
     validate_slot(&slot)?;
-    let mut blob = read_blob()?;
-    if !blob.is_object() {
-        blob = Value::Object(Map::new());
-    }
-    let provider = provider_entry(&mut blob, &provider_id);
-    if slot == "apiKey" {
-        provider.insert("apiKey".into(), Value::String(value));
-    } else {
-        let name = slot.strip_prefix("header:").expect("validated above");
-        let headers = provider
-            .entry("headers")
-            .or_insert_with(|| Value::Object(Map::new()));
-        if !headers.is_object() {
-            *headers = Value::Object(Map::new());
+    update_blob(|blob| {
+        let provider = provider_entry(blob, &provider_id);
+        if slot == "apiKey" {
+            provider.insert("apiKey".into(), Value::String(value));
+        } else {
+            let name = slot.strip_prefix("header:").expect("validated above");
+            let headers = provider
+                .entry("headers")
+                .or_insert_with(|| Value::Object(Map::new()));
+            if !headers.is_object() {
+                *headers = Value::Object(Map::new());
+            }
+            headers
+                .as_object_mut()
+                .expect("just ensured")
+                .insert(name.to_string(), Value::String(value));
         }
-        headers
-            .as_object_mut()
-            .expect("just ensured")
-            .insert(name.to_string(), Value::String(value));
-    }
-    write_blob(&blob)
+        Ok(true)
+    })
 }
 
 #[tauri::command(async)]
 pub fn delete_custom_provider_secret(provider_id: String, slot: String) -> Result<(), String> {
     validate_slot(&slot)?;
-    let mut blob = read_blob()?;
-    let Some(root) = blob.as_object_mut() else {
-        return Ok(());
-    };
-    let Some(provider) = root.get_mut(&provider_id).and_then(|v| v.as_object_mut()) else {
-        return Ok(());
-    };
-    if slot == "apiKey" {
-        provider.remove("apiKey");
-    } else {
-        let name = slot.strip_prefix("header:").expect("validated above");
-        if let Some(headers) = provider.get_mut("headers").and_then(|v| v.as_object_mut()) {
-            headers.remove(name);
-        }
-    }
-    // Drop the provider entirely if it has no remaining secrets.
-    let provider_empty = provider
-        .get("apiKey")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .is_none()
-        && provider
-            .get("headers")
-            .and_then(|v| v.as_object())
-            .map(|h| h.is_empty())
-            .unwrap_or(true);
-    if provider_empty {
-        root.remove(&provider_id);
-    }
-    write_blob(&blob)
+    update_blob(|blob| {
+        let root = blob.as_object_mut().expect("subtree is an object");
+        let Some(provider) = root.get_mut(&provider_id).and_then(|v| v.as_object_mut()) else {
+            return Ok(false);
+        };
+        let removed = if slot == "apiKey" {
+            provider.remove("apiKey").is_some()
+        } else {
+            let name = slot.strip_prefix("header:").expect("validated above");
+            provider
+                .get_mut("headers")
+                .and_then(|v| v.as_object_mut())
+                .is_some_and(|headers| headers.remove(name).is_some())
+        };
+        // Drop the provider entirely if it has no remaining secrets.
+        let provider_empty = provider
+            .get("apiKey")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .is_none()
+            && provider
+                .get("headers")
+                .and_then(|v| v.as_object())
+                .map(|h| h.is_empty())
+                .unwrap_or(true);
+        let pruned = provider_empty && root.remove(&provider_id).is_some();
+        Ok(removed || pruned)
+    })
 }
 
 /// Deletes every secret slot belonging to the given provider id. Called from
@@ -224,14 +215,10 @@ pub fn delete_custom_provider_secret(provider_id: String, slot: String) -> Resul
 /// orphan credentials linger in the Keychain.
 #[tauri::command(async)]
 pub fn delete_custom_provider_all_secrets(provider_id: String) -> Result<(), String> {
-    let mut blob = read_blob()?;
-    let Some(root) = blob.as_object_mut() else {
-        return Ok(());
-    };
-    if root.remove(&provider_id).is_some() {
-        write_blob(&blob)?;
-    }
-    Ok(())
+    update_blob(|blob| {
+        let root = blob.as_object_mut().expect("subtree is an object");
+        Ok(root.remove(&provider_id).is_some())
+    })
 }
 
 /// Returns the raw JSON blob to inject as `YARVIS_CUSTOM_PROVIDER_SECRETS`, or
