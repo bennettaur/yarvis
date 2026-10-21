@@ -14,6 +14,7 @@ import {
   type ProviderModelRow,
   withCapability,
 } from "./catalog.ts";
+import { responsesCompatFetch, withoutServerSideStorage } from "./responsesCompat.ts";
 
 /**
  * Provider identifiers.
@@ -204,8 +205,11 @@ function resolveCustom(row: CustomProviderRow, config: Config, modelId: string):
   };
   switch (row.apiKind) {
     case "openai":
-      // Default call goes through the OpenAI Responses API.
-      return createOpenAI(options)(modelId);
+      // Default call goes through the OpenAI Responses API. A proxy in front of
+      // it (LiteLLM especially) bends the protocol in ways the SDK rejects.
+      return withoutServerSideStorage(
+        createOpenAI({ ...options, fetch: responsesCompatFetch() })(modelId),
+      );
     case "openai-chat":
       // Use the legacy /chat/completions endpoint for gateways (e.g. older
       // litellm versions) that don't speak the Responses API.
