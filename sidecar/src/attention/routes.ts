@@ -8,6 +8,11 @@ import { readSessionActivityById } from "../cc/sessions.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { type AttentionNavTarget, workspaces } from "../db/schema.ts";
+import {
+  SESSION_KEY_HEADER,
+  SESSION_TOKEN_HEADER,
+  sessionTokenMatches,
+} from "../workspaces/agentSessions.ts";
 import { type AttentionStreamEvent, publish, subscribe } from "./hub.ts";
 import {
   awaitPermissionDecision,
@@ -213,9 +218,15 @@ export function createAttentionIngestRoutes(config: Config): Hono {
       if (!canHoldAnotherPermission()) return c.body(null, 204);
       const origin = permissionOriginSchema.safeParse({
         workspaceId: c.req.header("x-yarvis-workspace-id") || undefined,
-        sessionKey: c.req.header("x-yarvis-session-key"),
+        sessionKey: c.req.header(SESSION_KEY_HEADER),
       });
       if (!origin.success) return c.json({ error: origin.error.flatten() }, 400);
+      // Every terminal holds the ingest token; only this one holds its own
+      // session token, so a prompt can't be raised under another terminal's name.
+      const token = c.req.header(SESSION_TOKEN_HEADER) ?? "";
+      if (!sessionTokenMatches(config.token, origin.data.sessionKey, token)) {
+        return c.json({ error: "session token does not match the session key" }, 403);
+      }
       const parsed = permissionHookSchema.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
       const { workspaceId, sessionKey } = origin.data;

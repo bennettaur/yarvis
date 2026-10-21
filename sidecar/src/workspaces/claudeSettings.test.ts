@@ -94,19 +94,18 @@ describe("permissionHookCommand", () => {
   ) {
     const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: reply });
     try {
-      const child = Bun.spawn(
-        ["sh", "-c", permissionHookCommand(WORKSPACE_ID, `ws-claude:${WORKSPACE_ID}`)],
-        {
-          env: {
-            PATH: process.env.PATH ?? "",
-            YARVIS_SIDECAR_PORT: String(server.port),
-            YARVIS_ATTENTION_TOKEN: "scoped",
-            ...env,
-          },
-          stdin: new Blob([stdin]),
-          stdout: "pipe",
+      const child = Bun.spawn(["sh", "-c", permissionHookCommand(WORKSPACE_ID)], {
+        env: {
+          PATH: process.env.PATH ?? "",
+          YARVIS_SIDECAR_PORT: String(server.port),
+          YARVIS_ATTENTION_TOKEN: "scoped",
+          YARVIS_SESSION_KEY: `ws:${WORKSPACE_ID}/t1/p1`,
+          YARVIS_SESSION_TOKEN: "pty-token",
+          ...env,
         },
-      );
+        stdin: new Blob([stdin]),
+        stdout: "pipe",
+      });
       const stdout = await new Response(child.stdout).text();
       return { stdout, exitCode: await child.exited };
     } finally {
@@ -123,7 +122,6 @@ describe("permissionHookCommand", () => {
         return Response.json(decision);
       },
       JSON.stringify({ tool_name: "Bash", tool_input: { command: "ls" } }),
-      { YARVIS_SESSION_KEY: `ws:${WORKSPACE_ID}/t1/p1` },
     );
     expect(exitCode).toBe(0);
     expect(JSON.parse(stdout)).toEqual(decision);
@@ -131,6 +129,7 @@ describe("permissionHookCommand", () => {
     expect(seen!.headers.get("authorization")).toBe("Bearer scoped");
     expect(seen!.headers.get("x-yarvis-workspace-id")).toBe(WORKSPACE_ID);
     expect(seen!.headers.get("x-yarvis-session-key")).toBe(`ws:${WORKSPACE_ID}/t1/p1`);
+    expect(seen!.headers.get("x-yarvis-session-token")).toBe("pty-token");
   });
 
   it("prints nothing and exits cleanly when the sidecar refuses", async () => {
@@ -143,23 +142,25 @@ describe("permissionHookCommand", () => {
     expect(stdout).toBe("");
   });
 
-  it("prints nothing outside a Yarvis terminal, without calling anything", async () => {
-    let called = false;
-    const { stdout, exitCode } = await runAgainst(
-      () => {
-        called = true;
-        return Response.json({ hookSpecificOutput: { decision: { behavior: "allow" } } });
-      },
-      "{}",
-      { YARVIS_SIDECAR_PORT: "" },
-    );
-    expect(exitCode).toBe(0);
-    expect(stdout).toBe("");
-    expect(called).toBe(false);
-  });
+  for (const unset of ["YARVIS_SIDECAR_PORT", "YARVIS_SESSION_KEY", "YARVIS_SESSION_TOKEN"]) {
+    it(`prints nothing without ${unset}, without calling anything`, async () => {
+      let called = false;
+      const { stdout, exitCode } = await runAgainst(
+        () => {
+          called = true;
+          return Response.json({ hookSpecificOutput: { decision: { behavior: "allow" } } });
+        },
+        "{}",
+        { [unset]: "" },
+      );
+      expect(exitCode).toBe(0);
+      expect(stdout).toBe("");
+      expect(called).toBe(false);
+    });
+  }
 
   it("stays inside Claude Code's timeout for the hook", () => {
-    const command = permissionHookCommand(WORKSPACE_ID, `ws-claude:${WORKSPACE_ID}`);
+    const command = permissionHookCommand(WORKSPACE_ID);
     const maxTime = Number(command.match(/-m (\d+)/)?.[1]);
     expect(maxTime).toBeLessThan(PERMISSION_HOOK_TIMEOUT_S);
   });

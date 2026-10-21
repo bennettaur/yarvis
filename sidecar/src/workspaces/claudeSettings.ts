@@ -83,25 +83,29 @@ function assertShellSafe(...values: string[]): void {
  * prompt from the app. It forwards Claude Code's stdin (the tool and its input)
  * to the sidecar and prints whatever decision comes back, which Claude Code
  * reads as the hook's output. The session's identity rides in headers because
- * the body is Claude Code's own JSON.
+ * the body is Claude Code's own JSON: its PTY's key, and the PTY's
+ * `YARVIS_SESSION_TOKEN`, so a process in one terminal can't put a prompt in
+ * front of the user under another terminal's name.
  *
  * Every failure prints nothing: outside a Yarvis terminal, with the app closed,
  * or past the hold, Claude Code shows its normal dialog as if no hook ran.
- * Outside a Yarvis terminal the port is unset, and curl would read the bare
- * `127.0.0.1:` as port 80 and print whatever answers there as a decision, so
- * the command stops before curl instead.
+ * Outside a Yarvis terminal the variables are unset, and curl would read the
+ * bare `127.0.0.1:` as port 80 and print whatever answers there as a decision,
+ * so the command stops before curl instead.
  */
-export function permissionHookCommand(workspaceId: string, fallbackSessionKey: string): string {
-  assertShellSafe(workspaceId, fallbackSessionKey);
+export function permissionHookCommand(workspaceId: string): string {
+  assertShellSafe(workspaceId);
   // curl gives up a little before Claude Code would kill the hook, so a stalled
   // sidecar still ends in the empty "no decision" output rather than a kill.
   return (
-    `{ [ -n "\${YARVIS_SIDECAR_PORT}" ] && [ -n "\${YARVIS_ATTENTION_TOKEN}" ]; } || { cat >/dev/null; exit 0; }; ` +
+    `{ [ -n "\${YARVIS_SIDECAR_PORT}" ] && [ -n "\${YARVIS_ATTENTION_TOKEN}" ] && ` +
+    `[ -n "\${YARVIS_SESSION_KEY}" ] && [ -n "\${YARVIS_SESSION_TOKEN}" ]; } || { cat >/dev/null; exit 0; }; ` +
     `curl -sf -m ${PERMISSION_HOOK_TIMEOUT_S - 5} -X POST "http://127.0.0.1:\${YARVIS_SIDECAR_PORT}/ingest/permission" ` +
     `-H "Authorization: Bearer \${YARVIS_ATTENTION_TOKEN}" ` +
     `-H "Content-Type: application/json" ` +
     `-H 'X-Yarvis-Workspace-Id: ${workspaceId}' ` +
-    `-H "X-Yarvis-Session-Key: \${YARVIS_SESSION_KEY:-${fallbackSessionKey}}" ` +
+    `-H "${SESSION_KEY_HEADER}: \${YARVIS_SESSION_KEY}" ` +
+    `-H "${SESSION_TOKEN_HEADER}: \${YARVIS_SESSION_TOKEN}" ` +
     `--data-binary @- 2>/dev/null || true`
   );
 }
@@ -217,7 +221,7 @@ export function buildClaudeSettings(
         hooks: [
           {
             type: "command",
-            command: permissionHookCommand(workspaceId, fallbackSessionKey),
+            command: permissionHookCommand(workspaceId),
             timeout: PERMISSION_HOOK_TIMEOUT_S,
           },
         ],

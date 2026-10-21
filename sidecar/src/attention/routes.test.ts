@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { createHmac } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,6 +27,10 @@ const config: Config = {
   telegram: { allowedChatIds: [], otpWindowMinutes: 120 },
 };
 const app = createApp(config);
+
+/** The token the core puts in a PTY's environment (`session_token` in pty.rs). */
+const tokenFor = (sessionKey: string) =>
+  createHmac("sha256", config.token).update(`session:${sessionKey}`).digest("hex");
 
 const bearer = { Authorization: "Bearer test-token", "Content-Type": "application/json" };
 const ingestAuth = {
@@ -218,6 +223,7 @@ describe("permission requests", () => {
     ...ingestAuth,
     "X-Yarvis-Workspace-Id": workspaceId,
     "X-Yarvis-Session-Key": sessionKey,
+    "X-Yarvis-Session-Token": tokenFor(sessionKey),
   };
   const hookInput = {
     session_id: "s1",
@@ -358,6 +364,18 @@ describe("permission requests", () => {
     await decide(second.id, { behavior: "allow" });
     await second.response;
     expect(await pendingItems()).toHaveLength(0);
+  });
+
+  it("refuses a prompt raised under another terminal's name", async () => {
+    // Every terminal holds the ingest token; the session token is what ties a
+    // request to the terminal it claims to come from.
+    const res = await app.request("/ingest/permission", {
+      method: "POST",
+      headers: { ...permissionAuth, "X-Yarvis-Session-Token": tokenFor(`ws:${workspaceId}/t9/p1`) },
+      body: JSON.stringify(hookInput),
+    });
+    expect(res.status).toBe(403);
+    expect(await waitingRequests()).toHaveLength(0);
   });
 
   it("refuses a decision for a request that is no longer waiting", async () => {
