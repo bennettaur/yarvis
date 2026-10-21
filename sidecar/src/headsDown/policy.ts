@@ -9,13 +9,8 @@ import { resolveApproval } from "../mcp/approvals.ts";
 import type { ApprovalHooks } from "../mcp/chatTools.ts";
 import { OPEN_STREAM_STATUSES, refKeyOf } from "../workStreams/service.ts";
 import { getRepo } from "../workspaces/service.ts";
-import {
-  askQuestion,
-  deniedApprovalExists,
-  getActiveRun,
-  isToolUnattended,
-  spendApproval,
-} from "./service.ts";
+import { askUser } from "./attention.ts";
+import { deniedApprovalExists, getActiveRun, isToolUnattended, spendApproval } from "./service.ts";
 
 /**
  * What a heads-down pass may do with nobody watching.
@@ -211,7 +206,7 @@ export function passApprovalHooks(db: Db, run: HeadsDownRun, onQueued: () => voi
         if (decision === "denied") return { deniedMessage: DENIED };
         if (decision === "stopped") return { deniedMessage: STOPPED };
         if (decision === "ask") {
-          await askQuestion(db, {
+          await askUser(db, {
             kind: "approval",
             question: `Heads-down mode wants to run ${id}.`,
             situation: `A heads-down pass called ${id} with ${JSON.stringify(args).slice(0, MAX_ARGS_IN_SITUATION)}`,

@@ -149,7 +149,7 @@ named. It works well for status updates and brag docs.
 | --- | --- | --- |
 | **Tasks** | What *you* intend to do, scoped to today or this week | Tasks tab |
 | **Agent todos** | What the *assistant* has promised to do, with a progress log | Memory → Agent todos |
-| **Work streams** | Threads of work the assistant is pushing forward, such as a ticket to ship or a message to answer, each with its tickets, workspaces, PRs and messages, what it's waiting on, and the assistant's notes | Ask the assistant what it's working on |
+| **Work streams** | Threads of work the assistant is pushing forward, such as a ticket to ship or a message to answer, each with its tickets, workspaces, PRs and messages, what it's waiting on, and the assistant's notes | Heads down page |
 | **Projects** | A status, a focus for the week, and tracked tickets with priorities (urgent, high, medium, low) | Memory → Projects |
 | **Memories** | Durable facts, typed by kind | Memory → Memories |
 | **Activity log** | A record of what you did in the app | Memory → Activity |
@@ -326,7 +326,8 @@ you asked.
   its code, and a repo name can come from an issue or a look-alike name. Check
   the exact repo before you approve.
 - **Going heads down** asks every time, since it starts a loop that keeps
-  acting on its own until you stop it.
+  acting on its own until you stop it. See [Heads-down mode](heads-down.md)
+  for what it may do without asking.
 - **MCP tools** ask unless you set them to auto-approve in the Tool manager.
 - **Spoken turns** ask before anything irreversible: deleting a task, archiving
   a workspace, starting work, adding a repo to a workspace, filing a JIRA

@@ -7,7 +7,7 @@ import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
-import { askQuestion } from "./service.ts";
+import { askUser } from "./attention.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -45,7 +45,7 @@ let settingsDir: string;
 const originalSettingsPath = process.env.YARVIS_SETTINGS_PATH;
 
 beforeEach(async () => {
-  await sql`TRUNCATE heads_down_runs, heads_down_messages, heads_down_questions, memories, events RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE heads_down_runs, heads_down_messages, heads_down_questions, attention_items, memories, events RESTART IDENTITY CASCADE`;
   settingsDir = mkdtempSync(join(tmpdir(), "heads-down-routes-"));
   process.env.YARVIS_SETTINGS_PATH = join(settingsDir, "settings.json");
 });
@@ -61,8 +61,13 @@ describe("/api/heads-down", () => {
     expect((await post("/start", { focus: "ship billing" })).status).toBe(200);
     expect(await get("")).toMatchObject({ run: { focus: "ship billing", status: "active" } });
 
+    await askUser(db, { kind: "question", question: "Which repo?" });
     await post("/stop");
     expect(await get("")).toMatchObject({ run: null });
+    // Nothing is left in the bell asking for an answer no pass will read.
+    expect(await get("/questions")).toEqual([]);
+    const items = await sql`SELECT status FROM attention_items`;
+    expect(items.map((r) => r.status)).toEqual(["resolved"]);
   });
 
   it("takes a message for the next pass, and refuses an empty one", async () => {
@@ -73,8 +78,8 @@ describe("/api/heads-down", () => {
     ]);
   });
 
-  it("answers a question once", async () => {
-    const question = await askQuestion(db, {
+  it("answers a question once, and clears it from the attention bell", async () => {
+    const question = await askUser(db, {
       kind: "question",
       question: "Where should I ask for review?",
       options: ["#billing-reviews"],
@@ -87,6 +92,10 @@ describe("/api/heads-down", () => {
       (await post(`/questions/${question.id}/answer`, { choice: "#billing-reviews" })).status,
     ).toBe(409);
     expect(await get("/questions")).toEqual([]);
+    const items = await sql`SELECT status, nav_target FROM attention_items`;
+    expect([...items]).toEqual([
+      expect.objectContaining({ status: "resolved", nav_target: { type: "heads-down" } }),
+    ]);
   });
 
   it("saves working hours, and refuses a min sleep above the max", async () => {
@@ -112,6 +121,26 @@ describe("/api/heads-down", () => {
     expect(
       (await put({ ...valid, workingHours: { ...valid.workingHours, start: "9am" } })).status,
     ).toBe(400);
+  });
+
+  it("allows an MCP tool for heads-down mode, and refuses a tool that isn't one", async () => {
+    await sql`TRUNCATE agent_tools`;
+    await sql`INSERT INTO agent_tools (id, source, name, content_hash)
+              VALUES ('mcp:slack:post_message', 'mcp', 'post_message', 'h'),
+                     ('builtin:archive_workspace', 'builtin', 'archive_workspace', 'h')`;
+    const put = (id: string, allowed: boolean) =>
+      app.request(`/api/heads-down/allowed-tools/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        headers: jsonAuth,
+        body: JSON.stringify({ allowed }),
+      });
+
+    expect((await put("mcp:slack:post_message", true)).status).toBe(200);
+    expect(await get("/allowed-tools")).toEqual([
+      { id: "mcp:slack:post_message", name: "post_message" },
+    ]);
+    // A built-in's go-ahead comes from the pass policy, never from this list.
+    expect((await put("builtin:archive_workspace", true)).status).toBe(404);
   });
 
   it("answers 404 for a pass that doesn't exist", async () => {

@@ -6,6 +6,7 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
+import { dismissOpenQuestions, settleQuestionAttention } from "./attention.ts";
 import { getHeadsDownConfig, saveHeadsDownConfig } from "./config.ts";
 import { type HeadsDownStreamEvent, publish, subscribe } from "./hub.ts";
 import {
@@ -116,6 +117,7 @@ export function createHeadsDownRoutes(config: Config): Hono {
   router.post("/stop", async (c) => {
     const run = await stopRun(db());
     abortHeadsDownPass();
+    await dismissOpenQuestions(db());
     changed();
     return c.json({ stopped: run !== null });
   });
@@ -182,6 +184,7 @@ export function createHeadsDownRoutes(config: Config): Hono {
     const memory = new PgVectorMemoryStore(db(), await chooseEmbedder(config, db()));
     const result = await answerQuestion(db(), memory, id, parsed.data);
     if ("error" in result) return c.json(result, 409);
+    await settleQuestionAttention(db(), id);
     changed();
     wakeHeadsDown();
     return c.json(result);
@@ -192,6 +195,7 @@ export function createHeadsDownRoutes(config: Config): Hono {
     if (!UUID.test(id) || !(await dismissQuestion(db(), id))) {
       return c.json({ error: "no open question with that id" }, 404);
     }
+    await settleQuestionAttention(db(), id);
     changed();
     return c.json({ dismissed: true });
   });

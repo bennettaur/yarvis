@@ -2,7 +2,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { Db } from "../db/client.ts";
 import { streamExists, updateStream } from "../workStreams/service.ts";
-import { askQuestion } from "./service.ts";
+import { askUser } from "./attention.ts";
 
 /**
  * The tools only a heads-down pass has: asking the user without waiting for
@@ -40,7 +40,7 @@ export function buildPassTools(db: Db, outcome: PassOutcome, onAsked: () => void
         if (streamId && !(await streamExists(db, streamId))) {
           return { error: "no work stream with that id" };
         }
-        const asked = await askQuestion(db, {
+        const asked = await askUser(db, {
           kind: "question",
           question,
           situation,
