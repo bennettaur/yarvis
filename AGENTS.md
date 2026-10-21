@@ -21,7 +21,8 @@ Three processes, each with a clean ownership boundary:
   session: both the Terminal tab's shells and each workspace's agent session
   live in `pty.rs`, independent of the webview that renders them. The sidecar
   reaches them only through `control.rs`, a Unix-domain-socket RPC with a fixed
-  method list (`claude.spawn`, `claude.kill`, `claude.send`, `mcp.saveOAuth`)
+  method list (`claude.spawn`, `claude.kill`, `claude.send`, `mcp.saveOAuth`,
+  `github.saveToken`)
   driven from `sidecar/src/core/controlClient.ts`. New ways to act on a session
   belong there, as another narrow method — not as a sidecar route that writes to
   a PTY.
@@ -238,13 +239,18 @@ back to ad-hoc.
   that can't prompt gets those tools dropped rather than run unattended —
   silently doing the irreversible thing is the one unacceptable outcome.
 - Secrets flow one way — the webview writes them to the Keychain, the core
-  injects them into the sidecar at spawn. MCP OAuth tokens are the single
+  injects them into the sidecar at spawn. MCP OAuth tokens are the main
   exception, because an authorization server refreshes them on its own schedule
   and a refresh must not need an app restart to be durable. They travel back the
   other way through `mcp.saveOAuth` on the control channel, which is scoped so it
-  can only write the `oauth` subtree of one server's Keychain entry. Anything
-  else that wants to write a secret from the sidecar owes the same narrowing —
-  or, better, belongs in Postgres like the Google Calendar tokens.
+  can only write the `oauth` subtree of one server's Keychain entry. The GitHub
+  sign-in (`sidecar/src/github/deviceFlow.ts`) is the other: the device flow
+  runs in the sidecar so the token never passes through the webview, which
+  never reads a secret back. The token lands in the same `github_token` key a pasted token
+  uses, so the rest of the app can't tell them apart. `github.saveToken` can
+  write that key and nothing else. Anything else that wants to write a secret
+  from the sidecar owes the same narrowing — or, better, belongs in Postgres
+  like the Google Calendar tokens.
 - `sidecar/src/mcp/` is the MCP *client* (servers Yarvis connects out to);
   `sidecar/src/mcpServer/` is the MCP endpoint Yarvis *serves*. A tool exposed
   over that endpoint is reached by outside clients holding only the scoped

@@ -22,6 +22,8 @@ import type {
   ReviewerState,
   StackEntry,
 } from "../pr/types.ts";
+import { githubErrorFrom } from "./errors.ts";
+import { rateLimitedFetch } from "./rateLimit.ts";
 
 // Re-exported so existing `from "./client.ts"` imports keep resolving the
 // provider-neutral shapes that now live in ../pr/types.ts.
@@ -646,11 +648,15 @@ export function createGitHubClient(config: Pick<Config, "endpoints">, token: str
 }
 
 export class GitHubClient {
+  private readonly fetchImpl: FetchFn;
+
   constructor(
     private readonly token: string,
-    private readonly fetchImpl: FetchFn = fetch,
+    fetchImpl: FetchFn = fetch,
     private readonly endpoints: GitHubEndpoints = GITHUB_DEFAULT_ENDPOINTS,
-  ) {}
+  ) {
+    this.fetchImpl = rateLimitedFetch(fetchImpl, token);
+  }
 
   private async api<T>(path: string): Promise<T> {
     const res = await this.fetchImpl(`${this.endpoints.api}${path}`, {
@@ -660,7 +666,7 @@ export class GitHubClient {
         "X-GitHub-Api-Version": "2022-11-28",
       },
     });
-    if (!res.ok) throw new Error(`github ${path} -> ${res.status}`);
+    if (!res.ok) throw await githubErrorFrom(res, path);
     return (await res.json()) as T;
   }
 
@@ -695,7 +701,7 @@ export class GitHubClient {
       },
       body: JSON.stringify({ query, variables }),
     });
-    if (!res.ok) throw new Error(`github graphql -> ${res.status}`);
+    if (!res.ok) throw await githubErrorFrom(res, "graphql");
     return (await res.json()) as { data?: T; errors?: GraphqlError[] };
   }
 
@@ -875,7 +881,7 @@ export class GitHubClient {
       },
     );
     if (res.status === 404) return "";
-    if (!res.ok) throw new Error(`github contents ${path} -> ${res.status}`);
+    if (!res.ok) throw await githubErrorFrom(res, `contents ${path}`);
     return res.text();
   }
 
@@ -905,7 +911,7 @@ export class GitHubClient {
       },
     );
     if (res.status === 404) return [];
-    if (!res.ok) throw new Error(`github contents ${path} -> ${res.status}`);
+    if (!res.ok) throw await githubErrorFrom(res, `contents ${path}`);
     const body = (await res.json()) as unknown;
     // The contents endpoint returns an object for a file and an array for a
     // directory; only the latter is a listing.
@@ -936,7 +942,7 @@ export class GitHubClient {
         "X-GitHub-Api-Version": "2022-11-28",
       },
     });
-    if (!res.ok) throw new Error(`github code search -> ${res.status}`);
+    if (!res.ok) throw await githubErrorFrom(res, "code search");
     const body = (await res.json()) as { items?: any[] };
     return (body.items ?? []).map((item: any) => ({
       path: item.path,
@@ -1239,7 +1245,7 @@ export class GitHubClient {
         body: JSON.stringify({ event, body: body ?? "" }),
       },
     );
-    if (!res.ok) throw new Error(`github submit review -> ${res.status}`);
+    if (!res.ok) throw await githubErrorFrom(res, "submit review");
   }
 
   /**
@@ -1268,7 +1274,7 @@ export class GitHubClient {
         }),
       },
     );
-    if (!res.ok) throw new Error(`github post comment -> ${res.status}`);
+    if (!res.ok) throw await githubErrorFrom(res, "post comment");
   }
 
   // --- Issues ---
@@ -1409,14 +1415,14 @@ export class GitHubClient {
       { headers: this.restHeaders() },
     );
     if (res.ok) return;
-    if (res.status !== 404) throw new Error(`github get label -> ${res.status}`);
+    if (res.status !== 404) throw await githubErrorFrom(res, "get label");
     const create = await this.fetchImpl(`${this.endpoints.api}/repos/${owner}/${repo}/labels`, {
       method: "POST",
       headers: this.restHeaders(),
       body: JSON.stringify({ name, color }),
     });
     if (!create.ok && create.status !== 422) {
-      throw new Error(`github create label -> ${create.status}`);
+      throw await githubErrorFrom(create, "create label");
     }
   }
 
@@ -1440,7 +1446,7 @@ export class GitHubClient {
       headers: this.restHeaders(),
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`github ${method} ${path} -> ${res.status}`);
+    if (!res.ok) throw await githubErrorFrom(res, `${method} ${path}`);
     return res;
   }
 

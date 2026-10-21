@@ -274,12 +274,24 @@ describe("issue routes: updating an issue", () => {
     expect(calls[0]).toBe("PATCH /repos/octo/repo/issues/1");
   });
 
-  it("502s when GitHub rejects the edit", async () => {
+  it("passes GitHub's refusal of the edit through with its reason", async () => {
     globalThis.fetch = (async () =>
-      new Response("no write access", { status: 403 })) as unknown as typeof fetch;
+      new Response(JSON.stringify({ message: "no write access" }), {
+        status: 403,
+      })) as unknown as typeof fetch;
+    const res = await patchIssue({ state: "closed" });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string; reason: string };
+    expect(body.reason).toBe("forbidden");
+    expect(body.error).toContain("no write access");
+  });
+
+  it("502s when GitHub itself fails", async () => {
+    globalThis.fetch = (async () =>
+      new Response("oops", { status: 500 })) as unknown as typeof fetch;
     const res = await patchIssue({ state: "closed" });
     expect(res.status).toBe(502);
-    expect(((await res.json()) as { error: string }).error).toContain("403");
+    expect(((await res.json()) as { reason: string }).reason).toBe("upstream_error");
   });
 
   it("forwards an empty label set, so clearing every label reaches GitHub", async () => {
@@ -336,7 +348,7 @@ describe("issue routes: commenting and repo metadata", () => {
     expect(calls[0]).toBe("POST /repos/octo/repo/issues/1/comments");
   });
 
-  it("502s when GitHub rejects the comment", async () => {
+  it("403s when GitHub rejects the comment", async () => {
     globalThis.fetch = (async () =>
       new Response("locked", { status: 403 })) as unknown as typeof fetch;
     const res = await configured.request("/api/issues/github/detail/octo/repo/1/comments", {
@@ -344,7 +356,7 @@ describe("issue routes: commenting and repo metadata", () => {
       headers: json,
       body: JSON.stringify({ body: "hi" }),
     });
-    expect(res.status).toBe(502);
+    expect(res.status).toBe(403);
   });
 
   it("serves the repo's label and assignee sets", async () => {
@@ -367,13 +379,14 @@ describe("issue routes: commenting and repo metadata", () => {
     });
   });
 
-  it("502s when GitHub rejects the repo-meta lookup", async () => {
+  it("404s, with the private-repo hint, when GitHub can't find the repo", async () => {
     globalThis.fetch = (async () =>
       new Response("nope", { status: 404 })) as unknown as typeof fetch;
     const res = await configured.request("/api/issues/github/repo-meta/octo/repo", {
       headers: auth,
     });
-    expect(res.status).toBe(502);
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { reason: string }).reason).toBe("not_found");
   });
 });
 

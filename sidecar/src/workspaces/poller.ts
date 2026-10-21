@@ -20,6 +20,7 @@ import {
   workspaces,
 } from "../db/schema.ts";
 import { type ChecksSummary, createGitHubClient, type GitHubClient } from "../github/client.ts";
+import { GitHubError } from "../github/errors.ts";
 import { parseRepoRemote } from "./service.ts";
 
 type CheckRollup = WorkspaceRepoPr["checkRollup"];
@@ -213,9 +214,12 @@ export async function pollOnce(db: Db, clients: PollerClients): Promise<void> {
       // One repo's failure (rate limit, 5xx) must not abort the cycle.
       const message = e instanceof Error ? e.message : String(e);
       await upsertPr(db, wr.id, { lastPolledAt: new Date(), lastError: message });
-      if (/-> (403|429)$/.test(message)) {
-        // Hit a rate/abuse limit (403 secondary / 429) — stop this cycle and
-        // let the next one retry. 409 (Conflict) is unrelated and not matched.
+      const rateLimited =
+        e instanceof GitHubError ? e.reason === "rate_limited" : /-> (403|429)$/.test(message);
+      if (rateLimited) {
+        // Hit a rate/abuse limit — stop this cycle and let the next one retry.
+        // GitHub's errors name the reason; Azure's only carry the status, where
+        // 403 (secondary) and 429 mean a limit and 409 (Conflict) is unrelated.
         console.warn("[workspace poller] rate limited, backing off this cycle");
         return;
       }

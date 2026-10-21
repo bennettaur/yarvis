@@ -45,6 +45,9 @@ let recordedEvents: string[] = [];
  */
 let holdResponses: Promise<void> | null = null;
 
+/** What GitHub's viewer probe answers with; null is a working token. */
+let githubViewerReply: { status: number; body: Record<string, string> } | null = null;
+
 /** The body Azure's viewer probe answers with (always a 401). */
 let azureViewerBody: Record<string, string> = { error: "no pat" };
 
@@ -85,8 +88,14 @@ mock.module("../lib/api", () => ({
         detail = raw;
       }
     }
-    throw new Error(
-      detail ? `${context} failed (${res.status}): ${detail}` : `${context} failed: ${res.status}`,
+    // The real `SidecarError` carries the status and the raw body as `detail`.
+    throw Object.assign(
+      new Error(
+        detail
+          ? `${context} failed (${res.status}): ${detail}`
+          : `${context} failed: ${res.status}`,
+      ),
+      { status: res.status, detail: raw },
     );
   },
   getHealth: async () => ({
@@ -109,7 +118,11 @@ mock.module("../lib/api", () => ({
       recordedEvents.push(JSON.parse(String(init?.body)).type);
       return json({ ok: true });
     }
-    if (path === "/api/github/viewer") return json({ login: "octo" });
+    if (path === "/api/github/viewer") {
+      return githubViewerReply
+        ? json(githubViewerReply.body, githubViewerReply.status)
+        : json({ login: "octo" });
+    }
     if (path === "/api/github/stars")
       return json([
         {
@@ -193,6 +206,7 @@ describe("PrsPanel place", () => {
     recordedEvents = [];
     holdResponses = null;
     azureViewerBody = { error: "no pat" };
+    githubViewerReply = null;
   });
 
   it("paints the lists from the cache when the tab is revisited", async () => {
@@ -321,6 +335,30 @@ describe("PrsPanel place", () => {
 
     expect(html).toContain("Azure DevOps rejected the saved token");
     expect(html).toContain(MY_PR.title);
+  });
+
+  it("says why GitHub is missing when GitHub rejects the saved token", async () => {
+    githubViewerReply = {
+      status: 401,
+      body: { error: "GitHub rejected the token. It has expired.", reason: "unauthorized" },
+    };
+
+    const html = await renderToHtml(<PrsPanel />);
+
+    expect(html).toContain("GitHub: GitHub rejected the token. It has expired.");
+    expect(html).not.toContain(MY_PR.title);
+  });
+
+  it("says nothing about GitHub when no GitHub token is saved", async () => {
+    githubViewerReply = {
+      status: 400,
+      body: { error: "github token not configured", reason: "missing_token" },
+    };
+
+    const html = await renderToHtml(<PrsPanel />);
+
+    expect(html).not.toContain("GitHub: ");
+    expect(html).toContain("No PR provider configured");
   });
 
   it("says nothing about Azure when no Azure token is saved", async () => {

@@ -54,13 +54,33 @@ AWS Bedrock uses the standard AWS credential chain (`~/.aws`, `AWS_PROFILE`,
 
 ### Token scopes
 
-- **GitHub.** A classic PAT needs `repo` and `read:org`. A fine-grained PAT needs
+- **GitHub.** The simplest option is **Sign in with GitHub** above the GitHub
+  token field. Yarvis shows a short code and
+  opens github.com/login/device. Enter the code and approve the app, and the
+  token is saved for you. It acts as you, with the `repo` and `read:org`
+  scopes. `repo` is GitHub's only scope for private repos, so it allows reading
+  and writing all of them. The token doesn't expire, though GitHub revokes one
+  left unused for a year. An organization that restricts OAuth app access has
+  to approve Yarvis before it can see that org's repos.
+
+  To sign in through a different OAuth App, set `YARVIS_GITHUB_CLIENT_ID`. A
+  release build opened from Finder doesn't pass shell variables on, so this
+  only works for a dev build or an app started from a shell. The app needs
+  **Enable Device Flow** ticked, and no client secret.
+
+  To paste a token instead: a classic PAT needs `repo` and `read:org`. A fine-grained PAT needs
   **Contents: Read** (the review reads file bodies to show context) plus pull
   request and issue access. Merging a stack needs write access to the repo.
   Add **Commit statuses: Read** to see legacy status checks. GitHub doesn't
   offer fine-grained tokens a Checks permission, so CI check runs can't be
   read with one: the PR still opens, and its **Checks** section says the
-  token can't read them.
+  token can't read them. A token used with an organization that enforces SAML
+  SSO also has to be authorized for that org on GitHub.
+
+  When GitHub refuses a request, the app says why: an expired or revoked
+  token, an org that needs SSO authorization, a missing scope or permission,
+  a private repo the token can't see, or a rate limit and when it resets.
+  After a rate limit, Yarvis stops calling GitHub until the time GitHub gave.
 - **Azure DevOps.** A PAT with **Code (read & write)** and **Pull Request
   Threads (read & write)**. Code (read) is enough to browse and comment, but
   voting and publishing a draft write to the PR itself.
@@ -232,6 +252,7 @@ copy of the app, or for debugging.
 | `YARVIS_OP_BIN` | Path to the 1Password `op` binary |
 | `YARVIS_INSTANCE` | Names this process as a secondary instance. Use `bun run dev:instance` instead of setting this by hand. |
 | `YARVIS_BACKGROUND_WORKERS` | `1` or `0`: whether this instance runs the pollers, jobs and Telegram bot |
+| `YARVIS_GITHUB_CLIENT_ID` | The OAuth App that **Sign in with GitHub** uses, in place of the built-in one. The app needs **Enable Device Flow** ticked. |
 | `YARVIS_GLOBAL_SHORTCUTS` | `1` or `0`: whether this instance owns the global hotkeys |
 | `YARVIS_DEV_PORT` | Pin the Vite dev-server port. Default 1420. |
 | `YARVIS_DEBUG_MCP` | `1` logs raw MCP server replies |
