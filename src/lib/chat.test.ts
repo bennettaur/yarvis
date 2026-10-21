@@ -21,6 +21,10 @@ describe("messageLabel", () => {
     expect(messageLabel("user", { source: "telegram", telegramUserId: 7 })).toBe("Telegram · 7");
   });
 
+  it("marks a scheduled task as the assistant's own note", () => {
+    expect(messageLabel("user", { source: "scheduled-task" })).toBe("Yarvis · scheduled task");
+  });
+
   it("shows a bare Telegram label when no sender info is present", () => {
     expect(messageLabel("user", { source: "telegram" })).toBe("Telegram");
   });

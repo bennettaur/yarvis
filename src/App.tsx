@@ -84,6 +84,8 @@ export default function App() {
   // A workspace another view (Issues "Start work") has asked us to open, with an
   // optional Claude prompt to launch. WorkspacesPanel consumes and clears it.
   const [requestedWorkspace, setRequestedWorkspace] = useState<OpenWorkspaceRequest | null>(null);
+  const [requestedChatSession, setRequestedChatSession] = useState<string | null>(null);
+  const clearRequestedChatSession = useCallback(() => setRequestedChatSession(null), []);
   // A request to open the New Workspace form pre-filled (Tasks "Create workspace" /
   // "Start work"). WorkspacesPanel consumes and clears it.
   const [requestedNewWorkspace, setRequestedNewWorkspace] = useState<NewWorkspaceRequest | null>(
@@ -236,7 +238,12 @@ export default function App() {
           break;
         }
         case "chat":
-          openOmniChat();
+          if (target.sessionId) {
+            setRequestedChatSession(target.sessionId);
+            setTab("chat");
+          } else {
+            openOmniChat();
+          }
           break;
         case "pr":
         case "azure-pr":
@@ -380,7 +387,13 @@ export default function App() {
         {/* Chat stays mounted while another tab is showing, so a turn keeps
             streaming instead of being cancelled by the unmount. */}
         <div className={tab === "chat" ? "h-full" : "hidden"}>
-          <ChatPanel active={tab === "chat"} sessionStorageKey={CHAT_TAB_SESSION_KEY} focusOnShow />
+          <ChatPanel
+            active={tab === "chat"}
+            sessionStorageKey={CHAT_TAB_SESSION_KEY}
+            focusOnShow
+            requestedSessionId={requestedChatSession}
+            onRequestConsumed={clearRequestedChatSession}
+          />
         </div>
         {/* Omni fills the region and manages its own layout; page-like views
             scroll as a padded document. Chat is rendered above. */}

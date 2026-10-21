@@ -352,6 +352,7 @@ async function handleChat(
       config,
       db,
       model,
+      modelRef: { provider, model: chatModelId },
       sessionId,
       message: text,
       userMetadata,
