@@ -13,6 +13,7 @@ import { buildMemoryTools } from "../memory/tools.ts";
 import { buildPrReviewTools } from "../pr/reviewTools.ts";
 import { buildProjectTools } from "../projects/tools.ts";
 import { buildTodoTools } from "../todos/tools.ts";
+import { buildWorkStreamTools } from "../workStreams/tools.ts";
 import { buildWorkspaceTools } from "../workspaces/tools.ts";
 import { type AttentionState, buildAttentionTool, newAttentionState } from "./attentionTools.ts";
 import { buildTaskTools } from "./tools.ts";
@@ -55,6 +56,7 @@ export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Recor
     attention: buildAttentionTool(attention),
     projects: buildProjectTools(db),
     todos: buildTodoTools(db),
+    workStreams: buildWorkStreamTools(db),
     events: buildEventTools(db),
     digest: buildDigestTools(db, config),
     delegation: buildDelegationTools(db, config),

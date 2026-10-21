@@ -273,6 +273,7 @@ sidecar/        Bun + TS service (Hono)
   src/memory/      pgvector memory, notes, ingestion, recaps
   src/projects/    projects: status, focus, tracked tickets with priorities
   src/todos/       the assistant's own todo list
+  src/workStreams/ threads of work heads-down mode pushes forward, and their links
   src/agents/      specialists and bounded delegated runs
   src/help/        the user docs, embedded, and the tools the Yarvis guide reads them with
   src/jobs/        scheduler and jobs: consolidation, nightly rollup, transcript

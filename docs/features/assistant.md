@@ -149,6 +149,7 @@ named. It works well for status updates and brag docs.
 | --- | --- | --- |
 | **Tasks** | What *you* intend to do, scoped to today or this week | Tasks tab |
 | **Agent todos** | What the *assistant* has promised to do, with a progress log | Memory → Agent todos |
+| **Work streams** | Threads of work the assistant is pushing forward, such as a ticket to ship or a message to answer, each with its tickets, workspaces, PRs and messages, what it's waiting on, and the assistant's notes | Ask the assistant what it's working on |
 | **Projects** | A status, a focus for the week, and tracked tickets with priorities (urgent, high, medium, low) | Memory → Projects |
 | **Memories** | Durable facts, typed by kind | Memory → Memories |
 | **Activity log** | A record of what you did in the app | Memory → Activity |
@@ -369,6 +370,9 @@ Loaded on demand:
   sessions (including a scratch session with no repo), add a repo to a
   workspace, check status, sync with base, send instructions, archive.
 - **JIRA.** Search, read, create, and start work on a ticket.
+- **Work streams.** Track a thread of work, link its tickets, workspaces, PRs,
+  messages and review requests, mark what it's waiting on, and find the stream
+  something belongs to.
 - **PR review.** List your guided reviews and search the notes you took while
   reviewing.
 - **Calendar.** List events and create one.
