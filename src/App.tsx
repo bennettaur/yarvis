@@ -5,6 +5,7 @@ import AlarmsPanel from "./components/AlarmsPanel";
 import AlarmTakeover from "./components/AlarmTakeover";
 import AttentionAutoClear from "./components/attention/AttentionAutoClear";
 import AttentionPanel from "./components/attention/AttentionPanel";
+import PermissionRequestModal from "./components/attention/PermissionRequestModal";
 import QuestionDialog from "./components/attention/QuestionDialog";
 import ChatPanel from "./components/ChatPanel";
 import CalendarView from "./components/calendar/CalendarView";
@@ -72,6 +73,8 @@ export default function App() {
   const [attention, setAttention] = useState<string | null>(null);
   const [attentionPanelOpen, setAttentionPanelOpen] = useState(false);
   const [questionItem, setQuestionItem] = useState<AttentionItem | null>(null);
+  // A Claude session's permission prompt being answered from the modal.
+  const [permissionItem, setPermissionItem] = useState<AttentionItem | null>(null);
   const [wip, setWip] = useState<WipItem[]>([]);
   const [wipLoading, setWipLoading] = useState(false);
   // A PR another view (workspaces, omni) has asked us to open. PrsPanel reads
@@ -303,7 +306,14 @@ export default function App() {
 
   const openAttentionItem = useCallback(
     (item: AttentionItem) => {
-      // A question is answered in place; it leaves the stream once answered,
+      // A prompt can be answered where the user already is. The item stays
+      // pending until it is answered, which resolves it on the sidecar.
+      if (item.kind === "permission" && item.source === "claude-hook" && item.sessionKey) {
+        setAttentionPanelOpen(false);
+        setPermissionItem(item);
+        return;
+      }
+      // A question is answered in place too; it leaves the stream once answered,
       // not when it is opened. The panel closes so Esc reaches only the dialog.
       if (item.kind === "question") {
         setAttentionPanelOpen(false);
@@ -451,6 +461,18 @@ export default function App() {
         item={questionItem}
         onClose={closeQuestion}
         onOpenSession={openQuestionSession}
+      />
+
+      <PermissionRequestModal
+        sessionKey={permissionItem?.sessionKey ?? null}
+        title={permissionItem?.title ?? ""}
+        onClose={() => setPermissionItem(null)}
+        onGoToSession={() => {
+          if (!permissionItem) return;
+          setPermissionItem(null);
+          void markAttention(permissionItem.id, "read");
+          navigateTo(permissionItem.navTarget, permissionItem.title);
+        }}
       />
 
       <AttentionAutoClear />
