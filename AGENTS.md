@@ -250,6 +250,11 @@ back to ad-hoc.
   over that endpoint is reached by outside clients holding only the scoped
   `YARVIS_MCP_TOKEN`, so it must be one that token is meant to grant — the
   endpoint deliberately sits outside the main bearer wall, like attention-ingest.
+  It grants the memory tools and, for a session whose `.mcp.json` names its
+  workspace, listing and resolving that workspace's review comments. Review
+  comment bodies go out unfenced, the one exception to the rule below, because
+  the user is their only author; a feature that writes them from anywhere else
+  has to fence them first.
 - Anything an outside party can influence — file contents, diffs, PR titles,
   recalled memories — enters a prompt as data, not instruction: fenced in
   per-request nonce tags (see `sidecar/src/pr/ask.ts`) with the system prompt

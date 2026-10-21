@@ -156,6 +156,9 @@ pgvector store the in-app chat uses:
 | `list_memories` | Lists memories, newest first, optionally by `kind` (`fact`, `note`, `session-summary`, …), with the same validity fields |
 | `forget` | Deletes a memory |
 
+A session that Yarvis launched in a workspace gets two more tools. See
+[Workspace review comments](#workspace-review-comments).
+
 Confirming or correcting a memory is in-app only for now, so a coding session
 can see that a memory has expired but can't re-validate it. It can tell you, or
 `remember` what it found.
@@ -167,12 +170,37 @@ Not exposed, on purpose:
   rewriting another's.
 - **Projects.** These are in-app only too.
 
+### Workspace review comments
+
+A workspace's `.mcp.json` also sends an `X-Yarvis-Workspace` header naming the
+workspace. When that header is present, the endpoint adds tools for the
+[self-review comments](workspaces.md#the-right-column) left on that
+workspace's diffs:
+
+| Tool | What it does |
+| --- | --- |
+| `list_review_comments` | Lists the open comments, oldest first, with the repo, worktree path, file, line range and commit each one was left on. `includeResolved: true` adds the resolved ones |
+| `resolve_review_comment` | Marks a comment resolved, or reopens it with `resolved: false` |
+
+So "address the feedback left in Yarvis" is enough for the session to fetch the
+comments, work through them, and resolve each one.
+
+The tools only see the workspace the header names. That is a convenience, not
+a boundary: the same token can name any workspace. Comment bodies are returned
+as written, without the untrusted-data fencing memory gets, because only you
+write them and acting on them is the point.
+
+A workspace provisioned before this header existed gets it the next time it
+is provisioned.
+
 ### Sessions Yarvis launches need no setup
 
 When Yarvis provisions a workspace, it writes a `.mcp.json` at the workspace
 root. That file points at `${YARVIS_SIDECAR_PORT}` with an
 `Authorization: Bearer ${YARVIS_MCP_TOKEN}` header. The Rust core puts both
-variables into the session's shell, so the file on disk holds no secret.
+variables into the session's shell, so the file on disk holds no secret. It
+also sends an `X-Yarvis-Workspace` header with the workspace id, which isn't a
+secret and is written as-is.
 
 Claude Code asks you to approve the project's MCP server the first time it sees
 it.
@@ -202,7 +230,7 @@ pointing by hand.
 
 The command puts the token in your shell history, and Claude Code saves it in
 `~/.claude.json`. That exposure is limited: the token only grants the memory
-tools, and it changes every time Yarvis relaunches.
+and review comment tools, and it changes every time Yarvis relaunches.
 
 The port and token are made once per app launch. Restarting the sidecar (which
 saving a secret does) keeps them. Relaunching Yarvis picks new ones, so copy
@@ -214,8 +242,8 @@ and never printed. Set `YARVIS_MCP_TOKEN` yourself to point a client at one.
 ### Security
 
 - The endpoint is `POST http://127.0.0.1:<sidecar port>/mcp`.
-- It uses a **scoped token** that grants the memory tools and nothing else. The
-  rest of the sidecar API keeps its own bearer token.
+- It uses a **scoped token** that grants the memory and review comment tools
+  and nothing else. The rest of the sidecar API keeps its own bearer token.
 - It checks the `Host` header. A web page that points a name it controls at
   127.0.0.1 can't reach it.
 - Memory contents are treated as untrusted data on the way out. `recall` and

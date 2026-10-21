@@ -5,12 +5,15 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { type MemoryService, PgVectorMemoryStore } from "../memory/index.ts";
-import { createYarvisMcpServer } from "./server.ts";
+import { listLocatedReviewComments, updateReviewComment } from "../workspaces/reviewComments.ts";
+import { UUID } from "./results.ts";
+import type { ReviewCommentStore } from "./reviewCommentTools.ts";
+import { createYarvisMcpServer, WORKSPACE_HEADER, type WorkspaceContext } from "./server.ts";
 
 /**
  * The MCP endpoint, mounted at `/mcp` OUTSIDE the main bearer wall. Like
  * attention-ingest, it authenticates with its own scoped token, so a Claude Code
- * session (or another MCP client) can call the memory tools without holding the
+ * session (or another MCP client) can call its tools without holding the
  * full-access bearer that the webview uses.
  *
  * Each request gets a fresh server + transport (stateless mode): the transport
@@ -58,8 +61,24 @@ export function createMcpEndpointRoutes(config: Config): Hono {
     return new PgVectorMemoryStore(db, await chooseEmbedder(config, db));
   };
 
+  const reviewComments = (): ReviewCommentStore => {
+    const db = getDb(config.databaseUrl as string).db;
+    return {
+      list: (workspaceId) => listLocatedReviewComments(db, workspaceId),
+      setResolved: (workspaceId, commentId, resolved) =>
+        updateReviewComment(db, workspaceId, commentId, { resolved }),
+    };
+  };
+
   router.post("/", async (c) => {
-    const server = createYarvisMcpServer(memory);
+    // A malformed id is ignored rather than refused, so the memory tools still
+    // work from a session whose header got mangled.
+    const workspaceId = c.req.header(WORKSPACE_HEADER);
+    const workspace: WorkspaceContext | undefined =
+      workspaceId && UUID.safeParse(workspaceId).success
+        ? { id: workspaceId, reviewComments }
+        : undefined;
+    const server = createYarvisMcpServer(memory, workspace);
     const transport = new StreamableHTTPTransport({
       enableJsonResponse: true,
       enableDnsRebindingProtection: true,
