@@ -1,6 +1,6 @@
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
-import { embed, embedMany } from "ai";
+import { APICallError, embed, embedMany, RetryError } from "ai";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { EMBED_DIM } from "../db/schema.ts";
@@ -33,12 +33,20 @@ export interface Embedder {
    * queries differently from documents so the two compare well in cosine space.
    */
   embedQuery(text: string): Promise<number[]>;
-  /** Embeds many documents at once (one provider call where supported). */
+  /** Embeds many documents, batched into as few provider calls as the backend accepts. */
   embedMany(texts: string[]): Promise<number[][]>;
 }
 
 /** Default direct-Gemini embedding model (the gemini-embedding-* family). */
 const GEMINI_MODEL = "gemini-embedding-001";
+
+/**
+ * Most texts sent in one OpenAI-compatible embeddings request. OpenAI takes 2048,
+ * but a gateway can front a model with a much lower cap (Vertex's
+ * gemini-embedding-001 takes 250), so this matches the 100 the AI SDK's own
+ * Google provider uses.
+ */
+const OPENAI_COMPATIBLE_BATCH_SIZE = 100;
 
 /**
  * L2-normalizes a vector so cosine similarity reduces to a dot product. A
@@ -224,19 +232,59 @@ export class OpenAICompatibleEmbedder implements Embedder {
   }
 
   async embedMany(texts: string[]): Promise<number[][]> {
-    return traceEmbedCall(
-      `openai-compatible embedMany model=${this.model} dims=${this.dimensions} count=${texts.length}`,
-      async () => {
-        const { embeddings } = await embedMany({
-          model: this.embeddingModel,
-          values: texts,
-          providerOptions: this.providerOptions(),
-        });
-        return embeddings;
-      },
-      (vecs) => `count=${vecs.length} ${vecs[0] ? vectorSummary(vecs[0]) : "empty"}`,
-    );
+    const vecs: number[][] = [];
+    for (let i = 0; i < texts.length; i += OPENAI_COMPATIBLE_BATCH_SIZE) {
+      const batch = texts.slice(i, i + OPENAI_COMPATIBLE_BATCH_SIZE);
+      vecs.push(...(await this.embedBatch(batch)));
+    }
+    return vecs;
   }
+
+  /**
+   * Embeds texts in one request. When the backend refuses the batch, splits it
+   * in half and embeds each half the same way.
+   */
+  private async embedBatch(texts: string[]): Promise<number[][]> {
+    try {
+      return await traceEmbedCall(
+        `openai-compatible embedBatch model=${this.model} dims=${this.dimensions} count=${texts.length}`,
+        async () => {
+          const { embeddings } = await embedMany({
+            model: this.embeddingModel,
+            values: texts,
+            providerOptions: this.providerOptions(),
+          });
+          // Batches are joined by position, so one missing vector would shift
+          // every later one onto the wrong text.
+          if (embeddings.length !== texts.length) {
+            throw new Error(
+              `embeddings endpoint returned ${embeddings.length} vectors for ${texts.length} texts`,
+            );
+          }
+          return embeddings;
+        },
+        (vecs) => `count=${vecs.length} ${vecs[0] ? vectorSummary(vecs[0]) : "empty"}`,
+      );
+    } catch (err) {
+      if (texts.length < 2 || !mightBeBatchTooLarge(err)) throw err;
+      const mid = Math.ceil(texts.length / 2);
+      const head = await this.embedBatch(texts.slice(0, mid));
+      const tail = await this.embedBatch(texts.slice(mid));
+      return [...head, ...tail];
+    }
+  }
+}
+
+/**
+ * Gateways word a too-many-inputs or too-many-tokens refusal differently, so any
+ * 400 or 413 is retried as two smaller batches. A 400 unrelated to size still
+ * fails once the batch is down to one text.
+ */
+function mightBeBatchTooLarge(err: unknown): boolean {
+  // The SDK wraps the refusal in a RetryError when an earlier attempt hit a 429 or 5xx.
+  const cause =
+    RetryError.isInstance(err) && err.reason === "errorNotRetryable" ? err.lastError : err;
+  return APICallError.isInstance(cause) && (cause.statusCode === 400 || cause.statusCode === 413);
 }
 
 /**
