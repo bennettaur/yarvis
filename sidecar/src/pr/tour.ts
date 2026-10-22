@@ -10,8 +10,9 @@ import {
 } from "ai";
 import { z } from "zod";
 import type { PrGuideFindingKind, PrGuideStep } from "../db/schema.ts";
-import { guardedFetch } from "../lib/guardedFetch.ts";
 import { clientError, describeError } from "../llm/errors.ts";
+import { type OllamaMessage, ollamaChat } from "../llm/ollamaChat.ts";
+import type { OllamaChatTarget } from "../llm/providers.ts";
 import { buildPrCodeTools, noTraversal } from "./codeTools.ts";
 import { newCodeGraph } from "./graph.ts";
 import type { PrCodeSource } from "./source.ts";
@@ -36,17 +37,20 @@ import type { PrCodeSource } from "./source.ts";
 const STEP_BUDGET = 60;
 
 /**
- * Output token ceiling for each model call. A full tour — fifteen steps, each
- * with context and findings — runs to several thousand tokens, so this leaves
- * room to finish one; it also stops a model that has started repeating itself
- * well before the provider's own limit would.
+ * Output token ceiling for a call that only writes the tour, once the
+ * exploration is over. A full tour — fifteen steps, each with context and
+ * findings — runs to several thousand tokens, so this leaves room to finish
+ * one while stopping a model that has started repeating itself. The
+ * exploration itself is left to the provider's own limit: the catalogue does
+ * not know each model's ceiling, and on a reasoning model a cap here would
+ * also have to cover its thinking.
  */
-export const MAX_OUTPUT_TOKENS = 16_000;
+export const SUBMIT_MAX_OUTPUT_TOKENS = 16_000;
 
 /** Ceiling on tour length; past this a reviewer is reading a list, not a tour. */
 const MAX_STEPS = 15;
 
-/** A loose bound on the payload, not a view on how much is worth flagging. */
+/** Most findings stored per step; a loose bound on the payload, not a view on how much is worth flagging. */
 const MAX_FINDINGS = 20;
 
 /** Display bounds for the step's text. Longer text is cut to fit, not rejected. */
@@ -58,9 +62,9 @@ const MAX_NOTE = 400;
  * The schema below is deliberately loose about anything a model can get wrong
  * without harm — a missing line number, an over-long sentence, a seventeenth
  * step, an invented finding kind — and `toStoredSteps` tidies those up once the
- * submission is in. One slip used to reject the whole tour after the
- * exploration budget had already been spent. What stays strict is what a
- * reviewer's click acts on: the paths.
+ * submission is in. A submission arrives only after the exploration budget is
+ * spent, so a slip like that is not worth a retry, let alone the guide. What
+ * stays strict is what a reviewer's click acts on: the paths.
  */
 
 /**
@@ -74,8 +78,11 @@ const stepPath = z
   .max(1024)
   .refine(noTraversal, "path must stay inside the repository");
 
-/** A line number; anything that is not a usable one is read as "the whole file". */
-const lineNumber = z.number().nullish();
+/**
+ * A line number, as a number or the digits of one; anything that is not a
+ * usable one is read as "the whole file".
+ */
+const lineNumber = z.union([z.number(), z.string()]).nullish();
 
 const FINDING_KINDS = [
   "error-handling",
@@ -104,7 +111,7 @@ const FINDING_KIND_ALIASES: Record<string, PrGuideFindingKind> = {
 };
 
 /** A finding kind the model wrote freehand, read as the listed kind it most plausibly meant. */
-function findingKind(raw: unknown): PrGuideFindingKind {
+function normalizeFindingKind(raw: unknown): PrGuideFindingKind {
   const key = String(raw)
     .trim()
     .toLowerCase()
@@ -118,7 +125,7 @@ const finding = z.object({
     .enum(FINDING_KINDS)
     // The context is absent when the schema is rendered to JSON Schema, which
     // calls this for a default.
-    .catch((ctx) => findingKind(ctx?.input))
+    .catch((ctx) => normalizeFindingKind(ctx?.input))
     .describe("What sort of problem this is"),
   path: stepPath.describe("Repo-relative path the problem is in"),
   startLine: lineNumber.describe(
@@ -185,15 +192,16 @@ function clip(text: string, max: number): string {
   return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - 1).trimEnd()}…`;
 }
 
-/** A positive whole line number, or null. */
-function line(value: number | null | undefined): number | null {
-  return typeof value === "number" && Number.isInteger(value) && value >= 1 ? value : null;
+/** A positive whole line number, from a number or its digits, or null. */
+function toLineNumber(value: number | string | null | undefined): number | null {
+  const n = typeof value === "string" && /^\s*\d+\s*$/.test(value) ? Number(value) : value;
+  return typeof n === "number" && Number.isInteger(n) && n >= 1 ? n : null;
 }
 
 /** A step's range, with an end that cannot stand alone or precede the start. */
 function lineRange(step: SubmittedStep): { startLine: number | null; endLine: number | null } {
-  const startLine = line(step.startLine);
-  const endLine = line(step.endLine);
+  const startLine = toLineNumber(step.startLine);
+  const endLine = toLineNumber(step.endLine);
   if (startLine === null) return { startLine: null, endLine: null };
   return { startLine, endLine: endLine === null || endLine < startLine ? startLine : endLine };
 }
@@ -225,7 +233,7 @@ function toStoredSteps(submitted: SubmittedStep[], changed: Set<string>): PrGuid
     const findings = (s.findings ?? []).slice(0, MAX_FINDINGS).map((f) => ({
       kind: f.kind,
       path: f.path,
-      startLine: line(f.startLine),
+      startLine: toLineNumber(f.startLine),
       note: clip(f.note, MAX_NOTE),
     }));
     const context = s.context ? clip(s.context, MAX_CONTEXT) : "";
@@ -349,23 +357,24 @@ const MAX_ISSUES_FED_BACK = 10;
  * telling the two apart is what lets the retry say what to fix, and the final
  * error say what went wrong rather than looking like a model that gave up.
  *
- * `issues` is null when the submission could not be parsed at all, and
- * `truncated` says the output token limit is why.
+ * `issues` is null when the submission could not be parsed at all. When the
+ * output token limit cut an attempt short, `outputLimit` is the cap that call
+ * was given, or undefined when it ran under the provider's own.
  */
 type Miss =
-  | { kind: "rejected"; issues: string[] | null; truncated: boolean }
-  | { kind: "missing"; finishReason: string };
+  | { kind: "rejected"; issues: string[] | null; truncated: boolean; outputLimit?: number }
+  | { kind: "missing"; finishReason: string; outputLimit?: number };
 
-/** The parts of a `generateText` result `missOf` reads, as loose as the SDK's own union allows. */
+/** The parts of a `generateText` result read here, as loose as the SDK's own union allows. */
 interface RunSteps {
   finishReason: string;
   steps: {
     finishReason: string;
-    toolCalls: { toolName: string; invalid?: boolean; error?: unknown }[];
+    toolCalls: { toolCallId: string; toolName: string; invalid?: boolean; error?: unknown }[];
   }[];
 }
 
-function missOf(result: RunSteps): Miss {
+function classifyMiss(result: RunSteps, outputLimit?: number): Miss {
   for (const step of result.steps) {
     const call = step.toolCalls.find((c) => c.toolName === "submit_tour" && c.invalid);
     if (call) {
@@ -373,19 +382,72 @@ function missOf(result: RunSteps): Miss {
         kind: "rejected",
         issues: validationIssues(call.error),
         truncated: step.finishReason === "length",
+        outputLimit,
       };
     }
   }
-  return { kind: "missing", finishReason: result.finishReason };
+  return { kind: "missing", finishReason: result.finishReason, outputLimit };
+}
+
+/** A rejection as the model is told it; the issues carry no submitted value (see `validationIssues`). */
+function describeRejection(issues: string[] | null): string {
+  if (issues === null) return "The tour could not be read as JSON.";
+  if (!issues.length) return "The tour did not match the expected shape.";
+  return `The tour did not match the expected shape: ${issues.slice(0, MAX_ISSUES_FED_BACK).join("; ")}.`;
 }
 
 /**
- * The follow-up that asks for the tour again. The issues are the schema's own
- * wording with plain path segments (see `validationIssues`), so none of the
- * pull request's text is repeated back as if it came from the user.
+ * The conversation with each rejected submit_tour result replaced by the
+ * schema's complaints. The SDK's own error result quotes the whole rejected
+ * value, which would resend a tour's worth of tokens on every retry and repeat
+ * text drawn from the pull request back to the model as an error message.
  */
-function submitRequest(miss: Miss, viaTool: boolean): ModelMessage {
-  const how = viaTool ? "Call submit_tour now" : "Reply now with the tour";
+function withSanitisedRejections(
+  messages: ModelMessage[],
+  steps: RunSteps["steps"],
+): ModelMessage[] {
+  const rejected = new Map<string, string>();
+  for (const step of steps) {
+    for (const call of step.toolCalls) {
+      if (call.toolName === "submit_tour" && call.invalid) {
+        rejected.set(call.toolCallId, describeRejection(validationIssues(call.error)));
+      }
+    }
+  }
+  if (!rejected.size) return messages;
+  return messages.map((m) => {
+    if (m.role !== "tool") return m;
+    return {
+      ...m,
+      content: m.content.map((part) => {
+        const reason = part.type === "tool-result" ? rejected.get(part.toolCallId) : undefined;
+        return reason && part.type === "tool-result"
+          ? { ...part, output: { type: "error-text" as const, value: reason } }
+          : part;
+      }),
+    };
+  });
+}
+
+/** The tour schema as JSON, for a model that answers without the tool definition. */
+const SUBMISSION_JSON_SCHEMA = JSON.stringify(z.toJSONSchema(tourSubmission, { io: "input" }));
+
+/**
+ * How the model hands in the tour: by calling submit_tour, or — on Ollama's
+ * native API, which carries no tool definitions — as a JSON reply.
+ */
+type Channel = "tool-call" | "json-reply";
+
+/**
+ * The follow-up that asks for the tour again. A rejection is described by the
+ * schema's own wording with plain path segments (see `validationIssues`), so
+ * none of the pull request's text is repeated back as if it came from the user.
+ */
+function submitRequest(miss: Miss, channel: Channel): ModelMessage {
+  const how =
+    channel === "tool-call"
+      ? "Call submit_tour now"
+      : `Reply now with the tour as JSON matching this schema, not as a tool call: ${SUBMISSION_JSON_SCHEMA}\nWrite it`;
   if (miss.kind === "missing") {
     return {
       role: "user",
@@ -393,15 +455,15 @@ function submitRequest(miss: Miss, viaTool: boolean): ModelMessage {
     };
   }
   const why = miss.truncated
-    ? "it was cut off by the output token limit before it was complete"
-    : miss.issues?.length
-      ? `it did not match the expected shape (${miss.issues.slice(0, MAX_ISSUES_FED_BACK).join("; ")})`
-      : "it could not be read as JSON";
-  const fix = miss.truncated ? "Keep the explanations, context and findings shorter." : "";
-  return {
-    role: "user",
-    content: `Your tour was rejected: ${why}. ${how} with the whole tour, corrected. ${fix}`.trim(),
-  };
+    ? "Your tour was cut off by the output token limit before it was complete."
+    : describeRejection(miss.issues);
+  const fix = miss.truncated ? " Keep the explanations, context and findings shorter." : "";
+  return { role: "user", content: `${why} ${how} with the whole tour, corrected.${fix}` };
+}
+
+/** The output limit a message names: the cap a call was given, or the provider's. */
+function outputLimitText(limit: number | undefined): string {
+  return limit ? `its output token limit (${limit} tokens)` : "the model's output token limit";
 }
 
 /** Why the run ended without a tour, in terms the user can act on. */
@@ -409,10 +471,10 @@ function missingTourMessage(miss: Miss, explorationSteps: number): string {
   const after = `after ${explorationSteps} step${explorationSteps === 1 ? "" : "s"}`;
   if (miss.kind === "rejected") {
     if (miss.truncated) {
-      return `The review agent was cut off by its output token limit (${MAX_OUTPUT_TOKENS} tokens) while writing the tour, ${after} exploring. Try again, or generate one for a smaller change.`;
+      return `The review agent was cut off by ${outputLimitText(miss.outputLimit)} while writing the tour, ${after} exploring. Try again, or generate one for a smaller change.`;
     }
     if (miss.issues === null) {
-      return `The review agent submitted a tour ${after}, but it could not be read as valid tool input, even when asked again. Try again.`;
+      return `The review agent submitted a tour ${after}, but it could not be read as JSON, even when asked again. Try again.`;
     }
     const shown = miss.issues.slice(0, MAX_ISSUES_SHOWN);
     return `The review agent submitted a tour ${after}, but it was rejected for not matching the expected shape, even when asked to correct it${
@@ -423,7 +485,7 @@ function missingTourMessage(miss: Miss, explorationSteps: number): string {
   // filter is the more specific cause.
   switch (miss.finishReason) {
     case "length":
-      return `The review agent was cut off by its output token limit (${MAX_OUTPUT_TOKENS} tokens) ${after}, before it submitted a tour.`;
+      return `The review agent was cut off by ${outputLimitText(miss.outputLimit)} ${after}, before it submitted a tour.`;
     case "content-filter":
       return "The provider's content filter blocked the review agent before it submitted a tour.";
   }
@@ -433,19 +495,35 @@ function missingTourMessage(miss: Miss, explorationSteps: number): string {
   return `The review agent stopped ${after} without submitting a tour, even when asked to (finish reason: ${miss.finishReason}). Try again, or generate one for a smaller change.`;
 }
 
-/** Where to reach a model served by Ollama through its native `/api/chat`. */
-export interface OllamaChatTarget {
-  url: string;
-  headers: Record<string, string>;
-  model: string;
+/**
+ * How many more times the model is asked for the tour once the exploration
+ * ends without one. A run that never submitted is required to, and if that
+ * submission is rejected, asked once more to correct it. A rejected submission
+ * gets the corrected retry alone. A filtered run would only be filtered again.
+ */
+function submitAsks(miss: Miss): number {
+  if (miss.kind === "rejected") return 1;
+  return miss.finishReason === "content-filter" ? 0 : 2;
+}
+
+/** Rough size of a transcript in tokens, at four characters a token as compaction counts. */
+function estimateTokens(...parts: unknown[]): number {
+  return Math.ceil(parts.reduce<number>((sum, p) => sum + JSON.stringify(p).length, 0) / 4);
 }
 
 /**
  * Ollama's context window for the final answer. Its default is smaller than an
  * exploration transcript, and Ollama drops the overflow from the front without
- * an error — which is where the instructions sit.
+ * an error — which is where the instructions sit — so the transcript is also
+ * trimmed to fit before it is sent.
  */
 const OLLAMA_NUM_CTX = 32_768;
+
+/**
+ * Output cap for Ollama's answer. Lower than `SUBMIT_MAX_OUTPUT_TOKENS`: it
+ * comes out of the same window as the transcript, which needs most of it.
+ */
+const OLLAMA_NUM_PREDICT = 8_192;
 
 /**
  * A non-streaming `/api/chat` answers only once the whole tour is written,
@@ -453,10 +531,24 @@ const OLLAMA_NUM_CTX = 32_768;
  */
 const OLLAMA_TIMEOUT_MS = 10 * 60_000;
 
-const ollamaChatResponse = z.object({
-  message: z.object({ content: z.string() }),
-  done_reason: z.string().optional(),
-});
+/**
+ * Arguments for a tool call in Ollama's history, which takes only an object. A
+ * call the SDK could not parse keeps its raw text, so that is parsed here, and
+ * anything that still is not an object becomes an empty one.
+ */
+function toolArguments(input: unknown): Record<string, unknown> {
+  let value = input;
+  if (typeof input === "string") {
+    try {
+      value = JSON.parse(input);
+    } catch {
+      return {};
+    }
+  }
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
 
 /** Text for a tool result, which Ollama takes as a plain string. */
 function toolOutputText(output: ToolResultPart["output"]): string {
@@ -473,34 +565,79 @@ function toolOutputText(output: ToolResultPart["output"]): string {
 }
 
 /** The conversation in Ollama's native message shape. */
-function toOllamaMessages(system: string, messages: ModelMessage[]): unknown[] {
-  const out: unknown[] = [{ role: "system", content: system }];
+function toOllamaMessages(system: string, messages: ModelMessage[]): OllamaMessage[] {
+  const out: OllamaMessage[] = [{ role: "system", content: system }];
   for (const m of messages) {
-    if (typeof m.content === "string") {
-      out.push({ role: m.role, content: m.content });
-    } else if (m.role === "tool") {
-      for (const part of m.content) {
-        if (part.type !== "tool-result") continue;
-        out.push({ role: "tool", tool_name: part.toolName, content: toolOutputText(part.output) });
+    switch (m.role) {
+      case "system":
+        out.push({ role: "system", content: m.content });
+        break;
+      case "user":
+        out.push({
+          role: "user",
+          content:
+            typeof m.content === "string"
+              ? m.content
+              : m.content.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n"),
+        });
+        break;
+      case "assistant": {
+        if (typeof m.content === "string") {
+          out.push({ role: "assistant", content: m.content });
+          break;
+        }
+        const text = m.content.flatMap((p) => (p.type === "text" ? [p.text] : []));
+        const calls = m.content.flatMap((p) =>
+          p.type === "tool-call"
+            ? [{ function: { name: p.toolName, arguments: toolArguments(p.input) } }]
+            : [],
+        );
+        out.push({
+          role: "assistant",
+          content: text.join("\n"),
+          ...(calls.length ? { tool_calls: calls } : {}),
+        });
+        break;
       }
-    } else {
-      const parts = m.content as Array<
-        { type: string; text?: string } | { type: "tool-call"; toolName: string; input: unknown }
-      >;
-      const text = parts.flatMap((p) => (p.type === "text" && "text" in p ? [p.text] : []));
-      const calls = parts.flatMap((p) =>
-        p.type === "tool-call" && "toolName" in p
-          ? [{ function: { name: p.toolName, arguments: p.input } }]
-          : [],
-      );
-      out.push({
-        role: m.role,
-        content: text.join("\n"),
-        ...(calls.length ? { tool_calls: calls } : {}),
-      });
+      case "tool":
+        for (const part of m.content) {
+          if (part.type !== "tool-result") continue;
+          out.push({
+            role: "tool",
+            tool_name: part.toolName,
+            content: toolOutputText(part.output),
+          });
+        }
+        break;
     }
   }
   return out;
+}
+
+/**
+ * The transcript cut to fit Ollama's window: the system prompt, the pull
+ * request's brief and the closing request always stay, and the exploration
+ * between them keeps its most recent messages, which hold what the model
+ * learned last.
+ */
+function fitOllamaWindow(messages: OllamaMessage[]): {
+  messages: OllamaMessage[];
+  dropped: number;
+} {
+  const head = messages.slice(0, 2);
+  const request = messages.slice(-1);
+  const middle = messages.slice(2, -1);
+  let budget = OLLAMA_NUM_CTX - OLLAMA_NUM_PREDICT - estimateTokens(head, request);
+  let start = middle.length;
+  while (start > 0) {
+    const cost = estimateTokens(middle[start - 1]);
+    if (cost > budget) break;
+    budget -= cost;
+    start--;
+  }
+  // A tool result whose call was cut reads as output from nowhere.
+  while (start < middle.length && middle[start]?.role === "tool") start++;
+  return { messages: [...head, ...middle.slice(start), ...request], dropped: start };
 }
 
 /** Everything one attempt at the final answer needs. */
@@ -514,7 +651,7 @@ interface SubmitContext {
   fetchImpl: typeof fetch;
 }
 
-/** The tour, or why there is none and what the model said, to carry into the next attempt. */
+/** The tour, or why there is none and what to carry into the next attempt. */
 type Attempt = { steps: PrGuideStep[] } | { miss: Miss; messages: ModelMessage[] };
 
 /**
@@ -530,16 +667,20 @@ async function submitViaTool(ctx: SubmitContext, conversation: ModelMessage[]): 
     tools: ctx.tools,
     toolChoice: { type: "tool", toolName: "submit_tour" },
     stopWhen: stepCountIs(1),
-    maxOutputTokens: MAX_OUTPUT_TOKENS,
+    maxOutputTokens: SUBMIT_MAX_OUTPUT_TOKENS,
     abortSignal: ctx.signal,
   });
-  const steps: PrGuideStep[] | null = ctx.sink.steps;
-  return steps ? { steps } : { miss: missOf(result), messages: result.responseMessages };
+  const steps = ctx.sink.steps;
+  if (steps) return { steps };
+  return {
+    miss: classifyMiss(result, SUBMIT_MAX_OUTPUT_TOKENS),
+    messages: withSanitisedRejections(result.responseMessages, result.steps),
+  };
 }
 
 /**
- * Asks Ollama for the tour with its `format` set to the schema, which
- * constrains decoding to it. Ollama's OpenAI-compatible endpoint, which the
+ * Asks Ollama's native API for the tour, with `format` set to the schema so
+ * decoding is held to it. Ollama's OpenAI-compatible endpoint, which the
  * exploration runs on, neither enforces a forced tool call nor promises the
  * schema, which matters most for the small models people run locally.
  */
@@ -548,55 +689,51 @@ async function submitViaOllama(
   target: OllamaChatTarget,
   conversation: ModelMessage[],
 ): Promise<Attempt> {
-  const res = await guardedFetch(
-    target.url,
-    {
-      method: "POST",
-      headers: target.headers,
-      body: JSON.stringify({
-        model: target.model,
-        messages: toOllamaMessages(ctx.system, conversation),
-        format: z.toJSONSchema(tourSubmission, { io: "input" }),
-        stream: false,
-        options: { num_ctx: OLLAMA_NUM_CTX, num_predict: MAX_OUTPUT_TOKENS },
-      }),
-      // Also bounds reading the body, which outlives guardedFetch's own deadline.
-      signal: ctx.signal,
-    },
-    {
-      fetchImpl: ctx.fetchImpl,
-      timeoutMs: OLLAMA_TIMEOUT_MS,
-      allowLoopback: true,
-      // The body is the pull request's code.
-      sameOriginOnly: true,
-    },
-  );
-  if (!res.ok) throw new Error(`the Ollama server answered ${res.status}`);
-  const { message, done_reason } = ollamaChatResponse.parse(await res.json());
-  const messages: ModelMessage[] = [{ role: "assistant", content: message.content }];
-  const truncated = done_reason === "length";
+  const fitted = fitOllamaWindow(toOllamaMessages(ctx.system, conversation));
+  if (fitted.dropped) {
+    console.error(
+      "[pr] tour transcript trimmed for Ollama:",
+      JSON.stringify({ dropped: fitted.dropped, kept: fitted.messages.length }),
+    );
+  }
+  const reply = await ollamaChat({
+    target,
+    messages: fitted.messages,
+    format: z.toJSONSchema(tourSubmission, { io: "input" }),
+    options: { num_ctx: OLLAMA_NUM_CTX, num_predict: OLLAMA_NUM_PREDICT },
+    timeoutMs: OLLAMA_TIMEOUT_MS,
+    signal: ctx.signal,
+    fetchImpl: ctx.fetchImpl,
+  });
+  const reject = (issues: string[] | null): Attempt => ({
+    miss: { kind: "rejected", issues, truncated: reply.truncated, outputLimit: OLLAMA_NUM_PREDICT },
+    // The rejected reply is left out: the request that follows says what was
+    // wrong with it, and resending it would cost a tour's worth of tokens.
+    messages: [],
+  });
 
   let input: unknown;
   try {
-    input = JSON.parse(message.content);
+    input = JSON.parse(reply.content);
   } catch {
-    return { miss: { kind: "rejected", issues: null, truncated }, messages };
+    return reject(null);
   }
   const parsed = tourSubmission.safeParse(input);
-  if (!parsed.success) {
-    return {
-      miss: { kind: "rejected", issues: validationIssues(parsed.error), truncated },
-      messages,
-    };
-  }
-  ctx.sink.steps = toStoredSteps(parsed.data.steps, ctx.changed);
-  return { steps: ctx.sink.steps };
+  if (!parsed.success) return reject(validationIssues(parsed.error));
+  return { steps: toStoredSteps(parsed.data.steps, ctx.changed) };
 }
 
 export interface GenerateTourOptions {
   signal?: AbortSignal;
   /** Set when the model is served by Ollama, whose native API then writes the final answer. */
   ollama?: OllamaChatTarget;
+  /** The model's name, for an error that says it is too small for the change. */
+  modelName?: string;
+  /**
+   * How many tokens of conversation the model can take, as far as the
+   * catalogue knows; unknown skips the check, leaving the provider to refuse.
+   */
+  contextTokens?: number;
   /** Injected by tests in place of the network. Used on the Ollama path. */
   fetchImpl?: typeof fetch;
 }
@@ -614,7 +751,7 @@ export interface GenerateTourResult {
 export async function generateTour(
   model: LanguageModel,
   source: PrCodeSource,
-  { signal, ollama, fetchImpl = fetch }: GenerateTourOptions = {},
+  { signal, ollama, modelName, contextTokens, fetchImpl = fetch }: GenerateTourOptions = {},
 ): Promise<GenerateTourResult> {
   const detail = await source.detail();
   const graph = newCodeGraph();
@@ -648,7 +785,6 @@ export async function generateTour(
     // Without the tool condition the run keeps going after the tour is in
     // hand, spending the rest of the budget on exploration nobody reads.
     stopWhen: [stepCountIs(STEP_BUDGET), hasToolCall("submit_tour")],
-    maxOutputTokens: MAX_OUTPUT_TOKENS,
     abortSignal: signal,
   }).catch((e) => {
     console.error("[pr] tour model error:", describeError(e));
@@ -660,26 +796,32 @@ export async function generateTour(
 
   if (sink.steps) return { steps: sink.steps, headSha: detail.headSha };
   // A failed run without a tour rethrew above, so this one returned normally.
-  const { steps, totalUsage, responseMessages } = result as NonNullable<typeof result>;
-  let miss = missOf(result as NonNullable<typeof result>);
+  const explored = result as NonNullable<typeof result>;
+  let miss = classifyMiss(explored);
   console.error(
     "[pr] tour not submitted while exploring:",
-    JSON.stringify({ steps: steps.length, usage: totalUsage, miss }),
+    JSON.stringify({ steps: explored.steps.length, usage: explored.totalUsage, miss }),
   );
 
   // The exploration is what the tour is made from, so rather than discard it
-  // the model is asked again for the answer on its own: told what to fix if its
-  // submission was rejected, or required to submit if it never did. A rejected
-  // submission gets one corrected retry; a missing one gets two asks, the
-  // second carrying what was wrong with the first. A filtered run would only be
-  // filtered again.
-  const blocked = miss.kind === "missing" && miss.finishReason === "content-filter";
-  const ctx: SubmitContext = { model, system, tools, sink, changed, signal, fetchImpl };
+  // the model is asked again for the answer on its own (see `submitAsks`).
   // `responseMessages` spans every step; the last step's alone would drop the
   // tool calls and results the tour has to be built from.
-  let conversation: ModelMessage[] = [...opening, ...responseMessages];
-  for (let attempt = miss.kind === "rejected" ? 1 : 0; !blocked && attempt < 2; attempt++) {
-    conversation = [...conversation, submitRequest(miss, !ollama)];
+  const ctx: SubmitContext = { model, system, tools, sink, changed, signal, fetchImpl };
+  let conversation: ModelMessage[] = [
+    ...opening,
+    ...withSanitisedRejections(explored.responseMessages, explored.steps),
+  ];
+  const asks = submitAsks(miss);
+  for (let ask = 0; ask < asks; ask++) {
+    conversation = [...conversation, submitRequest(miss, ollama ? "json-reply" : "tool-call")];
+    // Ollama's path trims the transcript to its window instead.
+    const size = estimateTokens(system, conversation);
+    if (!ollama && contextTokens && size > contextTokens) {
+      throw new Error(
+        `This change is too large for ${modelName ?? "the selected model"} to write a guide from: its exploration ran to about ${Math.round(size / 1000)}k tokens, past the ${Math.round(contextTokens / 1000)}k it is set up to take. Try a model with a larger context window, or a smaller change.`,
+      );
+    }
     const next = await (ollama
       ? submitViaOllama(ctx, ollama, conversation)
       : submitViaTool(ctx, conversation)
@@ -690,7 +832,7 @@ export async function generateTour(
     if ("steps" in next) return { steps: next.steps, headSha: detail.headSha };
     miss = next.miss;
     conversation = [...conversation, ...next.messages];
-    console.error("[pr] tour submission attempt failed:", JSON.stringify({ attempt, miss }));
+    console.error("[pr] tour submission attempt failed:", JSON.stringify({ ask, miss }));
   }
-  throw new Error(missingTourMessage(miss, steps.length));
+  throw new Error(missingTourMessage(miss, explored.steps.length));
 }

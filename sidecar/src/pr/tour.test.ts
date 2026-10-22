@@ -28,7 +28,7 @@ const toolCall = (id: string, input: unknown) => ({
 });
 
 import type { PrCodeSource } from "./source.ts";
-import { generateTour, MAX_OUTPUT_TOKENS } from "./tour.ts";
+import { generateTour, SUBMIT_MAX_OUTPUT_TOKENS } from "./tour.ts";
 import type { PrDetail, PrFile, PrRef } from "./types.ts";
 
 const ref: PrRef = { provider: "github", owner: "o", repo: "r", number: 1 };
@@ -89,26 +89,46 @@ function submittingModel(steps: () => unknown) {
 
 type CallOptions = Parameters<Extract<DoGenerate, (...args: never[]) => unknown>>[0];
 
+type Reply = Pick<GenerateResult, "content" | "finishReason">;
+
 /**
  * A model that answers each call with the next of `replies` (the last one
- * repeating), keeping the options every call was made with.
+ * repeating), keeping the options every call was made with. Tool call ids get
+ * the call's number appended, so a repeated reply does not reuse one.
  */
-function scriptedModel(...replies: Array<Pick<GenerateResult, "content" | "finishReason">>) {
+function scriptedModel(...replies: Array<Reply | (() => never)>) {
   const seen: CallOptions[] = [];
   const model = new MockLanguageModelV3({
     doGenerate: async (options): Promise<GenerateResult> => {
       seen.push(options);
-      return { ...boilerplate, ...replies[Math.min(seen.length, replies.length) - 1]! };
+      const reply = replies[Math.min(seen.length, replies.length) - 1]!;
+      if (typeof reply === "function") reply();
+      const { content, finishReason } = reply as Reply;
+      return {
+        ...boilerplate,
+        finishReason,
+        content: content.map((p) =>
+          p.type === "tool-call" ? { ...p, toolCallId: `${p.toolCallId}-${seen.length}` } : p,
+        ),
+      };
     },
   });
   return { model, seen };
 }
 
-let submitIds = 0;
-const submits = (input: unknown) => ({
+const submits = (input: unknown): Reply => ({
   finishReason: finished("tool-calls"),
-  content: [toolCall(`s${++submitIds}`, input)],
+  content: [toolCall("s", input)],
 });
+
+const explores: Reply = {
+  finishReason: finished("tool-calls"),
+  content: [{ type: "tool-call", toolCallId: "e", toolName: "list_changed_files", input: "{}" }],
+};
+
+/** The tool results a call was sent, as text. */
+const toolResults = (options: CallOptions | undefined) =>
+  JSON.stringify(options?.prompt.filter((m) => m.role === "tool"));
 
 const saysNothing = {
   finishReason: finished("stop"),
@@ -150,22 +170,19 @@ describe("generateTour", () => {
   });
 
   it("reports a run that never submitted rather than storing nothing", async () => {
-    const { model } = scriptedModel(saysNothing);
+    const { model, seen } = scriptedModel(saysNothing);
     await expect(generateTour(model, fakeSource())).rejects.toThrow(
       "stopped after 1 step without submitting a tour, even when asked to (finish reason: stop)",
     );
+    // The exploration, then two asks for the tour.
+    expect(seen).toHaveLength(3);
   });
 
   // The exploration is what the tour is made from; a model that wandered off
   // without submitting is asked for the answer, not made to start over.
   it("requires a submission when the exploration ends without one", async () => {
     const { model, seen } = scriptedModel(
-      {
-        finishReason: finished("tool-calls"),
-        content: [
-          { type: "tool-call", toolCallId: "e1", toolName: "list_changed_files", input: "{}" },
-        ],
-      },
+      explores,
       saysNothing,
       submits({ steps: [step("a.ts")] }),
     );
@@ -176,19 +193,21 @@ describe("generateTour", () => {
     expect(seen[2]?.toolChoice).toEqual({ type: "tool", toolName: "submit_tour" });
     // The forced call carries the whole exploration and asks for the tour.
     const prompt = JSON.stringify(seen[2]?.prompt);
-    expect(prompt).toContain('"toolCallId":"e1"');
+    expect(prompt).toContain('"toolCallId":"e-1"');
     expect(prompt).toContain("I had a look around.");
     expect(prompt).toContain("Call submit_tour now");
   });
 
-  it("caps every call's output tokens", async () => {
+  // The exploration runs under the provider's own limit: the catalogue does not
+  // know each model's ceiling, and on a reasoning model the cap covers thinking.
+  it("caps the output tokens of a submission call only", async () => {
     const { model, seen } = scriptedModel(saysNothing, submits({ steps: [step("a.ts")] }));
     await generateTour(model, fakeSource());
-    expect(seen.map((o) => o.maxOutputTokens)).toEqual([MAX_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS]);
+    expect(seen.map((o) => o.maxOutputTokens)).toEqual([undefined, SUBMIT_MAX_OUTPUT_TOKENS]);
   });
 
-  // A rejected submission used to end the run on the spot, after the whole
-  // exploration budget had been spent getting there.
+  // A submission arrives only after the exploration budget is spent, so a
+  // rejected one is worth correcting rather than starting over.
   it("retries a rejected tour once, telling the model what to fix", async () => {
     const { model, seen } = scriptedModel(
       submits({ steps: [{ ...step("a.ts"), explanation: "" }] }),
@@ -198,9 +217,53 @@ describe("generateTour", () => {
     expect(result.steps).toEqual([stored("a.ts")]);
     expect(seen).toHaveLength(2);
     expect(seen[1]?.toolChoice).toEqual({ type: "tool", toolName: "submit_tour" });
-    expect(JSON.stringify(seen[1]?.prompt)).toContain(
-      "Your tour was rejected: it did not match the expected shape (steps.0.explanation: Too small",
+    expect(JSON.stringify(seen[1]?.prompt.at(-1))).toContain(
+      "The tour did not match the expected shape: steps.0.explanation: Too small",
     );
+  });
+
+  it("asks a model that never submitted to correct its forced submission", async () => {
+    const { model, seen } = scriptedModel(
+      saysNothing,
+      submits({ steps: [step("../outside.ts")] }),
+      submits({ steps: [step("../still-outside.ts")] }),
+    );
+    const message = await generateTour(model, fakeSource()).catch((e: Error) => e.message);
+    expect(seen).toHaveLength(3);
+    expect(JSON.stringify(seen[2]?.prompt.at(-1))).toContain(
+      "steps.0.path: path must stay inside the repository",
+    );
+    expect(message).toContain("rejected for not matching the expected shape");
+  });
+
+  // The SDK's own error result quotes the whole rejected value back, which
+  // would resend it, and text drawn from the pull request, on every retry.
+  it("replaces the rejected submission's error result with the schema's complaints", async () => {
+    const { model, seen } = scriptedModel(
+      submits({ steps: [{ ...step("a.ts"), explanation: "", context: "quoted-back" }] }),
+      submits({ steps: [step("a.ts")] }),
+    );
+    await generateTour(model, fakeSource());
+    const results = toolResults(seen[1]);
+    expect(results).toContain("steps.0.explanation");
+    expect(results).not.toContain("quoted-back");
+  });
+
+  it("reports a model that fails while submitting", async () => {
+    const { model } = scriptedModel(saysNothing, () => {
+      throw new Error("provider fell over");
+    });
+    await expect(generateTour(model, fakeSource())).rejects.toThrow("provider fell over");
+  });
+
+  it("refuses to resend an exploration past the model's context window", async () => {
+    const { model, seen } = scriptedModel(saysNothing);
+    const message = await generateTour(model, fakeSource(), {
+      modelName: "tiny-model",
+      contextTokens: 100,
+    }).catch((e: Error) => e.message);
+    expect(message).toContain("This change is too large for tiny-model to write a guide from");
+    expect(seen).toHaveLength(1);
   });
 
   // A submission the schema rejects still stops the run, so without naming it
@@ -229,16 +292,25 @@ describe("generateTour", () => {
       submits({
         steps: [
           { ...step("a.ts"), explanation: { planted: "planted-text" } },
-          { ...step("src/api.ts"), startLine: "planted-line", "planted-key": "planted-value" },
+          { ...step("src/api.ts"), covers: "planted-covers", "planted-key": "planted-value" },
         ],
       }),
     );
     const message = await generateTour(model, fakeSource()).catch((e: Error) => e.message);
     expect(message).toContain("steps.0.explanation");
     expect(message).not.toContain("planted");
-    const retryRequest = seen[1]?.prompt.at(-1);
-    expect(JSON.stringify(retryRequest)).toContain("steps.1.startLine");
-    expect(JSON.stringify(retryRequest)).not.toContain("planted");
+    const retryRequest = JSON.stringify(seen[1]?.prompt.at(-1));
+    expect(retryRequest).toContain("steps.1.covers");
+    expect(retryRequest).not.toContain("planted");
+    expect(toolResults(seen[1])).not.toContain("planted");
+  });
+
+  it("reads a line number written as digits", async () => {
+    const { model } = scriptedModel(
+      submits({ steps: [{ ...step("a.ts"), startLine: "12", endLine: " 14 " }] }),
+    );
+    const [first] = (await generateTour(model, fakeSource())).steps;
+    expect([first?.startLine, first?.endLine]).toEqual([12, 14]);
   });
 
   it("trims what is too long rather than rejecting the tour", async () => {
@@ -351,7 +423,7 @@ describe("generateTour", () => {
     const { model, seen } = scriptedModel(cutOff);
     const message = await generateTour(model, fakeSource()).catch((e: Error) => e.message);
     expect(message).toContain(
-      `cut off by its output token limit (${MAX_OUTPUT_TOKENS} tokens) while writing the tour`,
+      `cut off by its output token limit (${SUBMIT_MAX_OUTPUT_TOKENS} tokens) while writing the tour`,
     );
     expect(JSON.stringify(seen[1]?.prompt.at(-1))).toContain("cut off by the output token limit");
   });
@@ -372,7 +444,7 @@ describe("generateTour", () => {
       }),
     });
     await expect(generateTour(garbled, fakeSource())).rejects.toThrow(
-      "could not be read as valid tool input",
+      "could not be read as JSON, even when asked again",
     );
   });
 
@@ -408,15 +480,14 @@ describe("generateTour", () => {
     await expect(generateTour(truncated, fakeSource())).rejects.toThrow("output token limit");
   });
 
-  it("reports a run blocked by the provider's content filter", async () => {
-    const filtered = new MockLanguageModelV3({
-      doGenerate: async (): Promise<GenerateResult> => ({
-        ...boilerplate,
-        finishReason: { unified: "content-filter", raw: undefined },
-        content: [],
-      }),
+  // Asking again would only be filtered again.
+  it("reports a run blocked by the provider's content filter without asking again", async () => {
+    const { model, seen } = scriptedModel({
+      finishReason: { unified: "content-filter", raw: undefined },
+      content: [],
     });
-    await expect(generateTour(filtered, fakeSource())).rejects.toThrow("content filter blocked");
+    await expect(generateTour(model, fakeSource())).rejects.toThrow("content filter blocked");
+    expect(seen).toHaveLength(1);
   });
 
   it("omits an absent context rather than storing it as undefined", async () => {
@@ -545,25 +616,29 @@ describe("generateTour with an Ollama model", () => {
     model: "jev",
   };
 
+  type OllamaReply = { content: string; done_reason?: string } | Response;
+
   /** Ollama's `/api/chat`, answering each call with the next reply (the last repeating). */
-  function ollamaServer(...replies: Array<{ content: string; done_reason?: string }>) {
+  function ollamaServer(...replies: OllamaReply[]) {
     const calls: { url: string; body: Record<string, unknown> }[] = [];
     const fetchImpl = (async (url: string, init: RequestInit) => {
       calls.push({ url, body: JSON.parse(init.body as string) });
       const reply = replies[Math.min(calls.length, replies.length) - 1]!;
+      if (reply instanceof Response) return reply.clone();
       return Response.json({
         message: { role: "assistant", content: reply.content },
         done_reason: reply.done_reason ?? "stop",
       });
     }) as unknown as typeof fetch;
-    return { fetchImpl, calls };
+    const messagesOf = (n: number) => calls[n]?.body.messages as Array<Record<string, unknown>>;
+    return { fetchImpl, calls, messagesOf };
   }
+
+  const aTour = { content: JSON.stringify({ steps: [step("a.ts")] }) };
 
   it("writes the tour through the native API, with the schema as its format", async () => {
     const { model } = scriptedModel(saysNothing);
-    const { fetchImpl, calls } = ollamaServer({
-      content: JSON.stringify({ steps: [step("a.ts")] }),
-    });
+    const { fetchImpl, calls, messagesOf } = ollamaServer(aTour);
     const result = await generateTour(model, fakeSource(), { ollama, fetchImpl });
     expect(result.steps).toEqual([stored("a.ts")]);
     expect(calls[0]?.url).toBe(ollama.url);
@@ -571,25 +646,19 @@ describe("generateTour with an Ollama model", () => {
       model: "jev",
       stream: false,
       format: { type: "object", properties: { steps: { type: "array" } } },
-      options: { num_predict: MAX_OUTPUT_TOKENS },
     });
+    // The native request has no tool definitions, so the request says to reply
+    // with JSON and carries the schema itself.
+    const request = String(messagesOf(0).at(-1)?.content);
+    expect(request).toContain("not as a tool call");
+    expect(request).toContain('"steps"');
   });
 
   it("hands over the exploration, tool calls and results included", async () => {
-    const { model } = scriptedModel(
-      {
-        finishReason: finished("tool-calls"),
-        content: [
-          { type: "tool-call", toolCallId: "e1", toolName: "list_changed_files", input: "{}" },
-        ],
-      },
-      saysNothing,
-    );
-    const { fetchImpl, calls } = ollamaServer({
-      content: JSON.stringify({ steps: [step("a.ts")] }),
-    });
+    const { model } = scriptedModel(explores, saysNothing);
+    const { fetchImpl, messagesOf } = ollamaServer(aTour);
     await generateTour(model, fakeSource(), { ollama, fetchImpl });
-    const messages = calls[0]?.body.messages as Array<Record<string, unknown>>;
+    const messages = messagesOf(0);
     expect(messages[0]?.role).toBe("system");
     expect(messages).toContainEqual(
       expect.objectContaining({
@@ -597,33 +666,110 @@ describe("generateTour with an Ollama model", () => {
         tool_calls: [{ function: { name: "list_changed_files", arguments: {} } }],
       }),
     );
-    expect(messages).toContainEqual(
-      expect.objectContaining({ role: "tool", tool_name: "list_changed_files" }),
+    const result = messages.find((m) => m.role === "tool");
+    expect(result?.tool_name).toBe("list_changed_files");
+    expect(String(result?.content)).toContain("src/fetchUser.ts");
+  });
+
+  // A call the SDK could not parse keeps its raw text, but Ollama takes only an object.
+  it("sends an unparseable tool call in the history as an object", async () => {
+    const { model } = scriptedModel({
+      finishReason: finished("tool-calls"),
+      content: [{ type: "tool-call", toolCallId: "g", toolName: "submit_tour", input: "{steps" }],
+    });
+    const { fetchImpl, messagesOf } = ollamaServer(aTour);
+    await generateTour(model, fakeSource(), { ollama, fetchImpl });
+    expect(messagesOf(0)).toContainEqual(
+      expect.objectContaining({
+        tool_calls: [{ function: { name: "submit_tour", arguments: {} } }],
+      }),
     );
-    expect(String(messages.at(-1)?.content)).toContain("Reply now with the tour");
   });
 
   it("retries once with the problems when the answer is rejected", async () => {
     const { model } = scriptedModel(saysNothing);
-    const { fetchImpl, calls } = ollamaServer(
+    const { fetchImpl, messagesOf } = ollamaServer(
       { content: JSON.stringify({ steps: [step("../a.ts")] }) },
-      { content: JSON.stringify({ steps: [step("a.ts")] }) },
+      aTour,
     );
     const result = await generateTour(model, fakeSource(), { ollama, fetchImpl });
     expect(result.steps).toEqual([stored("a.ts")]);
-    const retry = calls[1]?.body.messages as Array<Record<string, unknown>>;
-    expect(String(retry.at(-1)?.content)).toContain(
+    expect(String(messagesOf(1).at(-1)?.content)).toContain(
       "steps.0.path: path must stay inside the repository",
     );
   });
 
-  it("reports an answer cut off by the output token limit", async () => {
+  it("reports an answer that is prose rather than JSON", async () => {
     const { model } = scriptedModel(saysNothing);
-    const { fetchImpl, calls } = ollamaServer({ content: '{"steps":[', done_reason: "length" });
+    const { fetchImpl, calls, messagesOf } = ollamaServer({
+      content: "Here is the tour you asked for.",
+    });
     const message = await generateTour(model, fakeSource(), { ollama, fetchImpl }).catch(
       (e: Error) => e.message,
     );
-    expect(message).toContain("cut off by its output token limit");
     expect(calls).toHaveLength(2);
+    expect(String(messagesOf(1).at(-1)?.content)).toContain("could not be read as JSON");
+    expect(message).toContain("could not be read as JSON");
+    expect(message).not.toContain("cut off");
+  });
+
+  it("reports an answer cut off by the output token limit", async () => {
+    const { model } = scriptedModel(saysNothing);
+    const { fetchImpl, calls, messagesOf } = ollamaServer({
+      content: '{"steps":[',
+      done_reason: "length",
+    });
+    const message = await generateTour(model, fakeSource(), { ollama, fetchImpl }).catch(
+      (e: Error) => e.message,
+    );
+    expect(calls).toHaveLength(2);
+    expect(String(messagesOf(1).at(-1)?.content)).toContain("Keep the explanations");
+    expect(message).toMatch(/cut off by its output token limit \(\d+ tokens\)/);
+  });
+
+  it("reports an error status from the server", async () => {
+    const { model } = scriptedModel(saysNothing);
+    const { fetchImpl } = ollamaServer(new Response("model not found", { status: 404 }));
+    await expect(generateTour(model, fakeSource(), { ollama, fetchImpl })).rejects.toThrow("404");
+  });
+
+  it("reports a reply that is not Ollama's shape", async () => {
+    const { model } = scriptedModel(saysNothing);
+    const { fetchImpl } = ollamaServer(Response.json({ choices: [] }));
+    await expect(generateTour(model, fakeSource(), { ollama, fetchImpl })).rejects.toThrow();
+  });
+
+  // Ollama drops whatever overflows its window from the front, where the
+  // instructions are, so the transcript is cut from the middle instead.
+  it("trims a long exploration to Ollama's window, keeping the brief and the latest results", async () => {
+    let reads = 0;
+    const { model } = scriptedModel(
+      ...Array.from(
+        { length: 30 },
+        (): Reply => ({
+          finishReason: finished("tool-calls"),
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: `r${++reads}`,
+              toolName: "read_file",
+              input: JSON.stringify({ path: "a.ts" }),
+            },
+          ],
+        }),
+      ),
+      saysNothing,
+    );
+    const source = fakeSource({ readFile: async () => "x".repeat(20_000) });
+    const { fetchImpl, messagesOf } = ollamaServer(aTour);
+    await generateTour(model, source, { ollama, fetchImpl });
+    const messages = messagesOf(0);
+    expect(messages[0]?.role).toBe("system");
+    expect(String(messages[1]?.content)).toContain("Lay out a reading order");
+    expect(String(messages.at(-1)?.content)).toContain("Reply now with the tour");
+    const results = messages.filter((m) => m.role === "tool");
+    expect(results.length).toBeGreaterThan(0);
+    expect(results.length).toBeLessThan(30);
+    expect(messages[2]?.role).not.toBe("tool");
   });
 });

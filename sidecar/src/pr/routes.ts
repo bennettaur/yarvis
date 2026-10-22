@@ -8,7 +8,7 @@ import type { AttentionNavTarget, PrGuideRow } from "../db/schema.ts";
 import { emitEvent } from "../events/service.ts";
 import { createGitHubClient } from "../github/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
-import { findCustomProvider, ollamaHeaders, ollamaUrl, resolveModel } from "../llm/providers.ts";
+import { modelCompactAtTokens, resolveModelWithOllama } from "../llm/providers.ts";
 import { askAboutCode } from "./ask.ts";
 import { deleteGuide, getGuide, isStale, saveGuide, setGuideProgress } from "./guides.ts";
 import {
@@ -171,7 +171,9 @@ export function createPrRoutes(config: Config): Hono {
     providerId?: string,
     modelId?: string,
   ): Promise<
-    | { model: Awaited<ReturnType<typeof resolveModel>>; providerId: string; modelId: string }
+    | ({ selection: { provider: string; model: string } } & Awaited<
+        ReturnType<typeof resolveModelWithOllama>
+      >)
     | { error: string }
   > => {
     const fallback = await resolvePrModel(config, feature);
@@ -182,9 +184,8 @@ export function createPrRoutes(config: Config): Hono {
       // Wrapped rather than returned bare: a resolved model can itself be a
       // string, so an `"error" in x` check would not tell the two apart.
       return {
-        model: await resolveModel(config, provider, model),
-        providerId: provider,
-        modelId: model,
+        selection: { provider, model },
+        ...(await resolveModelWithOllama(config, provider, model)),
       };
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) };
@@ -205,20 +206,14 @@ export function createPrRoutes(config: Config): Hono {
     if ("error" in resolved) return c.json({ error: resolved.error }, 400);
 
     try {
-      // An Ollama model writes its final answer through Ollama's own API, which
-      // holds the output to the tour's schema rather than only asking for JSON.
-      const custom = await findCustomProvider(resolved.providerId);
-      const ollama =
-        custom?.apiKind === "ollama"
-          ? {
-              url: ollamaUrl(custom.baseUrl, "/api/chat"),
-              headers: ollamaHeaders(config, custom),
-              model: resolved.modelId,
-            }
-          : undefined;
+      const { provider, model } = resolved.selection;
       const { steps, headSha } = await generateTour(resolved.model, source, {
         signal: c.req.raw.signal,
-        ollama,
+        // An Ollama model writes its final answer through Ollama's own API,
+        // which holds the output to the tour's schema.
+        ollama: resolved.ollama ?? undefined,
+        modelName: model,
+        contextTokens: await modelCompactAtTokens(config, provider, model),
       });
       const guide = await saveGuide(dbh, { ref, headSha, steps, title, url });
       await syncAttention(ref, guide);

@@ -1,17 +1,10 @@
 import { generateText, Output } from "ai";
 import { z } from "zod";
 import type { Config } from "../config.ts";
-import type { CustomProviderRow } from "../customProviders/service.ts";
-import { guardedFetch } from "../lib/guardedFetch.ts";
 import { readSection, withSection } from "../settings/store.ts";
 import type { ModelSelection } from "./complexity.ts";
-import {
-  availableProviders,
-  findCustomProvider,
-  ollamaHeaders,
-  ollamaUrl,
-  resolveModel,
-} from "./providers.ts";
+import { ollamaChat } from "./ollamaChat.ts";
+import { availableProviders, resolveModelWithOllama } from "./providers.ts";
 
 /**
  * The decision model: one model, tagged `decision` in the catalogue, that
@@ -114,12 +107,30 @@ export async function decide<T>(
       (s): s is AbortSignal => s !== undefined,
     ),
   );
-  const custom = await findCustomProvider(selection.provider);
-  if (custom?.apiKind === "ollama") {
-    return decideWithOllama(config, custom, selection.model, request, signal);
+  const { model, ollama } = await resolveModelWithOllama(
+    config,
+    selection.provider,
+    selection.model,
+  );
+  // Ollama's native API holds the answer to the schema; its OpenAI-compatible
+  // endpoint, which `model` would use, only promises JSON.
+  if (ollama) {
+    const reply = await ollamaChat({
+      target: ollama,
+      messages: [
+        { role: "system", content: request.system },
+        { role: "user", content: request.prompt },
+      ],
+      format: z.toJSONSchema(request.schema),
+      // A judgement should come out the same way twice.
+      options: { temperature: 0, num_ctx: OLLAMA_NUM_CTX, num_predict: OLLAMA_NUM_PREDICT },
+      timeoutMs: DECISION_TIMEOUT_MS,
+      signal,
+      fetchImpl: request.fetchImpl,
+    });
+    return request.schema.parse(JSON.parse(reply.content));
   }
 
-  const model = await resolveModel(config, selection.provider, selection.model);
   const { output } = await generateText({
     model,
     system: request.system,
@@ -128,56 +139,4 @@ export async function decide<T>(
     abortSignal: signal,
   });
   return output;
-}
-
-const ollamaChatResponseSchema = z.object({
-  message: z.object({ content: z.string() }),
-});
-
-/**
- * Ollama's native `/api/chat`, which takes a JSON schema as `format` and
- * constrains decoding to it. Its OpenAI-compatible endpoint only promises JSON,
- * not this schema, which matters for a small model.
- */
-async function decideWithOllama<T>(
-  config: Config,
-  row: CustomProviderRow,
-  modelId: string,
-  request: DecisionRequest<T>,
-  signal: AbortSignal,
-): Promise<T> {
-  const headers = ollamaHeaders(config, row);
-
-  const res = await guardedFetch(
-    ollamaUrl(row.baseUrl, "/api/chat"),
-    {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        model: modelId,
-        messages: [
-          { role: "system", content: request.system },
-          { role: "user", content: request.prompt },
-        ],
-        format: z.toJSONSchema(request.schema),
-        stream: false,
-        // A judgement should come out the same way twice.
-        options: { temperature: 0, num_ctx: OLLAMA_NUM_CTX, num_predict: OLLAMA_NUM_PREDICT },
-      }),
-      // Also bounds reading the body, which outlives guardedFetch's own deadline.
-      signal,
-    },
-    {
-      fetchImpl: request.fetchImpl ?? fetch,
-      timeoutMs: DECISION_TIMEOUT_MS,
-      allowLoopback: true,
-      // The body is the user's conversation.
-      sameOriginOnly: true,
-    },
-  );
-  if (!res.ok) {
-    throw new Error(`decision model call failed (${res.status})`);
-  }
-  const { message } = ollamaChatResponseSchema.parse(await res.json());
-  return request.schema.parse(JSON.parse(message.content));
 }
