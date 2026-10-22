@@ -1,1 +1,0 @@
-ALTER TABLE "review_workspace_prs" ADD COLUMN "setup_head_sha" text;

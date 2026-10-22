@@ -3,11 +3,13 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parseTestCounts } from "./testCommands.ts";
 import {
   checkSandbox,
   runSandboxed,
   type SandboxedCommand,
   type SandboxRunner,
+  sandboxEnv,
   sandboxProfile,
 } from "./testSandbox.ts";
 
@@ -55,6 +57,24 @@ describe("the sandbox profile", () => {
     expect(profile).toContain("mDNSResponder");
     expect(profile).toContain(".ssh");
     expect(profile).toContain(".claude/.credentials.json");
+  });
+
+  it("points the tool caches at the run's temp folder, not the home directory", () => {
+    const env = sandboxEnv({ tempDir: "/tmp/run", home: "/Users/me" });
+    for (const key of [
+      "XDG_CACHE_HOME",
+      "GOCACHE",
+      "npm_config_cache",
+      "YARN_CACHE_FOLDER",
+      "BUN_INSTALL_CACHE_DIR",
+      "PIP_CACHE_DIR",
+      "PYTHONPYCACHEPREFIX",
+    ]) {
+      expect(env[key]?.startsWith("/tmp/run/")).toBe(true);
+    }
+    expect(env.TMPDIR).toBe("/tmp/run");
+    expect(env.GOMODCACHE).toBeUndefined();
+    expect(env.SSH_AUTH_SOCK).toBeUndefined();
   });
 
   it("refuses a path that could break out of its string", () => {
@@ -115,6 +135,35 @@ describe.skipIf(process.platform !== "darwin")("running a command in the sandbox
     expect(run.output).toContain("dns: failed");
     expect(run.output).toContain("loopback: ok");
   });
+
+  // Go writes its build cache under ~/Library/Caches by default, which the
+  // sandbox refuses; GOCACHE in the run's temp folder is what lets it build.
+  it.skipIf(!Bun.which("go"))(
+    "gets `go test` past its baseline with its cache in temp",
+    async () => {
+      writeFileSync(join(cwd, "go.mod"), "module example.com/pricing\n\ngo 1.21\n");
+      writeFileSync(
+        join(cwd, "fee.go"),
+        "package pricing\n\nfunc Fee(t int) int {\n\tif t >= 50 {\n\t\treturn 0\n\t}\n\treturn 5\n}\n",
+      );
+      writeFileSync(
+        join(cwd, "fee_test.go"),
+        'package pricing\n\nimport "testing"\n\nfunc TestFee(t *testing.T) {\n\tif Fee(50) != 0 {\n\t\tt.Fatal("fee")\n\t}\n}\n',
+      );
+      const argv = ["go", "test", "-v", "./..."];
+      const run = await runSandboxed({
+        argv,
+        cwd,
+        tempDir,
+        timeoutMs: 120_000,
+        signal: new AbortController().signal,
+        home,
+      });
+      expect(run.exitCode).toBe(0);
+      expect(parseTestCounts(argv, run.output)).toEqual({ total: 1, failed: 0 });
+      expect(existsSync(join(tempDir, "go-build"))).toBe(true);
+    },
+  );
 
   it("kills the whole process group on a timeout", async () => {
     const started = Date.now();

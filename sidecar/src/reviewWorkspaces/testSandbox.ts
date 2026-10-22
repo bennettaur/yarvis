@@ -129,6 +129,41 @@ export function assertSandboxAvailable(): void {
   if (!existsSync(SANDBOX_EXEC)) throw new SandboxUnavailableError(`${SANDBOX_EXEC} not found`);
 }
 
+/**
+ * Tool caches that default to somewhere under the home directory, pointed at
+ * the run's temp folder instead: the sandbox refuses writes under `~`, and a
+ * runner that can't write its cache fails before any test runs. Go's module
+ * cache (`GOMODCACHE`) is left where it is, since only reads of it are needed
+ * offline. Cargo builds into the copy's own `target/` already.
+ */
+function cacheEnv(tempDir: string): Record<string, string> {
+  return {
+    XDG_CACHE_HOME: join(tempDir, "cache"),
+    GOCACHE: join(tempDir, "go-build"),
+    npm_config_cache: join(tempDir, "npm"),
+    YARN_CACHE_FOLDER: join(tempDir, "yarn"),
+    BUN_INSTALL_CACHE_DIR: join(tempDir, "bun"),
+    PIP_CACHE_DIR: join(tempDir, "pip"),
+    PYTHONPYCACHEPREFIX: join(tempDir, "pycache"),
+  };
+}
+
+/** The scrubbed environment a sandboxed command gets. Exported for tests. */
+export function sandboxEnv(command: Pick<SandboxedCommand, "tempDir" | "home">) {
+  return scrubbedEnv(
+    {
+      TMPDIR: command.tempDir,
+      ...cacheEnv(command.tempDir),
+      // Runners that watch by default (vitest, jest) run once under CI.
+      CI: "1",
+      NO_COLOR: "1",
+      FORCE_COLOR: "0",
+      ...(command.home ? { HOME: command.home } : {}),
+    },
+    WITHHELD_ENV,
+  );
+}
+
 export const runSandboxed: SandboxRunner = (command) => {
   assertSandboxAvailable();
   if (!exitHookInstalled) {
@@ -145,17 +180,7 @@ export const runSandboxed: SandboxRunner = (command) => {
   return new Promise<SandboxedRun>((resolve, reject) => {
     const child = spawn(SANDBOX_EXEC, ["-p", profile, ...command.argv], {
       cwd: command.cwd,
-      env: scrubbedEnv(
-        {
-          TMPDIR: command.tempDir,
-          // Runners that watch by default (vitest, jest) run once under CI.
-          CI: "1",
-          NO_COLOR: "1",
-          FORCE_COLOR: "0",
-          ...(command.home ? { HOME: command.home } : {}),
-        },
-        WITHHELD_ENV,
-      ),
+      env: sandboxEnv(command),
       shell: false,
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],

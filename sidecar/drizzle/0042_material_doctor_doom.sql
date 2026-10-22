@@ -20,6 +20,7 @@ CREATE TABLE "mutation_runs" (
 	"finished_at" timestamp with time zone
 );
 --> statement-breakpoint
+ALTER TABLE "review_workspace_prs" ADD COLUMN "setup_head_sha" text;--> statement-breakpoint
 ALTER TABLE "mutation_runs" ADD CONSTRAINT "mutation_runs_workspace_id_review_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."review_workspaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "mutation_runs" ADD CONSTRAINT "mutation_runs_pr_id_review_workspace_prs_id_fk" FOREIGN KEY ("pr_id") REFERENCES "public"."review_workspace_prs"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "mutation_runs_pr_idx" ON "mutation_runs" USING btree ("pr_id","started_at" DESC NULLS LAST);
