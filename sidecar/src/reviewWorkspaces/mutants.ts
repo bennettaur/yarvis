@@ -7,10 +7,9 @@
  * The sidecar writes these files unsandboxed, after the PR's tests have had
  * the run of the copy, so every write is made as if the file might have been
  * swapped for a link: the path must have no symlink anywhere in it, the file
- * must be the one recorded (same device and inode, one link), and the new
- * content goes into a freshly created file (`O_CREAT|O_EXCL|O_NOFOLLOW`)
- * rather than through whatever is at the path. Anything unexpected fails
- * closed.
+ * must be the one recorded (same device and inode, one link), checked on the
+ * open descriptor the content is then written through, and nothing is ever
+ * created or unlinked by path. Anything unexpected fails closed.
  */
 
 import { createHash } from "node:crypto";
@@ -18,15 +17,15 @@ import {
   closeSync,
   constants,
   fstatSync,
+  ftruncateSync,
   futimesSync,
   lstatSync,
   openSync,
   readFileSync,
   realpathSync,
-  unlinkSync,
   writeSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { z } from "zod";
 import { MAX_FILE_BYTES } from "../workspaces/files.ts";
 import { assertSafeRepoPath } from "./git.ts";
@@ -163,7 +162,7 @@ export interface ValidEdit {
   original: Buffer;
   mutated: Buffer;
   mode: number;
-  /** Updated on every write the sidecar makes. */
+  /** The file as prepared; every later read and write must find the same one. */
   identity: FileIdentity;
   /** The last mtime written, so each write moves it on. */
   mtime: number;
@@ -183,40 +182,46 @@ export class RevertError extends Error {
 }
 
 /**
- * Throws unless `file` is still a regular file with one link, the one
- * `identity` names, reached through no symlink.
+ * Opens the file for `flags` and checks the descriptor is the recorded file:
+ * a regular file with one link, the same device and inode. The check is on
+ * the descriptor, not the path, so a swapped file, a hard link or a parent
+ * folder replaced by a link (which `open` would follow) all fail here rather
+ * than redirect a read or write. `O_NOFOLLOW` refuses a symlink at the leaf;
+ * nothing is ever created, so a swap can't make the sidecar create a file
+ * somewhere else.
  */
-function assertSameFile(edit: Pick<ValidEdit, "file" | "identity">): void {
-  let stat: ReturnType<typeof lstatSync>;
+function openSameFile(edit: Pick<ValidEdit, "file" | "identity">, flags: number): number {
+  let fd: number;
   try {
-    stat = lstatSync(edit.file);
-  } catch {
-    throw new RevertError(edit.file, "it was removed");
+    fd = openSync(edit.file, flags | constants.O_NOFOLLOW);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    throw new RevertError(
+      edit.file,
+      code === "ELOOP"
+        ? "it was replaced by a link"
+        : code === "ENOENT"
+          ? "it was removed"
+          : `it can't be opened (${code})`,
+    );
   }
-  if (!stat.isFile()) throw new RevertError(edit.file, "it was replaced by something else");
-  if (stat.nlink !== 1) throw new RevertError(edit.file, "it was hard-linked");
-  if (stat.dev !== edit.identity.dev || stat.ino !== edit.identity.ino) {
-    throw new RevertError(edit.file, "it was replaced");
-  }
-  let folder: string;
   try {
-    folder = realpathSync(dirname(edit.file));
-  } catch {
-    throw new RevertError(edit.file, "its folder was removed");
-  }
-  if (folder !== dirname(edit.file)) {
-    throw new RevertError(edit.file, "its folder was replaced by a link");
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new RevertError(edit.file, "it was replaced by something else");
+    if (stat.nlink !== 1) throw new RevertError(edit.file, "it was hard-linked");
+    if (stat.dev !== edit.identity.dev || stat.ino !== edit.identity.ino) {
+      throw new RevertError(edit.file, "it was replaced");
+    }
+    return fd;
+  } catch (e) {
+    closeSync(fd);
+    throw e;
   }
 }
 
-/** Reads the file through a descriptor that refuses a symlink, checking it is the recorded one. */
 function readSameFile(edit: Pick<ValidEdit, "file" | "identity">): Buffer {
-  const fd = openSync(edit.file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const fd = openSameFile(edit, constants.O_RDONLY);
   try {
-    const stat = fstatSync(fd);
-    if (stat.dev !== edit.identity.dev || stat.ino !== edit.identity.ino || stat.nlink !== 1) {
-      throw new RevertError(edit.file, "it changed while being read");
-    }
     return readFileSync(fd);
   } finally {
     closeSync(fd);
@@ -224,25 +229,20 @@ function readSameFile(edit: Pick<ValidEdit, "file" | "identity">): Buffer {
 }
 
 /**
- * Replaces the file's content: removes it and creates a new one in its place,
- * exclusively and without following a link, then records the new file's
- * identity. Its mtime always moves forward, so a test runner's cache keyed on
- * mtime and size can't mistake the mutant for the original or the reverse.
+ * Rewrites the file's content in place, through a descriptor checked to be
+ * the recorded file. Its mtime always moves forward, so a test runner's cache
+ * keyed on mtime and size can't mistake the mutant for the original or the
+ * reverse.
  */
-function replaceFile(edit: ValidEdit, bytes: Buffer): void {
-  assertSameFile(edit);
-  unlinkSync(edit.file);
-  const fd = openSync(
-    edit.file,
-    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-    edit.mode,
-  );
+function rewriteFile(edit: ValidEdit, bytes: Buffer): void {
+  const fd = openSameFile(edit, constants.O_WRONLY);
   try {
-    writeSync(fd, bytes);
+    ftruncateSync(fd, 0);
+    let written = 0;
+    while (written < bytes.length)
+      written += writeSync(fd, bytes, written, bytes.length - written, written);
     edit.mtime = Math.max(Math.floor(Date.now() / 1000), edit.mtime + 1);
     futimesSync(fd, edit.mtime, edit.mtime);
-    const stat = fstatSync(fd);
-    edit.identity = { dev: stat.dev, ino: stat.ino };
   } finally {
     closeSync(fd);
   }
@@ -346,12 +346,12 @@ export async function withEdit<T>(
   if (sha256(readSameFile(edit)) !== expected) {
     throw new RevertError(edit.file, "it changed before the mutant was applied");
   }
-  replaceFile(edit, edit.mutated);
+  rewriteFile(edit, edit.mutated);
   try {
     return await run();
   } finally {
     await beforeRevert();
-    replaceFile(edit, edit.original);
+    rewriteFile(edit, edit.original);
     if (sha256(readSameFile(edit)) !== expected) {
       // biome-ignore lint/correctness/noUnsafeFinally: a failed restore must win over the result.
       throw new RevertError(edit.file, "its content didn't match after restoring");

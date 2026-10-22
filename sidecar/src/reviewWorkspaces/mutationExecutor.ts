@@ -170,7 +170,10 @@ export async function executeMutationPlan(
    */
   const cleanUp = async () => {
     for (let attempt = 0; attempt < 3; attempt++) {
-      const killed = await strays([input.copyRoot, tempDir], spare);
+      const killed = [
+        ...(await strays([input.copyRoot, tempDir], spare)),
+        ...(session ? await session.sweep() : []),
+      ];
       if (killed.length === 0) return;
       console.log(`[mutation-testing] killed ${killed.length} processes the tests left behind`);
       await new Promise((resolve) => setTimeout(resolve, 200));

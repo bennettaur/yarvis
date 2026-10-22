@@ -7,8 +7,8 @@
  * about the PR's code: every runner here runs code from the PR (a test file, a
  * `package.json` script), which the user consented to and the sandbox
  * contains. What it rules out is a model choosing some other program, loading
- * code from somewhere the PR didn't put it (`--require`, `-toolexec`, a config
- * file), or fetching a package (`npx` of something not installed).
+ * code from somewhere the PR didn't put it (any flag beyond a short list per
+ * runner), or fetching a package (`npx` of something not installed).
  */
 
 import { lstatSync, realpathSync } from "node:fs";
@@ -71,68 +71,225 @@ export const TEST_RUNNER_PREFIXES = RUNNERS.map((runner) => runner.prefix.join("
 const MAX_ARGS = 40;
 const MAX_ARG_CHARS = 300;
 
-/** Node-based runners' flags that load code, a config file or a plugin from a path. */
-const NODE_LOADING_FLAGS = [
-  "require",
-  "r",
-  "import",
-  "loader",
-  "experimental-loader",
-  "e",
-  "eval",
-  "p",
-  "print",
-  "preload",
-  "config",
-  "c",
-  "config-file",
-  "setupFiles",
-  "setup-files",
-  "setupFilesAfterEnv",
-  "globalSetup",
-  "globalTeardown",
-  "testEnvironment",
-  "env",
-  "environment",
-  "reporters",
-  "reporter",
-  "transform",
-  "resolver",
-  "runner",
-  "testRunner",
-  "preset",
-  "projects",
-  "rootDir",
-  "root",
-  "node-options",
-];
+/**
+ * How a flag is used: on its own; with a value (`--flag value`, `--flag=value`,
+ * or attached to a short flag, `-kfee`); either; or with one of a few values.
+ */
+type FlagSpec = "flag" | "value" | "optional" | readonly string[];
+type FlagSet = Readonly<Record<string, FlagSpec>>;
 
 /**
- * Flags refused per runner family, compared without their leading dashes and
- * any `=value`. Each one loads code, configuration or a plugin from a path the
- * planner names, or (for npm) runs a shell of its choosing.
+ * The flags each runner may be given, by name without dashes. Everything else
+ * is refused, which is how flags that load code or configuration from a path
+ * (`--require`, `--config`, `--setupFiles`, `-p` for a pytest plugin,
+ * `-toolexec`, `--env-file` …) stay out without having to be listed: only test
+ * selection, verbosity, timeouts, failure handling and parallelism are here.
  */
-const LOADING_FLAGS: Record<Family, readonly string[]> = {
-  bun: NODE_LOADING_FLAGS,
-  jest: NODE_LOADING_FLAGS,
-  vitest: NODE_LOADING_FLAGS,
-  mocha: [...NODE_LOADING_FLAGS, "file", "ui", "u"],
-  node: [...NODE_LOADING_FLAGS, "test-reporter", "test-reporter-destination"],
-  script: [
-    ...NODE_LOADING_FLAGS,
-    "userconfig",
-    "globalconfig",
-    "prefix",
-    "script-shell",
-    "workspace",
-    "w",
-  ],
-  pytest: ["p", "c", "config-file", "o", "override-ini", "confcutdir", "rootdir", "pyargs"],
-  go: ["exec", "toolexec", "overlay", "modfile", "pkgdir", "C"],
-  cargo: ["config", "Z", "manifest-path"],
-  rspec: ["r", "require", "I", "options", "default-path"],
-  mix: ["r", "require", "exs"],
-  dotnet: ["logger", "l", "collect", "settings", "s", "test-adapter-path", "a", "diag", "d"],
+const BUN_FLAGS: FlagSet = {
+  t: "value",
+  "test-name-pattern": "value",
+  timeout: "value",
+  bail: "optional",
+  only: "flag",
+  todo: "flag",
+  "rerun-each": "value",
+};
+const JEST_FLAGS: FlagSet = {
+  t: "value",
+  testNamePattern: "value",
+  testPathPattern: "value",
+  testPathIgnorePatterns: "value",
+  i: "flag",
+  runInBand: "flag",
+  ci: "flag",
+  silent: "flag",
+  verbose: "flag",
+  forceExit: "flag",
+  detectOpenHandles: "flag",
+  "no-cache": "flag",
+  "no-watchman": "flag",
+  bail: "optional",
+  testTimeout: "value",
+  maxWorkers: "value",
+  w: "value",
+};
+const VITEST_FLAGS: FlagSet = {
+  t: "value",
+  testNamePattern: "value",
+  bail: "value",
+  testTimeout: "value",
+  maxWorkers: "value",
+  minWorkers: "value",
+  retry: "value",
+  silent: "flag",
+  "no-isolate": "flag",
+  "no-file-parallelism": "flag",
+};
+const MOCHA_FLAGS: FlagSet = {
+  g: "value",
+  grep: "value",
+  f: "value",
+  fgrep: "value",
+  t: "value",
+  timeout: "value",
+  j: "value",
+  jobs: "value",
+  retries: "value",
+  b: "flag",
+  bail: "flag",
+  exit: "flag",
+  recursive: "flag",
+  parallel: "flag",
+  i: "flag",
+  invert: "flag",
+};
+const NODE_FLAGS: FlagSet = {
+  "test-name-pattern": "value",
+  "test-skip-pattern": "value",
+  "test-timeout": "value",
+  "test-concurrency": "value",
+  "test-only": "flag",
+  "test-reporter": ["spec", "tap"],
+};
+const PYTEST_FLAGS: FlagSet = {
+  k: "value",
+  m: "value",
+  maxfail: "value",
+  r: "value",
+  durations: "value",
+  W: "value",
+  timeout: "value",
+  capture: ["no", "sys", "fd", "tee-sys"],
+  tb: ["short", "long", "line", "no", "native", "auto"],
+  x: "flag",
+  exitfirst: "flag",
+  q: "flag",
+  quiet: "flag",
+  v: "flag",
+  verbose: "flag",
+  s: "flag",
+  l: "flag",
+  showlocals: "flag",
+  lf: "flag",
+  "last-failed": "flag",
+  ff: "flag",
+  "failed-first": "flag",
+  "no-header": "flag",
+  "disable-warnings": "flag",
+  "strict-markers": "flag",
+  runxfail: "flag",
+};
+const GO_FLAGS: FlagSet = {
+  v: "flag",
+  short: "flag",
+  failfast: "flag",
+  race: "flag",
+  run: "value",
+  skip: "value",
+  count: "value",
+  timeout: "value",
+  cpu: "value",
+  parallel: "value",
+  p: "value",
+  tags: "value",
+  shuffle: "value",
+  vet: "value",
+};
+const CARGO_FLAGS: FlagSet = {
+  lib: "flag",
+  bins: "flag",
+  tests: "flag",
+  doc: "flag",
+  release: "flag",
+  q: "flag",
+  quiet: "flag",
+  "no-fail-fast": "flag",
+  workspace: "flag",
+  offline: "flag",
+  locked: "flag",
+  frozen: "flag",
+  "all-features": "flag",
+  "no-default-features": "flag",
+  test: "value",
+  bin: "value",
+  p: "value",
+  package: "value",
+  features: "value",
+  F: "value",
+  j: "value",
+  jobs: "value",
+};
+/** What follows `cargo test --`: the test binary's own flags. */
+const CARGO_BINARY_FLAGS: FlagSet = {
+  nocapture: "flag",
+  exact: "flag",
+  ignored: "flag",
+  "include-ignored": "flag",
+  q: "flag",
+  quiet: "flag",
+  "show-output": "flag",
+  "test-threads": "value",
+  skip: "value",
+};
+const RSPEC_FLAGS: FlagSet = {
+  e: "value",
+  example: "value",
+  t: "value",
+  tag: "value",
+  order: "value",
+  seed: "value",
+  "fail-fast": "flag",
+  "no-color": "flag",
+  "only-failures": "flag",
+  f: ["progress", "documentation", "p", "d"],
+  format: ["progress", "documentation", "p", "d"],
+};
+const MIX_FLAGS: FlagSet = {
+  only: "value",
+  exclude: "value",
+  include: "value",
+  seed: "value",
+  "max-failures": "value",
+  "max-cases": "value",
+  trace: "flag",
+  failed: "flag",
+  stale: "flag",
+};
+const DOTNET_FLAGS: FlagSet = {
+  filter: "value",
+  configuration: "value",
+  c: "value",
+  framework: "value",
+  f: "value",
+  verbosity: "value",
+  v: "value",
+  "no-build": "flag",
+  "no-restore": "flag",
+  nologo: "flag",
+};
+/** A package script's runner is unknown: what any of the node runners allows, after `--`. */
+const SCRIPT_FLAGS: FlagSet = {
+  ...MOCHA_FLAGS,
+  ...BUN_FLAGS,
+  ...VITEST_FLAGS,
+  ...JEST_FLAGS,
+  ...NODE_FLAGS,
+};
+
+/** Flags before and after a `--` separator. */
+const FLAGS: Record<Family, { before: FlagSet; after: FlagSet }> = {
+  bun: { before: BUN_FLAGS, after: {} },
+  jest: { before: JEST_FLAGS, after: {} },
+  vitest: { before: VITEST_FLAGS, after: {} },
+  mocha: { before: MOCHA_FLAGS, after: {} },
+  node: { before: NODE_FLAGS, after: {} },
+  script: { before: { s: "flag", silent: "flag" }, after: SCRIPT_FLAGS },
+  pytest: { before: PYTEST_FLAGS, after: {} },
+  go: { before: GO_FLAGS, after: {} },
+  cargo: { before: CARGO_FLAGS, after: CARGO_BINARY_FLAGS },
+  rspec: { before: RSPEC_FLAGS, after: {} },
+  mix: { before: MIX_FLAGS, after: {} },
+  dotnet: { before: DOTNET_FLAGS, after: {} },
 };
 
 /** Families whose single-dash flags are long names (`-run`), never bundled letters. */
@@ -141,17 +298,52 @@ const SINGLE_DASH_LONG: ReadonlySet<Family> = new Set(["go"]);
 /** Launchers that would fetch a package that isn't installed; run only from node_modules/.bin. */
 const PACKAGE_LAUNCHERS = new Set(["npx", "bunx"]);
 
-function loadingFlagProblem(family: Family, argv: string[], prefixLength: number): string | null {
-  const denied = new Set(LOADING_FLAGS[family]);
-  for (const arg of argv.slice(prefixLength)) {
-    if (arg === "--") continue;
-    if (!arg.startsWith("-")) continue;
-    const name = (arg.split("=")[0] ?? "").replace(/^-+/, "");
-    if (denied.has(name)) return `\`${arg}\` loads code or configuration and isn't allowed`;
-    // A bundled short flag with its value attached: `-rsetup.js`.
-    if (!SINGLE_DASH_LONG.has(family) && /^-[A-Za-z]/.test(arg) && !arg.startsWith("--")) {
-      const letter = arg.slice(1, 2);
-      if (denied.has(letter)) return `\`${arg}\` loads code or configuration and isn't allowed`;
+/**
+ * Why the arguments after the runner prefix aren't allowed, or null. Arguments
+ * not starting with `-` are positional (test paths, filters) and checked as
+ * paths elsewhere; every flag must be on the runner's list, with a value where
+ * it takes one. Bundled short flags (`-qx`, `-kfee`) are split letter by letter.
+ */
+function flagProblem(family: Family, argv: string[], prefixLength: number): string | null {
+  const args = argv.slice(prefixLength);
+  let allowed = FLAGS[family].before;
+  const refuse = (arg: string) => `\`${arg}\` isn't an allowed flag for this runner`;
+  const checkValue = (arg: string, spec: FlagSpec, value: string | undefined) => {
+    if (spec === "flag") return value === undefined ? null : refuse(arg);
+    if (value === undefined) return spec === "optional" ? null : `\`${arg}\` needs a value`;
+    if (Array.isArray(spec) && !spec.includes(value)) return refuse(`${arg} ${value}`);
+    return null;
+  };
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string;
+    if (arg === "--") {
+      allowed = FLAGS[family].after;
+      continue;
+    }
+    if (!arg.startsWith("-") || arg === "-") continue;
+    const takesNext = (spec: FlagSpec) => spec === "value" || Array.isArray(spec);
+    if (arg.startsWith("--") || SINGLE_DASH_LONG.has(family)) {
+      const eq = arg.indexOf("=");
+      const name = (eq === -1 ? arg : arg.slice(0, eq)).replace(/^-+/, "");
+      const spec = Object.hasOwn(allowed, name) ? allowed[name] : undefined;
+      if (spec === undefined) return refuse(arg);
+      let value = eq === -1 ? undefined : arg.slice(eq + 1);
+      if (value === undefined && takesNext(spec)) value = args[++i];
+      const problem = checkValue(arg, spec, value);
+      if (problem) return problem;
+      continue;
+    }
+    const letters = arg.slice(1);
+    for (let j = 0; j < letters.length; j++) {
+      const letter = letters[j] as string;
+      const spec = Object.hasOwn(allowed, letter) ? allowed[letter] : undefined;
+      if (spec === undefined) return refuse(arg);
+      if (spec === "flag") continue;
+      let value: string | undefined = letters.slice(j + 1).replace(/^=/, "") || undefined;
+      if (value === undefined && takesNext(spec)) value = args[++i];
+      const problem = checkValue(arg, spec, value);
+      if (problem) return problem;
+      break;
     }
   }
   return null;
@@ -194,7 +386,7 @@ export function testCommandProblem(argv: string[]): string | null {
       if (part.split(/[\\/]/).includes("..")) return `\`${arg}\` climbs out of the copy`;
     }
   }
-  return loadingFlagProblem(runner.family, argv, runner.prefix.length);
+  return flagProblem(runner.family, argv, runner.prefix.length);
 }
 
 /**

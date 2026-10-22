@@ -557,8 +557,10 @@ back to ad-hoc.
   Code runs, so those tests run under `reviewWorkspaces/testSandbox.ts`
   instead: a deny-by-default `sandbox-exec` profile with no network or DNS,
   loopback only to the ephemeral port range, writes only to the scratch copy
-  and a temp folder (which holds a fake `HOME`), no reads of credentials,
-  `~/Library` or other checkouts, and no launchd, LaunchServices or keychain.
+  and a temp folder (which holds a fake `HOME`), no reads of the home folder
+  beyond the toolchains or of other checkouts, no setsid, and no launchd,
+  LaunchServices or keychain. One helper per pass runs every command, so the
+  profile compiles once.
   A probe script checks it holds before any test runs, and where it can't
   apply (anything but macOS) the tests don't run. The user already agreed to
   run the PR's code and its setup runs unsandboxed, so this is defence in
