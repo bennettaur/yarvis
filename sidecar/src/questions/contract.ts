@@ -70,14 +70,14 @@ export const waitInputShape = {
 /** Also the answer for another session's question, so its existence isn't confirmed. */
 export const NO_SUCH_QUESTION = "No question with that id.";
 
-/** How long `ask_user` blocks, for a caller that waits `ANSWER_WAIT_MS`. */
-export const SHORT_WAIT_GUIDANCE =
+/** How long `ask_user` and `wait_for_answer` block, for a caller that waits `ANSWER_WAIT_MS`. */
+const SHORT_ASK_GUIDANCE =
   "Blocks for up to four minutes; if the user hasn't answered by then it returns status 'pending' and a questionId to pass to wait_for_answer.";
+const SHORT_WAIT_GUIDANCE =
+  "Blocks for up to four minutes, then returns the answers, a decline, or 'pending' again.";
 
 /** Builds the `wait_for_answer` description; `waitGuidance` says how long one call blocks. */
-export function waitDescription(
-  waitGuidance = "Blocks for up to four minutes, then returns the answers, a decline, or 'pending' again.",
-): string {
+export function waitDescription(waitGuidance = SHORT_WAIT_GUIDANCE): string {
   return `Keep waiting for the user's answer to an earlier ask_user call that returned status 'pending'. ${waitGuidance}`;
 }
 
@@ -85,7 +85,7 @@ export function waitDescription(
  * Builds the `ask_user` description. Each caller says where the user sees the
  * question and when to ask, and how long one call blocks.
  */
-export function askDescription(callerGuidance: string, waitGuidance = SHORT_WAIT_GUIDANCE): string {
+export function askDescription(callerGuidance: string, waitGuidance = SHORT_ASK_GUIDANCE): string {
   return `Ask the user one or more questions and wait for their answers. ${callerGuidance} Never ask for passwords, tokens, keys or other secrets. ${waitGuidance}`;
 }
 

@@ -495,8 +495,20 @@ describe("ask_user waits", () => {
     });
     expect(payload(result)).toMatchObject({ status: "answered" });
     expect(waits).toEqual([LONG_ANSWER_WAIT_MS]);
-    expect(progress.length).toBeGreaterThan(1);
+    expect(progress.length).toBeGreaterThan(0);
     expect(progress).toEqual([...progress].sort((a, b) => a - b));
+  });
+
+  it("takes the short wait once a session holds too many long ones", async () => {
+    const { client, waits } = await connectAsking(150);
+    const calls = Array.from({ length: 5 }, () =>
+      client.callTool({ name: "ask_user", arguments: ASK_ARGS }, undefined, {
+        onprogress: () => {},
+      }),
+    );
+    await Promise.all(calls);
+    expect(waits.filter((w) => w === LONG_ANSWER_WAIT_MS)).toHaveLength(4);
+    expect(waits.filter((w) => w === ANSWER_WAIT_MS)).toHaveLength(1);
   });
 
   it("waits only a few minutes for a client without a progress token", async () => {

@@ -3,6 +3,7 @@ import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 import { mcpReply } from "../test/mcpResponse.ts";
+import { hasWaiter } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -44,6 +45,32 @@ interface Origin {
   workspaceId?: string;
 }
 
+/** The request a workspace's Claude session sends to call `name`; `meta` rides as `_meta`. */
+function mcpCall(
+  name: string,
+  args: Record<string, unknown>,
+  meta?: Record<string, unknown>,
+  origin: Origin = { sessionKey, workspaceId },
+) {
+  return {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer test-mcp-token",
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      Host: "127.0.0.1:8765",
+      ...(origin.sessionKey ? { "X-Yarvis-Session-Key": origin.sessionKey } : {}),
+      ...(origin.workspaceId ? { "X-Yarvis-Workspace": origin.workspaceId } : {}),
+    } as Record<string, string>,
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name, arguments: args, ...(meta ? { _meta: meta } : {}) },
+    }),
+  };
+}
+
 /**
  * Calls an MCP tool the way a workspace's Claude session would, headers
  * included. Pass an origin to ask as another session, or `{}` for a client
@@ -54,23 +81,7 @@ async function callTool(
   args: Record<string, unknown>,
   origin: Origin = { sessionKey, workspaceId },
 ) {
-  const res = await app.request("/mcp", {
-    method: "POST",
-    headers: {
-      Authorization: "Bearer test-mcp-token",
-      "Content-Type": "application/json",
-      Accept: "application/json, text/event-stream",
-      Host: "127.0.0.1:8765",
-      ...(origin.sessionKey ? { "X-Yarvis-Session-Key": origin.sessionKey } : {}),
-      ...(origin.workspaceId ? { "X-Yarvis-Workspace": origin.workspaceId } : {}),
-    },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "tools/call",
-      params: { name, arguments: args },
-    }),
-  });
+  const res = await app.request("/mcp", mcpCall(name, args, undefined, origin));
   expect(res.status).toBe(200);
   const body = (await mcpReply(res)) as {
     result: { isError?: boolean; content: { text: string }[] };
@@ -154,6 +165,42 @@ describe("ask_user over MCP", () => {
 
     const [after] = await sql`SELECT status FROM attention_items`;
     expect(after?.status).toBe("resolved");
+  });
+
+  it("sends the reply's headers before the user answers", async () => {
+    // Claude Code drops an HTTP tool call whose first byte takes over a minute.
+    const res = await app.request("/mcp", mcpCall("ask_user", ASK));
+    const id = await pendingQuestionId();
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+    await answer(id, [{ selected: ["Token bucket"] }, { selected: [], text: "No" }]);
+    const reply = await mcpReply<{ result: { content: { text: string }[] } }>(res);
+    expect(JSON.parse(reply.result.content[0]!.text).status).toBe("answered");
+  });
+
+  it("stops waiting when the client hangs up, and keeps the question answerable", async () => {
+    // A real socket: only a real disconnect cancels the reply stream.
+    const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: app.fetch });
+    try {
+      const hangUp = new AbortController();
+      const call = fetch(`http://127.0.0.1:${server.port}/mcp`, {
+        // The Host header the call sets names the configured port, which the
+        // endpoint checks, not the one this server happened to bind.
+        ...mcpCall("ask_user", ASK, { progressToken: 1 }),
+        signal: hangUp.signal,
+      }).catch(() => null);
+      const id = await pendingQuestionId();
+      expect(hasWaiter(id)).toBe(true);
+      hangUp.abort();
+      await call;
+      for (let i = 0; i < 100 && hasWaiter(id); i++) await Bun.sleep(20);
+      expect(hasWaiter(id)).toBe(false);
+      expect(
+        (await answer(id, [{ selected: ["Token bucket"] }, { selected: [], text: "No" }])).status,
+      ).toBe(200);
+    } finally {
+      server.stop(true);
+    }
   });
 
   it("tells the agent when the user declines", async () => {

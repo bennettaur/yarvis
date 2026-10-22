@@ -37,11 +37,23 @@ export const LONG_ANSWER_WAIT_MS = 24 * 60 * 60 * 1000;
  */
 const PROGRESS_INTERVAL_MS = 30_000;
 
+/**
+ * Most long waits held at once, overall and for one session. Each holds a
+ * socket, and an agent looping on `wait_for_answer` could otherwise open them
+ * until the sidecar runs out. Past either cap a call takes the short wait.
+ */
+const MAX_LONG_WAITS = 32;
+const MAX_LONG_WAITS_PER_SESSION = 4;
+
+/** Long waits running now, by asking session; sessionless clients share "". */
+const longWaits = new Map<string, number>();
+let longWaitTotal = 0;
+
 const ASK_WAIT_GUIDANCE =
-  "Blocks until the user answers, for up to a day. If it returns status 'pending' instead, pass the questionId to wait_for_answer to keep waiting.";
+  "Usually blocks until the user answers, for up to a day. If it returns status 'pending' instead, pass the questionId to wait_for_answer to keep waiting.";
 
 const WAIT_FOR_ANSWER_GUIDANCE =
-  "Blocks until the user answers, for up to a day, then returns the answers, a decline, or 'pending' again.";
+  "Usually blocks until the user answers, for up to a day, then returns the answers, a decline, or 'pending' again.";
 
 type ToolExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
@@ -64,8 +76,9 @@ export interface QuestionToolDeps {
 /**
  * Waits for the user's reply. A client that sent a progress token gets a
  * progress notification every interval, which keeps the quiet call alive, so
- * it can wait `LONG_ANSWER_WAIT_MS`. Without one the call stays under the
- * idle limits and the agent keeps waiting with `wait_for_answer`.
+ * it can wait `LONG_ANSWER_WAIT_MS`. Without one, or past the long-wait caps,
+ * the call stays under the idle limits and the agent keeps waiting with
+ * `wait_for_answer`.
  */
 async function waitWithProgress(
   deps: QuestionToolDeps,
@@ -73,7 +86,17 @@ async function waitWithProgress(
   extra: ToolExtra,
 ): Promise<AgentQuestionRow | undefined> {
   const progressToken = extra._meta?.progressToken;
-  if (progressToken === undefined) return deps.waitForReply(id, ANSWER_WAIT_MS);
+  const session = deps.origin.sessionKey ?? "";
+  const sessionWaits = longWaits.get(session) ?? 0;
+  if (
+    progressToken === undefined ||
+    longWaitTotal >= MAX_LONG_WAITS ||
+    sessionWaits >= MAX_LONG_WAITS_PER_SESSION
+  ) {
+    return deps.waitForReply(id, ANSWER_WAIT_MS);
+  }
+  longWaitTotal += 1;
+  longWaits.set(session, sessionWaits + 1);
 
   let progress = 0;
   const timer = setInterval(() => {
@@ -83,12 +106,17 @@ async function waitWithProgress(
         method: "notifications/progress",
         params: { progressToken, progress, message: "Waiting for the user to answer" },
       })
+      // A failed write means the client is gone; the request's own abort ends the wait.
       .catch(() => {});
   }, deps.progressIntervalMs ?? PROGRESS_INTERVAL_MS);
   try {
     return await deps.waitForReply(id, LONG_ANSWER_WAIT_MS);
   } finally {
     clearInterval(timer);
+    longWaitTotal -= 1;
+    const left = (longWaits.get(session) ?? 1) - 1;
+    if (left > 0) longWaits.set(session, left);
+    else longWaits.delete(session);
   }
 }
 

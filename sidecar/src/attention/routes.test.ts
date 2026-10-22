@@ -454,24 +454,65 @@ describe("permission requests", () => {
       expect(await waitingRequests()).toHaveLength(0);
     });
 
-    it("drops only one of two identical requests for one call", async () => {
+    it("drops only the older of two identical requests for one call", async () => {
       await seedWorkspace(workspaceId, "WS");
-      await ask();
-      await ask();
+      const first = await ask();
+      const second = await ask();
       await settle({
         hook_event_name: "PostToolUse",
         tool_name: "Bash",
         tool_input: hookInput.tool_input,
       });
+      expect((await first.response).status).toBe(204);
+      expect((await waitingRequests()).map((r) => r.id)).toEqual([second.id]);
+    });
+
+    it("leaves a request for another tool with the same input", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      await ask();
+      await settle({
+        hook_event_name: "PostToolUse",
+        tool_name: "Shell",
+        tool_input: hookInput.tool_input,
+      });
       expect(await waitingRequests()).toHaveLength(1);
     });
 
-    it("drops every request from the session when the turn ends", async () => {
+    it("ignores events that say nothing about a prompt", async () => {
       await seedWorkspace(workspaceId, "WS");
       await ask();
-      await ask({ ...hookInput, tool_input: { command: "bun test" } });
-      await settle({ hook_event_name: "Stop" });
-      expect(await waitingRequests()).toHaveLength(0);
+      expect((await settle({ hook_event_name: "PostToolUse" })).status).toBe(204);
+      expect((await settle({ hook_event_name: "Notification" })).status).toBe(204);
+      expect(await waitingRequests()).toHaveLength(1);
+    });
+
+    for (const event of ["Stop", "UserPromptSubmit"]) {
+      it(`drops every request from the session on ${event}`, async () => {
+        await seedWorkspace(workspaceId, "WS");
+        const first = await ask();
+        const second = await ask({ ...hookInput, tool_input: { command: "bun test" } });
+        await untilItemRaised();
+        await settle({ hook_event_name: event });
+        expect((await first.response).status).toBe(204);
+        expect((await second.response).status).toBe(204);
+        expect(await waitingRequests()).toHaveLength(0);
+        expect(await pendingItems()).toHaveLength(0);
+      });
+    }
+
+    it("leaves another terminal's prompts alone", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      await ask();
+      const other = `ws:${workspaceId}/t9/p1`;
+      await settle(
+        { hook_event_name: "Stop" },
+        {
+          ...permissionAuth,
+          "X-Yarvis-Session-Key": other,
+          "X-Yarvis-Session-Token": tokenFor(other),
+        },
+      );
+      expect(await waitingRequests()).toHaveLength(1);
     });
 
     it("refuses a terminal settling another terminal's prompts", async () => {

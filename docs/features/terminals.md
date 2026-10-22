@@ -129,16 +129,19 @@ Some details:
 - **The prompt waits in both places.** Claude Code shows its own dialog in the
   terminal while Yarvis holds the prompt, and whichever you answer first wins.
   Yarvis holds it for up to a day.
-- **Looking at the session doesn't clear the item.** It clears once the prompt
-  is answered, here or in the terminal, or when the session finishes.
+- **Looking at the session doesn't clear the item.** It clears once you answer
+  it here, once Claude runs a call you approved in the terminal, when the turn
+  ends or you send your next prompt, or when the session finishes. A prompt you
+  deny in the terminal clears at one of the last three.
 - **Several prompts from one session queue up.** The window shows the oldest
   first with a count of the rest.
 - **Only the app instance that launched the session can answer it.** Another
   instance sharing the database shows the item but not the prompt.
 - **A workspace made by an older version of Yarvis** may have an older hook:
-  one that only flags the prompt in the bell, or one that gives up after about
-  four minutes. It gets the current hook the next time it is provisioned, or
-  when the assistant starts a session in it.
+  one that only flags the prompt in the bell, one that gives up after about four
+  minutes, or none of the hooks that clear a prompt answered in the terminal.
+  It gets the current hooks the next time it is provisioned, or when the
+  assistant starts a session in it.
 - **A Claude run outside Yarvis is unaffected.** The hook needs a Yarvis
   terminal's environment and stands aside without it, so Claude Code shows its
   normal dialog.

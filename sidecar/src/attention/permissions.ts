@@ -175,10 +175,14 @@ export interface RanToolCall {
  * after that, so its connection never says so. With `ran`, it drops the oldest
  * request for that call: one whose every input field `ran` carries unchanged,
  * since Claude Code may add fields (an answered AskUserQuestion gains
- * `answers`). Without it, it drops every request from the session. Returns how
- * many it dropped.
+ * `answers`). Without it, it drops every request from the session.
+ *
+ * Matching on input can't tell identical calls apart, and a late report or a
+ * background subagent still asking when the turn ends can drop a prompt that
+ * was still open. That only takes it out of the app: the terminal dialog still
+ * shows it, and a dropped request never approves anything.
  */
-export function settlePermissions(sessionKey: string, ran?: RanToolCall): number {
+export function settlePermissions(sessionKey: string, ran?: RanToolCall): void {
   const held = listPendingPermissions({ sessionKey });
   const matches = ran
     ? held
@@ -192,7 +196,6 @@ export function settlePermissions(sessionKey: string, ran?: RanToolCall): number
         .slice(0, 1)
     : held;
   for (const info of matches) pending.get(info.id)?.resolve({ behavior: "settled" });
-  return matches.length;
 }
 
 /** The requests still waiting, oldest first, optionally for one session. */
@@ -236,7 +239,8 @@ export function summarizePermission(toolName: string, toolInput: Record<string, 
 
 /**
  * The stdout a `PermissionRequest` hook prints to apply a decision, or null for
- * no decision, which leaves the prompt to Claude Code's own dialog.
+ * no decision, which leaves the prompt to Claude Code's own dialog (or, once
+ * settled, to the answer the user already gave there).
  */
 export function hookOutputFor(decision: PermissionDecision | null): Record<string, unknown> | null {
   if (!decision || decision.behavior === "terminal" || decision.behavior === "settled") {

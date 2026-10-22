@@ -69,6 +69,33 @@ export function questionOrigin(headers: Headers): QuestionOrigin {
   };
 }
 
+/**
+ * Passes `body` through, calling `onEnd` once it finishes or the reader
+ * cancels it. A client that hangs up cancels the stream, which a
+ * TransformStream's `flush` would never see.
+ */
+function onStreamEnd(
+  body: ReadableStream<Uint8Array>,
+  onEnd: () => void,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  return new ReadableStream({
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) {
+        controller.close();
+        onEnd();
+      } else {
+        controller.enqueue(value);
+      }
+    },
+    cancel(reason) {
+      onEnd();
+      return reader.cancel(reason);
+    },
+  });
+}
+
 export function createMcpEndpointRoutes(config: Config): Hono {
   const router = new Hono();
 
@@ -104,14 +131,16 @@ export function createMcpEndpointRoutes(config: Config): Hono {
         ? { id: workspaceId, reviewComments }
         : undefined;
     const db = () => getDb(config.databaseUrl as string).db;
-    // A client that disconnects stops its wait, rather than holding a waiter
-    // until the timeout.
-    const signal = c.req.raw.signal;
+    // Fires once the reply stream ends, the client cancels it, or the request
+    // aborts. A client that disconnects stops its wait rather than holding a
+    // waiter until the timeout, and the per-request server closes with it.
+    const done = new AbortController();
+    c.req.raw.signal.addEventListener("abort", () => done.abort(), { once: true });
     const server = createYarvisMcpServer(memory, workspace, {
       origin: questionOrigin(c.req.raw.headers),
       ask: (input) => askQuestions(db(), input),
       getQuestion: (id) => getQuestion(db(), id),
-      waitForReply: (id, timeoutMs) => waitForReply(db(), id, timeoutMs, signal),
+      waitForReply: (id, timeoutMs) => waitForReply(db(), id, timeoutMs, done.signal),
     });
     const transport = new StreamableHTTPTransport({
       // Streamed rather than one JSON body, so the reply's headers go out at
@@ -121,28 +150,27 @@ export function createMcpEndpointRoutes(config: Config): Hono {
       enableDnsRebindingProtection: true,
       allowedHosts: allowedHosts(config.port),
     });
-    // The stream outlives this handler, so the server closes once the stream
-    // ends or the client goes away. Closing it releases the transport's stream
-    // mapping too.
-    let closed = false;
-    const close = () => {
-      if (closed) return;
-      closed = true;
-      void server.close();
-    };
-    signal.addEventListener("abort", close, { once: true });
+    // Closing the server also releases the transport's stream mapping.
+    done.signal.addEventListener("abort", () => void server.close(), { once: true });
     try {
       await server.connect(transport);
       const res = await transport.handleRequest(c);
-      // The transport answers every case itself (including 202 for a batch of
-      // notifications); the fallback only satisfies its optional return type.
+      // The transport answers every case itself, even a 202 for notifications,
+      // which carries a body; this branch only satisfies its optional return type.
       if (!res?.body) {
-        close();
+        done.abort();
         return res ?? c.body(null, 202);
       }
-      return new Response(res.body.pipeThrough(new TransformStream({ flush: close })), res);
+      // The stream outlives this handler, so its end is what finishes the request.
+      return new Response(
+        onStreamEnd(res.body, () => done.abort()),
+        {
+          status: res.status,
+          headers: res.headers,
+        },
+      );
     } catch (e) {
-      close();
+      done.abort();
       throw e;
     }
   });
