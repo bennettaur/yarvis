@@ -1914,7 +1914,7 @@ export const agentRuns = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     /** What the run is for, e.g. "verification-report". Chosen by the feature. */
     kind: text("kind").notNull(),
-    /** What it ran against, e.g. a PR's `refKey`. */
+    /** What it ran against, e.g. `<refKey>@<headSha>` for a PR at one commit. */
     targetKey: text("target_key").notNull(),
     /** "running" | "succeeded" | "failed" | "cancelled". */
     status: text("status").notNull(),

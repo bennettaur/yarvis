@@ -61,13 +61,15 @@ const REFUSED_PERMISSION_MODES = new Set<string>(["bypassPermissions", "auto"]);
 export interface ClaudeRunOptions<T = unknown> {
   /** What the run is for, e.g. "verification-report". */
   kind: string;
-  /** What it runs against, e.g. a PR's `refKey`. */
+  /** What it runs against, e.g. `<refKey>@<headSha>` for a PR at one commit. */
   targetKey: string;
   /** Absolute path of an existing directory to run in. */
   cwd: string;
   /**
    * Further directories the run's file tools may read (`--add-dir`), such as
    * one holding material the caller prepared for it outside the checkout.
+   * Checked like `cwd`; everything in them becomes readable to the run, so
+   * only pass directories the caller created.
    */
   addDirs?: string[];
   prompt: string;
@@ -331,6 +333,7 @@ export async function startClaudeRun<T>(
   }
   if (!(options.maxBudgetUsd > 0)) throw new Error("an agent run needs a positive maxBudgetUsd");
   const cwd = validateWorkingDir(options.cwd);
+  for (const dir of options.addDirs ?? []) validateWorkingDir(dir);
   const program = deps.program ?? (await claudeProgram());
 
   const plugins: PluginCopy[] = [];

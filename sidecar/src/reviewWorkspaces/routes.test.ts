@@ -1,5 +1,13 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
@@ -9,13 +17,13 @@ import type { AgentRunEvent } from "../agentRuns/events.ts";
 import { fakeClaude, resultLine } from "../agentRuns/testSupport.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import { reviewWorkspacePrs, reviewWorkspaces } from "../db/schema.ts";
+import { agentRuns, reviewWorkspacePrs, reviewWorkspaces } from "../db/schema.ts";
 import { RunRegistry } from "../lib/runRegistry.ts";
 import type { PrDetail, PrRef } from "../pr/types.ts";
 import { type ReviewGit, reviewGit } from "./git.ts";
 import type { ReviewProgressEvent } from "./progress.ts";
 import { createReviewWorkspaceRoutes } from "./routes.ts";
-import type { PrMeta, ReviewDeps } from "./service.ts";
+import { type PrMeta, type ReviewDeps, reviewPatches } from "./service.ts";
 import { createTestRemote, sh, type TestRemote } from "./testRepo.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -565,16 +573,28 @@ describe("removing and archiving", () => {
 
 describe("verification report", () => {
   const pass = { status: "pass", findings: [] };
+  const at = (title: string, line: number) => ({
+    title,
+    detail: "d",
+    severity: "medium",
+    path: "src/a.ts",
+    line,
+  });
   const report = {
     summary: `${"word ".repeat(200)}end.`,
-    mustRead: [{ path: "src/a.ts", reason: "the change" }],
+    mustRead: [
+      { path: "src/a.ts", reason: "the change" },
+      { path: "src/elsewhere.ts", reason: "not changed by the PR" },
+    ],
     risk: { level: "low", clientImpact: "None: internal only.", mitigations: [], concerns: [] },
-    completeness: pass,
-    tests: pass,
+    // The same problem from two checks: the server keeps the completeness one.
+    completeness: { status: "issues", findings: [at("b is never read", 2)] },
+    tests: { status: "issues", findings: [at("b is never read, and untested", 2)] },
     complexity: pass,
     performance: pass,
     comments: pass,
   };
+  let budget: number;
   const detail = {
     title: "Feature work",
     body: "Changes a and renames old.",
@@ -614,7 +634,7 @@ cat "${fakeDir}/result.jsonl"`,
         deps,
         verification: {
           loadDetail: async () => detail,
-          settings: async () => ({ model: "haiku", maxBudgetUsd: 0.5 }),
+          settings: async () => ({ model: "haiku", maxBudgetUsd: budget }),
           run: { program, registry, instance: "test" },
         },
       }),
@@ -629,14 +649,47 @@ cat "${fakeDir}/result.jsonl"`,
 
   async function latest(wsId: string, prId: string) {
     return (await (await verify("GET", wsId, prId)).json()) as {
-      run: { id: string; status: string; targetKey: string; result: typeof report } | null;
+      run: {
+        id: string;
+        status: string;
+        targetKey: string;
+        live: boolean;
+        result: typeof report;
+      } | null;
       current: boolean;
       headSha: string;
+      size: { files: number; changedLines: number; large: boolean } | null;
     };
   }
 
+  /** A run row as another run, kind or PR would have left it. */
+  async function insertRun(
+    kind: string,
+    refKey: string,
+    headSha: string,
+    minutesAgo: number,
+    status = "succeeded",
+  ) {
+    const [row] = await db
+      .insert(agentRuns)
+      .values({
+        kind,
+        targetKey: `${refKey}@${headSha}`,
+        status,
+        instance: "test",
+        meta: { refKey, headSha },
+        startedAt: new Date(Date.now() - minutesAgo * 60_000),
+      })
+      .returning({ id: agentRuns.id });
+    return row?.id as string;
+  }
+
+  const contextDirs = () =>
+    new Set(readdirSync(tmpdir()).filter((name) => name.startsWith("yarvis-verification-")));
+
   beforeEach(async () => {
     await sql`TRUNCATE agent_runs`;
+    budget = 0.5;
     setUpFake();
   });
 
@@ -654,22 +707,23 @@ cat "${fakeDir}/result.jsonl"`,
     expect(((await res.json()) as { error: string }).error).toContain("checking-out");
   });
 
-  it("runs once per PR at a time, and serves the latest run against the current head", async () => {
+  it("starts one run for concurrent requests, and serves it against the current head", async () => {
     const { wsId, prId, worktreePath } = await readyWorkspace();
     expect(await latest(wsId, prId)).toMatchObject({ run: null, current: false });
 
-    const first = await verify("POST", wsId, prId);
-    expect(first.status).toBe(202);
-    const { runId, existing } = (await first.json()) as { runId: string; existing: boolean };
-    expect(existing).toBe(false);
-
-    const second = await verify("POST", wsId, prId);
-    expect(second.status).toBe(200);
-    expect(await second.json()).toEqual({ runId, existing: true });
+    const responses = await Promise.all([verify("POST", wsId, prId), verify("POST", wsId, prId)]);
+    expect(responses.map((r) => r.status).sort()).toEqual([200, 202]);
+    const bodies = (await Promise.all(responses.map((r) => r.json()))) as {
+      runId: string;
+      existing: boolean;
+    }[];
+    const runId = bodies[0]?.runId as string;
+    expect(bodies[1]?.runId).toBe(runId);
+    expect(bodies.map((b) => b.existing).sort()).toEqual([false, true]);
+    expect(await db.select().from(agentRuns)).toHaveLength(1);
 
     // While it runs: the checkout is the working directory, the prepared
     // context is readable, and the settings chose the model and budget.
-    await until(async () => existsSync(join(fakeDir, "stdin.txt")), "the fake to start");
     await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
     const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
     const contextDir = args[args.indexOf("--add-dir") + 1] as string;
@@ -682,27 +736,128 @@ cat "${fakeDir}/result.jsonl"`,
     expect(
       args.slice(args.indexOf("--allowedTools") + 1, args.indexOf("--disallowedTools")),
     ).toEqual(["Read", "Grep", "Glob", "Agent", "Skill"]);
-    expect(readFileSync(join(fakeDir, "stdin.txt"), "utf8")).toContain(
-      `REVIEW_CONTEXT=${contextDir}`,
-    );
+    await until(async () => existsSync(join(fakeDir, "stdin.txt")), "the fake's stdin");
+    const prompt = readFileSync(join(fakeDir, "stdin.txt"), "utf8");
+    expect(prompt).toContain(`REVIEW_CONTEXT=${contextDir}`);
+    // The orchestrator's prompt carries no PR text; the agents read it from pr.md.
+    expect(prompt).not.toContain("Changes a and renames old.");
 
     const running = await latest(wsId, prId);
     const headSha = sh(worktreePath, "rev-parse", "HEAD").trim();
-    expect(running).toMatchObject({ run: { id: runId, status: "running" }, current: true });
+    expect(running).toMatchObject({
+      run: { id: runId, status: "running", live: true },
+      current: true,
+      size: { large: false },
+    });
     expect(running.run?.targetKey).toBe(`gh:o/r/1@${headSha}`);
 
     release();
     await until(async () => (await latest(wsId, prId)).run?.status === "succeeded", "the run");
     const done = await latest(wsId, prId);
-    // Held to the word cap the diff size gives (25 for this small PR).
-    expect(done.run?.result.summary).toBe(`${"word ".repeat(25).trim()}…`);
+    expect(done.run?.live).toBe(false);
+    // Held to the word cap the diff size gives (the floor, for this small PR).
+    expect(done.run?.result.summary).toBe(`${"word ".repeat(10).trim()}…`);
     expect(done.run?.result.mustRead).toEqual([{ path: "src/a.ts", reason: "the change" }]);
-    expect(existsSync(contextDir)).toBe(false);
+    expect(done.run?.result.completeness.findings).toHaveLength(1);
+    expect(done.run?.result.tests).toEqual({ status: "pass", findings: [] });
+    await until(async () => !existsSync(contextDir), "the context folder to go");
+
+    // What the server took out is on the run, to be audited.
+    await until(async () => {
+      const [row] = await db.select().from(agentRuns).where(eq(agentRuns.id, runId));
+      const meta = (row?.meta ?? {}) as { droppedDuplicates?: unknown };
+      return Array.isArray(meta.droppedDuplicates);
+    }, "the audit");
+    const [row] = await db.select().from(agentRuns).where(eq(agentRuns.id, runId));
+    expect(row?.meta).toMatchObject({
+      refKey: "gh:o/r/1",
+      headSha,
+      droppedMustReads: ["src/elsewhere.ts"],
+      droppedDuplicates: [
+        {
+          section: "tests",
+          keptIn: "completeness",
+          title: "b is never read, and untested",
+          path: "src/a.ts",
+        },
+      ],
+    });
 
     // A push moves the PR on; the old report is still served, marked stale.
     remote.pushToPr("src/a.ts", "export const a = 5;\n");
     await call("POST", `/${wsId}/prs/${prId}/refresh`);
     await progress(wsId, prId);
     expect(await latest(wsId, prId)).toMatchObject({ run: { id: runId }, current: false });
+  });
+
+  it("serves the PR's newest run, ignoring other kinds and other PRs", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const headSha = (await prRow(prId)).headSha as string;
+    await insertRun("verification-report", "gh:o/r/1", "old", 30);
+    const newest = await insertRun("verification-report", "gh:o/r/1", headSha, 20);
+    await insertRun("mutation-testing", "gh:o/r/1", headSha, 10);
+    // A key `gh:o/r/1` is a prefix of; a prefix match would pick it.
+    await insertRun("verification-report", "gh:o/r/10", headSha, 5);
+
+    expect(await latest(wsId, prId)).toMatchObject({
+      run: { id: newest, live: false },
+      current: true,
+      lastSucceeded: { run: { id: newest }, headSha, current: true },
+    });
+  });
+
+  it("keeps the last good report in view when a re-run fails", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const headSha = (await prRow(prId)).headSha as string;
+    const good = await insertRun("verification-report", "gh:o/r/1", "older-head", 30);
+    const failed = await insertRun("verification-report", "gh:o/r/1", headSha, 5, "failed");
+
+    expect(await latest(wsId, prId)).toMatchObject({
+      run: { id: failed, status: "failed" },
+      current: true,
+      lastSucceeded: { run: { id: good }, headSha: "older-head", current: false },
+    });
+  });
+
+  it("removes the context folder and records nothing when the run can't start", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    budget = 0;
+    const before = contextDirs();
+    const res = await verify("POST", wsId, prId);
+    expect(res.status).toBe(500);
+    expect(contextDirs()).toEqual(before);
+    expect(await db.select().from(agentRuns)).toHaveLength(0);
+  });
+});
+
+describe("patches for an agent run", () => {
+  it("leaves out binary, oversized and over-budget files, in path order", async () => {
+    const { prId } = await readyWorkspace();
+    const row = await prRow(prId);
+    const all = await reviewPatches(config, row, deps(), {
+      maxFileBytes: 4096,
+      maxTotalBytes: 1_000_000,
+    });
+    const paths = all.patches.map((p) => p.file.path);
+    expect(paths).toEqual([...paths].sort((a, b) => a.localeCompare(b)));
+    const omitted = Object.fromEntries(all.patches.map((p) => [p.file.path, p.omitted]));
+    expect(omitted).toMatchObject({
+      "image.bin": "binary",
+      "big.txt": "too-large",
+      "huge.txt": "too-large",
+      "src/a.ts": null,
+    });
+    expect(all.headSha).toBe(row.headSha as string);
+
+    // Room for the first included patch only: the rest are listed, not read.
+    const first = all.patches.find((p) => p.patch !== null);
+    if (!first?.patch) throw new Error("no patch was included");
+    const tight = await reviewPatches(config, row, deps(), {
+      maxFileBytes: 4096,
+      maxTotalBytes: first.patch.length,
+    });
+    const included = tight.patches.filter((p) => p.patch !== null).map((p) => p.file.path);
+    expect(included).toEqual([first.file.path]);
+    expect(tight.patches.find((p) => p.file.path === "src/a.ts")?.omitted).toBe("over-budget");
   });
 });

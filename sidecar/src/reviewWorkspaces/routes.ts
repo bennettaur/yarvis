@@ -337,8 +337,13 @@ export function createReviewWorkspaceRoutes(
     const registry = options.verification?.run?.registry ?? agentRunRegistry;
     try {
       return c.json(
-        await latestVerification(db(), c.req.param("id"), c.req.param("prId"), (id) =>
-          registry.isLive(id),
+        await latestVerification(
+          db(),
+          config,
+          c.req.param("id"),
+          c.req.param("prId"),
+          deps(),
+          (id) => registry.isLive(id),
         ),
       );
     } catch (e) {
