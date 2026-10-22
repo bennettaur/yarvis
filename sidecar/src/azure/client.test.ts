@@ -757,7 +757,10 @@ describe("azure client", () => {
           body: {
             pullRequestId: 30,
             mergeStatus: "succeeded",
-            repository: { project: { id: "p1" } },
+            repository: {
+              project: { id: "p1" },
+              webUrl: "https://dev.azure.com/acme/Shop/_git/web",
+            },
           },
         },
         { match: (u) => u.includes("/policy/evaluations"), body: { value: [] } },
@@ -794,7 +797,16 @@ describe("azure client", () => {
         isOutdated: false,
         canReply: true,
         canResolve: true,
-        comments: [{ id: "1", author: "Rev", body: "removed here", createdAt: "" }],
+        canUnresolve: true,
+        comments: [
+          {
+            id: "1",
+            author: "Rev",
+            body: "removed here",
+            createdAt: "",
+            url: "https://dev.azure.com/acme/Shop/_git/web/pullrequest/30?discussionId=3",
+          },
+        ],
       },
     ]);
   });
@@ -834,7 +846,52 @@ describe("azure client", () => {
         },
       ]);
       const [thread] = (await az.prDetail(ref)).reviewThreads;
-      expect(thread).toMatchObject({ id: "9", line: 14, startLine: 10, side: "RIGHT" });
+      expect(thread).toMatchObject({
+        id: "9",
+        line: 14,
+        startLine: 10,
+        startSide: "RIGHT",
+        side: "RIGHT",
+      });
+    });
+
+    it("reads a range on the left side", async () => {
+      const az = withThreads([
+        {
+          id: 9,
+          status: "active",
+          threadContext: {
+            filePath: "/a.ts",
+            leftFileStart: { line: 3, offset: 1 },
+            leftFileEnd: { line: 6, offset: 1 },
+          },
+          comments: [comment],
+        },
+      ]);
+      const [thread] = (await az.prDetail(ref)).reviewThreads;
+      expect(thread).toMatchObject({ line: 6, startLine: 3, startSide: "LEFT", side: "LEFT" });
+    });
+
+    // Every write addresses a thread by id, so one Azure left the id off can
+    // be read but not answered or resolved.
+    it("makes a thread without an id read-only", async () => {
+      const az = withThreads([{ status: "active", comments: [comment] }]);
+      const [thread] = (await az.prDetail(ref)).reviewThreads;
+      expect(thread).toMatchObject({
+        id: "",
+        canReply: false,
+        canResolve: false,
+        canUnresolve: false,
+      });
+      expect(thread!.comments[0]!.url).toBeUndefined();
+    });
+
+    it("offers no reply when the first comment has no id to answer", async () => {
+      const az = withThreads([
+        { id: 4, status: "active", comments: [{ ...comment, id: undefined }] },
+      ]);
+      const [thread] = (await az.prDetail(ref)).reviewThreads;
+      expect(thread).toMatchObject({ canReply: false, canResolve: true });
     });
 
     it("counts won't-fix as resolved and pending as open", async () => {
@@ -887,6 +944,12 @@ describe("azure client", () => {
       expect(calls[0]!.method).toBe("POST");
       expect(calls[0]!.url).toContain("/pullRequests/7/threads/9/comments?api-version=7.1");
       expect(calls[0]!.body).toEqual({ content: "agreed", parentCommentId: 1, commentType: 1 });
+    });
+
+    it("replies under the comment the caller names", async () => {
+      const { calls, az } = recording();
+      await az.replyToThread(ref, 9, "agreed", 4);
+      expect(calls[0]!.body.parentCommentId).toBe(4);
     });
 
     it("resolves a thread as fixed and reactivates it as active", async () => {

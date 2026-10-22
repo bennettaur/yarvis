@@ -119,9 +119,10 @@ export interface ReviewComment {
 
 /**
  * A review thread anchored to a file/line, with its comments. `line` is the
- * last line of the range on `side`, and `startLine` is set only for a
- * multi-line thread. A thread the provider can no longer place on the current
- * diff (GitHub's "outdated") has a null `line`.
+ * last line of the range on `side`; a multi-line thread also has `startLine`
+ * on `startSide`, which GitHub lets differ from `side` (a range starting in the
+ * old file and ending in the new one). A thread the provider can no longer
+ * place on the current diff (GitHub's "outdated") has a null `line`.
  *
  * `id` addresses the thread for replies and resolving: a GraphQL node id on
  * GitHub, the numeric thread id on Azure.
@@ -131,12 +132,15 @@ export interface ReviewThread {
   path: string | null;
   line: number | null;
   startLine?: number;
+  startSide?: DiffSide;
   side: DiffSide;
   isResolved: boolean;
   isOutdated: boolean;
   canReply: boolean;
-  /** Whether the viewer may flip `isResolved` from its current value. */
+  /** Whether the viewer may mark the thread resolved. */
   canResolve: boolean;
+  /** Whether the viewer may reopen the thread once it is resolved. */
+  canUnresolve: boolean;
   comments: ReviewComment[];
 }
 
@@ -233,6 +237,11 @@ export interface PrDetail {
    */
   checksUnavailable?: boolean;
   reviewThreads: ReviewThread[];
+  /**
+   * True when the PR has more review threads than `reviewThreads` holds: the
+   * page cap was reached, or a later page failed to load.
+   */
+  reviewThreadsTruncated?: boolean;
   /** Requested reviewers plus anyone who has already submitted a review. */
   reviewers: Reviewer[];
 }

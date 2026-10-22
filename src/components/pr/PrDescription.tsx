@@ -15,8 +15,9 @@ function ThreadsSection({ threads, actions }: { threads: ReviewThread[]; actions
   return (
     <div className="space-y-3">
       {threads.map((t, i) => (
-        // Ids are empty only on data from before ids were carried.
-        <ThreadView key={t.id || i} showLocation {...actions.viewProps(t)} />
+        // A provider can leave a thread's id off (Azure does on some threads),
+        // and then its position stands in for it.
+        <ThreadView key={t.id || `at-${i}`} showLocation {...actions.viewProps(t)} />
       ))}
     </div>
   );
@@ -53,6 +54,11 @@ export default function PrDescription({ prRef }: { prRef: PrRef }) {
       <section>
         <h3 className="mb-2 text-sm font-medium uppercase tracking-wide text-zinc-500">Comments</h3>
         <ThreadsSection threads={general} actions={actions} />
+        {data.reviewThreadsTruncated && (
+          <p className="mt-2 text-xs text-zinc-500">
+            Not every comment thread could be loaded. The rest are on the provider's site.
+          </p>
+        )}
       </section>
     </div>
   );

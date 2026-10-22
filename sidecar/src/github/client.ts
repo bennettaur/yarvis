@@ -354,24 +354,31 @@ export function toPrDetail(pr: any, repo?: any): PrDetail {
 /**
  * Shapes one GraphQL `PullRequestReviewThread`. GitHub reports `line` against
  * the current diff and nulls it once a push moves the code out from under the
- * thread, which is what `isOutdated` says too; `diffSide` names the file the
- * range sits in.
+ * thread, which is what `isOutdated` says too. `diffSide` names the file the
+ * range ends in and `startDiffSide` the one it starts in; a range made on
+ * github.com can start in the old file and end in the new one.
  */
 export function toReviewThread(thread: any): ReviewThread {
-  const isResolved = Boolean(thread.isResolved);
   const line: number | null = thread.line ?? null;
   const startLine: number | null = thread.startLine ?? null;
+  const side = thread.diffSide === "LEFT" ? "LEFT" : "RIGHT";
+  const startSide = thread.startDiffSide === "LEFT" ? "LEFT" : "RIGHT";
+  // GitHub sets `startLine` equal to `line` on some single-line threads; on
+  // the other side, the same number is a different line and still a range.
+  const isRange = startLine != null && line != null && (startLine !== line || startSide !== side);
+  // Without an id there is nothing to address a reply or resolve to.
+  const addressable = Boolean(thread.id);
   return {
     id: thread.id ?? "",
     path: thread.path ?? null,
     line,
-    // GitHub sets `startLine` equal to `line` on some single-line threads.
-    ...(startLine != null && line != null && startLine !== line ? { startLine } : {}),
-    side: thread.diffSide === "LEFT" ? "LEFT" : "RIGHT",
-    isResolved,
+    ...(isRange ? { startLine, startSide } : {}),
+    side,
+    isResolved: Boolean(thread.isResolved),
     isOutdated: Boolean(thread.isOutdated),
-    canReply: Boolean(thread.viewerCanReply),
-    canResolve: Boolean(isResolved ? thread.viewerCanUnresolve : thread.viewerCanResolve),
+    canReply: addressable && Boolean(thread.viewerCanReply),
+    canResolve: addressable && Boolean(thread.viewerCanResolve),
+    canUnresolve: addressable && Boolean(thread.viewerCanUnresolve),
     comments: (thread.comments?.nodes ?? []).map((comment: any) => ({
       id: comment.id ?? "",
       author: comment.author?.login ?? "",
@@ -726,7 +733,7 @@ function buildBranchLookupQuery(count: number): string {
 }
 
 /** Review threads asked for per page, on the detail query and each follow-up. */
-const REVIEW_THREAD_PAGE = 50;
+const REVIEW_THREAD_PAGE_SIZE = 50;
 /**
  * Follow-up pages of review threads a PR detail load will make. A PR busy
  * enough to pass this is shown with its first threads rather than costing a
@@ -737,7 +744,7 @@ const MAX_REVIEW_THREAD_PAGES = 10;
 // Comments are not paginated: a thread with more than this many replies shows
 // its first ones, which is where the context for the rest lives.
 const REVIEW_THREAD_FIELDS = `
-  id isResolved isOutdated path line startLine diffSide
+  id isResolved isOutdated path line startLine diffSide startDiffSide
   viewerCanReply viewerCanResolve viewerCanUnresolve
   comments(first:100){ nodes{ id author{login} body createdAt url } }`;
 
@@ -745,7 +752,7 @@ const REVIEW_THREADS_PAGE_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!,$after:String!){
   repository(owner:$owner,name:$repo){
     pullRequest(number:$number){
-      reviewThreads(first:${REVIEW_THREAD_PAGE}, after:$after){
+      reviewThreads(first:${REVIEW_THREAD_PAGE_SIZE}, after:$after){
         pageInfo{ hasNextPage endCursor }
         nodes{ ${REVIEW_THREAD_FIELDS} }
       }
@@ -777,7 +784,7 @@ query($owner:String!,$repo:String!,$number:Int!){
       latestReviews(first:50){
         nodes{ author{login} state }
       }
-      reviewThreads(first:${REVIEW_THREAD_PAGE}){
+      reviewThreads(first:${REVIEW_THREAD_PAGE_SIZE}){
         pageInfo{ hasNextPage endCursor }
         nodes{ ${REVIEW_THREAD_FIELDS} }
       }
@@ -1386,29 +1393,43 @@ export class GitHubClient {
     if (!pr) throw new Error(`pull request ${owner}/${repo}#${number} not found`);
     const detail = toPrDetail(pr, data?.repository);
     const more = await this.remainingReviewThreads(owner, repo, number, pr.reviewThreads?.pageInfo);
-    if (more.length > 0) detail.reviewThreads.push(...more);
+    detail.reviewThreads.push(...more.threads);
+    if (more.truncated) detail.reviewThreadsTruncated = true;
     return errors ? { ...detail, checksUnavailable: true } : detail;
   }
 
-  /** The review threads past the detail query's first page. */
+  /**
+   * The review threads past the detail query's first page. A page that fails
+   * to load ends the walk rather than the PR detail: the threads already read
+   * are worth showing, and `truncated` says some are missing.
+   */
   private async remainingReviewThreads(
     owner: string,
     repo: string,
     number: number,
     pageInfo: { hasNextPage?: boolean; endCursor?: string | null } | undefined,
-  ): Promise<ReviewThread[]> {
+  ): Promise<{ threads: ReviewThread[]; truncated: boolean }> {
     const threads: ReviewThread[] = [];
     let page = pageInfo;
     for (let i = 0; i < MAX_REVIEW_THREAD_PAGES && page?.hasNextPage && page.endCursor; i++) {
-      const data: { repository?: { pullRequest?: any } } = await this.graphql(
-        REVIEW_THREADS_PAGE_QUERY,
-        { owner, repo, number, after: page.endCursor },
-      );
+      let data: { repository?: { pullRequest?: any } };
+      try {
+        data = await this.graphql(REVIEW_THREADS_PAGE_QUERY, {
+          owner,
+          repo,
+          number,
+          after: page.endCursor,
+        });
+      } catch (e) {
+        console.warn(`[github] review threads page for ${owner}/${repo}#${number} failed:`, e);
+        return { threads, truncated: true };
+      }
       const connection = data.repository?.pullRequest?.reviewThreads;
       for (const node of connection?.nodes ?? []) threads.push(toReviewThread(node));
       page = connection?.pageInfo;
     }
-    return threads;
+    // Still more to read: the cap was reached, or GitHub gave no cursor to go on.
+    return { threads, truncated: Boolean(page?.hasNextPage) };
   }
 
   /**

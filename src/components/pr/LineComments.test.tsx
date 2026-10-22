@@ -1,12 +1,17 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
+import * as sidecar from "../../lib/api";
 import type { DiffSide, NewComment, PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
+import { fakeExpansion } from "../../test/expansion";
+import { mountForInteraction } from "../../test/render";
 import { reviewThread } from "../../test/reviewThread";
 import { LineCommentBlock, type LineComments, useLineComments } from "./LineComments";
+import { DiffBody } from "./PrFileDiffs";
 
 const sent: NewComment[] = [];
-const threadWrites: string[] = [];
+/** Thread writes as the sidecar receives them: method, path and body. */
+const threadWrites: { path: string; body: unknown }[] = [];
 
 const record = async (comment: NewComment) => {
   sent.push(comment);
@@ -15,10 +20,8 @@ const record = async (comment: NewComment) => {
 
 /** Swapped per-test rather than re-mocking, since `mock.module` is global. */
 let post: (comment: NewComment) => Promise<{ ok: boolean }> = record;
-let threadWrite: (what: string) => Promise<{ ok: boolean }> = async (what) => {
-  threadWrites.push(what);
-  return { ok: true };
-};
+/** The status the sidecar answers thread writes with. */
+let threadWriteStatus = 200;
 
 // mock.module is process-global in bun, so keep the module's other exports
 // intact — anything else loading this module in the same run gets this object.
@@ -26,11 +29,22 @@ const actual = await import("../../lib/pr/api");
 mock.module("../../lib/pr/api", () => ({
   ...actual,
   postPrComment: (_ref: PrRef, comment: NewComment) => post(comment),
-  replyToPrThread: (_ref: PrRef, thread: ReviewThread, body: string) =>
-    threadWrite(`reply ${thread.id} ${body}`),
-  resolvePrThread: (_ref: PrRef, id: string) => threadWrite(`resolve ${id}`),
-  unresolvePrThread: (_ref: PrRef, id: string) => threadWrite(`unresolve ${id}`),
 }));
+
+// Thread writes are stubbed one layer down, with a spy that ends with this
+// file, so the real reply/resolve dispatch stays in place for other tests.
+const sidecarFetch = spyOn(sidecar, "sidecarFetch").mockImplementation(
+  async (path: string, init?: RequestInit) => {
+    threadWrites.push({ path, body: init?.body ? JSON.parse(String(init.body)) : null });
+    return threadWriteStatus === 200
+      ? new Response(JSON.stringify({ ok: true }), { status: 200 })
+      : new Response(JSON.stringify({ error: "forbidden" }), { status: threadWriteStatus });
+  },
+);
+
+afterAll(() => {
+  sidecarFetch.mockRestore();
+});
 
 const prRef: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 1 };
 
@@ -89,10 +103,7 @@ beforeEach(() => {
   sent.length = 0;
   threadWrites.length = 0;
   post = record;
-  threadWrite = async (what) => {
-    threadWrites.push(what);
-    return { ok: true };
-  };
+  threadWriteStatus = 200;
   view = mount(4);
 });
 
@@ -240,15 +251,46 @@ describe("thread actions", () => {
   const button = (label: string) =>
     Array.from(view.host.querySelectorAll("button")).find((b) => b.textContent === label);
 
+  const textarea = () => view.host.querySelector("textarea");
+
+  function type(text: string) {
+    const box = textarea();
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(box, text);
+    box?.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  /** `thread` with `bodies` appended, as a refetch that carries new replies returns it. */
+  const withReplies = (t: ReviewThread, ...bodies: string[]): ReviewThread => ({
+    ...t,
+    comments: [
+      ...t.comments,
+      ...bodies.map((body, i) => ({ ...t.comments[0]!, id: `r${i}`, body })),
+    ],
+  });
+
   it("resolves a thread and shows it resolved before the refetch agrees", async () => {
     const open = thread(4, "nit");
     const comments = await view.render([open]);
     await comments.threadActions.viewProps(open).onResolve?.();
     await view.render([open]);
 
-    expect(threadWrites).toEqual([`resolve ${open.id}`]);
+    expect(threadWrites.map((w) => w.path)).toEqual([
+      `/api/github/pr/octo/repo/1/threads/${open.id}/resolve`,
+    ]);
     expect(view.html).toContain("resolved");
     expect(button("Unresolve")).toBeDefined();
+  });
+
+  // The flip changes which permission applies: having been allowed to resolve
+  // says nothing about being allowed to reopen.
+  it("hides Unresolve after a resolve when the viewer may not reopen", async () => {
+    const open = { ...thread(4, "nit"), canUnresolve: false };
+    const comments = await view.render([open]);
+    await comments.threadActions.viewProps(open).onResolve?.();
+    await view.render([open]);
+
+    expect(view.html).toContain("resolved");
+    expect(button("Unresolve")).toBeUndefined();
   });
 
   it("follows the server again once it has caught up", async () => {
@@ -263,15 +305,13 @@ describe("thread actions", () => {
   });
 
   it("leaves the thread as it was when resolving fails", async () => {
-    threadWrite = async () => {
-      throw new Error("forbidden");
-    };
+    threadWriteStatus = 403;
     const open = thread(4, "nit");
     await view.render([open]);
     button("Resolve")?.click();
     await settle();
 
-    expect(view.html).toContain("forbidden");
+    expect(view.host.querySelector(".text-red-400")).not.toBeNull();
     expect(button("Resolve")).toBeDefined();
   });
 
@@ -281,19 +321,92 @@ describe("thread actions", () => {
     await comments.threadActions.viewProps(open).onReply?.("fixed");
     await view.render([open]);
 
-    expect(threadWrites).toEqual([`reply ${open.id} fixed`]);
+    expect(threadWrites).toEqual([
+      { path: `/api/github/pr/octo/repo/1/threads/${open.id}/replies`, body: { body: "fixed" } },
+    ]);
     expect(view.html).toContain("you · just now");
 
-    await view.render([
-      { ...open, comments: [...open.comments, { ...open.comments[0]!, id: "c2", body: "fixed" }] },
-    ]);
+    await view.render([withReplies(open, "fixed")]);
     expect(view.html).not.toContain("you · just now");
     expect(view.html.split("fixed")).toHaveLength(2);
+  });
+
+  // "done" is already the thread's first comment, so matching on body alone
+  // would take that for the echo and drop the reply before the server has it.
+  it("keeps a reply that repeats an earlier comment until the refetch carries it", async () => {
+    const open = thread(4, "done");
+    const comments = await view.render([open]);
+    await comments.threadActions.viewProps(open).onReply?.("done");
+    await view.render([open]);
+    expect(view.html).toContain("you · just now");
+
+    await view.render([withReplies(open, "done")]);
+    expect(view.html).not.toContain("you · just now");
+  });
+
+  it("keeps the reply text and shows the error when the reply fails", async () => {
+    threadWriteStatus = 403;
+    await view.render([thread(4, "nit")]);
+    button("Reply")?.click();
+    await settle();
+    type("are you sure?");
+    await settle();
+    button("Reply")?.click();
+    await settle();
+
+    expect(textarea()?.value).toBe("are you sure?");
+    expect(view.host.querySelector(".text-red-400")).not.toBeNull();
+    expect(view.html).not.toContain("you · just now");
   });
 
   it("hides the controls the viewer may not use", async () => {
     await view.render([{ ...thread(4, "nit"), canReply: false, canResolve: false }]);
     expect(button("Reply")).toBeUndefined();
     expect(button("Resolve")).toBeUndefined();
+  });
+
+  // In the unified view a deleted line has only an old-file number, so its "+"
+  // is the one way to comment on the old side there.
+  it("posts a comment from a deleted line in the unified view against the old file", async () => {
+    const patch = ["@@ -1,2 +1,1 @@", " a", "-b"].join("\n");
+    const mounted = await mountForInteraction(
+      createElement(DiffBody, {
+        prRef,
+        file: { ...file, patch },
+        threads: [],
+        expansion: fakeExpansion(patch),
+      }),
+    );
+    try {
+      const pluses = mounted.host.querySelectorAll<HTMLButtonElement>(
+        'button[aria-label^="Comment on this line"]',
+      );
+      // One per row: the context line, then the deleted one.
+      expect(pluses).toHaveLength(2);
+      pluses[1]!.click();
+      await settle();
+      const box = mounted.host.querySelector("textarea");
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
+        box,
+        "why remove this?",
+      );
+      box?.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle();
+      Array.from(mounted.host.querySelectorAll("button"))
+        .find((b) => b.textContent === "Comment")
+        ?.click();
+      await settle();
+
+      expect(sent).toEqual([{ path: "foo.ts", line: 2, side: "LEFT", body: "why remove this?" }]);
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  it("links the thread on the provider's site", async () => {
+    const open = thread(4, "nit");
+    open.comments[0]!.url = "https://github.com/octo/repo/pull/1#discussion_r9";
+    await view.render([open]);
+    expect(button("open on GitHub ↗")).toBeDefined();
   });
 });

@@ -78,21 +78,24 @@ export interface ReviewComment {
 
 /**
  * A review thread, provider-neutral (mirrors the sidecar's `ReviewThread`).
- * `line` is the last line of the range on `side` and `startLine` the first,
- * set only for a multi-line thread. A thread the provider can no longer place
- * on the current diff has a null `line`.
+ * `line` is the last line of the range on `side`; a multi-line thread also has
+ * `startLine` on `startSide`, which GitHub lets differ from `side`. A thread
+ * the provider can no longer place on the current diff has a null `line`.
  */
 export interface ReviewThread {
   id: string;
   path: string | null;
   line: number | null;
   startLine?: number;
+  startSide?: DiffSide;
   side: DiffSide;
   isResolved: boolean;
   isOutdated: boolean;
   canReply: boolean;
-  /** Whether the viewer may flip `isResolved` from its current value. */
+  /** Whether the viewer may mark the thread resolved. */
   canResolve: boolean;
+  /** Whether the viewer may reopen the thread once it is resolved. */
+  canUnresolve: boolean;
   comments: ReviewComment[];
 }
 
@@ -160,6 +163,8 @@ export interface PrDetail {
   /** True when the token was refused some of `checks`; see `ChecksList`. */
   checksUnavailable?: boolean;
   reviewThreads: ReviewThread[];
+  /** True when the PR has more review threads than `reviewThreads` holds. */
+  reviewThreadsTruncated?: boolean;
   /** Requested reviewers plus anyone who has already submitted a review. */
   reviewers: Reviewer[];
 }
@@ -180,11 +185,9 @@ export interface NewComment {
   path: string;
   line: number;
   body: string;
-  /** Defaults to the new ("RIGHT") file. */
+  /** Defaults to the new ("RIGHT") file. A range stays on this side. */
   side?: DiffSide;
   startLine?: number;
-  /** Defaults to `side`. Azure only accepts a range that stays on one side. */
-  startSide?: DiffSide;
 }
 
 /** A saved GitHub search (free-text query). */

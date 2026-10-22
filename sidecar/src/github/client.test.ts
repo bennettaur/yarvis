@@ -11,6 +11,7 @@ import {
   toReviewThread,
   toStackEntry,
 } from "./client.ts";
+import { GitHubError } from "./errors.ts";
 
 function fakeFetch(routes: Record<string, unknown>): typeof fetch {
   return (async (url: string) => {
@@ -1220,16 +1221,27 @@ describe("github review threads", () => {
     viewerCanReply: true,
     viewerCanResolve: true,
     viewerCanUnresolve: false,
-    comments: { nodes: [{ id: `${id}-c`, author: { login: "rev" }, body: "nit", createdAt: "" }] },
+    comments: {
+      nodes: [
+        {
+          id: `${id}-c`,
+          author: { login: "rev" },
+          body: "nit",
+          createdAt: "",
+          url: "https://github.com/o/r/pull/4#discussion_r1",
+        },
+      ],
+    },
     ...extra,
   });
 
-  it("keeps the ids, side, range and permissions a reply or resolve needs", () => {
+  it("keeps the ids, side, range, permissions and links a reply or resolve needs", () => {
     expect(
       toReviewThread(
         threadNode("T1", {
           startLine: 9,
           diffSide: "LEFT",
+          startDiffSide: "LEFT",
           isResolved: true,
           viewerCanUnresolve: true,
           viewerCanResolve: false,
@@ -1240,13 +1252,22 @@ describe("github review threads", () => {
       path: "src/a.ts",
       line: 12,
       startLine: 9,
+      startSide: "LEFT",
       side: "LEFT",
       isResolved: true,
       isOutdated: false,
       canReply: true,
-      // A resolved thread is judged by whether the viewer may reopen it.
-      canResolve: true,
-      comments: [{ id: "T1-c", author: "rev", body: "nit", createdAt: "" }],
+      canResolve: false,
+      canUnresolve: true,
+      comments: [
+        {
+          id: "T1-c",
+          author: "rev",
+          body: "nit",
+          createdAt: "",
+          url: "https://github.com/o/r/pull/4#discussion_r1",
+        },
+      ],
     });
   });
 
@@ -1254,22 +1275,32 @@ describe("github review threads", () => {
     expect(toReviewThread(threadNode("T1", { startLine: 12 })).startLine).toBeUndefined();
   });
 
-  it("pages through threads past the first page", async () => {
-    const variables: Record<string, unknown>[] = [];
-    const page = (ids: string[], next: string | null) => ({
-      pageInfo: { hasNextPage: next != null, endCursor: next },
-      nodes: ids.map((id) => threadNode(id)),
-    });
+  // Old line 12 and new line 12 are different lines, so this is a range.
+  it("keeps a range that crosses from the old file to the new one", () => {
+    const thread = toReviewThread(
+      threadNode("T1", { startLine: 12, startDiffSide: "LEFT", diffSide: "RIGHT" }),
+    );
+    expect(thread).toMatchObject({ startLine: 12, startSide: "LEFT", line: 12, side: "RIGHT" });
+  });
+
+  /**
+   * A fetch answering the detail query with `pages[0]` and each follow-up
+   * (`after` = the previous page's cursor) with the next, or failing it when
+   * the page is `"fail"`.
+   */
+  function pagedFetch(
+    pages: ({ ids: string[]; next: string | null; hasNextPage?: boolean } | "fail")[],
+  ) {
+    const afters: unknown[] = [];
     const fetchImpl = (async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
-      variables.push(body.variables);
-      const after = body.variables.after as string | undefined;
-      const reviewThreads =
-        after === undefined
-          ? page(["T1"], "c1")
-          : after === "c1"
-            ? page(["T2"], "c2")
-            : page(["T3"], null);
+      afters.push(body.variables.after);
+      const page = pages[afters.length - 1] ?? { ids: [], next: null };
+      if (page === "fail") return new Response("boom", { status: 500 });
+      const reviewThreads = {
+        pageInfo: { hasNextPage: page.hasNextPage ?? page.next != null, endCursor: page.next },
+        nodes: page.ids.map((id) => threadNode(id)),
+      };
       return new Response(
         JSON.stringify({
           data: {
@@ -1287,10 +1318,47 @@ describe("github review threads", () => {
         { status: 200 },
       );
     }) as unknown as typeof fetch;
+    return { afters, gh: new GitHubClient("t", fetchImpl) };
+  }
 
-    const detail = await new GitHubClient("t", fetchImpl).prDetail("o", "r", 4);
+  it("pages through threads past the first page", async () => {
+    const { afters, gh } = pagedFetch([
+      { ids: ["T1"], next: "c1" },
+      { ids: ["T2"], next: "c2" },
+      { ids: ["T3"], next: null },
+    ]);
+    const detail = await gh.prDetail("o", "r", 4);
     expect(detail.reviewThreads.map((t) => t.id)).toEqual(["T1", "T2", "T3"]);
-    expect(variables.map((v) => v.after)).toEqual([undefined, "c1", "c2"]);
+    expect(detail.reviewThreadsTruncated).toBeUndefined();
+    expect(afters).toEqual([undefined, "c1", "c2"]);
+  });
+
+  it("stops at the page cap and says threads are missing", async () => {
+    const pages = Array.from({ length: 15 }, (_, i) => ({ ids: [`T${i}`], next: `c${i}` }));
+    const { afters, gh } = pagedFetch(pages);
+    const detail = await gh.prDetail("o", "r", 4);
+    // The detail query plus ten follow-up pages.
+    expect(afters).toHaveLength(11);
+    expect(detail.reviewThreads).toHaveLength(11);
+    expect(detail.reviewThreadsTruncated).toBe(true);
+  });
+
+  it("stops when GitHub says there is more but gives no cursor to it", async () => {
+    const { afters, gh } = pagedFetch([
+      { ids: ["T1"], next: "c1" },
+      { ids: ["T2"], next: null, hasNextPage: true },
+    ]);
+    const detail = await gh.prDetail("o", "r", 4);
+    expect(afters).toHaveLength(2);
+    expect(detail.reviewThreads.map((t) => t.id)).toEqual(["T1", "T2"]);
+    expect(detail.reviewThreadsTruncated).toBe(true);
+  });
+
+  it("keeps the threads it read when a later page fails", async () => {
+    const { gh } = pagedFetch([{ ids: ["T1"], next: "c1" }, { ids: ["T2"], next: "c2" }, "fail"]);
+    const detail = await gh.prDetail("o", "r", 4);
+    expect(detail.reviewThreads.map((t) => t.id)).toEqual(["T1", "T2"]);
+    expect(detail.reviewThreadsTruncated).toBe(true);
   });
 
   /** Records each request and answers GraphQL and REST alike with `reply`. */
@@ -1349,6 +1417,8 @@ describe("github review threads", () => {
 
   it("fails a mutation GitHub refused", async () => {
     const { gh } = capture({ errors: [{ type: "FORBIDDEN", message: "no" }] });
-    await expect(gh.setThreadResolved("T1", true)).rejects.toThrow();
+    const error = await gh.setThreadResolved("T1", true).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GitHubError);
+    expect(error).toMatchObject({ status: 403, reason: "forbidden" });
   });
 });

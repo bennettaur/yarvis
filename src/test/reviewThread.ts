@@ -24,6 +24,7 @@ export function reviewThread(
     isOutdated: false,
     canReply: true,
     canResolve: true,
+    canUnresolve: true,
     comments,
     ...rest,
   };

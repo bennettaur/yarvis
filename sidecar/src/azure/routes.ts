@@ -79,7 +79,7 @@ const commentSchema = z
 
 const replySchema = z.object({
   body: z.string().trim().min(1).max(65_536),
-  /** The comment being answered; Azure's UI answers the thread's first. */
+  /** The comment being answered; the client defaults to the thread's first. */
   parentCommentId: z.number().int().min(1).optional(),
 });
 
@@ -374,13 +374,13 @@ export function createAzureRoutes(config: Config): Hono {
   });
 
   /** The PR plus the thread a thread route addresses, or why they're invalid. */
-  function parseThreadParams(c: Context): (AzureRef & { threadId: number }) | { error: unknown } {
-    const { project = "", repo = "", prId = "" } = c.req.param();
+  function parseThreadParams(c: Context): { ref: AzureRef; threadId: number } | { error: unknown } {
+    const { project = "", repo = "", prId = "", threadId = "" } = c.req.param();
     const ref = parsePrParams(project, repo, prId);
     if ("error" in ref) return ref;
-    const threadId = Number(c.req.param("threadId"));
-    if (!Number.isInteger(threadId) || threadId < 1) return { error: "bad thread id" };
-    return { ...ref, threadId };
+    // Digits only, so nothing but a plain number reaches the upstream path.
+    if (!/^\d{1,10}$/.test(threadId) || Number(threadId) < 1) return { error: "bad thread id" };
+    return { ref, threadId: Number(threadId) };
   }
 
   // Reply to an existing comment thread.
@@ -391,7 +391,7 @@ export function createAzureRoutes(config: Config): Hono {
     if ("error" in params) return c.json({ error: params.error }, 400);
     const parsed = replySchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const { threadId, ...ref } = params;
+    const { ref, threadId } = params;
     try {
       await az.replyToThread(ref, threadId, parsed.data.body, parsed.data.parentCommentId);
       void emitEvent(db(), {
@@ -414,7 +414,7 @@ export function createAzureRoutes(config: Config): Hono {
       if (az instanceof Response) return az;
       const params = parseThreadParams(c);
       if ("error" in params) return c.json({ error: params.error }, 400);
-      const { threadId, ...ref } = params;
+      const { ref, threadId } = params;
       try {
         await az.setThreadResolved(ref, threadId, resolved);
         return c.json({ ok: true });

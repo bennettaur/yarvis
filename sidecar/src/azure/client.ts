@@ -229,17 +229,20 @@ function isResolvedStatus(status: string | undefined): boolean {
  */
 function threadAnchor(
   ctx: AzureThreadContext | null | undefined,
-): Pick<ReviewThread, "line" | "startLine" | "side"> {
-  const right = ctx?.rightFileStart?.line != null;
-  const start = right ? ctx?.rightFileStart?.line : ctx?.leftFileStart?.line;
-  const end = (right ? ctx?.rightFileEnd?.line : ctx?.leftFileEnd?.line) ?? start;
+): Pick<ReviewThread, "line" | "startLine" | "startSide" | "side"> {
+  const right = { side: "RIGHT" as const, start: ctx?.rightFileStart, end: ctx?.rightFileEnd };
+  const left = { side: "LEFT" as const, start: ctx?.leftFileStart, end: ctx?.leftFileEnd };
+  const isRightSide = right.start?.line != null;
+  const anchor = isRightSide ? right : left;
+  const start = anchor.start?.line;
+  const end = anchor.end?.line ?? start;
   if (start == null || end == null) {
     return { line: null, side: "RIGHT" };
   }
   return {
     line: end,
-    ...(start < end ? { startLine: start } : {}),
-    side: right ? "RIGHT" : "LEFT",
+    ...(start < end ? { startLine: start, startSide: anchor.side } : {}),
+    side: anchor.side,
   };
 }
 
@@ -492,7 +495,7 @@ export class AzureDevOpsClient {
     const projectId = pr.repository?.project?.id ?? "";
     const [checks, reviewThreads] = await Promise.all([
       this.checks(ref.project, projectId, ref.prId),
-      this.threads(ref),
+      this.threads(ref, this.prWebUrl(pr)),
     ]);
     return {
       number: pr.pullRequestId,
@@ -556,16 +559,15 @@ export class AzureDevOpsClient {
       .filter((c): c is CheckItem => c !== null);
   }
 
-  private async threads(ref: AzureRef): Promise<ReviewThread[]> {
-    const data = await this.get<AzureList<AzureThread>>(
-      `${this.repoBase(ref)}/pullRequests/${ref.prId}/threads`,
-    );
+  /** `prUrl` is the PR's web page, which each thread links into. */
+  private async threads(ref: AzureRef, prUrl: string): Promise<ReviewThread[]> {
+    const data = await this.get<AzureList<AzureThread>>(`${this.prBase(ref)}/threads`);
     return (data.value ?? [])
-      .map((thread) => this.toThread(thread))
+      .map((thread) => this.toThread(thread, prUrl))
       .filter((t): t is ReviewThread => t !== null);
   }
 
-  private toThread(thread: AzureThread): ReviewThread | null {
+  private toThread(thread: AzureThread, prUrl: string): ReviewThread | null {
     if (thread.isDeleted) return null;
     const comments = (thread.comments ?? []).filter(
       (c: AzureComment) => c.commentType !== "system" && !c.isDeleted,
@@ -574,21 +576,29 @@ export class AzureDevOpsClient {
     const ctx = thread.threadContext;
     const path = ctx?.filePath ? ctx.filePath.replace(/^\//, "") : null;
     const anchor = threadAnchor(ctx);
+    // Azure reports no per-thread permissions and no "outdated" flag: anyone
+    // who can read a PR can comment on it and set a thread's status. What a
+    // write needs is the ids to address: the thread's, and for a reply the
+    // comment it answers.
+    const hasThreadId = thread.id != null;
+    const hasParentId = comments[0]?.id != null;
+    // The PR page opens on a thread named by `discussionId`.
+    const url = hasThreadId ? `${prUrl}?discussionId=${thread.id}` : undefined;
     return {
-      id: thread.id != null ? String(thread.id) : "",
+      id: hasThreadId ? String(thread.id) : "",
       path,
       ...anchor,
       isResolved: isResolvedStatus(thread.status),
-      // Azure reports no per-thread permissions and no "outdated" flag: anyone
-      // who can read a PR can comment on it and set a thread's status.
       isOutdated: false,
-      canReply: true,
-      canResolve: true,
+      canReply: hasThreadId && hasParentId,
+      canResolve: hasThreadId,
+      canUnresolve: hasThreadId,
       comments: comments.map((c) => ({
         id: c.id != null ? String(c.id) : "",
         author: c.author?.displayName ?? "",
         body: c.content ?? "",
         createdAt: c.publishedDate ?? "",
+        ...(url ? { url } : {}),
       })),
     };
   }
@@ -774,23 +784,15 @@ export class AzureDevOpsClient {
    * not attach a body to the vote itself.
    */
   private async postPrComment(ref: AzureRef, body: string): Promise<void> {
-    const url = this.withVersion(
-      `${this.repoBase(ref)}/pullRequests/${ref.prId}/threads`,
-      API_VERSION,
-    );
-    const res = await this.fetchImpl(url, {
-      method: "POST",
-      headers: {
-        Authorization: this.authHeader(),
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
+    await this.sendJson(
+      "POST",
+      `${this.prBase(ref)}/threads`,
+      {
         comments: [{ content: body, commentType: COMMENT_TYPE_TEXT }],
         status: THREAD_STATUS_ACTIVE,
-      }),
-    });
-    if (!res.ok) throw new Error(`azure post pr comment -> ${res.status}`);
+      },
+      "post pr comment",
+    );
   }
 
   /**
@@ -800,23 +802,26 @@ export class AzureDevOpsClient {
    * not columns, and Azure anchors the thread by line either way.
    */
   async postComment(ref: AzureRef, input: NewComment): Promise<void> {
-    const prefix = input.side === "LEFT" ? "left" : "right";
-    const start = input.startLine ?? input.line;
+    const range = {
+      start: { line: input.startLine ?? input.line, offset: 1 },
+      end: { line: input.line, offset: 1 },
+    };
+    const anchor =
+      input.side === "LEFT"
+        ? { leftFileStart: range.start, leftFileEnd: range.end }
+        : { rightFileStart: range.start, rightFileEnd: range.end };
     const body = {
       comments: [{ content: input.body, commentType: COMMENT_TYPE_TEXT }],
       status: THREAD_STATUS_ACTIVE,
-      threadContext: {
-        filePath: `/${input.path.replace(/^\//, "")}`,
-        [`${prefix}FileStart`]: { line: start, offset: 1 },
-        [`${prefix}FileEnd`]: { line: input.line, offset: 1 },
-      },
+      threadContext: { filePath: `/${input.path.replace(/^\//, "")}`, ...anchor },
     };
     await this.sendJson("POST", `${this.prBase(ref)}/threads`, body, "post comment");
   }
 
   /**
-   * Replies to a thread. `parentCommentId` is the comment being answered; the
-   * thread's first comment is what Azure's own UI replies to.
+   * Replies to a thread. `parentCommentId` is the comment being answered. A
+   * caller that doesn't name one answers the thread's first comment, which
+   * Azure numbers 1 and which is what Azure's own UI replies to.
    */
   async replyToThread(
     ref: AzureRef,
