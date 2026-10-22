@@ -36,11 +36,6 @@ export class ModelCache<T extends Disposable> {
     return entry.value;
   }
 
-  /** The model for `key` if one exists, without holding it. */
-  peek(key: string): T | undefined {
-    return this.entries.get(key)?.value;
-  }
-
   release(key: string): void {
     const entry = this.entries.get(key);
     if (!entry || entry.refs === 0) return;

@@ -44,6 +44,22 @@ describe("originalLineInModified", () => {
     expect(originalLineInModified(7, CHANGES)).toBe(5);
   });
 
+  it("handles a deletion at the very top of the file", () => {
+    // Original lines 1-2 removed; Monaco reports the modified side as "after line 0".
+    const top: LineChange[] = [
+      {
+        originalStartLineNumber: 1,
+        originalEndLineNumber: 2,
+        modifiedStartLineNumber: 0,
+        modifiedEndLineNumber: 0,
+      },
+    ];
+    expect(originalLineInModified(1, top)).toBe(0);
+    expect(originalLineInModified(2, top)).toBe(0);
+    expect(originalLineInModified(3, top)).toBe(1);
+    expect(originalLineInModified(10, top)).toBe(8);
+  });
+
   it("keeps the line above the file at 0", () => {
     expect(originalLineInModified(0, CHANGES)).toBe(0);
     expect(originalLineInModified(0, [])).toBe(0);

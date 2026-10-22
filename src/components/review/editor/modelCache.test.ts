@@ -26,7 +26,7 @@ describe("ModelCache", () => {
     expect(model.disposed).toBe(false);
     cache.release("x");
     expect(model.disposed).toBe(true);
-    expect(cache.peek("x")).toBeUndefined();
+    expect(cache.size).toBe(0);
   });
 
   it("keeps the most recently released models and disposes older ones", () => {
@@ -55,6 +55,21 @@ describe("ModelCache", () => {
     cache.release("a");
     cache.release("never");
     expect(model.disposed).toBe(true);
+  });
+
+  it("forgets an idle model without disposing it again or letting it count as idle", () => {
+    const cache = new ModelCache<FakeModel>(1);
+    const a = cache.acquire("a", () => new FakeModel("a"));
+    cache.release("a");
+    // Disposed elsewhere while idle, so the cache only drops its record.
+    a.disposed = true;
+    cache.forget("a");
+    expect(cache.size).toBe(0);
+    // Its idle slot is free: releasing another model keeps that one.
+    const b = cache.acquire("b", () => new FakeModel("b"));
+    cache.release("b");
+    expect(b.disposed).toBe(false);
+    expect(cache.acquire("a", () => new FakeModel("fresh")).name).toBe("fresh");
   });
 
   it("forgets a model disposed elsewhere", () => {

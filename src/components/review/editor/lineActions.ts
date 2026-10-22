@@ -23,13 +23,13 @@ const ACTION_LABELS: Record<LineActionKind, string> = { comment: "Comment", ask:
  * selection. A click on a line's button acts on the selection when the line is
  * inside it, so dragging out a range and then clicking either way does the same.
  *
- * `getHandler` is read at click time, so the host can pass a fresh callback on
- * every render without the listeners being rebuilt.
+ * `getSide` and `getHandler` are read at click time, so the host can pass
+ * fresh values on every render without the listeners being rebuilt.
  */
 export function attachLineActions(
   monaco: MonacoApi,
   editor: Monaco.editor.ICodeEditor,
-  side: DiffSide,
+  getSide: () => DiffSide,
   getHandler: () => ((action: LineAction) => void) | undefined,
 ): Monaco.IDisposable {
   const { GlyphMarginLane, MouseTargetType } = monaco.editor;
@@ -51,11 +51,18 @@ export function attachLineActions(
       })),
     );
   };
-  reserveLanes();
-  disposables.push(editor.onDidChangeModel(reserveLanes));
-
   const hover = editor.createDecorationsCollection();
   let hoveredLine = 0;
+  reserveLanes();
+  disposables.push(
+    editor.onDidChangeModel(() => {
+      // The old model's hover decoration went with it; without this the
+      // same line number in the new model would never get its buttons.
+      hoveredLine = 0;
+      hover.clear();
+      reserveLanes();
+    }),
+  );
   const showButtons = (line: number) => {
     if (line === hoveredLine) return;
     hoveredLine = line;
@@ -84,7 +91,7 @@ export function attachLineActions(
   };
 
   const emit = (kind: LineActionKind, startLine: number, endLine: number) => {
-    getHandler()?.({ kind, side, startLine, endLine });
+    getHandler()?.({ kind, side: getSide(), startLine, endLine });
   };
 
   disposables.push(
@@ -127,7 +134,7 @@ export function attachLineActions(
   }
   let barLine = 0;
   const widget: Monaco.editor.IContentWidget = {
-    getId: () => `review.selectionActions.${side}`,
+    getId: () => `review.selectionActions.${editor.getId()}`,
     getDomNode: () => bar,
     getPosition: () =>
       barLine === 0
