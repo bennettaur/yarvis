@@ -460,6 +460,7 @@ tools:
   - search_events
   - recall
 model: anthropic/claude-sonnet-5   # optional; or complexity: low|medium|max
+effort: medium                      # optional; minimal|low|medium|high|xhigh
 maxSteps: 8                         # optional, default 8, hard cap 30
 ---
 
@@ -481,6 +482,8 @@ The fields:
   whatever you set for that tier under **Settings → Assistant → Complexity
   tiers** instead. You can't set both. With neither, it uses the default chat
   model.
+- `effort` is optional: how hard the model thinks, for a model tagged
+  `reasoning`. With `complexity`, it overrides the effort saved for that tier.
 - `maxSteps` is optional: default 8, hard cap 30.
 - `enabled: false` turns a specialist off, including a shipped one.
 - `unattended:` lists write tools the specialist may use without approval.

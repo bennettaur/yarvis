@@ -1,4 +1,5 @@
 import { sidecarFetch } from "./api";
+import type { ReasoningEffort } from "./effort";
 
 /**
  * Client for the specialists the assistant delegates to, and the background jobs
@@ -19,6 +20,8 @@ export interface Specialist {
   model: string | null;
   /** A complexity tier to resolve its model from, in place of a literal model. */
   complexityTier: "low" | "medium" | "max" | null;
+  /** Its `effort:` line, which overrides a complexity tier's own effort. */
+  effort: ReasoningEffort | null;
   maxSteps: number;
   enabled: boolean;
   /** "builtin" ships with the app; "user" comes from the agents directory. */

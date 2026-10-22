@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { listProviders, type ProviderInfo } from "../lib/chat";
 import type { ModelSelection } from "../lib/complexityModels";
+import { modelTakesEffort } from "../lib/effort";
 import {
   DEFAULT_PR_MODEL_CONFIG,
   getPrModelConfig,
@@ -9,6 +10,7 @@ import {
   type PrModelFeature,
   savePrModelConfig,
 } from "../lib/pr/models";
+import EffortSelect from "./EffortSelect";
 
 /**
  * Which model writes guided reviews and answers line questions about a pull request's
@@ -101,21 +103,31 @@ export default function PrModelSection() {
                   </option>
                 ))}
               </select>
-              <select
-                className={FIELD}
-                value={selection?.model ?? ""}
-                disabled={!selection?.provider}
-                onChange={(e) => {
-                  if (!selection?.provider) return;
-                  void save(feature, { provider: selection.provider, model: e.target.value });
-                }}
-              >
-                {modelsFor(selection?.provider ?? "").map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.id}
-                  </option>
-                ))}
-              </select>
+              <div className="space-y-1">
+                <select
+                  className={FIELD}
+                  value={selection?.model ?? ""}
+                  disabled={!selection?.provider}
+                  onChange={(e) => {
+                    if (!selection?.provider) return;
+                    void save(feature, { ...selection, model: e.target.value });
+                  }}
+                >
+                  {modelsFor(selection?.provider ?? "").map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.id}
+                    </option>
+                  ))}
+                </select>
+                {selection && modelTakesEffort(providers, selection.provider, selection.model) && (
+                  <EffortSelect
+                    className={FIELD}
+                    ariaLabel={`${FEATURE_LABELS[feature].label} effort`}
+                    value={selection.effort}
+                    onChange={(effort) => void save(feature, { ...selection, effort })}
+                  />
+                )}
+              </div>
             </div>
           );
         })}

@@ -6,6 +6,8 @@ import {
   getDecisionModelConfig,
   saveDecisionModelConfig,
 } from "../lib/decisionModel";
+import { modelTakesEffort } from "../lib/effort";
+import EffortSelect from "./EffortSelect";
 
 /**
  * Which model answers yes/no judgements, and auto mode for tool approvals,
@@ -105,7 +107,7 @@ export default function DecisionModelSection() {
             disabled={!selection?.provider}
             onChange={(e) => {
               if (!selection?.provider) return;
-              void save({ model: { provider: selection.provider, model: e.target.value } });
+              void save({ model: { ...selection, model: e.target.value } });
             }}
           >
             {stale && selection && <option value={selection.model}>{selection.model}</option>}
@@ -116,6 +118,19 @@ export default function DecisionModelSection() {
             ))}
           </select>
         </div>
+        {selection && modelTakesEffort(providers, selection.provider, selection.model) && (
+          <div className="grid grid-cols-2 gap-2">
+            <EffortSelect
+              className={FIELD}
+              ariaLabel="Decision model effort"
+              value={selection.effort}
+              onChange={(effort) => void save({ model: { ...selection, effort } })}
+            />
+            <p className="self-center text-xs text-zinc-500">
+              A review sits in front of every tool call, so a low effort keeps it quick.
+            </p>
+          </div>
+        )}
         {stale && (
           <p className="text-xs text-amber-400">
             This model is no longer tagged decision or its provider has no key, so auto mode is off

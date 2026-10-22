@@ -1,4 +1,5 @@
 import { ensureOk, sidecarFetch } from "./api";
+import type { ReasoningEffort } from "./effort";
 
 /**
  * Which provider/model backs each complexity tier for internal-use LLM
@@ -15,6 +16,8 @@ export type ComplexityTier = (typeof COMPLEXITY_TIERS)[number];
 export interface ModelSelection {
   provider: string;
   model: string;
+  /** Applies only to a model tagged `reasoning`; absent means the provider's default. */
+  effort?: ReasoningEffort;
 }
 
 export type ComplexityModelConfig = Record<ComplexityTier, ModelSelection | null>;

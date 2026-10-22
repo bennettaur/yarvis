@@ -194,14 +194,14 @@ has written your providers and MCP servers into it.
 
 | Key | Holds | Set from |
 | --- | --- | --- |
-| `customProviders` | Your OpenAI-, Anthropic- or Ollama-compatible endpoints, keyed by id | Settings → LLM Providers |
+| `customProviders` | Your OpenAI-, Anthropic- or Ollama-compatible endpoints, keyed by id, each with its models and their capability tags | Settings → LLM Providers |
 | `providerModels` | Your edited model list per provider. Replaces the built-in list for that provider once saved. | Settings → LLM Providers → Models |
 | `mcpServers` | MCP servers Yarvis connects to, keyed by id | Settings → Tools & MCP |
 | `chatConfig` | `maxSteps` (100, up to 500), `maxOutputTokens` (none, up to 200000), `compactAtTokens` (200000, from 10000 to 2000000). A model's own compaction threshold in its catalog entry wins over `compactAtTokens`. | Settings → Assistant → Turn budget |
-| `complexityModels` | The provider and model behind the `low`, `medium` and `max` tiers specialists can ask for | Settings → Assistant |
-| `decisionModel` | `model`, the provider and model tagged `decision` that answers yes/no judgements, `autoApproveTools`, which lets it approve MCP tool calls before you are asked, and `autoApproveHeadsDown`, which lets it approve a heads-down call to an MCP tool you've approved in similar situations before (see [Heads-down mode](features/heads-down.md)) | Settings → Tools & MCP |
+| `complexityModels` | The provider, model and optional `effort` behind the `low`, `medium` and `max` tiers specialists can ask for | Settings → Assistant |
+| `decisionModel` | `model`, the provider, model (tagged `decision`) and optional `effort` that answers yes/no judgements, `autoApproveTools`, which lets it approve MCP tool calls before you are asked, and `autoApproveHeadsDown`, which lets it approve a heads-down call to an MCP tool you've approved in similar situations before (see [Heads-down mode](features/heads-down.md)) | Settings → Tools & MCP |
 | `githubPrConfig` | `reviewQuery` for the Needs review tab, `reviewingLookbackDays` for Reviewing | Settings → PR review |
-| `prModels` | The provider and model behind guided reviews (`guide`) and line questions (`ask`). Unset uses the default chat model. | Settings → PR review |
+| `prModels` | The provider, model and optional `effort` behind guided reviews (`guide`) and line questions (`ask`). Unset uses the default chat model. | Settings → PR review |
 | `wipConfig` | Which sources feed the **In progress** list in the attention panel (the bell in the top bar), and a GitHub issue label filter | Settings → Work in progress |
 | `jobConfig` | `ccDigestEnabled` and `ccDigestProjectDirs` for the Claude Code transcript digest | Settings → Assistant |
 | `headsDown` | Heads-down mode: `minSleepMinutes` (5), `maxSleepMinutes` (120) and `idleSleepMinutes` (60) between passes, `workingHours` (`days` with 0 for Sunday, `start` and `end` as `HH:MM`; Monday to Friday 09:00–17:00 by default; an end at or before the start runs past midnight; `null` for any time), which is also when it may tag people, `userAwayAfterMinutes` (120), and the `provider` and `model` its passes run on (unset uses the default chat model). Per machine, so a work laptop and a personal one can keep different hours. See [Heads-down mode](features/heads-down.md). | Heads down page |
@@ -223,6 +223,48 @@ hand, include every field, as the example file does.
 > from Postgres back into the file. Back up the file before changing those
 > fields.
 
+
+## Custom LLM providers
+
+**Settings → LLM Providers → Add provider** points Yarvis at a gateway such as
+LiteLLM, Ollama or a company proxy. Pick the API it speaks:
+
+- **OpenAI Responses** for a gateway with `/responses`. LiteLLM supports it.
+  Yarvis sends `store: false`, so a multi-step tool turn carries the model's
+  reasoning in each request instead of asking the gateway to look it up.
+- **OpenAI /chat/completions** for a gateway without the Responses API.
+- **Anthropic Messages** for an Anthropic-shaped gateway.
+- **Ollama** for an Ollama server. Give the server root, such as
+  `http://localhost:11434`.
+
+Each model you add gets capability tags, the same ones the model catalog uses
+(`chat`, `stt`, `tts`, `vision`, `embed`, `decision`, `reasoning`). A new model
+starts as `chat`. The tags decide which pickers offer it, so tag a speech model
+`stt` or `tts` and not `chat`. Tag `reasoning` on a model that takes an effort
+level. That puts an effort picker beside it wherever it is chosen. Only tag
+models whose gateway accepts the parameter, since a gateway that rejects it
+fails the call.
+
+Each saved provider has two tests, run with its saved URL and credentials:
+
+- **Test connection** asks the gateway for its model list. It reports a
+  failure with the gateway's own error, and names any model you added that the
+  gateway doesn't list, which is usually a typo in the id.
+- **Test** beside each model sends it one short prompt through the same code a
+  chat turn uses. A model that is reachable but answers in a shape Yarvis
+  can't read fails here, with the details.
+
+### Effort level
+
+A model tagged `reasoning` gets an effort picker beside its model picker: on
+the Chat tab, Omni Chat and the Omni view (all three share one choice, which
+the memory recap also uses), for each complexity tier, for the decision model,
+and for each PR review model. A specialist sets one with `effort:` in its file.
+The levels are minimal, low, medium, high and extra high. **Default effort**
+leaves it to the provider. Yarvis translates the level into each provider's own
+setting, and drops it for a model that isn't tagged `reasoning`. Heads-down
+passes and the Telegram bot have no model picker of their own, so they use the
+provider's default.
 
 ## Embeddings
 
