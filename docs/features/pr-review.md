@@ -143,8 +143,13 @@ out about that file?" or "where did I leave off?" in chat. See
 
 Both are agent runs against your configured LLM provider, and neither is
 cheap. A guided review gives the agent up to 60 tool-calling steps to explore
-the change. A line question gets up to 16. Each step carries diffs and file
-contents.
+the change. If it finishes without handing in a usable guide, it is asked for
+the guide up to twice more, told what to fix when its answer was malformed,
+before the review reports an error; each ask resends the whole exploration. A
+line question gets up to 16 steps. Each step carries diffs and file contents.
+
+A guide that runs long is trimmed rather than refused: past 15 stops, and past
+a length limit on each explanation, note and background, the extra is cut off.
 
 On Azure DevOps, the agent's code search needs the **Code Search** extension
 installed in your organization. Without it, guided reviews and line questions

@@ -182,6 +182,17 @@ export function ollamaUrl(baseUrl: string, path: "/v1" | "/api/chat"): string {
   return `${baseUrl.replace(/\/+$/, "")}${path}`;
 }
 
+/** Request headers for an Ollama server's native API: the row's own, plus its key if it has one. */
+export function ollamaHeaders(config: Config, row: CustomProviderRow): Record<string, string> {
+  const secrets = config.customProviderSecrets[row.id] ?? { headers: {} };
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...secrets.headers,
+  };
+  if (secrets.apiKey) headers.Authorization = `Bearer ${secrets.apiKey}`;
+  return headers;
+}
+
 /** The saved row behind a `custom:<id>` provider id, or null for a built-in or unknown id. */
 export async function findCustomProvider(
   providerId: ProviderId,

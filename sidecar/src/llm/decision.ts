@@ -5,7 +5,13 @@ import type { CustomProviderRow } from "../customProviders/service.ts";
 import { guardedFetch } from "../lib/guardedFetch.ts";
 import { readSection, withSection } from "../settings/store.ts";
 import type { ModelSelection } from "./complexity.ts";
-import { availableProviders, findCustomProvider, ollamaUrl, resolveModel } from "./providers.ts";
+import {
+  availableProviders,
+  findCustomProvider,
+  ollamaHeaders,
+  ollamaUrl,
+  resolveModel,
+} from "./providers.ts";
 
 /**
  * The decision model: one model, tagged `decision` in the catalogue, that
@@ -140,12 +146,7 @@ async function decideWithOllama<T>(
   request: DecisionRequest<T>,
   signal: AbortSignal,
 ): Promise<T> {
-  const secrets = config.customProviderSecrets[row.id] ?? { headers: {} };
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...secrets.headers,
-  };
-  if (secrets.apiKey) headers.Authorization = `Bearer ${secrets.apiKey}`;
+  const headers = ollamaHeaders(config, row);
 
   const res = await guardedFetch(
     ollamaUrl(row.baseUrl, "/api/chat"),
