@@ -587,7 +587,7 @@ describe("verification report", () => {
       { path: "src/elsewhere.ts", reason: "not changed by the PR" },
     ],
     risk: { level: "low", clientImpact: "None: internal only.", mitigations: [], concerns: [] },
-    // The same problem from two checks: the server keeps the completeness one.
+    // The same problem from two checks: the server keeps the specialist's (tests).
     completeness: { status: "issues", findings: [at("b is never read", 2)] },
     tests: { status: "issues", findings: [at("b is never read, and untested", 2)] },
     complexity: pass,
@@ -758,8 +758,8 @@ cat "${fakeDir}/result.jsonl"`,
     // Held to the word cap the diff size gives (the floor, for this small PR).
     expect(done.run?.result.summary).toBe(`${"word ".repeat(10).trim()}…`);
     expect(done.run?.result.mustRead).toEqual([{ path: "src/a.ts", reason: "the change" }]);
-    expect(done.run?.result.completeness.findings).toHaveLength(1);
-    expect(done.run?.result.tests).toEqual({ status: "pass", findings: [] });
+    expect(done.run?.result.tests.findings).toHaveLength(1);
+    expect(done.run?.result.completeness).toEqual({ status: "pass", findings: [] });
     await until(async () => !existsSync(contextDir), "the context folder to go");
 
     // What the server took out is on the run, to be audited.
@@ -775,9 +775,9 @@ cat "${fakeDir}/result.jsonl"`,
       droppedMustReads: ["src/elsewhere.ts"],
       droppedDuplicates: [
         {
-          section: "tests",
-          keptIn: "completeness",
-          title: "b is never read, and untested",
+          section: "completeness",
+          keptIn: "tests",
+          title: "b is never read",
           path: "src/a.ts",
         },
       ],
