@@ -22,7 +22,8 @@ import { RunRegistry } from "../lib/runRegistry.ts";
 import type { PrRef } from "../pr/types.ts";
 import { reviewGit } from "./git.ts";
 import { MUTATION_RUN_KIND } from "./mutantCopy.ts";
-import type { MutationReport } from "./mutationTesting.ts";
+import type { MutationTestingConfig } from "./mutationConfig.ts";
+import { type MutationReport, mutantCopiesInUse } from "./mutationTesting.ts";
 import type { ReviewProgressEvent } from "./progress.ts";
 import { createReviewWorkspaceRoutes } from "./routes.ts";
 import type { ReviewDeps } from "./service.ts";
@@ -91,16 +92,22 @@ const program = fakeClaude(
 let remote: TestRemote;
 let setupScript: string | null;
 let registry: RunRegistry<AgentRunEvent>;
+let settings: MutationTestingConfig;
+/** When set, loading the PR waits on it, holding a refresh open. */
+let loadGate: PromiseWithResolvers<void> | null;
 let app: Hono;
 
 const deps = (): ReviewDeps => ({
-  loadPr: async () => ({
-    title: "Feature work",
-    author: "octocat",
-    headRef: "feature",
-    baseRef: "main",
-    fromFork: true,
-  }),
+  loadPr: async () => {
+    await loadGate?.promise;
+    return {
+      title: "Feature work",
+      author: "octocat",
+      headRef: "feature",
+      baseRef: "main",
+      fromFork: true,
+    };
+  },
   remoteUrlFor: async () => remote.url,
   credentialsFor: () => undefined,
   setupScriptFor: async () => setupScript,
@@ -186,6 +193,8 @@ beforeEach(async () => {
   config.workspacesRoot = mkdtempSync(join(tmpdir(), "yarvis-mutation-root-"));
   remote = createTestRemote();
   setupScript = "true";
+  settings = { model: "haiku", maxBudgetUsd: 0.5, maxMutants: 5 };
+  loadGate = null;
   rmSync(logDir, { recursive: true, force: true });
   rmSync(join(bin, "GATED"), { force: true });
   rmSync(join(bin, "RELEASE"), { force: true });
@@ -197,7 +206,7 @@ beforeEach(async () => {
         deps,
         mutation: {
           run: { program, instance: "test", registry },
-          config: async () => ({ model: "haiku", maxBudgetUsd: 0.5, maxMutants: 5 }),
+          config: async () => settings,
         },
       }),
     )
@@ -205,7 +214,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  // Let a gated fake a failed test left waiting finish.
+  // Let a gated fake or refresh a failed test left waiting finish.
+  loadGate?.resolve();
   writeFileSync(join(bin, "RELEASE"), "");
   rmSync(config.workspacesRoot, { recursive: true, force: true });
   rmSync(remote.root, { recursive: true, force: true });
@@ -382,6 +392,43 @@ describe("starting mutation testing", () => {
     };
     expect(state.run).toMatchObject({ headSha, isCurrentHead: false });
     expect(state.blocked.reason).toContain("earlier commit");
+  });
+
+  it("refuses while a refresh is moving the checkout", async () => {
+    const { wsId, prId, base, headSha } = await readyPr();
+    await consent(wsId, prId);
+    loadGate = Promise.withResolvers<void>();
+    expect((await call("POST", `${base}/refresh`)).status).toBe(202);
+    const res = await call("POST", `${base}/mutation-testing`, { headSha });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toContain("being updated");
+    loadGate.resolve();
+    await waitForProgress(wsId, prId);
+    expect(copiesIn(wsId)).toEqual([]);
+  });
+
+  it("refuses in an archived workspace", async () => {
+    const { wsId, prId, base, headSha } = await readyPr();
+    await consent(wsId, prId);
+    expect((await call("POST", `/rw/${wsId}/archive`)).status).toBe(202);
+    const res = await call("POST", `${base}/mutation-testing`, { headSha });
+    expect(res.status).toBe(409);
+    expect(await db.select().from(agentRuns)).toEqual([]);
+  });
+
+  it("removes the copy and records nothing when the run can't start", async () => {
+    const { wsId, prId, base, headSha } = await readyPr();
+    await consent(wsId, prId);
+    // startClaudeRun refuses a run with no budget, after the copy is made.
+    settings = { ...settings, maxBudgetUsd: 0 };
+    const res = await call("POST", `${base}/mutation-testing`, { headSha });
+    expect(res.status).toBe(500);
+    expect(copiesIn(wsId)).toEqual([]);
+    expect(mutantCopiesInUse.size).toBe(0);
+    expect(await db.select().from(agentRuns)).toEqual([]);
+    // The PR is free for the next sync.
+    expect((await call("POST", `${base}/refresh`)).status).toBe(202);
+    await waitForProgress(wsId, prId);
   });
 
   it("answers 404 for a PR that isn't in the workspace", async () => {

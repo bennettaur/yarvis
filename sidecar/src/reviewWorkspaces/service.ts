@@ -231,8 +231,13 @@ export function reviewClonePath(config: Pick<Config, "workspacesRoot">, ref: PrR
 }
 
 /** The folder holding one review workspace's worktrees. */
+/** The folder holding every review workspace's folder. */
+export function reviewWorkspacesRoot(config: Pick<Config, "workspacesRoot">): string {
+  return join(config.workspacesRoot, ".review");
+}
+
 export function reviewWorkspaceDir(config: Pick<Config, "workspacesRoot">, id: string): string {
-  return join(config.workspacesRoot, ".review", id);
+  return join(reviewWorkspacesRoot(config), id);
 }
 
 /** A DOM-id-safe variant of `refKey`, matching the frontend's `refDomKey`. */
@@ -245,7 +250,10 @@ function refDomKey(ref: PrRef): string {
  * Checked before anything is checked out, run or deleted there, so a row that
  * somehow named another path can't point any of those at the rest of the disk.
  */
-export function assertWorktreeInWorkspace(config: Config, pr: ReviewWorkspacePr): void {
+export function assertWorktreeInWorkspace(
+  config: Pick<Config, "workspacesRoot">,
+  pr: Pick<ReviewWorkspacePr, "workspaceId" | "worktreePath">,
+): void {
   if (dirname(resolve(pr.worktreePath)) !== resolve(reviewWorkspaceDir(config, pr.workspaceId))) {
     throw new Error(`${pr.worktreePath} is not in this review workspace's folder; left in place`);
   }

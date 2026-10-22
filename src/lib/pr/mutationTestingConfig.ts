@@ -18,7 +18,11 @@ export const DEFAULT_MUTATION_TESTING_CONFIG: MutationTestingConfig = {
   maxMutants: 12,
 };
 
-/** The limits the sidecar enforces, so the inputs can say so before a save is refused. */
+/**
+ * The limits the sidecar enforces, so the inputs can say so before a save is
+ * refused. Keep in sync with `mutationTestingConfigSchema` in
+ * `sidecar/src/reviewWorkspaces/mutationConfig.ts`.
+ */
 export const MUTATION_LIMITS = {
   minBudgetUsd: 0.1,
   maxBudgetUsd: 50,

@@ -5,7 +5,7 @@ import {
   changedFileListing,
   MUTATION_ALLOWED_TOOLS,
   mutationReportSchema,
-  mutationTestingBlocker,
+  mutationTestingGate,
   parseChangedRanges,
 } from "./mutationTesting.ts";
 
@@ -22,19 +22,20 @@ describe("when mutation testing may run", () => {
   };
 
   it("runs once setup succeeded under consent for the current head", () => {
-    expect(mutationTestingBlocker(ready, false)).toBeNull();
+    expect(mutationTestingGate(ready, false)).toEqual({ ok: true, headSha: HEAD });
   });
 
   it("with no setup script, runs only once the user confirms running the tests", () => {
     const skipped = { ...ready, setupStatus: "skipped" as const };
-    expect(mutationTestingBlocker(skipped, false)).toEqual({
+    expect(mutationTestingGate(skipped, false)).toEqual({
+      ok: false,
       reason: expect.stringContaining("no setup script"),
       needsTestConfirmation: true,
     });
-    expect(mutationTestingBlocker(skipped, true)).toBeNull();
+    expect(mutationTestingGate(skipped, true)).toEqual({ ok: true, headSha: HEAD });
   });
 
-  const refused: [string, Partial<Parameters<typeof mutationTestingBlocker>[0]>, string][] = [
+  const refused: [string, Partial<Parameters<typeof mutationTestingGate>[0]>, string][] = [
     ["a PR still cloning", { status: "cloning" }, "is cloning"],
     ["a PR with no head", { headSha: null }, "is ready"],
     ["a checkout in progress", { worktreeStatus: "checking-out" }, "checkout is checking-out"],
@@ -49,7 +50,9 @@ describe("when mutation testing may run", () => {
   ];
   for (const [what, change, reason] of refused) {
     it(`refuses ${what}, even with the tests confirmed`, () => {
-      expect(mutationTestingBlocker({ ...ready, ...change }, true)?.reason).toContain(reason);
+      const gate = mutationTestingGate({ ...ready, ...change }, true);
+      expect(gate.ok).toBe(false);
+      expect(gate.ok ? "" : gate.reason).toContain(reason);
     });
   }
 });
@@ -182,6 +185,40 @@ describe("the report schema", () => {
 
   it("accepts a well-formed report", () => {
     expect(mutationReportSchema.parse(report)).toEqual(report as never);
+  });
+
+  const rejects = (change: (r: typeof report) => unknown) =>
+    expect(mutationReportSchema.safeParse(change(structuredClone(report))).success).toBe(false);
+  const mutant = (fields: Record<string, unknown>) => (r: typeof report) => ({
+    ...r,
+    mutants: [{ ...r.mutants[0], ...fields }],
+  });
+  const finding = (fields: Record<string, unknown>) => (r: typeof report) => ({
+    ...r,
+    findings: [{ ...r.findings[0], ...fields }],
+  });
+
+  it("bounds every list and string, and checks lines, counts and enums", () => {
+    rejects(mutant({ tests: Array(21).fill("t") }));
+    rejects(mutant({ tests: ["x".repeat(301)] }));
+    rejects(mutant({ line: 0 }));
+    rejects(mutant({ line: 1.5 }));
+    rejects(mutant({ original: "x".repeat(1_001) }));
+    rejects(mutant({ mutated: "x".repeat(1_001) }));
+    rejects(mutant({ description: "x".repeat(501) }));
+    rejects(mutant({ path: "x".repeat(501) }));
+    rejects((r) => ({ ...r, findings: Array(41).fill(r.findings[0]) }));
+    rejects(finding({ severity: "critical" }));
+    rejects(finding({ title: "x".repeat(201) }));
+    rejects(finding({ detail: "x".repeat(2_001) }));
+    rejects(finding({ suggestion: "x".repeat(2_001) }));
+    rejects(finding({ line: -1 }));
+    rejects((r) => ({ ...r, summary: { ...r.summary, verdict: "fine" } }));
+    rejects((r) => ({ ...r, summary: { ...r.summary, killed: -1 } }));
+    rejects((r) => ({ ...r, baseline: { ...r.baseline, command: "x".repeat(501) } }));
+    rejects((r) => ({ ...r, baseline: { ...r.baseline, notes: "x".repeat(2_001) } }));
+    rejects((r) => ({ ...r, baseline: { ...r.baseline, durationMs: -5 } }));
+    rejects(({ findings: _gone, ...r }) => r);
   });
 
   it("rejects unknown outcomes, unbounded lists and overlong evidence", () => {

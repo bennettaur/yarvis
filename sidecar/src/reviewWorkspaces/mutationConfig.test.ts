@@ -66,6 +66,14 @@ describe("mutation testing settings", () => {
     }
   });
 
+  it("takes full model ids as well as aliases", async () => {
+    for (const model of ["claude-opus-4-1[1m]", "us.anthropic.claude-sonnet-4-5-v1:0", "opus"]) {
+      const res = await patch({ model });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { model: string }).model).toBe(model);
+    }
+  });
+
   it("keeps the valid fields of a hand-edited file and defaults the rest", async () => {
     writeFileSync(
       process.env.YARVIS_SETTINGS_PATH as string,

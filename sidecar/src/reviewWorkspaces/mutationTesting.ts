@@ -35,7 +35,7 @@ import {
   removeMutantCopy,
 } from "./mutantCopy.ts";
 import { getMutationTestingConfig, type MutationTestingConfig } from "./mutationConfig.ts";
-import { isRunning } from "./progress.ts";
+import { claimRun } from "./progress.ts";
 import {
   getReviewPr,
   type ReviewDeps,
@@ -52,7 +52,7 @@ import {
 const MAX_REPORTED_MUTANTS = 40;
 const short = (max: number) => z.string().max(max);
 
-export const mutantOutcomeSchema = z.enum(["killed", "survived", "error", "timeout"]);
+const mutantOutcomeSchema = z.enum(["killed", "survived", "error", "timeout"]);
 
 export const mutationReportSchema = z.object({
   baseline: z.object({
@@ -115,7 +115,7 @@ export type MutationReport = z.infer<typeof mutationReportSchema>;
  * inside the copy and temp — is what contains that code, not this list. The
  * list is what keeps the *agent* from running anything else.
  */
-export const TEST_COMMAND_PREFIXES = [
+const TEST_COMMAND_PREFIXES = [
   "bun test",
   "bun run test",
   "bunx vitest",
@@ -148,11 +148,14 @@ export const TEST_COMMAND_PREFIXES = [
 ] as const;
 
 /**
- * Read and search only inside the copy; edit only there (Claude Code refuses
- * edits under `.git` on its own). Bash only for the tests and for looking at
- * and reverting the copy's own changes — no `git checkout <branch>`, no
- * commits. Pipes into read-only filters (`| tail`) are Claude Code's own
- * allowance and run sandboxed like the rest.
+ * The agent's own reads, searches and edits are scoped to the copy (Claude
+ * Code also refuses edits under `.git` on its own). That limits the tools, not
+ * the code the tests run: a test can read anything the user can, so keeping
+ * credential folders out of reach is the sandbox's `denyRead` rules in
+ * `agentRuns/service.ts`. Bash only for the tests and for looking at and
+ * reverting the copy's own changes — no `git checkout <branch>`, no commits.
+ * Pipes into read-only filters (`| tail`) are Claude Code's own allowance and
+ * run sandboxed like the rest.
  */
 export const MUTATION_ALLOWED_TOOLS = [
   "Read(./**)",
@@ -189,39 +192,44 @@ type GatedPr = Pick<
   "status" | "headSha" | "worktreeStatus" | "setupConsent" | "setupHeadSha" | "setupStatus"
 >;
 
+type MutationGate =
+  | { ok: true; headSha: string }
+  | { ok: false; reason: string; needsTestConfirmation?: true };
+
 /**
- * Why mutation testing can't run on this PR right now, or null when it can.
- * `confirmedRunTests` is the user's explicit yes to running the tests of a PR
- * with no setup script, where consent alone said nothing about what would run.
+ * Whether mutation testing may run on this PR now, and on which head, or why
+ * not. `confirmedRunTests` is the user's explicit yes to running the tests of
+ * a PR with no setup script, where consent alone said nothing about what
+ * would run.
  */
-export function mutationTestingBlocker(
-  pr: GatedPr,
-  confirmedRunTests: boolean,
-): { reason: string; needsTestConfirmation?: true } | null {
-  if (pr.status !== "ready" || !pr.headSha) return { reason: `the pull request is ${pr.status}` };
-  if (pr.worktreeStatus !== "ready") return { reason: `the checkout is ${pr.worktreeStatus}` };
+export function mutationTestingGate(pr: GatedPr, confirmedRunTests: boolean): MutationGate {
+  const refuse = (reason: string): MutationGate => ({ ok: false, reason });
+  const { headSha } = pr;
+  if (pr.status !== "ready" || !headSha) return refuse(`the pull request is ${pr.status}`);
+  if (pr.worktreeStatus !== "ready") return refuse(`the checkout is ${pr.worktreeStatus}`);
   if (pr.setupConsent !== "granted") {
-    return { reason: "running this pull request's code needs your consent first" };
+    return refuse("running this pull request's code needs your consent first");
   }
-  if (pr.setupHeadSha !== pr.headSha) {
-    return { reason: "consent was given for an earlier commit; review the setup again" };
+  if (pr.setupHeadSha !== headSha) {
+    return refuse("consent was given for an earlier commit; review the setup again");
   }
   switch (pr.setupStatus) {
     case "succeeded":
-      return null;
+      return { ok: true, headSha };
     case "skipped":
       return confirmedRunTests
-        ? null
+        ? { ok: true, headSha }
         : {
+            ok: false,
             reason: "there is no setup script; confirm running the tests without one",
             needsTestConfirmation: true,
           };
     case "running":
-      return { reason: "setup is still running" };
+      return refuse("setup is still running");
     case "failed":
-      return { reason: "setup failed, so the tests can't be trusted to run" };
+      return refuse("setup failed, so the tests can't be trusted to run");
     default:
-      return { reason: "setup hasn't run" };
+      return refuse("setup hasn't run");
   }
 }
 
@@ -372,11 +380,11 @@ export const mutantCopiesInUse = new Set<string>();
 /** One start at a time per PR, so two clicks can't both find nothing running. */
 const withStartLock = createKeyedLock();
 
-export function mutationTargetKey(refKey: string, headSha: string): string {
+function mutationTargetKey(refKey: string, headSha: string): string {
   return `${refKey}@${headSha}`;
 }
 
-async function latestRunRow(db: Db, prId: string): Promise<AgentRunSummary | null> {
+async function latestRun(db: Db, prId: string): Promise<AgentRunSummary | null> {
   const [row] = await db
     .select({ id: agentRuns.id })
     .from(agentRuns)
@@ -400,12 +408,18 @@ export async function getMutationTesting(
   prId: string,
 ): Promise<MutationTestingState> {
   const pr = await getReviewPr(db, workspaceId, prId);
-  const run = await latestRunRow(db, pr.id);
+  const run = await latestRun(db, pr.id);
   const runHead = typeof run?.meta.headSha === "string" ? run.meta.headSha : null;
+  const gate = mutationTestingGate(pr, false);
+  let blocked: MutationTestingState["blocked"] = null;
+  if (!gate.ok) {
+    const { ok: _ok, ...why } = gate;
+    blocked = why;
+  }
   return {
     run: run ? { ...run, headSha: runHead, isCurrentHead: runHead === pr.headSha } : null,
     headSha: pr.headSha,
-    blocked: mutationTestingBlocker(pr, false),
+    blocked,
   };
 }
 
@@ -426,54 +440,61 @@ export async function startMutationTesting(
   return withStartLock(prId, async () => {
     await requireActiveWorkspace(db, workspaceId);
     const pr = await getReviewPr(db, workspaceId, prId);
-    const latest = await latestRunRow(db, pr.id);
+    const latest = await latestRun(db, pr.id);
     if (latest?.status === "running") return { runId: latest.id, existing: true };
 
-    const blocked = mutationTestingBlocker(pr, request.confirmRunTests);
-    if (blocked) throw new ReviewWorkspaceError(blocked.reason, 409);
-    const headSha = pr.headSha as string;
+    const gate = mutationTestingGate(pr, request.confirmRunTests);
+    if (!gate.ok) throw new ReviewWorkspaceError(gate.reason, 409);
+    const { headSha } = gate;
     if (request.headSha !== headSha) {
       throw new ReviewWorkspaceError("the pull request has moved; look at it again", 409);
     }
-    // A refresh or setup would be changing the worktree while it is copied.
-    if (isRunning(pr.id)) {
-      throw new ReviewWorkspaceError("this pull request is still being updated", 409);
-    }
-
-    const settings = await (deps.config ?? getMutationTestingConfig)();
-    const { files, mergeBaseSha } = await reviewChangedFiles(
-      db,
-      config,
-      workspaceId,
-      prId,
-      reviewDeps,
-    );
-    const ranges = await changedRanges(
-      reviewDeps.git({}).local,
-      reviewClonePath(config, pr.ref),
-      mergeBaseSha,
-      headSha,
-    );
+    // Held until the copy is made, so no refresh or setup can move the
+    // worktree while it is read and copied.
+    const claim = claimRun(pr.id);
+    if (!claim) throw new ReviewWorkspaceError("this pull request is still being updated", 409);
 
     const copyId = randomUUID();
     mutantCopiesInUse.add(copyId);
     const release = () => mutantCopiesInUse.delete(copyId);
-    let copyPath: string | null = null;
+    let copy: Awaited<ReturnType<typeof createMutantCopy>> | null = null;
     try {
-      const copy = await createMutantCopy(config, pr, copyId, deps.copy);
-      copyPath = copy.path;
+      let prompt: string;
+      let settings: MutationTestingConfig;
+      try {
+        claim.emit({ type: "log", text: "Copying the checkout for mutation testing\n" });
+        settings = await (deps.config ?? getMutationTestingConfig)();
+        const { files, mergeBaseSha } = await reviewChangedFiles(
+          db,
+          config,
+          workspaceId,
+          prId,
+          reviewDeps,
+        );
+        const ranges = await changedRanges(
+          reviewDeps.git({}).local,
+          reviewClonePath(config, pr.ref),
+          mergeBaseSha,
+          headSha,
+        );
+        prompt = buildMutationPrompt({
+          headSha,
+          maxMutants: settings.maxMutants,
+          setupRan: pr.setupStatus === "succeeded",
+          files: changedFileListing(files, ranges),
+        });
+        copy = await createMutantCopy(config, pr, copyId, headSha, deps.copy);
+      } finally {
+        claim.finish();
+      }
+
       const handle = await startClaudeRun(
         db,
         {
           kind: MUTATION_RUN_KIND,
           targetKey: mutationTargetKey(pr.refKey, headSha),
           cwd: copy.path,
-          prompt: buildMutationPrompt({
-            headSha,
-            maxMutants: settings.maxMutants,
-            setupRan: pr.setupStatus === "succeeded",
-            files: changedFileListing(files, ranges),
-          }),
+          prompt,
           outputSchema: mutationReportSchema,
           plugins: ["yarvis-review"],
           allowedTools: MUTATION_ALLOWED_TOOLS,
@@ -493,7 +514,7 @@ export async function startMutationTesting(
         },
         deps.run,
       );
-      const path = copy.path;
+      const { path } = copy;
       // `done` never rejects, and settles only once the process group is gone,
       // so nothing is still writing into the copy when it is removed.
       void handle.done
@@ -502,7 +523,7 @@ export async function startMutationTesting(
         .finally(release);
       return { runId: handle.id, existing: false };
     } catch (e) {
-      if (copyPath) await removeMutantCopy(config, pr.workspaceId, copyPath).catch(() => {});
+      if (copy) await removeMutantCopy(config, pr.workspaceId, copy.path).catch(() => {});
       release();
       throw e;
     }
