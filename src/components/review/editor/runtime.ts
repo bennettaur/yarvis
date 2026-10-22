@@ -9,8 +9,8 @@ import JsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
 import TsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
 import { getColorTheme, onColorTheme } from "../../../lib/theme";
 import { openExternal } from "../../../lib/url";
-import { safeHoverContents } from "./hoverSafety";
 import { installNavigation } from "./navigation";
+import { type QuickInfo, quickInfoHover } from "./quickInfo";
 import { defineThemes, monacoThemeFor } from "./themes";
 import "./reviewEditor.css";
 
@@ -69,20 +69,50 @@ for (const defaults of [
 }
 
 // Hover text comes from the code under review (a JSDoc comment, a schema
-// description), so every hover provider's answer is passed through
-// `safeHoverContents` before Monaco renders it. The language modes register
-// their providers through this same object when a language is first used,
-// which is after this runs, so wrapping the registration covers all of them.
-const registerHoverProvider = monaco.languages.registerHoverProvider;
-(
-  monaco.languages as { registerHoverProvider: typeof registerHoverProvider }
-).registerHoverProvider = (selector, provider) =>
-  registerHoverProvider(selector, {
-    async provideHover(model, position, token, context) {
-      const hover = await provider.provideHover(model, position, token, context);
-      return hover ? { ...hover, contents: safeHoverContents(hover.contents) } : hover;
+// description) and Monaco renders images in it, so no built-in hover is used.
+// A mode's configuration is replaced whole and a missing key turns that
+// feature off, hence the spread.
+function withoutHovers<C extends { readonly hovers?: boolean }>(defaults: {
+  readonly modeConfiguration: C;
+  setModeConfiguration(configuration: C): void;
+}): void {
+  defaults.setModeConfiguration({ ...defaults.modeConfiguration, hovers: false });
+}
+withoutHovers(monaco.typescript.typescriptDefaults);
+withoutHovers(monaco.typescript.javascriptDefaults);
+withoutHovers(monaco.css.cssDefaults);
+withoutHovers(monaco.css.scssDefaults);
+withoutHovers(monaco.css.lessDefaults);
+withoutHovers(monaco.html.htmlDefaults);
+withoutHovers(monaco.html.handlebarDefaults);
+withoutHovers(monaco.html.razorDefaults);
+withoutHovers(monaco.json.jsonDefaults);
+
+// TypeScript and JavaScript get their hover back from here: the same quick
+// info Monaco's own provider shows, rendered by `quickInfoHover`, which
+// escapes images and grants no trust or HTML.
+for (const [language, getWorker] of [
+  ["typescript", monaco.typescript.getTypeScriptWorker],
+  ["javascript", monaco.typescript.getJavaScriptWorker],
+] as const) {
+  monaco.languages.registerHoverProvider(language, {
+    async provideHover(model, position) {
+      const worker = await (await getWorker())(model.uri);
+      if (model.isDisposed()) return null;
+      const info: QuickInfo | undefined = await worker.getQuickInfoAtPosition(
+        model.uri.toString(),
+        model.getOffsetAt(position),
+      );
+      if (!info || model.isDisposed()) return null;
+      const start = model.getPositionAt(info.textSpan.start);
+      const end = model.getPositionAt(info.textSpan.start + info.textSpan.length);
+      return {
+        range: new monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column),
+        contents: quickInfoHover(info),
+      };
     },
   });
+}
 
 // A link in code or in a hover would otherwise go to `window.open`, or
 // navigate the webview itself. Everything is handled here, and only http(s)
