@@ -14,20 +14,21 @@ import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import postgres from "postgres";
 import type { AgentRunEvent } from "../agentRuns/events.ts";
-import { createAgentRunRoutes } from "../agentRuns/routes.ts";
 import { fakeClaude, resultLine, testConfig } from "../agentRuns/testSupport.ts";
 import { getDb } from "../db/client.ts";
-import { agentRuns, reviewWorkspacePrs } from "../db/schema.ts";
+import { agentRuns, mutationRuns, reviewWorkspacePrs } from "../db/schema.ts";
 import { RunRegistry } from "../lib/runRegistry.ts";
 import type { PrRef } from "../pr/types.ts";
 import { reviewGit } from "./git.ts";
-import { MUTATION_RUN_KIND } from "./mutantCopy.ts";
+import type { MutationPlan } from "./mutants.ts";
 import type { MutationTestingConfig } from "./mutationConfig.ts";
-import { type MutationReport, mutantCopiesInUse } from "./mutationTesting.ts";
+import type { MutationExecution, MutationSummary } from "./mutationReport.ts";
+import { type MutationProgressEvent, mutantCopiesInUse } from "./mutationTesting.ts";
 import type { ReviewProgressEvent } from "./progress.ts";
 import { createReviewWorkspaceRoutes } from "./routes.ts";
 import type { ReviewDeps } from "./service.ts";
 import { createTestRemote, type TestRemote } from "./testRepo.ts";
+import type { SandboxedCommand, SandboxedRun } from "./testSandbox.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -35,63 +36,123 @@ const db = getDb(url).db;
 const bin = mkdtempSync(join(tmpdir(), "yarvis-mutation-bin-"));
 const config = testConfig(url, "");
 
-const REPORT: MutationReport = {
-  baseline: { command: "bun test", passed: true },
+// The test remote's PR changes src/a.ts to "export const a = 2;\nexport const b = 3;\n".
+const PLAN: MutationPlan = {
+  testCommands: [{ id: "unit", argv: ["bun", "test", "test/a.test.ts"], testFiles: [] }],
+  positiveControl: {
+    path: "src/a.ts",
+    line: 2,
+    oldText: "b = 3",
+    newText: "b = 30",
+    description: "blatant",
+    testCommandId: "unit",
+  },
   mutants: [
     {
+      id: "m1",
       path: "src/a.ts",
       line: 1,
-      original: "a = 2",
-      mutated: "a = 3",
-      description: "Changed a constant",
-      tests: ["test/a.test.ts"],
-      outcome: "survived",
-      evidence: "1 pass, 0 fail",
+      oldText: "a = 2",
+      newText: "a = 20",
+      description: "changed a",
+      rationale: "a is new",
+      testCommandId: "unit",
+      testFiles: ["test/a.test.ts"],
+      likelyEquivalent: false,
+    },
+    {
+      id: "m2",
+      path: "src/a.ts",
+      line: 2,
+      oldText: "b = 3",
+      newText: "b = 4",
+      description: "changed b",
+      rationale: "b is new",
+      testCommandId: "unit",
+      testFiles: ["test/a.test.ts"],
+      likelyEquivalent: false,
     },
   ],
-  summary: { killed: 0, survived: 1, errors: 0, verdict: "weak" },
+  notes: "",
+};
+
+const FINDINGS = {
   findings: [
     {
+      mutantId: "m1",
       title: "a is never asserted",
       detail: "No test reads a.",
-      path: "src/a.ts",
-      line: 1,
       severity: "medium",
       suggestion: "expect(a).toBe(2)",
     },
   ],
 };
 
-/**
- * Stands in for `claude`: records where it ran, what it was asked and with
- * which flags, makes a "mutant" in its working directory, waits for the test
- * to release it when `GATED` exists, then reports.
- */
 const logDir = join(bin, "log");
-const result = join(bin, "result.jsonl");
-writeFileSync(
-  result,
-  `${JSON.stringify({ type: "system", subtype: "init", model: "m" })}\n${JSON.stringify(
-    resultLine({ structured_output: REPORT }),
-  )}\n`,
-);
+const planFile = join(bin, "plan.jsonl");
+const explainFile = join(bin, "explain.jsonl");
+const init = JSON.stringify({ type: "system", subtype: "init", model: "m" });
+function writeAnswers(plan: unknown, explanation: unknown = FINDINGS) {
+  writeFileSync(planFile, `${init}\n${JSON.stringify(resultLine({ structured_output: plan }))}\n`);
+  writeFileSync(
+    explainFile,
+    `${init}\n${JSON.stringify(resultLine({ structured_output: explanation, total_cost_usd: 0.02 }))}\n`,
+  );
+}
+
+/**
+ * Stands in for `claude`: tells the planning run from the explanation run by
+ * the schema it was handed, records what each was asked and with which flags,
+ * and holds the planning run while `GATED` exists.
+ */
 const program = fakeClaude(
   bin,
   "claude",
   [
     `mkdir -p "${logDir}"`,
-    `pwd > "${logDir}/cwd"`,
-    `cat > "${logDir}/prompt"`,
-    `printf '%s\\n' "$@" > "${logDir}/args"`,
-    `echo mutated >> src/a.ts`,
-    `if [ -f "${bin}/GATED" ]; then while [ ! -f "${bin}/RELEASE" ]; do sleep 0.05; done; fi`,
-    `cat "${result}"`,
+    `case "$*" in`,
+    `  *testCommands*) role=plan ;;`,
+    `  *) role=explain ;;`,
+    `esac`,
+    `pwd > "${logDir}/$role.cwd"`,
+    `cat > "${logDir}/$role.prompt"`,
+    `printf '%s\\n' "$@" > "${logDir}/$role.args"`,
+    `if [ "$role" = plan ] && [ -f "${bin}/GATED" ]; then while [ ! -f "${bin}/RELEASE" ]; do sleep 0.05; done; fi`,
+    `cat "${bin}/$role.jsonl"`,
   ].join("\n"),
 );
 
+/** Mutants whose source holds this text block until the pass is cancelled. */
+let blockOn: string | null;
+let runnerCalls: SandboxedCommand[];
+
+/**
+ * Stands in for the sandboxed test runner: the control is caught, `a = 20`
+ * survives, `b = 4` is caught.
+ */
+async function fakeRunner(command: SandboxedCommand): Promise<SandboxedRun> {
+  runnerCalls.push(command);
+  const source = readFileSync(join(command.cwd, "src", "a.ts"), "utf8");
+  if (blockOn && source.includes(blockOn)) {
+    await new Promise<void>((resolve) => command.signal.addEventListener("abort", () => resolve()));
+    return { exitCode: 143, output: "", timedOut: false, aborted: true, durationMs: 1 };
+  }
+  const caught = source.includes("b = 30") || source.includes("b = 4");
+  return {
+    exitCode: caught ? 1 : 0,
+    output: caught
+      ? " 1 pass\n 1 fail\nRan 2 tests across 1 file."
+      : " 2 pass\n 0 fail\nRan 2 tests across 1 file.",
+    timedOut: false,
+    aborted: false,
+    durationMs: 50,
+  };
+}
+
 let remote: TestRemote;
 let setupScript: string | null;
-let registry: RunRegistry<AgentRunEvent>;
+let agentRegistry: RunRegistry<AgentRunEvent>;
+let registry: RunRegistry<MutationProgressEvent>;
 let settings: MutationTestingConfig;
 /** When set, loading the PR waits on it, holding a refresh open. */
 let loadGate: PromiseWithResolvers<void> | null;
@@ -162,9 +223,9 @@ async function consent(wsId: string, prId: string): Promise<void> {
   if (setupScript) await waitForProgress(wsId, prId);
 }
 
-async function runRow(id: string) {
-  const [row] = await db.select().from(agentRuns).where(eq(agentRuns.id, id));
-  if (!row) throw new Error("no run");
+async function passRow(id: string) {
+  const [row] = await db.select().from(mutationRuns).where(eq(mutationRuns.id, id));
+  if (!row) throw new Error("no mutation run");
   return row;
 }
 
@@ -184,33 +245,50 @@ function copiesIn(wsId: string): string[] {
 }
 
 async function finished(runId: string) {
-  await until(async () => (await runRow(runId)).status !== "running", "the run to finish");
-  return runRow(runId);
+  await until(async () => (await passRow(runId)).status !== "running", "the pass to finish");
+  await until(() => !mutantCopiesInUse.has(runId), "the copy to be released");
+  return passRow(runId);
+}
+
+async function start(base: string, headSha: string, extra = {}) {
+  const res = await call("POST", `${base}/mutation-testing`, { headSha, ...extra });
+  return { res, body: (await res.json()) as { runId: string; existing: boolean; error?: string } };
 }
 
 beforeEach(async () => {
-  await sql`TRUNCATE review_workspaces, review_workspace_prs, agent_runs RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE review_workspaces, review_workspace_prs, agent_runs, mutation_runs RESTART IDENTITY CASCADE`;
   config.workspacesRoot = mkdtempSync(join(tmpdir(), "yarvis-mutation-root-"));
   remote = createTestRemote();
   setupScript = "true";
-  settings = { model: "haiku", maxBudgetUsd: 0.5, maxMutants: 5 };
+  settings = {
+    planningModel: "haiku",
+    planningBudgetUsd: 0.5,
+    explanationModel: "sonnet",
+    explanationBudgetUsd: 0.25,
+    maxMutants: 5,
+    testTimeoutCapSeconds: 60,
+  };
   loadGate = null;
+  blockOn = null;
+  runnerCalls = [];
+  writeAnswers(PLAN);
   rmSync(logDir, { recursive: true, force: true });
   rmSync(join(bin, "GATED"), { force: true });
   rmSync(join(bin, "RELEASE"), { force: true });
-  registry = new RunRegistry<AgentRunEvent>({ historyCap: 500, followerQueueCap: 2_000 });
-  app = new Hono()
-    .route(
-      "/rw",
-      createReviewWorkspaceRoutes(config, {
-        deps,
-        mutation: {
-          run: { program, instance: "test", registry },
-          config: async () => settings,
-        },
-      }),
-    )
-    .route("/runs", createAgentRunRoutes(config, registry));
+  agentRegistry = new RunRegistry<AgentRunEvent>({ historyCap: 500, followerQueueCap: 2_000 });
+  registry = new RunRegistry<MutationProgressEvent>({ historyCap: 500, followerQueueCap: 2_000 });
+  app = new Hono().route(
+    "/rw",
+    createReviewWorkspaceRoutes(config, {
+      deps,
+      mutation: {
+        run: { program, instance: "test", registry: agentRegistry },
+        exec: { runner: fakeRunner, checkSandbox: async () => {} },
+        registry,
+        config: async () => settings,
+      },
+    }),
+  );
 });
 
 afterEach(() => {
@@ -226,18 +304,18 @@ afterAll(async () => {
   rmSync(bin, { recursive: true, force: true });
 });
 
-describe("starting mutation testing", () => {
+describe("when a pass may start", () => {
   it("refuses until setup consent is granted for the current head and setup succeeded", async () => {
     const { wsId, prId, base, headSha } = await readyPr();
-    const before = await call("POST", `${base}/mutation-testing`, { headSha });
-    expect(before.status).toBe(409);
-    expect(((await before.json()) as { error: string }).error).toContain("consent");
+    const before = await start(base, headSha);
+    expect(before.res.status).toBe(409);
+    expect(before.body.error).toContain("consent");
 
     setupScript = "exit 1";
     await consent(wsId, prId);
-    const failed = await call("POST", `${base}/mutation-testing`, { headSha });
-    expect(failed.status).toBe(409);
-    expect(((await failed.json()) as { error: string }).error).toContain("setup failed");
+    const failed = await start(base, headSha);
+    expect(failed.res.status).toBe(409);
+    expect(failed.body.error).toContain("setup failed");
 
     // A push picked up by a refresh moves the head; the old consent doesn't carry over.
     setupScript = "true";
@@ -247,10 +325,10 @@ describe("starting mutation testing", () => {
     await waitForProgress(wsId, prId);
     const moved = await prRow(prId);
     expect(moved.headSha).not.toBe(headSha);
-    const stale = await call("POST", `${base}/mutation-testing`, { headSha: moved.headSha });
-    expect(stale.status).toBe(409);
-    expect(((await stale.json()) as { error: string }).error).toContain("earlier commit");
-    expect(await db.select().from(agentRuns)).toEqual([]);
+    const stale = await start(base, moved.headSha as string);
+    expect(stale.res.status).toBe(409);
+    expect(stale.body.error).toContain("earlier commit");
+    expect(await db.select().from(mutationRuns)).toEqual([]);
     expect(copiesIn(wsId)).toEqual([]);
   });
 
@@ -262,136 +340,17 @@ describe("starting mutation testing", () => {
       blocked: { needsTestConfirmation?: boolean } | null;
     };
     expect(state.blocked?.needsTestConfirmation).toBe(true);
-    expect((await call("POST", `${base}/mutation-testing`, { headSha })).status).toBe(409);
-    const res = await call("POST", `${base}/mutation-testing`, { headSha, confirmRunTests: true });
-    expect(res.status).toBe(202);
-    await finished(((await res.json()) as { runId: string }).runId);
+    expect((await start(base, headSha)).res.status).toBe(409);
+    const confirmed = await start(base, headSha, { confirmRunTests: true });
+    expect(confirmed.res.status).toBe(202);
+    await finished(confirmed.body.runId);
   });
 
   it("refuses a head the PR has moved on from, and a malformed one", async () => {
     const { wsId, prId, base } = await readyPr();
     await consent(wsId, prId);
-    expect(
-      (await call("POST", `${base}/mutation-testing`, { headSha: "b".repeat(40) })).status,
-    ).toBe(409);
-    expect((await call("POST", `${base}/mutation-testing`, { headSha: "HEAD" })).status).toBe(400);
-  });
-
-  it("runs in a scratch copy, stores the report and removes the copy", async () => {
-    const { wsId, prId, base, headSha } = await readyPr();
-    await consent(wsId, prId);
-    const worktree = (await prRow(prId)).worktreePath;
-    const original = readFileSync(join(worktree, "src", "a.ts"), "utf8");
-
-    const res = await call("POST", `${base}/mutation-testing`, { headSha });
-    expect(res.status).toBe(202);
-    const { runId } = (await res.json()) as { runId: string };
-    const row = await finished(runId);
-
-    expect(row).toMatchObject({
-      kind: MUTATION_RUN_KIND,
-      targetKey: `gh:o/r/1@${headSha}`,
-      status: "succeeded",
-      result: REPORT,
-    });
-    expect(row.meta).toMatchObject({ prId, headSha, maxMutants: 5 });
-
-    // It ran in a copy next to the checkout, which its mutant never reached.
-    const cwd = readFileSync(join(logDir, "cwd"), "utf8").trim();
-    expect(realpathSync(dirname(cwd))).toBe(realpathSync(dirname(worktree)));
-    expect(cwd).toContain(`-mutants-${row.meta.copyId}`);
-    expect(readFileSync(join(worktree, "src", "a.ts"), "utf8")).toBe(original);
-    await until(() => copiesIn(wsId).length === 0, "the copy to be removed");
-
-    // The prompt fences the changed files and carries the configured cap.
-    const prompt = readFileSync(join(logDir, "prompt"), "utf8");
-    expect(prompt).toContain("at most 5 mutants");
-    const fenced = /<changed-files-([0-9a-f]{12})>\n([\s\S]*)\n<\/changed-files-\1>/.exec(
-      prompt,
-    )?.[2];
-    expect(fenced?.split("\n")).toContain("src/a.ts (modified, +2 -1, changed lines 1-2)");
-    expect(prompt).not.toContain("docs/gone.md");
-    const args = readFileSync(join(logDir, "args"), "utf8").split("\n");
-    expect(args).toContain("--plugin-dir");
-    expect(args).toContain("Bash(git checkout -- *)");
-    expect(args[args.indexOf("--model") + 1]).toBe("haiku");
-    expect(args[args.indexOf("--max-budget-usd") + 1]).toBe("0.5");
-
-    const state = (await (await call("GET", `${base}/mutation-testing`)).json()) as {
-      run: { id: string; isCurrentHead: boolean; result: unknown };
-      blocked: unknown;
-    };
-    expect(state.run).toMatchObject({ id: runId, isCurrentHead: true, result: REPORT });
-    expect(state.blocked).toBeNull();
-  });
-
-  it("answers with the run already going, and removes its copy when it is cancelled", async () => {
-    const { wsId, prId, base, headSha } = await readyPr();
-    await consent(wsId, prId);
-    writeFileSync(join(bin, "GATED"), "");
-
-    const first = await call("POST", `${base}/mutation-testing`, { headSha });
-    expect(first.status).toBe(202);
-    const { runId } = (await first.json()) as { runId: string };
-    const again = await call("POST", `${base}/mutation-testing`, { headSha });
-    expect(again.status).toBe(200);
-    expect(await again.json()).toEqual({ runId, existing: true });
-    await until(() => existsSync(join(logDir, "cwd")), "the run to start");
-    expect(copiesIn(wsId)).toHaveLength(1);
-
-    expect((await call("POST", `/runs/${runId}/cancel`)).status).toBe(202);
-    expect((await finished(runId)).status).toBe("cancelled");
-    await until(() => copiesIn(wsId).length === 0, "the copy to be removed");
-  });
-
-  it("starts one run for two clicks at once", async () => {
-    const { wsId, prId, base, headSha } = await readyPr();
-    await consent(wsId, prId);
-    writeFileSync(join(bin, "GATED"), "");
-    const answers = await Promise.all([
-      call("POST", `${base}/mutation-testing`, { headSha }),
-      call("POST", `${base}/mutation-testing`, { headSha }),
-    ]);
-    expect(answers.map((res) => res.status).sort()).toEqual([200, 202]);
-    const ids = await Promise.all(
-      answers.map(async (res) => ((await res.json()) as { runId: string }).runId),
-    );
-    expect(ids[0]).toBe(ids[1] as string);
-    writeFileSync(join(bin, "RELEASE"), "");
-    await finished(ids[0] as string);
-    await until(() => copiesIn(wsId).length === 0, "the copy to be removed");
-  });
-
-  it("removes the copy when the run fails, and reports the latest run as stale after a push", async () => {
-    const { wsId, prId, base, headSha } = await readyPr();
-    await consent(wsId, prId);
-    writeFileSync(result, `${JSON.stringify(resultLine({ structured_output: { nope: 1 } }))}\n`);
-    try {
-      const { runId } = (await (
-        await call("POST", `${base}/mutation-testing`, { headSha })
-      ).json()) as { runId: string };
-      const row = await finished(runId);
-      expect(row.status).toBe("failed");
-      expect(row.error).toContain("did not match the expected shape");
-      await until(() => copiesIn(wsId).length === 0, "the copy to be removed");
-    } finally {
-      writeFileSync(
-        result,
-        `${JSON.stringify({ type: "system", subtype: "init", model: "m" })}\n${JSON.stringify(
-          resultLine({ structured_output: REPORT }),
-        )}\n`,
-      );
-    }
-
-    remote.pushToPr("src/a.ts", "export const a = 9;\n");
-    await call("POST", `${base}/refresh`);
-    await waitForProgress(wsId, prId);
-    const state = (await (await call("GET", `${base}/mutation-testing`)).json()) as {
-      run: { headSha: string; isCurrentHead: boolean };
-      blocked: { reason: string };
-    };
-    expect(state.run).toMatchObject({ headSha, isCurrentHead: false });
-    expect(state.blocked.reason).toContain("earlier commit");
+    expect((await start(base, "b".repeat(40))).res.status).toBe(409);
+    expect((await start(base, "HEAD")).res.status).toBe(400);
   });
 
   it("refuses while a refresh is moving the checkout", async () => {
@@ -399,9 +358,9 @@ describe("starting mutation testing", () => {
     await consent(wsId, prId);
     loadGate = Promise.withResolvers<void>();
     expect((await call("POST", `${base}/refresh`)).status).toBe(202);
-    const res = await call("POST", `${base}/mutation-testing`, { headSha });
-    expect(res.status).toBe(409);
-    expect(((await res.json()) as { error: string }).error).toContain("being updated");
+    const refused = await start(base, headSha);
+    expect(refused.res.status).toBe(409);
+    expect(refused.body.error).toContain("being updated");
     loadGate.resolve();
     await waitForProgress(wsId, prId);
     expect(copiesIn(wsId)).toEqual([]);
@@ -411,24 +370,8 @@ describe("starting mutation testing", () => {
     const { wsId, prId, base, headSha } = await readyPr();
     await consent(wsId, prId);
     expect((await call("POST", `/rw/${wsId}/archive`)).status).toBe(202);
-    const res = await call("POST", `${base}/mutation-testing`, { headSha });
-    expect(res.status).toBe(409);
-    expect(await db.select().from(agentRuns)).toEqual([]);
-  });
-
-  it("removes the copy and records nothing when the run can't start", async () => {
-    const { wsId, prId, base, headSha } = await readyPr();
-    await consent(wsId, prId);
-    // startClaudeRun refuses a run with no budget, after the copy is made.
-    settings = { ...settings, maxBudgetUsd: 0 };
-    const res = await call("POST", `${base}/mutation-testing`, { headSha });
-    expect(res.status).toBe(500);
-    expect(copiesIn(wsId)).toEqual([]);
-    expect(mutantCopiesInUse.size).toBe(0);
-    expect(await db.select().from(agentRuns)).toEqual([]);
-    // The PR is free for the next sync.
-    expect((await call("POST", `${base}/refresh`)).status).toBe(202);
-    await waitForProgress(wsId, prId);
+    expect((await start(base, headSha)).res.status).toBe(409);
+    expect(await db.select().from(mutationRuns)).toEqual([]);
   });
 
   it("answers 404 for a PR that isn't in the workspace", async () => {
@@ -438,5 +381,183 @@ describe("starting mutation testing", () => {
       `/rw/${wsId}/prs/00000000-0000-4000-8000-000000000000/mutation-testing`,
     );
     expect(res.status).toBe(404);
+  });
+});
+
+describe("a pass", () => {
+  it("plans, runs the mutants itself, explains the survivors and removes the copy", async () => {
+    const { wsId, prId, base, headSha } = await readyPr();
+    await consent(wsId, prId);
+    const worktree = (await prRow(prId)).worktreePath;
+    const original = readFileSync(join(worktree, "src", "a.ts"), "utf8");
+
+    const { res, body } = await start(base, headSha);
+    expect(res.status).toBe(202);
+    const row = await finished(body.runId);
+
+    expect(row).toMatchObject({ status: "succeeded", phase: "done", headSha, error: null });
+    expect(row.plan).toEqual(PLAN);
+    const execution = row.execution as MutationExecution;
+    expect(execution.baselines[0]).toMatchObject({ passed: true, testCount: 2 });
+    expect(execution.positiveControl?.outcome).toBe("killed");
+    expect(execution.mutants.map((m) => [m.id, m.outcome])).toEqual([
+      ["m1", "survived"],
+      ["m2", "killed"],
+    ]);
+    // Two valid mutants are too few for a verdict, whatever the rate.
+    expect(row.summary as MutationSummary).toMatchObject({
+      killed: 1,
+      survived: 1,
+      valid: 2,
+      killRate: 0.5,
+      verdict: "inconclusive",
+    });
+    expect(row.findings).toEqual([{ ...FINDINGS.findings[0], path: "src/a.ts", line: 1 }]);
+    expect(row.costUsd).toBeCloseTo(0.03);
+
+    // Both Claude Code runs are agent runs of their own, read-only, in the copy.
+    const runs = await db.select().from(agentRuns);
+    expect(runs.map((r) => r.kind).sort()).toEqual(["mutation-explain", "mutation-plan"]);
+    expect([row.planRunId, row.explainRunId].sort()).toEqual(runs.map((r) => r.id).sort());
+    const cwd = readFileSync(join(logDir, "plan.cwd"), "utf8").trim();
+    expect(realpathSync(dirname(cwd))).toBe(realpathSync(dirname(worktree)));
+    expect(cwd).toEndWith(`-mutants-${body.runId}`);
+    for (const role of ["plan", "explain"]) {
+      const args = readFileSync(join(logDir, `${role}.args`), "utf8").split("\n");
+      const allowed = args.slice(
+        args.indexOf("--allowedTools") + 1,
+        args.indexOf("--disallowedTools"),
+      );
+      expect(allowed).toEqual(["Read(./**)", "Grep(./**)", "Glob(./**)"]);
+      expect(args).toContain("Bash");
+      expect(args).toContain("Edit");
+    }
+    const planArgs = readFileSync(join(logDir, "plan.args"), "utf8").split("\n");
+    expect(planArgs[planArgs.indexOf("--model") + 1]).toBe("haiku");
+    expect(planArgs[planArgs.indexOf("--max-budget-usd") + 1]).toBe("0.5");
+
+    // The planner sees the changed files fenced, and the cap.
+    const prompt = readFileSync(join(logDir, "plan.prompt"), "utf8");
+    expect(prompt).toContain("at most 5 mutants");
+    const fenced = /<changed-files-([0-9a-f]{12})>\n([\s\S]*)\n<\/changed-files-\1>/.exec(
+      prompt,
+    )?.[2];
+    expect(fenced?.split("\n")).toContain("src/a.ts (modified, +2 -1, changed lines 1-2)");
+    // The explainer sees only the survivor.
+    const explainPrompt = readFileSync(join(logDir, "explain.prompt"), "utf8");
+    expect(explainPrompt).toContain("Mutant m1");
+    expect(explainPrompt).not.toContain("Mutant m2");
+
+    // The tests ran in the copy, and neither it nor the checkout kept a mutant.
+    expect(runnerCalls.every((c) => c.cwd.endsWith(`-mutants-${body.runId}`))).toBe(true);
+    expect(readFileSync(join(worktree, "src", "a.ts"), "utf8")).toBe(original);
+    expect(copiesIn(wsId)).toEqual([]);
+
+    const state = (await (await call("GET", `${base}/mutation-testing`)).json()) as {
+      run: { id: string; isCurrentHead: boolean; live: boolean };
+      blocked: unknown;
+    };
+    expect(state.run).toMatchObject({ id: body.runId, isCurrentHead: true, live: false });
+    expect(state.blocked).toBeNull();
+  });
+
+  it("skips the explanation when nothing survives", async () => {
+    writeAnswers({ ...PLAN, mutants: [PLAN.mutants[1]] });
+    const { wsId, prId, base, headSha } = await readyPr();
+    await consent(wsId, prId);
+    const row = await finished((await start(base, headSha)).body.runId);
+    expect(row).toMatchObject({ status: "succeeded", explainRunId: null, findings: [] });
+    expect(existsSync(join(logDir, "explain.args"))).toBe(false);
+  });
+
+  it("answers with the pass already going, and streams its progress", async () => {
+    const { wsId, prId, base, headSha } = await readyPr();
+    await consent(wsId, prId);
+    writeFileSync(join(bin, "GATED"), "");
+
+    const first = await start(base, headSha);
+    expect(first.res.status).toBe(202);
+    const again = await start(base, headSha);
+    expect(again.res.status).toBe(200);
+    expect(again.body).toEqual({ runId: first.body.runId, existing: true });
+    await until(() => existsSync(join(logDir, "plan.args")), "planning to start");
+
+    const stream = call("GET", `${base}/mutation-testing/progress`);
+    writeFileSync(join(bin, "RELEASE"), "");
+    const events = (await (await stream).text())
+      .split("\n")
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => JSON.parse(line.slice(5)) as MutationProgressEvent);
+    const types = events.map((e) => (e.type === "phase" ? `phase:${e.phase}` : e.type));
+    expect(types).toContain("phase:planning");
+    expect(types).toContain("baseline");
+    expect(types.filter((t) => t === "mutant")).toHaveLength(3);
+    expect(types.at(-1)).toBe("done");
+    await finished(first.body.runId);
+  });
+
+  it("keeps the results so far when cancelled, and removes the copy", async () => {
+    const { wsId, prId, base, headSha } = await readyPr();
+    await consent(wsId, prId);
+    blockOn = "b = 4";
+    const { body } = await start(base, headSha);
+    await until(async () => {
+      const ex = (await passRow(body.runId)).execution as MutationExecution | null;
+      return (ex?.mutants.length ?? 0) === 1;
+    }, "the first mutant's result");
+    await until(() => runnerCalls.length === 4, "the second mutant to start");
+
+    const cancel = await call("POST", `${base}/mutation-testing/cancel`);
+    expect(cancel.status).toBe(202);
+    const row = await finished(body.runId);
+    expect(row.status).toBe("cancelled");
+    const execution = row.execution as MutationExecution;
+    expect(execution.mutants.map((m) => m.id)).toEqual(["m1"]);
+    expect((row.summary as MutationSummary).notes.join(" ")).toContain("partial results");
+    expect(copiesIn(wsId)).toEqual([]);
+    expect((await call("POST", `${base}/mutation-testing/cancel`)).status).toBe(409);
+  });
+
+  it("fails on a plan that doesn't match the schema, and removes the copy", async () => {
+    writeAnswers({ mutants: "lots" });
+    const { wsId, prId, base, headSha } = await readyPr();
+    await consent(wsId, prId);
+    const row = await finished((await start(base, headSha)).body.runId);
+    expect(row.status).toBe("failed");
+    expect(row.error).toContain("planning failed");
+    expect(row.execution).toBeNull();
+    expect(runnerCalls).toEqual([]);
+    expect(copiesIn(wsId)).toEqual([]);
+  });
+
+  it("fails, leaving no copy, when the planning run can't start", async () => {
+    const { wsId, prId, base, headSha } = await readyPr();
+    await consent(wsId, prId);
+    // startClaudeRun refuses a run with no budget.
+    settings = { ...settings, planningBudgetUsd: 0 };
+    const row = await finished((await start(base, headSha)).body.runId);
+    expect(row.status).toBe("failed");
+    expect(row.error).toContain("maxBudgetUsd");
+    expect(copiesIn(wsId)).toEqual([]);
+    expect(mutantCopiesInUse.size).toBe(0);
+    expect(await db.select().from(agentRuns)).toEqual([]);
+    // The PR is free for the next sync.
+    expect((await call("POST", `${base}/refresh`)).status).toBe(202);
+    await waitForProgress(wsId, prId);
+  });
+
+  it("reports the latest pass as stale after a push", async () => {
+    const { wsId, prId, base, headSha } = await readyPr();
+    await consent(wsId, prId);
+    await finished((await start(base, headSha)).body.runId);
+    remote.pushToPr("src/a.ts", "export const a = 9;\n");
+    await call("POST", `${base}/refresh`);
+    await waitForProgress(wsId, prId);
+    const state = (await (await call("GET", `${base}/mutation-testing`)).json()) as {
+      run: { headSha: string; isCurrentHead: boolean };
+      blocked: { reason: string };
+    };
+    expect(state.run).toMatchObject({ headSha, isCurrentHead: false });
+    expect(state.blocked.reason).toContain("earlier commit");
   });
 });

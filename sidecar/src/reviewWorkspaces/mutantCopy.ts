@@ -4,7 +4,7 @@
  * each run gets its own copy of the PR's worktree, dependencies and all, next
  * to it in the review workspace's folder:
  *
- *   .review/<workspace id>/<refDomKey>-mutants-<copy id>
+ *   .review/<workspace id>/<refDomKey>-mutants-<mutation run id>
  *
  * On APFS the copy is a clonefile (`cp -c`), which shares blocks with the
  * original until either side writes, so even a large `node_modules` costs
@@ -23,21 +23,14 @@
 import { lstatSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { and, eq, sql } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
-import { agentRuns, type ReviewWorkspacePr } from "../db/schema.ts";
+import { mutationRuns, type ReviewWorkspacePr } from "../db/schema.ts";
 import { type RunResult, run } from "../workspaces/exec.ts";
 import { type GitRunner, git } from "../workspaces/git.ts";
 import { reviewGit } from "./git.ts";
 import { assertWorktreeInWorkspace, reviewWorkspaceDir, reviewWorkspacesRoot } from "./service.ts";
-
-/**
- * The run kind mutation tests are stored under. Defined here rather than with
- * the runs in `mutationTesting.ts` because the sweep below looks runs up by it,
- * and `mutationTesting.ts` already imports this module.
- */
-export const MUTATION_RUN_KIND = "mutation";
 
 const COPY_NAME = /^(.+)-mutants-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 
@@ -293,12 +286,15 @@ export async function sweepMutantCopies(
   if (candidates.length === 0) return 0;
 
   const rows = await db
-    .select({ copyId: sql<string>`${agentRuns.meta}->>'copyId'`, status: agentRuns.status })
-    .from(agentRuns)
+    .select({ id: mutationRuns.id, status: mutationRuns.status })
+    .from(mutationRuns)
     .where(
-      and(eq(agentRuns.kind, MUTATION_RUN_KIND), sql`${agentRuns.meta}->>'copyId' is not null`),
+      inArray(
+        mutationRuns.id,
+        candidates.map((c) => c.copyId),
+      ),
     );
-  const statusByCopy = new Map(rows.map((row) => [row.copyId, row.status]));
+  const statusByCopy = new Map<string, string>(rows.map((row) => [row.id, row.status]));
 
   let removed = 0;
   for (const candidate of candidates) {

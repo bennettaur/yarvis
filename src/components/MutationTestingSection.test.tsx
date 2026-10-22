@@ -3,7 +3,15 @@ import { createElement } from "react";
 import { mountForInteraction, renderToHtml, textOf } from "../test/render";
 import MutationTestingSection from "./MutationTestingSection";
 
-let config: Record<string, unknown> = { model: "sonnet", maxBudgetUsd: 2, maxMutants: 12 };
+const DEFAULTS = {
+  planningModel: "sonnet",
+  planningBudgetUsd: 1,
+  explanationModel: "sonnet",
+  explanationBudgetUsd: 0.5,
+  maxMutants: 12,
+  testTimeoutCapSeconds: 300,
+};
+let config: Record<string, unknown> = { ...DEFAULTS };
 const calls: { method: string; body?: string }[] = [];
 let nextPatchStatus: number | null = null;
 
@@ -35,7 +43,7 @@ afterEach(() => {
   unmount = null;
   calls.length = 0;
   nextPatchStatus = null;
-  config = { model: "sonnet", maxBudgetUsd: 2, maxMutants: 12 };
+  config = { ...DEFAULTS };
 });
 
 function setValue(element: HTMLInputElement | HTMLSelectElement, value: string) {
@@ -52,8 +60,10 @@ describe("MutationTestingSection", () => {
   it("shows the model, budget and mutant cap", async () => {
     const text = textOf(await renderToHtml(createElement(MutationTestingSection)));
     expect(text).toContain("Mutation testing");
-    expect(text).toContain("Claude Code model");
-    expect(text).toContain("Budget per run");
+    expect(text).toContain("Planning model");
+    expect(text).toContain("Explanation model");
+    expect(text).toContain("Longest test run");
+    expect(text).toContain("Planning budget");
     expect(text).toContain("Most mutants per run");
   });
 
@@ -63,7 +73,7 @@ describe("MutationTestingSection", () => {
 
     setValue(mounted.host.querySelector("select") as HTMLSelectElement, "opus");
     await settle();
-    const mutants = mounted.host.querySelectorAll("input")[1] as HTMLInputElement;
+    const mutants = mounted.host.querySelectorAll("input")[2] as HTMLInputElement;
     setValue(mutants, "6");
     // Nothing is sent while typing.
     expect(calls.filter((c) => c.method === "PATCH")).toHaveLength(1);
@@ -71,7 +81,7 @@ describe("MutationTestingSection", () => {
     await settle();
 
     expect(calls.filter((c) => c.method === "PATCH").map((c) => JSON.parse(c.body ?? ""))).toEqual([
-      { model: "opus" },
+      { planningModel: "opus" },
       { maxMutants: 6 },
     ]);
   });
@@ -79,7 +89,7 @@ describe("MutationTestingSection", () => {
   it("refuses an out-of-range value without saving it", async () => {
     const mounted = await mountForInteraction(createElement(MutationTestingSection));
     unmount = mounted.unmount;
-    const mutants = mounted.host.querySelectorAll("input")[1] as HTMLInputElement;
+    const mutants = mounted.host.querySelectorAll("input")[2] as HTMLInputElement;
     setValue(mutants, "99");
     mutants.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
     await settle();

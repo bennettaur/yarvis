@@ -3,10 +3,11 @@ import { z } from "zod";
 import { readSection, withSection } from "../settings/store.ts";
 
 /**
- * How a mutation-testing run is sized: which Claude Code model runs it, the
- * most it may spend, and how many mutants it makes. Kept under the
- * `mutationTesting` key in `~/.yarvis/settings.json`, like the PR review
- * models, and read at the start of every run so a change applies to the next.
+ * How a mutation-testing pass is sized: the Claude Code model and budget of
+ * its planning run and of its explanation run, how many mutants it makes, and
+ * the longest any one test command may run. Kept under the `mutationTesting`
+ * key in `~/.yarvis/settings.json`, like the PR review models, and read at the
+ * start of every pass so a change applies to the next.
  */
 
 /** `MUTATION_LIMITS` in `src/lib/pr/mutationTestingConfig.ts` mirrors these limits. */
@@ -24,22 +25,29 @@ const modelSchema = z
 
 const mutationTestingConfigSchema = z.object({
   /** Null runs Claude Code's own default model. */
-  model: modelSchema.nullable(),
-  maxBudgetUsd: z.number().min(0.1).max(50),
+  planningModel: modelSchema.nullable(),
+  planningBudgetUsd: z.number().min(0.1).max(20),
+  explanationModel: modelSchema.nullable(),
+  explanationBudgetUsd: z.number().min(0.05).max(20),
   maxMutants: z.number().int().min(1).max(MAX_MUTANTS_LIMIT),
+  /** A mutant's tests get three times the baseline's time, up to this. */
+  testTimeoutCapSeconds: z.number().int().min(30).max(3_600),
 });
 
 export type MutationTestingConfig = z.infer<typeof mutationTestingConfigSchema>;
 
 /**
- * Sonnet rather than Claude Code's default, which may be a pricier model than a
- * dozen edit-and-test loops need. About $2 covers a dozen mutants on a small
- * suite; the cap is a ceiling, and a run that reaches it ends without a report.
+ * Sonnet rather than Claude Code's default, which may be a pricier model than
+ * reading a diff and writing up a few survivors needs. A budget is a ceiling: a
+ * planning run that reaches it ends without a plan, and the pass with it.
  */
 export const DEFAULT_MUTATION_TESTING_CONFIG: MutationTestingConfig = {
-  model: "sonnet",
-  maxBudgetUsd: 2,
+  planningModel: "sonnet",
+  planningBudgetUsd: 1,
+  explanationModel: "sonnet",
+  explanationBudgetUsd: 0.5,
   maxMutants: 12,
+  testTimeoutCapSeconds: 300,
 };
 
 const SETTINGS_KEY = "mutationTesting";
@@ -52,13 +60,10 @@ function parseStoredConfig(stored: unknown): MutationTestingConfig {
   const out: MutationTestingConfig = { ...DEFAULT_MUTATION_TESTING_CONFIG };
   if (!stored || typeof stored !== "object") return out;
   const record = stored as Record<string, unknown>;
-  const shape = mutationTestingConfigSchema.shape;
-  const model = shape.model.safeParse(record.model);
-  if (model.success) out.model = model.data;
-  const budget = shape.maxBudgetUsd.safeParse(record.maxBudgetUsd);
-  if (budget.success) out.maxBudgetUsd = budget.data;
-  const mutants = shape.maxMutants.safeParse(record.maxMutants);
-  if (mutants.success) out.maxMutants = mutants.data;
+  for (const [key, schema] of Object.entries(mutationTestingConfigSchema.shape)) {
+    const parsed = schema.safeParse(record[key]);
+    if (parsed.success) (out as Record<string, unknown>)[key] = parsed.data;
+  }
   return out;
 }
 

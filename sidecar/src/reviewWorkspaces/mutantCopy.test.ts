@@ -15,11 +15,10 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import postgres from "postgres";
 import { getDb } from "../db/client.ts";
-import { agentRuns } from "../db/schema.ts";
+import { mutationRuns, reviewWorkspacePrs, reviewWorkspaces } from "../db/schema.ts";
 import { run } from "../workspaces/exec.ts";
 import {
   createMutantCopy,
-  MUTATION_RUN_KIND,
   mutantCopyPath,
   removeMutantCopy,
   sweepMutantCopies,
@@ -32,6 +31,7 @@ const db = getDb(url).db;
 
 const WORKSPACE = "11111111-1111-4111-8111-111111111111";
 const COPY_ID = "22222222-2222-4222-8222-222222222222";
+const PR_ID = "12121212-1212-4121-8121-121212121212";
 
 let root: string;
 let worktreePath: string;
@@ -234,7 +234,17 @@ describe("removing a mutant copy", () => {
 
 describe("sweeping leftover copies", () => {
   beforeEach(async () => {
-    await sql`TRUNCATE agent_runs`;
+    await sql`TRUNCATE review_workspaces, review_workspace_prs, mutation_runs CASCADE`;
+    await db.insert(reviewWorkspaces).values({ id: WORKSPACE, name: "Review" });
+    await db.insert(reviewWorkspacePrs).values({
+      id: PR_ID,
+      workspaceId: WORKSPACE,
+      refKey: "gh:o/r/1",
+      ref: { provider: "github", owner: "o", repo: "r", number: 1 },
+      colorIndex: 0,
+      position: 0,
+      worktreePath,
+    });
   });
 
   const ids = {
@@ -247,13 +257,15 @@ describe("sweeping leftover copies", () => {
     inUse: "77777777-7777-4777-8777-777777777777",
   };
 
-  async function recordRun(copyId: string, status: string) {
-    await db.insert(agentRuns).values({
-      kind: MUTATION_RUN_KIND,
-      targetKey: "gh:o/r/1@abc",
+  async function recordRun(id: string, status: "running" | "succeeded" | "failed" | "cancelled") {
+    await db.insert(mutationRuns).values({
+      id,
+      workspaceId: WORKSPACE,
+      prId: PR_ID,
+      refKey: "gh:o/r/1",
+      headSha: "a".repeat(40),
       status,
       instance: "test",
-      meta: { copyId },
     });
   }
 
