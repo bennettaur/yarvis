@@ -361,10 +361,18 @@ function hostileInput(): VerificationInput {
     checksUnavailable: false,
     reviewThreads: [
       {
+        id: "thread-1",
         path: `src/${MARK}.ts`,
         line: 3,
+        side: "RIGHT",
         isResolved: false,
-        comments: [{ author: `${MARK}-reviewer`, body: `please ${MARK}`, createdAt: "" }],
+        isOutdated: false,
+        canReply: true,
+        canResolve: true,
+        canUnresolve: false,
+        comments: [
+          { id: "comment-1", author: `${MARK}-reviewer`, body: `please ${MARK}`, createdAt: "" },
+        ],
       },
     ],
   } satisfies Pick<
