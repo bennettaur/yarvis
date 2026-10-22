@@ -8,7 +8,7 @@ import type { AttentionNavTarget, PrGuideRow } from "../db/schema.ts";
 import { emitEvent } from "../events/service.ts";
 import { createGitHubClient } from "../github/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
-import { resolveModel } from "../llm/providers.ts";
+import { modelCompactAtTokens, resolveModelWithOllama } from "../llm/providers.ts";
 import { askAboutCode } from "./ask.ts";
 import { deleteGuide, getGuide, isStale, saveGuide, setGuideProgress } from "./guides.ts";
 import {
@@ -170,7 +170,12 @@ export function createPrRoutes(config: Config): Hono {
     feature: PrModelFeature,
     providerId?: string,
     modelId?: string,
-  ): Promise<{ model: Awaited<ReturnType<typeof resolveModel>> } | { error: string }> => {
+  ): Promise<
+    | ({ selection: { provider: string; model: string } } & Awaited<
+        ReturnType<typeof resolveModelWithOllama>
+      >)
+    | { error: string }
+  > => {
     const fallback = await resolvePrModel(config, feature);
     const provider = providerId ?? fallback?.provider;
     const model = modelId ?? fallback?.model;
@@ -178,7 +183,10 @@ export function createPrRoutes(config: Config): Hono {
     try {
       // Wrapped rather than returned bare: a resolved model can itself be a
       // string, so an `"error" in x` check would not tell the two apart.
-      return { model: await resolveModel(config, provider, model) };
+      return {
+        selection: { provider, model },
+        ...(await resolveModelWithOllama(config, provider, model)),
+      };
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) };
     }
@@ -198,7 +206,15 @@ export function createPrRoutes(config: Config): Hono {
     if ("error" in resolved) return c.json({ error: resolved.error }, 400);
 
     try {
-      const { steps, headSha } = await generateTour(resolved.model, source, c.req.raw.signal);
+      const { provider, model } = resolved.selection;
+      const { steps, headSha } = await generateTour(resolved.model, source, {
+        signal: c.req.raw.signal,
+        // An Ollama model writes its final answer through Ollama's own API,
+        // which holds the output to the tour's schema.
+        ollama: resolved.ollama ?? undefined,
+        modelName: model,
+        contextTokens: await modelCompactAtTokens(config, provider, model),
+      });
       const guide = await saveGuide(dbh, { ref, headSha, steps, title, url });
       await syncAttention(ref, guide);
       void emitEvent(dbh, {

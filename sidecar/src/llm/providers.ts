@@ -182,6 +182,31 @@ export function ollamaUrl(baseUrl: string, path: "/v1" | "/api/chat"): string {
   return `${baseUrl.replace(/\/+$/, "")}${path}`;
 }
 
+/**
+ * Where to reach a model through an Ollama server's native `/api/chat`, which
+ * unlike its OpenAI-compatible endpoint can hold the output to a JSON schema.
+ */
+export interface OllamaChatTarget {
+  url: string;
+  headers: Record<string, string>;
+  model: string;
+}
+
+function ollamaChatTargetFor(
+  config: Config,
+  row: CustomProviderRow,
+  modelId: string,
+): OllamaChatTarget | null {
+  if (row.apiKind !== "ollama") return null;
+  const secrets = config.customProviderSecrets[row.id] ?? { headers: {} };
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...secrets.headers,
+  };
+  if (secrets.apiKey) headers.Authorization = `Bearer ${secrets.apiKey}`;
+  return { url: ollamaUrl(row.baseUrl, "/api/chat"), headers, model: modelId };
+}
+
 /** The saved row behind a `custom:<id>` provider id, or null for a built-in or unknown id. */
 export async function findCustomProvider(
   providerId: ProviderId,
@@ -227,14 +252,32 @@ export async function resolveModel(
   providerId: ProviderId,
   modelId: string,
 ): Promise<LanguageModel> {
+  return (await resolveModelWithOllama(config, providerId, modelId)).model;
+}
+
+/**
+ * `resolveModel`, plus the model's native Ollama chat target when an Ollama
+ * custom provider serves it — from the one lookup of the saved provider.
+ */
+export async function resolveModelWithOllama(
+  config: Config,
+  providerId: ProviderId,
+  modelId: string,
+): Promise<{ model: LanguageModel; ollama: OllamaChatTarget | null }> {
   if (providerId.startsWith(CUSTOM_PROVIDER_PREFIX)) {
     const id = providerId.slice(CUSTOM_PROVIDER_PREFIX.length);
     const rows = await listCustomProviders();
     const row = rows.find((r) => r.id === id);
     if (!row) throw new Error(`unknown custom provider: ${id}`);
-    return resolveCustom(row, config, modelId);
+    return {
+      model: resolveCustom(row, config, modelId),
+      ollama: ollamaChatTargetFor(config, row, modelId),
+    };
   }
+  return { model: resolveBuiltIn(config, providerId, modelId), ollama: null };
+}
 
+function resolveBuiltIn(config: Config, providerId: ProviderId, modelId: string): LanguageModel {
   switch (providerId) {
     case "anthropic": {
       const apiKey = config.secrets.anthropicApiKey;

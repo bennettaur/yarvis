@@ -18,6 +18,7 @@ import {
   ollamaUrl,
   reasoningOptions,
   resolveModel,
+  resolveModelWithOllama,
 } from "./providers.ts";
 
 function configWithSecrets(secrets: Config["customProviderSecrets"] = {}): Config {
@@ -337,6 +338,58 @@ describe("resolveModel for custom providers", () => {
     await expect(
       resolveModel(configWithSecrets(), `${CUSTOM_PROVIDER_PREFIX}does-not-exist`, "x"),
     ).rejects.toThrow();
+  });
+});
+
+describe("resolveModelWithOllama", () => {
+  it("names the native chat target of an Ollama provider, with its key and headers", async () => {
+    const row = await createCustomProvider({
+      name: "ollama",
+      baseUrl: "http://localhost:11434/",
+      apiKind: "ollama",
+      models: ["llama3.2"],
+      headerNames: ["X-Team"],
+    });
+    const config = configWithSecrets({
+      [row.id]: { apiKey: "sk-test", headers: { "X-Team": "core" } },
+    });
+    const { model, ollama } = await resolveModelWithOllama(
+      config,
+      `${CUSTOM_PROVIDER_PREFIX}${row.id}`,
+      "llama3.2",
+    );
+    expect((model as { modelId?: string }).modelId).toBe("llama3.2");
+    expect(ollama).toEqual({
+      url: "http://localhost:11434/api/chat",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Team": "core",
+        Authorization: "Bearer sk-test",
+      },
+      model: "llama3.2",
+    });
+  });
+
+  it("has no target for any other provider", async () => {
+    const row = await createCustomProvider({
+      name: "litellm",
+      baseUrl: "https://litellm.example.com/v1",
+      apiKind: "openai",
+      models: ["gpt-4o"],
+      headerNames: [],
+    });
+    const custom = await resolveModelWithOllama(
+      configWithSecrets(),
+      `${CUSTOM_PROVIDER_PREFIX}${row.id}`,
+      "gpt-4o",
+    );
+    expect(custom.ollama).toBeNull();
+    const builtIn = await resolveModelWithOllama(
+      { ...configWithSecrets(), secrets: { anthropicApiKey: "sk-ant" } },
+      "anthropic",
+      "claude-sonnet-4-6",
+    );
+    expect(builtIn.ollama).toBeNull();
   });
 });
 
