@@ -1,4 +1,5 @@
 import { ensureOk, sidecarFetch, streamSSE } from "./api";
+import type { QuestionItem } from "./questions";
 
 /**
  * Client for the sidecar's attention stream (`/api/attention`). The store in
@@ -124,11 +125,33 @@ export interface PermissionRequest {
   createdAt: string;
 }
 
-/** `terminal` leaves the prompt to Claude Code's own dialog in the session. */
+/**
+ * `terminal` leaves the prompt to Claude Code's own dialog in the session.
+ * `answer` replies to an AskUserQuestion prompt, keyed by each question's text.
+ */
 export type PermissionDecision =
   | { behavior: "allow" }
+  | { behavior: "answer"; answers: Record<string, string> }
   | { behavior: "deny"; message?: string }
   | { behavior: "terminal" };
+
+/**
+ * The questions in a Claude Code AskUserQuestion prompt, or null for any other
+ * tool, or an input not shaped the way the question view expects.
+ */
+export function askedQuestions(request: PermissionRequest): QuestionItem[] | null {
+  if (request.toolName !== "AskUserQuestion") return null;
+  const { questions } = request.toolInput;
+  if (!Array.isArray(questions) || questions.length === 0) return null;
+  const isOption = (o: unknown) =>
+    typeof o === "object" && o !== null && typeof (o as { label?: unknown }).label === "string";
+  const valid = questions.every(
+    (q) =>
+      typeof q?.question === "string" &&
+      (q.options === undefined || (Array.isArray(q.options) && q.options.every(isOption))),
+  );
+  return valid ? (questions as QuestionItem[]) : null;
+}
 
 /** The permission prompts still waiting, oldest first, optionally for one session. */
 export async function getPermissionRequests(sessionKey?: string): Promise<PermissionRequest[]> {

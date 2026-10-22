@@ -50,7 +50,9 @@ const _server = Bun.serve({
   // idle timer. Without this the socket is closed mid-generation and the client
   // sees a timeout with no output. 255s is Bun's maximum.
   // `ANSWER_WAIT_MS` in `questions/contract.ts` stays under this, since an
-  // `ask_user` call sends nothing while it waits.
+  // `ask_user` call sends nothing while it waits. A route that must wait longer
+  // opts out for its own request with `lib/idleTimeout.ts`, as the permission
+  // ingest route does.
   idleTimeout: 255,
 });
 if (config.tokenGenerated) {

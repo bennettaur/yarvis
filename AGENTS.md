@@ -307,7 +307,8 @@ back to ad-hoc.
   executable's file name as the fallback for an agent that registers nothing.
   A registered pid counts only while it leads the PTY's foreground process
   group, so a stale one matches nothing. Every PTY holds the same ingest token,
-  so registration (and a permission prompt sent to `/ingest/permission`) also
+  so registration (and a permission prompt sent to `/ingest/permission`, or the
+  hook that settles one at `/ingest/permission/settled`) also
   needs the PTY's own `YARVIS_SESSION_TOKEN`, an HMAC of
   its session key under the sidecar's full-access bearer, which no PTY holds.
   The sidecar recomputes it, so a process can't mint a token for a terminal it

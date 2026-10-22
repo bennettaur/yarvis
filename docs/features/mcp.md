@@ -193,10 +193,14 @@ you are on, so you can answer without switching to the session. See
 same two tools, and its questions show as coming from **Yarvis** (see
 [The assistant](assistant.md#tools)).
 
-One call waits up to four minutes. The sidecar closes a connection that sends
-nothing for longer than that, so past it the tool returns `pending` with a
-`questionId`, and the agent calls `wait_for_answer` to keep waiting. An answer
-given in between is kept and returned straight away.
+One call waits until you answer, for up to a day. While it waits, Yarvis sends
+the client a progress update every 30 seconds, which keeps Claude Code from
+dropping the quiet call. Claude Code moves a call that runs past two minutes
+into the background, so the agent can keep working while it waits. A client
+that doesn't ask for progress updates waits four minutes instead; past that the
+tool returns `pending` with a `questionId`, and the agent calls
+`wait_for_answer` to keep waiting. An answer given in between is kept and
+returned straight away.
 
 The question is shown against the workspace and terminal it came from. The
 session tells Yarvis which ones through the `X-Yarvis-Workspace` and

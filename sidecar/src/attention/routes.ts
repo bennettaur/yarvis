@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
@@ -8,22 +8,25 @@ import { readSessionActivityById } from "../cc/sessions.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { workspaces } from "../db/schema.ts";
+import { disableIdleTimeout } from "../lib/idleTimeout.ts";
 import {
   SESSION_KEY_HEADER,
   SESSION_TOKEN_HEADER,
   sessionTokenMatches,
 } from "../workspaces/agentSessions.ts";
+import { PERMISSION_HOOK_TIMEOUT_S } from "../workspaces/claudeSettings.ts";
 import { type AttentionStreamEvent, publish, subscribe } from "./hub.ts";
 import { navTargetFor } from "./navTarget.ts";
 import {
+  answerQuestionPrompt,
   awaitPermissionDecision,
   canHoldAnotherPermission,
   decidePermission,
   hasPendingPermission,
   hookOutputFor,
   listPendingPermissions,
-  type PermissionDecision,
   type PermissionRequestInfo,
+  settlePermissions,
   summarizePermission,
   truncate,
 } from "./permissions.ts";
@@ -71,11 +74,11 @@ export const ingestSchema = z.object({
 
 /**
  * How long the ingest route holds a permission request open waiting for the
- * user. Kept under Bun's 255s idle timeout (`server.ts`), which would otherwise
- * close the silent connection first. The hook's own `timeout` in
- * `claudeSettings.ts` sits just above this.
+ * user. Claude Code shows its own dialog while the hook waits, and whichever is
+ * answered first wins, so a long hold never keeps the user from the terminal.
+ * The hook's own `timeout` in `claudeSettings.ts` sits just above this.
  */
-export const PERMISSION_HOLD_MS = 240_000;
+export const PERMISSION_HOLD_MS = (PERMISSION_HOOK_TIMEOUT_S - 10) * 1000;
 
 /**
  * Largest hook body accepted. A Write's input carries the whole file, so this
@@ -96,6 +99,13 @@ export const permissionHookSchema = z.object({
   permission_mode: z.string().max(64).optional(),
   tool_name: z.string().min(1).max(256),
   tool_input: z.record(z.string(), z.unknown()).default({}),
+});
+
+/** The stdin of the hooks that settle held prompts; only these fields are read. */
+const settledHookSchema = z.object({
+  hook_event_name: z.string().max(64),
+  tool_name: z.string().max(256).optional(),
+  tool_input: z.record(z.string(), z.unknown()).optional(),
 });
 
 /**
@@ -170,6 +180,24 @@ export function createAttentionIngestRoutes(config: Config): Hono {
       });
   };
 
+  /**
+   * The session a hook speaks for, from its headers, or the error to reply
+   * with. Every terminal holds the ingest token; only this one holds its own
+   * session token, so a hook can't act under another terminal's name.
+   */
+  const sessionOrigin = (c: Context) => {
+    const origin = permissionOriginSchema.safeParse({
+      workspaceId: c.req.header("x-yarvis-workspace-id") || undefined,
+      sessionKey: c.req.header(SESSION_KEY_HEADER),
+    });
+    if (!origin.success) return { error: c.json({ error: origin.error.flatten() }, 400) };
+    const token = c.req.header(SESSION_TOKEN_HEADER) ?? "";
+    if (!sessionTokenMatches(config.token, origin.data.sessionKey, token)) {
+      return { error: c.json({ error: "session token does not match the session key" }, 403) };
+    }
+    return { origin: origin.data };
+  };
+
   router.post("/attention", async (c) => {
     const parsed = ingestSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
@@ -206,21 +234,13 @@ export function createAttentionIngestRoutes(config: Config): Hono {
     async (c) => {
       const arrivedAt = Date.now();
       if (!canHoldAnotherPermission()) return c.body(null, 204);
-      const origin = permissionOriginSchema.safeParse({
-        workspaceId: c.req.header("x-yarvis-workspace-id") || undefined,
-        sessionKey: c.req.header(SESSION_KEY_HEADER),
-      });
-      if (!origin.success) return c.json({ error: origin.error.flatten() }, 400);
-      // Every terminal holds the ingest token; only this one holds its own
-      // session token, so a prompt can't be raised under another terminal's name.
-      const token = c.req.header(SESSION_TOKEN_HEADER) ?? "";
-      if (!sessionTokenMatches(config.token, origin.data.sessionKey, token)) {
-        return c.json({ error: "session token does not match the session key" }, 403);
-      }
+      const checked = sessionOrigin(c);
+      if (checked.error) return checked.error;
       const parsed = permissionHookSchema.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-      const { workspaceId, sessionKey } = origin.data;
+      const { workspaceId, sessionKey } = checked.origin;
       const hook = parsed.data;
+      if (!canHoldAnotherPermission(sessionKey)) return c.body(null, 204);
 
       const [ws] = workspaceId
         ? await db()
@@ -236,6 +256,9 @@ export function createAttentionIngestRoutes(config: Config): Hono {
           ? await readSessionActivityById(hook.cwd, hook.session_id, 1).catch(() => null)
           : null;
 
+      // Only now, with the caller checked and the body read, may the wait
+      // outlast the server's idle timeout.
+      disableIdleTimeout(c);
       let raised: Promise<void> = Promise.resolve();
 
       const decision = await awaitPermissionDecision(
@@ -261,7 +284,7 @@ export function createAttentionIngestRoutes(config: Config): Hono {
         },
       );
 
-      // Answered, or the hook ended (Claude Code killed it), means this request
+      // Answered here or in the terminal, or the hook ended, means this request
       // no longer blocks anyone. A timeout or a hand-back leaves the terminal
       // dialog waiting, so the item stays for the user to follow.
       const handled = decision !== null && decision.behavior !== "terminal";
@@ -282,11 +305,41 @@ export function createAttentionIngestRoutes(config: Config): Hono {
     },
   );
 
+  // Tells the app a session has moved past its held prompts, which the user
+  // answered in Claude Code's own dialog. PostToolUse names the call that ran;
+  // Stop and UserPromptSubmit mean the turn is over, so nothing it asked waits.
+  router.post(
+    "/permission/settled",
+    bodyLimit({ maxSize: MAX_PERMISSION_BODY_BYTES, onError: (c) => c.body(null, 413) }),
+    async (c) => {
+      const checked = sessionOrigin(c);
+      if (checked.error) return checked.error;
+      const parsed = settledHookSchema.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+      const { hook_event_name: event, tool_name, tool_input } = parsed.data;
+      if (event === "PostToolUse" && tool_name) {
+        settlePermissions(checked.origin.sessionKey, {
+          toolName: tool_name,
+          toolInput: tool_input ?? {},
+        });
+      } else if (event === "Stop" || event === "UserPromptSubmit") {
+        settlePermissions(checked.origin.sessionKey);
+      }
+      return c.body(null, 204);
+    },
+  );
+
   return router;
 }
 
+/** `answer` replies to an AskUserQuestion prompt, keyed by each question's text. */
 const decisionSchema = z.discriminatedUnion("behavior", [
   z.object({ behavior: z.literal("allow") }),
+  z.object({
+    behavior: z.literal("answer"),
+    // Keys aren't capped: each must equal one of the request's own question texts.
+    answers: z.record(z.string(), z.string().trim().min(1).max(4_000)),
+  }),
   z.object({ behavior: z.literal("deny"), message: z.string().trim().max(4_000).optional() }),
   z.object({ behavior: z.literal("terminal") }),
 ]);
@@ -414,7 +467,15 @@ export function createAttentionRoutes(config: Config): Hono {
   router.post("/permissions/:id", async (c) => {
     const parsed = decisionSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const decision: PermissionDecision = parsed.data;
+    const decision = parsed.data;
+    if (decision.behavior === "answer") {
+      const result = answerQuestionPrompt(c.req.param("id"), decision.answers);
+      if (result === "gone") return c.json({ error: "no longer waiting" }, 410);
+      if (result === "mismatch") {
+        return c.json({ error: "answers don't match the prompt's questions" }, 400);
+      }
+      return c.json({ ok: true });
+    }
     if (!decidePermission(c.req.param("id"), decision)) {
       return c.json({ error: "no longer waiting" }, 410);
     }
