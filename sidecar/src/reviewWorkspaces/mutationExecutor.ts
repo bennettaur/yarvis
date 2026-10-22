@@ -28,10 +28,11 @@ import {
   checkSandbox,
   killStrays,
   makeRunTempDir,
-  runSandboxed,
+  openSandboxSession,
   type SandboxedCommand,
   type SandboxedRun,
   type SandboxRunner,
+  type SandboxSession,
 } from "./testSandbox.ts";
 
 /** A mutant's tests get three times the baseline, and never less than this. */
@@ -44,11 +45,13 @@ export type ExecutionEvent =
   | { type: "mutant"; result: MutantResult; index: number; total: number; control: boolean };
 
 export interface ExecutorDeps {
+  /** Replaces the pass's sandbox session; tests use a fake. */
   runner?: SandboxRunner;
+  openSession?: typeof openSandboxSession;
   /** Replaced in tests whose runner is a fake. */
   checkSandbox?: typeof checkSandbox;
   /** Kills what a command left running in the copy or temp folder; returns the pids it killed. */
-  killStrays?: (roots: string[]) => Promise<number[]>;
+  killStrays?: (roots: string[], spare?: ReadonlySet<number>) => Promise<number[]>;
   makeTempDir?: () => string;
 }
 
@@ -134,7 +137,11 @@ export async function executeMutationPlan(
   input: ExecutionInput,
   deps: ExecutorDeps = {},
 ): Promise<MutationExecution> {
-  const runner = deps.runner ?? runSandboxed;
+  // One sandbox for the whole pass (see `openSandboxSession`), opened below.
+  let runner: SandboxRunner | null = deps.runner ?? null;
+  let session: SandboxSession | null = null;
+  /** The session's helper lives in the copy too, and must survive the stray sweep. */
+  const spare = new Set<number>();
   const strays = deps.killStrays ?? killStrays;
   const tempDir = (deps.makeTempDir ?? makeRunTempDir)();
   // Equivalents are reported but don't use up the cap.
@@ -163,7 +170,7 @@ export async function executeMutationPlan(
    */
   const cleanUp = async () => {
     for (let attempt = 0; attempt < 3; attempt++) {
-      const killed = await strays([input.copyRoot, tempDir]);
+      const killed = await strays([input.copyRoot, tempDir], spare);
       if (killed.length === 0) return;
       console.log(`[mutation-testing] killed ${killed.length} processes the tests left behind`);
       await new Promise((resolve) => setTimeout(resolve, 200));
@@ -174,6 +181,7 @@ export async function executeMutationPlan(
   /** Runs one test command; with `settle`, cleans up after it (a mutant's revert does that itself). */
   const run = async (argv: string[], timeoutMs: number, settle = true) => {
     try {
+      if (!runner) throw new Error("the sandbox session isn't open");
       return await runner({
         argv,
         cwd: input.copyRoot,
@@ -233,6 +241,17 @@ export async function executeMutationPlan(
   };
 
   try {
+    if (!runner) {
+      session = await (deps.openSession ?? openSandboxSession)({
+        cwd: input.copyRoot,
+        tempDir,
+        sandbox: input.sandbox,
+      });
+      runner = session.runner;
+      if (session.helperPid !== undefined) spare.add(session.helperPid);
+    }
+    // The probes run through the same session, so they check the sandbox the
+    // tests will actually get.
     await (deps.checkSandbox ?? checkSandbox)(
       runner,
       { cwd: input.copyRoot, tempDir, outside: dirname(input.copyRoot), signal: input.signal },
@@ -363,6 +382,8 @@ export async function executeMutationPlan(
     return execution;
   } finally {
     try {
+      session?.close();
+      spare.clear();
       await cleanUp();
     } finally {
       rmSync(tempDir, { recursive: true, force: true });

@@ -17,9 +17,11 @@ import {
   checkSandbox,
   killStrays,
   makeRunTempDir,
+  openSandboxSession,
   runSandboxed,
   type SandboxedCommand,
   type SandboxRunner,
+  SandboxUnavailableError,
   sandboxEnv,
   sandboxProfile,
 } from "./testSandbox.ts";
@@ -336,6 +338,109 @@ describe.skipIf(process.platform !== "darwin")("running a command in the sandbox
         "was not refused",
       );
       expect(readdirSync(outside)).toEqual([]);
+    },
+    SLOW,
+  );
+});
+
+describe.skipIf(process.platform !== "darwin")("a sandbox session for a whole pass", () => {
+  const SLOW = 90_000;
+  const open = () => openSandboxSession({ cwd, tempDir, sandbox: sandbox() });
+  const command = (argv: string[], extra: Partial<SandboxedCommand> = {}): SandboxedCommand => ({
+    argv,
+    cwd,
+    tempDir,
+    timeoutMs: 30_000,
+    signal: new AbortController().signal,
+    sandbox: sandbox(),
+    ...extra,
+  });
+
+  it(
+    "compiles the profile once, and its commands are as confined as a sandbox of their own",
+    async () => {
+      const session = await open();
+      try {
+        await session.runner(command(["/usr/bin/true"]));
+        const started = Date.now();
+        const second = await session.runner(command(["/usr/bin/true"]));
+        expect(second.exitCode).toBe(0);
+        expect(Date.now() - started).toBeLessThan(500);
+
+        // Argv only: nothing is read by a shell.
+        const echoed = await session.runner(command(["/bin/echo", "$HOME; ls"]));
+        expect(echoed.output.trim()).toBe("$HOME; ls");
+
+        const writes = await session.runner(
+          command(["/bin/sh", "-c", `echo a > ok.txt; echo b > "${outside}/bad.txt"; true`]),
+        );
+        expect(writes.exitCode).toBe(0);
+        expect(existsSync(join(cwd, "ok.txt"))).toBe(true);
+        expect(existsSync(join(outside, "bad.txt"))).toBe(false);
+
+        await checkSandbox(session.runner, { cwd, tempDir, outside }, sandbox());
+      } finally {
+        session.close();
+      }
+    },
+    SLOW,
+  );
+
+  it(
+    "times out and cancels one command without ending the session",
+    async () => {
+      const session = await open();
+      try {
+        const timedOut = await session.runner(command(["/bin/sleep", "30"], { timeoutMs: 300 }));
+        expect(timedOut.timedOut).toBe(true);
+        const controller = new AbortController();
+        const cancelled = session.runner(
+          command(["/bin/sleep", "30"], { signal: controller.signal }),
+        );
+        setTimeout(() => controller.abort(), 200);
+        expect((await cancelled).aborted).toBe(true);
+        const after = await session.runner(command(["/bin/echo", "still here"]));
+        expect(after.output.trim()).toBe("still here");
+      } finally {
+        session.close();
+      }
+    },
+    SLOW,
+  );
+
+  it(
+    "doesn't wait on an escaped grandchild, and the stray sweep spares only the helper",
+    async () => {
+      const session = await open();
+      try {
+        const started = Date.now();
+        const result = await session.runner(
+          command(["/bin/sh", "-c", "/usr/bin/perl -e 'setpgrp(0, 0); sleep 30' & echo started"]),
+        );
+        expect(result.output).toContain("started");
+        expect(Date.now() - started).toBeLessThan(15_000);
+        const spare = new Set([session.helperPid as number]);
+        const killed = await killStrays([cwd, tempDir], spare);
+        expect(killed.length).toBeGreaterThan(0);
+        expect(killed).not.toContain(session.helperPid);
+        // The helper survived the sweep and still runs commands.
+        expect((await session.runner(command(["/bin/echo", "ok"]))).output.trim()).toBe("ok");
+      } finally {
+        session.close();
+      }
+    },
+    SLOW,
+  );
+
+  it(
+    "refuses commands once its helper has gone",
+    async () => {
+      const session = await open();
+      session.close();
+      await Bun.sleep(200);
+      await expect(session.runner(command(["/usr/bin/true"]))).rejects.toBeInstanceOf(
+        SandboxUnavailableError,
+      );
     },
     SLOW,
   );
