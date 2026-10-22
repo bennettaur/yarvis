@@ -306,15 +306,8 @@
     {
       "idx": 43,
       "version": "7",
-      "when": 1792900935399,
-      "tag": "0043_complex_lilandra",
-      "breakpoints": true
-    },
-    {
-      "idx": 44,
-      "version": "7",
-      "when": 1792900945214,
-      "tag": "0044_abandoned_otto_octavius",
+      "when": 1792900954887,
+      "tag": "0043_material_doctor_doom",
       "breakpoints": true
     }
   ]
