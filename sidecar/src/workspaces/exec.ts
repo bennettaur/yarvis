@@ -119,6 +119,74 @@ export function runBytes(args: string[], opts: RunOptions = {}): Promise<RunByte
   return spawnAndCollect(args, opts);
 }
 
+export interface CappedRunResult extends RunResult {
+  /** Stopped early: stdout reached `maxBytes`, or the time ran out. */
+  stopped: "bytes" | "timeout" | null;
+}
+
+/**
+ * Like {@link run}, but for a command whose output can be far bigger than
+ * anyone wants (a search): stdout is read as it arrives and the process is
+ * killed once `maxBytes` have come in, or when the time runs out. Either way
+ * it answers with what it had rather than throwing, cut back to the last
+ * complete line.
+ */
+export async function runCapped(
+  args: string[],
+  opts: RunOptions & { maxBytes: number },
+): Promise<CappedRunResult> {
+  const proc = Bun.spawn(args, {
+    cwd: opts.cwd,
+    env: scrubbedEnv(opts.env, opts.withoutEnv),
+    stdin: opts.stdin === undefined ? undefined : new TextEncoder().encode(opts.stdin),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  let stopped: CappedRunResult["stopped"] = null;
+  const timer = setTimeout(() => {
+    stopped ??= "timeout";
+    proc.kill();
+  }, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+
+  const readStdout = async (): Promise<Uint8Array> => {
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    const reader = proc.stdout.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      total += value.length;
+      if (total >= opts.maxBytes) {
+        stopped ??= "bytes";
+        proc.kill();
+        await reader.cancel().catch(() => {});
+        break;
+      }
+    }
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (const chunk of chunks) {
+      out.set(chunk, at);
+      at += chunk.length;
+    }
+    return out;
+  };
+
+  try {
+    const [bytes, stderr, exitCode] = await Promise.all([
+      readStdout(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    let stdout = new TextDecoder().decode(bytes);
+    if (stopped) stdout = stdout.slice(0, stdout.lastIndexOf("\n") + 1);
+    return { stdout, stderr, exitCode, stopped };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export interface StreamOptions extends Omit<RunOptions, "stdin"> {
   /** Called with each decoded chunk of stdout/stderr as it arrives. */
   onChunk: (text: string) => void | Promise<void>;

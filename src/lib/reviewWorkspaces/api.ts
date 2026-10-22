@@ -229,6 +229,47 @@ export function reviewFileDiff(workspaceId: string, prId: string, path: string) 
   return json<ReviewFileDiff>(`${prPath(workspaceId, prId)}/diff?${query}`, "read diff");
 }
 
+/** One line a symbol search found at the PR's head; `line` and `column` are 1-based. */
+export interface ReviewSymbolMatch {
+  path: string;
+  line: number;
+  column: number;
+  preview: string;
+}
+
+export interface ReviewSymbolSearch {
+  headSha: string;
+  /** Best first: the asking file, its directory, what it imports, the rest. */
+  matches: ReviewSymbolMatch[];
+  /** There were more, or the search ran out of time. */
+  truncated: boolean;
+}
+
+export type ReviewSymbolSearchKind = "definitions" | "references";
+
+export interface ReviewSymbolQuery {
+  /** The file asking. */
+  path: string;
+  /** An identifier; anything else is refused. */
+  symbol: string;
+  line?: number;
+}
+
+/**
+ * Where `symbol` is declared, or used, at the PR's head, found by text search
+ * (any language). 409 until the PR's checkout is ready.
+ */
+export function reviewSymbolSearch(
+  workspaceId: string,
+  prId: string,
+  kind: ReviewSymbolSearchKind,
+  query: ReviewSymbolQuery,
+) {
+  const params = new URLSearchParams({ path: query.path, symbol: query.symbol });
+  if (query.line !== undefined) params.set("line", String(query.line));
+  return json<ReviewSymbolSearch>(`${prPath(workspaceId, prId)}/${kind}?${params}`, `find ${kind}`);
+}
+
 export function reviewSetupInfo(workspaceId: string, prId: string) {
   return json<ReviewSetupInfo>(`${prPath(workspaceId, prId)}/setup`, "read setup");
 }
