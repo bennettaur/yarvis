@@ -10,8 +10,10 @@ export {
   type NavigationProvider,
   type OpenLocationHandler,
   registerNavigationProvider,
+  uriKey,
   useMonacoNavigation,
 } from "./navigation";
+export { onlyUnresolvedImports } from "./tsDefinitions";
 export type {
   DiffSide,
   EditorRange,
@@ -21,4 +23,4 @@ export type {
   LineDecoration,
   ModelSide,
 } from "./types";
-export { type ParsedReviewUri, parseReviewUri, reviewUri } from "./uri";
+export { type ParsedReviewUri, parseReviewUri, REVIEW_SCHEME, reviewUri } from "./uri";

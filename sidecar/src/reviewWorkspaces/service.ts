@@ -45,6 +45,16 @@ import {
 } from "../workspaces/service.ts";
 import { ShaCache, stringsSize } from "./cache.ts";
 import {
+  type GrepResult,
+  grepSymbol,
+  languageFamilyForPath,
+  pickDefinitions,
+  pickReferences,
+  type SymbolQuery,
+  type SymbolSearchResult,
+} from "./definitions.ts";
+import {
+  assertSafeRepoPath,
   type ChangedFileWithSizes,
   changedFilesBetween,
   checkoutWorktree,
@@ -843,13 +853,89 @@ export async function reviewFile(
 ): Promise<FileAtSide & { sha: string }> {
   const ready = await requireReadyPr(db, config, workspaceId, prId, deps);
   const sha = side === "head" ? ready.headSha : ready.mergeBaseSha;
-  const file = await cache.get(
-    `file:${ready.clonePath}:${sha}:${path}`,
-    () => readFileAt(ready.runners, ready.clonePath, sha, path),
-    (f) => (f?.content.length ?? 0) + 64,
-  );
+  const file = await cachedFileAt(ready, sha, path);
   if (!file) throw new ReviewWorkspaceError(`no file at ${path} on the ${side} side`, 404);
   return { ...file, sha };
+}
+
+/**
+ * A file at `sha`, cached under one key for every reader. `fetchMissing:
+ * false` reads only what the clone already has: a blob it lacks reads as no
+ * file, and that answer isn't cached, since a fetching read could still find it.
+ */
+function cachedFileAt(
+  ready: ReadyPr,
+  sha: string,
+  path: string,
+  { fetchMissing = true }: { fetchMissing?: boolean } = {},
+): Promise<FileAtSide | null> {
+  const key = `file:${ready.clonePath}:${sha}:${path}`;
+  const read = () =>
+    readFileAt(ready.runners, ready.clonePath, sha, path, MAX_FILE_BYTES, { fetchMissing });
+  if (!fetchMissing && !cache.has(key)) return read();
+  return cache.get(key, read, (f) => (f?.content.length ?? 0) + 64);
+}
+
+export type SymbolSearchKind = "definitions" | "references";
+
+/** A search that ran out of time, kept out of the cache so the next try runs it again. */
+class SearchTimedOut extends Error {
+  constructor(readonly result: GrepResult) {
+    super("search timed out");
+  }
+}
+
+/**
+ * Where a symbol is declared, or used, at the PR's head, found by `git grep`
+ * over the commit (`definitions.ts`). Waits for the checkout, not for its
+ * files but for what it guarantees: every blob of the head tree is local by
+ * then, so the search, and the read of the asking file for the imports that
+ * rank the answers, use only the local runner and never fetch. Definitions
+ * and references share one cached search per symbol and language.
+ */
+export async function reviewSymbolSearch(
+  db: Db,
+  config: Config,
+  workspaceId: string,
+  prId: string,
+  kind: SymbolSearchKind,
+  query: Omit<SymbolQuery, "content">,
+  deps: ReviewDeps,
+): Promise<SymbolSearchResult & { headSha: string }> {
+  assertSafeRepoPath(query.path);
+  const ready = await requireReadyPr(db, config, workspaceId, prId, deps);
+  if (ready.pr.worktreeStatus !== "ready") {
+    throw new ReviewWorkspaceError(`the checkout is ${ready.pr.worktreeStatus}, not ready`, 409);
+  }
+  const asking = await cachedFileAt(ready, ready.headSha, query.path, { fetchMissing: false });
+  const family = languageFamilyForPath(query.path);
+  let found: GrepResult;
+  try {
+    found = await cache.get(
+      `grep:${ready.clonePath}:${ready.headSha}:${family ?? "*"}:${query.symbol}`,
+      async () => {
+        const result = await grepSymbol(
+          ready.runners.search,
+          ready.clonePath,
+          ready.headSha,
+          query.symbol,
+          family,
+        );
+        if (result.timedOut) throw new SearchTimedOut(result);
+        return result;
+      },
+      (result) => stringsSize(result.lines.map((line) => line.text + line.path)),
+    );
+  } catch (e) {
+    if (e instanceof SearchTimedOut) found = e.result;
+    else throw e;
+  }
+  const withContent = { ...query, content: asking?.content };
+  const result =
+    kind === "definitions"
+      ? pickDefinitions(found, withContent)
+      : pickReferences(found, withContent);
+  return { ...result, headSha: ready.headSha };
 }
 
 interface ReviewFileDiff extends ReadShas {

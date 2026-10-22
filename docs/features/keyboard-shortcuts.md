@@ -56,6 +56,8 @@ These use Cmd only, so Ctrl+D, Ctrl+T and Ctrl+W still reach the shell. See
 | Cmd+W | Close the tab |
 | Cmd+\ | Move the tab to the other side, splitting the view if it isn't yet |
 | Option+J / Option+K | Open the next / previous changed file of the PR in front |
+| F12 or Cmd+click | Go to the definition of the name under the cursor, in a diff or file tab |
+| Shift+F12 | Find references to it |
 
 Cmd+1 … Cmd+9 and Cmd+Shift+] / [ still move between the app's views, which is
 why tabs cycle on other keys here. See [Review workspaces](review-workspaces.md).

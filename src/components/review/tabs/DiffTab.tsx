@@ -4,6 +4,7 @@ import type { ReviewChangedFile } from "../../../lib/reviewWorkspaces/api";
 import type { VerificationMustRead } from "../../../lib/reviewWorkspaces/verification";
 import LoadingIndicator from "../../LoadingIndicator";
 import { MonacoDiffView } from "../editor";
+import { useReviewNavigation } from "../navigation";
 import { AnnotationBar, CenteredNote } from "./FileChrome";
 import FileTab from "./FileTab";
 import {
@@ -127,6 +128,7 @@ function ChangedFileDiff({
   const mustRead = mustReadFor(reportOf(latest.data), path);
   const [showAll, setShowAll] = useState(false);
   const reveal = useReveal(revealLine, revealNonce);
+  const { onOpenLocation } = useReviewNavigation(ctx);
 
   const headContent = head.data?.content ?? "";
   const annotations = useFileAnnotations({
@@ -182,6 +184,7 @@ function ChangedFileDiff({
         onLineAction={annotations.onLineAction}
         revealLine={reveal.line}
         revealKey={reveal.key}
+        onOpenLocation={onOpenLocation}
       />
     );
   }
