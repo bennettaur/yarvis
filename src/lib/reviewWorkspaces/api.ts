@@ -107,6 +107,10 @@ export interface ReviewSetupInfo {
   script: string | null;
   author: string | null;
   branch: string | null;
+  /** The commit the script would run against; send it back with the answer. */
+  headSha: string | null;
+  /** Environment variables the script won't get (the SSH agent), to say so in the prompt. */
+  withheldEnv: string[];
   consent: SetupConsent | null;
   status: SetupStatus | null;
   log: string | null;
@@ -224,14 +228,15 @@ export function reviewSetupInfo(workspaceId: string, prId: string) {
 }
 
 /**
- * Answers the setup prompt. `script` must be the script the user was shown: a
- * script changed since is refused (409) rather than run. Output streams on
+ * Answers the setup prompt. `script` and `headSha` must be what the prompt
+ * showed (from {@link reviewSetupInfo}): a script changed since, or a PR that
+ * moved, is refused (409) rather than run. Output streams on
  * {@link followReviewPrProgress}.
  */
 export function answerReviewSetup(
   workspaceId: string,
   prId: string,
-  answer: { grant: boolean; script: string | null },
+  answer: { grant: boolean; script: string | null; headSha: string | null },
 ) {
   return json<ReviewWorkspacePr>(
     `${prPath(workspaceId, prId)}/setup`,

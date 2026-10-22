@@ -8,15 +8,23 @@
  * still running) share one git process. A rejected promise is dropped rather
  * than kept, so a failure is retried next time.
  */
+
+interface Entry {
+  value: Promise<unknown>;
+  /** Known once the value resolves; until then the entry holds no budget. */
+  size: number | null;
+}
+
 export class ShaCache {
-  private readonly entries = new Map<string, { value: Promise<unknown>; size: number }>();
+  private readonly entries = new Map<string, Entry>();
   private used = 0;
 
   constructor(private readonly budget: number) {}
 
   /**
    * The cached value for `key`, or `load()`'s, sized by `sizeOf` once it
-   * resolves. A value bigger than the whole budget is returned but not kept.
+   * resolves. A value bigger than the whole budget is returned but not kept,
+   * and evicts nothing.
    */
   get<T>(key: string, load: () => Promise<T>, sizeOf: (value: T) => number): Promise<T> {
     const hit = this.entries.get(key);
@@ -26,14 +34,19 @@ export class ShaCache {
       return hit.value as Promise<T>;
     }
     const value = load();
-    const entry = { value: value as Promise<unknown>, size: 0 };
+    const entry: Entry = { value, size: null };
     this.entries.set(key, entry);
     value.then(
       (resolved) => {
         if (this.entries.get(key) !== entry) return;
-        entry.size = sizeOf(resolved);
-        this.used += entry.size;
-        this.evict();
+        const size = sizeOf(resolved);
+        if (size > this.budget) {
+          this.entries.delete(key);
+          return;
+        }
+        entry.size = size;
+        this.used += size;
+        this.evictFor(key);
       },
       () => {
         if (this.entries.get(key) === entry) this.entries.delete(key);
@@ -42,9 +55,16 @@ export class ShaCache {
     return value;
   }
 
-  private evict(): void {
+  /** Whether `key` is cached (resolved or in flight). For tests. */
+  has(key: string): boolean {
+    return this.entries.has(key);
+  }
+
+  /** Evicts least recently used resolved entries, other than `keep`, until within budget. */
+  private evictFor(keep: string): void {
     for (const [key, entry] of this.entries) {
       if (this.used <= this.budget) return;
+      if (key === keep || entry.size === null) continue;
       this.entries.delete(key);
       this.used -= entry.size;
     }

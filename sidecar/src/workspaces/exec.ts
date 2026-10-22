@@ -33,14 +33,15 @@ const ENV_ALLOWLIST = [
   "XDG_CONFIG_HOME",
 ];
 
-/** Builds an allowlisted env, overlaying any explicit extras. */
+/** Builds an allowlisted env, minus `without`, overlaying any explicit extras. */
 export function scrubbedEnv(
   extra: Record<string, string | undefined> = {},
+  without: readonly string[] = [],
 ): Record<string, string> {
   const out: Record<string, string> = {};
   for (const key of ENV_ALLOWLIST) {
     const value = process.env[key];
-    if (value !== undefined) out[key] = value;
+    if (value !== undefined && !without.includes(key)) out[key] = value;
   }
   for (const [key, value] of Object.entries(extra)) {
     if (value !== undefined) out[key] = value;
@@ -61,6 +62,8 @@ export interface RunOptions {
   env?: Record<string, string | undefined>;
   /** Written to the command's stdin; without it stdin is closed. */
   stdin?: string;
+  /** Allowlisted variables to withhold from this command. */
+  withoutEnv?: readonly string[];
 }
 
 export interface RunBytesResult {
@@ -73,7 +76,7 @@ export interface RunBytesResult {
 async function spawnAndCollect(args: string[], opts: RunOptions): Promise<RunBytesResult> {
   const proc = Bun.spawn(args, {
     cwd: opts.cwd,
-    env: scrubbedEnv(opts.env),
+    env: scrubbedEnv(opts.env, opts.withoutEnv),
     stdin: opts.stdin === undefined ? undefined : new TextEncoder().encode(opts.stdin),
     stdout: "pipe",
     stderr: "pipe",
@@ -128,7 +131,7 @@ export interface StreamOptions extends Omit<RunOptions, "stdin"> {
 export async function runStreaming(args: string[], opts: StreamOptions): Promise<number> {
   const proc = Bun.spawn(args, {
     cwd: opts.cwd,
-    env: scrubbedEnv(opts.env),
+    env: scrubbedEnv(opts.env, opts.withoutEnv),
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -175,15 +178,18 @@ export const SETUP_LOG_CAP = 16 * 1024;
  * resolves with the exit code and the last {@link SETUP_LOG_CAP} characters of
  * output. `bash -c`, not `-lc`: a login shell would source the user's profile
  * and re-import the provider secrets the scrubbed environment strips.
+ * `withoutEnv` withholds allowlisted variables on top of that.
  */
 export async function runSetupScript(
   cwd: string,
   script: string,
   onChunk: (text: string) => void | Promise<void>,
+  { withoutEnv = [] }: { withoutEnv?: readonly string[] } = {},
 ): Promise<{ exitCode: number; logTail: string }> {
   let logTail = "";
   const exitCode = await runStreaming(["bash", "-c", script], {
     cwd,
+    withoutEnv,
     timeoutMs: SETUP_TIMEOUT_MS,
     onChunk: async (text) => {
       logTail = (logTail + text).slice(-SETUP_LOG_CAP);
