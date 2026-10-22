@@ -30,6 +30,7 @@ import {
   reviewWorkspaces,
 } from "../db/schema.ts";
 import { createKeyedLock } from "../lib/keyedLock.ts";
+import { redactSecrets } from "../llm/errors.ts";
 import { prSourceFor } from "../pr/source.ts";
 import { type PrRef, refKey } from "../pr/types.ts";
 import { runSetupScript } from "../workspaces/exec.ts";
@@ -47,15 +48,17 @@ import {
   type ChangedFileWithSizes,
   changedFilesBetween,
   checkoutWorktree,
-  credentialEnv,
   ensureReviewClone,
   type FileAtSide,
   fetchPr,
   fileDiffBetween,
+  type GitCredentials,
   type HeadSource,
   type PrShas,
+  prefetchTree,
   type ReviewChangedFile,
   type ReviewGit,
+  type ReviewGitOptions,
   readFileAt,
   registerWorktree,
   reviewGit,
@@ -70,6 +73,7 @@ import {
   startRun,
   whenIdle,
 } from "./progress.ts";
+import { restoreGitState, snapshotGitState } from "./setupGuard.ts";
 
 /** A refusal with the HTTP status the route should answer with. */
 export class ReviewWorkspaceError extends Error {
@@ -84,6 +88,11 @@ export class ReviewWorkspaceError extends Error {
 
 type SyncPhase = Exclude<ReviewRunPhase, "setup">;
 
+/** A failure's message, with anything shaped like a credential taken out. */
+function safeMessage(e: unknown): string {
+  return redactSecrets(e instanceof Error ? e.message : String(e));
+}
+
 // ---------------------------------------------------------------------------
 // Dependencies on the outside world, injectable for tests
 // ---------------------------------------------------------------------------
@@ -97,18 +106,18 @@ export interface PrMeta {
   fromFork: boolean;
 }
 
-/** Where to fetch a PR's repo from, and the environment that authenticates it. */
-interface PrRemote {
-  url: string;
-  env: Record<string, string>;
-}
-
 export interface ReviewDeps {
   loadPr(ref: PrRef): Promise<PrMeta>;
-  remoteFor(ref: PrRef): Promise<PrRemote>;
+  /** The registered repo's clone URL, or the provider's https URL. */
+  remoteUrlFor(ref: PrRef): Promise<string>;
+  /**
+   * The provider token for git, built from configuration on every call so a
+   * rotated or removed token takes effect at once and no copy is kept around.
+   */
+  credentialsFor(ref: PrRef): GitCredentials | undefined;
   /** The registered repo's setup script for this PR's repo, if there is one. */
   setupScriptFor(ref: PrRef): Promise<string | null>;
-  git(env: Record<string, string>): ReviewGit;
+  git(options: ReviewGitOptions): ReviewGit;
 }
 
 function locatorFor(ref: PrRef): PrLocator {
@@ -122,20 +131,19 @@ function prNumber(ref: PrRef): number {
 }
 
 /**
- * The https remote for a PR's repo, used when the repo isn't registered.
- * GitHub's host is fixed; Azure's comes from the configured organization URL,
- * which is checked to be an Azure DevOps host before a token is sent to it.
+ * The https remote for a PR's repo and the credentials for it. GitHub's host is
+ * fixed; Azure's comes from the configured organization URL, which is checked
+ * to be an Azure DevOps host before a token is sent to it.
  */
-function httpsRemoteFor(
+export function httpsRemoteFor(
   config: Pick<Config, "secrets">,
   ref: PrRef,
-): { url: string; host: string; username: string; token: string | undefined } {
+): { url: string; credentials?: GitCredentials } {
   if (ref.provider === "github") {
+    const token = config.secrets.githubToken;
     return {
       url: `https://github.com/${ref.owner}/${ref.repo}.git`,
-      host: "github.com",
-      username: "x-access-token",
-      token: config.secrets.githubToken,
+      ...(token ? { credentials: { host: "github.com", username: "x-access-token", token } } : {}),
     };
   }
   const orgUrl = config.secrets.azureDevopsOrgUrl;
@@ -143,11 +151,10 @@ function httpsRemoteFor(
     throw new ReviewWorkspaceError("azure devops is not configured", 400);
   }
   const base = orgUrl.replace(/\/+$/, "");
+  const token = config.secrets.azureDevopsToken;
   return {
     url: `${base}/${encodeURIComponent(ref.project)}/_git/${encodeURIComponent(ref.repo)}`,
-    host: new URL(base).hostname,
-    username: "yarvis",
-    token: config.secrets.azureDevopsToken,
+    ...(token ? { credentials: { host: new URL(base).hostname, username: "yarvis", token } } : {}),
   };
 }
 
@@ -155,8 +162,8 @@ function httpsRemoteFor(
  * The real dependencies. A registered repo's clone URL wins — usually ssh,
  * authenticated by the user's agent the way coding workspaces are — and an
  * unregistered one is fetched over https. Either way the provider token rides
- * along through {@link credentialEnv}, which only answers an https request to
- * the provider's own host, so it is unused (and harmless) on an ssh remote.
+ * along on network commands, through a credential helper that only answers an
+ * https request to the provider's own host, so it is unused on an ssh remote.
  */
 export function defaultReviewDeps(db: Db, config: Config): ReviewDeps {
   return {
@@ -172,13 +179,18 @@ export function defaultReviewDeps(db: Db, config: Config): ReviewDeps {
         fromFork: detail.fromFork,
       };
     },
-    async remoteFor(ref) {
-      const https = httpsRemoteFor(config, ref);
+    async remoteUrlFor(ref) {
       const registered = await findRepoForPr(db, locatorFor(ref));
-      return {
-        url: registered?.cloneUrl ?? https.url,
-        env: https.token ? credentialEnv(https.host, https.username, https.token) : {},
-      };
+      return registered?.cloneUrl ?? httpsRemoteFor(config, ref).url;
+    },
+    credentialsFor(ref) {
+      try {
+        return httpsRemoteFor(config, ref).credentials;
+      } catch {
+        // No usable Azure org URL: nothing to authenticate to over https, and a
+        // registered ssh remote needs no token.
+        return undefined;
+      }
     },
     async setupScriptFor(ref) {
       const registered = await findRepoForPr(db, locatorFor(ref));
@@ -189,18 +201,12 @@ export function defaultReviewDeps(db: Db, config: Config): ReviewDeps {
 }
 
 /**
- * Each PR's remote, resolved when it syncs. Finding it means scanning the
- * registered repos, which a read shouldn't pay for on every request; after a
- * restart the first read resolves it once and keeps it.
+ * The runners for a PR's clone, with the provider credentials as they are now.
+ * Reads never need the remote URL — a blob fetch goes to the clone's `origin`
+ * — so only a sync resolves it, and only credentials are rebuilt per call.
  */
-const remotes = new Map<string, PrRemote>();
-
-async function remoteForPr(pr: ReviewWorkspacePr, deps: ReviewDeps): Promise<PrRemote> {
-  const known = remotes.get(pr.id);
-  if (known) return known;
-  const remote = await deps.remoteFor(pr.ref);
-  remotes.set(pr.id, remote);
-  return remote;
+function runnersFor(pr: ReviewWorkspacePr, deps: ReviewDeps): ReviewGit {
+  return deps.git({ credentials: deps.credentialsFor(pr.ref) });
 }
 
 // ---------------------------------------------------------------------------
@@ -212,7 +218,7 @@ async function remoteForPr(pr: ReviewWorkspacePr, deps: ReviewDeps): Promise<PrR
  * joined name, since `a-b/c` and `a/b-c` would otherwise share a folder.
  * Lower-cased because both providers treat these names case-insensitively.
  */
-function reviewClonePath(config: Pick<Config, "workspacesRoot">, ref: PrRef): string {
+export function reviewClonePath(config: Pick<Config, "workspacesRoot">, ref: PrRef): string {
   const segments =
     ref.provider === "github"
       ? ["github", ref.owner, ref.repo]
@@ -236,8 +242,8 @@ function refDomKey(ref: PrRef): string {
 
 /**
  * Throws unless the PR's worktree path sits directly in its workspace's folder.
- * Checked before anything is checked out there or deleted from there, so a row
- * that somehow named another path can't point either at the rest of the disk.
+ * Checked before anything is checked out, run or deleted there, so a row that
+ * somehow named another path can't point any of those at the rest of the disk.
  */
 function assertWorktreeInWorkspace(config: Config, pr: ReviewWorkspacePr): void {
   if (dirname(resolve(pr.worktreePath)) !== resolve(reviewWorkspaceDir(config, pr.workspaceId))) {
@@ -440,14 +446,15 @@ export async function getReviewPr(
 }
 
 /**
- * Serializes what changes a review clone's refs or worktree list: clone, fetch,
- * and registering a worktree. Checkouts and reads don't hold it, so one PR's
- * slow checkout never queues another PR's fetch behind it.
+ * Serializes what changes a review clone's refs, config or worktree list:
+ * clone, fetch, registering a worktree, and restoring the config after setup.
+ * Checkouts and reads don't hold it, so one PR's slow checkout never queues
+ * another PR's fetch behind it.
  */
 const withCloneLock = createKeyedLock();
 
 /** Where a PR's head commit is fetched from. */
-function headSourceFor(ref: PrRef, meta: Pick<PrMeta, "headRef" | "fromFork">): HeadSource {
+export function headSourceFor(ref: PrRef, meta: Pick<PrMeta, "headRef" | "fromFork">): HeadSource {
   if (ref.provider === "github") return { kind: "ref", ref: `refs/pull/${ref.number}/head` };
   // Azure publishes no head ref for a PR, only the merge preview; the source
   // commit is its second parent. A same-repo branch is fetched directly, since
@@ -494,28 +501,26 @@ async function syncPr(
       .where(eq(reviewWorkspacePrs.id, pr.id));
   }
 
-  let runners: ReviewGit;
+  const runners = runnersFor(pr, deps);
   let clonePath: string;
   let shas: PrShas;
   try {
     assertWorktreeInWorkspace(config, pr);
     const meta = await deps.loadPr(pr.ref);
-    for (const branch of [meta.baseRef, ...(meta.fromFork ? [] : [meta.headRef])]) {
-      assertSafeBranchName(branch);
-    }
-    const remote = await deps.remoteFor(pr.ref);
-    remotes.set(pr.id, remote);
-    runners = deps.git(remote.env);
-    clonePath = reviewClonePath(config, pr.ref);
-    const cloneDir = clonePath;
-    const gitRunner = runners.run;
+    // The head branch is checked even for a fork, where it isn't fetched: it is
+    // still shown, logged and stored.
+    assertSafeBranchName(meta.baseRef);
+    assertSafeBranchName(meta.headRef);
+    const url = await deps.remoteUrlFor(pr.ref);
+    const cloneDir = reviewClonePath(config, pr.ref);
+    clonePath = cloneDir;
 
     shas = await withCloneLock(cloneDir, async () => {
       log(existsSync(join(cloneDir, ".git")) ? "Using existing clone" : "Cloning (blobless)");
-      await ensureReviewClone(gitRunner, remote.url, cloneDir);
+      await ensureReviewClone(runners, url, cloneDir);
       log(`Fetching ${meta.headRef} and ${meta.baseRef}`);
       return fetchPr(
-        gitRunner,
+        runners,
         cloneDir,
         prNumber(pr.ref),
         headSourceFor(pr.ref, meta),
@@ -538,7 +543,7 @@ async function syncPr(
       .where(eq(reviewWorkspacePrs.id, pr.id));
     log(`Ready to review at ${shas.headSha.slice(0, 12)}`);
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
+    const message = safeMessage(e);
     const status = phase === "refresh" ? "ready" : "error";
     // Emit before writing: a failing database is a likely way to get here, and
     // the event is what tells a watching view the run is over.
@@ -558,23 +563,25 @@ async function syncPr(
     log("Downloading the changed files");
     await changedFiles(runners, clonePath, shas.mergeBaseSha, shas.headSha);
   } catch (e) {
-    log(`Could not prefetch the changed files: ${e instanceof Error ? e.message : String(e)}`);
+    log(`Could not prefetch the changed files: ${safeMessage(e)}`);
   }
 
   let checkoutError: string | null = null;
   try {
-    const cloneDir = clonePath;
-    await withCloneLock(cloneDir, () =>
-      registerWorktree(runners.run, cloneDir, pr.worktreePath, shas.headSha),
+    await withCloneLock(clonePath, () =>
+      registerWorktree(runners.local, clonePath, pr.worktreePath, shas.headSha),
     );
     log("Checking out the worktree");
-    await checkoutWorktree(runners.run, pr.worktreePath, shas.headSha);
+    // The checkout itself runs without credentials, so whatever the tree
+    // needs is downloaded first, in one batch.
+    await prefetchTree(runners, clonePath, shas.headSha);
+    await checkoutWorktree(runners.local, pr.worktreePath, shas.headSha);
     await db
       .update(reviewWorkspacePrs)
       .set({ worktreeStatus: "ready" })
       .where(eq(reviewWorkspacePrs.id, pr.id));
   } catch (e) {
-    checkoutError = `checkout failed: ${e instanceof Error ? e.message : String(e)}`;
+    checkoutError = `checkout failed: ${safeMessage(e)}`;
     await db
       .update(reviewWorkspacePrs)
       .set({ worktreeStatus: "error", error: checkoutError })
@@ -587,17 +594,23 @@ async function syncPr(
 /**
  * Restarts a clone that a sidecar restart interrupted. A row left `pending` or
  * `cloning` with no run in flight has nobody working on it; following its
- * progress is what notices.
+ * progress is what notices. Never for a workspace being archived or archived:
+ * that would recreate the worktree the archive is removing.
  */
-export function resumeIfStalled(
+export async function resumeIfStalled(
   db: Db,
   config: Config,
   pr: ReviewWorkspacePr,
   deps: ReviewDeps,
-): void {
-  if ((pr.status === "pending" || pr.status === "cloning") && !isRunning(pr.id)) {
-    startSync(db, config, pr, "clone", deps);
-  }
+): Promise<void> {
+  if (pr.status !== "pending" && pr.status !== "cloning") return;
+  if (isRunning(pr.id)) return;
+  const [ws] = await db
+    .select({ status: reviewWorkspaces.status })
+    .from(reviewWorkspaces)
+    .where(eq(reviewWorkspaces.id, pr.workspaceId));
+  if (ws?.status !== "active") return;
+  startSync(db, config, pr, "clone", deps);
 }
 
 /** Fetches the PR's current head and moves its worktree there. */
@@ -636,7 +649,7 @@ async function removePrWorktree(
     return;
   }
   await withCloneLock(clonePath, () =>
-    removeWorktree(deps.git({}).run, clonePath, pr.worktreePath, {
+    removeWorktree(deps.git({}).local, clonePath, pr.worktreePath, {
       force: true,
       workspaceRoot: reviewWorkspaceDir(config, pr.workspaceId),
     }),
@@ -657,13 +670,13 @@ export async function removeReviewPr(
   await removePrWorktree(config, pr, deps);
   await db.delete(reviewWorkspacePrs).where(eq(reviewWorkspacePrs.id, pr.id));
   forgetRuns(pr.id);
-  remotes.delete(pr.id);
 }
 
 /**
- * Marks the workspace archiving and removes its worktrees in the background.
- * Clones stay for the next review of the same repo. Anything that couldn't be
- * removed is recorded in `error` and the workspace still ends `archived`.
+ * Marks the workspace archiving and removes its worktrees in the background,
+ * after any run in flight for each PR has finished. Clones stay for the next
+ * review of the same repo. Anything that couldn't be removed is recorded in
+ * `error` and the workspace still ends `archived`.
  */
 export async function archiveReviewWorkspace(
   db: Db,
@@ -690,10 +703,9 @@ export async function archiveReviewWorkspace(
       try {
         await whenIdle(pr.id);
         forgetRuns(pr.id);
-        remotes.delete(pr.id);
         await removePrWorktree(config, pr, deps);
       } catch (e) {
-        failures.push(e instanceof Error ? e.message : String(e));
+        failures.push(safeMessage(e));
       }
     }
     try {
@@ -732,7 +744,7 @@ function changedFiles(
 ): Promise<ChangedFileWithSizes[]> {
   return cache.get(
     `changed:${clonePath}:${mergeBaseSha}..${headSha}`,
-    () => changedFilesBetween(runners.run, clonePath, mergeBaseSha, headSha),
+    () => changedFilesBetween(runners, clonePath, mergeBaseSha, headSha),
     (files) => stringsSize(files.map((f) => f.path)) + files.length * 64,
   );
 }
@@ -756,13 +768,10 @@ async function requireReadyPr(
   if (pr.status !== "ready" || !pr.headSha || !pr.mergeBaseSha) {
     throw new ReviewWorkspaceError(`pull request is ${pr.status}, not ready`, 409);
   }
-  // Reads can fetch blobs a blobless clone doesn't have yet, so they carry the
-  // remote's credentials like a fetch does.
-  const remote = await remoteForPr(pr, deps);
   return {
     pr,
     clonePath: reviewClonePath(config, pr.ref),
-    runners: deps.git(remote.env),
+    runners: runnersFor(pr, deps),
     headSha: pr.headSha,
     mergeBaseSha: pr.mergeBaseSha,
   };
@@ -805,7 +814,7 @@ export async function reviewTree(
   const ready = await requireReadyPr(db, config, workspaceId, prId, deps);
   const paths = await cache.get(
     `tree:${ready.clonePath}:${ready.headSha}`,
-    () => treePaths(ready.runners.run, ready.clonePath, ready.headSha),
+    () => treePaths(ready.runners.local, ready.clonePath, ready.headSha),
     stringsSize,
   );
   return { headSha: ready.headSha, paths };
@@ -875,7 +884,7 @@ export async function reviewDiff(
     `diff:${ready.clonePath}:${ready.mergeBaseSha}..${ready.headSha}:${path}`,
     () =>
       fileDiffBetween(
-        ready.runners.run,
+        ready.runners.local,
         ready.clonePath,
         ready.mergeBaseSha,
         ready.headSha,
@@ -891,16 +900,33 @@ export async function reviewDiff(
 // Setup consent
 // ---------------------------------------------------------------------------
 
+/**
+ * Allowlisted variables a review's setup script doesn't get, on top of the
+ * provider secrets every spawned command is denied. The SSH agent would let a
+ * PR's own code authenticate as the user to any host their keys open. Named in
+ * the consent prompt, so the user knows a script needing them will fail.
+ */
+export const SETUP_WITHHELD_ENV = [
+  "SSH_AUTH_SOCK",
+  "SSH_AGENT_PID",
+  "GIT_SSH",
+  "GIT_SSH_COMMAND",
+] as const;
+
 interface SetupInfo {
   script: string | null;
   author: string | null;
   branch: string | null;
+  /** The commit the script would run against; sent back with the answer. */
+  headSha: string | null;
+  /** Environment variables the script will not be given. */
+  withheldEnv: readonly string[];
   consent: "granted" | "declined" | null;
   status: ReviewWorkspacePr["setupStatus"];
   log: string | null;
 }
 
-/** What the consent prompt shows: who wrote the PR, its branch, and the exact script. */
+/** What the consent prompt shows: who wrote the PR, its branch and commit, and the exact script. */
 export async function reviewSetupInfo(
   db: Db,
   workspaceId: string,
@@ -912,6 +938,8 @@ export async function reviewSetupInfo(
     script: await deps.setupScriptFor(pr.ref),
     author: pr.author,
     branch: pr.headRef,
+    headSha: pr.headSha,
+    withheldEnv: SETUP_WITHHELD_ENV,
     consent: pr.setupConsent,
     status: pr.setupStatus,
     log: pr.setupLog,
@@ -936,16 +964,18 @@ async function updatePr(
  * Records the user's answer and, on a yes, runs the setup script in the PR's
  * worktree in the background (output on the PR's progress stream).
  *
- * `script` is the script the user was shown. Running only when it still
- * matches is what makes the consent about *that* script: an edit to the
- * registered repo's setup between the prompt and the answer is refused rather
- * than run on the strength of a yes to something else.
+ * The answer carries the script and the head commit the user was shown, and
+ * nothing runs unless both still match: consent is to *that* script against
+ * *that* code. An edit to the registered repo's setup, or a push that a
+ * refresh picked up, between the prompt and the answer is refused rather than
+ * run on the strength of a yes to something else.
  */
 export async function answerReviewSetup(
   db: Db,
+  config: Config,
   workspaceId: string,
   prId: string,
-  answer: { grant: boolean; script: string | null },
+  answer: { grant: boolean; script: string | null; headSha: string | null },
   deps: ReviewDeps,
 ): Promise<ReviewWorkspacePr> {
   await requireActiveWorkspace(db, workspaceId);
@@ -954,6 +984,12 @@ export async function answerReviewSetup(
 
   if (pr.worktreeStatus !== "ready") {
     throw new ReviewWorkspaceError(`the checkout is ${pr.worktreeStatus}, not ready`, 409);
+  }
+  if (!answer.headSha || answer.headSha !== pr.headSha) {
+    throw new ReviewWorkspaceError(
+      "the pull request has moved since setup was offered; review it again",
+      409,
+    );
   }
   const script = await deps.setupScriptFor(pr.ref);
   if (answer.script !== script) {
@@ -979,12 +1015,13 @@ export async function answerReviewSetup(
     run.finish();
     throw e;
   }
-  void runSetup(db, pr, script, run);
+  void runSetup(db, config, pr, script, run);
   return row;
 }
 
 async function runSetup(
   db: Db,
+  config: Config,
   pr: ReviewWorkspacePr,
   script: string,
   run: RunHandle,
@@ -996,16 +1033,32 @@ async function runSetup(
   // the whole output while the run is followable.
   let logTail = "";
   try {
-    // The script's environment is the scrubbed one: no provider secrets, and
-    // no git credentials — those are only ever handed to git.
-    const result = await runSetupScript(pr.worktreePath, script, (text) => {
-      run.emit({ type: "log", text });
-    });
-    logTail = result.logTail;
-    status = result.exitCode === 0 ? "succeeded" : "failed";
-    if (result.exitCode !== 0) error = `setup script exited ${result.exitCode}`;
+    assertWorktreeInWorkspace(config, pr);
+    const clonePath = reviewClonePath(config, pr.ref);
+    const snapshot = snapshotGitState(clonePath, pr.worktreePath);
+    try {
+      // The script's environment is the scrubbed one minus the SSH agent: no
+      // provider secrets, no git credentials, no way to borrow the user's keys.
+      const result = await runSetupScript(
+        pr.worktreePath,
+        script,
+        (text) => run.emit({ type: "log", text }),
+        { withoutEnv: SETUP_WITHHELD_ENV },
+      );
+      logTail = result.logTail;
+      status = result.exitCode === 0 ? "succeeded" : "failed";
+      if (result.exitCode !== 0) error = `setup script exited ${result.exitCode}`;
+    } finally {
+      const restored = await withCloneLock(clonePath, async () => restoreGitState(snapshot));
+      if (restored.length) {
+        run.emit({
+          type: "log",
+          text: `\nPut back git files the setup script changed: ${restored.join(", ")}\n`,
+        });
+      }
+    }
   } catch (e) {
-    error = e instanceof Error ? e.message : String(e);
+    error = safeMessage(e);
   }
   run.emit({ type: "done", phase: "setup", status, error });
   await db

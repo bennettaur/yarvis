@@ -9,21 +9,27 @@
  * setup script writes can change what a diff says — and a review can start
  * before the checkout has finished.
  *
- * A blobless clone fetches file contents lazily from `origin` the first time a
- * command needs them, so every command here, not only clone and fetch, runs with
- * the remote's credentials available.
+ * Two runners, because the clone is shared with code the user may have agreed
+ * to run (a PR's setup script runs in a worktree whose git dir is this clone's):
+ *  - `network` talks to the remote and is the only one that carries the
+ *    provider token. It runs clone, fetch, the batched blob downloads, and the
+ *    changed-file diff, which is itself a batched download.
+ *  - `local` never reaches the network: `GIT_NO_LAZY_FETCH` makes a missing
+ *    blob an error instead of a silent fetch, so blobs a read needs are fetched
+ *    explicitly, in one narrow call, with `network`.
+ * Both carry {@link HARDENING}, which switches off what repo config could use
+ * to run code or redirect traffic.
  */
 
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { type RunBytesResult, runBytes } from "../workspaces/exec.ts";
+import { type RunBytesResult, type RunOptions, run, runBytes } from "../workspaces/exec.ts";
 import { CONTROL_CHARACTERS, isBinary, MAX_FILE_BYTES } from "../workspaces/files.ts";
 import {
   existingWorktree,
   GIT_BASE_ENV,
   type GitRunner,
   git,
-  gitRunnerWithEnv,
   NETWORK_TIMEOUT_MS,
   parseRawNumstat,
   splitNulFields,
@@ -35,19 +41,69 @@ export type GitBytesRunner = (
   opts: { cwd?: string; timeoutMs?: number },
 ) => Promise<RunBytesResult>;
 
-/** The two runners a review clone needs, sharing one environment. */
+/** The runners for one review clone; see the module comment for which is which. */
 export interface ReviewGit {
-  run: GitRunner;
+  network: GitRunner;
+  local: GitRunner;
   bytes: GitBytesRunner;
 }
 
-/** Builds the runners for a remote, with `env` (see {@link credentialEnv}) on every call. */
-export function reviewGit(env: Record<string, string> = {}): ReviewGit {
-  const merged = { ...GIT_BASE_ENV, ...env };
-  return {
-    run: gitRunnerWithEnv(env),
-    bytes: (args, opts) => runBytes(["git", ...args], { ...opts, env: merged }),
-  };
+/** How to authenticate to the provider over https. */
+export interface GitCredentials {
+  host: string;
+  username: string;
+  token: string;
+}
+
+export interface ReviewGitOptions {
+  credentials?: GitCredentials;
+  /** Lets tests use a `file://` remote; never set outside them. */
+  allowFileProtocol?: boolean;
+}
+
+/** The process spawners, injectable so tests can see every command and its env. */
+export interface Spawners {
+  run: (
+    args: string[],
+    opts: RunOptions,
+  ) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+  runBytes: (args: string[], opts: RunOptions) => Promise<RunBytesResult>;
+}
+
+/**
+ * Configuration applied to every review git command, as command-line config so
+ * it outranks anything in the clone's own config. Each line closes a way for
+ * config written into the shared clone — by a setup script, say — to act on a
+ * later command:
+ *  - hooks: `core.hooksPath` points at nothing, so no hook runs;
+ *  - `core.fsmonitor` would run its value as a command on every status/checkout;
+ *  - `core.askPass` would run a program when credentials are wanted;
+ *  - `http.sslVerify` and an empty `http.proxy` keep traffic, and the token in
+ *    it, going straight to the real host over verified TLS;
+ *  - transports are limited to https and ssh (`ext::` and the like execute
+ *    commands); `file` is allowed only for tests;
+ *  - the empty `credential.helper` clears every helper configured elsewhere, so
+ *    a planted helper can't receive the token and the user's keychain helper
+ *    can't store it.
+ * What can't be switched off this way — `include.path`, `url.*.insteadOf`,
+ * `filter.*` and similar keys with names of their own — is why the clone's
+ * config is also snapshotted and restored around a setup run (`setupGuard.ts`).
+ * Diffs additionally pass `--no-ext-diff --no-textconv`, since `diff.external`
+ * and textconv drivers are commands too.
+ */
+export function hardeningConfig(allowFileProtocol = false): [string, string][] {
+  return [
+    ["core.hooksPath", "/dev/null"],
+    ["core.fsmonitor", "false"],
+    ["core.askPass", ""],
+    ["http.sslVerify", "true"],
+    ["http.proxy", ""],
+    ["protocol.allow", "never"],
+    ["protocol.https.allow", "always"],
+    ["protocol.ssh.allow", "always"],
+    ...(allowFileProtocol ? ([["protocol.file.allow", "always"]] as [string, string][]) : []),
+    ["credential.helper", ""],
+  ];
 }
 
 /**
@@ -70,29 +126,53 @@ const CREDENTIAL_HELPER = [
   "}; f",
 ].join(" ");
 
+/** `GIT_CONFIG_*` variables for `pairs`, which git reads as command-line config. */
+function configEnv(pairs: [string, string][]): Record<string, string> {
+  const env: Record<string, string> = { GIT_CONFIG_COUNT: String(pairs.length) };
+  pairs.forEach(([key, value], i) => {
+    env[`GIT_CONFIG_KEY_${i}`] = key;
+    env[`GIT_CONFIG_VALUE_${i}`] = value;
+  });
+  return env;
+}
+
 /**
- * The environment that lets git authenticate to `host` over https with
- * `token`, without the token appearing in argv or being written to any config
- * file. The helper list is set through `GIT_CONFIG_*`, which git reads as
- * command-line configuration: the empty first entry clears any helper the user
- * configured (osxkeychain would otherwise *store* the token on success), and
- * the second is {@link CREDENTIAL_HELPER}, which reads the token back out of
- * this same environment.
+ * The environment for one runner. With credentials, the helper above is added
+ * after the hardening config cleared every other one, and the token rides in
+ * the environment only — never in argv or any config file.
  */
-export function credentialEnv(
-  host: string,
-  username: string,
-  token: string,
+export function reviewGitEnv(
+  options: ReviewGitOptions,
+  kind: "network" | "local",
 ): Record<string, string> {
+  const pairs = hardeningConfig(options.allowFileProtocol);
+  const creds = kind === "network" ? options.credentials : undefined;
+  if (creds) pairs.push(["credential.helper", CREDENTIAL_HELPER]);
   return {
-    GIT_CONFIG_COUNT: "2",
-    GIT_CONFIG_KEY_0: "credential.helper",
-    GIT_CONFIG_VALUE_0: "",
-    GIT_CONFIG_KEY_1: "credential.helper",
-    GIT_CONFIG_VALUE_1: CREDENTIAL_HELPER,
-    YARVIS_GIT_HOST: host,
-    YARVIS_GIT_USERNAME: username,
-    YARVIS_GIT_TOKEN: token,
+    ...GIT_BASE_ENV,
+    ...configEnv(pairs),
+    ...(kind === "local" ? { GIT_NO_LAZY_FETCH: "1" } : {}),
+    ...(creds
+      ? {
+          YARVIS_GIT_HOST: creds.host,
+          YARVIS_GIT_USERNAME: creds.username,
+          YARVIS_GIT_TOKEN: creds.token,
+        }
+      : {}),
+  };
+}
+
+/** Builds the runners for a review clone. */
+export function reviewGit(
+  options: ReviewGitOptions = {},
+  spawners: Spawners = { run, runBytes },
+): ReviewGit {
+  const networkEnv = reviewGitEnv(options, "network");
+  const localEnv = reviewGitEnv(options, "local");
+  return {
+    network: (args, opts) => spawners.run(["git", ...args], { ...opts, env: networkEnv }),
+    local: (args, opts) => spawners.run(["git", ...args], { ...opts, env: localEnv }),
+    bytes: (args, opts) => spawners.runBytes(["git", ...args], { ...opts, env: localEnv }),
   };
 }
 
@@ -100,27 +180,26 @@ export function credentialEnv(
  * Makes sure a blobless clone of `url` exists at `clonePath` with `origin`
  * pointing at `url`. Not shallow: a review diffs against the merge-base, which
  * can be any distance back. Commits and trees come down now; file contents
- * arrive on demand. The URL is re-pointed when it changed (a repo registered
- * after its first review switches to the registered remote), since a blobless
- * clone fetches every missing blob from `origin`.
+ * arrive when fetched. The URL is re-pointed when it changed (a repo registered
+ * after its first review switches to the registered remote).
  */
 export async function ensureReviewClone(
-  runner: GitRunner,
+  runners: ReviewGit,
   url: string,
   clonePath: string,
 ): Promise<void> {
   if (!existsSync(join(clonePath, ".git"))) {
     mkdirSync(dirname(clonePath), { recursive: true });
     await git(
-      runner,
+      runners.network,
       ["clone", "--filter=blob:none", "--no-checkout", "--", url, clonePath],
       undefined,
       NETWORK_TIMEOUT_MS,
     );
     return;
   }
-  const current = (await git(runner, ["remote", "get-url", "origin"], clonePath)).trim();
-  if (current !== url) await git(runner, ["remote", "set-url", "origin", url], clonePath);
+  const current = (await git(runners.local, ["remote", "get-url", "origin"], clonePath)).trim();
+  if (current !== url) await git(runners.local, ["remote", "set-url", "origin", url], clonePath);
 }
 
 /** Where a pull request's head comes from, which differs by provider and by fork. */
@@ -159,23 +238,23 @@ export interface PrShas {
  * target repo even though the branch doesn't.
  */
 export async function fetchPr(
-  runner: GitRunner,
+  runners: ReviewGit,
   clonePath: string,
   prNumber: number,
   head: HeadSource,
   baseBranch: string,
 ): Promise<PrShas> {
   await git(
-    runner,
+    runners.network,
     ["fetch", "--no-tags", "origin", ...prFetchRefspecs(prNumber, head, baseBranch)],
     clonePath,
     NETWORK_TIMEOUT_MS,
   );
   const headRev =
     head.kind === "ref" ? localPrRef(prNumber, "head") : `${localPrRef(prNumber, "merge")}^2`;
-  const headSha = await revParse(runner, clonePath, headRev);
-  const baseSha = await revParse(runner, clonePath, localBaseRef(baseBranch));
-  const mergeBase = await runner(["merge-base", baseSha, headSha], { cwd: clonePath });
+  const headSha = await revParse(runners.local, clonePath, headRev);
+  const baseSha = await revParse(runners.local, clonePath, localBaseRef(baseBranch));
+  const mergeBase = await runners.local(["merge-base", baseSha, headSha], { cwd: clonePath });
   const mergeBaseSha = mergeBase.stdout.trim();
   if (mergeBase.exitCode !== 0 || !mergeBaseSha) {
     throw new Error("the pull request shares no history with its base branch");
@@ -185,6 +264,55 @@ export async function fetchPr(
 
 async function revParse(runner: GitRunner, cwd: string, rev: string): Promise<string> {
   return (await git(runner, ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], cwd)).trim();
+}
+
+/**
+ * Downloads blobs by id in one request, the way git's own lazy fetch does, but
+ * on purpose and with the credentials only this call carries.
+ */
+export async function fetchBlobs(
+  runners: ReviewGit,
+  clonePath: string,
+  oids: readonly string[],
+): Promise<void> {
+  if (oids.length === 0) return;
+  await git(
+    runners.network,
+    [
+      "-c",
+      "fetch.negotiationAlgorithm=noop",
+      "fetch",
+      "origin",
+      "--no-tags",
+      "--no-write-fetch-head",
+      "--recurse-submodules=no",
+      "--filter=blob:none",
+      "--stdin",
+    ],
+    clonePath,
+    NETWORK_TIMEOUT_MS,
+    `${oids.join("\n")}\n`,
+  );
+}
+
+/** Downloads every blob in the tree at `sha` that the clone doesn't have yet. */
+export async function prefetchTree(
+  runners: ReviewGit,
+  clonePath: string,
+  sha: string,
+): Promise<void> {
+  // `--missing=print` lists what is absent instead of fetching it; `--no-walk`
+  // keeps this to the one commit's tree.
+  const out = await git(
+    runners.local,
+    ["rev-list", "--objects", "--no-walk", "--missing=print", sha],
+    clonePath,
+  );
+  const missing = out
+    .split("\n")
+    .filter((line) => line.startsWith("?"))
+    .map((line) => line.slice(1).trim());
+  await fetchBlobs(runners, clonePath, missing);
 }
 
 /**
@@ -212,7 +340,7 @@ export async function registerWorktree(
  * Checks the worktree out at `sha`. Forced: this checkout is for reading, and
  * a setup script that rewrote a lockfile must not stop a refresh. Untracked
  * files (installed dependencies) are left alone so a refresh doesn't undo the
- * setup.
+ * setup. Local only: run {@link prefetchTree} first.
  */
 export async function checkoutWorktree(
   runner: GitRunner,
@@ -256,24 +384,36 @@ const STATUS_LETTERS: Record<string, ChangeStatus> = {
 
 const NULL_OID = /^0+$/;
 
+/** Flags every diff here passes, so no configured program runs on a diff. */
+const SAFE_DIFF_FLAGS = ["--no-ext-diff", "--no-textconv"];
+
 /**
  * Every file the pull request changes, `from..to` (merge-base to head), with no
  * cap on how many. One `diff --raw --numstat` gives the kind of change, the
  * line counts and both sides' blob ids. On a blobless clone that same diff is
  * what downloads every changed blob, both sides, in a single batched fetch —
- * so running it once at sync time means every file and diff the reviewer opens
- * afterwards is already local.
+ * which is why it runs on the network runner, and why every file and diff the
+ * reviewer opens afterwards can be read locally.
  */
 export async function changedFilesBetween(
-  runner: GitRunner,
+  runners: ReviewGit,
   clonePath: string,
   from: string,
   to: string,
 ): Promise<ChangedFileWithSizes[]> {
   const records = parseRawNumstat(
     await git(
-      runner,
-      ["diff", "--raw", "--numstat", "-z", "-M", "--no-abbrev", `${from}..${to}`],
+      runners.network,
+      [
+        "diff",
+        ...SAFE_DIFF_FLAGS,
+        "--raw",
+        "--numstat",
+        "-z",
+        "-M",
+        "--no-abbrev",
+        `${from}..${to}`,
+      ],
       clonePath,
       NETWORK_TIMEOUT_MS,
     ),
@@ -285,7 +425,7 @@ export async function changedFilesBetween(
         .filter((o): o is string => !!o && !NULL_OID.test(o)),
     ),
   ];
-  const sizes = await blobSizes(runner, clonePath, oids);
+  const sizes = await blobSizes(runners.local, clonePath, oids);
   const sizeOf = (oid: string | undefined) => (oid ? (sizes.get(oid) ?? 0) : 0);
   return records
     .map((r) => ({
@@ -312,7 +452,7 @@ async function blobSizes(
     runner,
     ["cat-file", "--batch-check=%(objectname) %(objectsize)"],
     clonePath,
-    NETWORK_TIMEOUT_MS,
+    undefined,
     `${oids.join("\n")}\n`,
   );
   const sizes = new Map<string, number>();
@@ -387,7 +527,10 @@ export function parseTreeEntries(out: string): TreeEntry[] {
 /**
  * The tree entry at exactly `path` in `sha`, or null when there is none.
  * `--literal-pathspecs` keeps a `*` or `:(glob)` in a requested path from
- * matching anything but a file of that literal name.
+ * matching anything but a file of that literal name. Trees are always local in
+ * a blobless clone, and `-l` reads sizes from the object store's headers —
+ * for a missing blob that would mean a fetch, so the size is only read once
+ * the blob is known to be present (see {@link readFileAt}).
  */
 async function treeEntry(
   runner: GitRunner,
@@ -397,7 +540,7 @@ async function treeEntry(
 ): Promise<TreeEntry | null> {
   const out = await git(
     runner,
-    ["--literal-pathspecs", "ls-tree", "-z", "-l", "--full-tree", sha, "--", path],
+    ["--literal-pathspecs", "ls-tree", "-z", "--full-tree", sha, "--", path],
     clonePath,
   );
   return parseTreeEntries(out).find((entry) => entry.path === path) ?? null;
@@ -414,10 +557,11 @@ export interface FileAtSide {
 /**
  * The contents of `path` at commit `sha`, or null when the tree has no file
  * there. Only blobs are read: a directory or submodule at that path is "not a
- * file". Anything over `maxBytes` comes back `tooLarge` with no content, and is
- * never downloaded — the size comes from the tree, which a blobless clone has.
- * A file is binary when git would say so (a NUL near the start) or when it
- * isn't valid UTF-8, which the editor couldn't show faithfully anyway.
+ * file". A blob the clone doesn't have yet — any file the PR didn't change —
+ * is fetched by id first, the one network call a read can make. Anything over
+ * `maxBytes` comes back `tooLarge` with no content. A file is binary when git
+ * would say so (a NUL near the start) or when it isn't valid UTF-8, which the
+ * editor couldn't show faithfully anyway.
  */
 export async function readFileAt(
   runners: ReviewGit,
@@ -427,15 +571,17 @@ export async function readFileAt(
   maxBytes = MAX_FILE_BYTES,
 ): Promise<FileAtSide | null> {
   assertSafeRepoPath(path);
-  const entry = await treeEntry(runners.run, clonePath, sha, path);
+  const entry = await treeEntry(runners.local, clonePath, sha, path);
   if (entry?.type !== "blob") return null;
-  const size = entry.size ?? 0;
+
+  const present = await runners.local(["cat-file", "-e", entry.object], { cwd: clonePath });
+  if (present.exitCode !== 0) await fetchBlobs(runners, clonePath, [entry.object]);
+  const size = Number(
+    (await git(runners.local, ["cat-file", "-s", entry.object], clonePath)).trim(),
+  );
   if (size > maxBytes) return { content: "", binary: false, tooLarge: true, size };
 
-  const result = await runners.bytes(["cat-file", "blob", entry.object], {
-    cwd: clonePath,
-    timeoutMs: NETWORK_TIMEOUT_MS,
-  });
+  const result = await runners.bytes(["cat-file", "blob", entry.object], { cwd: clonePath });
   if (result.exitCode !== 0) {
     throw new Error(`git cat-file failed (${result.exitCode}): ${result.stderr.trim()}`);
   }
@@ -452,7 +598,9 @@ export async function readFileAt(
 /**
  * The unified patch for one file between two commits. Passing the old path
  * too keeps a rename a rename: with only the new path as the pathspec, git
- * can't see the other half and reports a whole-file addition.
+ * can't see the other half and reports a whole-file addition. Local: the
+ * changed-file listing that the caller checks the path against has already
+ * downloaded both sides.
  */
 export async function fileDiffBetween(
   runner: GitRunner,
@@ -467,8 +615,7 @@ export async function fileDiffBetween(
   const paths = oldPath && oldPath !== path ? [oldPath, path] : [path];
   return git(
     runner,
-    ["--literal-pathspecs", "diff", "-M", `${from}..${to}`, "--", ...paths],
+    ["--literal-pathspecs", "diff", ...SAFE_DIFF_FLAGS, "-M", `${from}..${to}`, "--", ...paths],
     clonePath,
-    NETWORK_TIMEOUT_MS,
   );
 }

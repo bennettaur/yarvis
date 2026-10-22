@@ -77,6 +77,8 @@ const setupSchema = z.object({
   grant: z.boolean(),
   /** The script the user was shown; required to match before anything runs. */
   script: z.string().nullable().default(null),
+  /** The head commit the prompt showed; required to match before anything runs. */
+  headSha: z.string().nullable().default(null),
 });
 const idSchema = z.string().uuid();
 
@@ -214,7 +216,7 @@ export function createReviewWorkspaceRoutes(
     } catch (e) {
       return fail(c, e);
     }
-    resumeIfStalled(db(), config, pr, deps());
+    await resumeIfStalled(db(), config, pr, deps());
     return streamSSE(c, async (stream) => {
       const gone = new AbortController();
       stream.onAbort(() => gone.abort());
@@ -288,7 +290,14 @@ export function createReviewWorkspaceRoutes(
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
       return c.json(
-        await answerReviewSetup(db(), c.req.param("id"), c.req.param("prId"), parsed.data, deps()),
+        await answerReviewSetup(
+          db(),
+          config,
+          c.req.param("id"),
+          c.req.param("prId"),
+          parsed.data,
+          deps(),
+        ),
       );
     } catch (e) {
       return fail(c, e);
