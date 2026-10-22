@@ -39,7 +39,7 @@ describe("which test commands may run", () => {
   });
 });
 
-describe("flags that load code", () => {
+describe("flags beyond each runner's list", () => {
   const refused: string[][] = [
     ["bun", "test", "--preload", "./x.ts"],
     ["bun", "test", "-r", "./x.ts"],
@@ -74,15 +74,27 @@ describe("flags that load code", () => {
     ["dotnet", "test", "--logger", "x"],
     ["dotnet", "test", "--collect", "x"],
     ["dotnet", "test", "--test-adapter-path", "."],
+    ["node", "--test", "--env-file=.env"],
+    ["npx", "jest", "--moduleDirectories", "x"],
+    ["npx", "vitest", "run", "--pool", "./pool.js"],
+    ["pytest", "-qp", "evil"],
+    ["pytest", "--tb=evil"],
+    ["node", "--test", "--test-reporter", "./r.mjs"],
+    ["bun", "test", "--bail=2", "--coverage"],
   ];
   for (const argv of refused) {
     it(`refuses ${argv.join(" ")}`, () => {
-      expect(testCommandProblem(argv)).toContain("loads code or configuration");
+      expect(testCommandProblem(argv)).toContain("isn't an allowed flag");
     });
   }
 
-  it("keeps the ordinary filters and switches", () => {
+  it("keeps the ordinary filters and switches, bundled or not", () => {
     for (const argv of [
+      ["pytest", "-qx", "-kfee", "--tb=short", "-vv", "--maxfail", "2"],
+      ["node", "--test", "--test-reporter=spec", "--test-name-pattern", "fee", "node/"],
+      ["npm", "test", "--", "-t", "fee", "--runInBand"],
+      ["cargo", "test", "--lib", "fee", "--", "--nocapture", "--test-threads=1"],
+      ["bun", "test", "--bail", "--timeout", "5000"],
       ["go", "test", "-v", "-run", "TestFee", "-count=1", "./..."],
       ["pytest", "-q", "-x", "-k", "fee", "-rA"],
       ["npx", "jest", "-t", "fee", "--runInBand"],
@@ -90,6 +102,14 @@ describe("flags that load code", () => {
     ]) {
       expect(testCommandProblem(argv)).toBeNull();
     }
+  });
+});
+
+describe("flag values", () => {
+  it("needs a value where a flag takes one, and refuses one where it doesn't", () => {
+    expect(testCommandProblem(["pytest", "-k"])).toContain("needs a value");
+    expect(testCommandProblem(["go", "test", "-v=true"])).toContain("isn't an allowed flag");
+    expect(testCommandProblem(["npx", "jest", "--ci=false"])).toContain("isn't an allowed flag");
   });
 });
 

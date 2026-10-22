@@ -7,19 +7,22 @@
  * wraps the commands Claude Code runs; mutation testing runs the tests itself,
  * under `sandbox-exec` with a deny-by-default profile that allows:
  *  - running programs, and signalling or inspecting only processes in the same
- *    sandbox;
- *  - reading files, except the home directory's credentials and private
- *    configuration, the rest of `~/Library`, the app's own data, and every
- *    other review checkout and clone;
- *  - writing only to the scratch copy, the run's temp folder and a few devices;
+ *    sandbox — but not `setsid`, so nothing it starts can leave the session
+ *    the sweep looks in (see `SandboxSession.sweep`);
+ *  - reading the system and the toolchains, but nothing else in the home
+ *    directory, no other run's temp folder, and no other review checkout or
+ *    clone;
+ *  - writing only to the scratch copy, the run's temp folder and a few
+ *    devices; no terminals;
  *  - a short, vetted list of system services (logging, preferences, user and
- *    group lookup) — not LaunchServices, launchd job submission, the keychain
- *    or Apple events;
- *  - loopback networking only: binding and accepting on any loopback port,
- *    but connecting only to the ephemeral range (where a server a test starts
- *    on port 0 lands), so the database, the sidecar and other local services
- *    on fixed ports are out of reach; Unix sockets only inside the copy and
- *    temp folder. DNS is refused, since a lookup is a way out on its own.
+ *    group lookup, temp-folder resolution, certificate trust) — not
+ *    LaunchServices, launchd job submission, the keychain, Apple events,
+ *    FSEvents or notifications;
+ *  - loopback networking only: connecting only to the ephemeral port range
+ *    (where a server a test starts on port 0 lands), binding anywhere on
+ *    loopback but the ports of local services, and Unix sockets only inside
+ *    the copy and temp folder. DNS is refused, since a lookup is a way out on
+ *    its own.
  * The tests get a fake `HOME` in the temp folder, with tool caches pointed
  * there too and toolchain locations passed explicitly. There is no fallback:
  * where the sandbox can't be applied, or its startup check finds a gap, no test
@@ -29,10 +32,7 @@
  * port), so a pass pays it once: `openSandboxSession` starts one small helper
  * under `sandbox-exec` and runs every command as the helper's child, which
  * inherits the sandbox. Commands are argv, never a shell line, with no
- * provider secrets or SSH agent, each in its own process group. A command
- * counts as finished when its process exits; anything it left behind is
- * killed, by process group and then by any process still working in the copy
- * or temp folder.
+ * provider secrets or SSH agent, each in its own process group.
  */
 
 import { type ChildProcess, execFile, spawn } from "node:child_process";
@@ -45,8 +45,9 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createConnection } from "node:net";
 import { homedir, tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { delimiter, dirname, join, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { SECRET_HOME_PATHS } from "../agentRuns/service.ts";
 import { scrubbedEnv } from "../workspaces/exec.ts";
@@ -64,6 +65,15 @@ const KILL_GRACE_MS = 5_000;
  */
 const EXIT_GRACE_MS = 2_000;
 
+/**
+ * How long past its deadline (or its cancel) a command's exit may take to be
+ * reported before the helper is presumed stuck and the session is torn down.
+ */
+const WATCHDOG_SLACK_MS = KILL_GRACE_MS + EXIT_GRACE_MS + 3_000;
+
+/** How often a running command's process tree is sampled for the sweep. */
+const MEMBERSHIP_POLL_MS = 100;
+
 /** Withheld like the setup script's environment (see `SETUP_WITHHELD_ENV`). */
 const WITHHELD_ENV = ["SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_SSH", "GIT_SSH_COMMAND"];
 
@@ -80,71 +90,85 @@ export class SandboxUnavailableError extends Error {
 /** What the sandbox does and doesn't do, for the consent prompt and the results view. */
 export const SANDBOX_NOTES =
   "Mutation testing runs the pull request's tests in a macOS sandbox: no network beyond loopback, " +
-  "writes only to a scratch copy and a temp folder, and no reads of your credentials, ~/Library or " +
-  "other checkouts. It is a second line of defence, not a guarantee: agreeing to run this pull " +
-  "request's code means trusting it, and its setup script runs without a sandbox.";
+  "writes only to a scratch copy and a temp folder, and no reads of your home folder beyond the " +
+  "toolchains, or of other checkouts. It is a second line of defence, not a guarantee: agreeing to " +
+  "run this pull request's code means trusting it, and its setup script runs without a sandbox.";
 
 /**
- * Home-directory paths a test may not read, beyond `SECRET_HOME_PATHS`:
- * private configuration and history that says more about the user than any
- * test needs. `~/Library` as a whole goes too, apart from what toolchains read.
+ * Home-directory folders toolchains are installed in or read from, and the
+ * only parts of the home directory a test may read. Anything on `PATH` under
+ * the home directory is added to these.
  */
-const PRIVATE_HOME_PATHS = [
-  "Library",
-  ".config",
-  ".zsh_history",
-  ".zsh_sessions",
-  ".bash_history",
-  ".bash_sessions",
-  ".python_history",
-  ".node_repl_history",
-  ".psql_history",
-  ".mysql_history",
-  ".sqlite_history",
-  ".lesshst",
-  ".viminfo",
-  ".terraform.d",
-  ".cargo/credentials",
-  ".cargo/credentials.toml",
-  ".gem/credentials",
-  ".bundle/config",
-  ".m2/settings.xml",
-  ".gradle/gradle.properties",
-  ".vault-token",
-  ".pgpass",
-  ".my.cnf",
-  ".boto",
-  ".s3cfg",
+const TOOLCHAIN_HOME_PATHS = [
+  ".local/bin",
+  ".local/lib",
+  ".local/share/mise",
+  ".local/share/pnpm",
+  ".config/mise",
+  ".cargo",
+  ".rustup",
+  "go",
+  "sdk",
+  ".nvm",
+  ".volta",
+  ".bun",
+  ".deno",
+  ".pyenv",
+  ".rbenv",
+  ".rvm",
+  ".gem",
+  ".asdf",
+  ".sdkman",
+  ".m2/repository",
+  ".gradle/caches",
+  ".gradle/wrapper",
+  "Library/Python",
+  "Library/pnpm",
 ];
 
-/** Re-allowed under the paths above, because toolchains read them. */
-const TOOLCHAIN_HOME_PATHS = ["Library/Python", ".config/mise"];
+/**
+ * Inside the toolchain folders, files that hold credentials. Denied again after
+ * the folders are allowed.
+ */
+const TOOLCHAIN_SECRETS = [".cargo/credentials", ".cargo/credentials.toml", ".gem/credentials"];
 
 /**
  * Loopback ports a test may connect to: macOS's ephemeral range
  * (`net.inet.ip.portrange.first`/`last`), where a server bound to port 0 lands.
- * Seatbelt can't deny one port out of an allowed wildcard, nor express a range,
- * so the range is listed port by port; compiling that costs about three
- * seconds per command, which is the price of keeping fixed-port local services
- * — Postgres, the sidecar, Redis, Docker — unreachable. A test that connects
- * to a fixed port of its own fails its baseline and says so.
+ * Seatbelt can't deny one outbound port out of an allowed wildcard (an
+ * outbound deny after a loopback allow is ignored; checked), nor express a
+ * range, so the range is listed port by port. A test that connects to a fixed
+ * port of its own fails its baseline and says so.
  */
 const EPHEMERAL_PORTS = { first: 49152, last: 65535 };
 /** Filters per rule: one rule holding all of them fails to compile. */
 const PORTS_PER_RULE = 1_000;
 
 /**
- * System services a test runner may look up. Everything here is local
- * plumbing — logging, preferences, notifications, user and group lookups,
- * temp-folder resolution, certificate trust. LaunchServices, launchd job
- * submission, the keychain (`com.apple.SecurityServer`), Apple events and
- * pasteboard are deliberately absent.
+ * Local service ports a test may not bind, so it can't pose as one of them to
+ * the sidecar or anything else on this machine. A second port list the size of
+ * the ephemeral one doesn't fit in a profile (`sandbox_apply` refuses it), but
+ * a bind deny after a loopback allow does hold (checked; an inbound deny
+ * doesn't), so binding is allowed on loopback minus these and every
+ * privileged port. Port 0 still works: the kernel picks an ephemeral port.
+ */
+const SERVICE_PORTS = [
+  1080, 2375, 2376, 3306, 4317, 4318, 5000, 5432, 5433, 5672, 5900, 6379, 6443, 7000, 8200, 8500,
+  8765, 9050, 9200, 9300, 11211, 11434, 15672, 27017,
+];
+
+/**
+ * System services a test runner may look up: local plumbing only — logging,
+ * preferences, user and group lookups, temp-folder resolution, certificate
+ * trust. LaunchServices, launchd job submission, the keychain
+ * (`com.apple.SecurityServer`), Apple events, the pasteboard, FSEvents and the
+ * notification center are absent; the toolchains here run without them
+ * (checked with bun, node, jest, vitest, pytest and go).
  */
 const MACH_SERVICES = [
   "com.apple.system.logger",
   "com.apple.logd",
   "com.apple.diagnosticd",
-  "com.apple.system.notification_center",
   "com.apple.system.opendirectoryd.libinfo",
   "com.apple.system.opendirectoryd.membership",
   "com.apple.system.DirectoryService.libinfo_v1",
@@ -153,7 +177,6 @@ const MACH_SERVICES = [
   "com.apple.bsd.dirhelper",
   "com.apple.trustd",
   "com.apple.trustd.agent",
-  "com.apple.FSEvents",
   "com.apple.coreservices.quarantine-resolver",
 ];
 
@@ -171,13 +194,22 @@ function realpathOr(path: string): string {
   }
 }
 
+/** `/a/b/c` → `/`, `/a`, `/a/b`: what a process stats on the way to `/a/b/c`. */
+function ancestors(path: string): string[] {
+  const out: string[] = [];
+  for (let dir = dirname(path); ; dir = dirname(dir)) {
+    out.push(dir);
+    if (dir === dirname(dir)) return out;
+  }
+}
+
 /** Where things are, for building a profile; tests supply their own. */
 export interface SandboxPaths {
   /** The scratch copy; the tests' working directory. */
   copy: string;
   /** The run's temp folder; also holds the fake home. */
   tempDir: string;
-  /** The user's real home, whose private parts are denied. */
+  /** The user's real home, of which only the toolchains are readable. */
   realHome: string;
   /** Review checkouts and clones live here; all but the copy are denied. */
   workspacesRoot: string;
@@ -186,47 +218,83 @@ export interface SandboxPaths {
    * and the sidecar, should either be configured there.
    */
   extraBlockedPorts: number[];
+  /** The system temp folder, whose other contents (other runs') are denied. */
+  systemTemp?: string;
+  /** Searched for toolchain folders under the home directory; defaults to this process's `PATH`. */
+  path?: string;
+}
+
+/** The home-directory folders a test may read: the toolchains, and what's on PATH. */
+export function readableHomePaths(home: string, path = process.env.PATH ?? ""): string[] {
+  const fromPath = path
+    .split(delimiter)
+    .filter((dir) => dir.startsWith(`${home}${sep}`))
+    .map((dir) => realpathOr(dir));
+  return [...new Set([...TOOLCHAIN_HOME_PATHS.map((p) => join(home, p)), ...fromPath])].filter(
+    (dir) => dir !== home && !dir.split(sep).some((part) => part === ".ssh" || part === ".aws"),
+  );
 }
 
 /**
  * The profile for one run. Every path is a realpath, since Seatbelt matches
  * the resolved path (`/private/var/…`, not `/var/…`). Later rules win, which
- * is how the copy and temp folder stay readable inside denied folders.
+ * is how the toolchains, copy and temp folder stay readable inside denied
+ * folders, and the toolchains' own credential files are denied again.
  */
 export function sandboxProfile(paths: SandboxPaths): string {
   const copy = realpathSync(paths.copy);
   const temp = realpathSync(paths.tempDir);
   const home = realpathOr(paths.realHome);
   const root = realpathOr(paths.workspacesRoot);
+  const systemTemp = realpathOr(paths.systemTemp ?? tmpdir());
   const sub = (path: string) => `(subpath ${sbString(path)})`;
+  const lit = (path: string) => `(literal ${sbString(path)})`;
 
+  const toolchains = readableHomePaths(home, paths.path);
   const deniedReads = [
+    sub(home),
+    sub(systemTemp),
+    '(regex #"^/private/tmp/claude-")',
+    sub(join(root, ".review")),
+    sub(join(root, ".review-repos")),
+    '(regex #"^/dev/(ttys|pty)")',
+  ];
+  const secrets = [
     ...SECRET_HOME_PATHS.map((p) => join(home, p)),
-    ...PRIVATE_HOME_PATHS.map((p) => join(home, p)),
+    ...TOOLCHAIN_SECRETS.map((p) => join(home, p)),
     join(home, ".yarvis"),
     join(home, "Library", "Application Support", APP_IDENTIFIER),
-    join(root, ".review"),
-    join(root, ".review-repos"),
   ];
-  const reallowedReads = TOOLCHAIN_HOME_PATHS.map((p) => join(home, p));
+  // Stat-ing the way down to the copy, the temp folder and the toolchains has
+  // to work, or `realpath` (and every runtime that calls it) fails.
+  const metadata = [
+    ...new Set([copy, temp, ...toolchains].flatMap((path) => [path, ...ancestors(path)])),
+  ];
+
   const blocked = new Set(paths.extraBlockedPorts);
   const ports: number[] = [];
   for (let port = EPHEMERAL_PORTS.first; port <= EPHEMERAL_PORTS.last; port++) {
     if (!blocked.has(port)) ports.push(port);
   }
-  const loopbackRules: string[] = [];
+  const outboundRules: string[] = [];
   for (let i = 0; i < ports.length; i += PORTS_PER_RULE) {
     const filters = ports
       .slice(i, i + PORTS_PER_RULE)
       .map((port) => `(remote ip "localhost:${port}")`);
-    loopbackRules.push(`(allow network-outbound ${filters.join(" ")})`);
+    outboundRules.push(`(allow network-outbound ${filters.join(" ")})`);
   }
+  const noListen: number[] = [];
+  for (let port = 1; port < 1024; port++) noListen.push(port);
+  noListen.push(...SERVICE_PORTS, ...paths.extraBlockedPorts);
+  const listenDeny = [...new Set(noListen)].map((port) => `(local ip "localhost:${port}")`);
 
   return [
     "(version 1)",
     "(deny default)",
     "(allow process-fork)",
     "(allow process-exec)",
+    // Without setsid, everything a test starts stays in the helper's session.
+    "(deny syscall-unix (syscall-number SYS_setsid))",
     "(allow signal (target same-sandbox))",
     "(allow process-info* (target same-sandbox))",
     "(allow sysctl-read)",
@@ -236,23 +304,34 @@ export function sandboxProfile(paths: SandboxPaths): string {
     "(allow ipc-posix-shm*)",
     `(allow mach-lookup ${MACH_SERVICES.map((name) => `(global-name ${sbString(name)})`).join(" ")})`,
     "(allow file-read*)",
-    `(deny file-read* ${deniedReads.map(sub).join(" ")})`,
-    `(allow file-read* ${[...reallowedReads, copy, temp].map(sub).join(" ")})`,
+    `(deny file-read* ${deniedReads.join(" ")})`,
+    `(allow file-read* ${toolchains.map(sub).join(" ")})`,
+    `(deny file-read* ${secrets.map(sub).join(" ")})`,
+    `(allow file-read* ${sub(copy)} ${sub(temp)})`,
+    `(allow file-read-metadata ${metadata.map(lit).join(" ")})`,
     `(allow file-write* ${sub(copy)} ${sub(temp)} ${[
       '(literal "/dev/null")',
       '(literal "/dev/zero")',
-      '(literal "/dev/tty")',
       '(literal "/dev/dtracehelper")',
       '(regex #"^/dev/fd/")',
-      '(regex #"^/dev/ttys[0-9]+$")',
     ].join(" ")})`,
-    `(allow file-ioctl ${sub(copy)} ${sub(temp)} (subpath "/dev"))`,
+    '(deny file-write* (regex #"^/dev/(ttys|pty)"))',
+    `(allow file-ioctl ${[
+      "/dev/null",
+      "/dev/zero",
+      "/dev/random",
+      "/dev/urandom",
+      "/dev/dtracehelper",
+    ]
+      .map(lit)
+      .join(" ")})`,
     // A hard link inside the copy to a file outside it would make that file
     // writable through the copy's path.
     "(deny file-link)",
     '(allow network-bind (local ip "localhost:*"))',
+    `(deny network-bind ${listenDeny.join(" ")})`,
     '(allow network-inbound (local ip "localhost:*"))',
-    ...loopbackRules,
+    ...outboundRules,
     `(allow network-bind (local unix-socket ${sub(copy)}) (local unix-socket ${sub(temp)}))`,
     `(allow network-inbound (local unix-socket ${sub(copy)}) (local unix-socket ${sub(temp)}))`,
     `(allow network-outbound (remote unix-socket ${sub(copy)}) (remote unix-socket ${sub(temp)}))`,
@@ -348,12 +427,18 @@ export type SandboxRunner = (command: SandboxedCommand) => Promise<SandboxedRun>
 const liveGroups = new Set<number>();
 let exitHookInstalled = false;
 
-function killGroup(pgid: number, signal: NodeJS.Signals): void {
+function signalQuietly(target: number, signal: NodeJS.Signals): void {
   try {
-    process.kill(-pgid, signal);
+    process.kill(target, signal);
   } catch {
     // Already gone.
   }
+}
+
+/** Signals a process group and its leader: the leader may have moved to another group. */
+function killGroup(pgid: number, signal: NodeJS.Signals): void {
+  signalQuietly(-pgid, signal);
+  signalQuietly(pgid, signal);
 }
 
 export function assertSandboxAvailable(): void {
@@ -506,8 +591,7 @@ use JSON::PP; use MIME::Base64; use POSIX qw(:sys_wait_h); use IO::Select; use T
 $| = 1;
 my $json = JSON::PP->new->utf8->canonical;
 my ($max, $grace) = (${MAX_OUTPUT_CHARS}, ${EXIT_GRACE_MS / 1000});
-sub reply { print $json->encode($_[0]), "
-"; }
+sub reply { print $json->encode($_[0]), "\n"; }
 while (my $line = <STDIN>) {
   my $req = eval { $json->decode($line) };
   next unless ref $req eq "HASH" && ref $req->{argv} eq "ARRAY" && @{$req->{argv}};
@@ -521,11 +605,9 @@ while (my $line = <STDIN>) {
     setpgrp(0, 0);
     open(STDIN, "<", "/dev/null");
     open(STDOUT, ">&", $w); open(STDERR, ">&", $w); close $w;
-    chdir $cwd or do { print STDERR "cannot enter $cwd: $!
-"; POSIX::_exit(126); };
+    chdir $cwd or do { print STDERR "cannot enter $cwd: $!\n"; POSIX::_exit(126); };
     { no warnings; exec { $argv->[0] } @$argv; }
-    print STDERR "cannot run $argv->[0]: $!
-";
+    print STDERR "cannot run $argv->[0]: $!\n";
     POSIX::_exit(127);
   }
   setpgrp($pid, $pid);
@@ -558,11 +640,68 @@ while (my $line = <STDIN>) {
 
 const PERL = "/usr/bin/perl";
 
+interface ProcessEntry {
+  pid: number;
+  ppid: number;
+  pgid: number;
+  /** `ps`'s start time, so a reused pid is never mistaken for a member. */
+  started: string;
+}
+
+function listProcesses(): Promise<ProcessEntry[]> {
+  return new Promise((resolve) => {
+    execFile(
+      "ps",
+      ["-axo", "pid=,ppid=,pgid=,lstart="],
+      { maxBuffer: 16 * 1024 * 1024 },
+      (_e, out) => {
+        resolve(
+          (out ?? "")
+            .split("\n")
+            .map((line) => /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(line))
+            .filter((m): m is RegExpExecArray => m !== null)
+            .map((m) => ({
+              pid: Number(m[1]),
+              ppid: Number(m[2]),
+              pgid: Number(m[3]),
+              started: m[4] as string,
+            })),
+        );
+      },
+    );
+  });
+}
+
+/** Pids of this user's processes whose environment names `marker` (`ps -E`). */
+function processesWithEnv(marker: string): Promise<number[]> {
+  return new Promise((resolve) => {
+    execFile(
+      "ps",
+      ["-E", "-ww", "-x", "-o", "pid=,command="],
+      { maxBuffer: 64 * 1024 * 1024 },
+      (_e, out) => {
+        resolve(
+          (out ?? "")
+            .split("\n")
+            .filter((line) => line.includes(marker))
+            .map((line) => Number(/^\s*(\d+)/.exec(line)?.[1]))
+            .filter((pid) => Number.isInteger(pid) && pid > 0),
+        );
+      },
+    );
+  });
+}
+
 export interface SandboxSession {
   /** Runs commands through the session's helper; every command must use the session's copy and temp folder. */
   runner: SandboxRunner;
   /** The helper's pid, which the stray sweep must spare. */
   helperPid: number | undefined;
+  /**
+   * Kills every process the sandbox started that is still running, and checks
+   * again: returns the pids killed. See the comment inside for how they are found.
+   */
+  sweep: () => Promise<number[]>;
   close: () => void;
 }
 
@@ -579,7 +718,7 @@ export async function openSandboxSession(base: {
   assertSandboxAvailable();
   if (!existsSync(PERL)) {
     console.log("[mutation-testing] no perl for the sandbox helper; sandboxing each command");
-    return { runner: runSandboxed, helperPid: undefined, close: () => {} };
+    return { runner: runSandboxed, helperPid: undefined, sweep: async () => [], close: () => {} };
   }
   installExitHook();
   const paths = { ...sandboxDefaults, ...base.sandbox };
@@ -590,6 +729,8 @@ export async function openSandboxSession(base: {
       cwd: base.cwd,
       env: sandboxEnv({ tempDir: base.tempDir, realHome: paths.realHome }),
       shell: false,
+      // Its own session and group: everything it starts stays in that session,
+      // since the profile refuses setsid.
       detached: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -599,6 +740,71 @@ export async function openSandboxSession(base: {
   }
   const helperPid = helper.pid;
   if (helperPid !== undefined) liveGroups.add(helperPid);
+
+  /**
+   * Every process the helper's commands started, by pid and start time. Found
+   * three ways, since no one way catches them all: the process tree (parent
+   * and group links, sampled while commands run, so a child that is reparented
+   * after its parent exits was usually seen first); the environment, which
+   * names this run's temp folder unless a process cleared it; and, in the
+   * executor's sweep, anything working in or run from the copy or temp folder.
+   * A process can't leave the session (no setsid), but a session can't be
+   * listed on macOS, so it is these that find it. All of them are still
+   * sandboxed: what this catches can't write outside the copy and temp folder.
+   */
+  const members = new Map<number, string>();
+  const scan = async () => {
+    if (helperPid === undefined) return;
+    const processes = await listProcesses();
+    const byPid = new Map(processes.map((p) => [p.pid, p]));
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const p of processes) {
+        if (p.pid === helperPid || members.get(p.pid) === p.started) continue;
+        const parentKnown = p.ppid === helperPid || members.has(p.ppid);
+        const groupKnown =
+          members.has(p.pgid) && byPid.get(p.pgid)?.started === members.get(p.pgid);
+        if (parentKnown || groupKnown) {
+          members.set(p.pid, p.started);
+          grew = true;
+        }
+      }
+    }
+  };
+  let polling: ReturnType<typeof setInterval> | undefined;
+  let running = 0;
+  const startPolling = () => {
+    running++;
+    polling ??= setInterval(() => void scan(), MEMBERSHIP_POLL_MS);
+  };
+  const stopPolling = () => {
+    running = Math.max(0, running - 1);
+    if (running === 0 && polling) {
+      clearInterval(polling);
+      polling = undefined;
+    }
+  };
+
+  const killMembers = async (): Promise<number[]> => {
+    await scan();
+    const byEnv = await processesWithEnv(realpathOr(base.tempDir));
+    const current = new Map((await listProcesses()).map((p) => [p.pid, p.started]));
+    for (const pid of byEnv) {
+      const started = current.get(pid);
+      if (started && pid !== helperPid && pid !== process.pid) members.set(pid, started);
+    }
+    const killed: number[] = [];
+    for (const [pid, started] of members) {
+      if (current.get(pid) !== started) {
+        members.delete(pid);
+        continue;
+      }
+      signalQuietly(pid, "SIGKILL");
+      killed.push(pid);
+    }
+    return killed;
+  };
 
   type Pending = {
     onSpawned: (pgid: number) => void;
@@ -611,10 +817,18 @@ export async function openSandboxSession(base: {
   helper.stderr?.on("data", (chunk: Buffer) => {
     helperErrors = (helperErrors + chunk.toString("utf8")).slice(-2_000);
   });
+  // A helper that died mid-write closes the pipe under us; the exit handler reports it.
+  helper.stdin?.on("error", () => {});
   const fail = (message: string) => {
     broken ??= message;
     for (const entry of pending.values()) entry.onError(broken);
     pending.clear();
+  };
+  /** Tears the session down: the helper, its group and everything it started. */
+  const breakSession = (message: string) => {
+    if (helperPid !== undefined) killGroup(helperPid, "SIGKILL");
+    void killMembers();
+    fail(message);
   };
   helper.on("exit", () => {
     if (helperPid !== undefined) liveGroups.delete(helperPid);
@@ -655,11 +869,19 @@ export async function openSandboxSession(base: {
     if (broken) return Promise.reject(new SandboxUnavailableError(broken));
     const id = nextId++;
     const started = Date.now();
+    startPolling();
     return new Promise<SandboxedRun>((resolve, reject) => {
       let pgid: number | undefined;
       let timedOut = false;
       let aborted = false;
       let forceKill: ReturnType<typeof setTimeout> | undefined;
+      let watchdog: ReturnType<typeof setTimeout> | undefined;
+      const armWatchdog = (ms: number) => {
+        if (watchdog) clearTimeout(watchdog);
+        watchdog = setTimeout(() => {
+          breakSession("the sandbox helper stopped answering, so the session was ended");
+        }, ms);
+      };
       const stop = () => {
         if (pgid === undefined) return;
         killGroup(pgid, "SIGTERM");
@@ -672,14 +894,18 @@ export async function openSandboxSession(base: {
         timedOut = true;
         stop();
       }, command.timeoutMs);
+      armWatchdog(command.timeoutMs + WATCHDOG_SLACK_MS);
       const onAbort = () => {
         aborted = true;
         stop();
+        armWatchdog(WATCHDOG_SLACK_MS);
       };
       const settle = () => {
         clearTimeout(timer);
+        if (watchdog) clearTimeout(watchdog);
         if (forceKill) clearTimeout(forceKill);
         command.signal.removeEventListener("abort", onAbort);
+        stopPolling();
         if (pgid !== undefined) {
           // Whatever the command left running in its group goes with it.
           killGroup(pgid, "SIGKILL");
@@ -689,8 +915,11 @@ export async function openSandboxSession(base: {
       pending.set(id, {
         onSpawned: (spawned) => {
           pgid = spawned;
+          members.set(spawned, "");
           liveGroups.add(spawned);
           command.onSpawn?.(spawned);
+          // Records its real start time, and catches what it starts right away.
+          void scan();
           if (aborted || timedOut) stop();
         },
         onExit: ({ code, output }) => {
@@ -711,8 +940,10 @@ export async function openSandboxSession(base: {
   return {
     runner,
     helperPid,
+    sweep: killMembers,
     close: () => {
       helper.stdin?.end();
+      if (polling) clearInterval(polling);
       if (helperPid !== undefined) killGroup(helperPid, "SIGKILL");
     },
   };
@@ -750,8 +981,9 @@ function processExecutables(): Promise<{ pid: number; path: string }[]> {
 
 /**
  * Kills every process working in, or run from, one of `roots`: what a test
- * left behind outside its process group (a daemon that called `setsid`, say).
- * Returns the pids it killed. Never this process.
+ * left behind outside its process group. Returns the pids it killed. Never
+ * this process or `spare`. A session's own sweep (`SandboxSession.sweep`)
+ * finds what has moved elsewhere.
  */
 export async function killStrays(
   roots: string[],
@@ -768,42 +1000,64 @@ export async function killStrays(
       .filter((p) => p.pid !== process.pid && !spare.has(p.pid) && under(p.path))
       .map((p) => p.pid),
   );
-  for (const pid of pids) {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // Already gone.
-    }
-  }
+  for (const pid of pids) signalQuietly(pid, "SIGKILL");
   return [...pids];
 }
 
 /** The startup check's probes, run as one script so the profile compiles once. */
-const PROBE_SCRIPT = `
-probe() { name=$1; shift; out=$("$@" 2>&1); code=$?; printf '@@%s|%s|%s\\n' "$name" "$code" "$(printf '%s' "$out" | tr '\\n' ' ' | cut -c1-400)"; }
-probe write /bin/sh -c 'echo escaped > "$1"' sh "$1"
-probe link /bin/sh -c 'ln "$1" link-probe && echo escaped >> link-probe' sh "$2"
-probe secret /bin/ls "$3"
+const PROBE_SCRIPT = String.raw`
+probe() { name=$1; shift; out=$("$@" 2>&1); code=$?; printf '@@%s|%s|%s\n' "$name" "$code" "$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-400)"; }
+outside_write=$1; outside_target=$2; secret=$3; tag=$4; private=$5; listen_port=$6; shift 6
+probe write /bin/sh -c 'echo escaped > "$1"' sh "$outside_write"
+probe link /bin/sh -c 'ln "$1" link-probe && echo escaped >> link-probe' sh "$outside_target"
+probe secret /bin/ls "$secret"
+probe private /bin/cat "$private"
+probe tty /bin/sh -c ': > /dev/ttys000'
 probe network /usr/bin/nc -v -z -G 2 192.0.2.1 443
-probe service /usr/bin/nc -v -z -G 2 127.0.0.1 "$5"
+for port in "$@"; do probe "service$port" /usr/bin/nc -v -z -G 1 127.0.0.1 "$port"; done
+probe listen /usr/bin/perl -MIO::Socket::INET -e '$s = IO::Socket::INET->new(LocalAddr => "127.0.0.1", LocalPort => $ARGV[0], Listen => 1, ReuseAddr => 1) or die "listen: $!\n"; print "listening\n"' "$listen_port"
 probe dns /usr/bin/dscacheutil -q host -a name example.com
 probe unix /usr/bin/nc -U -z /private/var/run/mDNSResponder
-probe launchd /bin/launchctl submit -l "$4" -- /usr/bin/true
+probe launchd /bin/launchctl submit -l "$tag" -- /usr/bin/true
 probe launchservices /usr/bin/lsappinfo front
 probe keychain /usr/bin/security show-keychain-info /Library/Keychains/System.keychain
+probe setsid /usr/bin/perl -MPOSIX -e 'print((POSIX::setsid() // -1) > 0 ? "new session\n" : "setsid: $!\n")'
 `;
 
 const REFUSED = "Operation not permitted";
+
+/** A blocked service port nothing is listening on, so a listen probe can tell refusal from "in use". */
+function freeServicePort(): Promise<number> {
+  const tryPort = (port: number) =>
+    new Promise<boolean>((resolve) => {
+      const socket = createConnection({ host: "127.0.0.1", port });
+      socket.once("connect", () => {
+        socket.destroy();
+        resolve(false);
+      });
+      socket.once("error", () => resolve(true));
+      socket.setTimeout(500, () => {
+        socket.destroy();
+        resolve(false);
+      });
+    });
+  return (async () => {
+    for (const port of SERVICE_PORTS) if (await tryPort(port)) return port;
+    return SERVICE_PORTS[0] as number;
+  })();
+}
 
 /**
  * Checks, before any test runs, that the sandbox applies and holds. One
  * sandboxed script tries each of these, and every one must be refused: a
  * write next to the copy; a hard link to a file outside it, written through;
- * a read of a credential folder; an outbound connection; a connection to a
- * local service port (the database's); a DNS lookup; a Unix socket outside the
- * copy; submitting a launchd job; a LaunchServices query; a keychain query.
- * A sandbox that can't be applied (a nested one, say) fails here rather than
- * letting a test run outside it.
+ * a read of a credential folder and of a private file in the real home; a
+ * terminal; an outbound connection; a connection to every blocked port; a
+ * listen on a service port; a DNS lookup; a Unix socket outside the copy;
+ * submitting a launchd job; a LaunchServices query; a keychain query; setsid.
+ * A probe that reports nothing counts as one that got through. A sandbox that
+ * can't be applied (a nested one, say) fails here rather than letting a test
+ * run outside it.
  */
 export async function checkSandbox(
   runner: SandboxRunner,
@@ -819,9 +1073,23 @@ export async function checkSandbox(
   const secretDir =
     SECRET_HOME_PATHS.map((p) => join(realHome, p)).find((p) => existsSync(p)) ??
     join(realHome, "Library");
-  const servicePort = String(
-    (sandbox?.extraBlockedPorts ?? sandboxDefaults.extraBlockedPorts)[0] ?? 5432,
-  );
+  // Present on every Mac, and private to the user: the home directory beyond
+  // the toolchains must be unreadable, whatever HOME says.
+  const privateFile =
+    [
+      join(realHome, "Library", "Preferences", ".GlobalPreferences.plist"),
+      join(realHome, ".zsh_history"),
+    ].find((p) => existsSync(p)) ??
+    join(realHome, "Library", "Preferences", ".GlobalPreferences.plist");
+  const blockedPorts = [
+    ...new Set([
+      ...(sandbox?.extraBlockedPorts ?? sandboxDefaults.extraBlockedPorts),
+      5432,
+      6379,
+      11434,
+    ]),
+  ];
+  const listenPort = await freeServicePort();
 
   try {
     const run = await runner({
@@ -834,7 +1102,9 @@ export async function checkSandbox(
         outsideTarget,
         secretDir,
         tag,
-        servicePort,
+        privateFile,
+        String(listenPort),
+        ...blockedPorts.map(String),
       ],
       cwd: dirs.cwd,
       tempDir: dirs.tempDir,
@@ -844,29 +1114,44 @@ export async function checkSandbox(
     });
     if (signal.aborted || run.aborted) return;
     const results = new Map<string, { code: number; out: string }>();
-    for (const match of run.output.matchAll(/^@@([a-z]+)\|(\d+)\|(.*)$/gm)) {
+    for (const match of run.output.matchAll(/^@@([a-z0-9]+)\|(\d+)\|(.*)$/gm)) {
       results.set(match[1] as string, { code: Number(match[2]), out: match[3] ?? "" });
     }
-    if (results.size === 0) {
-      throw new SandboxUnavailableError(run.output.trim().slice(0, 500) || "it did not start");
-    }
-    const get = (name: string) => results.get(name) ?? { code: -1, out: "" };
+    const refused = (name: string) => results.get(name)?.out.includes(REFUSED) === true;
+    const reported = (name: string) => results.has(name);
     const escaped: [string, boolean][] = [
-      ["a write outside the copy", existsSync(outsideWrite)],
+      ["a write outside the copy", existsSync(outsideWrite) || !reported("write")],
       [
         "a hard link to a file outside the copy",
-        !readFileSync(outsideTarget, "utf8").startsWith("untouched"),
+        !readFileSync(outsideTarget, "utf8").startsWith("untouched") || !reported("link"),
       ],
-      ["a read of a credential folder", !get("secret").out.includes(REFUSED)],
-      ["an outbound connection", !get("network").out.includes(REFUSED)],
-      ["a connection to a local service port", !get("service").out.includes(REFUSED)],
-      ["a DNS lookup", /ip_address|ipv6_address/.test(get("dns").out)],
-      ["a Unix socket outside the copy", get("unix").code === 0],
-      ["submitting a launchd job", get("launchd").code === 0],
-      ["a LaunchServices query", /ASN:/.test(get("launchservices").out)],
-      ["a keychain query", /lock-on-sleep|no-timeout|timeout=/.test(get("keychain").out)],
+      ["a read of a credential folder", !refused("secret")],
+      ["a read of a private file in the home folder", !refused("private")],
+      ["opening a terminal", !refused("tty")],
+      ["an outbound connection", !refused("network")],
+      ...blockedPorts.map((port): [string, boolean] => [
+        `a connection to port ${port}`,
+        !refused(`service${port}`),
+      ]),
+      [`listening on port ${listenPort}`, !refused("listen")],
+      [
+        "a DNS lookup",
+        !reported("dns") || /ip_address|ipv6_address/.test(results.get("dns")?.out ?? ""),
+      ],
+      ["a Unix socket outside the copy", !reported("unix") || results.get("unix")?.code === 0],
+      ["submitting a launchd job", !reported("launchd") || results.get("launchd")?.code === 0],
+      [
+        "a LaunchServices query",
+        !reported("launchservices") || /ASN:/.test(results.get("launchservices")?.out ?? ""),
+      ],
+      [
+        "a keychain query",
+        !reported("keychain") ||
+          /lock-on-sleep|no-timeout|timeout=/.test(results.get("keychain")?.out ?? ""),
+      ],
+      ["leaving the session (setsid)", !refused("setsid")],
     ];
-    if (get("launchd").code === 0) execFile("/bin/launchctl", ["remove", tag], () => {});
+    if (results.get("launchd")?.code === 0) execFile("/bin/launchctl", ["remove", tag], () => {});
     const gap = escaped.find(([, through]) => through);
     if (gap) throw new SandboxUnavailableError(`${gap[0]} was not refused`);
   } finally {
