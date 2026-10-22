@@ -194,7 +194,7 @@ has written your providers and MCP servers into it.
 
 | Key | Holds | Set from |
 | --- | --- | --- |
-| `customProviders` | Your OpenAI-, Anthropic- or Ollama-compatible endpoints, keyed by id, each with its models and their capability tags | Settings → LLM Providers |
+| `customProviders` | Your OpenAI-, Anthropic- or Ollama-compatible endpoints, keyed by id. Each has a `models` list of `{ id, capabilities }`; a bare id string, as older builds wrote, reads as a `chat` model. | Settings → LLM Providers |
 | `providerModels` | Your edited model list per provider. Replaces the built-in list for that provider once saved. | Settings → LLM Providers → Models |
 | `mcpServers` | MCP servers Yarvis connects to, keyed by id | Settings → Tools & MCP |
 | `chatConfig` | `maxSteps` (100, up to 500), `maxOutputTokens` (none, up to 200000), `compactAtTokens` (200000, from 10000 to 2000000). A model's own compaction threshold in its catalog entry wins over `compactAtTokens`. | Settings → Assistant → Turn budget |
@@ -250,8 +250,9 @@ Each saved provider has two tests, run with its saved URL and credentials:
 - **Test connection** asks the gateway for its model list. It reports a
   failure with the gateway's own error, and names any model you added that the
   gateway doesn't list, which is usually a typo in the id.
-- **Test** beside each model sends it one short prompt through the same code a
-  chat turn uses. A model that is reachable but answers in a shape Yarvis
+- **Test** beside each chat or decision model sends it one short prompt
+  through the same code a chat turn uses, with a low effort for a model tagged
+  `reasoning`. A model that is reachable but answers in a shape Yarvis
   can't read fails here, with the details.
 
 ### Effort level
@@ -262,9 +263,25 @@ the memory recap also uses), for each complexity tier, for the decision model,
 and for each PR review model. A specialist sets one with `effort:` in its file.
 The levels are minimal, low, medium, high and extra high. **Default effort**
 leaves it to the provider. Yarvis translates the level into each provider's own
-setting, and drops it for a model that isn't tagged `reasoning`. Heads-down
-passes and the Telegram bot have no model picker of their own, so they use the
-provider's default.
+setting, and drops it for a model that isn't tagged `reasoning`. On a Claude
+model, any effort also turns thinking on, so its reasoning can appear even with
+**Thinking** unticked.
+
+The built-in Claude Opus and Sonnet models and the Gemini chat models come
+tagged `reasoning`. If you edited a provider's list under **Settings → LLM
+Providers → Models**, that saved list is used as it is: tag the model
+`reasoning` there, or press **Reset to built-in list** (**Reset to provider's
+list** for a custom provider) to pick up the tags. A custom provider's
+**Models** list also wins over the tags in its provider form until it is reset.
+
+Tag an OpenAI reasoning model (o-series, GPT-5) `reasoning` even if you never
+set an effort, when its id behind your gateway isn't OpenAI's own (say
+`azure-gpt-5`). Yarvis then asks for the model's reasoning back, which a
+multi-step tool turn needs since Yarvis sends `store: false`.
+
+Heads-down passes and the Telegram bot don't take an effort level, so they use
+the provider's default. A decision model on an **Ollama** provider ignores the
+effort too, since Ollama's own API has no such setting.
 
 ## Embeddings
 

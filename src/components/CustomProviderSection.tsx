@@ -20,6 +20,7 @@ import {
   testCustomProviderModel,
   updateCustomProvider,
 } from "../lib/customProviders";
+import type { DisplayError } from "../lib/errors";
 import { restartSidecar } from "../lib/keychain";
 import { CAPABILITY_HINTS, MODEL_CAPABILITIES } from "../lib/modelCatalog";
 import ErrorNotice from "./ErrorNotice";
@@ -81,6 +82,7 @@ function toInput(d: Draft): CustomProviderInput {
     apiKind: d.apiKind,
     models: d.models
       .map((m) => ({ ...m, id: m.id.trim() }))
+      // A hand-edited entry can arrive with no tags, which the sidecar would refuse to save.
       .filter((m) => m.id && m.capabilities.length > 0),
     headerNames: d.headerNames.map((h) => h.trim()).filter(Boolean),
   };
@@ -359,21 +361,24 @@ function ModelListEditor({
     setPending("");
   }, [pending, models, setModels]);
 
-  const toggle = (id: string, capability: ModelCapability) =>
-    setModels(
-      models.map((m) => {
-        if (m.id !== id) return m;
-        const has = m.capabilities.includes(capability);
-        // A model with no tags would be offered nowhere; Remove is the way to drop it.
-        if (has && m.capabilities.length === 1) return m;
-        return {
-          ...m,
-          capabilities: has
-            ? m.capabilities.filter((c) => c !== capability)
-            : [...m.capabilities, capability],
-        };
-      }),
-    );
+  const toggle = useCallback(
+    (id: string, capability: ModelCapability) =>
+      setModels(
+        models.map((m) => {
+          if (m.id !== id) return m;
+          const isTagged = m.capabilities.includes(capability);
+          // A model with no tags would be offered nowhere; Remove is the way to drop it.
+          if (isTagged && m.capabilities.length === 1) return m;
+          return {
+            ...m,
+            capabilities: isTagged
+              ? m.capabilities.filter((c) => c !== capability)
+              : [...m.capabilities, capability],
+          };
+        }),
+      ),
+    [models, setModels],
+  );
 
   return (
     <div className="mt-4">
@@ -620,8 +625,22 @@ function ProviderCard({
   );
 }
 
-function testFailure(result: { error: string; detail?: string }) {
+/** A test's failure in the shape `ErrorNotice` shows. */
+function toDisplayError(result: { error: string; detail?: string }): DisplayError {
   return { message: result.error, detail: result.detail };
+}
+
+/** A test that has finished, as opposed to one not started or still running. */
+function isDone<T>(result: T | "running" | null | undefined): result is T {
+  return result != null && result !== "running";
+}
+
+/**
+ * Only these answer a text prompt. A speech or embedding model would fail the
+ * test even when it works where it is used.
+ */
+function answersPrompts(model: CustomProviderModel): boolean {
+  return model.capabilities.includes("chat") || model.capabilities.includes("decision");
 }
 
 /**
@@ -635,37 +654,38 @@ function ConnectionTests({ provider }: { provider: CustomProvider }) {
   const [modelResults, setModelResults] = useState<
     Record<string, ModelTestResult | "running" | undefined>
   >({});
-  const [error, setError] = useState<string | null>(null);
+  // A request the sidecar itself refused. A failed test shows through ErrorNotice instead.
+  const [requestError, setRequestError] = useState<string | null>(null);
 
   const testConnection = useCallback(async () => {
     setConnection("running");
-    setError(null);
+    setRequestError(null);
     try {
       setConnection(await testCustomProvider(provider.id));
     } catch (e) {
       setConnection(null);
-      setError(e instanceof Error ? e.message : String(e));
+      setRequestError(e instanceof Error ? e.message : String(e));
     }
   }, [provider.id]);
 
   const testModel = useCallback(
     async (model: string) => {
       setModelResults((prev) => ({ ...prev, [model]: "running" }));
-      setError(null);
+      setRequestError(null);
       try {
         const result = await testCustomProviderModel(provider.id, model);
         setModelResults((prev) => ({ ...prev, [model]: result }));
       } catch (e) {
         setModelResults((prev) => ({ ...prev, [model]: undefined }));
-        setError(e instanceof Error ? e.message : String(e));
+        setRequestError(e instanceof Error ? e.message : String(e));
       }
     },
     [provider.id],
   );
 
-  const listed = connection !== null && connection !== "running" && connection.ok;
-  const unlisted = listed
-    ? provider.models.filter((m) => !connection.models.includes(m.id)).map((m) => m.id)
+  const connected = isDone(connection) && connection.ok ? connection : null;
+  const missingFromProxy = connected
+    ? provider.models.filter((m) => !connected.models.includes(m.id)).map((m) => m.id)
     : [];
 
   return (
@@ -679,23 +699,21 @@ function ConnectionTests({ provider }: { provider: CustomProvider }) {
         >
           {connection === "running" ? "Testing…" : "Test connection"}
         </button>
-        {listed && (
+        {connected && (
           <span className="text-xs text-emerald-400">
-            Connected in {connection.latencyMs} ms · the proxy lists {connection.models.length}{" "}
-            {connection.models.length === 1 ? "model" : "models"}
+            Connected in {connected.latencyMs} ms · the proxy lists {connected.models.length}{" "}
+            {connected.models.length === 1 ? "model" : "models"}
           </span>
         )}
       </div>
-      {connection !== null && connection !== "running" && !connection.ok && (
-        <ErrorNotice error={testFailure(connection)} />
-      )}
-      {unlisted.length > 0 && (
+      {isDone(connection) && !connection.ok && <ErrorNotice error={toDisplayError(connection)} />}
+      {missingFromProxy.length > 0 && (
         <p className="text-xs text-amber-400">
-          The proxy doesn't list {unlisted.join(", ")}. Check the model id, or test the model to see
-          whether it answers anyway.
+          The proxy doesn't list {missingFromProxy.join(", ")}. Check the model id, or test the
+          model to see whether it answers anyway.
         </p>
       )}
-      {error && <p className="text-xs text-red-400">{error}</p>}
+      {requestError && <p className="text-xs text-red-400">{requestError}</p>}
 
       {provider.models.length > 0 && (
         <ul className="space-y-1">
@@ -714,23 +732,23 @@ function ConnectionTests({ provider }: { provider: CustomProvider }) {
                       {c}
                     </span>
                   ))}
-                  {result && result !== "running" && result.ok && (
+                  {isDone(result) && result.ok && (
                     <span className="text-emerald-400" title={`Replied: ${result.reply}`}>
                       Answered in {result.latencyMs} ms
                     </span>
                   )}
-                  <button
-                    type="button"
-                    disabled={result === "running"}
-                    onClick={() => void testModel(model.id)}
-                    className="ml-auto rounded-md border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
-                  >
-                    {result === "running" ? "Testing…" : "Test"}
-                  </button>
+                  {answersPrompts(model) && (
+                    <button
+                      type="button"
+                      disabled={result === "running"}
+                      onClick={() => void testModel(model.id)}
+                      className="ml-auto rounded-md border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+                    >
+                      {result === "running" ? "Testing…" : "Test"}
+                    </button>
+                  )}
                 </div>
-                {result && result !== "running" && !result.ok && (
-                  <ErrorNotice error={testFailure(result)} />
-                )}
+                {isDone(result) && !result.ok && <ErrorNotice error={toDisplayError(result)} />}
               </li>
             );
           })}

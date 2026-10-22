@@ -13,8 +13,8 @@ Open it from the **Omni** tab (Cmd+2).
 
 1. Open the **Omni** tab. The canvas is on the left, and the **Builder** panel
    is on the right.
-2. Pick a provider and model in the Builder. These are shared with the Chat
-   tab.
+2. Pick a provider and model in the Builder, and an effort for a model tagged
+   `reasoning`. These are shared with the Chat tab.
 3. Describe the layout you want and press **Build**. The canvas fills in as the
    model streams its answer.
 4. Send follow-ups to change it: "make the calendar a week view", "put the PR

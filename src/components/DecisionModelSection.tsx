@@ -6,7 +6,7 @@ import {
   getDecisionModelConfig,
   saveDecisionModelConfig,
 } from "../lib/decisionModel";
-import { modelTakesEffort } from "../lib/effort";
+import { modelTakesEffort, withModel } from "../lib/effort";
 import EffortSelect from "./EffortSelect";
 
 /**
@@ -107,7 +107,7 @@ export default function DecisionModelSection() {
             disabled={!selection?.provider}
             onChange={(e) => {
               if (!selection?.provider) return;
-              void save({ model: { ...selection, model: e.target.value } });
+              void save({ model: withModel(providers, selection, e.target.value) });
             }}
           >
             {stale && selection && <option value={selection.model}>{selection.model}</option>}
@@ -127,7 +127,7 @@ export default function DecisionModelSection() {
               onChange={(effort) => void save({ model: { ...selection, effort } })}
             />
             <p className="self-center text-xs text-zinc-500">
-              A review sits in front of every tool call, so a low effort keeps it quick.
+              A review runs before each MCP tool call it judges, so a low effort keeps it quick.
             </p>
           </div>
         )}

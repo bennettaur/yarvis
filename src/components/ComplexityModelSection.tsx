@@ -9,7 +9,7 @@ import {
   type ModelSelection,
   saveComplexityModelConfig,
 } from "../lib/complexityModels";
-import { modelTakesEffort } from "../lib/effort";
+import { modelTakesEffort, withModel } from "../lib/effort";
 import EffortSelect from "./EffortSelect";
 
 /**
@@ -119,7 +119,7 @@ export default function ComplexityModelSection() {
                   disabled={!selection?.provider}
                   onChange={(e) => {
                     if (!selection?.provider) return;
-                    void save(tier, { ...selection, model: e.target.value });
+                    void save(tier, withModel(providers, selection, e.target.value));
                   }}
                 >
                   {modelsFor(selection?.provider ?? "").map((m) => (

@@ -40,9 +40,18 @@ const headerName = z
     "header name is reserved and cannot be customised",
   );
 
-const modelId = z.string().trim().min(1).max(256);
+/** No whitespace or control characters, which no model id has and which would split a log line. */
+const modelId = z
+  .string()
+  .trim()
+  .min(1)
+  .max(256)
+  .refine(
+    (v) => !/\s/.test(v) && [...v].every((ch) => ch >= " "),
+    "model id must not contain spaces or control characters",
+  );
 
-/** A bare id is what clients sent before models carried tags; it means a chat model. */
+/** A bare id is read as a chat model, the same way a saved one is (see `withTaggedModels`). */
 const models = z.array(
   z.union([
     modelId.transform((id) => ({ id, capabilities: ["chat" as const] })),

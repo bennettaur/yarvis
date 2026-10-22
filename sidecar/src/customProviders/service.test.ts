@@ -83,6 +83,37 @@ describe("customProviders/service", () => {
     ]);
   });
 
+  it("drops unknown tags and skips entries it can't read, rather than failing the section", async () => {
+    await withSection<Record<string, unknown>, void>("customProviders", () => ({
+      next: {
+        edited: {
+          id: "edited",
+          ...input,
+          models: [
+            { id: "gpt-4o", capabilities: ["chat", "telepathy"] },
+            { id: "no-tags" },
+            { capabilities: ["chat"] },
+            null,
+          ],
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      },
+      result: undefined,
+    }));
+    expect((await listCustomProviders())[0]?.models).toEqual([
+      { id: "gpt-4o", capabilities: ["chat"] },
+      { id: "no-tags", capabilities: [] },
+    ]);
+  });
+
+  it("doesn't read a provider off the object prototype", async () => {
+    await createCustomProvider(input);
+    expect(await getCustomProvider("__proto__")).toBeNull();
+    expect(await updateCustomProvider("constructor", { name: "x" })).toBeNull();
+    expect(await deleteCustomProvider("__proto__")).toBe(false);
+  });
+
   it("returns null getting an unknown id", async () => {
     expect(await getCustomProvider("does-not-exist")).toBeNull();
   });

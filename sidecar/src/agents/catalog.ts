@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { builtinToolMetadata } from "../chat/builtinTools.ts";
 import { COMPLEXITY_TIERS, type ComplexityTier, isComplexityTier } from "../llm/complexity.ts";
-import { REASONING_EFFORTS, type ReasoningEffort } from "../llm/effort.ts";
+import { isReasoningEffort, REASONING_EFFORTS, type ReasoningEffort } from "../llm/effort.ts";
 import activityConsolidator from "./definitions/activity-consolidator.md" with { type: "text" };
 import planner from "./definitions/planner.md" with { type: "text" };
 import projectManager from "./definitions/project-manager.md" with { type: "text" };
@@ -202,10 +202,11 @@ export function parseSpecialist(
   }
 
   const effortRef = asString(path, data, "effort");
-  if (effortRef && !(REASONING_EFFORTS as readonly string[]).includes(effortRef)) {
+  if (effortRef && !isReasoningEffort(effortRef)) {
     throw new FrontmatterError(path, `'effort' must be one of: ${REASONING_EFFORTS.join(", ")}`, 1);
   }
-  const effort = (effortRef as ReasoningEffort | undefined) ?? null;
+  const effort: ReasoningEffort | null =
+    effortRef && isReasoningEffort(effortRef) ? effortRef : null;
 
   const maxSteps = asInteger(path, data, "maxSteps") ?? DEFAULT_MAX_STEPS;
   if (maxSteps > MAX_STEPS_CEILING) {

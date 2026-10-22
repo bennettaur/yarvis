@@ -58,6 +58,15 @@ const MESSAGES_REPLY = {
   usage: { input_tokens: 1, output_tokens: 1 },
 };
 
+const CHAT_COMPLETIONS_REPLY = {
+  id: "chatcmpl_1",
+  object: "chat.completion",
+  created: 0,
+  model: "m",
+  choices: [{ index: 0, message: { role: "assistant", content: "OK" }, finish_reason: "stop" }],
+  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+};
+
 /** Saves a provider pointed at a fake gateway, sends one prompt, and returns the request body. */
 async function requestBodyFor(
   apiKind: CustomProviderApiKind,
@@ -70,7 +79,13 @@ async function requestBodyFor(
     hostname: "127.0.0.1",
     async fetch(req) {
       bodies.push((await req.json()) as Record<string, unknown>);
-      return Response.json(apiKind === "anthropic" ? MESSAGES_REPLY : RESPONSES_REPLY);
+      return Response.json(
+        apiKind === "anthropic"
+          ? MESSAGES_REPLY
+          : apiKind === "openai"
+            ? RESPONSES_REPLY
+            : CHAT_COMPLETIONS_REPLY,
+      );
     },
   });
   const row = await createCustomProvider({
@@ -87,7 +102,7 @@ async function requestBodyFor(
   const resolved = await resolveModel(config, `${CUSTOM_PROVIDER_PREFIX}${row.id}`, model.id, {
     effort,
   });
-  await generateText({ model: resolved, prompt: "hi" });
+  await generateText({ model: resolved, system: "Be brief.", prompt: "hi" });
   return bodies[0] ?? {};
 }
 
@@ -101,6 +116,38 @@ describe("resolveModel with an effort level", () => {
     // The SDK doesn't recognize the alias as a reasoning model, so this only
     // arrives because the tag vouches for it.
     expect((body.reasoning as { effort?: string } | undefined)?.effort).toBe("high");
+    // Forcing reasoning would otherwise move the system prompt to OpenAI's `developer` role.
+    expect((body.input as { role?: string }[])[0]?.role).toBe("system");
+  });
+
+  it("asks a tagged Responses model for its reasoning back, with or without an effort", async () => {
+    const body = await requestBodyFor(
+      "openai",
+      { id: "azure-gpt-5", capabilities: ["chat", "reasoning"] },
+      undefined,
+    );
+    expect(body.store).toBe(false);
+    expect(body.include).toEqual(["reasoning.encrypted_content"]);
+  });
+
+  it("doesn't ask an untagged Responses model for reasoning, which OpenAI would reject", async () => {
+    const body = await requestBodyFor(
+      "openai",
+      { id: "gpt-4o", capabilities: ["chat"] },
+      undefined,
+    );
+    expect(body.store).toBe(false);
+    expect(body.include).toBeUndefined();
+  });
+
+  it("sends the effort to a /chat/completions proxy and keeps its system prompt as system", async () => {
+    const body = await requestBodyFor(
+      "openai-chat",
+      { id: "gpt-oss-120b", capabilities: ["chat", "reasoning"] },
+      "high",
+    );
+    expect(body.reasoning_effort).toBe("high");
+    expect((body.messages as { role?: string }[])[0]?.role).toBe("system");
   });
 
   it("sends nothing to a model that isn't tagged reasoning", async () => {
