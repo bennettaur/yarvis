@@ -37,6 +37,7 @@ import { createPrRoutes } from "./pr/routes.ts";
 import { createProjectRoutes } from "./projects/routes.ts";
 import { createQuestionRoutes } from "./questions/routes.ts";
 import { createReadiness, type Readiness } from "./readiness.ts";
+import { createReviewWorkspaceRoutes } from "./reviewWorkspaces/routes.ts";
 import { createTaskRoutes } from "./tasks/routes.ts";
 import { createTelegramRoutes } from "./telegram/routes.ts";
 import { createTodoRoutes } from "./todos/routes.ts";
@@ -185,6 +186,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/voice", createVoiceRoutes(config));
   app.route("/api/repos", createRepoRoutes(config));
   app.route("/api/workspaces", createWorkspaceRoutes(config));
+  app.route("/api/review-workspaces", createReviewWorkspaceRoutes(config));
 
   return app;
 }

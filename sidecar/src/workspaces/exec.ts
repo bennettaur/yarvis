@@ -92,6 +92,47 @@ export async function run(args: string[], opts: RunOptions = {}): Promise<RunRes
   }
 }
 
+export interface RunBytesResult {
+  stdout: Uint8Array;
+  stderr: string;
+  exitCode: number;
+}
+
+/**
+ * Like {@link run}, but hands stdout back as bytes. For reading file contents
+ * out of git, where decoding as text would mangle a binary file before anything
+ * could tell it was one.
+ */
+export async function runBytes(args: string[], opts: RunOptions = {}): Promise<RunBytesResult> {
+  const proc = Bun.spawn(args, {
+    cwd: opts.cwd,
+    env: scrubbedEnv(opts.env),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    proc.kill();
+  }, timeoutMs);
+
+  try {
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).arrayBuffer(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    if (timedOut) {
+      throw new Error(`command timed out after ${timeoutMs}ms: ${args.join(" ")}`);
+    }
+    return { stdout: new Uint8Array(stdout), stderr, exitCode };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export interface StreamOptions extends RunOptions {
   /** Called with each decoded chunk of stdout/stderr as it arrives. */
   onChunk: (text: string) => void | Promise<void>;
