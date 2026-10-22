@@ -126,9 +126,9 @@ with them. **Skip** tells Claude you won't answer.
 
 Some details:
 
-- **Yarvis holds the prompt for about four minutes.** After that, Claude Code
-  shows its own dialog in the terminal and the bell item stays until you answer
-  there.
+- **The prompt waits in both places.** Claude Code shows its own dialog in the
+  terminal while Yarvis holds the prompt, and whichever you answer first wins.
+  Yarvis holds it for up to a day.
 - **Looking at the session doesn't clear the item.** It clears once the prompt
   is answered, here or in the terminal, or when the session finishes.
 - **Several prompts from one session queue up.** The window shows the oldest

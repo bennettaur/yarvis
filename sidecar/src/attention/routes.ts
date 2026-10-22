@@ -8,11 +8,13 @@ import { readSessionActivityById } from "../cc/sessions.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { workspaces } from "../db/schema.ts";
+import { holdWithoutIdleTimeout } from "../lib/idleTimeout.ts";
 import {
   SESSION_KEY_HEADER,
   SESSION_TOKEN_HEADER,
   sessionTokenMatches,
 } from "../workspaces/agentSessions.ts";
+import { PERMISSION_HOOK_TIMEOUT_S } from "../workspaces/claudeSettings.ts";
 import { type AttentionStreamEvent, publish, subscribe } from "./hub.ts";
 import { navTargetFor } from "./navTarget.ts";
 import {
@@ -71,11 +73,11 @@ export const ingestSchema = z.object({
 
 /**
  * How long the ingest route holds a permission request open waiting for the
- * user. Kept under Bun's 255s idle timeout (`server.ts`), which would otherwise
- * close the silent connection first. The hook's own `timeout` in
- * `claudeSettings.ts` sits just above this.
+ * user. Claude Code shows its own dialog while the hook waits, and whichever is
+ * answered first wins, so a long hold never keeps the user from the terminal.
+ * The hook's own `timeout` in `claudeSettings.ts` sits just above this.
  */
-export const PERMISSION_HOLD_MS = 240_000;
+export const PERMISSION_HOLD_MS = (PERMISSION_HOOK_TIMEOUT_S - 10) * 1000;
 
 /**
  * Largest hook body accepted. A Write's input carries the whole file, so this
@@ -206,6 +208,7 @@ export function createAttentionIngestRoutes(config: Config): Hono {
     async (c) => {
       const arrivedAt = Date.now();
       if (!canHoldAnotherPermission()) return c.body(null, 204);
+      holdWithoutIdleTimeout(c);
       const origin = permissionOriginSchema.safeParse({
         workspaceId: c.req.header("x-yarvis-workspace-id") || undefined,
         sessionKey: c.req.header(SESSION_KEY_HEADER),

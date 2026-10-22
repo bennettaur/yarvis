@@ -13,11 +13,12 @@ import { SESSION_KEY_HEADER, SESSION_TOKEN_HEADER } from "./agentSessions.ts";
 const INGEST_MARKERS = ["/ingest/attention", "/ingest/permission", "/ingest/agent-session"];
 
 /**
- * Seconds Claude Code lets the permission hook run. Just above how long the
- * sidecar holds the request (`PERMISSION_HOLD_MS`), so the sidecar's own
- * "no decision" reply arrives before Claude Code kills the hook.
+ * Seconds Claude Code lets the permission hook run: a day, so a prompt waits in
+ * the app for as long as the user is away. The sidecar's hold
+ * (`PERMISSION_HOLD_MS`) ends a little before, so its own "no decision" reply
+ * arrives before Claude Code kills the hook.
  */
-export const PERMISSION_HOOK_TIMEOUT_S = 250;
+export const PERMISSION_HOOK_TIMEOUT_S = 86_400;
 
 export type AttentionHookKind = "idle" | "completed";
 

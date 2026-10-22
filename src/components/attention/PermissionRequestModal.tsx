@@ -39,8 +39,8 @@ function promptAnswers(questions: QuestionItem[], drafts: Draft[]): Record<strin
  * Code's AskUserQuestion asks through this same prompt, so it shows as the
  * questions themselves and is answered here rather than approved.
  *
- * The session's hook only waits a few minutes. Past that, or once the prompt
- * is answered in the terminal, the request is gone and the modal says so.
+ * Once the prompt is answered in the terminal, the request is gone and the
+ * modal says so.
  */
 export default function PermissionRequestModal({
   sessionKey,
