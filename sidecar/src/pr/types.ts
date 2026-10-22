@@ -101,18 +101,42 @@ export interface PrStatus {
 /** A merge strategy the repo allows, in GitHub's GraphQL vocabulary. */
 export type MergeMethod = "MERGE" | "SQUASH" | "REBASE";
 
-/** A single review comment within a thread. */
+/** Which file of a diff a line belongs to: the base ("LEFT") or the head ("RIGHT"). */
+export type DiffSide = "LEFT" | "RIGHT";
+
+/**
+ * A single review comment within a thread. `id` is the provider's own: a
+ * GraphQL node id on GitHub, the comment's number within its thread on Azure.
+ */
 export interface ReviewComment {
+  id: string;
   author: string;
   body: string;
   createdAt: string;
+  /** Link to the comment on the provider's site, when it reports one. */
+  url?: string;
 }
 
-/** A review thread anchored to a file/line, with its comments. */
+/**
+ * A review thread anchored to a file/line, with its comments. `line` is the
+ * last line of the range on `side`, and `startLine` is set only for a
+ * multi-line thread. A thread the provider can no longer place on the current
+ * diff (GitHub's "outdated") has a null `line`.
+ *
+ * `id` addresses the thread for replies and resolving: a GraphQL node id on
+ * GitHub, the numeric thread id on Azure.
+ */
 export interface ReviewThread {
+  id: string;
   path: string | null;
   line: number | null;
+  startLine?: number;
+  side: DiffSide;
   isResolved: boolean;
+  isOutdated: boolean;
+  canReply: boolean;
+  /** Whether the viewer may flip `isResolved` from its current value. */
+  canResolve: boolean;
   comments: ReviewComment[];
 }
 
@@ -222,13 +246,19 @@ export interface PrFile {
   patch: string | null;
 }
 
-/** A line comment the user wants to post to a PR. */
+/**
+ * A line comment the user wants to post to a PR. A multi-line comment names
+ * its first line in `startLine`; `line` is always the last.
+ */
 export interface NewComment {
   path: string;
   line: number;
   body: string;
   /** Side of the diff the line belongs to; defaults to the new ("RIGHT") file. */
-  side?: "RIGHT" | "LEFT";
+  side?: DiffSide;
+  startLine?: number;
+  /** Side of `startLine`; defaults to `side`. */
+  startSide?: DiffSide;
 }
 
 export interface Viewer {

@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
@@ -64,12 +64,39 @@ const starSchema = z.object({
   url: z.string().nullish(),
 });
 
-const commentSchema = z.object({
-  path: z.string().min(1).max(1024),
-  line: z.number().int().min(1),
-  body: z.string().min(1),
-  side: z.enum(["RIGHT", "LEFT"]).optional(),
-});
+const commentSchema = z
+  .object({
+    path: z.string().min(1).max(1024),
+    line: z.number().int().min(1),
+    body: z.string().min(1).max(65_536),
+    side: z.enum(["RIGHT", "LEFT"]).optional(),
+    startLine: z.number().int().min(1).optional(),
+    startSide: z.enum(["RIGHT", "LEFT"]).optional(),
+  })
+  // Within one file a range runs downwards. Across the two (a range starting in
+  // the old file and ending in the new) the numbers aren't comparable, so only
+  // GitHub can judge it.
+  .refine(
+    (c) =>
+      c.startLine == null ||
+      (c.startSide ?? c.side ?? "RIGHT") !== (c.side ?? "RIGHT") ||
+      c.startLine < c.line,
+    "startLine must come before line",
+  )
+  .refine((c) => c.startSide == null || c.startLine != null, "startSide needs a startLine");
+
+/**
+ * A review thread's GraphQL node id, interpolated into nothing but a GraphQL
+ * variable; the charset is what GitHub's ids use and keeps a route param from
+ * carrying anything else.
+ */
+const threadIdParam = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9_=-]+$/, "invalid thread id");
+
+const replySchema = z.object({ body: z.string().trim().min(1).max(65_536) });
 
 const reviewSchema = z.object({
   event: z.enum(["APPROVE", "REQUEST_CHANGES", "COMMENT"]),
@@ -421,7 +448,7 @@ export function createGithubRoutes(config: Config): Hono {
     }
   });
 
-  // Post a single-line review comment to the PR.
+  // Post a review comment on one line or a range of lines, on either side.
   router.post("/pr/:owner/:repo/:number/comments", async (c) => {
     const gh = client();
     if (!gh) return missingTokenResponse(c);
@@ -441,6 +468,58 @@ export function createGithubRoutes(config: Config): Hono {
       return githubErrorResponse(c, e);
     }
   });
+
+  /** The PR plus the thread a thread route addresses, or why they're invalid. */
+  function parseThreadParams(c: Context) {
+    const { owner = "", repo = "", number = "" } = c.req.param();
+    const params = parsePrParams(owner, repo, number);
+    if ("error" in params) return params;
+    const threadId = threadIdParam.safeParse(c.req.param("threadId"));
+    if (!threadId.success) return { error: threadId.error.flatten() };
+    return { ...params, threadId: threadId.data };
+  }
+
+  // Reply to an existing review thread.
+  router.post("/pr/:owner/:repo/:number/threads/:threadId/replies", async (c) => {
+    const gh = client();
+    if (!gh) return missingTokenResponse(c);
+    const params = parseThreadParams(c);
+    if ("error" in params) return c.json({ error: params.error }, 400);
+    const parsed = replySchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    try {
+      await gh.replyToThread(params.threadId, parsed.data.body);
+      void emitEvent(db(), {
+        type: "pr.commented",
+        source: "github",
+        payload: {
+          ref: refKey({ provider: "github", ...params }),
+          reply: true,
+        },
+      });
+      return c.json({ ok: true }, 201);
+    } catch (e) {
+      return githubErrorResponse(c, e);
+    }
+  });
+
+  for (const [action, resolved] of [
+    ["resolve", true],
+    ["unresolve", false],
+  ] as const) {
+    router.post(`/pr/:owner/:repo/:number/threads/:threadId/${action}`, async (c) => {
+      const gh = client();
+      if (!gh) return missingTokenResponse(c);
+      const params = parseThreadParams(c);
+      if ("error" in params) return c.json({ error: params.error }, 400);
+      try {
+        await gh.setThreadResolved(params.threadId, resolved);
+        return c.json({ ok: true });
+      } catch (e) {
+        return githubErrorResponse(c, e);
+      }
+    });
+  }
 
   // --- Dashboard config (database only) ---
 

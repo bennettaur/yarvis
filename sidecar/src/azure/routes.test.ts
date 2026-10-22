@@ -62,6 +62,39 @@ describe("azure route validation", () => {
     expect(res.status).toBe(400);
   });
 
+  it("rejects a comment range that crosses sides with 400", async () => {
+    const res = await configured.request("/api/azure/pr/Shop/web/1/comments", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: "src/app.ts",
+        line: 9,
+        side: "RIGHT",
+        startLine: 4,
+        startSide: "LEFT",
+        body: "hi",
+      }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a non-numeric thread id with 400", async () => {
+    const res = await configured.request("/api/azure/pr/Shop/web/1/threads/abc/resolve", {
+      method: "POST",
+      headers: auth,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects an empty reply with 400", async () => {
+    const res = await configured.request("/api/azure/pr/Shop/web/1/threads/3/replies", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ body: "" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
   it("rejects a vote value outside the allowed enum with 400", async () => {
     const res = await configured.request("/api/azure/pr/Shop/web/1/vote", {
       method: "POST",

@@ -103,12 +103,25 @@ function toGraphqlPull(pr: FakePull) {
       nodes: pr.reviews[VIEWER] ? [{ state: pr.reviews[VIEWER] }] : [],
     },
     reviewThreads: {
-      nodes: pr.reviewThreads.map((t) => ({
+      nodes: pr.reviewThreads.map((t, i) => ({
+        id: `PRRT_${pr.number}_${i}`,
         isResolved: false,
+        isOutdated: false,
+        diffSide: "RIGHT",
+        viewerCanReply: true,
+        viewerCanResolve: true,
+        viewerCanUnresolve: true,
         path: t.path,
         line: t.line,
         comments: {
-          nodes: [{ author: { login: t.author }, body: t.body, createdAt: pr.updatedAt }],
+          nodes: [
+            {
+              id: `PRRC_${pr.number}_${i}`,
+              author: { login: t.author },
+              body: t.body,
+              createdAt: pr.updatedAt,
+            },
+          ],
         },
       })),
     },

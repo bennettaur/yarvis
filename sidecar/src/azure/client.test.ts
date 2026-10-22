@@ -766,10 +766,16 @@ describe("azure client", () => {
           body: {
             value: [
               {
+                id: 3,
                 status: "fixed",
                 threadContext: { filePath: "/src/old.ts", leftFileStart: { line: 5 } },
                 comments: [
-                  { author: { displayName: "Rev" }, content: "removed here", commentType: "text" },
+                  {
+                    id: 1,
+                    author: { displayName: "Rev" },
+                    content: "removed here",
+                    commentType: "text",
+                  },
                 ],
               },
             ],
@@ -780,12 +786,128 @@ describe("azure client", () => {
     const detail = await az.prDetail({ project: "Shop", repo: "web", prId: 30 });
     expect(detail.reviewThreads).toEqual([
       {
+        id: "3",
         path: "src/old.ts",
         line: 5,
+        side: "LEFT",
         isResolved: true,
-        comments: [{ author: "Rev", body: "removed here", createdAt: "" }],
+        isOutdated: false,
+        canReply: true,
+        canResolve: true,
+        comments: [{ id: "1", author: "Rev", body: "removed here", createdAt: "" }],
       },
     ]);
+  });
+
+  describe("comment threads", () => {
+    const ref = { project: "Shop", repo: "web", prId: 7 };
+
+    /** Detail for PR 7 whose threads endpoint answers `threads`. */
+    function withThreads(threads: unknown[]) {
+      return new AzureDevOpsClient(
+        "pat",
+        ORG,
+        fakeFetch([
+          {
+            match: (u) => /\/pullRequests\/7$/.test(u.split("?")[0]!),
+            body: { pullRequestId: 7, repository: { project: { id: "p1" } } },
+          },
+          { match: (u) => u.includes("/policy/evaluations"), body: { value: [] } },
+          { match: (u) => u.includes("/threads"), body: { value: threads } },
+        ]),
+      );
+    }
+
+    const comment = { id: 1, author: { displayName: "Rev" }, content: "hm", commentType: "text" };
+
+    it("maps a range on the right side to its last line plus a start line", async () => {
+      const az = withThreads([
+        {
+          id: 9,
+          status: "active",
+          threadContext: {
+            filePath: "/a.ts",
+            rightFileStart: { line: 10, offset: 1 },
+            rightFileEnd: { line: 14, offset: 1 },
+          },
+          comments: [comment],
+        },
+      ]);
+      const [thread] = (await az.prDetail(ref)).reviewThreads;
+      expect(thread).toMatchObject({ id: "9", line: 14, startLine: 10, side: "RIGHT" });
+    });
+
+    it("counts won't-fix as resolved and pending as open", async () => {
+      const az = withThreads([
+        { id: 1, status: "wontFix", comments: [comment] },
+        { id: 2, status: "pending", comments: [comment] },
+        { id: 3, comments: [comment] },
+      ]);
+      const threads = (await az.prDetail(ref)).reviewThreads;
+      expect(threads.map((t) => t.isResolved)).toEqual([true, false, false]);
+    });
+
+    it("drops deleted threads and deleted comments", async () => {
+      const az = withThreads([
+        { id: 1, status: "active", isDeleted: true, comments: [comment] },
+        {
+          id: 2,
+          status: "active",
+          comments: [comment, { ...comment, id: 2, content: "gone", isDeleted: true }],
+        },
+      ]);
+      const threads = (await az.prDetail(ref)).reviewThreads;
+      expect(threads.map((t) => t.id)).toEqual(["2"]);
+      expect(threads[0]!.comments.map((c) => c.body)).toEqual(["hm"]);
+    });
+
+    /** A fetch that records every write and answers it with `{}`. */
+    function recording() {
+      const calls: { url: string; method: string; body: any }[] = [];
+      const fetchImpl = (async (url: string, init: any) => {
+        calls.push({ url: String(url), method: init?.method, body: JSON.parse(init.body) });
+        return new Response("{}", { status: 200 });
+      }) as unknown as typeof fetch;
+      return { calls, az: new AzureDevOpsClient("pat", ORG, fetchImpl) };
+    }
+
+    it("posts a left-side range", async () => {
+      const { calls, az } = recording();
+      await az.postComment(ref, { path: "a.ts", line: 8, startLine: 6, side: "LEFT", body: "x" });
+      expect(calls[0]!.body.threadContext).toEqual({
+        filePath: "/a.ts",
+        leftFileStart: { line: 6, offset: 1 },
+        leftFileEnd: { line: 8, offset: 1 },
+      });
+    });
+
+    it("replies to a thread under its first comment", async () => {
+      const { calls, az } = recording();
+      await az.replyToThread(ref, 9, "agreed");
+      expect(calls[0]!.method).toBe("POST");
+      expect(calls[0]!.url).toContain("/pullRequests/7/threads/9/comments?api-version=7.1");
+      expect(calls[0]!.body).toEqual({ content: "agreed", parentCommentId: 1, commentType: 1 });
+    });
+
+    it("resolves a thread as fixed and reactivates it as active", async () => {
+      const { calls, az } = recording();
+      await az.setThreadResolved(ref, 9, true);
+      await az.setThreadResolved(ref, 9, false);
+      expect(calls.map((c) => [c.method, c.body.status])).toEqual([
+        ["PATCH", 2],
+        ["PATCH", 1],
+      ]);
+      expect(calls[0]!.url).toContain("/pullRequests/7/threads/9?api-version=7.1");
+    });
+
+    it("reports a failed write with its status", async () => {
+      const az = new AzureDevOpsClient(
+        "pat",
+        ORG,
+        (async () => new Response("no", { status: 403 })) as unknown as typeof fetch,
+      );
+      await expect(az.setThreadResolved(ref, 9, true)).rejects.toThrow("-> 403");
+    });
   });
 });
 

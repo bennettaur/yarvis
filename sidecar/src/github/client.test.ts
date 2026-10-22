@@ -8,6 +8,7 @@ import {
   summarizeChecks,
   summarizeReviewDecision,
   toPrDetail,
+  toReviewThread,
   toStackEntry,
 } from "./client.ts";
 
@@ -1204,5 +1205,150 @@ describe("github endpoints", () => {
       globalThis.fetch = original;
     }
     expect(urls[0]).toBe("https://api.github.com/graphql");
+  });
+});
+
+describe("github review threads", () => {
+  const threadNode = (id: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    isResolved: false,
+    isOutdated: false,
+    path: "src/a.ts",
+    line: 12,
+    startLine: null,
+    diffSide: "RIGHT",
+    viewerCanReply: true,
+    viewerCanResolve: true,
+    viewerCanUnresolve: false,
+    comments: { nodes: [{ id: `${id}-c`, author: { login: "rev" }, body: "nit", createdAt: "" }] },
+    ...extra,
+  });
+
+  it("keeps the ids, side, range and permissions a reply or resolve needs", () => {
+    expect(
+      toReviewThread(
+        threadNode("T1", {
+          startLine: 9,
+          diffSide: "LEFT",
+          isResolved: true,
+          viewerCanUnresolve: true,
+          viewerCanResolve: false,
+        }),
+      ),
+    ).toEqual({
+      id: "T1",
+      path: "src/a.ts",
+      line: 12,
+      startLine: 9,
+      side: "LEFT",
+      isResolved: true,
+      isOutdated: false,
+      canReply: true,
+      // A resolved thread is judged by whether the viewer may reopen it.
+      canResolve: true,
+      comments: [{ id: "T1-c", author: "rev", body: "nit", createdAt: "" }],
+    });
+  });
+
+  it("drops a start line that only repeats the line", () => {
+    expect(toReviewThread(threadNode("T1", { startLine: 12 })).startLine).toBeUndefined();
+  });
+
+  it("pages through threads past the first page", async () => {
+    const variables: Record<string, unknown>[] = [];
+    const page = (ids: string[], next: string | null) => ({
+      pageInfo: { hasNextPage: next != null, endCursor: next },
+      nodes: ids.map((id) => threadNode(id)),
+    });
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      variables.push(body.variables);
+      const after = body.variables.after as string | undefined;
+      const reviewThreads =
+        after === undefined
+          ? page(["T1"], "c1")
+          : after === "c1"
+            ? page(["T2"], "c2")
+            : page(["T3"], null);
+      return new Response(
+        JSON.stringify({
+          data: {
+            repository: {
+              pullRequest: {
+                number: 4,
+                state: "OPEN",
+                author: { login: "me" },
+                commits: { nodes: [] },
+                reviewThreads,
+              },
+            },
+          },
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+
+    const detail = await new GitHubClient("t", fetchImpl).prDetail("o", "r", 4);
+    expect(detail.reviewThreads.map((t) => t.id)).toEqual(["T1", "T2", "T3"]);
+    expect(variables.map((v) => v.after)).toEqual([undefined, "c1", "c2"]);
+  });
+
+  /** Records each request and answers GraphQL and REST alike with `reply`. */
+  function capture(reply: unknown = { data: {} }) {
+    const calls: { url: string; body: any }[] = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      calls.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null });
+      return new Response(JSON.stringify(reply), { status: 200 });
+    }) as unknown as typeof fetch;
+    return { calls, gh: new GitHubClient("t", fetchImpl) };
+  }
+
+  it("posts a range with its start line and side", async () => {
+    const { calls, gh } = capture({ head: { sha: "abc" } });
+    await gh.postComment("o", "r", 4, {
+      path: "a.ts",
+      line: 12,
+      startLine: 9,
+      side: "LEFT",
+      body: "x",
+    });
+    expect(calls[1]!.url).toBe("https://api.github.com/repos/o/r/pulls/4/comments");
+    expect(calls[1]!.body).toEqual({
+      body: "x",
+      commit_id: "abc",
+      path: "a.ts",
+      line: 12,
+      side: "LEFT",
+      start_line: 9,
+      start_side: "LEFT",
+    });
+  });
+
+  it("posts a single line without range fields", async () => {
+    const { calls, gh } = capture({ head: { sha: "abc" } });
+    await gh.postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" });
+    expect(calls[1]!.body).not.toHaveProperty("start_line");
+    expect(calls[1]!.body.side).toBe("RIGHT");
+  });
+
+  it("replies through the thread reply mutation", async () => {
+    const { calls, gh } = capture();
+    await gh.replyToThread("T1", "agreed");
+    expect(calls[0]!.body.query).toContain("addPullRequestReviewThreadReply");
+    expect(calls[0]!.body.variables).toEqual({ id: "T1", body: "agreed" });
+  });
+
+  it("resolves and unresolves by thread id", async () => {
+    const { calls, gh } = capture();
+    await gh.setThreadResolved("T1", true);
+    await gh.setThreadResolved("T1", false);
+    expect(calls[0]!.body.query).toContain("resolveReviewThread");
+    expect(calls[1]!.body.query).toContain("unresolveReviewThread");
+    expect(calls.map((c) => c.body.variables)).toEqual([{ id: "T1" }, { id: "T1" }]);
+  });
+
+  it("fails a mutation GitHub refused", async () => {
+    const { gh } = capture({ errors: [{ type: "FORBIDDEN", message: "no" }] });
+    await expect(gh.setThreadResolved("T1", true)).rejects.toThrow();
   });
 });
