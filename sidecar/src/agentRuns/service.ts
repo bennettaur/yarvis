@@ -191,6 +191,33 @@ export const SECRET_HOME_PATHS = [
 ];
 
 /**
+ * Plugins compiled into Claude Code itself (`<name>@builtin` in a run's
+ * `system/init`). No settings file enables them — they register on startup and
+ * default to on — so `--setting-sources ""` leaves them loaded. None is needed
+ * by a run: one adds a skill for authoring Claude Code mods, one reports
+ * telemetry, one is about `AGENTS.md` files, and the rest are interactive-session
+ * features. `enabledPlugins` in `--settings` turns each off (checked against
+ * 2.1.307), and doesn't touch `--plugin-dir` plugins.
+ *
+ * `cc-plugin-sec-default` is left alone on purpose: it is the security default
+ * an organization's managed settings put outermost, and turning it off would be
+ * undoing a control, not removing a feature.
+ */
+const DISABLED_BUILTIN_PLUGINS = [
+  "cc-plugin-agents-md",
+  "cc-plugin-telemetry",
+  "cc-plugin-plugin-authoring",
+  "cc-plugin-mods-guide",
+  "cc-plugin-tips",
+  "cc-plugin-mermaid",
+  "cc-plugin-responsive-mode",
+  "cc-plugin-diff",
+  "cc-plugin-you-should-know",
+  "cc-plugin-easel",
+  "cc-plugin-claude-test",
+];
+
+/**
  * The only settings a run gets (`--settings`). Key names are Claude Code's
  * (checked against 2.1.307). The command deny list is a backstop to the
  * sandbox, not a substitute for it: a rule names a command, and there are other
@@ -204,6 +231,9 @@ export function lockedDownSettings(home: string = homedir()): Record<string, unk
     disableAllHooks: true,
     autoMemoryEnabled: false,
     enableAllProjectMcpServers: false,
+    enabledPlugins: Object.fromEntries(
+      DISABLED_BUILTIN_PLUGINS.map((name) => [`${name}@builtin`, false]),
+    ),
     permissions: { deny: [...ALWAYS_DENIED, ...readRules] },
     sandbox: {
       enabled: true,

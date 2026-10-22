@@ -108,6 +108,14 @@ describe("the arguments a run is started with", () => {
     );
   });
 
+  it("switches off the plugins compiled into Claude Code, but not its security default", () => {
+    const { enabledPlugins } = lockedDownSettings() as { enabledPlugins: Record<string, boolean> };
+    for (const name of ["agents-md", "telemetry", "plugin-authoring"]) {
+      expect(enabledPlugins[`cc-plugin-${name}@builtin`]).toBe(false);
+    }
+    expect(enabledPlugins["cc-plugin-sec-default@builtin"]).toBeUndefined();
+  });
+
   it("keeps the prompt out of argv", () => {
     expect(args).not.toContain("count the files");
   });
