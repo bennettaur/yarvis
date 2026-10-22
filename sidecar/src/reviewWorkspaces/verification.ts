@@ -183,11 +183,13 @@ const mustReadSchema = z.object({
 
 /** The check sections, in the order that decides which keeps a finding two of them reported. */
 export const CHECK_SECTIONS = [
-  "completeness",
   "tests",
   "performance",
   "complexity",
   "comments",
+  // Last: a specialist's finding in its own lane beats completeness reporting
+  // the same problem, which it tends to when a review comment raised it.
+  "completeness",
 ] as const;
 
 type CheckSection = (typeof CHECK_SECTIONS)[number];
@@ -199,9 +201,14 @@ const NEARBY_LINES = 3;
  * How much two titles must share (Jaccard over their meaningful words) to be
  * the same finding. Location alone isn't enough: checks point at the same
  * function head for different problems — a missing test and an N+1 query in
- * one function are two findings, not one.
+ * one function are two findings, not one. Set from real runs, where pairs
+ * describing the same problem scored 0.22 and up and shared at least two
+ * words, and different problems scored 0.14 and below and shared at most one.
+ * The two-word floor keeps a short title ("usedLabels has no tests") from
+ * matching on the one name it shares with a neighbour.
  */
-const SAME_TITLE = 0.3;
+const SAME_TITLE = 0.2;
+const SAME_TITLE_MIN_SHARED = 2;
 
 const STOP_WORDS = new Set(
   "a an the and or but of to in on at for from with without by is are was be been it its this that these those no not does do doesn't has have than then as into per".split(
@@ -225,7 +232,7 @@ export function similarTitles(a: string, b: string): boolean {
   const y = titleWords(b);
   const shared = [...x].filter((w) => y.has(w)).length;
   const union = x.size + y.size - shared;
-  return union > 0 && shared / union >= SAME_TITLE;
+  return shared >= SAME_TITLE_MIN_SHARED && shared / union >= SAME_TITLE;
 }
 
 export interface DroppedDuplicate {

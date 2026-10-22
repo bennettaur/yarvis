@@ -159,7 +159,7 @@ describe("the report schema", () => {
 });
 
 describe("removing duplicate findings across checks", () => {
-  it("keeps a finding in the first section to report it and records the rest", () => {
+  it("keeps a finding in the specialist's section, completeness last, and records the rest", () => {
     const audit = emptyAudit();
     const at = (title: string, line: number, path = "src/a.ts") => finding(title, { path, line });
     const parsed = verificationReportSchema(limits, audit).parse(
@@ -193,8 +193,9 @@ describe("removing duplicate findings across checks", () => {
     );
     const titles = (section: keyof typeof parsed) =>
       (parsed[section] as { findings: { title: string }[] }).findings.map((f) => f.title);
-    expect(titles("completeness")).toEqual(["rename does not validate the new label name"]);
+    expect(titles("completeness")).toEqual([]);
     expect(titles("tests")).toEqual([
+      "rename does not validate and has no test",
       "rename does not validate the new label name",
       "usedLabels has no tests",
     ]);
@@ -207,18 +208,18 @@ describe("removing duplicate findings across checks", () => {
     expect(titles("comments")).toEqual(["Docstring says null but it throws"]);
     expect(audit.droppedDuplicates).toEqual([
       {
-        section: "tests",
-        keptIn: "completeness",
-        title: "rename does not validate and has no test",
-        path: "src/a.ts",
-        line: 40,
-      },
-      {
         section: "complexity",
         keptIn: "performance",
         title: "usedLabels runs one query per name in a loop",
         path: "src/a.ts",
         line: 46,
+      },
+      {
+        section: "completeness",
+        keptIn: "tests",
+        title: "rename does not validate the new label name",
+        path: "src/a.ts",
+        line: 38,
       },
     ]);
   });
@@ -235,6 +236,7 @@ describe("removing duplicate findings across checks", () => {
         "Test mocks the module under test and proves nothing",
         "Test mocks the module it claims to test",
       ],
+      ["N+1 queries with full-row selects in usedLabels", "N+1 queries to find used labels"],
     ];
     const different: [string, string][] = [
       ["usedLabels has no tests", "N+1 full-row memory queries inside loop in usedLabels"],
@@ -243,6 +245,12 @@ describe("removing duplicate findings across checks", () => {
         "Docstring says returns null but function throws",
       ],
       ["usedLabels has no tests", "Missing why for matching labels against memory content"],
+      ["usedLabels is untested", "N+1 queries with full-row selects in usedLabels"],
+      [
+        "usedLabels matches labels against memory content",
+        "N+1 queries with full-row selects in usedLabels",
+      ],
+      ["Rename validation has no test", "rename does not validate the new label name"],
     ];
     for (const [a, b] of same) expect(similarTitles(a, b)).toBe(true);
     for (const [a, b] of different) expect(similarTitles(a, b)).toBe(false);
@@ -267,8 +275,8 @@ describe("paths an agent cites", () => {
       }),
     );
     expect(parsed.mustRead.map((m) => m.path)).toEqual(["src/a.ts"]);
-    expect(parsed.completeness.findings[0]?.path).toBe("src/a.ts");
-    expect(parsed.complexity.findings).toEqual([]);
+    expect(parsed.complexity.findings[0]?.path).toBe("src/a.ts");
+    expect(parsed.completeness.findings).toEqual([]);
     expect(audit.droppedDuplicates).toHaveLength(1);
   });
 });
