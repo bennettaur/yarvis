@@ -18,6 +18,8 @@ import { chooseEmbedder } from "./memory/embedder.ts";
 import { sweepStaleGuides } from "./pr/guides.ts";
 import { createReadiness } from "./readiness.ts";
 import { sweepVerificationContextDirs } from "./reviewWorkspaces/verification.ts";
+import { sweepMutantCopies } from "./reviewWorkspaces/mutantCopy.ts";
+import { mutantCopiesInUse } from "./reviewWorkspaces/mutationTesting.ts";
 import { migrateStructuralConfig } from "./settings/migrateStructuralConfig.ts";
 import { startTelegramBot } from "./telegram/index.ts";
 import { startWorkspacePoller } from "./workspaces/poller.ts";
@@ -116,7 +118,16 @@ if (config.databaseUrl) {
         .then((failed) => {
           if (failed > 0) console.log(`[agent-runs] marked ${failed} interrupted runs as failed`);
         })
-        .catch((e) => console.error("[agent-runs] could not sweep interrupted runs:", e));
+        .catch((e) => console.error("[agent-runs] could not sweep interrupted runs:", e))
+        // After the runs are marked, so this instance's crashed runs read as
+        // finished and their scratch copies go.
+        .then(() =>
+          sweepMutantCopies(getDb(config.databaseUrl as string).db, config, mutantCopiesInUse),
+        )
+        .then((removed) => {
+          if (removed > 0) console.log(`[mutation-testing] removed ${removed} leftover copies`);
+        })
+        .catch((e) => console.error("[mutation-testing] could not sweep leftover copies:", e));
       // A secondary instance serves its window and nothing else: the work below
       // reaches out to providers and writes rows on a schedule, and running it
       // from two processes against one database duplicates both.

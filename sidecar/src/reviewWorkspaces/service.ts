@@ -231,7 +231,7 @@ export function reviewClonePath(config: Pick<Config, "workspacesRoot">, ref: PrR
 }
 
 /** The folder holding one review workspace's worktrees. */
-function reviewWorkspaceDir(config: Pick<Config, "workspacesRoot">, id: string): string {
+export function reviewWorkspaceDir(config: Pick<Config, "workspacesRoot">, id: string): string {
   return join(config.workspacesRoot, ".review", id);
 }
 
@@ -362,7 +362,7 @@ export async function touchReviewWorkspace(
   return row ? getReviewWorkspace(db, id) : null;
 }
 
-async function requireActiveWorkspace(db: Db, id: string): Promise<ReviewWorkspace> {
+export async function requireActiveWorkspace(db: Db, id: string): Promise<ReviewWorkspace> {
   const [ws] = await db.select().from(reviewWorkspaces).where(eq(reviewWorkspaces.id, id));
   if (!ws) throw new ReviewWorkspaceError("review workspace not found", 404);
   if (ws.status !== "active") {
@@ -1015,6 +1015,8 @@ interface SetupInfo {
   /** Environment variables the script will not be given. */
   withheldEnv: readonly string[];
   consent: "granted" | "declined" | null;
+  /** The head commit `consent` was given for; consent for another head no longer applies. */
+  consentHeadSha: string | null;
   status: ReviewWorkspacePr["setupStatus"];
   log: string | null;
 }
@@ -1034,6 +1036,7 @@ export async function reviewSetupInfo(
     headSha: pr.headSha,
     withheldEnv: SETUP_WITHHELD_ENV,
     consent: pr.setupConsent,
+    consentHeadSha: pr.setupHeadSha,
     status: pr.setupStatus,
     log: pr.setupLog,
   };
@@ -1073,7 +1076,9 @@ export async function answerReviewSetup(
 ): Promise<ReviewWorkspacePr> {
   await requireActiveWorkspace(db, workspaceId);
   const pr = await getReviewPr(db, workspaceId, prId);
-  if (!answer.grant) return updatePr(db, pr.id, { setupConsent: "declined" });
+  if (!answer.grant) {
+    return updatePr(db, pr.id, { setupConsent: "declined", setupHeadSha: pr.headSha });
+  }
 
   if (pr.worktreeStatus !== "ready") {
     throw new ReviewWorkspaceError(`the checkout is ${pr.worktreeStatus}, not ready`, 409);
@@ -1091,7 +1096,13 @@ export async function answerReviewSetup(
       409,
     );
   }
-  if (!script) return updatePr(db, pr.id, { setupConsent: "granted", setupStatus: "skipped" });
+  if (!script) {
+    return updatePr(db, pr.id, {
+      setupConsent: "granted",
+      setupHeadSha: pr.headSha,
+      setupStatus: "skipped",
+    });
+  }
 
   // Claimed before anything is written, so a request that loses the race to a
   // sync (or another yes) is refused without leaving `running` on the row.
@@ -1101,6 +1112,7 @@ export async function answerReviewSetup(
   try {
     row = await updatePr(db, pr.id, {
       setupConsent: "granted",
+      setupHeadSha: pr.headSha,
       setupStatus: "running",
       setupLog: null,
     });

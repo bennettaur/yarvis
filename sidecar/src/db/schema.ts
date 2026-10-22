@@ -2007,6 +2007,11 @@ export const reviewWorkspacePrs = pgTable(
     mergeBaseSha: text("merge_base_sha"),
     /** Null until the user answers; whether the PR's setup script may run. */
     setupConsent: text("setup_consent").$type<"granted" | "declined">(),
+    /**
+     * The head commit the answer was given for. Consent is to that code: after
+     * a refresh moves the head, anything that runs the PR's code asks again.
+     */
+    setupHeadSha: text("setup_head_sha"),
     /** "running" | "succeeded" | "failed" | "skipped" (no script to run). */
     setupStatus: text("setup_status").$type<"running" | "succeeded" | "failed" | "skipped">(),
     /** Capped tail of the last setup run. */
