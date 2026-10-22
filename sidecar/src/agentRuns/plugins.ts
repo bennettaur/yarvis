@@ -2,7 +2,31 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import reviewManifest from "../../claude-plugins/yarvis-review/.claude-plugin/plugin.json";
+import changeSummary from "../../claude-plugins/yarvis-review/agents/change-summary.md" with {
+  type: "text",
+};
+import commentReviewer from "../../claude-plugins/yarvis-review/agents/comment-reviewer.md" with {
+  type: "text",
+};
+import completenessReviewer from "../../claude-plugins/yarvis-review/agents/completeness-reviewer.md" with {
+  type: "text",
+};
+import complexityReviewer from "../../claude-plugins/yarvis-review/agents/complexity-reviewer.md" with {
+  type: "text",
+};
+import performanceReviewer from "../../claude-plugins/yarvis-review/agents/performance-reviewer.md" with {
+  type: "text",
+};
+import riskReviewer from "../../claude-plugins/yarvis-review/agents/risk-reviewer.md" with {
+  type: "text",
+};
+import testReviewer from "../../claude-plugins/yarvis-review/agents/test-reviewer.md" with {
+  type: "text",
+};
 import reviewReadme from "../../claude-plugins/yarvis-review/README.md" with { type: "text" };
+import verificationReport from "../../claude-plugins/yarvis-review/skills/verification-report/SKILL.md" with {
+  type: "text",
+};
 
 /**
  * The Claude Code plugins Yarvis ships to its headless runs.
@@ -22,6 +46,14 @@ const PLUGINS = {
   "yarvis-review": {
     ".claude-plugin/plugin.json": `${JSON.stringify(reviewManifest, null, 2)}\n`,
     "README.md": reviewReadme,
+    "agents/change-summary.md": changeSummary,
+    "agents/risk-reviewer.md": riskReviewer,
+    "agents/completeness-reviewer.md": completenessReviewer,
+    "agents/test-reviewer.md": testReviewer,
+    "agents/complexity-reviewer.md": complexityReviewer,
+    "agents/performance-reviewer.md": performanceReviewer,
+    "agents/comment-reviewer.md": commentReviewer,
+    "skills/verification-report/SKILL.md": verificationReport,
   },
 } satisfies Record<string, Record<string, string>>;
 

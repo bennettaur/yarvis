@@ -65,6 +65,11 @@ export interface ClaudeRunOptions<T = unknown> {
   targetKey: string;
   /** Absolute path of an existing directory to run in. */
   cwd: string;
+  /**
+   * Further directories the run's file tools may read (`--add-dir`), such as
+   * one holding material the caller prepared for it outside the checkout.
+   */
+  addDirs?: string[];
   prompt: string;
   /**
    * The answer's shape. Sent to Claude Code as `--json-schema`, and the run
@@ -285,6 +290,7 @@ export function buildClaudeArgs(options: ClaudeRunOptions, pluginDirs: string[])
       : RUN_GUARDRAIL,
   ];
   for (const dir of pluginDirs) args.push("--plugin-dir", dir);
+  for (const dir of options.addDirs ?? []) args.push("--add-dir", dir);
   if (options.maxTurns !== undefined) args.push("--max-turns", String(options.maxTurns));
   if (options.model) args.push("--model", options.model);
   if (options.outputSchema) args.push("--json-schema", jsonSchemaArg(options.outputSchema));

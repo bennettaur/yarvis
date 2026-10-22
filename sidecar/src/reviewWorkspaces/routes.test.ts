@@ -5,10 +5,13 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import postgres from "postgres";
+import type { AgentRunEvent } from "../agentRuns/events.ts";
+import { fakeClaude, resultLine } from "../agentRuns/testSupport.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { reviewWorkspacePrs, reviewWorkspaces } from "../db/schema.ts";
-import type { PrRef } from "../pr/types.ts";
+import { RunRegistry } from "../lib/runRegistry.ts";
+import type { PrDetail, PrRef } from "../pr/types.ts";
 import { type ReviewGit, reviewGit } from "./git.ts";
 import type { ReviewProgressEvent } from "./progress.ts";
 import { createReviewWorkspaceRoutes } from "./routes.ts";
@@ -557,5 +560,149 @@ describe("removing and archiving", () => {
     await Bun.sleep(100);
     expect((await prRow(pr?.id as string)).status).toBe("cloning");
     expect(existsSync(join(config.workspacesRoot, ".review", ws?.id as string))).toBe(false);
+  });
+});
+
+describe("verification report", () => {
+  const pass = { status: "pass", findings: [] };
+  const report = {
+    summary: `${"word ".repeat(200)}end.`,
+    mustRead: [{ path: "src/a.ts", reason: "the change" }],
+    risk: { level: "low", clientImpact: "None: internal only.", mitigations: [], concerns: [] },
+    completeness: pass,
+    tests: pass,
+    complexity: pass,
+    performance: pass,
+    comments: pass,
+  };
+  const detail = {
+    title: "Feature work",
+    body: "Changes a and renames old.",
+    author: "octocat",
+    headRef: "feature",
+    baseRef: "main",
+    checks: [],
+    reviewThreads: [],
+  } as unknown as PrDetail;
+
+  let fakeDir: string;
+  let registry: RunRegistry<AgentRunEvent>;
+  let verificationApp: Hono;
+
+  /**
+   * A `claude` that records its stdin and argv, waits for `release`, then
+   * ends the run with the report as its structured output.
+   */
+  function setUpFake() {
+    fakeDir = mkdtempSync(join(tmpdir(), "yarvis-verification-fake-"));
+    writeFileSync(
+      join(fakeDir, "result.jsonl"),
+      `${JSON.stringify(resultLine({ structured_output: report }))}\n`,
+    );
+    const program = fakeClaude(
+      fakeDir,
+      "claude",
+      `cat > "${fakeDir}/stdin.txt"
+printf '%s\\n' "$@" > "${fakeDir}/args.txt"
+while [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
+cat "${fakeDir}/result.jsonl"`,
+    );
+    registry = new RunRegistry<AgentRunEvent>({ historyCap: 500, followerQueueCap: 2_000 });
+    verificationApp = new Hono().route(
+      "/rw",
+      createReviewWorkspaceRoutes(config, {
+        deps,
+        verification: {
+          loadDetail: async () => detail,
+          settings: async () => ({ model: "haiku", maxBudgetUsd: 0.5 }),
+          run: { program, registry, instance: "test" },
+        },
+      }),
+    );
+  }
+
+  const release = () => writeFileSync(join(fakeDir, "release"), "");
+
+  async function verify(method: string, wsId: string, prId: string): Promise<Response> {
+    return verificationApp.request(`/rw/${wsId}/prs/${prId}/verification`, { method });
+  }
+
+  async function latest(wsId: string, prId: string) {
+    return (await (await verify("GET", wsId, prId)).json()) as {
+      run: { id: string; status: string; targetKey: string; result: typeof report } | null;
+      current: boolean;
+      headSha: string;
+    };
+  }
+
+  beforeEach(async () => {
+    await sql`TRUNCATE agent_runs`;
+    setUpFake();
+  });
+
+  afterEach(() => {
+    release();
+    rmSync(fakeDir, { recursive: true, force: true });
+  });
+
+  it("refuses to start before the checkout is ready", async () => {
+    checkoutGate = gate();
+    const { wsId, prId } = await startWorkspace();
+    await until(async () => (await prRow(prId)).status === "ready", "ready");
+    const res = await verify("POST", wsId, prId);
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toContain("checking-out");
+  });
+
+  it("runs once per PR at a time, and serves the latest run against the current head", async () => {
+    const { wsId, prId, worktreePath } = await readyWorkspace();
+    expect(await latest(wsId, prId)).toMatchObject({ run: null, current: false });
+
+    const first = await verify("POST", wsId, prId);
+    expect(first.status).toBe(202);
+    const { runId, existing } = (await first.json()) as { runId: string; existing: boolean };
+    expect(existing).toBe(false);
+
+    const second = await verify("POST", wsId, prId);
+    expect(second.status).toBe(200);
+    expect(await second.json()).toEqual({ runId, existing: true });
+
+    // While it runs: the checkout is the working directory, the prepared
+    // context is readable, and the settings chose the model and budget.
+    await until(async () => existsSync(join(fakeDir, "stdin.txt")), "the fake to start");
+    await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
+    const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
+    const contextDir = args[args.indexOf("--add-dir") + 1] as string;
+    expect(readFileSync(join(contextDir, "pr.md"), "utf8")).toContain("Changes a and renames old.");
+    expect(readFileSync(join(contextDir, "changes.diff"), "utf8")).toContain(
+      "diff --git a/src/a.ts",
+    );
+    expect(args[args.indexOf("--model") + 1]).toBe("haiku");
+    expect(args[args.indexOf("--max-budget-usd") + 1]).toBe("0.5");
+    expect(
+      args.slice(args.indexOf("--allowedTools") + 1, args.indexOf("--disallowedTools")),
+    ).toEqual(["Read", "Grep", "Glob", "Agent", "Skill"]);
+    expect(readFileSync(join(fakeDir, "stdin.txt"), "utf8")).toContain(
+      `REVIEW_CONTEXT=${contextDir}`,
+    );
+
+    const running = await latest(wsId, prId);
+    const headSha = sh(worktreePath, "rev-parse", "HEAD").trim();
+    expect(running).toMatchObject({ run: { id: runId, status: "running" }, current: true });
+    expect(running.run?.targetKey).toBe(`gh:o/r/1@${headSha}`);
+
+    release();
+    await until(async () => (await latest(wsId, prId)).run?.status === "succeeded", "the run");
+    const done = await latest(wsId, prId);
+    // Held to the word cap the diff size gives (25 for this small PR).
+    expect(done.run?.result.summary).toBe(`${"word ".repeat(25).trim()}…`);
+    expect(done.run?.result.mustRead).toEqual([{ path: "src/a.ts", reason: "the change" }]);
+    expect(existsSync(contextDir)).toBe(false);
+
+    // A push moves the PR on; the old report is still served, marked stale.
+    remote.pushToPr("src/a.ts", "export const a = 5;\n");
+    await call("POST", `/${wsId}/prs/${prId}/refresh`);
+    await progress(wsId, prId);
+    expect(await latest(wsId, prId)).toMatchObject({ run: { id: runId }, current: false });
   });
 });
