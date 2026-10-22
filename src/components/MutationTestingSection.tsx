@@ -8,9 +8,9 @@ import {
 } from "../lib/pr/mutationTestingConfig";
 
 /**
- * How a review workspace's mutation-testing runs are sized. They run on
- * Claude Code rather than the app's own providers, so the model is a Claude
- * Code model name, not a provider pick.
+ * How a review workspace's mutation-testing passes are sized. Planning and
+ * explaining run on Claude Code rather than the app's own providers, so their
+ * models are Claude Code model names, not provider picks.
  */
 
 const FIELD =
@@ -18,18 +18,33 @@ const FIELD =
 
 const MODEL_ALIASES = ["haiku", "sonnet", "opus"];
 
+type ModelKey = "planningModel" | "explanationModel";
+type NumberKey = keyof typeof MUTATION_LIMITS;
+
+const NUMBER_FIELDS: { key: NumberKey; label: string; step: number; integer: boolean }[] = [
+  { key: "planningBudgetUsd", label: "Planning budget (USD)", step: 0.5, integer: false },
+  { key: "explanationBudgetUsd", label: "Explanation budget (USD)", step: 0.25, integer: false },
+  { key: "maxMutants", label: "Most mutants per run", step: 1, integer: true },
+  { key: "testTimeoutCapSeconds", label: "Longest test run (seconds)", step: 30, integer: true },
+];
+
+const asDrafts = (config: MutationTestingConfig): Record<NumberKey, string> => ({
+  planningBudgetUsd: String(config.planningBudgetUsd),
+  explanationBudgetUsd: String(config.explanationBudgetUsd),
+  maxMutants: String(config.maxMutants),
+  testTimeoutCapSeconds: String(config.testTimeoutCapSeconds),
+});
+
 export default function MutationTestingSection() {
   const [config, setConfig] = useState<MutationTestingConfig>(DEFAULT_MUTATION_TESTING_CONFIG);
   // Number inputs are edited as text and saved on blur, so a half-typed value
   // isn't sent (and refused) on every keystroke.
-  const [budget, setBudget] = useState(String(DEFAULT_MUTATION_TESTING_CONFIG.maxBudgetUsd));
-  const [mutants, setMutants] = useState(String(DEFAULT_MUTATION_TESTING_CONFIG.maxMutants));
+  const [drafts, setDrafts] = useState(asDrafts(DEFAULT_MUTATION_TESTING_CONFIG));
   const [error, setError] = useState<string | null>(null);
 
   const show = useCallback((next: MutationTestingConfig) => {
     setConfig(next);
-    setBudget(String(next.maxBudgetUsd));
-    setMutants(String(next.maxMutants));
+    setDrafts(asDrafts(next));
   }, []);
 
   useEffect(() => {
@@ -55,29 +70,47 @@ export default function MutationTestingSection() {
     [config, show],
   );
 
-  const commitNumber = (
-    raw: string,
-    key: "maxBudgetUsd" | "maxMutants",
-    valid: (n: number) => boolean,
-  ) => {
+  const commitNumber = (key: NumberKey, integer: boolean) => {
+    const raw = drafts[key];
     const value = Number(raw);
     if (value === config[key]) return;
-    if (!raw.trim() || !valid(value)) {
+    const { min, max } = MUTATION_LIMITS[key];
+    if (
+      !raw.trim() ||
+      Number.isNaN(value) ||
+      value < min ||
+      value > max ||
+      (integer && !Number.isInteger(value))
+    ) {
       show(config);
-      setError(
-        key === "maxMutants"
-          ? `Mutants must be a whole number from 1 to ${MUTATION_LIMITS.maxMutants}.`
-          : `The budget must be between $${MUTATION_LIMITS.minBudgetUsd} and $${MUTATION_LIMITS.maxBudgetUsd}.`,
-      );
+      setError(`${NUMBER_FIELDS.find((f) => f.key === key)?.label} must be from ${min} to ${max}.`);
       return;
     }
     void save({ [key]: value });
   };
 
-  const models =
-    config.model && !MODEL_ALIASES.includes(config.model)
-      ? [...MODEL_ALIASES, config.model]
-      : MODEL_ALIASES;
+  const modelSelect = (key: ModelKey, label: string) => {
+    const current = config[key];
+    const models =
+      current && !MODEL_ALIASES.includes(current) ? [...MODEL_ALIASES, current] : MODEL_ALIASES;
+    return (
+      <label className="grid grid-cols-[180px_1fr] items-center gap-2">
+        <span className="text-sm text-zinc-300">{label}</span>
+        <select
+          className={FIELD}
+          value={current ?? ""}
+          onChange={(e) => void save({ [key]: e.target.value || null })}
+        >
+          <option value="">Claude Code's default</option>
+          {models.map((model) => (
+            <option key={model} value={model}>
+              {model}
+            </option>
+          ))}
+        </select>
+      </label>
+    );
+  };
 
   return (
     <section>
@@ -85,66 +118,29 @@ export default function MutationTestingSection() {
         Mutation testing
       </h2>
       <p className="mb-3 text-sm text-zinc-500">
-        Claude Code makes small logic changes to a pull request's code and checks its tests catch
-        them. Each run uses this model and stops at its budget.
+        Claude Code plans small logic changes to a pull request's code; Yarvis applies each one,
+        runs the tests in a sandbox and reports the ones they miss, which Claude Code then explains.
       </p>
 
       <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/50 p-3">
-        <label className="grid grid-cols-[160px_1fr] items-center gap-2">
-          <span className="text-sm text-zinc-300">Claude Code model</span>
-          <select
-            className={FIELD}
-            value={config.model ?? ""}
-            onChange={(e) => void save({ model: e.target.value || null })}
-          >
-            <option value="">Claude Code's default</option>
-            {models.map((model) => (
-              <option key={model} value={model}>
-                {model}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="grid grid-cols-[160px_1fr] items-center gap-2">
-          <span className="text-sm text-zinc-300">Budget per run (USD)</span>
-          <input
-            className={FIELD}
-            type="number"
-            inputMode="decimal"
-            min={MUTATION_LIMITS.minBudgetUsd}
-            max={MUTATION_LIMITS.maxBudgetUsd}
-            step={0.5}
-            value={budget}
-            onChange={(e) => setBudget(e.target.value)}
-            onBlur={() =>
-              commitNumber(
-                budget,
-                "maxBudgetUsd",
-                (n) => n >= MUTATION_LIMITS.minBudgetUsd && n <= MUTATION_LIMITS.maxBudgetUsd,
-              )
-            }
-          />
-        </label>
-        <label className="grid grid-cols-[160px_1fr] items-center gap-2">
-          <span className="text-sm text-zinc-300">Most mutants per run</span>
-          <input
-            className={FIELD}
-            type="number"
-            inputMode="numeric"
-            min={1}
-            max={MUTATION_LIMITS.maxMutants}
-            step={1}
-            value={mutants}
-            onChange={(e) => setMutants(e.target.value)}
-            onBlur={() =>
-              commitNumber(
-                mutants,
-                "maxMutants",
-                (n) => Number.isInteger(n) && n >= 1 && n <= MUTATION_LIMITS.maxMutants,
-              )
-            }
-          />
-        </label>
+        {modelSelect("planningModel", "Planning model")}
+        {modelSelect("explanationModel", "Explanation model")}
+        {NUMBER_FIELDS.map(({ key, label, step, integer }) => (
+          <label key={key} className="grid grid-cols-[180px_1fr] items-center gap-2">
+            <span className="text-sm text-zinc-300">{label}</span>
+            <input
+              className={FIELD}
+              type="number"
+              inputMode={integer ? "numeric" : "decimal"}
+              min={MUTATION_LIMITS[key].min}
+              max={MUTATION_LIMITS[key].max}
+              step={step}
+              value={drafts[key]}
+              onChange={(e) => setDrafts((prev) => ({ ...prev, [key]: e.target.value }))}
+              onBlur={() => commitNumber(key, integer)}
+            />
+          </label>
+        ))}
       </div>
 
       {error && <p className="mt-2 text-sm text-red-400">{error}</p>}

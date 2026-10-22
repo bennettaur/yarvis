@@ -17,7 +17,10 @@ import { sweepStaleGuides } from "./pr/guides.ts";
 import { createReadiness } from "./readiness.ts";
 import { sweepVerificationContextDirs } from "./reviewWorkspaces/verification.ts";
 import { sweepMutantCopies } from "./reviewWorkspaces/mutantCopy.ts";
-import { mutantCopiesInUse } from "./reviewWorkspaces/mutationTesting.ts";
+import {
+  failInterruptedMutationRuns,
+  mutantCopiesInUse,
+} from "./reviewWorkspaces/mutationTesting.ts";
 import { migrateStructuralConfig } from "./settings/migrateStructuralConfig.ts";
 import { startTelegramBot } from "./telegram/index.ts";
 import { startWorkspacePoller } from "./workspaces/poller.ts";
@@ -102,8 +105,15 @@ if (config.databaseUrl) {
           if (failed > 0) console.log(`[agent-runs] marked ${failed} interrupted runs as failed`);
         })
         .catch((e) => console.error("[agent-runs] could not sweep interrupted runs:", e))
-        // After the runs are marked, so this instance's crashed runs read as
+        // After the runs are marked, so this instance's crashed passes read as
         // finished and their scratch copies go.
+        .then(() =>
+          failInterruptedMutationRuns(
+            getDb(config.databaseUrl as string).db,
+            instance.name,
+            bootedAt,
+          ),
+        )
         .then(() =>
           sweepMutantCopies(getDb(config.databaseUrl as string).db, config, mutantCopiesInUse),
         )

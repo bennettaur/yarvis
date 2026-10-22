@@ -48,9 +48,6 @@ export function withInputsAndTrust(agent: string, shared: string = inputsAndTrus
   }
   return parts.join(shared.trim());
 }
-import mutationTestingSkill from "../../claude-plugins/yarvis-review/skills/mutation-testing/SKILL.md" with {
-  type: "text",
-};
 
 /**
  * The Claude Code plugins Yarvis ships to its headless runs.
@@ -78,7 +75,6 @@ const PLUGINS = {
     "agents/performance-reviewer.md": withInputsAndTrust(performanceReviewer),
     "agents/comment-reviewer.md": withInputsAndTrust(commentReviewer),
     "skills/verification-report/SKILL.md": verificationReport,
-    "skills/mutation-testing/SKILL.md": mutationTestingSkill,
   },
 } satisfies Record<string, Record<string, string>>;
 

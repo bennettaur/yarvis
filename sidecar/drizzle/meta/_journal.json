@@ -302,6 +302,13 @@
       "when": 1792637380692,
       "tag": "0042_complex_lilandra",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1792645670306,
+      "tag": "0043_abandoned_otto_octavius",
+      "breakpoints": true
     }
   ]
 }
