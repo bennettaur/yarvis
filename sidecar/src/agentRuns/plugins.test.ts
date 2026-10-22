@@ -13,6 +13,9 @@ describe("writing out a shipped plugin", () => {
       );
       expect(manifest.name).toBe("yarvis-review");
       expect(existsSync(join(copy.dir, "README.md"))).toBe(true);
+      expect(
+        readFileSync(join(copy.dir, "skills", "mutation-testing", "SKILL.md"), "utf8"),
+      ).toStartWith("---\nname: mutation-testing\n");
     } finally {
       copy.remove();
     }

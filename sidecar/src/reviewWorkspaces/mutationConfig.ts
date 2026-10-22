@@ -9,7 +9,8 @@ import { readSection, withSection } from "../settings/store.ts";
  * models, and read at the start of every run so a change applies to the next.
  */
 
-export const MAX_MUTANTS_LIMIT = 30;
+/** `MUTATION_LIMITS` in `src/lib/pr/mutationTestingConfig.ts` mirrors these limits. */
+const MAX_MUTANTS_LIMIT = 30;
 
 /**
  * A Claude Code `--model` value: an alias (`sonnet`, `opus`, `haiku`) or a full
@@ -21,7 +22,7 @@ const modelSchema = z
   .trim()
   .regex(/^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,99}$/, "not a model name");
 
-export const mutationTestingConfigSchema = z.object({
+const mutationTestingConfigSchema = z.object({
   /** Null runs Claude Code's own default model. */
   model: modelSchema.nullable(),
   maxBudgetUsd: z.number().min(0.1).max(50),
@@ -47,13 +48,13 @@ const SETTINGS_KEY = "mutationTesting";
  * Each stored field that is valid, over the defaults. The file is
  * hand-editable, and a bad value in one field shouldn't reset the others.
  */
-function merged(stored: unknown): MutationTestingConfig {
+function parseStoredConfig(stored: unknown): MutationTestingConfig {
   const out: MutationTestingConfig = { ...DEFAULT_MUTATION_TESTING_CONFIG };
   if (!stored || typeof stored !== "object") return out;
   const record = stored as Record<string, unknown>;
   const shape = mutationTestingConfigSchema.shape;
   const model = shape.model.safeParse(record.model);
-  if ("model" in record && model.success) out.model = model.data;
+  if (model.success) out.model = model.data;
   const budget = shape.maxBudgetUsd.safeParse(record.maxBudgetUsd);
   if (budget.success) out.maxBudgetUsd = budget.data;
   const mutants = shape.maxMutants.safeParse(record.maxMutants);
@@ -62,15 +63,15 @@ function merged(stored: unknown): MutationTestingConfig {
 }
 
 export async function getMutationTestingConfig(): Promise<MutationTestingConfig> {
-  return merged(await readSection<unknown>(SETTINGS_KEY));
+  return parseStoredConfig(await readSection<unknown>(SETTINGS_KEY));
 }
 
 /** Merges the given fields onto the stored config and writes the result back. */
-export async function saveMutationTestingConfig(
+async function saveMutationTestingConfig(
   input: Partial<MutationTestingConfig>,
 ): Promise<MutationTestingConfig> {
   return withSection<unknown, MutationTestingConfig>(SETTINGS_KEY, (current) => {
-    const next = { ...merged(current), ...input };
+    const next = { ...parseStoredConfig(current), ...input };
     return { next, result: next };
   });
 }

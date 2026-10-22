@@ -12,16 +12,17 @@
  *
  * The copy is made its own git repository with one commit of what it holds, so
  * the agent's `git diff` shows exactly its current mutant and `git checkout --`
- * reverts it. A copied worktree's `.git` would otherwise point at the review
- * clone, and sharing that worktree's index and HEAD is the review checkout.
+ * reverts it. Copied as is, the worktree's `.git` file would point the copy at
+ * the review checkout's own index and HEAD, so a revert in the copy would act
+ * on the review checkout's git state.
  *
  * Copies are removed when their run ends, however it ends; the startup sweep
  * removes what a crashed sidecar left.
  */
 
-import { lstatSync, readdirSync } from "node:fs";
+import { lstatSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
@@ -29,11 +30,23 @@ import { agentRuns, type ReviewWorkspacePr } from "../db/schema.ts";
 import { type RunResult, run } from "../workspaces/exec.ts";
 import { type GitRunner, git } from "../workspaces/git.ts";
 import { reviewGit } from "./git.ts";
+import { assertWorktreeInWorkspace, reviewWorkspaceDir, reviewWorkspacesRoot } from "./service.ts";
 
-/** The run kind mutation tests are stored under. */
+/**
+ * The run kind mutation tests are stored under. Defined here rather than with
+ * the runs in `mutationTesting.ts` because the sweep below looks runs up by it,
+ * and `mutationTesting.ts` already imports this module.
+ */
 export const MUTATION_RUN_KIND = "mutation";
 
 const COPY_NAME = /^(.+)-mutants-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+
+/**
+ * Files at the top of the copy that would speak to the agent as instructions
+ * or configuration rather than as code. The run reads no settings, but these
+ * are what a PR would plant to try anyway, and no test needs them.
+ */
+const AGENT_FILES = ["CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", ".claude"];
 
 /** Copying a large tree without clonefile, or committing it, can take a while. */
 const COPY_TIMEOUT_MS = 10 * 60 * 1000;
@@ -44,9 +57,9 @@ const COPY_TIMEOUT_MS = 10 * 60 * 1000;
  */
 const ORPHAN_AGE_MS = 60 * 60 * 1000;
 
-export type CopyMethod = "clonefile" | "copy";
+type CopyMethod = "clonefile" | "copy";
 
-export interface MutantCopy {
+interface MutantCopy {
   path: string;
   method: CopyMethod;
 }
@@ -58,18 +71,15 @@ export interface MutantCopyDeps {
   platform?: NodeJS.Platform;
 }
 
-/** The folder holding one review workspace's worktrees and their mutant copies. */
-function workspaceDir(config: Pick<Config, "workspacesRoot">, workspaceId: string): string {
-  return join(config.workspacesRoot, ".review", workspaceId);
-}
+type CopiedPr = Pick<ReviewWorkspacePr, "workspaceId" | "worktreePath">;
 
 export function mutantCopyPath(
   config: Pick<Config, "workspacesRoot">,
-  pr: Pick<ReviewWorkspacePr, "workspaceId" | "worktreePath">,
+  pr: CopiedPr,
   copyId: string,
 ): string {
   return join(
-    workspaceDir(config, pr.workspaceId),
+    reviewWorkspaceDir(config, pr.workspaceId),
     `${basename(pr.worktreePath)}-mutants-${copyId}`,
   );
 }
@@ -80,7 +90,7 @@ export function mutantCopyPath(
  */
 function assertCopyPath(config: Pick<Config, "workspacesRoot">, workspaceId: string, path: string) {
   const resolved = resolve(path);
-  if (dirname(resolved) !== resolve(workspaceDir(config, workspaceId))) {
+  if (dirname(resolved) !== resolve(reviewWorkspaceDir(config, workspaceId))) {
     throw new Error(`${path} is not in its review workspace's folder`);
   }
   if (!COPY_NAME.test(basename(resolved))) throw new Error(`${path} is not a mutant copy`);
@@ -106,30 +116,59 @@ function exists(path: string): boolean {
 }
 
 /**
+ * Removes every symlink in the copy that leads out of it. A link into the
+ * review checkout — an absolute one a setup script wrote, say — would hand
+ * the agent's edits and the tests' writes straight to the code the reviewer is
+ * reading. Links that stay inside, like `node_modules/.bin`, are kept. A
+ * dangling link is judged by where it points.
+ */
+async function removeOutwardLinks(path: string): Promise<string[]> {
+  const found = await run(["find", path, "-type", "l", "-print0"], { timeoutMs: COPY_TIMEOUT_MS });
+  if (found.exitCode !== 0) throw new Error(`could not list symlinks: ${found.stderr.trim()}`);
+  const root = realpathSync(path);
+  const removed: string[] = [];
+  for (const link of found.stdout.split("\0").filter(Boolean)) {
+    let target: string;
+    try {
+      target = realpathSync(link);
+    } catch {
+      target = resolve(realpathSync(dirname(link)), readlinkSync(link));
+    }
+    const inside = relative(root, target);
+    if (inside === "" || (!inside.startsWith("..") && !isAbsolute(inside))) continue;
+    await rm(link, { force: true });
+    removed.push(relative(path, link));
+  }
+  return removed;
+}
+
+/**
  * Copies the PR's worktree, including whatever its setup installed, and turns
- * the copy into a standalone repository. Removes a half-made copy on failure.
+ * the copy into a standalone repository. Refuses, and removes the copy, unless
+ * both the worktree and the copy are still at `headSha` once it is made, so a
+ * copy can't be of some other commit than the one consent was given for.
  */
 export async function createMutantCopy(
   config: Pick<Config, "workspacesRoot">,
-  pr: Pick<ReviewWorkspacePr, "workspaceId" | "worktreePath">,
+  pr: CopiedPr,
   copyId: string,
+  headSha: string,
   deps: MutantCopyDeps = {},
 ): Promise<MutantCopy> {
   const runCp = deps.run ?? run;
   const gitRunner = deps.git ?? reviewGit().local;
   const platform = deps.platform ?? process.platform;
 
+  assertWorktreeInWorkspace(config, pr);
   const source = resolve(pr.worktreePath);
-  if (dirname(source) !== resolve(workspaceDir(config, pr.workspaceId))) {
-    throw new Error(`${pr.worktreePath} is not in this review workspace's folder`);
-  }
   if (!isRealDirectory(source)) throw new Error(`no checkout at ${pr.worktreePath}`);
   const path = mutantCopyPath(config, pr, copyId);
   assertCopyPath(config, pr.workspaceId, path);
   if (exists(path)) throw new Error(`${path} already exists`);
 
   // `-R` copies symlinks as symlinks rather than following them, on both BSD
-  // and GNU cp, so a link in the checkout can't pull the rest of the disk in.
+  // and GNU cp. A failed attempt is removed before anything else is tried, or
+  // the next `cp` would copy into it as a subfolder.
   const copyWith = async (flags: string[]) => {
     const result = await runCp(["cp", ...flags, source, path], { timeoutMs: COPY_TIMEOUT_MS });
     if (result.exitCode !== 0) {
@@ -137,6 +176,7 @@ export async function createMutantCopy(
       throw new Error(`cp ${flags.join(" ")} failed: ${result.stderr.trim()}`);
     }
   };
+  const headOf = async (dir: string) => (await git(gitRunner, ["rev-parse", "HEAD"], dir)).trim();
 
   let method: CopyMethod = "copy";
   try {
@@ -155,8 +195,22 @@ export async function createMutantCopy(
       await copyWith(["-R"]);
     }
 
-    // The worktree's `.git` is a file naming the review clone's git dir.
-    await rm(join(path, ".git"), { recursive: true, force: true });
+    // Read through the copied `.git` file, which still names the review
+    // worktree's git dir, before it is replaced.
+    const [copyHead, sourceHead] = [await headOf(path), await headOf(source)];
+    if (copyHead !== headSha || sourceHead !== headSha) {
+      throw new Error("the checkout moved while it was being copied");
+    }
+
+    const unlinked = await removeOutwardLinks(path);
+    if (unlinked.length > 0) {
+      console.log(
+        `[mutation-testing] removed ${unlinked.length} symlinks leading out of the copy: ${unlinked.slice(0, 5).join(", ")}`,
+      );
+    }
+    for (const name of [".git", ...AGENT_FILES]) {
+      await rm(join(path, name), { recursive: true, force: true });
+    }
     await git(gitRunner, ["init", "-q"], path);
     await git(gitRunner, ["add", "-A"], path, COPY_TIMEOUT_MS);
     await git(
@@ -198,7 +252,8 @@ export async function removeMutantCopy(
   try {
     await rm(path, { recursive: true, force: true });
   } catch (first) {
-    // Tests can leave read-only folders behind, which `rm` can't empty.
+    // The PR's tests and tooling can leave read-only folders behind (Go's
+    // module cache, for one, is written read-only), which `rm` can't empty.
     await run(["chmod", "-R", "u+w", path]).catch(() => {});
     await rm(path, { recursive: true, force: true }).catch(() => {
       throw first;
@@ -220,16 +275,15 @@ export async function sweepMutantCopies(
   inUse: ReadonlySet<string> = new Set(),
   now: number = Date.now(),
 ): Promise<number> {
-  const reviewRoot = join(config.workspacesRoot, ".review");
   let workspaces: string[];
   try {
-    workspaces = readdirSync(reviewRoot);
+    workspaces = readdirSync(reviewWorkspacesRoot(config));
   } catch {
     return 0;
   }
   const candidates: { workspaceId: string; path: string; copyId: string }[] = [];
   for (const workspaceId of workspaces) {
-    const dir = join(reviewRoot, workspaceId);
+    const dir = reviewWorkspaceDir(config, workspaceId);
     if (!isRealDirectory(dir)) continue;
     for (const name of readdirSync(dir)) {
       const match = COPY_NAME.exec(name);

@@ -432,7 +432,10 @@ describe("setup", () => {
     expect((await prRow(prId)).setupHeadSha).toBe(headSha);
 
     const declined = await setup(wsId, prId, { grant: false });
-    expect(((await declined.json()) as { setupConsent: string }).setupConsent).toBe("declined");
+    expect(await declined.json()).toMatchObject({
+      setupConsent: "declined",
+      setupHeadSha: headSha,
+    });
   });
 
   it("runs one of two grants made at once", async () => {
