@@ -1953,6 +1953,16 @@ export const reviewWorkspacePrs = pgTable(
       .default("pending"),
     error: text("error"),
     worktreePath: text("worktree_path").notNull(),
+    /**
+     * "pending" | "checking-out" | "ready" | "error". Separate from `status`
+     * because review reads come from git objects and start as soon as the shas
+     * are known; only what needs files on disk (setup, code navigation) waits
+     * for the checkout.
+     */
+    worktreeStatus: text("worktree_status")
+      .$type<"pending" | "checking-out" | "ready" | "error">()
+      .notNull()
+      .default("pending"),
     headSha: text("head_sha"),
     baseSha: text("base_sha"),
     mergeBaseSha: text("merge_base_sha"),

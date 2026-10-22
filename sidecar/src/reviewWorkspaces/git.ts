@@ -6,17 +6,28 @@
  * Everything reads commits, never the working tree. The worktree is there for
  * tools that need files on disk (a setup script, code navigation), but what the
  * reviewer is shown comes from the objects at the recorded shas, so nothing a
- * setup script writes can change what a diff says.
+ * setup script writes can change what a diff says — and a review can start
+ * before the checkout has finished.
  *
  * A blobless clone fetches file contents lazily from `origin` the first time a
- * command needs them — a checkout, a diff, a `cat-file` — so every command here,
- * not only clone and fetch, runs with the remote's credentials available.
+ * command needs them, so every command here, not only clone and fetch, runs with
+ * the remote's credentials available.
  */
 
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { type RunBytesResult, run, runBytes } from "../workspaces/exec.ts";
-import { existingWorktree, type GitRunner } from "../workspaces/git.ts";
+import { type RunBytesResult, runBytes } from "../workspaces/exec.ts";
+import { CONTROL_CHARACTERS, isBinary, MAX_FILE_BYTES } from "../workspaces/files.ts";
+import {
+  existingWorktree,
+  GIT_BASE_ENV,
+  type GitRunner,
+  git,
+  gitRunnerWithEnv,
+  NETWORK_TIMEOUT_MS,
+  parseRawNumstat,
+  splitNulFields,
+} from "../workspaces/git.ts";
 
 /** Reads stdout as bytes; injectable like {@link GitRunner}. */
 export type GitBytesRunner = (
@@ -30,27 +41,11 @@ export interface ReviewGit {
   bytes: GitBytesRunner;
 }
 
-/** Network operations — and a first checkout, which downloads blobs — can be slow. */
-const NETWORK_TIMEOUT_MS = 10 * 60 * 1000;
-
-/** Largest file `readFileAtSide` returns; anything bigger is reported `tooLarge`. */
-export const MAX_REVIEW_FILE_BYTES = 2_000_000;
-
-/** How far into a file to look for a NUL byte, matching git's own heuristic. */
-const BINARY_SNIFF_BYTES = 8000;
-
-/**
- * Base environment for every review git command. `GIT_TERMINAL_PROMPT=0` makes
- * a missing credential fail instead of hanging on a prompt nobody can answer;
- * `LC_ALL=C` keeps git's messages in English for the logs.
- */
-const BASE_ENV = { GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" };
-
 /** Builds the runners for a remote, with `env` (see {@link credentialEnv}) on every call. */
 export function reviewGit(env: Record<string, string> = {}): ReviewGit {
-  const merged = { ...BASE_ENV, ...env };
+  const merged = { ...GIT_BASE_ENV, ...env };
   return {
-    run: (args, opts) => run(["git", ...args], { ...opts, env: merged }),
+    run: gitRunnerWithEnv(env),
     bytes: (args, opts) => runBytes(["git", ...args], { ...opts, env: merged }),
   };
 }
@@ -101,19 +96,6 @@ export function credentialEnv(
   };
 }
 
-async function git(
-  runner: GitRunner,
-  args: string[],
-  cwd?: string,
-  timeoutMs?: number,
-): Promise<string> {
-  const result = await runner(args, { cwd, timeoutMs });
-  if (result.exitCode !== 0) {
-    throw new Error(`git ${args.join(" ")} failed (${result.exitCode}): ${result.stderr.trim()}`);
-  }
-  return result.stdout;
-}
-
 /**
  * Makes sure a blobless clone of `url` exists at `clonePath` with `origin`
  * pointing at `url`. Not shallow: a review diffs against the merge-base, which
@@ -138,7 +120,7 @@ export async function ensureReviewClone(
     return;
   }
   const current = (await git(runner, ["remote", "get-url", "origin"], clonePath)).trim();
-  if (current !== url) await git(runner, ["remote", "set-url", "origin", "--", url], clonePath);
+  if (current !== url) await git(runner, ["remote", "set-url", "origin", url], clonePath);
 }
 
 /** Where a pull request's head comes from, which differs by provider and by fork. */
@@ -149,12 +131,11 @@ export type HeadSource =
   | { kind: "merge-parent"; ref: string };
 
 /** The local ref a pull request's fetched head (or merge commit) is kept under. */
-export function localPrRef(prNumber: number, kind: "head" | "merge"): string {
+function localPrRef(prNumber: number, kind: "head" | "merge"): string {
   return `refs/yarvis-review/pr-${prNumber}/${kind}`;
 }
 
-/** The remote-tracking ref for a base branch. */
-export function localBaseRef(baseBranch: string): string {
+function localBaseRef(baseBranch: string): string {
   return `refs/remotes/origin/${baseBranch}`;
 }
 
@@ -194,8 +175,11 @@ export async function fetchPr(
     head.kind === "ref" ? localPrRef(prNumber, "head") : `${localPrRef(prNumber, "merge")}^2`;
   const headSha = await revParse(runner, clonePath, headRev);
   const baseSha = await revParse(runner, clonePath, localBaseRef(baseBranch));
-  const mergeBaseSha = (await git(runner, ["merge-base", baseSha, headSha], clonePath)).trim();
-  if (!mergeBaseSha) throw new Error("the pull request shares no history with its base branch");
+  const mergeBase = await runner(["merge-base", baseSha, headSha], { cwd: clonePath });
+  const mergeBaseSha = mergeBase.stdout.trim();
+  if (mergeBase.exitCode !== 0 || !mergeBaseSha) {
+    throw new Error("the pull request shares no history with its base branch");
+  }
   return { headSha, baseSha, mergeBaseSha };
 }
 
@@ -204,29 +188,38 @@ async function revParse(runner: GitRunner, cwd: string, rev: string): Promise<st
 }
 
 /**
- * Puts a detached worktree at `worktreePath` checked out at `sha`, or moves the
- * one already there. The move is forced: this checkout is for reading, and a
- * setup script that rewrote a lockfile must not stop a refresh. Untracked files
- * (installed dependencies) are left alone so a refresh doesn't undo the setup.
+ * Registers a detached worktree at `worktreePath` without checking anything
+ * out, unless one is already there. Only this touches the clone's worktree
+ * list; the slow part, the checkout, is {@link checkoutWorktree}, which the
+ * caller runs without holding the clone.
  */
-export async function ensureDetachedWorktree(
+export async function registerWorktree(
   runner: GitRunner,
   clonePath: string,
   worktreePath: string,
   sha: string,
 ): Promise<void> {
-  const existing = await existingWorktree(runner, clonePath, worktreePath);
-  if (existing) {
-    await git(runner, ["checkout", "--force", "--detach", sha], worktreePath, NETWORK_TIMEOUT_MS);
-    return;
-  }
+  if (await existingWorktree(runner, clonePath, worktreePath)) return;
   mkdirSync(dirname(worktreePath), { recursive: true });
   await git(
     runner,
-    ["worktree", "add", "--detach", "--", worktreePath, sha],
+    ["worktree", "add", "--no-checkout", "--detach", "--", worktreePath, sha],
     clonePath,
-    NETWORK_TIMEOUT_MS,
   );
+}
+
+/**
+ * Checks the worktree out at `sha`. Forced: this checkout is for reading, and
+ * a setup script that rewrote a lockfile must not stop a refresh. Untracked
+ * files (installed dependencies) are left alone so a refresh doesn't undo the
+ * setup.
+ */
+export async function checkoutWorktree(
+  runner: GitRunner,
+  worktreePath: string,
+  sha: string,
+): Promise<void> {
+  await git(runner, ["checkout", "--force", "--detach", sha], worktreePath, NETWORK_TIMEOUT_MS);
 }
 
 export type ChangeStatus = "added" | "modified" | "deleted" | "renamed";
@@ -242,11 +235,12 @@ export interface ReviewChangedFile {
   binary: boolean;
 }
 
-/** Splits NUL-terminated output, dropping the empty field the final NUL leaves. */
-function splitNul(out: string): string[] {
-  const fields = out.split("\0");
-  if (fields[fields.length - 1] === "") fields.pop();
-  return fields;
+/** A changed file plus the blob sizes a diff request is checked against. */
+export interface ChangedFileWithSizes extends ReviewChangedFile {
+  /** Bytes on the base side; 0 for an added file. */
+  oldSize: number;
+  /** Bytes on the head side; 0 for a deleted file. */
+  newSize: number;
 }
 
 const STATUS_LETTERS: Record<string, ChangeStatus> = {
@@ -260,72 +254,73 @@ const STATUS_LETTERS: Record<string, ChangeStatus> = {
   C: "added",
 };
 
+const NULL_OID = /^0+$/;
+
 /**
- * Joins `git diff --name-status -z -M` and `git diff --numstat -z -M` output
- * into one entry per file, keyed by where the file ended up.
- *
- * In `-z` form a rename is a status field followed by two path fields in
- * name-status, and an empty path column followed by two path fields in
- * numstat. Only numstat's first two tabs are delimiters: a tab is legal in a
- * filename and `-z` leaves it raw.
+ * Every file the pull request changes, `from..to` (merge-base to head), with no
+ * cap on how many. One `diff --raw --numstat` gives the kind of change, the
+ * line counts and both sides' blob ids. On a blobless clone that same diff is
+ * what downloads every changed blob, both sides, in a single batched fetch —
+ * so running it once at sync time means every file and diff the reviewer opens
+ * afterwards is already local.
  */
-export function parseChangedFiles(nameStatus: string, numstat: string): ReviewChangedFile[] {
-  const byPath = new Map<string, ReviewChangedFile>();
-
-  const statusFields = splitNul(nameStatus);
-  for (let i = 0; i < statusFields.length; ) {
-    const code = statusFields[i] ?? "";
-    const twoPaths = code.startsWith("R") || code.startsWith("C");
-    const oldPath = twoPaths ? statusFields[i + 1] : undefined;
-    const path = statusFields[i + (twoPaths ? 2 : 1)] ?? "";
-    i += twoPaths ? 3 : 2;
-    if (!path) continue;
-    byPath.set(path, {
-      path,
-      ...(oldPath ? { oldPath } : {}),
-      status: STATUS_LETTERS[code[0] ?? ""] ?? "modified",
-      additions: 0,
-      deletions: 0,
-      binary: false,
-    });
-  }
-
-  const countFields = splitNul(numstat);
-  for (let i = 0; i < countFields.length; ) {
-    const [add, del, ...rest] = (countFields[i] ?? "").split("\t");
-    const inline = rest.join("\t");
-    const path = (inline ? inline : countFields[i + 2]) ?? "";
-    i += inline ? 1 : 3;
-    if (!path) continue;
-    const entry = byPath.get(path) ?? {
-      path,
-      status: "modified" as const,
-      additions: 0,
-      deletions: 0,
-      binary: false,
-    };
-    entry.binary = add === "-" && del === "-";
-    entry.additions = entry.binary ? 0 : Number(add) || 0;
-    entry.deletions = entry.binary ? 0 : Number(del) || 0;
-    byPath.set(path, entry);
-  }
-
-  return [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path));
-}
-
-/** Every file the pull request changes, `from..to` (merge-base to head). No cap. */
 export async function changedFilesBetween(
   runner: GitRunner,
   clonePath: string,
   from: string,
   to: string,
-): Promise<ReviewChangedFile[]> {
-  const range = `${from}..${to}`;
-  const [nameStatus, numstat] = await Promise.all([
-    git(runner, ["diff", "--name-status", "-z", "-M", range], clonePath, NETWORK_TIMEOUT_MS),
-    git(runner, ["diff", "--numstat", "-z", "-M", range], clonePath, NETWORK_TIMEOUT_MS),
-  ]);
-  return parseChangedFiles(nameStatus, numstat);
+): Promise<ChangedFileWithSizes[]> {
+  const records = parseRawNumstat(
+    await git(
+      runner,
+      ["diff", "--raw", "--numstat", "-z", "-M", "--no-abbrev", `${from}..${to}`],
+      clonePath,
+      NETWORK_TIMEOUT_MS,
+    ),
+  );
+  const oids = [
+    ...new Set(
+      records
+        .flatMap((r) => [r.oldOid, r.newOid])
+        .filter((o): o is string => !!o && !NULL_OID.test(o)),
+    ),
+  ];
+  const sizes = await blobSizes(runner, clonePath, oids);
+  const sizeOf = (oid: string | undefined) => (oid ? (sizes.get(oid) ?? 0) : 0);
+  return records
+    .map((r) => ({
+      path: r.path,
+      ...(r.oldPath && r.code.startsWith("R") ? { oldPath: r.oldPath } : {}),
+      status: STATUS_LETTERS[r.code[0] ?? ""] ?? "modified",
+      additions: r.additions,
+      deletions: r.deletions,
+      binary: r.binary,
+      oldSize: sizeOf(r.oldOid),
+      newSize: sizeOf(r.newOid),
+    }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/** Sizes of blobs, in one `cat-file --batch-check` (they are local by now). */
+async function blobSizes(
+  runner: GitRunner,
+  clonePath: string,
+  oids: string[],
+): Promise<Map<string, number>> {
+  if (oids.length === 0) return new Map();
+  const out = await git(
+    runner,
+    ["cat-file", "--batch-check=%(objectname) %(objectsize)"],
+    clonePath,
+    NETWORK_TIMEOUT_MS,
+    `${oids.join("\n")}\n`,
+  );
+  const sizes = new Map<string, number>();
+  for (const line of out.split("\n")) {
+    const [oid, size] = line.split(" ");
+    if (oid && size && /^\d+$/.test(size)) sizes.set(oid, Number(size));
+  }
+  return sizes;
 }
 
 /** Every file path in the tree at `sha`. */
@@ -334,7 +329,14 @@ export async function treePaths(
   clonePath: string,
   sha: string,
 ): Promise<string[]> {
-  return splitNul(await git(runner, ["ls-tree", "-r", "-z", "--name-only", sha], clonePath));
+  return splitNulFields(await git(runner, ["ls-tree", "-r", "-z", "--name-only", sha], clonePath));
+}
+
+export class UnsafePathError extends Error {
+  constructor(path: string) {
+    super(`invalid path: ${JSON.stringify(path.slice(0, 200))}`);
+    this.name = "UnsafePathError";
+  }
 }
 
 /**
@@ -345,19 +347,11 @@ export async function treePaths(
  * path that passes here is also one that can never climb out of a worktree.
  */
 export function assertSafeRepoPath(path: string): void {
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters never name a file we show.
-  if (!path || path.length > 4096 || /[\x00-\x1f\x7f]/.test(path)) {
+  if (!path || path.length > 4096 || CONTROL_CHARACTERS.test(path) || path.startsWith("/")) {
     throw new UnsafePathError(path);
   }
-  if (path.startsWith("/")) throw new UnsafePathError(path);
   for (const segment of path.split("/")) {
     if (segment === "" || segment === "." || segment === "..") throw new UnsafePathError(path);
-  }
-}
-
-export class UnsafePathError extends Error {
-  constructor(path: string) {
-    super(`invalid path: ${JSON.stringify(path.slice(0, 200))}`);
   }
 }
 
@@ -373,7 +367,7 @@ export interface TreeEntry {
 
 /** Parses `git ls-tree -z -l` output. */
 export function parseTreeEntries(out: string): TreeEntry[] {
-  return splitNul(out).flatMap((record) => {
+  return splitNulFields(out).flatMap((record) => {
     const tab = record.indexOf("\t");
     if (tab < 0) return [];
     const [mode, type, object, size] = record.slice(0, tab).split(/\s+/);
@@ -395,7 +389,7 @@ export function parseTreeEntries(out: string): TreeEntry[] {
  * `--literal-pathspecs` keeps a `*` or `:(glob)` in a requested path from
  * matching anything but a file of that literal name.
  */
-export async function treeEntry(
+async function treeEntry(
   runner: GitRunner,
   clonePath: string,
   sha: string,
@@ -418,53 +412,41 @@ export interface FileAtSide {
 }
 
 /**
- * Whether bytes look binary: a NUL in the first {@link BINARY_SNIFF_BYTES}, as
- * git decides, or anything that isn't valid UTF-8, which the editor couldn't
- * show faithfully anyway.
- */
-export function looksBinary(bytes: Uint8Array): boolean {
-  if (bytes.subarray(0, BINARY_SNIFF_BYTES).includes(0)) return true;
-  try {
-    new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    return false;
-  } catch {
-    return true;
-  }
-}
-
-/**
  * The contents of `path` at commit `sha`, or null when the tree has no file
  * there. Only blobs are read: a directory or submodule at that path is "not a
  * file". Anything over `maxBytes` comes back `tooLarge` with no content, and is
  * never downloaded — the size comes from the tree, which a blobless clone has.
+ * A file is binary when git would say so (a NUL near the start) or when it
+ * isn't valid UTF-8, which the editor couldn't show faithfully anyway.
  */
 export async function readFileAt(
-  git: ReviewGit,
+  runners: ReviewGit,
   clonePath: string,
   sha: string,
   path: string,
-  maxBytes = MAX_REVIEW_FILE_BYTES,
+  maxBytes = MAX_FILE_BYTES,
 ): Promise<FileAtSide | null> {
   assertSafeRepoPath(path);
-  const entry = await treeEntry(git.run, clonePath, sha, path);
+  const entry = await treeEntry(runners.run, clonePath, sha, path);
   if (entry?.type !== "blob") return null;
   const size = entry.size ?? 0;
   if (size > maxBytes) return { content: "", binary: false, tooLarge: true, size };
 
-  const result = await git.bytes(["cat-file", "blob", entry.object], {
+  const result = await runners.bytes(["cat-file", "blob", entry.object], {
     cwd: clonePath,
     timeoutMs: NETWORK_TIMEOUT_MS,
   });
   if (result.exitCode !== 0) {
     throw new Error(`git cat-file failed (${result.exitCode}): ${result.stderr.trim()}`);
   }
-  if (looksBinary(result.stdout)) return { content: "", binary: true, tooLarge: false, size };
-  return {
-    content: new TextDecoder().decode(result.stdout),
-    binary: false,
-    tooLarge: false,
-    size,
-  };
+  const binary = { content: "", binary: true, tooLarge: false, size };
+  if (isBinary(result.stdout)) return binary;
+  try {
+    const content = new TextDecoder("utf-8", { fatal: true }).decode(result.stdout);
+    return { content, binary: false, tooLarge: false, size };
+  } catch {
+    return binary;
+  }
 }
 
 /**

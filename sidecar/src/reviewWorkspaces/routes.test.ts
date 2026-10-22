@@ -105,34 +105,56 @@ describe("review workspace routes", () => {
     expect(existsSync(join(workspacesRoot, ".review-repos/github/o/r/.git"))).toBe(true);
 
     const detail = (await (await call("GET", `/${wsId}`)).json()) as {
-      prs: { status: string; title: string; colorIndex: number; headSha: string }[];
+      prs: { headSha: string; mergeBaseSha: string }[];
     };
-    expect(detail.prs[0]).toMatchObject({ status: "ready", title: "Feature work", colorIndex: 0 });
+    expect(detail.prs[0]).toMatchObject({
+      status: "ready",
+      worktreeStatus: "ready",
+      title: "Feature work",
+      colorIndex: 0,
+    });
+    const { headSha, mergeBaseSha } = detail.prs[0]!;
 
     const changed = (await (await call("GET", `/${wsId}/prs/${prId}/changed-files`)).json()) as {
-      path: string;
-    }[];
-    expect(changed.map((f) => f.path)).toEqual([
+      headSha: string;
+      mergeBaseSha: string;
+      files: { path: string }[];
+    };
+    expect(changed).toMatchObject({ headSha, mergeBaseSha });
+    expect(changed.files.map((f) => f.path)).toEqual([
       "big.txt",
       "docs/gone.md",
       "image.bin",
+      "latin1.txt",
       "src/a.ts",
       "src/new.ts",
     ]);
+    // Sizes are for checking diffs against the cap, not part of the response.
+    expect(changed.files[0]).not.toHaveProperty("newSize");
 
-    const tree = (await (await call("GET", `/${wsId}/prs/${prId}/tree`)).json()) as string[];
-    expect(tree).toContain("README.md");
-    expect(tree).not.toContain("later.md");
+    const tree = (await (await call("GET", `/${wsId}/prs/${prId}/tree`)).json()) as {
+      headSha: string;
+      paths: string[];
+    };
+    expect(tree.headSha).toBe(headSha);
+    expect(tree.paths).toContain("README.md");
+    expect(tree.paths).not.toContain("later.md");
 
     const head = await call("GET", `/${wsId}/prs/${prId}/file?path=src/a.ts&side=head`);
     expect(await head.json()).toMatchObject({
       content: "export const a = 2;\nexport const b = 3;\n",
+      sha: headSha,
     });
     const base = await call("GET", `/${wsId}/prs/${prId}/file?path=src/a.ts&side=base`);
-    expect(await base.json()).toMatchObject({ content: "export const a = 1;\n" });
+    expect(await base.json()).toMatchObject({
+      content: "export const a = 1;\n",
+      sha: mergeBaseSha,
+    });
 
-    const diff = await call("GET", `/${wsId}/prs/${prId}/diff?path=src/new.ts&oldPath=src/old.ts`);
-    expect(((await diff.json()) as { patch: string }).patch).toContain("rename from src/old.ts");
+    const diff = await call("GET", `/${wsId}/prs/${prId}/diff?path=src/new.ts`);
+    const body = (await diff.json()) as { patch: string; oldPath: string; tooLarge: boolean };
+    expect(body).toMatchObject({ oldPath: "src/old.ts", tooLarge: false, headSha, mergeBaseSha });
+    expect(body.patch).toContain("rename from src/old.ts");
   });
 
   it("refuses traversal, unknown paths and bad ids", async () => {
@@ -146,6 +168,9 @@ describe("review workspace routes", () => {
       (await call("GET", `/${wsId}/prs/${prId}/file?path=docs/gone.md&side=head`)).status,
     ).toBe(404);
     expect((await call("GET", `/${wsId}/prs/${prId}/diff?path=nope.txt`)).status).toBe(404);
+    // In the tree but not changed by the PR.
+    expect((await call("GET", `/${wsId}/prs/${prId}/diff?path=README.md`)).status).toBe(404);
+    expect((await call("GET", `/${wsId}/prs/${prId}/diff?path=../x`)).status).toBe(400);
     expect((await call("GET", `/${wsId}/prs/${prId}/file?path=src/a.ts&side=x`)).status).toBe(400);
     expect((await call("GET", `/not-a-uuid`)).status).toBe(400);
     expect((await call("GET", `/${wsId}/prs/not-a-uuid/tree`)).status).toBe(400);
@@ -220,8 +245,11 @@ describe("review workspace routes", () => {
     expect((await call("DELETE", `/${wsId}/prs/${prId}`)).status).toBe(200);
     expect(existsSync(worktreePath)).toBe(false);
 
-    const archived = await call("POST", `/${wsId}/archive`);
-    expect(archived.status).toBe(202);
+    // Two archives at once: exactly one proceeds.
+    const statuses = (
+      await Promise.all([call("POST", `/${wsId}/archive`), call("POST", `/${wsId}/archive`)])
+    ).map((res) => res.status);
+    expect(statuses.sort()).toEqual([202, 409]);
     for (let i = 0; i < 50; i++) {
       const [row] = await db.select().from(reviewWorkspaces).where(eq(reviewWorkspaces.id, wsId));
       if (row?.status === "archived") break;

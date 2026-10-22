@@ -288,6 +288,13 @@
       "when": 1792632201915,
       "tag": "0040_green_secret_warriors",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1792635408410,
+      "tag": "0041_rare_jasper_sitwell",
+      "breakpoints": true
     }
   ]
 }

@@ -54,7 +54,7 @@ export interface TestRemote {
 /**
  * main: README.md, src/a.ts, src/old.ts, docs/gone.md
  * PR #1 (branch `feature`): modifies src/a.ts, renames src/old.ts → src/new.ts,
- * deletes docs/gone.md, adds image.bin (binary) and big.txt.
+ * deletes docs/gone.md, adds image.bin (binary), latin1.txt (not UTF-8) and big.txt.
  * main then moves on (adds later.md) so the merge-base is not main's tip.
  * PR #2 is the same branch exposed only as an Azure-style merge ref.
  */
@@ -77,6 +77,8 @@ export function createTestRemote(): TestRemote {
   sh(work, "rm", "-q", "docs/gone.md");
   write(work, "image.bin", new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3, 0, 255]));
   write(work, "big.txt", "x".repeat(5000));
+  // Latin-1 "café": no NUL, but not UTF-8 either.
+  write(work, "latin1.txt", new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x0a]));
   sh(work, "add", "-A");
   sh(work, "commit", "-q", "-m", "feature work");
 

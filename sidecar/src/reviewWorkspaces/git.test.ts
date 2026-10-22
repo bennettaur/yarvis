@@ -2,77 +2,23 @@ import { afterAll, describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { removeWorktree } from "../workspaces/git.ts";
+import { type GitRunner, removeWorktree } from "../workspaces/git.ts";
 import {
   assertSafeRepoPath,
   changedFilesBetween,
+  checkoutWorktree,
   credentialEnv,
-  ensureDetachedWorktree,
   ensureReviewClone,
   fetchPr,
   fileDiffBetween,
-  looksBinary,
-  parseChangedFiles,
   parseTreeEntries,
   prFetchRefspecs,
   readFileAt,
+  registerWorktree,
   reviewGit,
   treePaths,
 } from "./git.ts";
 import { createTestRemote, sh } from "./testRepo.ts";
-
-describe("parseChangedFiles", () => {
-  it("joins name-status and numstat, keeping renames, deletions and binaries", () => {
-    const nameStatus = [
-      "M",
-      "src/a.ts",
-      "R087",
-      "src/old.ts",
-      "src/new.ts",
-      "D",
-      "gone.md",
-      "A",
-      "img.bin",
-      "",
-    ].join("\0");
-    const numstat = [
-      "2\t1\tsrc/a.ts",
-      "1\t1\t",
-      "src/old.ts",
-      "src/new.ts",
-      "0\t1\tgone.md",
-      "-\t-\timg.bin",
-      "",
-    ].join("\0");
-    expect(parseChangedFiles(nameStatus, numstat)).toEqual([
-      { path: "gone.md", status: "deleted", additions: 0, deletions: 1, binary: false },
-      { path: "img.bin", status: "added", additions: 0, deletions: 0, binary: true },
-      { path: "src/a.ts", status: "modified", additions: 2, deletions: 1, binary: false },
-      {
-        path: "src/new.ts",
-        oldPath: "src/old.ts",
-        status: "renamed",
-        additions: 1,
-        deletions: 1,
-        binary: false,
-      },
-    ]);
-  });
-
-  it("keeps a tab inside a filename as part of the path", () => {
-    const files = parseChangedFiles("M\0a\tb.txt\0", "1\t0\ta\tb.txt\0");
-    expect(files).toEqual([
-      { path: "a\tb.txt", status: "modified", additions: 1, deletions: 0, binary: false },
-    ]);
-  });
-
-  it("has no cap on the number of files", () => {
-    const paths = Array.from({ length: 250 }, (_, i) => `f${i}.ts`);
-    const nameStatus = paths.flatMap((p) => ["A", p]).join("\0");
-    const numstat = paths.map((p) => `1\t0\t${p}`).join("\0");
-    expect(parseChangedFiles(`${nameStatus}\0`, `${numstat}\0`)).toHaveLength(250);
-  });
-});
 
 describe("parseTreeEntries", () => {
   it("reads mode, type, object, size and a path with spaces", () => {
@@ -113,14 +59,6 @@ describe("assertSafeRepoPath", () => {
       expect(() => assertSafeRepoPath(p)).toThrow("invalid path");
     },
   );
-});
-
-describe("looksBinary", () => {
-  it("flags NUL bytes and invalid UTF-8, not ordinary text", () => {
-    expect(looksBinary(new TextEncoder().encode("héllo\n"))).toBe(false);
-    expect(looksBinary(new Uint8Array([104, 0, 105]))).toBe(true);
-    expect(looksBinary(new Uint8Array([0xff, 0xfe, 0x41]))).toBe(true);
-  });
 });
 
 describe("credentialEnv", () => {
@@ -172,7 +110,7 @@ describe("review clone integration", () => {
   const clonePath = join(root, ".review-repos", "github", "o", "r");
   const wsDir = join(root, ".review", "ws1");
   const worktreePath = join(wsDir, "gh-o-r-1");
-  const git = reviewGit();
+  const runners = reviewGit();
 
   afterAll(() => {
     rmSync(remote.root, { recursive: true, force: true });
@@ -180,11 +118,11 @@ describe("review clone integration", () => {
   });
 
   it("clones blobless, fetches a fork-style PR ref, and checks out a detached worktree", async () => {
-    await ensureReviewClone(git.run, remote.url, clonePath);
+    await ensureReviewClone(runners.run, remote.url, clonePath);
     expect(sh(clonePath, "config", "remote.origin.partialclonefilter").trim()).toBe("blob:none");
 
     const shas = await fetchPr(
-      git.run,
+      runners.run,
       clonePath,
       1,
       { kind: "ref", ref: "refs/pull/1/head" },
@@ -194,77 +132,121 @@ describe("review clone integration", () => {
     expect(shas.baseSha).toBe(sh(remote.bare, "rev-parse", "main").trim());
     expect(shas.mergeBaseSha).toBe(sh(remote.work, "rev-parse", "main~1").trim());
 
-    await ensureDetachedWorktree(git.run, clonePath, worktreePath, shas.headSha);
+    await registerWorktree(runners.run, clonePath, worktreePath, shas.headSha);
+    // Registered but not yet checked out: nothing on disk but the `.git` file.
+    expect(existsSync(join(worktreePath, "src/new.ts"))).toBe(false);
+    await checkoutWorktree(runners.run, worktreePath, shas.headSha);
     expect(sh(worktreePath, "rev-parse", "HEAD").trim()).toBe(shas.headSha);
     expect(sh(worktreePath, "branch", "--show-current").trim()).toBe("");
     expect(existsSync(join(worktreePath, "src/new.ts"))).toBe(true);
+  });
 
-    const files = await changedFilesBetween(git.run, clonePath, shas.mergeBaseSha, shas.headSha);
+  it("lists every changed file with sizes, prefetching all their blobs in one fetch", async () => {
+    // A second, fresh clone, so no blob is local yet.
+    const fresh = join(root, "fresh");
+    await ensureReviewClone(runners.run, remote.url, fresh);
+    const shas = await fetchPr(
+      runners.run,
+      fresh,
+      1,
+      { kind: "ref", ref: "refs/pull/1/head" },
+      "main",
+    );
+
+    const traced = reviewGit({ GIT_TRACE: "1" }).run;
+    const fetches: string[] = [];
+    const tracing: GitRunner = async (args, opts) => {
+      const result = await traced(args, opts);
+      fetches.push(
+        ...result.stderr.split("\n").filter((l) => /built-in: git fetch origin/.test(l)),
+      );
+      return result;
+    };
+    const files = await changedFilesBetween(tracing, fresh, shas.mergeBaseSha, shas.headSha);
+    expect(fetches).toHaveLength(1);
+
     expect(files.map((f) => [f.path, f.status, f.oldPath, f.binary])).toEqual([
       ["big.txt", "added", undefined, false],
       ["docs/gone.md", "deleted", undefined, false],
       ["image.bin", "added", undefined, true],
+      ["latin1.txt", "added", undefined, false],
       ["src/a.ts", "modified", undefined, false],
       ["src/new.ts", "renamed", "src/old.ts", false],
     ]);
+    expect(files.find((f) => f.path === "big.txt")).toMatchObject({ oldSize: 0, newSize: 5000 });
+    expect(files.find((f) => f.path === "docs/gone.md")).toMatchObject({ oldSize: 4, newSize: 0 });
     // main's later commit is not part of the PR.
     expect(files.some((f) => f.path === "later.md")).toBe(false);
 
-    const tree = await treePaths(git.run, clonePath, shas.headSha);
+    // Everything changed is local now: reading it needs no further fetch.
+    const missing = sh(
+      fresh,
+      "rev-list",
+      "--objects",
+      "--missing=print",
+      `${shas.mergeBaseSha}..${shas.headSha}`,
+    );
+    expect(missing.split("\n").filter((l) => l.startsWith("?"))).toEqual([]);
+  });
+
+  it("reads the tree and files by side", async () => {
+    const head = sh(clonePath, "rev-parse", "refs/yarvis-review/pr-1/head").trim();
+    const base = sh(clonePath, "merge-base", head, "origin/main").trim();
+
+    const tree = await treePaths(runners.run, clonePath, head);
     expect(tree).toContain("src/new.ts");
     expect(tree).not.toContain("src/old.ts");
 
-    expect(await readFileAt(git, clonePath, shas.headSha, "src/a.ts")).toEqual({
+    expect(await readFileAt(runners, clonePath, head, "src/a.ts")).toEqual({
       content: "export const a = 2;\nexport const b = 3;\n",
       binary: false,
       tooLarge: false,
       size: 40,
     });
-    expect((await readFileAt(git, clonePath, shas.mergeBaseSha, "src/a.ts"))?.content).toBe(
+    expect((await readFileAt(runners, clonePath, base, "src/a.ts"))?.content).toBe(
       "export const a = 1;\n",
     );
-    expect(await readFileAt(git, clonePath, shas.headSha, "image.bin")).toMatchObject({
+    // A NUL byte, and bytes that aren't UTF-8, both read as binary.
+    expect(await readFileAt(runners, clonePath, head, "image.bin")).toMatchObject({
       binary: true,
       content: "",
     });
-    expect(await readFileAt(git, clonePath, shas.headSha, "big.txt", 1000)).toEqual({
+    expect(await readFileAt(runners, clonePath, head, "latin1.txt")).toMatchObject({
+      binary: true,
+      content: "",
+    });
+    expect(await readFileAt(runners, clonePath, head, "big.txt", 1000)).toEqual({
       content: "",
       binary: false,
       tooLarge: true,
       size: 5000,
     });
     // Absent on that side, a directory, or a glob: none of them is a file.
-    expect(await readFileAt(git, clonePath, shas.headSha, "docs/gone.md")).toBeNull();
-    expect(await readFileAt(git, clonePath, shas.headSha, "src")).toBeNull();
-    expect(await readFileAt(git, clonePath, shas.headSha, "src/*.ts")).toBeNull();
-    await expect(readFileAt(git, clonePath, shas.headSha, "../remote.git/config")).rejects.toThrow(
+    expect(await readFileAt(runners, clonePath, head, "docs/gone.md")).toBeNull();
+    expect(await readFileAt(runners, clonePath, head, "src")).toBeNull();
+    expect(await readFileAt(runners, clonePath, head, "src/*.ts")).toBeNull();
+    await expect(readFileAt(runners, clonePath, head, "../remote.git/config")).rejects.toThrow(
       "invalid path",
     );
 
     const renamed = await fileDiffBetween(
-      git.run,
+      runners.run,
       clonePath,
-      shas.mergeBaseSha,
-      shas.headSha,
+      base,
+      head,
       "src/new.ts",
       "src/old.ts",
     );
     expect(renamed).toContain("rename from src/old.ts");
     expect(renamed).toContain("rename to src/new.ts");
-    const modified = await fileDiffBetween(
-      git.run,
-      clonePath,
-      shas.mergeBaseSha,
-      shas.headSha,
-      "src/a.ts",
-    );
+    const modified = await fileDiffBetween(runners.run, clonePath, base, head, "src/a.ts");
     expect(modified).toContain("-export const a = 1;");
     expect(modified).toContain("+export const b = 3;");
   });
 
   it("resolves an Azure-style merge ref to its second parent", async () => {
     const shas = await fetchPr(
-      git.run,
+      runners.run,
       clonePath,
       2,
       { kind: "merge-parent", ref: "refs/pull/2/merge" },
@@ -277,21 +259,25 @@ describe("review clone integration", () => {
     const newHead = remote.pushToPr("src/a.ts", "export const a = 3;\n");
     // Something a setup script might leave behind must not block the move.
     await Bun.write(join(worktreePath, "src/a.ts"), "locally edited\n");
-    await ensureReviewClone(git.run, remote.url, clonePath);
+    await ensureReviewClone(runners.run, remote.url, clonePath);
     const shas = await fetchPr(
-      git.run,
+      runners.run,
       clonePath,
       1,
       { kind: "ref", ref: "refs/pull/1/head" },
       "main",
     );
     expect(shas.headSha).toBe(newHead);
-    await ensureDetachedWorktree(git.run, clonePath, worktreePath, shas.headSha);
+    await registerWorktree(runners.run, clonePath, worktreePath, shas.headSha);
+    await checkoutWorktree(runners.run, worktreePath, shas.headSha);
     expect(sh(worktreePath, "rev-parse", "HEAD").trim()).toBe(newHead);
   });
 
   it("removes the worktree and keeps the clone", async () => {
-    await removeWorktree(git.run, clonePath, worktreePath, { force: true, workspaceRoot: wsDir });
+    await removeWorktree(runners.run, clonePath, worktreePath, {
+      force: true,
+      workspaceRoot: wsDir,
+    });
     expect(existsSync(worktreePath)).toBe(false);
     expect(existsSync(join(clonePath, ".git"))).toBe(true);
     expect(sh(clonePath, "worktree", "list", "--porcelain")).not.toContain(worktreePath);
