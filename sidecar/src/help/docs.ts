@@ -10,6 +10,7 @@ import mcp from "../../../docs/features/mcp.md" with { type: "text" };
 import omniView from "../../../docs/features/omni-view.md" with { type: "text" };
 import prReview from "../../../docs/features/pr-review.md" with { type: "text" };
 import quickChat from "../../../docs/features/quick-chat.md" with { type: "text" };
+import reviewWorkspaces from "../../../docs/features/review-workspaces.md" with { type: "text" };
 import scheduledJobs from "../../../docs/features/scheduled-jobs.md" with { type: "text" };
 import telegram from "../../../docs/features/telegram.md" with { type: "text" };
 import terminals from "../../../docs/features/terminals.md" with { type: "text" };
@@ -43,6 +44,7 @@ const DOCS: Record<string, string> = {
   "features/omni-view": omniView,
   "features/pr-review": prReview,
   "features/quick-chat": quickChat,
+  "features/review-workspaces": reviewWorkspaces,
   "features/scheduled-jobs": scheduledJobs,
   "features/telegram": telegram,
   "features/terminals": terminals,

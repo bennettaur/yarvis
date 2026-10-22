@@ -43,6 +43,8 @@ export interface MonacoFileViewProps {
   language?: string;
   /** Scrolled to and centred whenever it changes. */
   revealLine?: number;
+  /** Changed to reveal `revealLine` again when it hasn't changed itself. */
+  revealKey?: number;
   decorations?: LineDecoration[];
   /** Every zone is shown; `side` only matters in a diff. */
   zones?: EditorZone[];
@@ -69,6 +71,7 @@ function FileEditor({
   content,
   language,
   revealLine,
+  revealKey,
   decorations,
   zones,
   onLineAction,
@@ -137,7 +140,9 @@ function FileEditor({
     if (!editor || !held || !revealLine) return;
     editor.revealLineInCenter(revealLine);
     editor.setPosition({ lineNumber: revealLine, column: 1 });
-  }, [editor, held, revealLine]);
+    // `revealKey` is read by its change alone.
+    void revealKey;
+  }, [editor, held, revealLine, revealKey]);
 
   useEffect(() => {
     if (!lineDecorations || !held) return;

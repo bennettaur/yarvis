@@ -1,0 +1,251 @@
+# Review workspaces
+
+The **Review** tab is a second way to review pull requests, built for speed. A
+review workspace checks one or more PRs out on your machine and lays them out
+like an editor: each PR's sections in a nav on the left, and whatever you open
+from it as tabs on the right. You can put two tabs side by side, and review
+several PRs at once, each in its own colour. It works with GitHub and Azure
+DevOps. The [PRs tab](pr-review.md) stays as it is; use whichever suits the PR.
+
+## Set up
+
+Review workspaces use the same credentials as the PRs tab: a GitHub sign-in or
+token, or an Azure DevOps token and organization URL, under **Settings →
+Credentials**. See [PR review](pr-review.md#set-up).
+
+A PR's repo doesn't have to be registered. If it is (under **Settings →
+Repositories**), its setup script is offered for the PR's checkout; see
+[Running the setup script](#running-the-setup-script).
+
+## Use it
+
+### Open a PR
+
+On the **Review** tab, paste a PR into the box: a link, `owner/repo#123`, or
+`repo#123` for a registered repo, the same forms the PRs tab takes. A PR that
+is already in a review workspace opens there. Anything else gets a new
+workspace named after the PR.
+
+From the PRs tab, the PR's header has **Open in review workspace**, which does
+the same and switches to the Review tab. Its **▾** lists your review
+workspaces, to add the PR to one of them instead.
+
+The nav and the description show straight away. The PR's commits are fetched
+in the background, and the PR's header in the nav says how far that has got.
+The description, reviewers, checks and comments come from the provider, so
+they work before the clone finishes. Changed files and the file tree fill in
+when it does.
+
+The Review tab remembers the workspace you had open. **←** goes back to the
+list, ordered by when each workspace was last opened.
+
+### Find your way around
+
+Each PR has a group in the left nav, headed by its colour, `repo#number` and
+title:
+
+- **Description**, **Reviewers**, **Checks** and **Comments** each open as a
+  tab. Comments starts with the PR's conversation (on GitHub; Azure DevOps
+  general comments show as threads), then every open review thread, with
+  resolved ones behind **Show resolved**. Each inline thread links to its line
+  in the diff. The number beside Comments counts the open threads. Images in
+  comments load straight from wherever they are hosted, as they do in the PRs
+  tab, so opening the tab lets those hosts see the request.
+- **Changed files** is a tree of what the PR changes, with how many you've
+  viewed. Each file has a viewed checkbox, its comment count (amber while a
+  thread is open), and a **must read** marker when the
+  [verification report](#verification-report) names it. Clicking a file opens
+  its diff.
+- **All files** is the whole tree at the PR's head, collapsed by default, with
+  a filter box: every word you type must appear in the path. Files the PR
+  changes are marked and open as diffs; anything else opens whole.
+
+Clicking the PR's header folds its group away.
+
+### Diff tabs
+
+A diff tab shows one file's changes in the editor, side by side or unified as
+set in the top bar, with unchanged stretches folded behind bars you can
+expand. **Whole file** shows it all; **Open file** opens the file at the PR's
+head in a tab of its own.
+
+- **Threads** sit under their lines on either side. Reply, resolve and
+  reopen them in place. Threads whose line no longer exists are folded into a
+  count above the editor.
+- **Comment**: hover a line and click the comment button in the margin, or
+  select lines and use the bar beside the selection for a multi-line comment.
+  Either side works.
+- **Ask**: the same way, with the ask button, to ask about those lines as in
+  the PRs tab's [line questions](pr-review.md#ask-about-a-line). The answer
+  stays under the lines. Questions go on the new version of the file; asking
+  on the old side says so.
+- **Viewed** marks the file viewed, shared with the tree and the PRs tab.
+  **Viewed, next →** marks it and opens the next file you haven't viewed.
+- A **Must read** badge, from the verification report, says why the file
+  matters and jumps to the lines it points at.
+
+A **file tab** shows any file at the PR's head whole, with the PR's threads
+on it. Questions work on any file; comments only on files the PR changes,
+since that is all the providers accept.
+
+### Guided review
+
+**Guided review** in the PR bar opens the
+[guided review](pr-review.md#take-a-guided-review) as a tab: the tour down
+the side and the current step beside it. Next, Back, a step, a flagged finding
+or a covered file each open that place in a diff tab, and moving past a step
+marks its files viewed.
+
+### Verification report
+
+**Verification** in the PR bar opens a tab where an agent (Claude Code,
+running on your machine against the PR's checkout) reads the whole change and
+reports: a summary, the files that must be read and why, the risk, and checks
+for completeness, tests, complexity, performance and comments. Its progress
+shows check by check while it runs, and **Cancel** stops it. Every file and
+line in the report opens the diff there.
+
+- A report made for an older head says so, with **Re-run**.
+- If a re-run fails or is cancelled, the last good report stays below the
+  notice.
+- On a large PR you are asked first: the run leaves some files out and costs
+  more.
+
+### Mutation testing
+
+**Mutation testing** (in the PR bar's **⋯**) checks whether the PR's tests
+would notice the code being wrong. Claude Code plans a handful of small,
+deliberate bugs ("mutants") in the code the PR changes, such as a flipped
+comparison or a dropped guard. Then Yarvis runs the PR's own tests against
+each one, in a scratch copy of the checkout. A mutant the tests don't notice
+is a gap in them.
+
+It runs the PR's code, so it waits for that to be allowed:
+
+- Until you've agreed to the PR's setup script for its current commit, and
+  setup has finished, the tab says why it can't start, with **Review the
+  setup script…** to open the prompt (see
+  [Running the setup script](#running-the-setup-script)).
+- When the repo has no setup script, the tab asks you to confirm running the
+  tests without one first.
+
+Before a pass starts, the tab says how many mutants it may try, what planning
+and explaining can cost (set under **Settings → PR review**), and what the test
+sandbox does: no network beyond your machine, writes only to the scratch copy
+and a temp folder, and no reading your home folder beyond your toolchains. The
+sandbox is a second line of defence, not a guarantee, and setup itself is not
+sandboxed.
+
+While it runs, the tab shows each phase (copying, planning, the tests as they
+are, a blatant control mutant the tests must catch, each mutant, explaining
+survivors) and each mutant's result as it lands. **Cancel** stops it, keeping
+what it found so far.
+
+The report leads with a verdict (strong, mixed, weak or inconclusive) and how
+many mutants the tests caught. Each surviving mutant follows as a finding: its
+edit as a small diff, the test that should have caught it, the assertion that
+would, and the test output. Caught, unreached, equivalent and inconclusive
+mutants are counted below, folded away. Everything in the report that came
+from the PR, its tests or a model is shown as plain text. A path is a link to
+the diff only when the PR changes that file. A pass made for an older head
+says so, with **Re-run**.
+
+### Tabs
+
+Description, reviewers, checks, comments and the agent tabs stay pinned to the
+left of the strip, in that order, and each one opens once per PR: opening it
+again brings the open tab forward. Files and diffs open to the right of them,
+and also open only once. Opening a file that is already open jumps to the line
+asked for.
+
+- Drag a tab to reorder it. Static tabs stay where they are pinned.
+- Middle-click a tab, or press **Cmd+W**, to close it.
+- When a workspace holds more than one PR, each tab starts with its PR's
+  number (`repo#number` if the PRs come from different repos), in the PR's
+  colour, and has a left edge in that colour.
+
+### Side by side
+
+**Side by side** (or **Cmd+\\**) moves the current tab to a second group on the
+right, so two tabs show at once: a diff beside the description, or the same
+file in two PRs. You can also drag a tab onto the right half of the tab area,
+or onto the other group's strip. Drag the divider to resize. Closing a group's
+last tab folds the split away.
+
+The workspace remembers its open tabs, the split and which tab is showing
+across restarts.
+
+### The PR bar
+
+The bar above the tabs is for the PR whose tab is in front, in its colour. It
+has the same actions as the PRs tab's header: **Ready for review** on a draft,
+**Approve** and **Request changes**, **Merge** or auto-merge when the repo
+allows them, the link to a coding [workspace](workspaces.md) on the PR's
+branch, refresh, open on GitHub or Azure DevOps, and copy link. It also has:
+
+- **Guided review** and **Verification**, which open those tabs (see
+  [Guided review](#guided-review) and [Verification report](#verification-report)).
+- **⋯**, with **Update checkout**, which fetches the PR's latest commits,
+  **Remove from workspace**, which takes the PR and its checkout out, and
+  **Mutation testing**, which opens that tab (see
+  [Mutation testing](#mutation-testing)).
+
+**Unified** / **Split** in the top bar sets how every diff tab lays out.
+
+### Review several PRs together
+
+Paste another PR into the **Add PR** box in the top bar. It gets the next
+colour, its own group in the nav, and its tabs carry its colour. A PR keeps
+its colour for as long as it stays in the workspace.
+
+### Running the setup script
+
+Nothing from a PR runs on your machine until you say so. When the PR's repo
+is registered and has a setup script, the PR's group in the nav says **Setup
+hasn't run · review the script…**. That opens a prompt showing the PR's author,
+its branch (with the fork's owner for a PR from a fork) and commit, and the
+script exactly as it will run.
+
+**Setup is not sandboxed.** The script, and any code from the PR it runs
+(install hooks, build scripts), runs as you, with your files, your
+credentials and your network. Only run it for an author you trust. The prompt
+also lists a few environment variables the script won't get, such as your SSH
+agent, but that is a narrow exception rather than protection.
+
+**Run setup** runs it in the PR's checkout; **Don't run** records the answer
+so you aren't asked again for that PR. If the script or the PR's head changed
+after the prompt opened, the answer is refused and the prompt reloads to show
+what would run now.
+
+Until setup has run, code navigation only uses what is in the checkout, and
+mutation testing stays off.
+
+### Archive
+
+**Archive** in the top bar (or on hover in the list), after you confirm, removes the workspace's
+checkouts and moves it to **Show archived**. The clone each repo was fetched
+into is kept, so the next review of that repo starts faster.
+
+## Reference
+
+### Keyboard shortcuts
+
+| Keys | Does |
+| --- | --- |
+| Ctrl+Tab / Ctrl+Shift+Tab | Next / previous tab on the focused side |
+| Cmd+Option+→ / Cmd+Option+← | Next / previous tab, the same way |
+| Cmd+W | Close the tab |
+| Cmd+\ | Move the tab to the other side, splitting the view if it isn't yet |
+| Option+J / Option+K | Open the next / previous changed file of the PR in front |
+
+They work while the focus is somewhere in the workspace. While you are typing
+in a box (a comment, a reply, the Add PR field), Cmd+W and Option+J / K are
+left to the box. The focused side is the one you last clicked in; its strip
+has an indigo underline when the view is split.
+
+### Where things live
+
+Each repo is cloned once, without file contents until they are needed, under
+your workspaces folder in `.review-repos/`. Each PR gets its own checkout at
+the PR's head under `.review/<workspace>/`. Neither is a coding workspace's
+clone, so reviewing never touches your own branches.

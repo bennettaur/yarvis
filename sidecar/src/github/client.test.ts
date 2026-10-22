@@ -240,6 +240,45 @@ describe("github client", () => {
     expect(st.checks).toEqual({ total: 1, success: 0, failure: 0, pending: 1 });
   });
 
+  it("reads the PR's conversation comments and says when there are more", () => {
+    const base = { number: 5, title: "t", state: "OPEN", reviewThreads: { nodes: [] } };
+    const detail = toPrDetail({
+      ...base,
+      comments: {
+        totalCount: 5,
+        nodes: [
+          null,
+          {
+            id: "IC_1",
+            author: { login: "rev" },
+            body: "Looks good overall",
+            createdAt: "2026-01-02T00:00:00Z",
+            url: "https://github.com/o/r/pull/5#issuecomment-1",
+          },
+          { id: "IC_2", author: null, body: "+1", createdAt: "2026-01-03T00:00:00Z" },
+        ],
+      },
+    });
+    expect(detail.conversation).toEqual([
+      {
+        id: "IC_1",
+        author: "rev",
+        body: "Looks good overall",
+        createdAt: "2026-01-02T00:00:00Z",
+        url: "https://github.com/o/r/pull/5#issuecomment-1",
+      },
+      {
+        id: "IC_2",
+        author: "ghost",
+        body: "+1",
+        createdAt: "2026-01-03T00:00:00Z",
+        url: undefined,
+      },
+    ]);
+    expect(detail.conversationTruncated).toBe(true);
+    expect(toPrDetail(base).conversation).toEqual([]);
+  });
+
   it("normalizes CheckRun and StatusContext into a flat check list", () => {
     const detail = toPrDetail({
       number: 5,

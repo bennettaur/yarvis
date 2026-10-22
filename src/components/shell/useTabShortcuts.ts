@@ -4,7 +4,7 @@ import { NAV_ITEMS, type Tab } from "./nav";
 /** All tabs in rail order — the cycle order. */
 const ORDERED: Tab[] = NAV_ITEMS.map((i) => i.id);
 /** Top (non-pinned) tabs — the Cmd+1..9 targets. */
-const TOP: Tab[] = NAV_ITEMS.filter((i) => !i.pinBottom).map((i) => i.id);
+const TOP: Tab[] = NAV_ITEMS.filter((i) => !i.pinBottom && !i.noDigit).map((i) => i.id);
 
 /**
  * The digit that jumps to `tab`, or null when it has no digit shortcut — the

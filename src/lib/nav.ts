@@ -108,6 +108,36 @@ export function useNewWorkspaceListener(handler: (request: NewWorkspaceRequest) 
   useEffect(() => onNewWorkspace(handler), [handler]);
 }
 
+const OPEN_REVIEW_EVENT = "yarvis:open-review";
+
+/**
+ * A request to show a review workspace on the Review tab, with one of its PRs
+ * brought forward (its description opened) when `prId` is set.
+ */
+export interface OpenReviewRequest {
+  workspaceId: string;
+  prId?: string;
+}
+
+interface OpenReviewEvent extends Event {
+  detail: OpenReviewRequest;
+}
+
+export function requestOpenReview(request: OpenReviewRequest): void {
+  target.dispatchEvent(new CustomEvent(OPEN_REVIEW_EVENT, { detail: request }));
+}
+
+export function onOpenReview(handler: (request: OpenReviewRequest) => void): () => void {
+  const listener = (e: Event) => handler((e as OpenReviewEvent).detail);
+  target.addEventListener(OPEN_REVIEW_EVENT, listener);
+  return () => target.removeEventListener(OPEN_REVIEW_EVENT, listener);
+}
+
+/** React-friendly hook over `onOpenReview` for the App shell. */
+export function useOpenReviewListener(handler: (request: OpenReviewRequest) => void): void {
+  useEffect(() => onOpenReview(handler), [handler]);
+}
+
 const OPEN_PLACE_EVENT = "yarvis:open-place";
 
 interface OpenPlaceEvent extends Event {

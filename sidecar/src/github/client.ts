@@ -348,6 +348,14 @@ export function toPrDetail(pr: any, repo?: any): PrDetail {
     checks: rollupNodes.filter(Boolean).map(toCheckItem),
     reviewers: toReviewers(pr),
     reviewThreads: threadNodes.map(toReviewThread),
+    conversation: (pr.comments?.nodes ?? []).filter(Boolean).map((c: any) => ({
+      id: c.id ?? "",
+      author: c.author?.login ?? "ghost",
+      body: c.body ?? "",
+      createdAt: c.createdAt ?? "",
+      url: c.url ?? undefined,
+    })),
+    conversationTruncated: (pr.comments?.totalCount ?? 0) > (pr.comments?.nodes?.length ?? 0),
   };
 }
 
@@ -760,6 +768,12 @@ query($owner:String!,$repo:String!,$number:Int!,$after:String!){
   }
 }`;
 
+/**
+ * Conversation comments read with the detail: the latest ones, since a PR
+ * with more than this is shown with its recent discussion and a link out.
+ */
+const CONVERSATION_PAGE_SIZE = 100;
+
 const PR_DETAIL_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!){
   repository(owner:$owner,name:$repo){
@@ -787,6 +801,10 @@ query($owner:String!,$repo:String!,$number:Int!){
       reviewThreads(first:${REVIEW_THREAD_PAGE_SIZE}){
         pageInfo{ hasNextPage endCursor }
         nodes{ ${REVIEW_THREAD_FIELDS} }
+      }
+      comments(last:${CONVERSATION_PAGE_SIZE}){
+        totalCount
+        nodes{ id author{login} body createdAt url }
       }
       commits(last:1){
         nodes{ commit{ statusCheckRollup{ contexts(first:100){ nodes{
