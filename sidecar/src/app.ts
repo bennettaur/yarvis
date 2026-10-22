@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { cors } from "hono/cors";
+import { createAgentRunRoutes } from "./agentRuns/routes.ts";
 import { createSpecialistRoutes } from "./agents/routes.ts";
 import { createAttentionIngestRoutes, createAttentionRoutes } from "./attention/routes.ts";
 import { createAzureRoutes } from "./azure/routes.ts";
@@ -169,6 +170,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/heads-down", createHeadsDownRoutes(config));
   app.route("/api/specialists", createSpecialistRoutes(config));
   app.route("/api/jobs", createJobRoutes(config));
+  app.route("/api/agent-runs", createAgentRunRoutes(config));
   app.route("/api/logs", createLogRoutes());
   app.route("/api/attention", createAttentionRoutes(config));
   app.route("/api/questions", createQuestionRoutes(config));
