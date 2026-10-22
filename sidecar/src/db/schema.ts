@@ -1863,7 +1863,7 @@ export type NewScheduledJobRun = typeof scheduledJobRuns.$inferInsert;
  * A headless Claude Code run started by a feature (a verification report, a
  * mutation-testing pass) and streamed to the UI while it works.
  *
- * The live stream is held in memory by `agentRuns/registry.ts`; this row is what
+ * The live stream is held in memory (`agentRuns/service.ts`); this row is what
  * outlasts it — the outcome, and a trimmed copy of the events so a finished run
  * can still be replayed. `instance` names the app instance whose process ran it:
  * only that instance can tell whether a `running` row is still running, so its
@@ -1879,7 +1879,15 @@ export const agentRuns = pgTable(
     targetKey: text("target_key").notNull(),
     /** "running" | "succeeded" | "failed" | "cancelled". */
     status: text("status").notNull(),
+    /** The app instance (`YARVIS_INSTANCE`, "default" for the primary) whose sidecar ran it. */
     instance: text("instance").notNull(),
+    /** The Claude Code process, which leads the run's process group. */
+    pid: integer("pid"),
+    /**
+     * When that process started, as `ps` reports it, so a sweep after a crash
+     * kills the run's leftovers and not whatever has since been given its pid.
+     */
+    pidStartedAt: text("pid_started_at"),
     /** The run's validated structured output, when it produced one. */
     result: jsonb("result"),
     error: text("error"),

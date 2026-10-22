@@ -7,7 +7,17 @@ import { ensureOk, sidecarFetch, streamSSE } from "./api";
  * the outcome, stopping it — is the same for every kind and lives here.
  */
 
-/** Mirrors the sidecar's `AgentRunEvent` (`sidecar/src/agentRuns/events.ts`). */
+/**
+ * What a run reports while it works. Mirrors the sidecar's `AgentRunEvent`
+ * (`sidecar/src/agentRuns/events.ts`).
+ *
+ * `subagentId` on `text` and `tool` is the id of the delegation that produced
+ * it — the `subagent` event with the same `id` — or null for the main agent, so
+ * a view can nest a subagent's work under it.
+ *
+ * A run ends with exactly one of `result` (it succeeded) or `error` (it failed),
+ * unless it was cancelled, and then `done`.
+ */
 export type AgentRunEvent =
   | { type: "status"; message: string }
   | { type: "text"; text: string; subagentId: string | null }
@@ -16,20 +26,25 @@ export type AgentRunEvent =
       type: "subagent";
       phase: "start" | "stop";
       id: string;
+      /** The subagent type, e.g. "general-purpose" or a plugin agent's name. */
       name: string;
       description: string;
+      /** Set on `stop`: whether the delegation ended in an error or never ended. */
       failed?: boolean;
     }
   | {
       type: "result";
+      /** The structured output, validated against the run's schema; null without one. */
       output: unknown;
+      /** The final answer as text. */
       text: string;
       costUsd: number | null;
       durationMs: number | null;
       sessionId: string | null;
     }
   | { type: "error"; message: string }
-  | { type: "done"; status: AgentRunFinalStatus; error: string | null };
+  /** Always the last event of a run. Why a failed run failed is the `error` before it. */
+  | { type: "done"; status: AgentRunFinalStatus };
 
 export type AgentRunFinalStatus = "succeeded" | "failed" | "cancelled";
 export type AgentRunStatus = "running" | AgentRunFinalStatus;
@@ -42,6 +57,7 @@ export interface AgentRun {
   /** The validated structured output, once the run has succeeded. */
   result: unknown;
   error: string | null;
+  /** Claude Code's figure, or an estimate from token usage when it never gave one. */
   costUsd: number | null;
   sessionId: string | null;
   meta: Record<string, unknown>;
@@ -80,12 +96,16 @@ export async function* streamAgentRun(
   for await (const data of streamSSE(`/api/agent-runs/${encodeURIComponent(id)}/events`, {
     signal,
   })) {
+    let frame: AgentRunEvent | { type: "ping" };
     try {
-      yield JSON.parse(data) as AgentRunEvent;
+      frame = JSON.parse(data);
     } catch (e) {
       // One unreadable frame shouldn't end the view of a run that is still going.
       console.warn("[agent-runs] dropped unparseable stream frame:", e);
+      continue;
     }
+    // Pings only keep an idle connection open.
+    if (frame.type !== "ping") yield frame;
   }
 }
 

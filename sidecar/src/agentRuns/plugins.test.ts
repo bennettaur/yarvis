@@ -1,74 +1,45 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { materializePlugin, pluginHash } from "./plugins.ts";
-
-let root: string;
-
-beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "yarvis-plugins-"));
-});
-
-afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
-});
+import { describe, expect, it } from "bun:test";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { writePluginCopy } from "./plugins.ts";
 
 describe("writing out a shipped plugin", () => {
   it("writes the bundled yarvis-review plugin as Claude Code expects to find it", () => {
-    const dir = materializePlugin("yarvis-review", root);
-    expect(dir).toBe(join(root, "yarvis-review"));
-    const manifest = JSON.parse(readFileSync(join(dir, ".claude-plugin", "plugin.json"), "utf8"));
-    expect(manifest.name).toBe("yarvis-review");
-    expect(existsSync(join(dir, "README.md"))).toBe(true);
+    const copy = writePluginCopy("yarvis-review");
+    try {
+      expect(copy.dir.endsWith("/yarvis-review")).toBe(true);
+      const manifest = JSON.parse(
+        readFileSync(join(copy.dir, ".claude-plugin", "plugin.json"), "utf8"),
+      );
+      expect(manifest.name).toBe("yarvis-review");
+      expect(existsSync(join(copy.dir, "README.md"))).toBe(true);
+    } finally {
+      copy.remove();
+    }
   });
 
-  it("leaves an unchanged copy alone", () => {
-    const files = { "agents/a.md": "one" };
-    const dir = materializePlugin("yarvis-review", root, files);
-    const before = statSync(join(dir, "agents", "a.md")).ino;
-    materializePlugin("yarvis-review", root, files);
-    expect(statSync(join(dir, "agents", "a.md")).ino).toBe(before);
+  it("gives each run its own private copy, holding only the listed files", () => {
+    const first = writePluginCopy("yarvis-review", { "agents/a.md": "one" });
+    const second = writePluginCopy("yarvis-review", { "agents/a.md": "one" });
+    try {
+      expect(first.dir).not.toBe(second.dir);
+      expect(readdirSync(join(first.dir, "agents"))).toEqual(["a.md"]);
+      // Only the user can read or change it.
+      expect(statSync(dirname(first.dir)).mode & 0o077).toBe(0);
+    } finally {
+      first.remove();
+      second.remove();
+    }
   });
 
-  it("replaces the copy when the bundled content changes, dropping removed files", () => {
-    const dir = materializePlugin("yarvis-review", root, { "agents/a.md": "one" });
-    materializePlugin("yarvis-review", root, { "agents/b.md": "two" });
-    expect(existsSync(join(dir, "agents", "a.md"))).toBe(false);
-    expect(readFileSync(join(dir, "agents", "b.md"), "utf8")).toBe("two");
-    // Nothing staged or retired is left beside it.
-    expect(readdirSync(root)).toEqual(["yarvis-review"]);
+  it("removes the copy when asked", () => {
+    const copy = writePluginCopy("yarvis-review", { "agents/a.md": "one" });
+    copy.remove();
+    expect(existsSync(dirname(copy.dir))).toBe(false);
   });
 
-  it("rewrites a copy someone edited by hand, since its hash no longer matches what it holds", () => {
-    const dir = materializePlugin("yarvis-review", root, { "agents/a.md": "one" });
-    writeFileSync(join(dir, ".yarvis-content-hash"), "stale\n");
-    writeFileSync(join(dir, "agents", "a.md"), "tampered");
-    materializePlugin("yarvis-review", root, { "agents/a.md": "one" });
-    expect(readFileSync(join(dir, "agents", "a.md"), "utf8")).toBe("one");
-  });
-
-  it("refuses a listed path that leaves the plugin folder", () => {
-    mkdirSync(join(root, "elsewhere"));
-    expect(() => materializePlugin("yarvis-review", root, { "../elsewhere/x.md": "no" })).toThrow(
-      "escapes",
-    );
-    expect(existsSync(join(root, "elsewhere", "x.md"))).toBe(false);
-  });
-});
-
-describe("the content hash", () => {
-  it("changes when a file is renamed, not only when its content does", () => {
-    expect(pluginHash({ "a.md": "x" })).not.toBe(pluginHash({ "b.md": "x" }));
-    expect(pluginHash({ "a.md": "x", "b.md": "y" })).toBe(pluginHash({ "b.md": "y", "a.md": "x" }));
+  it("refuses a listed path that leaves the plugin folder, leaving nothing behind", () => {
+    expect(() => writePluginCopy("yarvis-review", { "../x.md": "no" })).toThrow("escapes");
+    expect(() => writePluginCopy("yarvis-review", { "/etc/x.md": "no" })).toThrow("escapes");
   });
 });

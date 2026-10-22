@@ -156,4 +156,119 @@ describe("summarising a tool call", () => {
       "flaky tests",
     );
   });
+
+  it("redacts a credential a command carries", () => {
+    const summary = summarizeToolInput(
+      "Bash",
+      { command: "curl -H 'Authorization: Bearer abcdefghijklmnopqrstuvwxyz' x" },
+      "/r",
+    );
+    expect(summary).not.toContain("abcdefghijklmnop");
+  });
+});
+
+/** Builds stream-json lines for the delegation cases below. */
+const line = (value: unknown) => JSON.stringify(value);
+const delegate = (id: string, background = false) =>
+  line({
+    type: "assistant",
+    parent_tool_use_id: null,
+    message: {
+      id: `msg_${id}`,
+      content: [
+        {
+          type: "tool_use",
+          id,
+          name: "Agent",
+          input: { subagent_type: "reviewer", description: "look", run_in_background: background },
+        },
+      ],
+    },
+  });
+const toolResult = (id: string, isError = false) =>
+  line({
+    type: "user",
+    parent_tool_use_id: null,
+    message: {
+      content: [{ type: "tool_result", tool_use_id: id, is_error: isError, content: "x" }],
+    },
+  });
+
+describe("delegations", () => {
+  it("marks a delegation that ended in an error as failed", () => {
+    const parser = new StreamJsonParser("/r");
+    parser.parseLine(delegate("t1"));
+    expect(parser.parseLine(toolResult("t1", true)).events).toEqual([
+      {
+        type: "subagent",
+        phase: "stop",
+        id: "t1",
+        name: "reviewer",
+        description: "look",
+        failed: true,
+      },
+    ]);
+  });
+
+  it("waits for a backgrounded delegation's task to end, not its launch result", () => {
+    const parser = new StreamJsonParser("/r");
+    parser.parseLine(delegate("t2", true));
+    parser.parseLine(
+      line({ type: "system", subtype: "task_started", task_id: "task-2", tool_use_id: "t2" }),
+    );
+    expect(parser.parseLine(toolResult("t2")).events).toEqual([]);
+    const ended = parser.parseLine(
+      line({
+        type: "system",
+        subtype: "task_updated",
+        task_id: "task-2",
+        patch: { status: "completed" },
+      }),
+    );
+    expect(ended.events).toMatchObject([
+      { type: "subagent", phase: "stop", id: "t2", failed: false },
+    ]);
+  });
+
+  it("closes delegations still open when the run stops, as failed", () => {
+    const parser = new StreamJsonParser("/r");
+    parser.parseLine(delegate("t3"));
+    expect(parser.closeOpenDelegations()).toMatchObject([
+      { type: "subagent", phase: "stop", id: "t3", failed: true },
+    ]);
+    expect(parser.closeOpenDelegations()).toEqual([]);
+  });
+});
+
+describe("estimating what a run has spent", () => {
+  it("counts each API message once, however many lines repeat its usage", () => {
+    const parser = new StreamJsonParser("/r");
+    const usage = { input_tokens: 1_000_000, output_tokens: 0 };
+    const message = (block: unknown) =>
+      line({
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: { id: "msg_1", model: "claude-opus-5-5", usage, content: [block] },
+      });
+    parser.parseLine(message({ type: "text", text: "a" }));
+    parser.parseLine(message({ type: "text", text: "b" }));
+    expect(parser.estimatedCostUsd).toBeCloseTo(4);
+  });
+
+  it("prices a model it doesn't know at the dearest rates rather than at nothing", () => {
+    const parser = new StreamJsonParser("/r");
+    parser.parseLine(
+      line({
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: {
+          id: "msg_2",
+          model: "claude-future-9",
+          usage: { output_tokens: 1_000_000 },
+          content: [],
+        },
+      }),
+    );
+    expect(parser.estimatedCostUsd).toBeCloseTo(50);
+  });
 });

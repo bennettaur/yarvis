@@ -1,5 +1,5 @@
 {
-  "id": "bfad894b-4a26-4ffe-947e-9a9d0b45bf94",
+  "id": "8bbf33e3-5752-41be-973d-b5cec10074f4",
   "prevId": "e119262c-3a75-4184-b8f0-c03787db5e59",
   "version": "7",
   "dialect": "postgresql",
@@ -145,6 +145,18 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "pid": {
+          "name": "pid",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pid_started_at": {
+          "name": "pid_started_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "result": {
           "name": "result",

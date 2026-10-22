@@ -5,6 +5,9 @@
  * `subagentId` on `text` and `tool` is the id of the delegation that produced
  * it — the `subagent` event with the same `id` — or null for the main agent, so
  * a view can nest a subagent's work under it.
+ *
+ * A run ends with exactly one of `result` (it succeeded) or `error` (it failed),
+ * unless it was cancelled, and then `done`.
  */
 export type AgentRunEvent =
   | { type: "status"; message: string }
@@ -17,7 +20,7 @@ export type AgentRunEvent =
       /** The subagent type, e.g. "general-purpose" or a plugin agent's name. */
       name: string;
       description: string;
-      /** Set on `stop`: whether the delegation ended in an error. */
+      /** Set on `stop`: whether the delegation ended in an error or never ended. */
       failed?: boolean;
     }
   | {
@@ -31,8 +34,8 @@ export type AgentRunEvent =
       sessionId: string | null;
     }
   | { type: "error"; message: string }
-  /** Always the last event of a run. */
-  | { type: "done"; status: AgentRunFinalStatus; error: string | null };
+  /** Always the last event of a run. Why a failed run failed is the `error` before it. */
+  | { type: "done"; status: AgentRunFinalStatus };
 
 export type AgentRunStatus = "running" | AgentRunFinalStatus;
 export type AgentRunFinalStatus = "succeeded" | "failed" | "cancelled";

@@ -10,8 +10,6 @@ import { resetRateLimits } from "../github/rateLimit.ts";
 const dir = mkdtempSync(join(tmpdir(), "yarvis-sidecar-test-"));
 process.env.YARVIS_SETTINGS_PATH = join(dir, "settings.json");
 process.env.YARVIS_AGENTS_DIR = join(dir, "agents");
-process.env.YARVIS_CLAUDE_PLUGINS_DIR = join(dir, "claude-plugins");
-
 // A top-level afterAll in a preload runs once, after every test file.
 // process.on("exit") never fires under bun test.
 afterAll(() => {

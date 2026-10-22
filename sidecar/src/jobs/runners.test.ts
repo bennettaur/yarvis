@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { describe, expect, it } from "bun:test";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../config.ts";
@@ -9,22 +9,6 @@ import { createClaudeCodeRunner, parseClaudeOutput, type SpawnedRun } from "./ru
 
 const config = {} as Config;
 const db = {} as Db;
-
-// The program is read from `~/.yarvis/settings.json`; point the whole suite at a
-// temporary one so it neither reads nor depends on the developer's own.
-let settingsDir: string;
-const previousSettingsPath = process.env.YARVIS_SETTINGS_PATH;
-
-beforeEach(() => {
-  settingsDir = mkdtempSync(join(tmpdir(), "yarvis-runners-settings-"));
-  process.env.YARVIS_SETTINGS_PATH = join(settingsDir, "settings.json");
-});
-
-afterEach(() => {
-  if (previousSettingsPath === undefined) delete process.env.YARVIS_SETTINGS_PATH;
-  else process.env.YARVIS_SETTINGS_PATH = previousSettingsPath;
-  rmSync(settingsDir, { recursive: true, force: true });
-});
 
 function claudeTarget(cwd: string): AgentJobTarget {
   return { kind: "claude-code", cwd, model: null, permissionMode: null };
@@ -88,8 +72,11 @@ describe("the Claude Code runner", () => {
       signal: AbortSignal.timeout(1_000),
     });
     expect(fake.calls[0].args).toContain("--strict-mcp-config");
-    expect(fake.calls[0].args).toContain("--disallowed-tools");
-    expect(fake.calls[0].args).toContain("Task");
+    // Both names Claude Code has given the delegation tool, after the flag.
+    const args = fake.calls[0].args;
+    const denied = args.slice(args.indexOf("--disallowed-tools") + 1);
+    expect(denied).toContain("Task");
+    expect(denied).toContain("Agent");
   });
 
   it("adds the model and permission mode when the job sets them", async () => {

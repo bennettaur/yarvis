@@ -84,10 +84,13 @@ aren't in Postgres, so truncating doesn't reset them. The sidecar preload in
 `sidecar/src/test/setup.ts` points `YARVIS_SETTINGS_PATH` at a temp file and
 `YARVIS_AGENTS_DIR` at an empty temp folder for the whole suite when it runs
 from `sidecar/`, so your own `~/.yarvis/agents` definitions never change what
-the tests load. `YARVIS_CLAUDE_PLUGINS_DIR` gets the same treatment, so a test
-that writes out a shipped Claude Code plugin never touches
-`~/.yarvis/claude-plugins`. A test that writes settings should still set its own path per
+the tests load. A test that writes settings should still set its own path per
 test.
+
+The lockdown on headless agent runs (`sidecar/src/agentRuns/`) is checked
+against the real Claude Code by `bun run sidecar/src/agentRuns/canary.ts`, which
+needs a signed-in `claude` and network access, so no suite runs it. Run it after
+upgrading Claude Code or changing how those runs are started.
 
 Frontend tests use `bun test` with happy-dom. The preload in
 `src/test/setup.ts` registers the DOM, pins the timezone and stubs the Tauri

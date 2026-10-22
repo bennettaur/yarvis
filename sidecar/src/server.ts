@@ -1,4 +1,4 @@
-import { failInterruptedAgentRuns } from "./agentRuns/service.ts";
+import { failInterruptedAgentRuns, pruneAgentRunEvents } from "./agentRuns/service.ts";
 import { syncBuiltins } from "./agentTools/registry.ts";
 import { createApp } from "./app.ts";
 import { browserBridge } from "./browser/bridge.ts";
@@ -160,6 +160,13 @@ if (config.databaseUrl) {
           if (removed > 0) console.log(`[sidecar] swept ${removed} stale PR review guides`);
         })
         .catch((e) => console.error("[sidecar] guide sweep failed:", e));
+      // Same cadence for trimming old agent runs' transcripts: the rows only
+      // grow when a run finishes, and nothing reads a month-old run's text.
+      pruneAgentRunEvents(getDb(config.databaseUrl as string).db)
+        .then((pruned) => {
+          if (pruned > 0) console.log(`[agent-runs] trimmed the text of ${pruned} old runs`);
+        })
+        .catch((e) => console.error("[agent-runs] could not trim old runs:", e));
     })
     .catch((e) => {
       // Redact before storing the message because `/health` (unauthenticated)
