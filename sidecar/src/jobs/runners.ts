@@ -193,8 +193,9 @@ export function createClaudeCodeRunner(launch: ClaudeLauncher = spawnClaude): Ag
     // The two rules `selectTools` enforces for an in-app delegated run hold here
     // too, and Claude Code has to be told: without `--strict-mcp-config` it
     // loads the user's MCP servers plus any `.mcp.json` in the directory the job
-    // names, and `Task` is delegation by another name. Neither belongs in a run
-    // with nobody to approve a tool call.
+    // names, and the delegation tool is delegation by another name — `Agent`
+    // since Claude Code renamed it from `Task`, both denied so neither version
+    // keeps it. Neither belongs in a run with nobody to approve a tool call.
     const args = [
       "-p",
       input.prompt,
@@ -203,6 +204,7 @@ export function createClaudeCodeRunner(launch: ClaudeLauncher = spawnClaude): Ag
       "--strict-mcp-config",
       "--disallowed-tools",
       "Task",
+      "Agent",
     ];
     if (input.target.model) args.push("--model", input.target.model);
     if (input.target.permissionMode) args.push("--permission-mode", input.target.permissionMode);

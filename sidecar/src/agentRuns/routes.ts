@@ -3,9 +3,14 @@ import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import type { RunRegistry } from "../lib/runRegistry.ts";
 import type { AgentRunEvent } from "./events.ts";
-import { type AgentRunRegistry, agentRunRegistry } from "./registry.ts";
-import { cancelAgentRun, getAgentRun, getAgentRunSummary, listAgentRuns } from "./service.ts";
+import {
+  agentRunRegistry,
+  getAgentRunEvents,
+  getAgentRunSummary,
+  listAgentRuns,
+} from "./service.ts";
 
 /**
  * Reading and stopping headless Claude Code runs. Starting one is each
@@ -21,9 +26,16 @@ const listQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 
+/**
+ * How often an idle event stream sends a ping. A run can think for minutes
+ * between events, and an idle connection is closed by Bun (255s) or anything
+ * in between well before that ends.
+ */
+const HEARTBEAT_MS = 25_000;
+
 export function createAgentRunRoutes(
   config: Config,
-  registry: AgentRunRegistry = agentRunRegistry,
+  registry: RunRegistry<AgentRunEvent> = agentRunRegistry,
 ): Hono {
   const router = new Hono();
 
@@ -51,29 +63,37 @@ export function createAgentRunRoutes(
 
   // Streams a run's events as SSE: what it has done so far, then what it does
   // next, ending with a `done` event. A finished run replays its stored events.
+  // `{"type":"ping"}` frames keep an idle connection open and carry nothing.
   // Closing the stream stops following; the run carries on.
   router.get("/:id/events", async (c) => {
     const id = c.req.param("id");
     if (!idSchema.safeParse(id).success) return c.json({ error: "invalid run id" }, 400);
     // Checked before the stream opens so a wrong id is a 404, not an empty stream.
-    if (!registry.isLive(id) && !(await getAgentRun(db(), id))) {
+    if (!registry.isLive(id) && !(await getAgentRunEvents(db(), id))) {
       return c.json({ error: "not found" }, 404);
     }
     return streamSSE(c, async (stream) => {
-      const emit = (event: AgentRunEvent) => stream.writeSSE({ data: JSON.stringify(event) });
+      const write = (event: AgentRunEvent | { type: "ping" }) =>
+        stream.writeSSE({ data: JSON.stringify(event) });
       const gone = new AbortController();
       stream.onAbort(() => gone.abort());
-      if (await registry.follow(id, emit, gone.signal)) return;
-      // Not live here: it finished (or finished between the check above and
-      // now), or it belongs to another instance.
-      const row = await getAgentRun(db(), id);
-      if (!row) return;
-      for (const event of row.events as AgentRunEvent[]) await emit(event);
-      if (row.status === "running") {
-        await emit({
-          type: "error",
-          message: "this run is in progress in another Yarvis instance and can't be followed here",
-        });
+      const heartbeat = setInterval(() => void write({ type: "ping" }), HEARTBEAT_MS);
+      try {
+        if (await registry.follow(id, write, gone.signal)) return;
+        // Not live here: it finished (or finished between the check above and
+        // now), or it belongs to another instance.
+        const stored = await getAgentRunEvents(db(), id);
+        if (!stored) return;
+        for (const event of stored.events) await write(event);
+        if (stored.status === "running") {
+          await write({
+            type: "error",
+            message:
+              "this run is in progress in another Yarvis instance and can't be followed here",
+          });
+        }
+      } finally {
+        clearInterval(heartbeat);
       }
     });
   });
@@ -81,7 +101,7 @@ export function createAgentRunRoutes(
   router.post("/:id/cancel", async (c) => {
     const id = c.req.param("id");
     if (!idSchema.safeParse(id).success) return c.json({ error: "invalid run id" }, 400);
-    if (cancelAgentRun(id, registry)) return c.json({ cancelling: true }, 202);
+    if (registry.cancel(id)) return c.json({ cancelling: true }, 202);
     const run = await getAgentRunSummary(db(), id);
     if (!run) return c.json({ error: "not found" }, 404);
     const error =

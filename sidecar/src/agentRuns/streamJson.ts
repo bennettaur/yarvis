@@ -1,6 +1,7 @@
 import { isAbsolute, relative } from "node:path";
 import { redactSecrets } from "../llm/errors.ts";
 import type { AgentRunEvent } from "./events.ts";
+import { estimateCostUsd, type TokenUsage } from "./pricing.ts";
 
 /**
  * Reads `claude -p --output-format stream-json --verbose`, one JSON object per
@@ -13,13 +14,15 @@ import type { AgentRunEvent } from "./events.ts";
  *
  * - `system`/`init` — the session starting (model, plugins loaded).
  * - `system`/`api_retry` — the API failing and being retried.
- * - `assistant` — a model message: `text` and `tool_use` blocks. A message
- *   from inside a delegation carries the delegating `tool_use` id as
- *   `parent_tool_use_id`.
+ * - `system`/`task_started`, `task_notification`, `task_updated` — a
+ *   delegation's lifecycle, which is the only place a backgrounded one ends.
+ * - `assistant` — a model message: `text` and `tool_use` blocks, and its token
+ *   usage. A message from inside a delegation carries the delegating
+ *   `tool_use` id as `parent_tool_use_id`.
  * - `user` — tool results going back to the model, which is where a
- *   delegation's end shows up.
+ *   foreground delegation's end shows up.
  * - `result` — the run's end: answer, `structured_output` (with
- *   `--json-schema`), cost, duration, session id, `is_error`.
+ *   `--json-schema`), cost, duration, session id, `is_error`, `subtype`.
  *
  * Everything that reaches an event is model- or tool-composed text that is kept
  * and displayed, so it is redacted for credential shapes and capped here.
@@ -32,10 +35,14 @@ const MAX_TEXT_CHARS = 8_000;
 const MAX_SUMMARY_CHARS = 160;
 
 /** The tools Claude Code delegates through; it has used both names. */
-const DELEGATION_TOOLS = new Set(["Agent", "Task"]);
+export const DELEGATION_TOOLS = ["Agent", "Task"] as const;
+const DELEGATION_TOOL_NAMES = new Set<string>(DELEGATION_TOOLS);
 
 /** How `--json-schema` hands back its answer; the `result` line carries it too. */
 const STRUCTURED_OUTPUT_TOOL = "StructuredOutput";
+
+/** Task statuses that mean a delegation is over. */
+const TASK_ENDED = new Set(["completed", "failed", "killed", "cancelled", "stopped", "error"]);
 
 /** The `result` line, before the runner validates its output. */
 export interface ClaudeStreamResult {
@@ -60,11 +67,11 @@ function isObject(value: unknown): value is Json {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function str(value: unknown): string | null {
+function asString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
-function num(value: unknown): number | null {
+function asNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
@@ -83,7 +90,7 @@ function oneLine(text: string, max: number): string {
 export function summarizeToolInput(name: string, input: unknown, cwd: string): string {
   if (!isObject(input)) return "";
   const path = (value: unknown): string | null => {
-    const raw = str(value);
+    const raw = asString(value);
     if (!raw) return null;
     if (!isAbsolute(raw)) return raw;
     const rel = relative(cwd, raw);
@@ -92,7 +99,7 @@ export function summarizeToolInput(name: string, input: unknown, cwd: string): s
   let summary: string | null = null;
   switch (name) {
     case "Bash":
-      summary = str(input.command);
+      summary = asString(input.command);
       break;
     case "Read":
     case "Write":
@@ -103,19 +110,19 @@ export function summarizeToolInput(name: string, input: unknown, cwd: string): s
       break;
     case "Grep":
     case "Glob": {
-      const pattern = str(input.pattern);
+      const pattern = asString(input.pattern);
       const where = path(input.path);
       summary = pattern && where ? `${pattern} in ${where}` : pattern;
       break;
     }
     case "WebFetch":
-      summary = str(input.url);
+      summary = asString(input.url);
       break;
     case "WebSearch":
-      summary = str(input.query);
+      summary = asString(input.query);
       break;
     case "Skill":
-      summary = str(input.skill) ?? str(input.command);
+      summary = asString(input.skill) ?? asString(input.command);
       break;
   }
   if (summary === null) {
@@ -123,20 +130,38 @@ export function summarizeToolInput(name: string, input: unknown, cwd: string): s
     // string argument is usually the one that says what it is doing.
     summary =
       Object.values(input)
-        .map((value) => str(value))
+        .map((value) => asString(value))
         .find((value) => value !== null && value.trim().length > 0) ?? "";
   }
   return oneLine(summary, MAX_SUMMARY_CHARS);
 }
 
+interface OpenDelegation {
+  name: string;
+  description: string;
+  /** A backgrounded delegation's tool result only says it started. */
+  background: boolean;
+}
+
 /**
- * Holds what spans lines — which delegations are open, so a tool result can be
- * recognised as one ending — and turns each line into events.
+ * Holds what spans lines — which delegations are open, what has been spent —
+ * and turns each line into events.
  */
 export class StreamJsonParser {
-  private readonly openDelegations = new Map<string, { name: string; description: string }>();
+  private readonly openDelegations = new Map<string, OpenDelegation>();
+  /** Task ids, which the lifecycle lines use, to the delegating `tool_use` id. */
+  private readonly taskToolUse = new Map<string, string>();
+  /** Estimated cost per API message. Each content block repeats its message's usage. */
+  private readonly messageCosts = new Map<string, number>();
 
   constructor(private readonly cwd: string) {}
+
+  /** What the run has spent so far, from the usage on its messages. */
+  get estimatedCostUsd(): number {
+    let total = 0;
+    for (const cost of this.messageCosts.values()) total += cost;
+    return total;
+  }
 
   parseLine(line: string): ParsedLine {
     const trimmed = line.trim();
@@ -150,49 +175,104 @@ export class StreamJsonParser {
     if (!isObject(message)) return { events: [] };
     switch (message.type) {
       case "system":
-        return { events: this.system(message) };
+        return { events: this.parseSystem(message) };
       case "assistant":
-        return { events: this.assistant(message) };
+        return { events: this.parseAssistant(message) };
       case "user":
-        return { events: this.user(message) };
+        return { events: this.parseUser(message) };
       case "result":
-        return { events: [], result: this.result(message) };
+        return { events: [], result: this.parseResult(message) };
       default:
         return { events: [] };
     }
   }
 
-  private system(message: Json): AgentRunEvent[] {
-    if (message.subtype === "init") {
-      const model = str(message.model);
-      const plugins = Array.isArray(message.plugins)
-        ? message.plugins
-            .map((plugin) => (isObject(plugin) ? str(plugin.name) : str(plugin)))
-            .filter((name): name is string => name !== null)
-        : [];
-      const parts = ["Claude Code started"];
-      if (model) parts.push(`with ${model}`);
-      if (plugins.length > 0) parts.push(`(plugins: ${plugins.join(", ")})`);
-      return [{ type: "status", message: oneLine(parts.join(" "), MAX_SUMMARY_CHARS) }];
+  /**
+   * Ends every delegation still open when the run stops. A run that ends
+   * mid-delegation (cancelled, timed out, killed) never says the subagent
+   * stopped, and a view would show it running forever.
+   */
+  closeOpenDelegations(): AgentRunEvent[] {
+    const events: AgentRunEvent[] = [];
+    for (const id of [...this.openDelegations.keys()]) {
+      const stop = this.stopDelegation(id, true);
+      if (stop) events.push(stop);
     }
-    if (message.subtype === "api_retry") {
-      const attempt = num(message.attempt);
-      const max = num(message.max_retries);
-      const progress = attempt !== null && max !== null ? ` (attempt ${attempt} of ${max})` : "";
-      return [{ type: "status", message: `The API request failed; retrying${progress}` }];
-    }
-    return [];
+    return events;
   }
 
-  private assistant(message: Json): AgentRunEvent[] {
-    const subagentId = str(message.parent_tool_use_id);
-    const content = isObject(message.message) ? message.message.content : null;
+  private stopDelegation(id: string, failed: boolean): AgentRunEvent | null {
+    const delegation = this.openDelegations.get(id);
+    if (!delegation) return null;
+    this.openDelegations.delete(id);
+    const { background: _background, ...shown } = delegation;
+    return { type: "subagent", phase: "stop", id, ...shown, failed };
+  }
+
+  private parseSystem(message: Json): AgentRunEvent[] {
+    switch (message.subtype) {
+      case "init": {
+        const model = asString(message.model);
+        const plugins = Array.isArray(message.plugins)
+          ? message.plugins
+              .map((plugin) => (isObject(plugin) ? asString(plugin.name) : asString(plugin)))
+              .filter((name): name is string => name !== null)
+          : [];
+        const parts = ["Claude Code started"];
+        if (model) parts.push(`with ${model}`);
+        if (plugins.length > 0) parts.push(`(plugins: ${plugins.join(", ")})`);
+        return [{ type: "status", message: oneLine(parts.join(" "), MAX_SUMMARY_CHARS) }];
+      }
+      case "api_retry": {
+        const attempt = asNumber(message.attempt);
+        const max = asNumber(message.max_retries);
+        const progress = attempt !== null && max !== null ? ` (attempt ${attempt} of ${max})` : "";
+        return [{ type: "status", message: `The API request failed; retrying${progress}` }];
+      }
+      case "task_started": {
+        const taskId = asString(message.task_id);
+        const toolUseId = asString(message.tool_use_id);
+        if (taskId && toolUseId) this.taskToolUse.set(taskId, toolUseId);
+        return [];
+      }
+      case "task_notification": {
+        const toolUseId =
+          asString(message.tool_use_id) ?? this.taskToolUse.get(asString(message.task_id) ?? "");
+        const status = asString(message.status);
+        if (!toolUseId || !status || !TASK_ENDED.has(status)) return [];
+        const stop = this.stopDelegation(toolUseId, status !== "completed");
+        return stop ? [stop] : [];
+      }
+      case "task_updated": {
+        const toolUseId = this.taskToolUse.get(asString(message.task_id) ?? "");
+        const status = isObject(message.patch) ? asString(message.patch.status) : null;
+        if (!toolUseId || !status || !TASK_ENDED.has(status)) return [];
+        const stop = this.stopDelegation(toolUseId, status !== "completed");
+        return stop ? [stop] : [];
+      }
+      default:
+        return [];
+    }
+  }
+
+  private parseAssistant(message: Json): AgentRunEvent[] {
+    const subagentId = asString(message.parent_tool_use_id);
+    const body = isObject(message.message) ? message.message : null;
+    if (!body) return [];
+    const messageId = asString(body.id);
+    if (messageId && isObject(body.usage)) {
+      this.messageCosts.set(
+        messageId,
+        estimateCostUsd(asString(body.model), body.usage as TokenUsage),
+      );
+    }
+    const content = body.content;
     if (!Array.isArray(content)) return [];
     const events: AgentRunEvent[] = [];
     for (const block of content) {
       if (!isObject(block)) continue;
       if (block.type === "text") {
-        const text = str(block.text)?.trim();
+        const text = asString(block.text)?.trim();
         if (text) {
           events.push({
             type: "text",
@@ -201,16 +281,19 @@ export class StreamJsonParser {
           });
         }
       } else if (block.type === "tool_use") {
-        const id = str(block.id);
-        const name = str(block.name);
+        const id = asString(block.id);
+        const name = asString(block.name);
         if (!id || !name || name === STRUCTURED_OUTPUT_TOOL) continue;
-        if (DELEGATION_TOOLS.has(name)) {
+        if (DELEGATION_TOOL_NAMES.has(name)) {
           const input = isObject(block.input) ? block.input : {};
           const delegation = {
-            name: oneLine(str(input.subagent_type) ?? "general-purpose", MAX_SUMMARY_CHARS),
-            description: oneLine(str(input.description) ?? "", MAX_SUMMARY_CHARS),
+            name: oneLine(asString(input.subagent_type) ?? "general-purpose", MAX_SUMMARY_CHARS),
+            description: oneLine(asString(input.description) ?? "", MAX_SUMMARY_CHARS),
           };
-          this.openDelegations.set(id, delegation);
+          this.openDelegations.set(id, {
+            ...delegation,
+            background: input.run_in_background === true,
+          });
           events.push({ type: "subagent", phase: "start", id, ...delegation });
         } else {
           events.push({
@@ -226,36 +309,29 @@ export class StreamJsonParser {
     return events;
   }
 
-  private user(message: Json): AgentRunEvent[] {
+  private parseUser(message: Json): AgentRunEvent[] {
     const content = isObject(message.message) ? message.message.content : null;
     if (!Array.isArray(content)) return [];
     const events: AgentRunEvent[] = [];
     for (const block of content) {
       if (!isObject(block) || block.type !== "tool_result") continue;
-      const id = str(block.tool_use_id);
-      const delegation = id ? this.openDelegations.get(id) : undefined;
-      if (!id || !delegation) continue;
-      this.openDelegations.delete(id);
-      events.push({
-        type: "subagent",
-        phase: "stop",
-        id,
-        ...delegation,
-        failed: block.is_error === true,
-      });
+      const id = asString(block.tool_use_id);
+      if (!id || this.openDelegations.get(id)?.background !== false) continue;
+      const stop = this.stopDelegation(id, block.is_error === true);
+      if (stop) events.push(stop);
     }
     return events;
   }
 
-  private result(message: Json): ClaudeStreamResult {
+  private parseResult(message: Json): ClaudeStreamResult {
     return {
       isError: message.is_error === true,
-      subtype: str(message.subtype),
-      text: clip(redactSecrets(str(message.result) ?? ""), MAX_TEXT_CHARS),
+      subtype: asString(message.subtype),
+      text: clip(redactSecrets(asString(message.result) ?? ""), MAX_TEXT_CHARS),
       structuredOutput: message.structured_output ?? null,
-      costUsd: num(message.total_cost_usd),
-      durationMs: num(message.duration_ms),
-      sessionId: str(message.session_id),
+      costUsd: asNumber(message.total_cost_usd),
+      durationMs: asNumber(message.duration_ms),
+      sessionId: asString(message.session_id),
     };
   }
 }

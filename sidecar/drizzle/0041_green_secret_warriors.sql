@@ -4,6 +4,8 @@ CREATE TABLE "agent_runs" (
 	"target_key" text NOT NULL,
 	"status" text NOT NULL,
 	"instance" text NOT NULL,
+	"pid" integer,
+	"pid_started_at" text,
 	"result" jsonb,
 	"error" text,
 	"cost_usd" double precision,
