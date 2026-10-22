@@ -6,8 +6,13 @@
  * The allowlist is about what the *planner* can make the sidecar start, not
  * about the PR's code: every runner here runs code from the PR (a test file, a
  * `package.json` script), which the user consented to and the sandbox
- * contains. What it rules out is a model choosing some other program.
+ * contains. What it rules out is a model choosing some other program, loading
+ * code from somewhere the PR didn't put it (`--require`, `-toolexec`, a config
+ * file), or fetching a package (`npx` of something not installed).
  */
+
+import { lstatSync, realpathSync } from "node:fs";
+import { join, relative } from "node:path";
 
 type Family =
   | "bun"
@@ -66,13 +71,103 @@ export const TEST_RUNNER_PREFIXES = RUNNERS.map((runner) => runner.prefix.join("
 const MAX_ARGS = 40;
 const MAX_ARG_CHARS = 300;
 
-function familyOf(argv: string[]): Family | null {
+/** Node-based runners' flags that load code, a config file or a plugin from a path. */
+const NODE_LOADING_FLAGS = [
+  "require",
+  "r",
+  "import",
+  "loader",
+  "experimental-loader",
+  "e",
+  "eval",
+  "p",
+  "print",
+  "preload",
+  "config",
+  "c",
+  "config-file",
+  "setupFiles",
+  "setup-files",
+  "setupFilesAfterEnv",
+  "globalSetup",
+  "globalTeardown",
+  "testEnvironment",
+  "env",
+  "environment",
+  "reporters",
+  "reporter",
+  "transform",
+  "resolver",
+  "runner",
+  "testRunner",
+  "preset",
+  "projects",
+  "rootDir",
+  "root",
+  "node-options",
+];
+
+/**
+ * Flags refused per runner family, compared without their leading dashes and
+ * any `=value`. Each one loads code, configuration or a plugin from a path the
+ * planner names, or (for npm) runs a shell of its choosing.
+ */
+const LOADING_FLAGS: Record<Family, readonly string[]> = {
+  bun: NODE_LOADING_FLAGS,
+  jest: NODE_LOADING_FLAGS,
+  vitest: NODE_LOADING_FLAGS,
+  mocha: [...NODE_LOADING_FLAGS, "file", "ui", "u"],
+  node: [...NODE_LOADING_FLAGS, "test-reporter", "test-reporter-destination"],
+  script: [
+    ...NODE_LOADING_FLAGS,
+    "userconfig",
+    "globalconfig",
+    "prefix",
+    "script-shell",
+    "workspace",
+    "w",
+  ],
+  pytest: ["p", "c", "config-file", "o", "override-ini", "confcutdir", "rootdir", "pyargs"],
+  go: ["exec", "toolexec", "overlay", "modfile", "pkgdir", "C"],
+  cargo: ["config", "Z", "manifest-path"],
+  rspec: ["r", "require", "I", "options", "default-path"],
+  mix: ["r", "require", "exs"],
+  dotnet: ["logger", "l", "collect", "settings", "s", "test-adapter-path", "a", "diag", "d"],
+};
+
+/** Families whose single-dash flags are long names (`-run`), never bundled letters. */
+const SINGLE_DASH_LONG: ReadonlySet<Family> = new Set(["go"]);
+
+/** Launchers that would fetch a package that isn't installed; run only from node_modules/.bin. */
+const PACKAGE_LAUNCHERS = new Set(["npx", "bunx"]);
+
+function loadingFlagProblem(family: Family, argv: string[], prefixLength: number): string | null {
+  const denied = new Set(LOADING_FLAGS[family]);
+  for (const arg of argv.slice(prefixLength)) {
+    if (arg === "--") continue;
+    if (!arg.startsWith("-")) continue;
+    const name = (arg.split("=")[0] ?? "").replace(/^-+/, "");
+    if (denied.has(name)) return `\`${arg}\` loads code or configuration and isn't allowed`;
+    // A bundled short flag with its value attached: `-rsetup.js`.
+    if (!SINGLE_DASH_LONG.has(family) && /^-[A-Za-z]/.test(arg) && !arg.startsWith("--")) {
+      const letter = arg.slice(1, 2);
+      if (denied.has(letter)) return `\`${arg}\` loads code or configuration and isn't allowed`;
+    }
+  }
+  return null;
+}
+
+function runnerOf(argv: string[]): (typeof RUNNERS)[number] | null {
   // Longest prefix first, so `bun run test` isn't read as `bun …`.
   const matches = RUNNERS.filter(
     (runner) =>
       runner.prefix.length <= argv.length && runner.prefix.every((part, i) => argv[i] === part),
   ).sort((a, b) => b.prefix.length - a.prefix.length);
-  return matches[0]?.family ?? null;
+  return matches[0] ?? null;
+}
+
+function familyOf(argv: string[]): Family | null {
+  return runnerOf(argv)?.family ?? null;
 }
 
 /**
@@ -83,7 +178,8 @@ function familyOf(argv: string[]): Family | null {
 export function testCommandProblem(argv: string[]): string | null {
   if (argv.length === 0) return "the command is empty";
   if (argv.length > MAX_ARGS) return `the command has more than ${MAX_ARGS} arguments`;
-  if (!familyOf(argv)) {
+  const runner = runnerOf(argv);
+  if (!runner) {
     return `\`${argv.slice(0, 3).join(" ")}\` is not an allowed test runner`;
   }
   for (const arg of argv) {
@@ -98,7 +194,34 @@ export function testCommandProblem(argv: string[]): string | null {
       if (part.split(/[\\/]/).includes("..")) return `\`${arg}\` climbs out of the copy`;
     }
   }
-  return null;
+  return loadingFlagProblem(runner.family, argv, runner.prefix.length);
+}
+
+/**
+ * The argv to actually start, once `testCommandProblem` has passed it.
+ * `npx`/`bunx` would download a package that isn't installed, so they are
+ * replaced by the copy's own `node_modules/.bin/<tool>`, which must exist and
+ * stay inside the copy.
+ */
+export function resolveTestCommand(
+  argv: string[],
+  copyRoot: string,
+): { argv: string[] } | { problem: string } {
+  const [launcher, tool, ...rest] = argv;
+  if (!launcher || !PACKAGE_LAUNCHERS.has(launcher) || !tool) return { argv };
+  const root = realpathSync(copyRoot);
+  const bin = join(root, "node_modules", ".bin", tool);
+  try {
+    lstatSync(bin);
+    const target = realpathSync(bin);
+    const inside = relative(root, target);
+    if (inside.startsWith("..") || inside.startsWith("/")) {
+      return { problem: `node_modules/.bin/${tool} leads outside the copy` };
+    }
+  } catch {
+    return { problem: `${tool} isn't installed in the copy (no node_modules/.bin/${tool})` };
+  }
+  return { argv: [bin, ...rest] };
 }
 
 export interface TestCounts {
@@ -146,7 +269,8 @@ const PARSERS: Record<Exclude<Family, "script">, (output: string) => TestCounts 
     return { total, failed: num(last(output, /^(?:ℹ|#) fail (\d+)/m)) ?? 0 };
   },
   pytest(output) {
-    const line = last(output, /^=+ (.*\d+ (?:passed|failed|errors?)\b.*) in [\d.]+s/m);
+    // With or without the ===== rule: `-q` and some addopts print it bare.
+    const line = last(output, /^(?:=+ )?(\d+ (?:passed|failed|errors?)\b.*?) in [\d.]+s/m);
     if (!line) return null;
     const count = (word: string) => num(new RegExp(`(\\d+) ${word}\\b`).exec(line[1] ?? "")) ?? 0;
     const failed = count("failed") + count("errors?");
@@ -178,8 +302,16 @@ const PARSERS: Record<Exclude<Family, "script">, (output: string) => TestCounts 
     return line ? { total: Number(line[1]), failed: Number(line[2]) } : null;
   },
   dotnet(output) {
-    const line = last(output, /Failed:\s+(\d+),\s+Passed:\s+(\d+),.*?Total:\s+(\d+)/);
-    return line ? { total: Number(line[3]), failed: Number(line[1]) } : null;
+    // One summary per test project.
+    let total = 0;
+    let failed = 0;
+    let seen = false;
+    for (const match of output.matchAll(/Failed:\s+(\d+),\s+Passed:\s+(\d+),.*?Total:\s+(\d+)/g)) {
+      seen = true;
+      total += Number(match[3]);
+      failed += Number(match[1]);
+    }
+    return seen ? { total, failed } : null;
   },
 };
 

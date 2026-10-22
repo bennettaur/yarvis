@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,7 +24,11 @@ import { reviewGit } from "./git.ts";
 import type { MutationPlan } from "./mutants.ts";
 import type { MutationTestingConfig } from "./mutationConfig.ts";
 import type { MutationExecution, MutationSummary } from "./mutationReport.ts";
-import { type MutationProgressEvent, mutantCopiesInUse } from "./mutationTesting.ts";
+import {
+  failInterruptedMutationRuns,
+  type MutationProgressEvent,
+  mutantCopiesInUse,
+} from "./mutationTesting.ts";
 import type { ReviewProgressEvent } from "./progress.ts";
 import { createReviewWorkspaceRoutes } from "./routes.ts";
 import type { ReviewDeps } from "./service.ts";
@@ -39,14 +44,16 @@ const config = testConfig(url, "");
 // The test remote's PR changes src/a.ts to "export const a = 2;\nexport const b = 3;\n".
 const PLAN: MutationPlan = {
   testCommands: [{ id: "unit", argv: ["bun", "test", "test/a.test.ts"], testFiles: [] }],
-  positiveControl: {
-    path: "src/a.ts",
-    line: 2,
-    oldText: "b = 3",
-    newText: "b = 30",
-    description: "blatant",
-    testCommandId: "unit",
-  },
+  positiveControls: [
+    {
+      path: "src/a.ts",
+      line: 2,
+      oldText: "b = 3",
+      newText: "b = 30",
+      description: "blatant",
+      testCommandId: "unit",
+    },
+  ],
   mutants: [
     {
       id: "m1",
@@ -125,6 +132,8 @@ const program = fakeClaude(
 /** Mutants whose source holds this text block until the pass is cancelled. */
 let blockOn: string | null;
 let runnerCalls: SandboxedCommand[];
+/** When set, a mutant's test run swaps src/a.ts for a link to this file. */
+let swapOnMutant: string | null;
 
 /**
  * Stands in for the sandboxed test runner: the control is caught, `a = 20`
@@ -133,6 +142,10 @@ let runnerCalls: SandboxedCommand[];
 async function fakeRunner(command: SandboxedCommand): Promise<SandboxedRun> {
   runnerCalls.push(command);
   const source = readFileSync(join(command.cwd, "src", "a.ts"), "utf8");
+  if (swapOnMutant && source.includes("a = 20")) {
+    rmSync(join(command.cwd, "src", "a.ts"));
+    symlinkSync(swapOnMutant, join(command.cwd, "src", "a.ts"));
+  }
   if (blockOn && source.includes(blockOn)) {
     await new Promise<void>((resolve) => command.signal.addEventListener("abort", () => resolve()));
     return { exitCode: 143, output: "", timedOut: false, aborted: true, durationMs: 1 };
@@ -270,6 +283,7 @@ beforeEach(async () => {
   };
   loadGate = null;
   blockOn = null;
+  swapOnMutant = null;
   runnerCalls = [];
   writeAnswers(PLAN);
   rmSync(logDir, { recursive: true, force: true });
@@ -283,7 +297,7 @@ beforeEach(async () => {
       deps,
       mutation: {
         run: { program, instance: "test", registry: agentRegistry },
-        exec: { runner: fakeRunner, checkSandbox: async () => {} },
+        exec: { runner: fakeRunner, checkSandbox: async () => {}, killStrays: async () => [] },
         registry,
         config: async () => settings,
       },
@@ -399,7 +413,9 @@ describe("a pass", () => {
     expect(row.plan).toEqual(PLAN);
     const execution = row.execution as MutationExecution;
     expect(execution.baselines[0]).toMatchObject({ passed: true, testCount: 2 });
-    expect(execution.positiveControl?.outcome).toBe("killed");
+    expect(execution.positiveControls.map((c) => [c.id, c.outcome])).toEqual([
+      ["control-unit", "killed"],
+    ]);
     expect(execution.mutants.map((m) => [m.id, m.outcome])).toEqual([
       ["m1", "survived"],
       ["m2", "killed"],
@@ -456,9 +472,11 @@ describe("a pass", () => {
     const state = (await (await call("GET", `${base}/mutation-testing`)).json()) as {
       run: { id: string; isCurrentHead: boolean; live: boolean };
       blocked: unknown;
+      sandboxNotes: string;
     };
     expect(state.run).toMatchObject({ id: body.runId, isCurrentHead: true, live: false });
     expect(state.blocked).toBeNull();
+    expect(state.sandboxNotes).toContain("second line of defence");
   });
 
   it("skips the explanation when nothing survives", async () => {
@@ -544,6 +562,44 @@ describe("a pass", () => {
     // The PR is free for the next sync.
     expect((await call("POST", `${base}/refresh`)).status).toBe(202);
     await waitForProgress(wsId, prId);
+  });
+
+  it("fails the pass, and still removes the copy, when the tests swap a file for a link", async () => {
+    const { wsId, prId, base, headSha } = await readyPr();
+    await consent(wsId, prId);
+    const target = join(bin, "outside-target.ts");
+    writeFileSync(target, "outside\n");
+    swapOnMutant = target;
+    const row = await finished((await start(base, headSha)).body.runId);
+    expect(row.status).toBe("failed");
+    expect(row.error).toMatch(/could not restore .*src\/a\.ts after a mutant/);
+    expect(readFileSync(target, "utf8")).toBe("outside\n");
+    expect(copiesIn(wsId)).toEqual([]);
+  });
+
+  it("marks this instance's interrupted passes failed at startup, and no one else's", async () => {
+    const { wsId, prId, headSha } = await readyPr();
+    const values = {
+      workspaceId: wsId,
+      prId,
+      refKey: "gh:o/r/1",
+      headSha,
+      status: "running" as const,
+    };
+    const before = new Date(Date.now() - 60_000);
+    await db.insert(mutationRuns).values([
+      { ...values, instance: "test", startedAt: before },
+      { ...values, instance: "other", startedAt: before },
+      { ...values, instance: "test", startedAt: new Date(Date.now() + 60_000) },
+    ]);
+    expect(await failInterruptedMutationRuns(db, "test", new Date())).toBe(1);
+    const rows = await db.select().from(mutationRuns);
+    expect(rows.map((r) => [r.instance, r.status]).sort()).toEqual([
+      ["other", "running"],
+      ["test", "failed"],
+      ["test", "running"],
+    ]);
+    expect(rows.find((r) => r.status === "failed")?.error).toContain("interrupted");
   });
 
   it("reports the latest pass as stale after a push", async () => {

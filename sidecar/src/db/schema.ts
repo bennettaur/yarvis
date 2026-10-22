@@ -2016,6 +2016,10 @@ export const mutationRuns = pgTable(
     instance: text("instance").notNull(),
     /** The model, budget and limits it was started with. */
     settings: jsonb("settings").$type<Record<string, unknown>>().notNull().default({}),
+    /** The test command running now, which leads its own process group. */
+    pid: integer("pid"),
+    /** When that process started, so a sweep after a crash kills only it. */
+    pidStartedAt: text("pid_started_at"),
     planRunId: uuid("plan_run_id"),
     explainRunId: uuid("explain_run_id"),
     /** The planning run's validated output. */

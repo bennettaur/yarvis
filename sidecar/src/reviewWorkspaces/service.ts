@@ -1014,6 +1014,16 @@ export const SETUP_WITHHELD_ENV = [
   "GIT_SSH_COMMAND",
 ] as const;
 
+/**
+ * Said in the consent prompt: agreeing runs the PR's code, and only the tests
+ * mutation testing runs get a sandbox.
+ */
+export const SETUP_SANDBOX_NOTES =
+  "Agreeing runs this pull request's code on your machine as you. The setup script runs without " +
+  "a sandbox, with no provider secrets or SSH agent. Mutation testing later runs its tests in a " +
+  "macOS sandbox (loopback-only network, writes only to a scratch copy, no reads of your " +
+  "credentials); that is a second line of defence, not a reason to run code you don't trust.";
+
 interface SetupInfo {
   script: string | null;
   author: string | null;
@@ -1022,6 +1032,8 @@ interface SetupInfo {
   headSha: string | null;
   /** Environment variables the script will not be given. */
   withheldEnv: readonly string[];
+  /** What runs sandboxed and what doesn't, for the consent prompt to say plainly. */
+  sandboxNotes: string;
   consent: "granted" | "declined" | null;
   /** The head commit `consent` was given for; consent for another head no longer applies. */
   consentHeadSha: string | null;
@@ -1043,6 +1055,7 @@ export async function reviewSetupInfo(
     branch: pr.headRef,
     headSha: pr.headSha,
     withheldEnv: SETUP_WITHHELD_ENV,
+    sandboxNotes: SETUP_SANDBOX_NOTES,
     consent: pr.setupConsent,
     consentHeadSha: pr.setupHeadSha,
     status: pr.setupStatus,

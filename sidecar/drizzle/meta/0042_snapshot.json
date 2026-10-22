@@ -1,5 +1,5 @@
 {
-  "id": "76584b91-e293-4b6f-a4da-12a53669a34e",
+  "id": "bea6fd46-b11c-4c7e-a101-e95f07da7a3a",
   "prevId": "664100ff-5ffc-4646-a908-1a3cbd2b5bd5",
   "version": "7",
   "dialect": "postgresql",
@@ -2645,6 +2645,18 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'{}'::jsonb"
+        },
+        "pid": {
+          "name": "pid",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pid_started_at": {
+          "name": "pid_started_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "plan_run_id": {
           "name": "plan_run_id",

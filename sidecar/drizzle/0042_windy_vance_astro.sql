@@ -8,6 +8,8 @@ CREATE TABLE "mutation_runs" (
 	"phase" text DEFAULT 'copying' NOT NULL,
 	"instance" text NOT NULL,
 	"settings" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"pid" integer,
+	"pid_started_at" text,
 	"plan_run_id" uuid,
 	"explain_run_id" uuid,
 	"plan" jsonb,

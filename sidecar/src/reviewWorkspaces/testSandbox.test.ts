@@ -1,11 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseTestCounts } from "./testCommands.ts";
 import {
   checkSandbox,
+  killStrays,
+  makeRunTempDir,
   runSandboxed,
   type SandboxedCommand,
   type SandboxRunner,
@@ -14,53 +25,105 @@ import {
 } from "./testSandbox.ts";
 
 let root: string;
+/** Where review checkouts live; the copy is one of them. */
+let workspacesRoot: string;
 let cwd: string;
+let otherCheckout: string;
 let tempDir: string;
 let outside: string;
 let home: string;
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "yarvis-sandbox-"));
-  cwd = join(root, "copy");
+  root = realpathSync(mkdtempSync(join(tmpdir(), "yarvis-sandbox-")));
+  workspacesRoot = join(root, "workspaces");
+  cwd = join(workspacesRoot, ".review", "ws", "gh-o-r-1-mutants-x");
+  otherCheckout = join(workspacesRoot, ".review", "other", "gh-o-r-2");
   tempDir = join(root, "tmp");
   outside = join(root, "outside");
   home = join(root, "home");
-  for (const dir of [cwd, tempDir, outside, join(home, ".ssh"), join(home, ".aws")]) {
+  for (const dir of [
+    cwd,
+    otherCheckout,
+    join(workspacesRoot, ".review-repos", "github", "o", "r"),
+    tempDir,
+    outside,
+    join(home, ".ssh"),
+    join(home, ".aws"),
+    join(home, ".config", "gh"),
+    join(home, ".config", "mise"),
+    join(home, "Library", "Keychains"),
+    join(home, "Library", "Python", "3.9"),
+  ]) {
     mkdirSync(dir, { recursive: true });
   }
   writeFileSync(join(home, ".ssh", "id_ed25519"), "PRIVATE KEY\n");
   writeFileSync(join(home, ".aws", "credentials"), "aws_secret_access_key=x\n");
   writeFileSync(join(home, ".netrc"), "machine x password y\n");
+  writeFileSync(join(home, ".zsh_history"), "export TOKEN=hunter2\n");
+  writeFileSync(join(home, ".config", "gh", "hosts.yml"), "oauth_token: gho_x\n");
+  writeFileSync(join(home, ".config", "mise", "config.toml"), "[tools]\n");
+  writeFileSync(join(home, "Library", "Keychains", "login.keychain-db"), "KEYCHAIN\n");
+  writeFileSync(join(home, "Library", "Python", "3.9", "site.txt"), "user site\n");
   writeFileSync(join(home, "notes.txt"), "not a secret\n");
+  writeFileSync(join(otherCheckout, "secret.ts"), "OTHER CHECKOUT\n");
+  writeFileSync(join(workspacesRoot, ".review-repos", "github", "o", "r", "HEAD"), "CLONE\n");
 });
 
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-const sh = (script: string, extra: Partial<SandboxedCommand> = {}) =>
+const sandbox = () => ({ realHome: home, workspacesRoot, extraBlockedPorts: [] as number[] });
+
+const run = (argv: string[], extra: Partial<SandboxedCommand> = {}) =>
   runSandboxed({
-    argv: ["/bin/sh", "-c", script],
+    argv,
     cwd,
     tempDir,
-    timeoutMs: 20_000,
+    timeoutMs: 30_000,
     signal: new AbortController().signal,
-    home,
+    sandbox: sandbox(),
     ...extra,
   });
+const sh = (script: string, extra: Partial<SandboxedCommand> = {}) =>
+  run(["/bin/sh", "-c", script], extra);
 
 describe("the sandbox profile", () => {
-  it("denies the network and every write outside the copy and temp, and the secret paths", () => {
-    const profile = sandboxProfile({ writable: [cwd, tempDir], home });
-    expect(profile).toContain("(deny network*)");
-    expect(profile).toContain("(deny file-write*)");
-    expect(profile).toContain("mDNSResponder");
-    expect(profile).toContain(".ssh");
-    expect(profile).toContain(".claude/.credentials.json");
+  it("denies by default and opens only what tests need", () => {
+    const profile = sandboxProfile({
+      ...sandbox(),
+      copy: cwd,
+      tempDir,
+      extraBlockedPorts: [50000],
+    });
+    expect(profile).toContain("(deny default)");
+    expect(profile).toContain("(deny file-link)");
+    expect(profile).toContain('(remote ip "localhost:49152")');
+    expect(profile).toContain('(remote ip "localhost:65535")');
+    expect(profile).not.toContain('"localhost:50000"');
+    expect(profile).not.toContain('"localhost:5432"');
+    expect(profile).not.toContain('(remote ip "localhost:*")');
+    expect(profile).not.toContain("com.apple.SecurityServer");
+    expect(profile).not.toContain("com.apple.coreservices.launchservicesd");
   });
 
-  it("points the tool caches at the run's temp folder, not the home directory", () => {
-    const env = sandboxEnv({ tempDir: "/tmp/run", home: "/Users/me" });
+  it("refuses a path that could break out of its string", () => {
+    expect(() =>
+      sandboxProfile({
+        ...sandbox(),
+        copy: cwd,
+        tempDir: '/tmp/a")(allow default',
+        extraBlockedPorts: [],
+      }),
+    ).toThrow();
+  });
+});
+
+describe("the environment tests get", () => {
+  it("has a fake home with tool caches in the temp folder, and no agent or secrets", () => {
+    const env = sandboxEnv({ tempDir: "/tmp/run", realHome: home });
+    expect(env.HOME).toBe("/tmp/run/home");
+    expect(env.TMPDIR).toBe("/tmp/run");
     for (const key of [
       "XDG_CACHE_HOME",
       "GOCACHE",
@@ -72,69 +135,161 @@ describe("the sandbox profile", () => {
     ]) {
       expect(env[key]?.startsWith("/tmp/run/")).toBe(true);
     }
-    expect(env.TMPDIR).toBe("/tmp/run");
-    expect(env.GOMODCACHE).toBeUndefined();
+    expect(env.PYTHONDONTWRITEBYTECODE).toBe("1");
+    // Toolchain locations that would be looked up under HOME point at the real ones.
+    expect(env.MISE_CONFIG_DIR).toBe(join(home, ".config", "mise"));
+    expect(env.PYTHONUSERBASE).toBe(join(home, "Library", "Python"));
     expect(env.SSH_AUTH_SOCK).toBeUndefined();
+    expect(env.XDG_CONFIG_HOME).toBeUndefined();
   });
+});
 
-  it("refuses a path that could break out of its string", () => {
-    expect(() => sandboxProfile({ writable: ['/tmp/a")(allow default'] })).toThrow();
+describe("the run's temp folder", () => {
+  it("stays out of a shared /tmp", () => {
+    const fakeHome = join(root, "apphome");
+    const dir = makeRunTempDir("/tmp", fakeHome);
+    expect(dir.startsWith(join(fakeHome, ".yarvis", "mutation-tmp"))).toBe(true);
+    expect(statSync(join(fakeHome, ".yarvis", "mutation-tmp")).mode & 0o077).toBe(0);
+    expect(statSync(dir).mode & 0o077).toBe(0);
+    const normal = makeRunTempDir(root, fakeHome);
+    expect(normal.startsWith(root)).toBe(true);
   });
 });
 
 // sandbox-exec is macOS-only; elsewhere these runs are refused outright.
 describe.skipIf(process.platform !== "darwin")("running a command in the sandbox", () => {
-  it("lets it write in the copy and its temp folder, and nowhere else", async () => {
-    const run = await sh(
-      `echo a > ok.txt && echo b > "$TMPDIR/ok.txt" && echo ok; echo c > "${outside}/bad.txt"; echo d > "$HOME/bad.txt"; true`,
-    );
-    expect(run.exitCode).toBe(0);
-    expect(existsSync(join(cwd, "ok.txt"))).toBe(true);
-    expect(existsSync(join(tempDir, "ok.txt"))).toBe(true);
-    expect(existsSync(join(outside, "bad.txt"))).toBe(false);
-    expect(existsSync(join(home, "bad.txt"))).toBe(false);
-    expect(run.output).toContain("Operation not permitted");
-  });
+  // Each sandboxed run compiles a profile listing every ephemeral port: ~3s.
+  const SLOW = 90_000;
+  it(
+    "lets it write in the copy and its temp folder, and nowhere else",
+    async () => {
+      const result = await sh(
+        `echo a > ok.txt && echo b > "$TMPDIR/ok.txt" && echo c > "$HOME/ok.txt" && echo ok; echo d > "${outside}/bad.txt"; echo e > "${home}/bad.txt"; echo f > "${otherCheckout}/bad.txt"; true`,
+      );
+      expect(result.exitCode).toBe(0);
+      expect(existsSync(join(cwd, "ok.txt"))).toBe(true);
+      expect(existsSync(join(tempDir, "ok.txt"))).toBe(true);
+      expect(existsSync(join(tempDir, "home", "ok.txt"))).toBe(true);
+      for (const bad of [
+        join(outside, "bad.txt"),
+        join(home, "bad.txt"),
+        join(otherCheckout, "bad.txt"),
+      ]) {
+        expect(existsSync(bad)).toBe(false);
+      }
+    },
+    SLOW,
+  );
 
-  it("refuses reads of the home directory's credentials, and allows the rest", async () => {
-    const run = await sh(
-      'cat "$HOME/.ssh/id_ed25519"; cat "$HOME/.aws/credentials"; cat "$HOME/.netrc"; ls "$HOME/.ssh"; cat "$HOME/notes.txt"',
-    );
-    expect(run.output).not.toContain("PRIVATE KEY");
-    expect(run.output).not.toContain("aws_secret_access_key");
-    expect(run.output).not.toContain("password");
-    expect(run.output).toContain("not a secret");
-  });
+  it(
+    "refuses a hard link to a file outside, so nothing is written through it",
+    async () => {
+      writeFileSync(join(outside, "target.txt"), "untouched\n");
+      const result = await sh(
+        `ln "${outside}/target.txt" link.txt; echo escaped >> link.txt; true`,
+      );
+      expect(result.output).toContain("Operation not permitted");
+      expect(readFileSync(join(outside, "target.txt"), "utf8")).toBe("untouched\n");
+    },
+    SLOW,
+  );
 
-  it("refuses the network and DNS, but not loopback", async () => {
-    // 192.0.2.1 is TEST-NET-1 (RFC 5737): never routed, so nothing could leave
-    // even if the sandbox let it; a denial shows as EPERM at once.
-    const script = [
-      "import errno, socket",
-      "try:",
-      "    socket.create_connection(('192.0.2.1', 443), timeout=3); print('remote: connected')",
-      "except OSError as e:",
-      "    print('remote:', 'denied' if e.errno == errno.EPERM else e)",
-      "try:",
-      "    socket.getaddrinfo('example.com', 443); print('dns: resolved')",
-      "except OSError as e:",
-      "    print('dns: failed')",
-      "s = socket.socket(); s.bind(('127.0.0.1', 0)); s.listen()",
-      "socket.create_connection(('127.0.0.1', s.getsockname()[1]), timeout=3); print('loopback: ok')",
-    ].join("\n");
-    writeFileSync(join(cwd, "net.py"), script);
-    const run = await runSandboxed({
-      argv: ["/usr/bin/python3", "net.py"],
-      cwd,
-      tempDir,
-      timeoutMs: 20_000,
-      signal: new AbortController().signal,
-      home,
-    });
-    expect(run.output).toContain("remote: denied");
-    expect(run.output).toContain("dns: failed");
-    expect(run.output).toContain("loopback: ok");
-  });
+  it(
+    "refuses reads of credentials, private config, ~/Library and other checkouts",
+    async () => {
+      const paths = [
+        ".ssh/id_ed25519",
+        ".aws/credentials",
+        ".netrc",
+        ".zsh_history",
+        ".config/gh/hosts.yml",
+        "Library/Keychains/login.keychain-db",
+      ].map((p) => `"${join(home, p)}"`);
+      const result = await sh(
+        `cat ${paths.join(" ")} "${otherCheckout}/secret.ts" "${workspacesRoot}/.review-repos/github/o/r/HEAD"; cat "${home}/notes.txt" "${home}/.config/mise/config.toml" "${home}/Library/Python/3.9/site.txt"`,
+      );
+      for (const secret of [
+        "PRIVATE KEY",
+        "aws_secret_access_key",
+        "password",
+        "hunter2",
+        "gho_x",
+        "KEYCHAIN",
+        "OTHER CHECKOUT",
+        "CLONE",
+      ]) {
+        expect(result.output).not.toContain(secret);
+      }
+      expect(result.output).toContain("not a secret");
+      expect(result.output).toContain("[tools]");
+      expect(result.output).toContain("user site");
+    },
+    SLOW,
+  );
+
+  it(
+    "refuses the network and DNS, and loopback but to the ephemeral range",
+    async () => {
+      // 192.0.2.1 is TEST-NET-1 (RFC 5737): never routed, so nothing could leave
+      // even if the sandbox let it; a denial shows as EPERM at once.
+      const script = [
+        "import errno, socket",
+        "def attempt(label, fn):",
+        "    try:",
+        "        fn(); print(label, 'ok')",
+        "    except OSError as e:",
+        "        print(label, 'denied' if e.errno == errno.EPERM else f'failed {e}')",
+        "attempt('remote', lambda: socket.create_connection(('192.0.2.1', 443), timeout=3))",
+        "try:",
+        "    socket.getaddrinfo('example.com', 443); print('dns ok')",
+        "except OSError:",
+        "    print('dns failed')",
+        "eph = socket.socket(); eph.bind(('127.0.0.1', 0)); eph.listen()",
+        "attempt('ephemeral', lambda: socket.create_connection(('127.0.0.1', eph.getsockname()[1]), timeout=3))",
+        "fixed = socket.socket(); fixed.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)",
+        "fixed.bind(('127.0.0.1', 23456)); fixed.listen()",
+        "attempt('fixed', lambda: socket.create_connection(('127.0.0.1', 23456), timeout=3))",
+        "srv = socket.socket(socket.AF_UNIX); srv.bind('s.sock'); srv.listen()",
+        "attempt('unix-inside', lambda: socket.socket(socket.AF_UNIX).connect('s.sock'))",
+        "attempt('unix-outside', lambda: socket.socket(socket.AF_UNIX).connect('/private/var/run/mDNSResponder'))",
+      ].join("\n");
+      writeFileSync(join(cwd, "net.py"), script);
+      const result = await run(["/usr/bin/python3", "net.py"]);
+      expect(result.output).toContain("remote denied");
+      expect(result.output).toContain("dns failed");
+      expect(result.output).toContain("ephemeral ok");
+      expect(result.output).toContain("fixed denied");
+      expect(result.output).toContain("unix-inside ok");
+      expect(result.output).toContain("unix-outside denied");
+    },
+    SLOW,
+  );
+
+  it(
+    "kills the whole process group on a timeout",
+    async () => {
+      const started = Date.now();
+      const result = await sh("sleep 30 & sleep 30", { timeoutMs: 300 });
+      expect(result.timedOut).toBe(true);
+      expect(Date.now() - started).toBeLessThan(10_000);
+    },
+    SLOW,
+  );
+
+  it(
+    "doesn't wait on a process that left the group holding its output, and the sweep kills it",
+    async () => {
+      const started = Date.now();
+      const result = await sh(`/usr/bin/perl -e 'setpgrp(0, 0); sleep 30' & echo started`);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain("started");
+      expect(Date.now() - started).toBeLessThan(15_000);
+      const killed = await killStrays([cwd, tempDir]);
+      expect(killed.length).toBeGreaterThan(0);
+      expect(await killStrays([cwd, tempDir])).toEqual([]);
+    },
+    SLOW,
+  );
 
   // Go writes its build cache under ~/Library/Caches by default, which the
   // sandbox refuses; GOCACHE in the run's temp folder is what lets it build.
@@ -151,45 +306,37 @@ describe.skipIf(process.platform !== "darwin")("running a command in the sandbox
         'package pricing\n\nimport "testing"\n\nfunc TestFee(t *testing.T) {\n\tif Fee(50) != 0 {\n\t\tt.Fatal("fee")\n\t}\n}\n',
       );
       const argv = ["go", "test", "-v", "./..."];
-      const run = await runSandboxed({
-        argv,
-        cwd,
-        tempDir,
+      const result = await run(argv, {
         timeoutMs: 120_000,
-        signal: new AbortController().signal,
-        home,
+        sandbox: { ...sandbox(), realHome: process.env.HOME as string },
       });
-      expect(run.exitCode).toBe(0);
-      expect(parseTestCounts(argv, run.output)).toEqual({ total: 1, failed: 0 });
+      expect(result.exitCode).toBe(0);
+      expect(parseTestCounts(argv, result.output)).toEqual({ total: 1, failed: 0 });
       expect(existsSync(join(tempDir, "go-build"))).toBe(true);
     },
+    SLOW,
   );
 
-  it("kills the whole process group on a timeout", async () => {
-    const started = Date.now();
-    const run = await sh("sleep 30 & sleep 30", { timeoutMs: 300 });
-    expect(run.timedOut).toBe(true);
-    expect(Date.now() - started).toBeLessThan(10_000);
-  });
-
-  it("passes the startup check, which an unsandboxed runner fails", async () => {
-    await checkSandbox(runSandboxed, { cwd, tempDir, outside });
-    const unsandboxed: SandboxRunner = async (command) => {
-      const result = spawnSync(command.argv[0] as string, command.argv.slice(1), {
-        cwd: command.cwd,
-        encoding: "utf8",
-      });
-      return {
-        exitCode: result.status,
+  it(
+    "passes the startup check, which an unsandboxed runner fails",
+    async () => {
+      await checkSandbox(runSandboxed, { cwd, tempDir, outside }, sandbox());
+      // A runner that let everything through, as its probe output would show.
+      // (Not a real unsandboxed run: that would submit a launchd job for real.)
+      const unsandboxed: SandboxRunner = async () => ({
+        exitCode: 0,
         timedOut: false,
         aborted: false,
         durationMs: 0,
-        output: `${result.stdout}${result.stderr}`,
-      };
-    };
-    await expect(checkSandbox(unsandboxed, { cwd, tempDir, outside })).rejects.toThrow(
-      "was not refused",
-    );
-    expect(existsSync(join(outside, `.yarvis-sandbox-probe-${process.pid}`))).toBe(false);
-  });
+        output: ["@@secret|0|id_ed25519", "@@network|0|Connection to 192.0.2.1 succeeded"].join(
+          "\n",
+        ),
+      });
+      await expect(checkSandbox(unsandboxed, { cwd, tempDir, outside }, sandbox())).rejects.toThrow(
+        "was not refused",
+      );
+      expect(readdirSync(outside)).toEqual([]);
+    },
+    SLOW,
+  );
 });
