@@ -538,6 +538,10 @@ back to ad-hoc.
   PRs) don't belong in an unattended run. `lockedDownSettings` applies instead:
   no hooks or auto-memory, a deny list for publishing and the network, and Bash
   in a network-less sandbox that refuses to run when the sandbox can't start.
+  The home directory's credentials (`SECRET_HOME_PATHS`: SSH and cloud keys,
+  `~/.yarvis`, Claude Code's own) are denied twice — `Read(…)` rules for the
+  Read tool, `sandbox.filesystem.denyRead` for whatever Bash runs, since a test
+  suite's own file reads never pass through the rules.
   The permission mode is always set and never one that approves on its own, a
   budget is required, the prompt goes on stdin, a fixed guardrail says the
   checkout is material rather than instructions (`spotlight` fences PR text a
