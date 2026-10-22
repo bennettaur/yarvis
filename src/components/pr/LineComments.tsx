@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { postPrComment } from "../../lib/pr/api";
 import { invalidate, prDetailKey } from "../../lib/pr/cache";
 import type { DiffSide, PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
-import { CommentComposer, describeLines, ThreadView } from "./ThreadView";
+import { CommentComposer, describeLines, needsLineLabel, ThreadView } from "./ThreadView";
 import { comparableBody, type ThreadActions, useThreadActions } from "./useThreadActions";
 
 /**
@@ -105,8 +105,7 @@ export function useLineComments(prRef: PrRef, file: PrFile, threads: ReviewThrea
       path: file.filename,
       line: target.line,
       body,
-      // Sent only when it isn't the default, so a plain right-side comment
-      // posts exactly what it always has.
+      // Left out when it is the provider's default (the new file, one line).
       ...(target.side === "LEFT" ? { side: "LEFT" as const } : {}),
       ...(target.startLine != null ? { startLine: target.startLine } : {}),
     });
@@ -161,11 +160,11 @@ export function hasLineComments(
  * otherwise show up as a blank gap between consecutive rows.
  */
 export function LineCommentBlock({
-  side = "RIGHT",
+  side,
   line,
   comments,
 }: {
-  side?: DiffSide;
+  side: DiffSide;
   line: number | null;
   comments: LineComments;
 }) {
@@ -180,8 +179,9 @@ export function LineCommentBlock({
   return (
     <div className="space-y-2 px-3 py-2 font-sans">
       {threads?.map((t, i) => (
-        // Ids are empty only on data from before ids were carried.
-        <ThreadView key={t.id || `t-${i}`} {...comments.threadActions.viewProps(t)} />
+        // A provider can leave a thread's id off (Azure does on some threads),
+        // and then its position stands in for it.
+        <ThreadView key={t.id || `at-${i}`} {...comments.threadActions.viewProps(t)} />
       ))}
       {pending.map((p) => (
         <div
@@ -194,13 +194,7 @@ export function LineCommentBlock({
       ))}
       {target && (
         <CommentComposer
-          // A plain comment on the new file needs no label; anything else says
-          // what it will be attached to before it is posted.
-          label={
-            target.startLine != null || side === "LEFT"
-              ? `Commenting on ${describeLines(target.line, target.startLine, side)}`
-              : undefined
-          }
+          label={needsLineLabel(target) ? `Commenting on ${describeLines(target)}` : undefined}
           onSubmit={(body) => comments.submit(target, body)}
           onCancel={comments.closeComposer}
         />

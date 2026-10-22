@@ -76,13 +76,13 @@ const commentSchema = z
   // Within one file a range runs downwards. Across the two (a range starting in
   // the old file and ending in the new) the numbers aren't comparable, so only
   // GitHub can judge it.
-  .refine(
-    (c) =>
-      c.startLine == null ||
-      (c.startSide ?? c.side ?? "RIGHT") !== (c.side ?? "RIGHT") ||
-      c.startLine < c.line,
-    "startLine must come before line",
-  )
+  .refine((c) => {
+    if (c.startLine == null) return true;
+    const endSide = c.side ?? "RIGHT";
+    const startSide = c.startSide ?? endSide;
+    const crossesSides = startSide !== endSide;
+    return crossesSides || c.startLine < c.line;
+  }, "startLine must come before line")
   .refine((c) => c.startSide == null || c.startLine != null, "startSide needs a startLine");
 
 /**
@@ -470,13 +470,17 @@ export function createGithubRoutes(config: Config): Hono {
   });
 
   /** The PR plus the thread a thread route addresses, or why they're invalid. */
-  function parseThreadParams(c: Context) {
-    const { owner = "", repo = "", number = "" } = c.req.param();
-    const params = parsePrParams(owner, repo, number);
-    if ("error" in params) return params;
-    const threadId = threadIdParam.safeParse(c.req.param("threadId"));
-    if (!threadId.success) return { error: threadId.error.flatten() };
-    return { ...params, threadId: threadId.data };
+  function parseThreadParams(
+    c: Context,
+  ):
+    | { ref: { owner: string; repo: string; number: number }; threadId: string }
+    | { error: unknown } {
+    const { owner = "", repo = "", number = "", threadId = "" } = c.req.param();
+    const ref = parsePrParams(owner, repo, number);
+    if ("error" in ref) return ref;
+    const parsedThreadId = threadIdParam.safeParse(threadId);
+    if (!parsedThreadId.success) return { error: parsedThreadId.error.flatten() };
+    return { ref, threadId: parsedThreadId.data };
   }
 
   // Reply to an existing review thread.
@@ -493,7 +497,7 @@ export function createGithubRoutes(config: Config): Hono {
         type: "pr.commented",
         source: "github",
         payload: {
-          ref: refKey({ provider: "github", ...params }),
+          ref: refKey({ provider: "github", ...params.ref }),
           reply: true,
         },
       });

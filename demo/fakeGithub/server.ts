@@ -65,6 +65,57 @@ function rollupState(pr: FakePull): "SUCCESS" | "FAILURE" | "PENDING" {
   return "SUCCESS";
 }
 
+const threadId = (pr: FakePull, index: number) => `PRRT_${pr.number}_${index}`;
+
+interface FakeReply {
+  id: string;
+  author: { login: string };
+  body: string;
+  createdAt: string;
+}
+
+/**
+ * What a demo flow has done to the review threads: replies and resolve state,
+ * by thread id. Kept for the life of the process, so a reply posted in a flow
+ * shows on the refetch that follows it.
+ */
+const threadState = new Map<string, { resolved: boolean; replies: FakeReply[] }>();
+
+function stateOf(id: string) {
+  let state = threadState.get(id);
+  if (!state) {
+    state = { resolved: false, replies: [] };
+    threadState.set(id, state);
+  }
+  return state;
+}
+
+/** The thread mutations, or null for any other mutation. */
+function threadMutation(query: string, variables: Record<string, unknown>): FakeResponse | null {
+  const id = String(variables.id ?? "");
+  if (query.includes("addPullRequestReviewThreadReply")) {
+    const replies = stateOf(id).replies;
+    const reply = {
+      id: `${id}_reply_${replies.length}`,
+      author: { login: VIEWER },
+      body: String(variables.body ?? ""),
+      createdAt: new Date().toISOString(),
+    };
+    replies.push(reply);
+    return { json: { data: { addPullRequestReviewThreadReply: { comment: { id: reply.id } } } } };
+  }
+  // `unresolveReviewThread` contains `resolveReviewThread`, so it is checked first.
+  if (query.includes("unresolveReviewThread")) {
+    stateOf(id).resolved = false;
+    return { json: { data: { unresolveReviewThread: { thread: { id } } } } };
+  }
+  if (query.includes("resolveReviewThread")) {
+    stateOf(id).resolved = true;
+    return { json: { data: { resolveReviewThread: { thread: { id } } } } };
+  }
+  return null;
+}
+
 /** A pull request as the GraphQL queries read it: the fields any of them selects. */
 function toGraphqlPull(pr: FakePull) {
   return {
@@ -103,27 +154,32 @@ function toGraphqlPull(pr: FakePull) {
       nodes: pr.reviews[VIEWER] ? [{ state: pr.reviews[VIEWER] }] : [],
     },
     reviewThreads: {
-      nodes: pr.reviewThreads.map((t, i) => ({
-        id: `PRRT_${pr.number}_${i}`,
-        isResolved: false,
-        isOutdated: false,
-        diffSide: "RIGHT",
-        viewerCanReply: true,
-        viewerCanResolve: true,
-        viewerCanUnresolve: true,
-        path: t.path,
-        line: t.line,
-        comments: {
-          nodes: [
-            {
-              id: `PRRC_${pr.number}_${i}`,
-              author: { login: t.author },
-              body: t.body,
-              createdAt: pr.updatedAt,
-            },
-          ],
-        },
-      })),
+      nodes: pr.reviewThreads.map((t, i) => {
+        const id = threadId(pr, i);
+        const state = threadState.get(id);
+        return {
+          id,
+          isResolved: state?.resolved ?? false,
+          isOutdated: false,
+          diffSide: "RIGHT",
+          viewerCanReply: true,
+          viewerCanResolve: true,
+          viewerCanUnresolve: true,
+          path: t.path,
+          line: t.line,
+          comments: {
+            nodes: [
+              {
+                id: `PRRC_${pr.number}_${i}`,
+                author: { login: t.author },
+                body: t.body,
+                createdAt: pr.updatedAt,
+              },
+              ...(state?.replies ?? []),
+            ],
+          },
+        };
+      }),
     },
     commits: {
       nodes: [
@@ -157,8 +213,12 @@ function handleGraphql(body: unknown): FakeResponse {
     query?: string;
     variables?: Record<string, unknown>;
   };
-  // Mutations (merge, auto-merge, marking a file viewed) succeed without changing anything.
-  if (query.trimStart().startsWith("mutation")) return { json: { data: {} } };
+  if (query.trimStart().startsWith("mutation")) {
+    // Thread replies and resolving are kept, so the review shows them. Other
+    // mutations (merge, auto-merge, marking a file viewed) succeed without
+    // changing anything.
+    return threadMutation(query, variables) ?? { json: { data: {} } };
+  }
 
   // Which query reads which key:
   //   viewer                   the viewer lookup

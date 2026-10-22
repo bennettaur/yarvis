@@ -79,29 +79,33 @@ export const fetchPrFileContent = (ref: PrRef, path: string, sha: string): Promi
 export const postPrComment = (ref: PrRef, comment: NewComment): Promise<{ ok: boolean }> =>
   ref.provider === "github" ? ghPostComment(ref, comment) : azPostComment(ref, comment);
 
+/** An Azure comment id as the number Azure gave it, or undefined when there isn't one. */
+function azureCommentId(id: string | undefined): number | undefined {
+  return id && /^\d+$/.test(id) ? Number(id) : undefined;
+}
+
 /**
- * Replies to a review thread. Azure threads a reply under a parent comment; the
- * thread's first one is what Azure's own UI answers.
+ * Replies to a review thread. Azure threads a reply under a parent comment: the
+ * thread's first one, named when its id is known and otherwise left to the
+ * sidecar's default.
  */
-export function replyToPrThread(
+export const replyToPrThread = (
   ref: PrRef,
   thread: Pick<ReviewThread, "id" | "comments">,
   body: string,
-): Promise<{ ok: boolean }> {
-  if (ref.provider === "github") return ghReplyToThread(ref, thread.id, body);
-  const parent = Number(thread.comments[0]?.id);
-  return azReplyToThread(ref, thread.id, body, Number.isInteger(parent) ? parent : undefined);
-}
-
-export const resolvePrThread = (ref: PrRef, threadId: string): Promise<{ ok: boolean }> =>
+): Promise<{ ok: boolean }> =>
   ref.provider === "github"
-    ? ghSetThreadResolved(ref, threadId, true)
-    : azSetThreadResolved(ref, threadId, true);
+    ? ghReplyToThread(ref, thread.id, body)
+    : azReplyToThread(ref, thread.id, body, azureCommentId(thread.comments[0]?.id));
 
-export const unresolvePrThread = (ref: PrRef, threadId: string): Promise<{ ok: boolean }> =>
+export const setPrThreadResolved = (
+  ref: PrRef,
+  threadId: string,
+  resolved: boolean,
+): Promise<{ ok: boolean }> =>
   ref.provider === "github"
-    ? ghSetThreadResolved(ref, threadId, false)
-    : azSetThreadResolved(ref, threadId, false);
+    ? ghSetThreadResolved(ref, threadId, resolved)
+    : azSetThreadResolved(ref, threadId, resolved);
 
 export const addStar = (ref: PrRef, title?: string | null, url?: string | null) =>
   ref.provider === "github" ? ghAddStar(ref, title, url) : azAddStar(ref, title, url);

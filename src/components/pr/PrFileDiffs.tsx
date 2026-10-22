@@ -103,7 +103,7 @@ export function DiffBody({
         const rightLine = row.rightLine;
         const leftLine = row.leftLine;
         // A line that exists only in the old file is commented on there; every
-        // other line takes its comments on the new file, as before.
+        // other line takes its comments on the new file.
         const commentAt =
           rightLine != null
             ? { side: "RIGHT" as const, line: rightLine }

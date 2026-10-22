@@ -157,16 +157,44 @@ describe("github comment thread routes", () => {
     expect(res.status).toBe(400);
   });
 
-  it("resolves a thread through GitHub's mutation", async () => {
+  /** Stubs GitHub's GraphQL endpoint with `reply`, recording each request. */
+  function githubAnswers(reply: unknown) {
     const sent: { query: string; variables: unknown }[] = [];
     globalThis.fetch = (async (_url: string, init?: RequestInit) => {
       sent.push(JSON.parse(String(init?.body)));
-      return new Response(JSON.stringify({ data: {} }), { status: 200 });
+      return new Response(JSON.stringify(reply), { status: 200 });
     }) as unknown as typeof fetch;
+    return sent;
+  }
+
+  it("resolves a thread through GitHub's mutation", async () => {
+    const sent = githubAnswers({ data: {} });
     const res = await post("/threads/PRRT_1/resolve");
     expect(res.status).toBe(200);
     expect(sent[0]!.query).toContain("resolveReviewThread");
     expect(sent[0]!.variables).toEqual({ id: "PRRT_1" });
+  });
+
+  it("reopens a thread through GitHub's mutation", async () => {
+    const sent = githubAnswers({ data: {} });
+    const res = await post("/threads/PRRT_1/unresolve");
+    expect(res.status).toBe(200);
+    expect(sent[0]!.query).toContain("unresolveReviewThread");
+  });
+
+  it("posts a reply and answers 201", async () => {
+    const sent = githubAnswers({ data: {} });
+    const res = await post("/threads/PRRT_1/replies", { body: "done" });
+    expect(res.status).toBe(201);
+    expect(sent[0]!.query).toContain("addPullRequestReviewThreadReply");
+    expect(sent[0]!.variables).toEqual({ id: "PRRT_1", body: "done" });
+  });
+
+  it("passes GitHub refusing a mutation through as forbidden", async () => {
+    githubAnswers({ errors: [{ type: "FORBIDDEN", message: "not yours" }] });
+    const res = await post("/threads/PRRT_1/resolve");
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { reason: string }).reason).toBe("forbidden");
   });
 });
 
@@ -281,6 +309,18 @@ describe("github review submission logging", () => {
     expect((await approve()).status).toBe(201);
     const [event] = await loggedEvents();
     expect(event).toMatchObject({ type: "pr.approved", externalId: null });
+  });
+
+  it("logs a thread reply as a comment marked as a reply", async () => {
+    stubSubmit({ data: {} });
+    const res = await app.request("/api/github/pr/o/r/1/threads/PRRT_1/replies", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ body: "done" }),
+    });
+    expect(res.status).toBe(201);
+    const [event] = await loggedEvents();
+    expect(event).toMatchObject({ type: "pr.commented", payload: { reply: true } });
   });
 });
 
