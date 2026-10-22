@@ -135,8 +135,10 @@ Some details:
   first with a count of the rest.
 - **Only the app instance that launched the session can answer it.** Another
   instance sharing the database shows the item but not the prompt.
-- **A workspace made by an older version of Yarvis** only flags the prompt in
-  the bell. It gets the new hook the next time it is provisioned.
+- **A workspace made by an older version of Yarvis** may have an older hook:
+  one that only flags the prompt in the bell, or one that gives up after about
+  four minutes. It gets the current hook the next time it is provisioned, or
+  when the assistant starts a session in it.
 - **A Claude run outside Yarvis is unaffected.** The hook needs a Yarvis
   terminal's environment and stands aside without it, so Claude Code shows its
   normal dialog.

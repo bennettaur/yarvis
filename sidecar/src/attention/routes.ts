@@ -8,7 +8,7 @@ import { readSessionActivityById } from "../cc/sessions.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { workspaces } from "../db/schema.ts";
-import { holdWithoutIdleTimeout } from "../lib/idleTimeout.ts";
+import { disableIdleTimeout } from "../lib/idleTimeout.ts";
 import {
   SESSION_KEY_HEADER,
   SESSION_TOKEN_HEADER,
@@ -208,7 +208,6 @@ export function createAttentionIngestRoutes(config: Config): Hono {
     async (c) => {
       const arrivedAt = Date.now();
       if (!canHoldAnotherPermission()) return c.body(null, 204);
-      holdWithoutIdleTimeout(c);
       const origin = permissionOriginSchema.safeParse({
         workspaceId: c.req.header("x-yarvis-workspace-id") || undefined,
         sessionKey: c.req.header(SESSION_KEY_HEADER),
@@ -224,6 +223,7 @@ export function createAttentionIngestRoutes(config: Config): Hono {
       if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
       const { workspaceId, sessionKey } = origin.data;
       const hook = parsed.data;
+      if (!canHoldAnotherPermission(sessionKey)) return c.body(null, 204);
 
       const [ws] = workspaceId
         ? await db()
@@ -239,6 +239,9 @@ export function createAttentionIngestRoutes(config: Config): Hono {
           ? await readSessionActivityById(hook.cwd, hook.session_id, 1).catch(() => null)
           : null;
 
+      // Only now, with the caller checked and the body read, may the wait
+      // outlast the server's idle timeout.
+      disableIdleTimeout(c);
       let raised: Promise<void> = Promise.resolve();
 
       const decision = await awaitPermissionDecision(
@@ -293,7 +296,8 @@ const decisionSchema = z.discriminatedUnion("behavior", [
   z.object({ behavior: z.literal("allow") }),
   z.object({
     behavior: z.literal("answer"),
-    answers: z.record(z.string().max(1_000), z.string().trim().min(1).max(4_000)),
+    // Keys aren't capped: each must equal one of the request's own question texts.
+    answers: z.record(z.string(), z.string().trim().min(1).max(4_000)),
   }),
   z.object({ behavior: z.literal("deny"), message: z.string().trim().max(4_000).optional() }),
   z.object({ behavior: z.literal("terminal") }),

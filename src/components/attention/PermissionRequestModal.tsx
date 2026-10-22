@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
   askedQuestions,
   decidePermission,
@@ -20,7 +20,7 @@ const ARMING_MS = 400;
  * The reply Claude Code reads for each question, keyed by its text: the picked
  * labels comma-separated, then any note on its own line.
  */
-function promptAnswers(questions: QuestionItem[], drafts: Draft[]): Record<string, string> {
+function answersByQuestion(questions: QuestionItem[], drafts: Draft[]): Record<string, string> {
   return Object.fromEntries(
     questions.map((q, i) => {
       const draft = drafts[i] ?? EMPTY_DRAFT;
@@ -63,9 +63,15 @@ export default function PermissionRequestModal({
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [armed, setArmed] = useState(false);
-  const [drafts, setDrafts] = useState<Draft[]>([]);
+  // Tagged with the request they belong to, so the next prompt never shows
+  // the last one's answers, even for a single render.
+  const [draftState, setDraftState] = useState<{ requestId: string; drafts: Draft[] } | null>(null);
   const current = requests?.[0] ?? null;
   const questions = current ? askedQuestions(current) : null;
+  const drafts =
+    current && draftState?.requestId === current.id
+      ? draftState.drafts
+      : emptyDrafts(questions ?? []);
   // Only the newest load may land: a poll sent before an answer would otherwise
   // put the answered request back in front.
   const loadSeq = useRef(0);
@@ -106,7 +112,6 @@ export default function PermissionRequestModal({
   useEffect(() => {
     setArmed(false);
     setMessage("");
-    setDrafts(questions ? emptyDrafts(questions) : []);
     const timer = setTimeout(() => setArmed(true), ARMING_MS);
     return () => clearTimeout(timer);
   }, [current?.id]);
@@ -147,7 +152,7 @@ export default function PermissionRequestModal({
   };
 
   const disabled = !armed || busy;
-  const canSendAnswers = questions !== null && drafts.length > 0 && drafts.every(isAnswered);
+  const canSendAnswers = questions !== null && drafts.every(isAnswered);
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
@@ -165,13 +170,11 @@ export default function PermissionRequestModal({
       >
         <header className="flex shrink-0 items-start justify-between gap-3 border-b border-zinc-800 px-4 py-3">
           <div className="min-w-0">
-            {questions ? (
-              <div className="text-xs uppercase tracking-wide text-sky-400">Question</div>
-            ) : (
-              <div className="text-xs uppercase tracking-wide text-amber-400">
-                Permission needed
-              </div>
-            )}
+            <div
+              className={`text-xs uppercase tracking-wide ${questions ? "text-sky-400" : "text-amber-400"}`}
+            >
+              {questions ? "Question" : "Permission needed"}
+            </div>
             <div className="truncate text-sm font-medium text-zinc-100">
               {current?.workspaceName ?? title}
             </div>
@@ -200,14 +203,17 @@ export default function PermissionRequestModal({
             </p>
           )}
           {current && (
-            <RequestDetails
-              request={current}
-              questions={questions}
-              drafts={drafts}
-              onDraftChange={(i, draft) =>
-                setDrafts((prev) => prev.map((d, j) => (j === i ? draft : d)))
-              }
-            />
+            <RequestDetails request={current}>
+              {questions ? (
+                <QuestionList
+                  questions={questions}
+                  drafts={drafts}
+                  onChange={(next) => setDraftState({ requestId: current.id, drafts: next })}
+                />
+              ) : (
+                <ToolInput request={current} />
+              )}
+            </RequestDetails>
           )}
           {(error ?? loadError) && (
             <p role="alert" className="text-xs text-red-400">
@@ -278,7 +284,10 @@ export default function PermissionRequestModal({
                   <button
                     type="button"
                     onClick={() =>
-                      void answer({ behavior: "answer", answers: promptAnswers(questions, drafts) })
+                      void answer({
+                        behavior: "answer",
+                        answers: answersByQuestion(questions, drafts),
+                      })
                     }
                     disabled={disabled || !canSendAnswers}
                     className="rounded-md bg-sky-600 px-3 py-1 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-50"
@@ -304,18 +313,39 @@ export default function PermissionRequestModal({
   );
 }
 
-function RequestDetails({
-  request,
+/** The questions of an AskUserQuestion prompt, answered in place of approving it. */
+function QuestionList({
   questions,
   drafts,
-  onDraftChange,
+  onChange,
 }: {
-  request: PermissionRequest;
-  /** The AskUserQuestion prompt's questions, shown in place of the raw input. */
-  questions: QuestionItem[] | null;
+  questions: QuestionItem[];
   drafts: Draft[];
-  onDraftChange: (index: number, draft: Draft) => void;
+  onChange: (drafts: Draft[]) => void;
 }) {
+  return (
+    <div className="space-y-5">
+      <p className="rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
+        Claude wrote these questions, and your answers go back to it. Don't type passwords, tokens
+        or other secrets.
+      </p>
+      {questions.map((question, i) => (
+        <QuestionField
+          // Questions in a prompt are fixed once asked, so the index is stable.
+          // biome-ignore lint/suspicious/noArrayIndexKey: see above
+          key={i}
+          index={i}
+          question={question}
+          draft={drafts[i] ?? EMPTY_DRAFT}
+          onChange={(draft) => onChange(drafts.map((d, j) => (j === i ? draft : d)))}
+        />
+      ))}
+    </div>
+  );
+}
+
+/** The tool and its input, for every prompt except a question. */
+function ToolInput({ request }: { request: PermissionRequest }) {
   const { command, description, ...rest } = request.toolInput;
   const isBash = request.toolName === "Bash" && typeof command === "string";
   // Bash shows its command on its own, with any other fields below it so a
@@ -326,55 +356,43 @@ function RequestDetails({
   const unsandboxed = request.toolInput.dangerouslyDisableSandbox === true;
 
   return (
-    <>
-      {questions ? (
-        <div className="space-y-5">
-          <p className="text-[11px] text-zinc-500">{formatRelativeTime(request.createdAt)}</p>
-          <p className="rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
-            Claude wrote these questions, and your answers go back to it. Don't type passwords,
-            tokens or other secrets.
-          </p>
-          {questions.map((question, i) => (
-            <QuestionField
-              // Questions in a prompt are fixed once asked, so the index is stable.
-              // biome-ignore lint/suspicious/noArrayIndexKey: see above
-              key={i}
-              index={i}
-              question={question}
-              draft={drafts[i] ?? EMPTY_DRAFT}
-              onChange={(draft) => onDraftChange(i, draft)}
-            />
-          ))}
-        </div>
-      ) : (
-        <div>
-          <div className="mb-1 flex items-baseline justify-between gap-2">
-            <span className="font-medium text-zinc-100">{request.toolName}</span>
-            <span className="text-[11px] text-zinc-500">
-              {formatRelativeTime(request.createdAt)}
-            </span>
-          </div>
-          {unsandboxed && (
-            <p className="mb-1 rounded border border-red-800 bg-red-950/40 px-2 py-1 text-xs text-red-300">
-              Runs outside the sandbox
-            </p>
-          )}
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-zinc-950/70 p-2 font-mono text-xs text-zinc-200">
-            {input}
-          </pre>
-          {otherFields && (
-            <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded bg-zinc-950/70 p-2 font-mono text-xs text-zinc-400">
-              {otherFields}
-            </pre>
-          )}
-          {isBash && typeof description === "string" && (
-            <p className="mt-1 text-xs text-zinc-400">
-              <span className="text-zinc-500">Claude's description: </span>
-              {description}
-            </p>
-          )}
-        </div>
+    <div>
+      <div className="mb-1 font-medium text-zinc-100">{request.toolName}</div>
+      {unsandboxed && (
+        <p className="mb-1 rounded border border-red-800 bg-red-950/40 px-2 py-1 text-xs text-red-300">
+          Runs outside the sandbox
+        </p>
       )}
+      <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-zinc-950/70 p-2 font-mono text-xs text-zinc-200">
+        {input}
+      </pre>
+      {otherFields && (
+        <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded bg-zinc-950/70 p-2 font-mono text-xs text-zinc-400">
+          {otherFields}
+        </pre>
+      )}
+      {isBash && typeof description === "string" && (
+        <p className="mt-1 text-xs text-zinc-400">
+          <span className="text-zinc-500">Claude's description: </span>
+          {description}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** What is being asked (`children`), then where it runs and the conversation around it. */
+function RequestDetails({
+  request,
+  children,
+}: {
+  request: PermissionRequest;
+  children: ReactNode;
+}) {
+  return (
+    <>
+      <p className="text-[11px] text-zinc-500">{formatRelativeTime(request.createdAt)}</p>
+      {children}
 
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
         {request.cwd && (

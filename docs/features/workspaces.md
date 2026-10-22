@@ -530,7 +530,9 @@ How the bell behaves:
   without you. Looking at the session doesn't clear a question; only answering,
   skipping or dismissing it does. See [MCP](mcp.md#asking-you-questions).
 
-A permission prompt can be answered straight from the bell. See
+A permission prompt, or a question Claude asks with its own question tool, can
+be answered straight from the bell. Its row reads `AskUserQuestion:` and the
+first question. See
 [Answering permission prompts](terminals.md#answering-permission-prompts).
 
 The assistant doesn't read the bell. It is for you.

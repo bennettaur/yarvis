@@ -241,6 +241,69 @@ describe("PermissionRequestModal", () => {
       expect(closed).toBe(1);
     });
 
+    it("sends several picked options comma-separated", async () => {
+      queue = [
+        {
+          ...QUESTION,
+          toolInput: {
+            questions: [
+              {
+                question: "Which checks?",
+                options: [{ label: "Lint" }, { label: "Tests" }, { label: "Types" }],
+                multiSelect: true,
+              },
+            ],
+          },
+        },
+      ];
+      const host = await mount();
+      await armed();
+      button(host, "Lint").click();
+      await armed();
+      button(host, "Types").click();
+      await armed();
+      button(host, "Send answers").click();
+      await armed();
+      expect(decisions).toEqual([
+        ["req-q", { behavior: "answer", answers: { "Which checks?": "Lint, Types" } }],
+      ]);
+    });
+
+    it("starts the next question prompt with nothing picked", async () => {
+      const next: PermissionRequest = {
+        ...QUESTION,
+        id: "req-q2",
+        toolInput: {
+          questions: [
+            { question: "Which database?", options: [{ label: "SQLite" }, { label: "Postgres" }] },
+          ],
+        },
+      };
+      queue = [
+        {
+          ...QUESTION,
+          toolInput: {
+            questions: [
+              {
+                question: "Which database?",
+                options: [{ label: "SQLite" }, { label: "Postgres" }],
+              },
+            ],
+          },
+        },
+        next,
+      ];
+      const host = await mount();
+      await armed();
+      button(host, "SQLite").click();
+      await armed();
+      button(host, "Send answers").click();
+      await armed();
+      expect(host.textContent).not.toContain("+1 waiting");
+      expect(button(host, "SQLite").getAttribute("aria-pressed")).toBe("false");
+      expect(button(host, "Send answers").disabled).toBe(true);
+    });
+
     it("skips with a deny", async () => {
       queue = [QUESTION];
       const host = await mount();

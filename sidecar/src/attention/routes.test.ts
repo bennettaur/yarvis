@@ -365,6 +365,23 @@ describe("permission requests", () => {
           },
         },
       });
+      expect(await pendingItems()).toHaveLength(0);
+    });
+
+    it("answers a question longer than a typical one", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      const question = `Does this plan look right?\n${"- a step\n".repeat(200)}`;
+      const longInput = {
+        ...questionInput,
+        tool_input: { questions: [{ question, options: [{ label: "Yes" }, { label: "No" }] }] },
+      };
+      const { response, id } = await ask(longInput);
+      const res = await decide(id, { behavior: "answer", answers: { [question]: "Yes" } });
+      expect(res.status).toBe(200);
+      const reply = (await (await response).json()) as {
+        hookSpecificOutput: { decision: { updatedInput: { answers: Record<string, string> } } };
+      };
+      expect(reply.hookSpecificOutput.decision.updatedInput.answers).toEqual({ [question]: "Yes" });
     });
 
     it("refuses answers that don't cover exactly the prompt's questions", async () => {
@@ -388,6 +405,18 @@ describe("permission requests", () => {
       const res = await decide(crypto.randomUUID(), { behavior: "answer", answers });
       expect(res.status).toBe(410);
     });
+  });
+
+  it("leaves a session's prompts to its terminal once it holds too many", async () => {
+    await seedWorkspace(workspaceId, "WS");
+    for (let i = 0; i < 8; i++) await ask();
+    const ninth = await app.request("/ingest/permission", {
+      method: "POST",
+      headers: permissionAuth,
+      body: JSON.stringify(hookInput),
+    });
+    expect(ninth.status).toBe(204);
+    expect(await waitingRequests()).toHaveLength(8);
   });
 
   it("hands the prompt back to the terminal with an empty reply and keeps the item", async () => {

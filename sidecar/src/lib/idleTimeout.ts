@@ -1,3 +1,4 @@
+import type { Server } from "bun";
 import type { Context } from "hono";
 
 /**
@@ -7,7 +8,7 @@ import type { Context } from "hono";
  * as `c.env`. Under `app.request` in tests there is no server, so this does
  * nothing.
  */
-export function holdWithoutIdleTimeout(c: Context): void {
-  const server = c.env as { timeout?: (request: Request, seconds: number) => void } | undefined;
+export function disableIdleTimeout(c: Context): void {
+  const server = c.env as Server<unknown> | undefined;
   server?.timeout?.(c.req.raw, 0);
 }

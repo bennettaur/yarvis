@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { ingestSchema } from "../attention/routes.ts";
+import { ingestSchema, PERMISSION_HOLD_MS } from "../attention/routes.ts";
 import {
   agentSessionHookCommand,
   attentionHookCommand,
@@ -163,6 +163,14 @@ describe("permissionHookCommand", () => {
     const command = permissionHookCommand(WORKSPACE_ID);
     const maxTime = Number(command.match(/-m (\d+)/)?.[1]);
     expect(maxTime).toBeLessThan(PERMISSION_HOOK_TIMEOUT_S);
+  });
+
+  it("ends the sidecar's hold before curl gives up", () => {
+    const command = permissionHookCommand(WORKSPACE_ID);
+    const maxTime = Number(command.match(/-m (\d+)/)?.[1]);
+    expect(PERMISSION_HOLD_MS / 1000).toBeLessThan(maxTime);
+    // setTimeout fires at once for anything longer.
+    expect(PERMISSION_HOLD_MS).toBeLessThanOrEqual(2 ** 31 - 1);
   });
 });
 

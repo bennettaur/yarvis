@@ -48,15 +48,29 @@ interface PendingRequest {
 const pending = new Map<string, PendingRequest>();
 
 /**
- * Most requests held at once. Each holds a socket for minutes, and any process
- * in a Yarvis terminal holds the token that opens one. Past this, a new request
- * goes straight to Claude Code's own dialog.
+ * Most requests held at once. Each can hold a socket for up to a day, and any
+ * process in a Yarvis terminal holds the token that opens one. Past this, a new
+ * request goes straight to Claude Code's own dialog.
  */
 const MAX_PENDING = 64;
 
-/** Whether another request can be held, or should be left to Claude Code's dialog. */
-export function canHoldAnotherPermission(): boolean {
-  return pending.size < MAX_PENDING;
+/**
+ * Most requests held for one session, so a runaway terminal can't take every
+ * slot and push other sessions' prompts back to their terminals. Claude Code
+ * asks one at a time, so even parallel subagents rarely come near it.
+ */
+const MAX_PENDING_PER_SESSION = 8;
+
+/**
+ * Whether another request can be held, or should be left to Claude Code's
+ * dialog. Without `sessionKey` it checks only the global cap.
+ */
+export function canHoldAnotherPermission(sessionKey?: string): boolean {
+  if (pending.size >= MAX_PENDING) return false;
+  if (!sessionKey) return true;
+  let held = 0;
+  for (const p of pending.values()) if (p.info.sessionKey === sessionKey) held++;
+  return held < MAX_PENDING_PER_SESSION;
 }
 
 export type NewPermissionRequest = Omit<PermissionRequestInfo, "id" | "createdAt">;
@@ -103,10 +117,10 @@ export function awaitPermissionDecision(
 
 /**
  * Claude Code's built-in question tool. It asks for permission like any other
- * tool, and a hook that allows it with `answers` filled in answers it for the
- * user, so the terminal never shows the question.
+ * tool. A hook that allows it with `updatedInput.answers` set supplies the
+ * user's replies, so the terminal never shows the question.
  */
-export const ASK_USER_QUESTION = "AskUserQuestion";
+const ASK_USER_QUESTION = "AskUserQuestion";
 
 /** The question texts of an `AskUserQuestion` input, or null when it has none. */
 function questionTexts(toolInput: Record<string, unknown>): string[] | null {
@@ -131,9 +145,10 @@ export function answerQuestionPrompt(
   const { toolName, toolInput } = entry.info;
   const texts = toolName === ASK_USER_QUESTION ? questionTexts(toolInput) : null;
   const keys = Object.keys(answers);
-  if (!texts || keys.length !== new Set(texts).size || !keys.every((k) => texts.includes(k))) {
-    return "mismatch";
-  }
+  // Two questions with the same text share one answer key, hence the Set.
+  const coversEveryQuestion =
+    texts !== null && keys.length === new Set(texts).size && keys.every((k) => texts.includes(k));
+  if (!coversEveryQuestion) return "mismatch";
   entry.resolve({ behavior: "allow", updatedInput: { ...toolInput, answers } });
   return "answered";
 }
