@@ -9,14 +9,17 @@
  * The clone is never a coding workspace's clone, even when the repo is
  * registered, so review traffic can't move anything someone is working in.
  *
- * Cloning and refreshing run in the background (see `progress.ts`); a PR row's
- * `status` says where that stands and its shas are what every read uses.
+ * A sync (clone or refresh) runs in the background (see `progress.ts`). A PR is
+ * `ready` — reviewable — as soon as its shas are fetched, since every read
+ * comes from git objects; the changed blobs are then downloaded in one batch
+ * and the worktree checked out, tracked by `worktreeStatus`, which only setup
+ * and code navigation wait on.
  */
 
 import { randomUUID } from "node:crypto";
 import { existsSync, rmdirSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { and, asc, desc, eq, ne } from "drizzle-orm";
+import { dirname, join, resolve } from "node:path";
+import { and, asc, desc, eq, getTableColumns, inArray, ne } from "drizzle-orm";
 import { isAllowedAzureOrgUrl } from "../azure/client.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
@@ -26,9 +29,11 @@ import {
   reviewWorkspacePrs,
   reviewWorkspaces,
 } from "../db/schema.ts";
+import { createKeyedLock } from "../lib/keyedLock.ts";
 import { prSourceFor } from "../pr/source.ts";
 import { type PrRef, refKey } from "../pr/types.ts";
-import { runStreaming } from "../workspaces/exec.ts";
+import { runSetupScript } from "../workspaces/exec.ts";
+import { MAX_FILE_BYTES } from "../workspaces/files.ts";
 import { removeWorktree } from "../workspaces/git.ts";
 import {
   assertSafeBranchName,
@@ -37,43 +42,47 @@ import {
   isUniqueViolation,
   type PrLocator,
 } from "../workspaces/service.ts";
+import { ShaCache, stringsSize } from "./cache.ts";
 import {
+  type ChangedFileWithSizes,
   changedFilesBetween,
+  checkoutWorktree,
   credentialEnv,
-  ensureDetachedWorktree,
   ensureReviewClone,
   type FileAtSide,
   fetchPr,
   fileDiffBetween,
   type HeadSource,
+  type PrShas,
   type ReviewChangedFile,
   type ReviewGit,
   readFileAt,
+  registerWorktree,
   reviewGit,
-  treeEntry,
   treePaths,
 } from "./git.ts";
 import {
+  claimRun,
   forgetRuns,
   isRunning,
-  type ReviewProgressEmit,
   type ReviewRunPhase,
+  type RunHandle,
   startRun,
   whenIdle,
 } from "./progress.ts";
-
-const SETUP_LOG_CAP = 16 * 1024;
-const SETUP_TIMEOUT_MS = 10 * 60 * 1000;
 
 /** A refusal with the HTTP status the route should answer with. */
 export class ReviewWorkspaceError extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 404 | 409 | 502,
+    readonly status: 400 | 404 | 409,
   ) {
     super(message);
+    this.name = "ReviewWorkspaceError";
   }
 }
+
+type SyncPhase = Exclude<ReviewRunPhase, "setup">;
 
 // ---------------------------------------------------------------------------
 // Dependencies on the outside world, injectable for tests
@@ -89,7 +98,7 @@ export interface PrMeta {
 }
 
 /** Where to fetch a PR's repo from, and the environment that authenticates it. */
-export interface PrRemote {
+interface PrRemote {
   url: string;
   env: Record<string, string>;
 }
@@ -117,7 +126,7 @@ function prNumber(ref: PrRef): number {
  * GitHub's host is fixed; Azure's comes from the configured organization URL,
  * which is checked to be an Azure DevOps host before a token is sent to it.
  */
-export function httpsRemoteFor(
+function httpsRemoteFor(
   config: Pick<Config, "secrets">,
   ref: PrRef,
 ): { url: string; host: string; username: string; token: string | undefined } {
@@ -134,9 +143,8 @@ export function httpsRemoteFor(
     throw new ReviewWorkspaceError("azure devops is not configured", 400);
   }
   const base = orgUrl.replace(/\/+$/, "");
-  const enc = encodeURIComponent;
   return {
-    url: `${base}/${enc(ref.project)}/_git/${enc(ref.repo)}`,
+    url: `${base}/${encodeURIComponent(ref.project)}/_git/${encodeURIComponent(ref.repo)}`,
     host: new URL(base).hostname,
     username: "yarvis",
     token: config.secrets.azureDevopsToken,
@@ -180,26 +188,31 @@ export function defaultReviewDeps(db: Db, config: Config): ReviewDeps {
   };
 }
 
+/**
+ * Each PR's remote, resolved when it syncs. Finding it means scanning the
+ * registered repos, which a read shouldn't pay for on every request; after a
+ * restart the first read resolves it once and keeps it.
+ */
+const remotes = new Map<string, PrRemote>();
+
+async function remoteForPr(pr: ReviewWorkspacePr, deps: ReviewDeps): Promise<PrRemote> {
+  const known = remotes.get(pr.id);
+  if (known) return known;
+  const remote = await deps.remoteFor(pr.ref);
+  remotes.set(pr.id, remote);
+  return remote;
+}
+
 // ---------------------------------------------------------------------------
 // Paths
 // ---------------------------------------------------------------------------
-
-/** Every review clone lives under here. */
-export function reviewReposRoot(config: Pick<Config, "workspacesRoot">): string {
-  return join(config.workspacesRoot, ".review-repos");
-}
-
-/** Every review worktree lives under here, one folder per review workspace. */
-export function reviewWorktreesRoot(config: Pick<Config, "workspacesRoot">): string {
-  return join(config.workspacesRoot, ".review");
-}
 
 /**
  * The clone for a PR's repo. One folder per identity segment rather than a
  * joined name, since `a-b/c` and `a/b-c` would otherwise share a folder.
  * Lower-cased because both providers treat these names case-insensitively.
  */
-export function reviewClonePath(config: Pick<Config, "workspacesRoot">, ref: PrRef): string {
+function reviewClonePath(config: Pick<Config, "workspacesRoot">, ref: PrRef): string {
   const segments =
     ref.provider === "github"
       ? ["github", ref.owner, ref.repo]
@@ -208,32 +221,40 @@ export function reviewClonePath(config: Pick<Config, "workspacesRoot">, ref: PrR
   if (!lowered.every(isSafePathSegment)) {
     throw new ReviewWorkspaceError(`unsafe repository name in ${refKey(ref)}`, 400);
   }
-  return join(reviewReposRoot(config), ...lowered);
+  return join(config.workspacesRoot, ".review-repos", ...lowered);
 }
 
 /** The folder holding one review workspace's worktrees. */
-export function reviewWorkspaceDir(config: Pick<Config, "workspacesRoot">, id: string): string {
-  return join(reviewWorktreesRoot(config), id);
+function reviewWorkspaceDir(config: Pick<Config, "workspacesRoot">, id: string): string {
+  return join(config.workspacesRoot, ".review", id);
 }
 
 /** A DOM-id-safe variant of `refKey`, matching the frontend's `refDomKey`. */
-export function refDomKey(ref: PrRef): string {
+function refDomKey(ref: PrRef): string {
   return refKey(ref).replace(/[^a-zA-Z0-9_-]/g, "-");
 }
 
-/** Whether `path` is strictly inside `root`, after resolving `.` and `..`. */
-function isInside(root: string, path: string): boolean {
-  const rel = relative(resolve(root), resolve(path));
-  return rel !== "" && !isAbsolute(rel) && rel.split(sep)[0] !== "..";
+/**
+ * Throws unless the PR's worktree path sits directly in its workspace's folder.
+ * Checked before anything is checked out there or deleted from there, so a row
+ * that somehow named another path can't point either at the rest of the disk.
+ */
+function assertWorktreeInWorkspace(config: Config, pr: ReviewWorkspacePr): void {
+  if (dirname(resolve(pr.worktreePath)) !== resolve(reviewWorkspaceDir(config, pr.workspaceId))) {
+    throw new Error(`${pr.worktreePath} is not in this review workspace's folder; left in place`);
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Workspaces
 // ---------------------------------------------------------------------------
 
-export interface ReviewWorkspaceDetail extends ReviewWorkspace {
+interface ReviewWorkspaceDetail extends ReviewWorkspace {
   prs: ReviewWorkspacePr[];
 }
+
+/** A PR as the workspace list shows it: the setup log is only read on demand. */
+type ReviewWorkspacePrSummary = Omit<ReviewWorkspacePr, "setupLog">;
 
 async function prsFor(db: Db, workspaceId: string): Promise<ReviewWorkspacePr[]> {
   return db
@@ -246,17 +267,31 @@ async function prsFor(db: Db, workspaceId: string): Promise<ReviewWorkspacePr[]>
 export async function listReviewWorkspaces(
   db: Db,
   { includeArchived = false }: { includeArchived?: boolean } = {},
-): Promise<ReviewWorkspaceDetail[]> {
+): Promise<(ReviewWorkspace & { prs: ReviewWorkspacePrSummary[] })[]> {
   const rows = await db
     .select()
     .from(reviewWorkspaces)
     .where(includeArchived ? undefined : ne(reviewWorkspaces.status, "archived"))
     .orderBy(desc(reviewWorkspaces.lastOpenedAt), desc(reviewWorkspaces.createdAt));
-  const prs = rows.length ? await db.select().from(reviewWorkspacePrs) : [];
-  return rows.map((ws) => ({
-    ...ws,
-    prs: prs.filter((pr) => pr.workspaceId === ws.id).sort((a, b) => a.position - b.position),
-  }));
+  if (rows.length === 0) return [];
+  const { setupLog: _omitted, ...summaryColumns } = getTableColumns(reviewWorkspacePrs);
+  const prs = await db
+    .select(summaryColumns)
+    .from(reviewWorkspacePrs)
+    .where(
+      inArray(
+        reviewWorkspacePrs.workspaceId,
+        rows.map((ws) => ws.id),
+      ),
+    )
+    .orderBy(asc(reviewWorkspacePrs.position));
+  const byWorkspace = new Map<string, ReviewWorkspacePrSummary[]>();
+  for (const pr of prs) {
+    const list = byWorkspace.get(pr.workspaceId) ?? [];
+    list.push(pr);
+    byWorkspace.set(pr.workspaceId, list);
+  }
+  return rows.map((ws) => ({ ...ws, prs: byWorkspace.get(ws.id) ?? [] }));
 }
 
 export async function getReviewWorkspace(
@@ -266,6 +301,12 @@ export async function getReviewWorkspace(
   const [ws] = await db.select().from(reviewWorkspaces).where(eq(reviewWorkspaces.id, id));
   if (!ws) return null;
   return { ...ws, prs: await prsFor(db, id) };
+}
+
+async function requireWorkspace(db: Db, id: string): Promise<ReviewWorkspaceDetail> {
+  const ws = await getReviewWorkspace(db, id);
+  if (!ws) throw new ReviewWorkspaceError("review workspace not found", 404);
+  return ws;
 }
 
 /** Creates a workspace and starts cloning any PRs it was created with. */
@@ -286,7 +327,7 @@ export async function createReviewWorkspace(
     seen.add(refKey(ref));
     await addReviewPr(db, config, ws.id, ref, deps);
   }
-  return (await getReviewWorkspace(db, ws.id)) as ReviewWorkspaceDetail;
+  return requireWorkspace(db, ws.id);
 }
 
 export async function renameReviewWorkspace(
@@ -315,7 +356,7 @@ export async function touchReviewWorkspace(
   return row ? getReviewWorkspace(db, id) : null;
 }
 
-async function activeWorkspace(db: Db, id: string): Promise<ReviewWorkspace> {
+async function requireActiveWorkspace(db: Db, id: string): Promise<ReviewWorkspace> {
   const [ws] = await db.select().from(reviewWorkspaces).where(eq(reviewWorkspaces.id, id));
   if (!ws) throw new ReviewWorkspaceError("review workspace not found", 404);
   if (ws.status !== "active") {
@@ -329,7 +370,7 @@ async function activeWorkspace(db: Db, id: string): Promise<ReviewWorkspace> {
 // ---------------------------------------------------------------------------
 
 /** The lowest colour index not already taken, so a removed PR's colour is reused. */
-export function lowestUnused(taken: Iterable<number>): number {
+function lowestUnusedColorIndex(taken: Iterable<number>): number {
   const used = new Set(taken);
   let index = 0;
   while (used.has(index)) index++;
@@ -347,19 +388,17 @@ export async function addReviewPr(
   ref: PrRef,
   deps: ReviewDeps,
 ): Promise<ReviewWorkspacePr> {
-  await activeWorkspace(db, workspaceId);
+  await requireActiveWorkspace(db, workspaceId);
   reviewClonePath(config, ref);
   const existing = await prsFor(db, workspaceId);
   const key = refKey(ref);
-  if (existing.some((pr) => pr.refKey === key)) {
-    throw new ReviewWorkspaceError("this pull request is already in the workspace", 409);
-  }
+  const duplicate = new ReviewWorkspaceError("this pull request is already in the workspace", 409);
+  if (existing.some((pr) => pr.refKey === key)) throw duplicate;
 
   const id = randomUUID();
-  const dir = reviewWorkspaceDir(config, workspaceId);
   // Two refs can flatten to the same folder name (`a-b/c` and `a/b-c`); the
   // second one gets the row id on the end rather than sharing a checkout.
-  let worktreePath = join(dir, refDomKey(ref));
+  let worktreePath = join(reviewWorkspaceDir(config, workspaceId), refDomKey(ref));
   if (existing.some((pr) => pr.worktreePath === worktreePath)) {
     worktreePath = `${worktreePath}-${id.slice(0, 8)}`;
   }
@@ -373,15 +412,13 @@ export async function addReviewPr(
         workspaceId,
         refKey: key,
         ref,
-        colorIndex: lowestUnused(existing.map((pr) => pr.colorIndex)),
+        colorIndex: lowestUnusedColorIndex(existing.map((pr) => pr.colorIndex)),
         position: existing.reduce((max, pr) => Math.max(max, pr.position + 1), 0),
         worktreePath,
       })
       .returning();
   } catch (e) {
-    if (isUniqueViolation(e)) {
-      throw new ReviewWorkspaceError("this pull request is already in the workspace", 409);
-    }
+    if (isUniqueViolation(e)) throw duplicate;
     throw e;
   }
   if (!row) throw new Error("failed to add pull request");
@@ -389,7 +426,11 @@ export async function addReviewPr(
   return row;
 }
 
-async function getPr(db: Db, workspaceId: string, prId: string): Promise<ReviewWorkspacePr> {
+export async function getReviewPr(
+  db: Db,
+  workspaceId: string,
+  prId: string,
+): Promise<ReviewWorkspacePr> {
   const [row] = await db
     .select()
     .from(reviewWorkspacePrs)
@@ -398,26 +439,15 @@ async function getPr(db: Db, workspaceId: string, prId: string): Promise<ReviewW
   return row;
 }
 
-export { getPr as getReviewPr };
-
-/** Serializes work on one review clone: fetches and worktree changes share its refs. */
-const cloneLocks = new Map<string, Promise<unknown>>();
-
-async function withCloneLock<T>(clonePath: string, fn: () => Promise<T>): Promise<T> {
-  const prev = cloneLocks.get(clonePath) ?? Promise.resolve();
-  const result = prev.then(fn, fn);
-  cloneLocks.set(
-    clonePath,
-    result.then(
-      () => undefined,
-      () => undefined,
-    ),
-  );
-  return result;
-}
+/**
+ * Serializes what changes a review clone's refs or worktree list: clone, fetch,
+ * and registering a worktree. Checkouts and reads don't hold it, so one PR's
+ * slow checkout never queues another PR's fetch behind it.
+ */
+const withCloneLock = createKeyedLock();
 
 /** Where a PR's head commit is fetched from. */
-export function headSourceFor(ref: PrRef, meta: Pick<PrMeta, "headRef" | "fromFork">): HeadSource {
+function headSourceFor(ref: PrRef, meta: Pick<PrMeta, "headRef" | "fromFork">): HeadSource {
   if (ref.provider === "github") return { kind: "ref", ref: `refs/pull/${ref.number}/head` };
   // Azure publishes no head ref for a PR, only the merge preview; the source
   // commit is its second parent. A same-repo branch is fetched directly, since
@@ -429,65 +459,68 @@ export function headSourceFor(ref: PrRef, meta: Pick<PrMeta, "headRef" | "fromFo
 /**
  * Starts a clone or refresh of one PR in the background. Returns false when a
  * run for that PR is already in flight (the caller can follow it instead).
+ */
+function startSync(
+  db: Db,
+  config: Config,
+  pr: ReviewWorkspacePr,
+  phase: SyncPhase,
+  deps: ReviewDeps,
+): boolean {
+  return startRun(pr.id, (run) => syncPr(db, config, pr, phase, deps, run));
+}
+
+/**
+ * Fetches the PR and makes it reviewable, then readies everything behind it.
  *
  * A failed clone leaves the row in `error`. A failed refresh leaves it `ready`
  * on the commits it already had, with the reason in `error`: the old checkout
  * is still a coherent thing to review.
  */
-export function startSync(
-  db: Db,
-  config: Config,
-  pr: ReviewWorkspacePr,
-  phase: Exclude<ReviewRunPhase, "setup">,
-  deps: ReviewDeps,
-): boolean {
-  return startRun(pr.id, (emit) => syncPr(db, config, pr, phase, deps, emit));
-}
-
 async function syncPr(
   db: Db,
   config: Config,
   pr: ReviewWorkspacePr,
-  phase: Exclude<ReviewRunPhase, "setup">,
+  phase: SyncPhase,
   deps: ReviewDeps,
-  emit: ReviewProgressEmit,
+  run: RunHandle,
 ): Promise<void> {
-  const log = (text: string) => emit({ type: "log", text: `${text}\n` });
-  await emit({ type: "start", phase });
+  const log = (text: string) => run.emit({ type: "log", text: `${text}\n` });
+  run.emit({ type: "start", phase });
   if (phase === "clone") {
     await db
       .update(reviewWorkspacePrs)
       .set({ status: "cloning", error: null })
       .where(eq(reviewWorkspacePrs.id, pr.id));
   }
+
+  let runners: ReviewGit;
+  let clonePath: string;
+  let shas: PrShas;
   try {
+    assertWorktreeInWorkspace(config, pr);
     const meta = await deps.loadPr(pr.ref);
     for (const branch of [meta.baseRef, ...(meta.fromFork ? [] : [meta.headRef])]) {
       assertSafeBranchName(branch);
     }
     const remote = await deps.remoteFor(pr.ref);
-    const git = deps.git(remote.env);
-    const clonePath = reviewClonePath(config, pr.ref);
-    if (!isInside(reviewWorktreesRoot(config), pr.worktreePath)) {
-      throw new Error("worktree path is outside the review folder");
-    }
+    remotes.set(pr.id, remote);
+    runners = deps.git(remote.env);
+    clonePath = reviewClonePath(config, pr.ref);
+    const cloneDir = clonePath;
+    const gitRunner = runners.run;
 
-    const shas = await withCloneLock(clonePath, async () => {
-      await log(
-        existsSync(join(clonePath, ".git")) ? "Using existing clone" : "Cloning (blobless)",
-      );
-      await ensureReviewClone(git.run, remote.url, clonePath);
-      await log(`Fetching ${meta.headRef} and ${meta.baseRef}`);
-      const fetched = await fetchPr(
-        git.run,
-        clonePath,
+    shas = await withCloneLock(cloneDir, async () => {
+      log(existsSync(join(cloneDir, ".git")) ? "Using existing clone" : "Cloning (blobless)");
+      await ensureReviewClone(gitRunner, remote.url, cloneDir);
+      log(`Fetching ${meta.headRef} and ${meta.baseRef}`);
+      return fetchPr(
+        gitRunner,
+        cloneDir,
         prNumber(pr.ref),
         headSourceFor(pr.ref, meta),
         meta.baseRef,
       );
-      await log(`Checking out ${fetched.headSha.slice(0, 12)}`);
-      await ensureDetachedWorktree(git.run, clonePath, pr.worktreePath, fetched.headSha);
-      return fetched;
     });
 
     await db
@@ -499,22 +532,56 @@ async function syncPr(
         author: meta.author,
         headRef: meta.headRef,
         baseRef: meta.baseRef,
+        worktreeStatus: "checking-out",
         ...shas,
       })
       .where(eq(reviewWorkspacePrs.id, pr.id));
-    await emit({ type: "done", phase, status: "ready", error: null });
+    log(`Ready to review at ${shas.headSha.slice(0, 12)}`);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    const status = phase === "refresh" && pr.status === "ready" ? "ready" : "error";
+    const status = phase === "refresh" ? "ready" : "error";
     // Emit before writing: a failing database is a likely way to get here, and
     // the event is what tells a watching view the run is over.
-    await emit({ type: "done", phase, status, error: message });
+    run.emit({ type: "done", phase, status, error: message });
     await db
       .update(reviewWorkspacePrs)
       .set({ status, error: message })
       .where(eq(reviewWorkspacePrs.id, pr.id))
       .catch((err) => console.error("[review-workspaces] failed to record error:", err));
+    return;
   }
+
+  // Not needed for correctness — a read computes the same thing on demand — so
+  // a failure here is only logged. Doing it now is what makes the first files
+  // the reviewer opens instant instead of a fetch each.
+  try {
+    log("Downloading the changed files");
+    await changedFiles(runners, clonePath, shas.mergeBaseSha, shas.headSha);
+  } catch (e) {
+    log(`Could not prefetch the changed files: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  let checkoutError: string | null = null;
+  try {
+    const cloneDir = clonePath;
+    await withCloneLock(cloneDir, () =>
+      registerWorktree(runners.run, cloneDir, pr.worktreePath, shas.headSha),
+    );
+    log("Checking out the worktree");
+    await checkoutWorktree(runners.run, pr.worktreePath, shas.headSha);
+    await db
+      .update(reviewWorkspacePrs)
+      .set({ worktreeStatus: "ready" })
+      .where(eq(reviewWorkspacePrs.id, pr.id));
+  } catch (e) {
+    checkoutError = `checkout failed: ${e instanceof Error ? e.message : String(e)}`;
+    await db
+      .update(reviewWorkspacePrs)
+      .set({ worktreeStatus: "error", error: checkoutError })
+      .where(eq(reviewWorkspacePrs.id, pr.id))
+      .catch((err) => console.error("[review-workspaces] failed to record error:", err));
+  }
+  run.emit({ type: "done", phase, status: "ready", error: checkoutError });
 }
 
 /**
@@ -541,8 +608,8 @@ export async function refreshReviewPr(
   prId: string,
   deps: ReviewDeps,
 ): Promise<ReviewWorkspacePr> {
-  await activeWorkspace(db, workspaceId);
-  const pr = await getPr(db, workspaceId, prId);
+  await requireActiveWorkspace(db, workspaceId);
+  const pr = await getReviewPr(db, workspaceId, prId);
   const phase = pr.status === "ready" ? "refresh" : "clone";
   if (!startSync(db, config, pr, phase, deps)) {
     throw new ReviewWorkspaceError("this pull request is already being updated", 409);
@@ -551,21 +618,16 @@ export async function refreshReviewPr(
 }
 
 /**
- * Removes the worktree at `worktreePath`. Only ever deletes inside the review
- * workspace's own folder: `removeWorktree` refuses to delete a leftover folder
- * anywhere but directly under the root it is given, and the row's path is
- * checked to be there first.
+ * Removes a PR's worktree. Only ever deletes inside the review workspace's own
+ * folder: the row's path is checked to be there, and `removeWorktree` refuses
+ * to delete a leftover folder anywhere but directly under the root it is given.
  */
 async function removePrWorktree(
   config: Config,
-  workspaceId: string,
   pr: ReviewWorkspacePr,
   deps: ReviewDeps,
 ): Promise<void> {
-  const dir = reviewWorkspaceDir(config, workspaceId);
-  if (dirname(resolve(pr.worktreePath)) !== resolve(dir)) {
-    throw new Error(`${pr.worktreePath} is not in this review workspace's folder; left in place`);
-  }
+  assertWorktreeInWorkspace(config, pr);
   const clonePath = reviewClonePath(config, pr.ref);
   if (!existsSync(join(clonePath, ".git"))) {
     if (existsSync(pr.worktreePath)) {
@@ -576,7 +638,7 @@ async function removePrWorktree(
   await withCloneLock(clonePath, () =>
     removeWorktree(deps.git({}).run, clonePath, pr.worktreePath, {
       force: true,
-      workspaceRoot: dir,
+      workspaceRoot: reviewWorkspaceDir(config, pr.workspaceId),
     }),
   );
 }
@@ -588,13 +650,14 @@ export async function removeReviewPr(
   prId: string,
   deps: ReviewDeps,
 ): Promise<void> {
-  const pr = await getPr(db, workspaceId, prId);
+  const pr = await getReviewPr(db, workspaceId, prId);
   if (isRunning(pr.id)) {
     throw new ReviewWorkspaceError("this pull request is still being updated", 409);
   }
-  await removePrWorktree(config, workspaceId, pr, deps);
+  await removePrWorktree(config, pr, deps);
   await db.delete(reviewWorkspacePrs).where(eq(reviewWorkspacePrs.id, pr.id));
   forgetRuns(pr.id);
+  remotes.delete(pr.id);
 }
 
 /**
@@ -607,34 +670,37 @@ export async function archiveReviewWorkspace(
   config: Config,
   id: string,
   deps: ReviewDeps,
-): Promise<{ workspace: ReviewWorkspaceDetail; done: Promise<void> }> {
-  const ws = await getReviewWorkspace(db, id);
-  if (!ws) throw new ReviewWorkspaceError("review workspace not found", 404);
-  if (ws.status !== "active") {
-    throw new ReviewWorkspaceError(`review workspace is already ${ws.status}`, 409);
-  }
-  await db
+): Promise<ReviewWorkspaceDetail> {
+  // Conditional, so of two archives racing only one gets the row back and
+  // goes on to remove anything.
+  const [claimed] = await db
     .update(reviewWorkspaces)
     .set({ status: "archiving", updatedAt: new Date() })
-    .where(eq(reviewWorkspaces.id, id));
+    .where(and(eq(reviewWorkspaces.id, id), eq(reviewWorkspaces.status, "active")))
+    .returning();
+  if (!claimed) {
+    const ws = await requireWorkspace(db, id);
+    throw new ReviewWorkspaceError(`review workspace is already ${ws.status}`, 409);
+  }
+  const ws = await requireWorkspace(db, id);
 
-  const done = (async () => {
+  void (async () => {
     const failures: string[] = [];
     for (const pr of ws.prs) {
       try {
         await whenIdle(pr.id);
-        await removePrWorktree(config, id, pr, deps);
+        forgetRuns(pr.id);
+        remotes.delete(pr.id);
+        await removePrWorktree(config, pr, deps);
       } catch (e) {
         failures.push(e instanceof Error ? e.message : String(e));
       }
     }
-    const dir = reviewWorkspaceDir(config, id);
-    if (isInside(reviewWorktreesRoot(config), dir) && existsSync(dir)) {
-      try {
-        // Only an empty folder: anything left is what a failure above kept.
-        rmdirSync(dir);
-      } catch {}
-    }
+    try {
+      // Only removes an empty folder; anything left in it is what a failure
+      // above kept, and is already reported.
+      rmdirSync(reviewWorkspaceDir(config, id));
+    } catch {}
     await db
       .update(reviewWorkspaces)
       .set({
@@ -645,42 +711,67 @@ export async function archiveReviewWorkspace(
       .where(eq(reviewWorkspaces.id, id));
   })().catch((e) => console.error("[review-workspaces] archive failed:", e));
 
-  return { workspace: (await getReviewWorkspace(db, id)) as ReviewWorkspaceDetail, done };
+  return ws;
 }
 
 // ---------------------------------------------------------------------------
 // Reads
 // ---------------------------------------------------------------------------
 
+/**
+ * Review reads, keyed by sha. 64 MB holds the changed-file lists, trees and
+ * open files of a good few large PRs; past that the least recently read go.
+ */
+const cache = new ShaCache(64 * 1024 * 1024);
+
+function changedFiles(
+  runners: ReviewGit,
+  clonePath: string,
+  mergeBaseSha: string,
+  headSha: string,
+): Promise<ChangedFileWithSizes[]> {
+  return cache.get(
+    `changed:${clonePath}:${mergeBaseSha}..${headSha}`,
+    () => changedFilesBetween(runners.run, clonePath, mergeBaseSha, headSha),
+    (files) => stringsSize(files.map((f) => f.path)) + files.length * 64,
+  );
+}
+
 interface ReadyPr {
   pr: ReviewWorkspacePr;
   clonePath: string;
-  git: ReviewGit;
+  runners: ReviewGit;
   headSha: string;
   mergeBaseSha: string;
 }
 
-async function readyPr(
+async function requireReadyPr(
   db: Db,
   config: Config,
   workspaceId: string,
   prId: string,
   deps: ReviewDeps,
 ): Promise<ReadyPr> {
-  const pr = await getPr(db, workspaceId, prId);
+  const pr = await getReviewPr(db, workspaceId, prId);
   if (pr.status !== "ready" || !pr.headSha || !pr.mergeBaseSha) {
     throw new ReviewWorkspaceError(`pull request is ${pr.status}, not ready`, 409);
   }
   // Reads can fetch blobs a blobless clone doesn't have yet, so they carry the
   // remote's credentials like a fetch does.
-  const remote = await deps.remoteFor(pr.ref);
+  const remote = await remoteForPr(pr, deps);
   return {
     pr,
     clonePath: reviewClonePath(config, pr.ref),
-    git: deps.git(remote.env),
+    runners: deps.git(remote.env),
     headSha: pr.headSha,
     mergeBaseSha: pr.mergeBaseSha,
   };
+}
+
+/** The commits a read answered from, so the client can cache by them too. */
+interface ReadShas {
+  headSha: string;
+  mergeBaseSha: string;
 }
 
 export async function reviewChangedFiles(
@@ -689,9 +780,19 @@ export async function reviewChangedFiles(
   workspaceId: string,
   prId: string,
   deps: ReviewDeps,
-): Promise<ReviewChangedFile[]> {
-  const ready = await readyPr(db, config, workspaceId, prId, deps);
-  return changedFilesBetween(ready.git.run, ready.clonePath, ready.mergeBaseSha, ready.headSha);
+): Promise<ReadShas & { files: ReviewChangedFile[] }> {
+  const ready = await requireReadyPr(db, config, workspaceId, prId, deps);
+  const files = await changedFiles(
+    ready.runners,
+    ready.clonePath,
+    ready.mergeBaseSha,
+    ready.headSha,
+  );
+  return {
+    headSha: ready.headSha,
+    mergeBaseSha: ready.mergeBaseSha,
+    files: files.map(({ oldSize: _old, newSize: _new, ...file }) => file),
+  };
 }
 
 export async function reviewTree(
@@ -700,9 +801,14 @@ export async function reviewTree(
   workspaceId: string,
   prId: string,
   deps: ReviewDeps,
-): Promise<string[]> {
-  const ready = await readyPr(db, config, workspaceId, prId, deps);
-  return treePaths(ready.git.run, ready.clonePath, ready.headSha);
+): Promise<{ headSha: string; paths: string[] }> {
+  const ready = await requireReadyPr(db, config, workspaceId, prId, deps);
+  const paths = await cache.get(
+    `tree:${ready.clonePath}:${ready.headSha}`,
+    () => treePaths(ready.runners.run, ready.clonePath, ready.headSha),
+    stringsSize,
+  );
+  return { headSha: ready.headSha, paths };
 }
 
 /** A file at the PR's head or at the merge-base; 404 when that side has no such file. */
@@ -714,17 +820,30 @@ export async function reviewFile(
   path: string,
   side: "base" | "head",
   deps: ReviewDeps,
-): Promise<FileAtSide> {
-  const ready = await readyPr(db, config, workspaceId, prId, deps);
+): Promise<FileAtSide & { sha: string }> {
+  const ready = await requireReadyPr(db, config, workspaceId, prId, deps);
   const sha = side === "head" ? ready.headSha : ready.mergeBaseSha;
-  const file = await readFileAt(ready.git, ready.clonePath, sha, path);
+  const file = await cache.get(
+    `file:${ready.clonePath}:${sha}:${path}`,
+    () => readFileAt(ready.runners, ready.clonePath, sha, path),
+    (f) => (f?.content.length ?? 0) + 64,
+  );
   if (!file) throw new ReviewWorkspaceError(`no file at ${path} on the ${side} side`, 404);
-  return file;
+  return { ...file, sha };
+}
+
+interface ReviewFileDiff extends ReadShas {
+  path: string;
+  oldPath?: string;
+  patch: string;
+  /** Either side is over the size cap, so no patch was computed. */
+  tooLarge: boolean;
 }
 
 /**
- * The patch for one file. The path has to exist on one side or the other, so
- * a request can't use this to diff arbitrary pathspecs.
+ * The patch for one changed file. The path has to be one the PR changes,
+ * checked against the cached changed-file list, which also says where a
+ * renamed file came from and whether either side is too big to diff.
  */
 export async function reviewDiff(
   db: Db,
@@ -732,27 +851,47 @@ export async function reviewDiff(
   workspaceId: string,
   prId: string,
   path: string,
-  oldPath: string | undefined,
   deps: ReviewDeps,
-): Promise<string> {
-  const ready = await readyPr(db, config, workspaceId, prId, deps);
-  const { run } = ready.git;
-  const [atHead, atBase] = await Promise.all([
-    treeEntry(run, ready.clonePath, ready.headSha, path),
-    treeEntry(run, ready.clonePath, ready.mergeBaseSha, path),
-  ]);
-  if (!atHead && !atBase) throw new ReviewWorkspaceError(`no file at ${path}`, 404);
-  if (oldPath && !(await treeEntry(run, ready.clonePath, ready.mergeBaseSha, oldPath))) {
-    throw new ReviewWorkspaceError(`no file at ${oldPath} on the base side`, 404);
+): Promise<ReviewFileDiff> {
+  const ready = await requireReadyPr(db, config, workspaceId, prId, deps);
+  const files = await changedFiles(
+    ready.runners,
+    ready.clonePath,
+    ready.mergeBaseSha,
+    ready.headSha,
+  );
+  const file = files.find((f) => f.path === path);
+  if (!file) throw new ReviewWorkspaceError(`${path} is not changed in this pull request`, 404);
+  const base = {
+    path,
+    ...(file.oldPath ? { oldPath: file.oldPath } : {}),
+    headSha: ready.headSha,
+    mergeBaseSha: ready.mergeBaseSha,
+  };
+  if (file.oldSize > MAX_FILE_BYTES || file.newSize > MAX_FILE_BYTES) {
+    return { ...base, patch: "", tooLarge: true };
   }
-  return fileDiffBetween(run, ready.clonePath, ready.mergeBaseSha, ready.headSha, path, oldPath);
+  const patch = await cache.get(
+    `diff:${ready.clonePath}:${ready.mergeBaseSha}..${ready.headSha}:${path}`,
+    () =>
+      fileDiffBetween(
+        ready.runners.run,
+        ready.clonePath,
+        ready.mergeBaseSha,
+        ready.headSha,
+        path,
+        file.oldPath,
+      ),
+    (p) => p.length + 64,
+  );
+  return { ...base, patch, tooLarge: false };
 }
 
 // ---------------------------------------------------------------------------
 // Setup consent
 // ---------------------------------------------------------------------------
 
-export interface SetupInfo {
+interface SetupInfo {
   script: string | null;
   author: string | null;
   branch: string | null;
@@ -768,7 +907,7 @@ export async function reviewSetupInfo(
   prId: string,
   deps: ReviewDeps,
 ): Promise<SetupInfo> {
-  const pr = await getPr(db, workspaceId, prId);
+  const pr = await getReviewPr(db, workspaceId, prId);
   return {
     script: await deps.setupScriptFor(pr.ref),
     author: pr.author,
@@ -777,6 +916,20 @@ export async function reviewSetupInfo(
     status: pr.setupStatus,
     log: pr.setupLog,
   };
+}
+
+async function updatePr(
+  db: Db,
+  id: string,
+  values: Partial<ReviewWorkspacePr>,
+): Promise<ReviewWorkspacePr> {
+  const [row] = await db
+    .update(reviewWorkspacePrs)
+    .set(values)
+    .where(eq(reviewWorkspacePrs.id, id))
+    .returning();
+  if (!row) throw new ReviewWorkspaceError("pull request not found", 404);
+  return row;
 }
 
 /**
@@ -795,73 +948,70 @@ export async function answerReviewSetup(
   answer: { grant: boolean; script: string | null },
   deps: ReviewDeps,
 ): Promise<ReviewWorkspacePr> {
-  await activeWorkspace(db, workspaceId);
-  const pr = await getPr(db, workspaceId, prId);
-  if (!answer.grant) {
-    const [row] = await db
-      .update(reviewWorkspacePrs)
-      .set({ setupConsent: "declined" })
-      .where(eq(reviewWorkspacePrs.id, pr.id))
-      .returning();
-    return row as ReviewWorkspacePr;
-  }
+  await requireActiveWorkspace(db, workspaceId);
+  const pr = await getReviewPr(db, workspaceId, prId);
+  if (!answer.grant) return updatePr(db, pr.id, { setupConsent: "declined" });
 
-  if (pr.status !== "ready") {
-    throw new ReviewWorkspaceError(`pull request is ${pr.status}, not ready`, 409);
+  if (pr.worktreeStatus !== "ready") {
+    throw new ReviewWorkspaceError(`the checkout is ${pr.worktreeStatus}, not ready`, 409);
   }
   const script = await deps.setupScriptFor(pr.ref);
-  if ((answer.script ?? null) !== script) {
+  if (answer.script !== script) {
     throw new ReviewWorkspaceError(
       "the setup script changed since it was shown; review it again",
       409,
     );
   }
-  if (isRunning(pr.id)) {
-    throw new ReviewWorkspaceError("this pull request is still being updated", 409);
-  }
+  if (!script) return updatePr(db, pr.id, { setupConsent: "granted", setupStatus: "skipped" });
 
-  const [row] = await db
-    .update(reviewWorkspacePrs)
-    .set({ setupConsent: "granted", setupStatus: script ? "running" : "skipped", setupLog: null })
-    .where(eq(reviewWorkspacePrs.id, pr.id))
-    .returning();
-  if (script) {
-    startRun(pr.id, (emit) => runSetup(db, pr, script, emit));
+  // Claimed before anything is written, so a request that loses the race to a
+  // sync (or another yes) is refused without leaving `running` on the row.
+  const run = claimRun(pr.id);
+  if (!run) throw new ReviewWorkspaceError("this pull request is still being updated", 409);
+  let row: ReviewWorkspacePr;
+  try {
+    row = await updatePr(db, pr.id, {
+      setupConsent: "granted",
+      setupStatus: "running",
+      setupLog: null,
+    });
+  } catch (e) {
+    run.finish();
+    throw e;
   }
-  return row as ReviewWorkspacePr;
+  void runSetup(db, pr, script, run);
+  return row;
 }
 
 async function runSetup(
   db: Db,
   pr: ReviewWorkspacePr,
   script: string,
-  emit: ReviewProgressEmit,
+  run: RunHandle,
 ): Promise<void> {
-  await emit({ type: "start", phase: "setup" });
-  let tail = "";
+  run.emit({ type: "start", phase: "setup" });
   let status: "succeeded" | "failed" = "failed";
   let error: string | null = null;
+  // The row keeps the tail `runSetupScript` returns; the progress stream has
+  // the whole output while the run is followable.
+  let logTail = "";
   try {
-    // `bash -c`, not `-lc`: a login shell would source the user's profile and
-    // re-import the secrets `exec.ts` strips. The environment carries no git
-    // credentials either — those are only ever handed to git.
-    const exitCode = await runStreaming(["bash", "-c", script], {
-      cwd: pr.worktreePath,
-      timeoutMs: SETUP_TIMEOUT_MS,
-      onChunk: async (text) => {
-        tail = (tail + text).slice(-SETUP_LOG_CAP);
-        await emit({ type: "log", text });
-      },
+    // The script's environment is the scrubbed one: no provider secrets, and
+    // no git credentials — those are only ever handed to git.
+    const result = await runSetupScript(pr.worktreePath, script, (text) => {
+      run.emit({ type: "log", text });
     });
-    status = exitCode === 0 ? "succeeded" : "failed";
-    if (exitCode !== 0) error = `setup script exited ${exitCode}`;
+    logTail = result.logTail;
+    status = result.exitCode === 0 ? "succeeded" : "failed";
+    if (result.exitCode !== 0) error = `setup script exited ${result.exitCode}`;
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
-  await emit({ type: "done", phase: "setup", status, error });
+  run.emit({ type: "done", phase: "setup", status, error });
   await db
     .update(reviewWorkspacePrs)
-    .set({ setupStatus: status, setupLog: tail })
+    .set({ setupStatus: status, setupLog: logTail })
     .where(eq(reviewWorkspacePrs.id, pr.id))
-    .catch((err) => console.error("[review-workspaces] failed to record setup:", err));
+    .catch((err) => console.error("[review-workspaces] failed to record setup:", err))
+    .finally(() => run.finish());
 }

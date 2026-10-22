@@ -3,7 +3,9 @@ import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { type Db, getDb } from "../db/client.ts";
+import { clientError, describeError } from "../llm/errors.ts";
 import type { PrRef } from "../pr/types.ts";
+import { CONTROL_CHARACTERS } from "../workspaces/files.ts";
 import { isSafePathSegment } from "../workspaces/service.ts";
 import { assertSafeRepoPath, UnsafePathError } from "./git.ts";
 import { follow, type ReviewProgressEvent } from "./progress.ts";
@@ -35,31 +37,32 @@ import {
  * review clone root and a component of `refKey` (split on `/`), so anything
  * that could climb a directory or add a segment is refused here.
  */
-const segment = z
+const refSegmentSchema = z
   .string()
   .min(1)
   .max(200)
   .refine(
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters never name a repo.
-    (s) => isSafePathSegment(s) && !/[\x00-\x1f\x7f:]/.test(s) && s.trim() === s,
+    (s) =>
+      isSafePathSegment(s) && !CONTROL_CHARACTERS.test(s) && !s.includes(":") && s.trim() === s,
     "invalid name",
   );
+const githubNameSchema = refSegmentSchema.and(z.string().regex(/^[A-Za-z0-9._-]+$/));
 
-const prNumber = z.number().int().positive();
+const prNumberSchema = z.number().int().positive();
 
-export const prRefSchema: z.ZodType<PrRef> = z.discriminatedUnion("provider", [
+const prRefSchema: z.ZodType<PrRef> = z.discriminatedUnion("provider", [
   z.object({
     provider: z.literal("github"),
-    owner: segment.and(z.string().regex(/^[A-Za-z0-9._-]+$/)),
-    repo: segment.and(z.string().regex(/^[A-Za-z0-9._-]+$/)),
-    number: prNumber,
+    owner: githubNameSchema,
+    repo: githubNameSchema,
+    number: prNumberSchema,
   }),
   z.object({
     provider: z.literal("azure"),
-    org: segment,
-    project: segment,
-    repo: segment,
-    prId: prNumber,
+    org: refSegmentSchema,
+    project: refSegmentSchema,
+    repo: refSegmentSchema,
+    prId: prNumberSchema,
   }),
 ]);
 
@@ -73,7 +76,7 @@ const addPrSchema = z.object({ ref: prRefSchema });
 const setupSchema = z.object({
   grant: z.boolean(),
   /** The script the user was shown; required to match before anything runs. */
-  script: z.string().nullable().optional(),
+  script: z.string().nullable().default(null),
 });
 const idSchema = z.string().uuid();
 
@@ -120,8 +123,8 @@ export function createReviewWorkspaceRoutes(
   const fail = (c: Context, e: unknown) => {
     if (e instanceof ReviewWorkspaceError) return c.json({ error: e.message }, e.status);
     if (e instanceof UnsafePathError) return c.json({ error: e.message }, 400);
-    console.error("[review-workspaces]", e);
-    return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    console.error("[review-workspaces]", describeError(e));
+    return c.json({ error: clientError(e) }, 500);
   };
 
   router.get("/", async (c) =>
@@ -161,8 +164,7 @@ export function createReviewWorkspaceRoutes(
   // background and the workspace reads `archived` when that is done.
   router.post("/:id/archive", async (c) => {
     try {
-      const { workspace } = await archiveReviewWorkspace(db(), config, c.req.param("id"), deps());
-      return c.json(workspace, 202);
+      return c.json(await archiveReviewWorkspace(db(), config, c.req.param("id"), deps()), 202);
     } catch (e) {
       return fail(c, e);
     }
@@ -249,7 +251,6 @@ export function createReviewWorkspaceRoutes(
       return c.json({ error: "side must be head or base" }, 400);
     }
     try {
-      assertSafeRepoPath(path);
       return c.json(
         await reviewFile(db(), config, c.req.param("id"), c.req.param("prId"), path, side, deps()),
       );
@@ -260,20 +261,14 @@ export function createReviewWorkspaceRoutes(
 
   router.get("/:id/prs/:prId/diff", async (c) => {
     const path = c.req.query("path") ?? "";
-    const oldPath = c.req.query("oldPath") || undefined;
     try {
+      // Checked here because the lookup it guards is a match against the
+      // changed-file list, where a malformed path would only read as "not
+      // changed" (404) rather than as the bad request it is.
       assertSafeRepoPath(path);
-      if (oldPath) assertSafeRepoPath(oldPath);
-      const patch = await reviewDiff(
-        db(),
-        config,
-        c.req.param("id"),
-        c.req.param("prId"),
-        path,
-        oldPath,
-        deps(),
+      return c.json(
+        await reviewDiff(db(), config, c.req.param("id"), c.req.param("prId"), path, deps()),
       );
-      return c.json({ path, ...(oldPath ? { oldPath } : {}), patch });
     } catch (e) {
       return fail(c, e);
     }
@@ -293,13 +288,7 @@ export function createReviewWorkspaceRoutes(
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
       return c.json(
-        await answerReviewSetup(
-          db(),
-          c.req.param("id"),
-          c.req.param("prId"),
-          { grant: parsed.data.grant, script: parsed.data.script ?? null },
-          deps(),
-        ),
+        await answerReviewSetup(db(), c.req.param("id"), c.req.param("prId"), parsed.data, deps()),
       );
     } catch (e) {
       return fail(c, e);
